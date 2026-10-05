@@ -60,7 +60,7 @@ before the run is held for the manager). Edits apply at the next tick.
   before falling back to a retry; fresh workers are told what the branch already
   committed. Reports carry the worker's `seq`, so stale and duplicate ones drop.
 - **Quarterbacking**: `retry`, `goto <station|done>`, `abort`, `fork <run> <station>
-  [note]` (try another approach on a copy), `rm` (finished runs; the branch stays).
+[note]` (try another approach on a copy), `rm` (finished runs; the branch stays).
 
 ## Caveats
 
