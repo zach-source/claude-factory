@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
-import { compile, unread, validate, where, type Ev, type Factory } from './machine'
+import { compile, reach, unread, validate, where, type Ev, type Factory } from './machine'
 
 const def: Factory = {
   name: 'review-loop',
@@ -156,6 +156,16 @@ test('timed edges park the run without a worker; goto skips the wait', () => {
   s = send({ type: 'GOTO', node: 'look', at: 2 * wake + 1 })
   expect(where(s.value)).toEqual(['look', 'working'])
   expect(s.context.seq).toBe(4)
+})
+
+test('reach finds stations the start never leads to and stations with no way to done', () => {
+  expect(reach(def)).toEqual({ unreachable: ['iterate'], trapped: [] })
+  const loop: Factory = {
+    name: 'loop',
+    start: 'a',
+    nodes: { a: { prompt: 'a', next: { x: 'b' } }, b: { prompt: 'b', next: { y: 'a' } } },
+  }
+  expect(reach(loop)).toEqual({ unreachable: [], trapped: ['a', 'b'] })
 })
 
 test('validate rejects broken graphs', () => {

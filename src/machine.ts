@@ -310,6 +310,22 @@ export function compile(def: Factory) {
   })
 }
 
+/** stations the start never leads to (reached only by @station or goto), and stations with no way to done */
+export function reach(def: Factory) {
+  const next = (id: string) => Object.values(def.nodes[id]?.next ?? {}).map(edgeTo)
+  const from = (id: string) => {
+    const seen = new Set([id])
+    for (const at of seen) for (const to of next(at)) seen.add(to)
+    return seen
+  }
+  const ids = Object.keys(def.nodes)
+  const reachable = from(def.start)
+  return {
+    unreachable: ids.filter(id => !reachable.has(id)),
+    trapped: ids.filter(id => !from(id).has('done')),
+  }
+}
+
 export const unread = (c: Ctx, box: string) => (c.mail[box] ?? []).slice(c.seen[box] ?? 0)
 
 /** 'implement.working' -> ['implement', 'working']; 'done' -> ['done', ''] */

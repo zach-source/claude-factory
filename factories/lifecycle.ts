@@ -15,6 +15,10 @@ import type { Factory } from '../src/machine'
 // In a repo with beads, a run's bead is its epic: plan records the tasks as its children,
 // implement works them, verify and review file findings as more, release needs them all
 // closed, and sweeps file to the backlog, where `factory` labels what starts on its own.
+//
+// `factory init <repo>` copies this file into the repo as .factory/lifecycle.ts. From then on the
+// factory is the repo's code: improve's factory lens and postmortems file changes to it, and they ship
+// like any change, through review and approve. Each run follows the version its starting commit holds.
 
 const claude = (model?: string) =>
   `claude-smart --new --no-channels --dangerously-skip-permissions${model ? ` --model '${model}'` : ''}`
@@ -28,7 +32,8 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Production is read-only for every station but deploy and rollback.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
 - On a retry or a resumed worker, first find out what earlier attempts already did (journal, git log, pull request, deploy state) and never repeat an external action that already happened.
-- Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.`
+- Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.
+- .factory/ is this factory's own definition: change it only in a run whose goal is to change it, check every edited file with \`factory check\` (see your brief) before committing, and keep the approve gate before anything merges or deploys.`
 
 export default {
   name: 'lifecycle',
@@ -73,7 +78,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 5. Rollout and rollback: flags, migration order, how to undo it.
 6. Observability: the metrics, logs or checks that prove it works in production; soak reads them.
 7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary.
-For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned.
+For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned. For a change to the factory itself (.factory/), the acceptance criteria say what future runs will do differently and how that shows in their journals.
 Commit nothing but an architecture decision record, and only where the repo keeps them.`,
       next: { ready: 'implement' },
     },
@@ -103,7 +108,7 @@ For a refactor: no behavior change; the characterization tests stay untouched an
     verify: {
       timeoutMin: 60,
       prompt: `Check the branch independently; trust no earlier report and change no code.
-Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green.
+Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green. For a change to .factory/, run the factory check on every changed file.
 Report green with the evidence, or red with a numbered list of every failure and how to reproduce it, each also recorded as a bug task of this run (see Tracking).`,
       next: { green: 'review', red: 'implement' },
     },
@@ -111,7 +116,8 @@ Report green with the evidence, or red with a numbered list of every failure and
       agent: OPUS,
       timeoutMin: 45,
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
-Report approve; changes with a numbered list of exactly what to fix, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive.`,
+A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
+Report approve; changes with a numbered list of exactly what to fix, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence.`,
       next: { approve: 'release', changes: 'implement', security: 'security' },
     },
     security: {
@@ -140,7 +146,7 @@ Report ready with the pull request link, the CI status and exactly what shipping
       timeoutMin: 90,
       prompt: `Ship the approved pull request the repo's way. First check what is already done (merged? tagged? deployed?) and do only what is not.
 Before the change lands, record the production baseline it will be compared against: error rate, latency, saturation and cost signals. Then merge, tag or publish, run or watch the deploy pipeline to the end, verify the rollout (for example kubectl rollout status) and run a smoke check.
-Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI); failed when the rollout did not complete.`,
+Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a change to .factory/ only, which runs started from now on follow); failed when the rollout did not complete.`,
       next: { deployed: { to: 'soak', delayMin: 15 }, published: 'done', failed: 'rollback' },
     },
     soak: {
@@ -173,7 +179,7 @@ Report rollback when a recent release caused it (name it and the version to retu
     postmortem: {
       agent: OPUS,
       timeoutMin: 45,
-      prompt: `Write the blameless postmortem from the journal: impact, timeline, root cause, contributing factors, what went well, and the action items. File each action item that needs work (missing tests, alerts, runbooks, guardrails) as separate work for a person to prioritize, except a guardrail without which the incident can recur this week, which starts on its own. If the factory itself should change (a station, a prompt, a rule), mail the manager the change. Your summary is the postmortem.`,
+      prompt: `Write the blameless postmortem from the journal: impact, timeline, root cause, contributing factors, what went well, and the action items. File each action item that needs work (missing tests, alerts, runbooks, guardrails) as separate work for a person to prioritize, except a guardrail without which the incident can recur this week, which starts on its own. When the factory itself let this happen (a station that missed it, a prompt, a rule, a gate), file the change to .factory/ the same way, for a person to prioritize. Your summary is the postmortem.`,
       next: { filed: 'done' },
     },
 
@@ -195,11 +201,12 @@ Report again with what you filed and what you skipped on purpose, which the next
     improve: {
       agent: OPUS,
       timeoutMin: 90,
-      prompt: `One pass of continuous improvement, through the next lens in rotation after the journal's last pass: refactor, then performance, then cost.
+      prompt: `One pass of continuous improvement, through the next lens in rotation after the journal's last pass: refactor, then performance, then cost, then the factory itself.
 - refactor: hotspots where churn meets complexity, duplication, modules too large to change safely
 - performance: the slowest endpoints, queries and jobs in production telemetry; slow tests and builds
 - cost: over-provisioned or idle resources, expensive queries, storage and transfer, CI minutes, model token spend, this factory's own runs included (retries, loops, the model each station uses)
-Rank what you find by expected gain over effort, with evidence, and file the top items as separate work for a person to prioritize, set to start at the characterize station (refactor) or the baseline station (performance, cost), at most three per pass, skipping what is already tracked. Mail the manager any change to the factory itself.
+- the factory itself: how recent runs went, from \`factory status\` and, with beads, the closed factory beads' comments (bd list -l factory --status closed, bd comments <id>): stations that fail or retry often, implement ⇄ verify or review loops a better plan or prompt would have avoided, stuck runs, gates that are always answered the same way, timeouts, cadences and models that cost more than they return. Each finding is one proposed change to .factory/, with the journals that show it
+Rank what you find by expected gain over effort, with evidence, and file the top items as separate work for a person to prioritize, set to start at the characterize station (refactor), the baseline station (performance, cost) or the plan station (the factory itself), at most three per pass, skipping what is already tracked.
 Report again with the lens, the findings and what you filed; stop only when the goal says to.`,
       next: { again: { to: 'improve', delayMin: 1440 }, stop: 'done' },
     },

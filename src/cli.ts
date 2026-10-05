@@ -3,6 +3,7 @@
 // the run's inbox.jsonl, which the next tick drains in order.
 import {
   closeSync,
+  copyFileSync,
   existsSync,
   fsyncSync,
   mkdirSync,
@@ -16,10 +17,11 @@ import {
   writeSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
   compile,
+  reach,
   unread,
   validate,
   where,
@@ -33,7 +35,9 @@ import {
 import { actorOf, beads, dispatchable, goalOf, hasBeads, stationOf } from './beads'
 
 const ROOT = resolve(import.meta.dir, '..')
-const HOME = process.env.FACTORY_HOME ?? join(ROOT, '.factory')
+const HOME = process.env.FACTORY_HOME ?? join(ROOT, '.factory-state')
+/** where a repo keeps its own factories, versioned with its code */
+const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = 'claude-smart --new --no-channels --dangerously-skip-permissions'
@@ -45,7 +49,10 @@ const NUDGES = 2 // ...this many times, then fails
 
 type Run = {
   id: string
+  /** the factory this run follows, pinned into the run dir when it started */
   factory: string
+  /** where that pinned copy came from */
+  factoryFrom?: string
   repo: string
   goal: string
   ws: string
@@ -127,7 +134,42 @@ function git(cwd: string, ...args: string[]) {
   return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
 }
 
-const factoryPath = (arg: string) => (existsSync(arg) ? resolve(arg) : join(ROOT, 'factories', `${arg}.ts`))
+/**
+ * the factory a new run follows: a path as given; else the repo's own `.factory/<name>.ts` in `checkout`
+ * (the run's worktree, so the version in the commit it starts from); else the template of that name
+ */
+function factorySource(spec: string, checkout: string) {
+  if (existsSync(spec)) return resolve(spec)
+  const own = join(checkout, OWN, `${spec}.ts`)
+  return existsSync(own) ? own : join(ROOT, 'factories', `${spec}.ts`)
+}
+
+/** a template made the repo's own: no import back into this project, and a note on how it is changed */
+export function ownCopy(template: string, name: string) {
+  const body = template
+    .replace(/^import type \{ Factory \} from '[^']*'\n+/m, '')
+    .replace(/\}\s*satisfies Factory\s*$/, '}\n')
+  return (
+    `// This repo's own factory, from claude-factory's "${name}" template (factory init).\n` +
+    `// A run follows the version in the commit it starts from, so change it like code: in a run or a\n` +
+    `// commit, checked with \`factory check ${OWN}/${name}.ts\`. The improve sweep proposes changes to it.\n\n` +
+    body
+  )
+}
+
+/**
+ * what a new run branches from: the remote's default branch when it already holds everything local
+ * (fetched, so merged work, factory changes included, reaches new runs); local HEAD otherwise
+ */
+function freshBase(repo: string) {
+  const head = git(repo, 'rev-parse', 'HEAD')
+  const remote = Bun.spawnSync(['git', '-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  if (remote.exitCode !== 0) return head
+  const ref = remote.stdout.toString().trim()
+  Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin'], { timeout: 30_000 }) // offline: what we have
+  const isBehind = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', head, ref]).exitCode === 0
+  return isBehind ? git(repo, 'rev-parse', ref) : head
+}
 const loadFactory = async (file: string): Promise<Factory> => validate((await import(file)).default)
 const runIds = () => (existsSync(join(HOME, 'runs')) ? readdirSync(join(HOME, 'runs')).sort() : [])
 function loadRun(id: string | undefined): Run {
@@ -154,6 +196,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   return [
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
+    `This run follows the factory pinned when it started (${run.factoryFrom ?? run.factory}): changes to ${OWN}/ on any branch reach only runs that start after they merge. Check an edited factory file with ${CLI} check <file>.`,
     ...(def.rules ? ['', '## House rules', def.rules.trim()] : []),
     '',
     '## Goal',
@@ -449,29 +492,53 @@ async function tick() {
   }
 }
 
-/** a run is a branch + herdr worktree + snapshot; a fork starts from another run's branch and snapshot */
-function createRun(
-  def: Factory,
-  file: string,
+/**
+ * a run is a branch + herdr worktree + snapshot + the factory it follows, pinned so that no later edit,
+ * its own included, changes the graph under it; a fork starts from another run's branch, snapshot and factory
+ */
+async function createRun(
+  spec: string,
   repo: string,
   goal: string,
-  { id = newId(def), bead, from }: { id?: string; bead?: string; from?: { run: Run; saved: Saved } } = {},
+  { id, bead, from }: { id: string; bead?: string; from?: { run: Run; saved: Saved } },
 ) {
   const branch = `factory/${id}`
-  const base = from?.run.base ?? git(repo, 'rev-parse', 'HEAD')
+  const base = from?.run.base ?? freshBase(repo)
   const created = herdr(
     ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? base],
     ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
   )
+  const ws: string = created.workspace.workspace_id
+  const worktree: string = created.worktree.path
+  const source = from ? from.run.factory : factorySource(spec, worktree)
+  const pinned = join(runDir(id), 'factory.ts')
+  mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
+  copyFileSync(source, pinned)
+  let def: Factory
+  try {
+    def = await loadFactory(pinned)
+  } catch (err) {
+    herdr('worktree', 'remove', '--workspace', ws, '--force') // fresh, nothing in it yet
+    rmSync(runDir(id), { recursive: true, force: true })
+    throw new Error(
+      `${relative(worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
+    )
+  }
+  const factoryFrom = from
+    ? (from.run.factoryFrom ?? from.run.factory)
+    : source.startsWith(worktree)
+      ? `${relative(worktree, source)} at ${base.slice(0, 8)}`
+      : source
   const run: Run = {
     id,
-    factory: file,
+    factory: pinned,
+    factoryFrom,
     repo,
     goal,
     branch,
     base,
-    ws: created.workspace.workspace_id,
-    worktree: created.worktree.path,
+    ws,
+    worktree,
     ...(from && { forkedFrom: from.run.id }),
     ...(bead && { bead }),
   }
@@ -482,31 +549,28 @@ function createRun(
         context: { ...from.saved.snapshot.context, pane: null, session: null, resumes: 0 },
       }
     : createActor(compile(def)).getPersistedSnapshot()
-  mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
   writeJson(join(runDir(id), 'run.json'), run)
   writeJson(join(runDir(id), 'state.json'), { cursor: 0, snapshot })
-  return run
+  return { run, def }
 }
 
-const newId = (def: Factory) =>
-  `${def.name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`
-
 /** creates the run with its bead claimed for it, giving the claim back if the run cannot be made */
-function createTracked(
-  def: Factory,
-  file: string,
+async function createTracked(
+  spec: string,
+  name: string,
   repo: string,
   goal: string,
   bead?: string,
   from?: { run: Run; saved: Saved },
 ) {
-  const id = newId(def)
+  const id = `${name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`
   const b = beads(repo, actorOf(id))
   if (bead && !b.claim(bead)) fail(`${bead} is already claimed by another worker`)
   try {
-    return createRun(def, file, repo, goal, { id, bead, from })
+    return await createRun(spec, repo, goal, { id, bead, from })
   } catch (err) {
-    if (bead) b.release(bead)
+    // deferred, not released: a dispatcher would otherwise retry the same failure every window
+    if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
     throw err
   }
 }
@@ -538,12 +602,11 @@ async function dispatch(out: { runs: Row[]; started: string[] }) {
   )
   for (const w of watched()) {
     try {
-      const file = factoryPath(w.factory)
-      const def = await loadFactory(file)
+      const preview = await loadFactory(factorySource(w.factory, w.repo))
       for (const bead of dispatchable(beads(w.repo, 'factory').ready(), linked, room)) {
-        let run
+        let run, def
         try {
-          run = createTracked(def, file, w.repo, goalOf(bead), bead.id)
+          ;({ run, def } = await createTracked(w.factory, preview.name, w.repo, goalOf(bead), bead.id))
         } catch (err) {
           if (/already claimed/.test((err as Error).message)) continue // lost the race to another worker
           throw err
@@ -576,17 +639,18 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   if (!factory || !repo || !goal) fail('usage: factory start <factory>[@station] <repo> <goal...>')
   await assertRoom()
   // <factory>@<station> starts past the triage when the caller already knows the kind of work
-  const [name, at] = factory!.split(/@(?=[^@/]+$)/)
-  const file = factoryPath(name!)
-  const def = await loadFactory(file)
-  if (at && !def.nodes[at]) fail(`no station "${at}" in ${def.name}: ${Object.keys(def.nodes).join(', ')}`)
+  const [spec, at] = factory!.split(/@(?=[^@/]+$)/)
   const root = resolve(repo!.replace(/^~(?=\/|$)/, homedir()))
+  // the checkout's version answers the station question; the run pins the version its own commit holds
+  const preview = await loadFactory(factorySource(spec!, root))
+  if (at && !preview.nodes[at])
+    fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
   const linked = beadFor(root, goal)
-  const run = createTracked(def, file, root, linked.goal, linked.bead)
-  if (at && at !== def.start) post(run.id, { type: 'GOTO', node: at })
+  const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
+  if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
   await tick() // launches the first worker now rather than at the next tick
   console.log(
-    `started ${run.id} in ${run.worktree} (herdr workspace ${run.ws})${run.bead ? `, bead ${run.bead}` : ''}`,
+    `started ${run.id} in ${run.worktree} (herdr workspace ${run.ws}), following ${run.factoryFrom}${run.bead ? `, bead ${run.bead}` : ''}`,
   )
 }
 
@@ -604,7 +668,7 @@ async function fork(id: string | undefined, station: string | undefined, note: s
         ...['--deps', `related:${src.bead}`],
       )
     : undefined
-  const run = createTracked(def, src.factory, src.repo, src.goal, bead, { run: src, saved })
+  const { run } = await createTracked(src.factory, def.name, src.repo, src.goal, bead, { run: src, saved })
   const [node, sub] = where(value)
   if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station! })
   if (note) post(run.id, { type: 'MAIL', from: 'manager', to: station!, text: note })
@@ -627,6 +691,7 @@ async function status(id: string | undefined) {
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
     console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     console.log(`  goal: ${r.goal}`)
+    if (id) console.log(`  factory: ${run.factoryFrom ?? run.factory}`)
     if (r.error) console.log(`  error: ${r.error}`)
     if (id && run.bead) {
       const tasks = beads(run.repo, 'factory').children(run.bead)
@@ -649,6 +714,8 @@ const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <repo> <goal...|bead>   new run: herdr worktree off <repo>, first worker launched
   watch [<repo> [factory]] | unwatch <repo>   a watched repo's ready beads labeled factory start as runs
+  init <repo> [template]             copy a factory into <repo>/.factory/ for the repo to own and improve
+  check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   tick                               advance every run once (the manager mod does this every 5s)
   report <run> <seq> <outcome> <summary...>   worker: finish its station
@@ -658,124 +725,152 @@ const usage = `factory — herdr software factories on xstate
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
 
-<factory> is a path or a name under ${join(ROOT, 'factories')}; state lives in ${HOME}.
+<factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
+else the template in ${join(ROOT, 'factories')}. Each run pins its factory. State lives in ${HOME}.
 start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
-try {
-  switch (cmd) {
-    case 'start':
-      await start(args[0], args[1], args.slice(2).join(' '))
-      break
-    case 'fork':
-      await fork(args[0], args[1], args.slice(2).join(' '))
-      break
-    case 'tick':
-      console.log(JSON.stringify(await tick()))
-      break
-    case 'status':
-      await status(args[0])
-      break
-    case 'report': {
-      const [id, seq, outcome, ...summary] = args
-      const { run, value, c } = current(id)
-      const [node] = where(value)
-      const n = (await loadFactory(run.factory)).nodes[node]
-      if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
-      const outcomes = Object.keys(n?.next ?? {}).concat('fail')
-      if (Number(seq) !== c.seq)
-        fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
-      if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
-      const text = summary.join(' ')
-      post(
-        run.id,
-        outcome === 'fail'
-          ? { type: 'FAIL', seq: c.seq, reason: text }
-          : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
-      )
-      console.log(`reported ${outcome} for ${node}; you are done, stop now`)
-      break
-    }
-    case 'decide': {
-      const [id, outcome, ...note] = args
-      // ponytail: an env check, not a lock: it stops a worker deciding by habit, not one set on it
-      if (process.env.FACTORY_FROM) fail('a worker cannot decide a gate: mail the manager instead')
-      const { run, value, c } = current(id)
-      const [node, sub] = where(value)
-      const n = (await loadFactory(run.factory)).nodes[node]
-      if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
-      const outcomes = Object.keys(n!.next)
-      if (!outcomes.includes(outcome ?? '')) fail(`decision must be one of: ${outcomes.join(', ')}`)
-      const summary = note.join(' ') || `${outcome}, decided by the person`
-      post(run.id, { type: 'DONE', seq: c.seq, outcome: outcome!, summary })
-      console.log(`decided ${outcome} at ${node} of ${run.id}`)
-      break
-    }
-    case 'mail': {
-      const [id, to, ...text] = args
-      const run = loadRun(id)
-      const boxes = Object.keys((await loadFactory(run.factory)).nodes).concat('manager')
-      if (!boxes.includes(to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
-      post(run.id, {
-        type: 'MAIL',
-        from: process.env.FACTORY_FROM ?? 'manager',
-        to: to!,
-        text: text.join(' '),
-      })
-      console.log(`mailed ${to}`)
-      break
-    }
-    case 'retry':
-      post(loadRun(args[0]).id, { type: 'RETRY' })
-      break
-    case 'goto': {
-      const run = loadRun(args[0])
-      const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')
-      if (!nodes.includes(args[1] ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
-      post(run.id, { type: 'GOTO', node: args[1]! })
-      break
-    }
-    case 'abort':
-      post(loadRun(args[0]).id, { type: 'ABORT' })
-      break
-    case 'watch': {
-      const [repo, factory = 'lifecycle'] = args
-      if (!repo) {
-        for (const w of watched()) console.log(`${w.repo}  ${w.factory}`)
-        if (!watched().length) console.log('no repos watched: factory watch <repo> [factory]')
+if (import.meta.main)
+  try {
+    switch (cmd) {
+      case 'start':
+        await start(args[0], args[1], args.slice(2).join(' '))
+        break
+      case 'fork':
+        await fork(args[0], args[1], args.slice(2).join(' '))
+        break
+      case 'tick':
+        console.log(JSON.stringify(await tick()))
+        break
+      case 'status':
+        await status(args[0])
+        break
+      case 'report': {
+        const [id, seq, outcome, ...summary] = args
+        const { run, value, c } = current(id)
+        const [node] = where(value)
+        const n = (await loadFactory(run.factory)).nodes[node]
+        if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
+        const outcomes = Object.keys(n?.next ?? {}).concat('fail')
+        if (Number(seq) !== c.seq)
+          fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
+        if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
+        const text = summary.join(' ')
+        post(
+          run.id,
+          outcome === 'fail'
+            ? { type: 'FAIL', seq: c.seq, reason: text }
+            : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
+        )
+        console.log(`reported ${outcome} for ${node}; you are done, stop now`)
         break
       }
-      const root = git(resolve(repo.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
-      if (!hasBeads(root)) fail(`${root} has no .beads: run bd init there first`)
-      await loadFactory(factoryPath(factory))
-      mkdirSync(HOME, { recursive: true })
-      writeJson(watchFile(), [...watched().filter(w => w.repo !== root), { repo: root, factory }])
-      console.log(`watching ${root}: its ready beads labeled factory start as ${factory} runs`)
-      break
+      case 'decide': {
+        const [id, outcome, ...note] = args
+        // ponytail: an env check, not a lock: it stops a worker deciding by habit, not one set on it
+        if (process.env.FACTORY_FROM) fail('a worker cannot decide a gate: mail the manager instead')
+        const { run, value, c } = current(id)
+        const [node, sub] = where(value)
+        const n = (await loadFactory(run.factory)).nodes[node]
+        if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
+        const outcomes = Object.keys(n!.next)
+        if (!outcomes.includes(outcome ?? '')) fail(`decision must be one of: ${outcomes.join(', ')}`)
+        const summary = note.join(' ') || `${outcome}, decided by the person`
+        post(run.id, { type: 'DONE', seq: c.seq, outcome: outcome!, summary })
+        console.log(`decided ${outcome} at ${node} of ${run.id}`)
+        break
+      }
+      case 'mail': {
+        const [id, to, ...text] = args
+        const run = loadRun(id)
+        const boxes = Object.keys((await loadFactory(run.factory)).nodes).concat('manager')
+        if (!boxes.includes(to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
+        post(run.id, {
+          type: 'MAIL',
+          from: process.env.FACTORY_FROM ?? 'manager',
+          to: to!,
+          text: text.join(' '),
+        })
+        console.log(`mailed ${to}`)
+        break
+      }
+      case 'retry':
+        post(loadRun(args[0]).id, { type: 'RETRY' })
+        break
+      case 'goto': {
+        const run = loadRun(args[0])
+        const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')
+        if (!nodes.includes(args[1] ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
+        post(run.id, { type: 'GOTO', node: args[1]! })
+        break
+      }
+      case 'abort':
+        post(loadRun(args[0]).id, { type: 'ABORT' })
+        break
+      case 'init': {
+        const [repo, name = 'lifecycle'] = args
+        if (!repo) fail('usage: factory init <repo> [template]')
+        const root = git(resolve(repo!.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
+        const target = join(root, OWN, `${name}.ts`)
+        const template = join(ROOT, 'factories', `${name}.ts`)
+        if (existsSync(target)) fail(`${target} exists: it is the repo's own now, edit it there`)
+        if (!existsSync(template)) fail(`no template "${name}" in ${dirname(template)}`)
+        mkdirSync(dirname(target), { recursive: true })
+        writeFileSync(target, ownCopy(readFileSync(template, 'utf8'), name))
+        await loadFactory(target)
+        console.log(
+          `wrote ${target}. Commit it: runs that start from a commit holding it follow it, and the factory improves it through its own runs.`,
+        )
+        break
+      }
+      case 'check': {
+        if (!args[0]) fail('usage: factory check <factory file>')
+        const def = await loadFactory(resolve(args[0]!))
+        compile(def)
+        const { unreachable, trapped } = reach(def)
+        if (trapped.length) fail(`${def.name}: no way to done from ${trapped.join(', ')}`)
+        console.log(`${def.name}: valid, ${Object.keys(def.nodes).length} stations from ${def.start}`)
+        if (unreachable.length) console.log(`only reached by @station or goto: ${unreachable.join(', ')}`)
+        break
+      }
+      case 'watch': {
+        const [repo, factory = 'lifecycle'] = args
+        if (!repo) {
+          for (const w of watched()) console.log(`${w.repo}  ${w.factory}`)
+          if (!watched().length) console.log('no repos watched: factory watch <repo> [factory]')
+          break
+        }
+        const root = git(resolve(repo.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
+        if (!hasBeads(root)) fail(`${root} has no .beads: run bd init there first`)
+        await loadFactory(factorySource(factory, root))
+        mkdirSync(HOME, { recursive: true })
+        writeJson(watchFile(), [...watched().filter(w => w.repo !== root), { repo: root, factory }])
+        console.log(`watching ${root}: its ready beads labeled factory start as ${factory} runs`)
+        break
+      }
+      case 'unwatch': {
+        const root = resolve((args[0] ?? '').replace(/^~(?=\/|$)/, homedir()))
+        writeJson(
+          watchFile(),
+          watched().filter(w => w.repo !== root),
+        )
+        console.log(`stopped watching ${root}`)
+        break
+      }
+      case 'rm': {
+        const { run, value } = current(args[0])
+        if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
+        // no --force: herdr refuses a worktree with uncommitted work; the branch always stays
+        herdr('worktree', 'remove', '--workspace', run.ws)
+        rmSync(runDir(run.id), { recursive: true })
+        console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
+        break
+      }
+      default:
+        console.log(usage)
+        if (cmd && cmd !== 'help') process.exitCode = 2
     }
-    case 'unwatch': {
-      const root = resolve((args[0] ?? '').replace(/^~(?=\/|$)/, homedir()))
-      writeJson(
-        watchFile(),
-        watched().filter(w => w.repo !== root),
-      )
-      console.log(`stopped watching ${root}`)
-      break
-    }
-    case 'rm': {
-      const { run, value } = current(args[0])
-      if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
-      // no --force: herdr refuses a worktree with uncommitted work; the branch always stays
-      herdr('worktree', 'remove', '--workspace', run.ws)
-      rmSync(runDir(run.id), { recursive: true })
-      console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
-      break
-    }
-    default:
-      console.log(usage)
-      if (cmd && cmd !== 'help') process.exitCode = 2
+  } catch (err) {
+    console.error(`factory: ${(err as Error).message}`)
+    process.exitCode = 1
   }
-} catch (err) {
-  console.error(`factory: ${(err as Error).message}`)
-  process.exitCode = 1
-}

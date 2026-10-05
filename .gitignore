@@ -1,5 +1,5 @@
 node_modules/
-.factory/
+.factory-state/
 .claude/
 mod/.claude-plugin/types/
 mod/tsconfig.json

@@ -47,6 +47,29 @@ Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews 
 
 `bin/factory help` lists every command; the manager model uses the same CLI.
 
+## The factory improves itself
+
+`factory init <repo>` copies the lifecycle template into `<repo>/.factory/lifecycle.ts`;
+commit it, and the repo owns its factory like any other code:
+
+- **Runs pin their factory.** `start lifecycle` (and `watch`) use the repo's own
+  `.factory/lifecycle.ts` as of the commit the run starts from, copied into the run, so no
+  later edit, the run's own included, changes the graph under it. Without a repo copy, the
+  template in `factories/` is used. `factory status <run>` says which version a run follows.
+- **New runs start from what has merged.** A run branches from the remote's default branch,
+  freshly fetched, whenever that already holds your local HEAD; from local HEAD when you have
+  unpushed work. So a merged factory change reaches the next run with nothing to pull.
+- **The improve sweep's fourth lens is the factory itself**: it reads recent runs' journals
+  and the closed factory beads' comments (retries, stuck stations, loops, gates always
+  answered the same way, costly models) and files one change to `.factory/` per finding.
+  Postmortems file the factory changes an incident exposed.
+- **Those changes ship like any change**: plan, implement, `factory check` in verify, a review
+  that reads them as policy (security review when they remove a gate, widen what runs
+  unattended or raise a limit), and your approve gate. Deploy reports them as published.
+- `factory check <file>` validates a factory: the graph, its outcomes and timed edges, and a
+  way to `done` from every station. A factory whose starting commit does not validate is
+  refused before any worker starts, and its bead is deferred with the reason.
+
 ## Beads: planning and execution
 
 In a repo with `.beads/`, beads is the factory's task tracker:
@@ -93,7 +116,7 @@ edge refills it, so a sweep loops forever). Edits apply at the next tick.
 
 ## How a run behaves
 
-- **Snapshots**: `.factory/runs/<run>/state.json` is the run. Every tick restores
+- **Snapshots**: `.factory-state/runs/<run>/state.json` is the run (`FACTORY_HOME` moves it). Every tick restores
   it, drains `inbox.jsonl`, reconciles the worker, and writes it back (fsynced),
   so a crashed or restarted manager picks up where it stopped.
 - **Mailboxes and journal**: a station's report summary is mailed to the next
