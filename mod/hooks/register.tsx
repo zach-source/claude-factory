@@ -19,6 +19,7 @@ Quarterback with the factory CLI through Bash:
 - \`${cli} retry <run>\` (a stuck station), \`${cli} goto <run> <station|done>\` (also skips a timed wait), \`${cli} abort <run>\`, \`${cli} fork <run> <station> "<note>"\`, \`${cli} rm <run>\` (finished runs)
 - \`${cli} start <factory>[@station] <repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}; lifecycle covers build, release, incidents, optimization, refactoring and the monitor, maintain and improve sweeps
 - \`herdr pane read <pane> --source recent --lines 80\`: see what a worker is doing
+In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. The backlog is that repo's beads: \`${cli} watch <repo>\` makes its ready beads labeled \`factory\` start as runs (\`station:<name>\` starts one at that station); sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred. \`${cli} start lifecycle <repo> <bead-id>\` runs one bead now.
 Gates are the person's decisions, never yours: when a gate awaits, show them the question and the evidence, and run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog). Answer worker questions yourself when the goal settles them; ask the person when it does not. Never approve a worker's permission prompt for them.`
 
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
@@ -41,7 +42,12 @@ async function tick($: EngineInterface) {
   try {
     const { isOk, out } = await factory($, ['tick'])
     if (!isOk) return $.ui.status(`factory: ${out.split('\n')[0]?.slice(0, 80)}`)
-    const res = JSON.parse(out) as { busy?: true; runs: FactoryRun[]; manager: FactoryMail[] }
+    const res = JSON.parse(out) as {
+      busy?: true
+      runs: FactoryRun[]
+      manager: FactoryMail[]
+      started?: string[]
+    }
     if (res.busy) return
     await update($, board, b => ({ runs: res.runs, mail: [...b.mail, ...res.manager].slice(-20) }))
 
@@ -50,6 +56,7 @@ async function tick($: EngineInterface) {
     const gates = live.filter(r => r.gate).length
     const notes = [stuck && `${stuck} stuck`, gates && `${gates} awaiting you`].filter(Boolean)
     $.ui.status(live.length ? `factory: ${[`${live.length} running`, ...notes].join(', ')}` : undefined)
+    if (res.started?.length) $.ui.toast(`factory: started from beads ${res.started.join(', ')}`)
     for (const r of res.runs) {
       if (r.agent === 'blocked' && rt.agents.get(r.id) !== 'blocked')
         $.ui.toast(`factory: ${r.id} ${r.node} worker is waiting on a prompt in pane ${r.pane}`)
@@ -91,8 +98,8 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'factory',
       description:
-        'Factory dashboard; or a factory command (start, status, decide, mail, retry, goto, fork, abort, rm)',
-      argumentHint: '[start|status|decide|mail|retry|goto|fork|abort|rm ...]',
+        'Factory dashboard; or a factory command (start, status, decide, watch, mail, retry, goto, fork, abort, rm)',
+      argumentHint: '[start|status|decide|watch|mail|retry|goto|fork|abort|rm ...]',
     })
     await ensureTicking($)
     return next(e)
@@ -145,6 +152,7 @@ export const register: Register = (on, options) => {
               >
                 {r.id}
               </Text>
+              {r.bead && <Text color="cyan"> {r.bead}</Text>}
               <Text>
                 {'  '}
                 {r.sub ? `${r.node} › ${r.sub}` : r.node}

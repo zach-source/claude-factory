@@ -11,6 +11,8 @@ export type FactoryRun = {
   agent?: string | null
   error?: string | null
   last?: { node: string; attempt: number; outcome: string; summary: string }
+  /** the bead the run works, in a repo tracked with beads */
+  bead?: string
   /** set while the run waits at a gate for the person */
   gate?: { question: string; outcomes: string[] }
 }

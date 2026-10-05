@@ -9,9 +9,12 @@ import type { Factory } from '../src/machine'
 //   operate    soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem
 //   incident   incident → rollback | plan → … → soak resolved → postmortem
 //   sweeps     monitor (30 min) · maintain (daily) · improve (daily, rotating refactor/performance/cost)
-//              loop forever and file what they find as runs of their own
+//              loop forever and file what they find as separate work
 //
 // approve is the one place a person must act: nothing merges or deploys without them.
+// In a repo with beads, a run's bead is its epic: plan records the tasks as its children,
+// implement works them, verify and review file findings as more, release needs them all
+// closed, and sweeps file to the backlog, where `factory` labels what starts on its own.
 
 const claude = (model?: string) =>
   `claude-smart --new --no-channels --dangerously-skip-permissions${model ? ` --model '${model}'` : ''}`
@@ -23,7 +26,7 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
 - Never commit secrets. Only deploy and rollback touch the default branch or production; nobody force-pushes.
 - Production is read-only for every station but deploy and rollback.
-- Stay in scope: file anything else you find as a run of its own (see Reporting), at most three per station.
+- Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
 - On a retry or a resumed worker, first find out what earlier attempts already did (journal, git log, pull request, deploy state) and never repeat an external action that already happened.
 - Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.`
 
@@ -44,7 +47,7 @@ export default {
 - refactor: restructure code without changing behavior
 - incident: production is broken or degraded now
 - monitor, maintain or improve: start that standing sweep (the goal names it)
-- reject: unclear, already covered by a run in \`factory status\`, or not worth doing; say why
+- reject: unclear, already tracked (a run in \`factory status\`, an open issue), or not worth doing; say why
 Summary: the goal restated as a testable outcome, its constraints, and the files and systems involved.`,
       next: {
         build: 'plan',
@@ -69,6 +72,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access.
 5. Rollout and rollback: flags, migration order, how to undo it.
 6. Observability: the metrics, logs or checks that prove it works in production; soak reads them.
+7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary.
 For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned.
 Commit nothing but an architecture decision record, and only where the repo keeps them.`,
       next: { ready: 'implement' },
@@ -91,7 +95,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
     // ── the inner loop: build it, prove it, review it ────────────────────────
     implement: {
       timeoutMin: 120,
-      prompt: `Build what the plan in the journal specifies. Test first: write the failing test, watch it fail, make it pass. If your inbox holds failures or review findings, fix every one and say how.
+      prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how.
 For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned.
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
       next: { ready: 'verify', abandon: 'done' },
@@ -100,36 +104,36 @@ For a refactor: no behavior change; the characterization tests stay untouched an
       timeoutMin: 60,
       prompt: `Check the branch independently; trust no earlier report and change no code.
 Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green.
-Report green with the evidence, or red with a numbered list of every failure and how to reproduce it.`,
+Report green with the evidence, or red with a numbered list of every failure and how to reproduce it, each also recorded as a bug task of this run (see Tracking).`,
       next: { green: 'review', red: 'implement' },
     },
     review: {
       agent: OPUS,
       timeoutMin: 45,
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
-Report approve; changes with a numbered list of exactly what to fix; or security when everything else is approved and the plan or the diff is security-sensitive.`,
+Report approve; changes with a numbered list of exactly what to fix, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive.`,
       next: { approve: 'release', changes: 'implement', security: 'security' },
     },
     security: {
       agent: FABLE,
       timeoutMin: 45,
       prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section. Change no code.
-Report approve, or changes with each finding, its severity and its fix.`,
+Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
       next: { approve: 'release', changes: 'implement' },
     },
 
     // ── the outer loop: ship it, watch it, undo it ───────────────────────────
     release: {
       timeoutMin: 60,
-      prompt: `Prepare the release. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and open a pull request, or update the one this run already opened. Its description carries the plan's summary, the verification evidence and the rollback plan. Wait for CI and read every failing check.
+      prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and open a pull request, or update the one this run already opened. Its description carries the plan's summary, the verification evidence and the rollback plan. Wait for CI and read every failing check.
 Report ready with the pull request link, the CI status and exactly what shipping will do; or red with the failures.`,
       next: { ready: 'approve', red: 'implement' },
     },
     approve: {
       gate: true,
       prompt:
-        'Ship it? Read the pull request and the evidence. ship merges and deploys it; changes sends it back to implement with your note; hold ends the run and leaves the pull request open.',
-      next: { ship: 'deploy', changes: 'implement', hold: 'done' },
+        'Ship it? Read the pull request and the evidence. ship merges and deploys it; changes sends it back to implement with your note; hold ends the run, leaves the pull request open and defers its bead until you undefer it.',
+      next: { ship: 'deploy', changes: 'implement', hold: { to: 'done', defer: true } },
     },
     deploy: {
       retries: 1,
@@ -169,7 +173,7 @@ Report rollback when a recent release caused it (name it and the version to retu
     postmortem: {
       agent: OPUS,
       timeoutMin: 45,
-      prompt: `Write the blameless postmortem from the journal: impact, timeline, root cause, contributing factors, what went well, and the action items. File each action item that needs work as a run of its own (missing tests, alerts, runbooks, guardrails). If the factory itself should change (a station, a prompt, a rule), mail the manager the change. Your summary is the postmortem.`,
+      prompt: `Write the blameless postmortem from the journal: impact, timeline, root cause, contributing factors, what went well, and the action items. File each action item that needs work (missing tests, alerts, runbooks, guardrails) as separate work for a person to prioritize, except a guardrail without which the incident can recur this week, which starts on its own. If the factory itself should change (a station, a prompt, a rule), mail the manager the change. Your summary is the postmortem.`,
       next: { filed: 'done' },
     },
 
@@ -177,14 +181,14 @@ Report rollback when a recent release caused it (name it and the version to retu
     monitor: {
       timeoutMin: 20,
       prompt: `One pass of production watch, read-only: SLOs and error budgets, alert states, error rates and new error types, latency, saturation, failing jobs, certificate and quota expiry, and the health of recent deploys. Compare with the previous passes in the journal.
-File what hurts users now as an incident run (factory path + "@incident"); file defects that can wait as build runs ("@plan"). Never file what \`factory status\` already shows.
+File what hurts users now as separate work that starts on its own at the incident station, at priority 0. File defects that can wait as separate work for a person to prioritize. Never file what is already tracked or running.
 Report watching with the key numbers, which the next pass compares against; stop only when the goal says to.`,
       next: { watching: { to: 'monitor', delayMin: 30 }, stop: 'done' },
     },
     maintain: {
       timeoutMin: 60,
       prompt: `One pass of maintenance. Look for, most urgent first: security advisories on dependencies and base images; failing or flaky tests and CI jobs; deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code.
-File each item worth doing as a run of its own ("@plan" when its intent is clear), at most five per pass, skipping what \`factory status\` already shows.
+File each item worth doing as separate work, at most five per pass, skipping what is already tracked: security advisories start on their own at the plan station; everything else is for a person to prioritize.
 Report again with what you filed and what you skipped on purpose, which the next pass reads; stop only when the goal says to.`,
       next: { again: { to: 'maintain', delayMin: 1440 }, stop: 'done' },
     },
@@ -195,7 +199,7 @@ Report again with what you filed and what you skipped on purpose, which the next
 - refactor: hotspots where churn meets complexity, duplication, modules too large to change safely
 - performance: the slowest endpoints, queries and jobs in production telemetry; slow tests and builds
 - cost: over-provisioned or idle resources, expensive queries, storage and transfer, CI minutes, model token spend, this factory's own runs included (retries, loops, the model each station uses)
-Rank what you find by expected gain over effort, with evidence, and file the top items as runs ("@characterize" for a refactor, "@baseline" for performance or cost), at most three per pass, skipping what \`factory status\` already shows. Mail the manager any change to the factory itself.
+Rank what you find by expected gain over effort, with evidence, and file the top items as separate work for a person to prioritize, set to start at the characterize station (refactor) or the baseline station (performance, cost), at most three per pass, skipping what is already tracked. Mail the manager any change to the factory itself.
 Report again with the lens, the findings and what you filed; stop only when the goal says to.`,
       next: { again: { to: 'improve', delayMin: 1440 }, stop: 'done' },
     },

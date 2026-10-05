@@ -3,10 +3,13 @@
 // persisted snapshot is the whole truth. The runner (cli.ts) does the effects.
 import { assign, setup } from 'xstate'
 
-/** where an outcome goes: a node id or 'done', or a timed edge that parks the run, with no worker, for delayMin */
-export type Edge = string | { to: string; delayMin: number }
+/**
+ * where an outcome goes: a node id or 'done'; or an object whose `delayMin` parks the run, with no worker,
+ * that long first, and whose `defer` (into 'done' only) ends the run but leaves its tracked work open for a person
+ */
+export type Edge = string | { to: string; delayMin?: number; defer?: true }
 export const edgeTo = (e: Edge) => (typeof e === 'string' ? e : e.to)
-const delayOf = (e: Edge) => (typeof e === 'string' ? 0 : e.delayMin)
+const delayOf = (e: Edge) => (typeof e === 'string' ? 0 : (e.delayMin ?? 0))
 
 export type Node = {
   /** the worker's task; for a gate, the question put to the person */
@@ -99,8 +102,13 @@ export function validate(def: Factory): Factory {
             !ids.includes(edgeTo(edge)) &&
             `${id}: outcome "${outcome}" goes to unknown node "${edgeTo(edge)}"`,
           typeof edge !== 'string' &&
+            edge.delayMin !== undefined &&
             !(edge.delayMin > 0) &&
             `${id}: outcome "${outcome}" needs delayMin > 0`,
+          typeof edge !== 'string' &&
+            edge.defer &&
+            edge.to !== 'done' &&
+            `${id}: only an edge into done defers`,
         ]),
       ]
     }),

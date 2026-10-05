@@ -167,10 +167,12 @@ test('validate rejects broken graphs', () => {
       name: 'x',
       start: 'a',
       nodes: {
-        a: { prompt: '', next: { later: { to: 'a', delayMin: 0 } } },
+        a: { prompt: '', next: { later: { to: 'a', delayMin: 0 }, park: { to: 'a', defer: true } } },
         g: { prompt: '?', gate: true, agent: 'claude', next: {} },
       },
     }),
-  ).toThrow(/"later" needs delayMin > 0[\s\S]*g: has no outcomes[\s\S]*a gate has no worker/)
+  ).toThrow(
+    /"later" needs delayMin > 0[\s\S]*only an edge into done defers[\s\S]*g: has no outcomes[\s\S]*a gate has no worker/,
+  )
   expect(validate(def)).toBe(def)
 })

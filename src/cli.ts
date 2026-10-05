@@ -30,6 +30,7 @@ import {
   type Factory,
   type Mail,
 } from './machine'
+import { actorOf, beads, dispatchable, goalOf, hasBeads, stationOf } from './beads'
 
 const ROOT = resolve(import.meta.dir, '..')
 const HOME = process.env.FACTORY_HOME ?? join(ROOT, '.factory')
@@ -37,6 +38,8 @@ const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = 'claude-smart --new --no-channels --dangerously-skip-permissions'
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 8)
+const DISPATCH_MS = 30_000 // how often watched repos' ready beads are looked at
+const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const NUDGES = 2 // ...this many times, then fails
 
@@ -51,8 +54,16 @@ type Run = {
   /** the commit the run branched from: what its stations committed is base..HEAD */
   base?: string
   forkedFrom?: string
+  /** the bead this run works: its epic in the repo's beads tracker */
+  bead?: string
 }
-type Saved = { cursor: number; snapshot: Snapshot<unknown> & { value: unknown; context: Ctx } }
+type Saved = {
+  cursor: number
+  snapshot: Snapshot<unknown> & { value: unknown; context: Ctx }
+  /** bead bookkeeping: journal entries mirrored, last heartbeat, whether the run's end was recorded */
+  track?: Track
+}
+type Track = { mirrored: number; beatAt: number; isSettled: boolean }
 type Input = Ev extends infer E ? (E extends Ev ? Omit<E, 'at'> : never) : never
 export type Row = {
   id: string
@@ -68,6 +79,7 @@ export type Row = {
   error?: string | null
   last?: Entry
   gate?: { question: string; outcomes: string[] }
+  bead?: string
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
@@ -170,8 +182,32 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
-    `To file separate work as a run of its own (its own branch and workers), check \`${CLI} status\` for a duplicate first, then run: ${CLI} start ${run.factory}[@station] ${run.repo} "<goal>" (@station skips straight to that station)`,
+    '',
+    ...tracking(run, node),
   ].join('\n')
+}
+
+/** how a worker records tasks and files separate work: beads when the repo has them */
+function tracking(run: Run, node: string) {
+  const b = run.bead
+  if (!b)
+    return [
+      '## Tracking',
+      "This repo has no beads tracker: keep the run's tasks as a checklist in your report summary.",
+      `- Separate work that starts on its own: check \`${CLI} status\` for a duplicate, then ${CLI} start ${run.factory}[@station] ${run.repo} "<goal>" (@station starts it at that station)`,
+      `- Separate work for a person to prioritize: mail it to the manager.`,
+    ]
+  return [
+    '## Tracking (beads)',
+    `This run is bead ${b} (bd show ${b}); its tasks are the bead's children. Your bd writes are recorded as ${actorOf(run.id)}/${node}.`,
+    `- The plan's tasks: bd children ${b}; the unblocked ones: bd ready --parent ${b}`,
+    `- Add a task: bd create "<title>" --parent ${b} -t task|bug -p <0-4> -d "<what, and how to verify it>"; order two with bd dep <first> --blocks <second>`,
+    `- Work a task: bd update <id> -s in_progress, then bd close <id> --reason "<what changed, the commit>"`,
+    `- Separate work outside this run: look for it first (bd search "<words>"), then bd create "<title>" -t bug|task|feature -p <0-4> -d "<evidence>" --deps discovered-from:${b}`,
+    `  - that starts on its own: add -l factory; for a person to prioritize: no factory label`,
+    `  - to start at a station: add -l station:<name>`,
+    `- Never close or defer ${b} itself: the factory does when the run ends.`,
+  ]
 }
 
 const resumeNote = (run: Run, node: string, c: Ctx) =>
@@ -187,6 +223,7 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
       ...['--label', `${node}#${c.attempt}`, '--no-focus'],
       ...['--env', `FACTORY_FROM=${node}`, '--env', `FACTORY_HOME=${HOME}`],
+      ...['--env', `BEADS_ACTOR=${actorOf(run.id)}/${node}`],
     )
   let created
   try {
@@ -298,6 +335,7 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     ws: run.ws,
     error: error ?? c.error,
     last: c.log.at(-1),
+    bead: run.bead,
     ...(n?.gate &&
       sub === 'working' && { gate: { question: n.prompt.trim(), outcomes: Object.keys(n.next) } }),
   }
@@ -310,7 +348,13 @@ async function tickRun(run: Run, now: number) {
   const actor = createActor(compile(def), { snapshot: saved.snapshot }).start()
   const lines = inboxLines(run.id)
   const ctx = () => actor.getSnapshot().context
-  const save = () => writeJson(file, { cursor: lines.length, snapshot: actor.getPersistedSnapshot() })
+  const t: Track = { mirrored: 0, beatAt: 0, isSettled: false, ...saved.track }
+  const save = () =>
+    writeJson(file, {
+      cursor: lines.length,
+      snapshot: actor.getPersistedSnapshot(),
+      ...(run.bead && { track: t }),
+    })
   const send = (e: Input, at = now) => {
     const pane = ctx().pane
     actor.send({ ...e, at } as Ev)
@@ -333,12 +377,48 @@ async function tickRun(run: Run, now: number) {
     error = (err as Error).message
   }
 
+  try {
+    if (run.bead) track(run, def, actor.getSnapshot().value, ctx(), t, now)
+  } catch (err) {
+    error ??= `beads: ${(err as Error).message}`
+  }
+
   const manager = unread(ctx(), 'manager')
   if (manager.length) send({ type: 'READ', box: 'manager', seen: ctx().mail.manager!.length })
   save()
   return {
     row: row(run, def, actor.getSnapshot().value, ctx(), agent, error),
     manager: manager.map(m => ({ run: run.id, ...m })),
+  }
+}
+
+/** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
+function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
+  const b = beads(run.repo, actorOf(run.id))
+  const id = run.bead!
+  for (const e of c.log.slice(t.mirrored)) {
+    const edge = def.nodes[e.node]?.next[e.outcome]
+    // a sweep's routine pass stays in the journal only: a comment every 30 minutes is noise
+    const isPass = typeof edge === 'object' && edge.to === e.node && edge.delayMin !== undefined
+    if (!isPass) b.comment(id, `${e.node}#${e.attempt} ${e.outcome}: ${e.summary}`)
+    t.mirrored++
+  }
+  const [node] = where(value)
+  const isOver = node === 'done' || node === 'aborted'
+  if (isOver && !t.isSettled) {
+    const last = c.log.at(-1)
+    const edge = last && def.nodes[last.node]?.next[last.outcome]
+    const reason = clip(last ? `${last.node} ${last.outcome}: ${last.summary}` : node, 500)
+    // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
+    if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
+    else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
+    else if (!b.close(id, reason)) b.defer(id, `run ${run.id} ended with open tasks: ${reason}`)
+    t.isSettled = true
+  } else if (!isOver && t.isSettled) {
+    t.isSettled = !b.reopen(id) // a run revived with goto
+  } else if (!isOver && now - t.beatAt > HEARTBEAT_MS) {
+    if (!b.heartbeat(id)) throw new Error(`lost the claim on ${id} to another worker`)
+    t.beatAt = now
   }
 }
 
@@ -352,7 +432,7 @@ async function tick() {
   }
   try {
     const now = Date.now()
-    const out = { runs: [] as Row[], manager: [] as (Mail & { run: string })[] }
+    const out = { runs: [] as Row[], manager: [] as (Mail & { run: string })[], started: [] as string[] }
     for (const id of runIds()) {
       try {
         const { row, manager } = await tickRun(loadRun(id), now)
@@ -362,6 +442,7 @@ async function tick() {
         out.runs.push({ id, error: (err as Error).message })
       }
     }
+    await dispatch(out)
     return out
   } finally {
     rmSync(lock, { recursive: true, force: true })
@@ -374,9 +455,8 @@ function createRun(
   file: string,
   repo: string,
   goal: string,
-  from?: { run: Run; saved: Saved },
+  { id = newId(def), bead, from }: { id?: string; bead?: string; from?: { run: Run; saved: Saved } } = {},
 ) {
-  const id = `${def.name}-${Date.now().toString(36)}`
   const branch = `factory/${id}`
   const base = from?.run.base ?? git(repo, 'rev-parse', 'HEAD')
   const created = herdr(
@@ -393,6 +473,7 @@ function createRun(
     ws: created.workspace.workspace_id,
     worktree: created.worktree.path,
     ...(from && { forkedFrom: from.run.id }),
+    ...(bead && { bead }),
   }
   // the source's worker stays the source's: the fork launches its own
   const snapshot = from
@@ -405,6 +486,77 @@ function createRun(
   writeJson(join(runDir(id), 'run.json'), run)
   writeJson(join(runDir(id), 'state.json'), { cursor: 0, snapshot })
   return run
+}
+
+const newId = (def: Factory) =>
+  `${def.name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`
+
+/** creates the run with its bead claimed for it, giving the claim back if the run cannot be made */
+function createTracked(
+  def: Factory,
+  file: string,
+  repo: string,
+  goal: string,
+  bead?: string,
+  from?: { run: Run; saved: Saved },
+) {
+  const id = newId(def)
+  const b = beads(repo, actorOf(id))
+  if (bead && !b.claim(bead)) fail(`${bead} is already claimed by another worker`)
+  try {
+    return createRun(def, file, repo, goal, { id, bead, from })
+  } catch (err) {
+    if (bead) b.release(bead)
+    throw err
+  }
+}
+
+/** the bead a new run works: the one its goal names, or a new one when the repo tracks beads */
+function beadFor(repo: string, goal: string, extra: string[] = []) {
+  if (!hasBeads(repo)) return { goal }
+  const b = beads(repo, 'factory')
+  const named = /^[a-z][\w-]*-[\w.]+$/i.test(goal.trim()) ? b.show(goal.trim()) : null
+  if (named) return { goal: goalOf(named), bead: named.id }
+  return { goal, bead: b.create(clip(goal.split('\n')[0]!, 100), goal, ...extra) }
+}
+
+const isBusy = (r: Row) => r.node !== 'done' && r.node !== 'aborted' && r.sub !== 'waiting' && !r.gate
+
+type Watch = { repo: string; factory: string }
+const watchFile = () => join(HOME, 'watch.json')
+const watched = (): Watch[] => (existsSync(watchFile()) ? readJson(watchFile()) : [])
+
+/** watched repos' ready `factory` beads become runs while there is room */
+async function dispatch(out: { runs: Row[]; started: string[] }) {
+  const stamp = join(HOME, 'dispatch.stamp')
+  if (!watched().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS)) return
+  writeFileSync(stamp, '')
+  let room = MAX_BUSY - out.runs.filter(isBusy).length
+  // live runs only: a finished run's deferred bead, undeferred by a person, is new work again
+  const linked = new Set(
+    out.runs.filter(r => r.node !== 'done' && r.node !== 'aborted').flatMap(r => r.bead ?? []),
+  )
+  for (const w of watched()) {
+    try {
+      const file = factoryPath(w.factory)
+      const def = await loadFactory(file)
+      for (const bead of dispatchable(beads(w.repo, 'factory').ready(), linked, room)) {
+        let run
+        try {
+          run = createTracked(def, file, w.repo, goalOf(bead), bead.id)
+        } catch (err) {
+          if (/already claimed/.test((err as Error).message)) continue // lost the race to another worker
+          throw err
+        }
+        const at = stationOf(bead)
+        if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
+        out.started.push(`${bead.id} → ${run.id}`)
+        room--
+      }
+    } catch (err) {
+      out.runs.push({ id: `watch:${basename(w.repo)}`, error: (err as Error).message })
+    }
+  }
 }
 
 /** a run holding a worker counts; a wait or a gate costs nothing */
@@ -428,10 +580,14 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   const file = factoryPath(name!)
   const def = await loadFactory(file)
   if (at && !def.nodes[at]) fail(`no station "${at}" in ${def.name}: ${Object.keys(def.nodes).join(', ')}`)
-  const run = createRun(def, file, resolve(repo!.replace(/^~(?=\/|$)/, homedir())), goal)
+  const root = resolve(repo!.replace(/^~(?=\/|$)/, homedir()))
+  const linked = beadFor(root, goal)
+  const run = createTracked(def, file, root, linked.goal, linked.bead)
   if (at && at !== def.start) post(run.id, { type: 'GOTO', node: at })
   await tick() // launches the first worker now rather than at the next tick
-  console.log(`started ${run.id} in ${run.worktree} (herdr workspace ${run.ws})`)
+  console.log(
+    `started ${run.id} in ${run.worktree} (herdr workspace ${run.ws})${run.bead ? `, bead ${run.bead}` : ''}`,
+  )
 }
 
 async function fork(id: string | undefined, station: string | undefined, note: string) {
@@ -441,7 +597,14 @@ async function fork(id: string | undefined, station: string | undefined, note: s
     fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
   await assertRoom()
   const saved = readJson<Saved>(join(runDir(src.id), 'state.json'))
-  const run = createRun(def, src.factory, src.repo, src.goal, { run: src, saved })
+  const bead = src.bead
+    ? beads(src.repo, 'factory').create(
+        `fork of ${src.bead}${note ? `: ${clip(note, 80)}` : ''}`,
+        `${src.goal}\n\nForked from run ${src.id} at ${station}. ${note}`,
+        ...['--deps', `related:${src.bead}`],
+      )
+    : undefined
+  const run = createTracked(def, src.factory, src.repo, src.goal, bead, { run: src, saved })
   const [node, sub] = where(value)
   if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station! })
   if (note) post(run.id, { type: 'MAIL', from: 'manager', to: station!, text: note })
@@ -465,6 +628,11 @@ async function status(id: string | undefined) {
     console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     console.log(`  goal: ${r.goal}`)
     if (r.error) console.log(`  error: ${r.error}`)
+    if (id && run.bead) {
+      const tasks = beads(run.repo, 'factory').children(run.bead)
+      const closed = tasks.filter(t => t.status === 'closed').length
+      console.log(`  bead: ${run.bead}, tasks ${closed}/${tasks.length} closed (bd children ${run.bead})`)
+    } else if (run.bead) console.log(`  bead: ${run.bead}`)
     if (r.gate)
       console.log(
         `  gate: ${r.gate.question}\n  decide: factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`,
@@ -479,7 +647,8 @@ async function status(id: string | undefined) {
 const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
 
-  start <factory>[@station] <repo> <goal...>   new run: herdr worktree off <repo>, first worker launched
+  start <factory>[@station] <repo> <goal...|bead>   new run: herdr worktree off <repo>, first worker launched
+  watch [<repo> [factory]] | unwatch <repo>   a watched repo's ready beads labeled factory start as runs
   status [run]                       runs at a glance, or one run's full log
   tick                               advance every run once (the manager mod does this every 5s)
   report <run> <seq> <outcome> <summary...>   worker: finish its station
@@ -490,7 +659,8 @@ const usage = `factory — herdr software factories on xstate
   rm <run>                           finished run: drop its worktree and state, keep its branch
 
 <factory> is a path or a name under ${join(ROOT, 'factories')}; state lives in ${HOME}.
-start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker.`
+start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker.
+In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
 try {
   switch (cmd) {
@@ -568,6 +738,30 @@ try {
     case 'abort':
       post(loadRun(args[0]).id, { type: 'ABORT' })
       break
+    case 'watch': {
+      const [repo, factory = 'lifecycle'] = args
+      if (!repo) {
+        for (const w of watched()) console.log(`${w.repo}  ${w.factory}`)
+        if (!watched().length) console.log('no repos watched: factory watch <repo> [factory]')
+        break
+      }
+      const root = git(resolve(repo.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
+      if (!hasBeads(root)) fail(`${root} has no .beads: run bd init there first`)
+      await loadFactory(factoryPath(factory))
+      mkdirSync(HOME, { recursive: true })
+      writeJson(watchFile(), [...watched().filter(w => w.repo !== root), { repo: root, factory }])
+      console.log(`watching ${root}: its ready beads labeled factory start as ${factory} runs`)
+      break
+    }
+    case 'unwatch': {
+      const root = resolve((args[0] ?? '').replace(/^~(?=\/|$)/, homedir()))
+      writeJson(
+        watchFile(),
+        watched().filter(w => w.repo !== root),
+      )
+      console.log(`stopped watching ${root}`)
+      break
+    }
     case 'rm': {
       const { run, value } = current(args[0])
       if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)

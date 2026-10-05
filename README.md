@@ -47,6 +47,28 @@ Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews 
 
 `bin/factory help` lists every command; the manager model uses the same CLI.
 
+## Beads: planning and execution
+
+In a repo with `.beads/`, beads is the factory's task tracker:
+
+- **Every run works a bead**, its epic. `start` claims the bead its goal names
+  (`/factory start lifecycle ~/repos/my-app fx-12`) or creates one from the goal.
+- **Planning**: the plan station records its tasks as the bead's children, in dependency
+  order. **Execution**: implement works `bd ready --parent <bead>` and closes each task with
+  its commit; verify, review and security file their findings as more tasks; release
+  refuses while any task is open.
+- **The journal mirrors into the bead**: every station's report becomes a comment (a
+  sweep's routine passes excepted), and workers' bd writes carry `factory/<run>/<station>`.
+- **The end of a run settles its bead**: shipped or otherwise finished closes it; a hold, an
+  abort, or a run that ends with open tasks defers it, unassigned. Undefer it to hand it back.
+- **The backlog dispatches itself**: `factory watch <repo>` turns that repo's ready,
+  unassigned, top-level beads labeled `factory` into runs, every 30 s while there is room
+  under `FACTORY_MAX_RUNS`. A `station:<name>` label starts one at that station.
+- **Sweeps file to the backlog**: incidents and security fixes labeled `factory` start on
+  their own; everything else is filed unlabeled for you to prioritize by adding the label.
+- **Leases**: the run heartbeats its claim every 2 minutes, so a `bd reclaim` reaper never
+  takes live work. Without `.beads/`, runs keep task lists in their reports instead.
+
 ## Define a factory
 
 `factories/<name>.ts` exports a graph ([review-loop](factories/review-loop.ts)):
@@ -103,5 +125,7 @@ edge refills it, so a sweep loops forever). Edits apply at the next tick.
   your deploy tooling and telemetry (kubectl, gh, the Grafana MCP) the way you do.
 - The gate guard against workers is an environment check, not a lock: a worker set
   on it could still run `factory decide`. The manager-session dialog is enforced.
+- The runner and the workers use whatever `bd` is first on PATH; it must match the
+  repo's beads schema. Syncing beads across machines (`bd dolt push`) stays yours.
 - One manager session at a time: a second one shares the ticks, and manager
   mail goes to whichever one ticks first.
