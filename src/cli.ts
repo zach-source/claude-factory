@@ -902,6 +902,7 @@ const usage = `factory — herdr software factories on xstate
   show <run> | backlog               JSON for the manager's views
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
+  home                               the factory these commands work: FACTORY_HOME, else found from here
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
   decide <run> <outcome> [note...]   the person: answer a gate station
@@ -928,6 +929,9 @@ if (import.meta.main)
         break
       case 'tick':
         console.log(JSON.stringify(await tick()))
+        break
+      case 'home':
+        console.log(HOME)
         break
       case 'loop': {
         const ms = args[0] === '--interval' ? Number(args[1]) : 5000
