@@ -1,5 +1,5 @@
 // Pure layout helpers for the factory console: no `$`, no elements.
-import type { FactoryMail, FactoryRun } from '../types'
+import type { FactoryMail, FactoryRig, FactoryRun } from '../types'
 
 /** one station on a run's path: how often it ran, and whether the run is there now */
 export type Stop = { id: string; runs: number; isCurrent: boolean }
@@ -58,19 +58,24 @@ const blockKey = (r: FactoryRun) => `${r.id}:${r.node}:${r.since}`
 
 /**
  * The manager's loop: what to wake this session's model with, or null when nothing calls for it.
- * New mail and newly blocked workers wake it at once; `isDue` adds a heartbeat while any worker runs.
- * `keys` are the blocked workers this patrol reports, for the caller to remember in `seen`.
+ * New mail and newly blocked workers wake it at once; `isDue` adds a heartbeat while any worker runs
+ * or a rig with a goal has room for more runs. `keys` are the blocked workers this patrol reports,
+ * for the caller to remember in `seen`.
  */
 export function patrol(
   runs: readonly FactoryRun[],
   mail: readonly FactoryMail[],
   seen: ReadonlySet<string>,
   isDue: boolean,
+  rigs: readonly FactoryRig[] = [],
 ) {
   const live = runs.filter(r => r.node && r.node !== 'done' && r.node !== 'aborted')
   const blocked = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
   const isWorking = live.some(r => r.sub === 'working' && !r.gate)
-  if (!mail.length && !blocked.length && !(isDue && isWorking)) return null
+  const busy = (g: FactoryRig) => live.filter(r => r.rig === g.name && r.sub !== 'waiting' && !r.gate).length
+  const goals = rigs.filter(g => g.goal)
+  const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
+  if (!mail.length && !blocked.length && !(isDue && (isWorking || hasRoom))) return null
   const news = [
     ...mail.map(m => `- ${m.run} / ${m.from}: ${m.text}`),
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
@@ -84,7 +89,14 @@ export function patrol(
     news.length
       ? `New:\n${news.join('\n')}`
       : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
-    `Board:\n${board.join('\n')}`,
+    board.length ? `Board:\n${board.join('\n')}` : 'Board: no runs.',
+    ...(goals.length
+      ? [
+          `Rig goals: with room, give each rig the next work toward its goal.\n${goals
+            .map(g => `- ${g.name}, busy ${busy(g)}${g.maxRuns ? `/${g.maxRuns}` : ''}: ${g.goal}`)
+            .join('\n')}`,
+        ]
+      : []),
   ].join('\n')
   return { text, keys: blocked.map(blockKey) }
 }

@@ -69,3 +69,18 @@ test('patrol wakes the manager for mail, a newly blocked worker, or a heartbeat 
   expect(first.text).toContain('its worker (pane w1:p2) is waiting on a prompt')
   expect(patrol([blocked], [], new Set(first.keys), false)).toBeNull() // reported once per worker
 })
+
+test("patrol keeps the manager working toward a rig's goal while the rig has room", () => {
+  const fab = { name: 'fab', repo: '/r/fab', factory: 'lifecycle', maxRuns: 2, goal: 'finish the features' }
+  const run = (id: string, sub: string) => ({ id, rig: 'fab', node: 'implement', sub, goal: id, since: 1 })
+  const idle = patrol([], [], new Set(), true, [fab])!
+  expect(idle.text).toContain('Board: no runs.')
+  expect(idle.text).toContain('- fab, busy 0/2: finish the features')
+  expect(patrol([], [], new Set(), false, [fab])).toBeNull() // only on the heartbeat
+  expect(patrol([], [], new Set(), true, [{ ...fab, goal: undefined }])).toBeNull() // no goal, nothing to do
+  const full = [run('a', 'working'), run('b', 'backoff')]
+  expect(patrol(full, [], new Set(), true, [fab])!.text).toContain('busy 2/2')
+  expect(patrol([run('a', 'waiting'), run('b', 'waiting')], [], new Set(), true, [fab])).not.toBeNull()
+  // at its cap with no worker running, a rig has nothing for the manager to add
+  expect(patrol([run('a', 'backoff'), run('b', 'backoff')], [], new Set(), true, [fab])).toBeNull()
+})

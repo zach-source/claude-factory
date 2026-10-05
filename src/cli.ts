@@ -35,7 +35,11 @@ import {
 import { actorOf, beads, dispatchable, goalOf, hasBeads, stationOf, type Bead } from './beads'
 
 const ROOT = resolve(import.meta.dir, '..')
-const HOME = process.env.FACTORY_HOME ?? join(ROOT, '.factory-state')
+/** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
+const factoryAt = (dir: string): string | undefined =>
+  existsSync(join(dir, 'rigs.json')) ? dir : dirname(dir) === dir ? undefined : factoryAt(dirname(dir))
+// a session or `loop` started inside a factory's directory works that factory
+const HOME = process.env.FACTORY_HOME ?? factoryAt(process.cwd()) ?? join(ROOT, '.factory-state')
 /** where a repo keeps its own factories, versioned with its code */
 const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
@@ -157,7 +161,7 @@ export function ownCopy(template: string, name: string) {
     .replace(/^import type \{ Factory \} from '[^']*'\n+/m, '')
     .replace(/\}\s*satisfies Factory\s*$/, '}\n')
   return (
-    `// This repo's own factory, from claude-factory's "${name}" template (factory init).\n` +
+    `// This repo's own factory, from claude-factory's "${name}" template (factory adopt).\n` +
     `// A run follows the version in the commit it starts from, so change it like code: in a run or a\n` +
     `// commit, checked with \`factory check ${OWN}/${name}.ts\`. The improve sweep proposes changes to it.\n\n` +
     body
@@ -486,7 +490,12 @@ async function tick() {
   }
   try {
     const now = Date.now()
-    const out = { runs: [] as Row[], manager: [] as (Mail & { run: string })[], started: [] as string[] }
+    const out = {
+      runs: [] as Row[],
+      manager: [] as (Mail & { run: string })[],
+      started: [] as string[],
+      rigs: rigs(), // the manager's patrol works toward their goals
+    }
     for (const id of runIds()) {
       try {
         const { row, manager } = await tickRun(loadRun(id), now)
@@ -642,15 +651,23 @@ const isBusy = (r: Row) => r.node !== 'done' && r.node !== 'aborted' && r.sub !=
 
 /**
  * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, it keeps its
- * sweeps running, and `maxRuns` caps its own busy runs under the town's FACTORY_MAX_RUNS. The town is
- * FACTORY_HOME; its rigs.json is written by `factory rig add` and can be edited by hand.
+ * sweeps running, and `maxRuns` caps its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's
+ * rigs.json is written by `factory rig add` and can be edited by hand.
  */
-export type Rig = { name: string; repo: string; factory: string; maxRuns?: number; sweeps?: string[] }
+export type Rig = {
+  name: string
+  repo: string
+  factory: string
+  maxRuns?: number
+  sweeps?: string[]
+  /** what the manager works toward there while the rig has room */
+  goal?: string
+}
 const rigsFile = () => join(HOME, 'rigs.json')
 const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
-const toplevel = (path: string) =>
-  git(resolve(path.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
+const expand = (path: string) => resolve(path.replace(/^~(?=\/|$)/, homedir()))
+const toplevel = (path: string) => git(expand(path), 'rev-parse', '--show-toplevel')
 /** a rig's name stands for its repo wherever a command takes one */
 const repoOf = (arg: string) => rigs().find(r => r.name === arg)?.repo ?? toplevel(arg)
 
@@ -665,7 +682,7 @@ export const room = (
     rig?.maxRuns === undefined ? Infinity : rig.maxRuns - busy.filter(b => b === rig.name).length,
   )
 
-/** the rigs' ready `factory` beads become runs while each rig, and the town, has room */
+/** the rigs' ready `factory` beads become runs while each rig, and the factory, has room */
 async function dispatch(out: { runs: Row[]; started: string[] }) {
   const stamp = join(HOME, 'dispatch.stamp')
   if (!rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS)) return
@@ -720,12 +737,17 @@ async function assertRoom(repo: string) {
 }
 
 /** a rig as `rig add` defines it, checked: its repo tracks beads, its factory loads, its sweeps exist */
-async function defineRig(name: string, path: string, factory: string, max?: string, sweeps?: string) {
+async function defineRig(
+  name: string,
+  path: string,
+  factory: string,
+  { max, sweeps, goal }: { max?: string; sweeps?: string; goal?: string },
+) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
   const repo = toplevel(path)
   if (!hasBeads(repo)) fail(`${repo} has no .beads: run bd init there first`)
   const def = await loadFactory(factorySource(factory, repo))
-  const rig: Rig = { name, repo, factory }
+  const rig: Rig = { name, repo, factory, ...(goal && { goal }) }
   if (max !== undefined) {
     if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
     rig.maxRuns = Number(max)
@@ -871,9 +893,11 @@ const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <rig|repo> <goal...|bead>   new run: herdr worktree off the repo, first worker launched
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] | rm <name>]   the town's rigs: repos whose
-                                     ready beads labeled factory start as runs, each with its own cap and sweeps
-  init <rig|repo> [template]         copy a factory into <repo>/.factory/ for the repo to own and improve
+  init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--goal text...] | rm <name>]   the factory's
+                                     rigs: repos whose ready beads labeled factory start as runs, each with its
+                                     own cap, sweeps and a goal the manager works toward
+  adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog               JSON for the manager's views
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
@@ -888,8 +912,8 @@ const usage = `factory — herdr software factories on xstate
   rm <run>                           finished run: drop its worktree and state, keep its branch
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
-else the template in ${join(ROOT, 'factories')}. Each run pins its factory. State lives in ${HOME}, the town:
-its rigs are in rigs.json. start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
+else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
+(FACTORY_HOME, else the nearest directory up holding a rigs.json). start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
 or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
@@ -1005,8 +1029,23 @@ if (import.meta.main)
         post(loadRun(args[0]).id, { type: 'ABORT' })
         break
       case 'init': {
+        if (!args[0]) fail('usage: factory init <dir>')
+        const dir = expand(args[0]!)
+        if (existsSync(join(dir, 'rigs.json'))) fail(`${dir} is already a factory: factory rig add, there`)
+        mkdirSync(dir, { recursive: true })
+        writeJson(join(dir, 'rigs.json'), [])
+        console.log(
+          [
+            `a new factory in ${dir}. Commands run in that directory work it; add its rigs there:`,
+            `  cd ${dir} && ${CLI} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
+            `and run its manager there: claude-smart --new --plugin-dir ${join(ROOT, 'mod')}`,
+          ].join('\n'),
+        )
+        break
+      }
+      case 'adopt': {
         const [repo, name = 'lifecycle'] = args
-        if (!repo) fail('usage: factory init <rig|repo> [template]')
+        if (!repo) fail('usage: factory adopt <rig|repo> [template]')
         const root = repoOf(repo!)
         const target = join(root, OWN, `${name}.ts`)
         const template = join(ROOT, 'factories', `${name}.ts`)
@@ -1033,12 +1072,18 @@ if (import.meta.main)
       case 'rig': {
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
+        // the goal is the rest of the line, so `/factory rig add ... --goal finish it` needs no quotes
+        const goal = args.includes('--goal')
+          ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
+          : undefined
         const [max, sweeps] = [opt('--max'), opt('--sweeps')]
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
-            fail('usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none]')
-          const rig = await defineRig(name!, repo!, factory, max, sweeps)
+            fail(
+              'usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--goal text...]',
+            )
+          const rig = await defineRig(name!, repo!, factory, { max, sweeps, goal })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo: redefining either replaces it
           writeJson(rigsFile(), [...rigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
@@ -1067,6 +1112,7 @@ if (import.meta.main)
             console.log(
               `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${(r.sweeps ?? SWEEPS).join(',') || 'none'}`,
             )
+            if (r.goal) console.log(`  goal: ${r.goal}`)
           }
         } else fail(`unknown rig command "${sub}": add, rm or list`)
         break

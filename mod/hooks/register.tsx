@@ -10,6 +10,7 @@ import type {
   FactoryDetail,
   FactoryDraft,
   FactoryMail,
+  FactoryRig,
   FactoryRun,
   FactoryView,
 } from '../types'
@@ -60,7 +61,7 @@ A message starting "[factory] patrol" is your loop. It lists what is new and the
 2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog).
 3. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
 4. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
-5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`); leave what needs the person's priority to them, and list it by rig.
+5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
 6. Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
 The factory CLI, through Bash:
 - \`${cli} status [run]\`: every run, or one run's full journal
@@ -69,9 +70,9 @@ The factory CLI, through Bash:
 - \`${cli} retry <run>\` (a stuck station), \`${cli} goto <run> <station|done>\` (also skips a timed wait), \`${cli} abort <run>\`, \`${cli} fork <run> <station> "<note>"\`, \`${cli} rm <run>\` (finished runs)
 - \`${cli} start <factory>[@station] <rig|repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}; lifecycle covers build, release, incidents, optimization, refactoring and the monitor, maintain and improve sweeps
 - \`herdr pane read <pane> --source recent --lines 80\`: see what a worker is doing
-The factory works rigs: named repos, listed by \`${cli} rig\`. A rig's ready beads labeled \`factory\` start as runs, it keeps the sweeps it asks for running, and its own cap (\`--max\`) bounds its busy runs under the town's. A rig's name stands for its repo in every command. \`${cli} rig add <name> <repo> [factory] [--max n] [--sweeps monitor,maintain,improve|none]\` defines or redefines one and \`${cli} rig rm <name>\` drops it (its runs carry on); do either only when the person asks.
+The factory works rigs: named repos, listed by \`${cli} rig\`. A rig's ready beads labeled \`factory\` start as runs, it keeps the sweeps it asks for running, and its own cap (\`--max\`) bounds its busy runs under the town's. A rig's name stands for its repo in every command. \`${cli} rig add <name> <repo> [factory] [--max n] [--sweeps monitor,maintain,improve|none] [--goal <text>]\` defines or redefines one and \`${cli} rig rm <name>\` drops it (its runs carry on); do either only when the person asks.
 In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. A rig's backlog is its beads: \`${cli} queue <rig> <bead> [station]\` labels one \`factory\`; \`station:<name>\` starts it at that station; sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred. \`${cli} start lifecycle <rig> <bead-id>\` runs one bead now.
-A repo owns its factory once \`${cli} init <rig>\` copies the template to \`.factory/lifecycle.ts\` and it is committed: each run follows the version its starting commit holds, the improve sweep and postmortems propose changes to it, and those ship through review and the approve gate like any change. \`${cli} check <file>\` validates one. When the person wants the factory itself changed, file that as work on \`.factory/\` rather than editing it in this session.`
+A repo owns its factory once \`${cli} adopt <rig>\` copies the template to \`.factory/lifecycle.ts\` and it is committed: each run follows the version its starting commit holds, the improve sweep and postmortems propose changes to it, and those ship through review and the approve gate like any change. \`${cli} check <file>\` validates one. When the person wants the factory itself changed, file that as work on \`.factory/\` rather than editing it in this session.`
 
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
 const rt = {
@@ -105,6 +106,7 @@ async function tick($: EngineInterface) {
       runs: FactoryRun[]
       manager: FactoryMail[]
       started?: string[]
+      rigs?: FactoryRig[]
     }
     if (res.busy) return
     await update($, board, b => ({ runs: res.runs, mail: [...b.mail, ...res.manager].slice(-50) }))
@@ -127,7 +129,7 @@ async function tick($: EngineInterface) {
     if (res.manager.length) $.ui.toast(`factory: ${res.manager.length} message(s) for the manager`)
     if (rt.isAutopilot) {
       rt.unsent.push(...res.manager)
-      await patrolNow($, res.runs)
+      await patrolNow($, res.runs, res.rigs ?? [])
     }
   } catch (err) {
     $.ui.status(String(err).slice(0, 80))
@@ -137,10 +139,10 @@ async function tick($: EngineInterface) {
 }
 
 /** wake this session's model to patrol, one patrol at a time */
-async function patrolNow($: EngineInterface, runs: FactoryRun[]) {
+async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRig[]) {
   if (rt.isPatrolling) return
   const now = await $.clock.now()
-  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS)
+  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs)
   if (!due) return
   rt.unsent = []
   for (const key of due.keys) rt.seen.add(key)

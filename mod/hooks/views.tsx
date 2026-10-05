@@ -458,6 +458,7 @@ export function backlogView(p: Base, backlog: FactoryBacklog) {
             r.name,
             `${shortPath(r.repo)} · ${shortPath(r.factory)} · busy ${r.busy}${r.maxRuns ? `/${r.maxRuns}` : ''}`,
           )}
+          {r.goal && <Text wrap="wrap">◎ {r.goal}</Text>}
           {r.error && <Text color="red">! {r.error}</Text>}
           <Text color="green">will start ({String(r.queued.length)})</Text>
           {r.queued.length === 0 && <Text dimColor> nothing queued</Text>}

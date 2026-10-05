@@ -5,20 +5,22 @@ stations; a run is an xstate machine over that graph whose snapshot is persisted
 on every tick. Each station is worked by its own Claude session in a herdr tab of
 the run's git worktree, and the outcome it reports routes the run along the graph.
 A Claude mod turns one session into the manager: it ticks every run, draws the
-board, and wakes the manager model with mail.
+board, and wakes the manager model with mail and toward each rig's goal.
 
 ## Run it
 
 ```sh
 bun install
-# the manager session, in a herdr pane
+bin/factory init ~/my-factory   # a new factory: a directory for its rigs and runs
+cd ~/my-factory
+# the manager session, in a herdr pane: a session started in a factory's directory works it
 claude-smart --new --plugin-dir ~/repos/workspaces/claude-factory/mod
 ```
 
 In the manager session:
 
 ```
-/factory rig add my-app ~/repos/my-app --max 3   # a rig: a repo the factory works
+/factory rig add my-app ~/repos/my-app --max 3 --goal ship the v2 API   # a rig: a repo the factory works
 /factory start lifecycle my-app Add a /health endpoint with tests
 /factory start lifecycle@monitor my-app watch production
 /factory start lifecycle@maintain my-app keep it maintained
@@ -32,7 +34,7 @@ In the manager session:
 You talk to the manager session; it runs the factory. With `autopilot` on (the default)
 the mod wakes the manager model with a `[factory] patrol` whenever there is mail for it (a
 worker's question, a stuck station, a gate, a finished run), when a worker is blocked on a
-prompt, and every 10 minutes while workers run. A patrol answers mail, unsticks runs
+prompt, and every 10 minutes while workers run or a rig with a goal has room. A patrol answers mail, unsticks runs
 (`retry`, `goto`, `fork`, `abort`), pokes workers (`factory poke <run> [steer]`), takes the
 next work from the backlog when there is room, brings gates to you, and ends with a report
 of at most three lines. Underneath, the runtime stays mechanical: it ticks every 5 s,
@@ -47,12 +49,20 @@ and mail escalates from worker to manager to you.
 
 ## Rigs
 
+A factory is a directory (Gas Town's town): `factory init <dir>` makes one, its
+`rigs.json` defines its rigs, and its runs live beside it. Commands, the manager session and
+`factory loop` started inside it work that factory; `FACTORY_HOME` overrides, and with
+neither the factory is `.factory-state/` here. Run several factories side by side, each with its
+own manager.
+
 A rig is a repo the factory works, by name. Its ready beads labeled `factory` start as runs,
-it keeps its sweeps running, and it has its own cap on busy runs under the town's
-`FACTORY_MAX_RUNS`. The town is `FACTORY_HOME`, and its `rigs.json` defines every rig:
+it keeps its sweeps running, and it has its own cap on busy runs under the factory's
+`FACTORY_MAX_RUNS`. A goal is the person's standing direction for the rig: while the rig has
+room, the manager's heartbeat patrol carries it and gives the rig the next work toward it.
 
 ```sh
 factory rig add web ~/repos/web --max 4                     # all of lifecycle's sweeps
+factory rig add app ~/repos/app --max 3 --sweeps none --goal finish the v2 features
 factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor
 factory rig add docs ~/repos/docs review-loop --sweeps none
 factory rig                                                 # each rig, its busy runs and sweeps
@@ -89,7 +99,7 @@ Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews 
 
 ## The factory improves itself
 
-`factory init <repo>` copies the lifecycle template into `<repo>/.factory/lifecycle.ts`;
+`factory adopt <repo>` copies the lifecycle template into `<repo>/.factory/lifecycle.ts`;
 commit it, and the repo owns its factory like any other code:
 
 - **Runs pin their factory.** `start lifecycle` (and a rig's dispatch) use the repo's own

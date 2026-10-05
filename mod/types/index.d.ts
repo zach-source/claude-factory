@@ -48,21 +48,25 @@ export type FactoryDetail = FactoryRun & {
   isWorking: boolean
 }
 
-// what `factory backlog` prints
-export type FactoryBead = { id: string; title: string; priority?: number; type?: string; labels?: string[] }
-export type FactoryBacklog = {
-  /** the rig: a repo the factory works, with its own cap and sweeps */
+/** a repo the factory works, with its own cap, sweeps and goal (src/cli.ts Rig) */
+export type FactoryRig = {
   name: string
   repo: string
   factory: string
   maxRuns?: number
   sweeps?: string[]
+  goal?: string
+}
+
+// what `factory backlog` prints
+export type FactoryBead = { id: string; title: string; priority?: number; type?: string; labels?: string[] }
+export type FactoryBacklog = (FactoryRig & {
   /** its runs holding a worker now */
   busy: number
   queued: FactoryBead[]
   unqueued: FactoryBead[]
   error?: string
-}[]
+})[]
 
 export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'new'
 /** what the person has typed and not sent */

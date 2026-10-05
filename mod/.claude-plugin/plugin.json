@@ -10,7 +10,7 @@
     "autopilot": {
       "type": "boolean",
       "title": "Let the manager model drive the factory",
-      "description": "On: this session's model patrols the factory. It is woken by mail for the manager (a stuck station, a worker's question, a gate, a finished run), by a worker blocked on a prompt, and every 10 minutes while workers run, and acts on them. Off: mail only shows in the pane and a toast.",
+      "description": "On: this session's model patrols the factory. It is woken by mail for the manager (a stuck station, a worker's question, a gate, a finished run), by a worker blocked on a prompt, and every 10 minutes while workers run or a rig with a goal has room, and acts on them. Off: mail only shows in the pane and a toast.",
       "default": true
     }
   }

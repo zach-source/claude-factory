@@ -16,7 +16,7 @@ import type { Factory } from '../src/machine'
 // implement works them, verify and review file findings as more, release needs them all
 // closed, and sweeps file to the backlog, where `factory` labels what starts on its own.
 //
-// `factory init <repo>` copies this file into the repo as .factory/lifecycle.ts. From then on the
+// `factory adopt <repo>` copies this file into the repo as .factory/lifecycle.ts. From then on the
 // factory is the repo's code: improve's factory lens and postmortems file changes to it, and they ship
 // like any change, through review and approve. Each run follows the version its starting commit holds.
 
