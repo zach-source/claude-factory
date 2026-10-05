@@ -58,7 +58,9 @@ manager to you.
 | sweeps                       | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)  |
 
 Sweeps never end: each pass files what it finds as runs of its own (`lifecycle@incident`,
-`@plan`, `@baseline`, `@characterize`), skipping duplicates. **approve** is a gate: nothing
+`@plan`, `@baseline`, `@characterize`), skipping duplicates. `factory loop` ticks with no
+console open and keeps one run of each sweep per watched repo: abort a sweep to stop it, `rm`
+it to let the loop start it again. **approve** is a gate: nothing
 merges or deploys until you decide it, with the board's buttons or `/factory decide`.
 Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews security.
 `factories/lifecycle.test.ts` walks every loop through the machine.

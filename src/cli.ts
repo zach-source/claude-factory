@@ -500,6 +500,43 @@ async function tick() {
   }
 }
 
+// ponytail: lifecycle's sweep stations by name; a node flag if another factory grows its own
+const SWEEPS = ['monitor', 'maintain', 'improve']
+const sweepGoal = (station: string) => `sweep: ${station}`
+
+export const missingSweeps = (def: Factory, repo: string, runs: { repo: string; goal: string }[]) =>
+  SWEEPS.filter(s => def.nodes[s] && !runs.some(r => r.repo === repo && r.goal === sweepGoal(s)))
+
+/** each watched repo keeps one run per sweep its factory has: abort one to stop it, rm it to let it start again */
+async function sweep() {
+  const runs = runIds().map(id => loadRun(id))
+  for (const w of watched()) {
+    try {
+      const preview = await loadFactory(factorySource(w.factory, w.repo))
+      for (const station of missingSweeps(preview, w.repo, runs)) {
+        const goal = sweepGoal(station)
+        await assertRoom()
+        const linked = beadFor(w.repo, goal)
+        const { run, def } = await createTracked(w.factory, preview.name, w.repo, goal, linked.bead)
+        if (station !== def.start) post(run.id, { type: 'GOTO', node: station })
+        console.log(`${new Date().toISOString()} sweep ${station} for ${w.repo} → ${run.id}`)
+      }
+    } catch (err) {
+      console.error(`${new Date().toISOString()} sweeps for ${w.repo}: ${(err as Error).message}`)
+    }
+  }
+}
+
+/** ticks forever, so runs advance, watched repos dispatch and their sweeps stay running with no console open */
+async function loop(intervalMs: number) {
+  for (;;) {
+    await sweep()
+    const out = await tick()
+    if ('runs' in out) for (const s of out.started) console.log(`${new Date().toISOString()} started ${s}`)
+    await Bun.sleep(intervalMs)
+  }
+}
+
 /**
  * a run is a branch + herdr worktree + snapshot + the factory it follows, pinned so that no later edit,
  * its own included, changes the graph under it; a fork starts from another run's branch, snapshot and factory
@@ -777,7 +814,7 @@ const usage = `factory — herdr software factories on xstate
   show <run> | backlog               JSON for the manager's views
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
-  tick                               advance every run once (the manager mod does this every 5s)
+  tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping watched repos' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
@@ -803,6 +840,12 @@ if (import.meta.main)
       case 'tick':
         console.log(JSON.stringify(await tick()))
         break
+      case 'loop': {
+        const ms = args[0] === '--interval' ? Number(args[1]) : 5000
+        if (!(ms >= 1000)) fail('usage: factory loop [--interval ms], at least 1000')
+        await loop(ms)
+        break
+      }
       case 'show':
         console.log(JSON.stringify(await show(args[0])))
         break
