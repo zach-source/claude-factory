@@ -15,6 +15,8 @@ export type FactoryRun = {
   gate?: { question: string; outcomes: string[] }
   /** the bead the run works, in a repo tracked with beads */
   bead?: string
+  /** the rig whose repo it works */
+  rig?: string
   /** the stations of its recent reports, oldest first */
   trail?: string[]
   since?: number
@@ -49,8 +51,14 @@ export type FactoryDetail = FactoryRun & {
 // what `factory backlog` prints
 export type FactoryBead = { id: string; title: string; priority?: number; type?: string; labels?: string[] }
 export type FactoryBacklog = {
+  /** the rig: a repo the factory works, with its own cap and sweeps */
+  name: string
   repo: string
   factory: string
+  maxRuns?: number
+  sweeps?: string[]
+  /** its runs holding a worker now */
+  busy: number
   queued: FactoryBead[]
   unqueued: FactoryBead[]
   error?: string

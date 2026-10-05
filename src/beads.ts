@@ -1,6 +1,6 @@
 // Beads (bd) as the factory's task tracker. A run's bead is its epic: claimed by the run, its
 // station reports mirrored as comments, closed (or deferred for a person) when the run ends.
-// The plan's tasks are the bead's children. In a watched repo, ready beads labeled `factory`
+// The plan's tasks are the bead's children. In a rig, ready beads labeled `factory`
 // become runs. Claiming decides who owns work; everything else is best-effort bookkeeping.
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -60,7 +60,7 @@ export const beads = (repo: string, actor: string) => ({
     (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '100'), 'ready')) as Bead[]).filter(
       b => !b.parent && !b.assignee && !b.labels?.includes(LABEL),
     ),
-  /** hands a bead to the factory: a watched repo starts it at the next dispatch */
+  /** hands a bead to the factory: a rig starts it at the next dispatch */
   queue: (id: string, station?: string) =>
     must(
       bd(

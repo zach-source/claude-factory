@@ -42,7 +42,7 @@ const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = 'claude-smart --new --no-channels --dangerously-skip-permissions'
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 8)
-const DISPATCH_MS = 30_000 // how often watched repos' ready beads are looked at
+const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const NUDGES = 2 // ...this many times, then fails
@@ -87,6 +87,8 @@ export type Row = {
   last?: Entry
   gate?: { question: string; outcomes: string[] }
   bead?: string
+  /** the rig whose repo the run works, when one is defined for it */
+  rig?: string
   /** the stations of the last 40 reports, oldest first: the board draws the run's path from it */
   trail?: string[]
   /** when the current worker started, or when a timed wait ends */
@@ -384,6 +386,7 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     error: error ?? c.error,
     last: c.log.at(-1),
     bead: run.bead,
+    rig: rigOf(run.repo)?.name,
     trail: c.log.slice(-40).map(e => e.node),
     ...(c.startedAt && { since: c.startedAt }),
     ...(c.wakeAt && { wakeAt: c.wakeAt }),
@@ -504,30 +507,36 @@ async function tick() {
 const SWEEPS = ['monitor', 'maintain', 'improve']
 const sweepGoal = (station: string) => `sweep: ${station}`
 
-export const missingSweeps = (def: Factory, repo: string, runs: { repo: string; goal: string }[]) =>
-  SWEEPS.filter(s => def.nodes[s] && !runs.some(r => r.repo === repo && r.goal === sweepGoal(s)))
+export const missingSweeps = (
+  def: Factory,
+  rig: Pick<Rig, 'repo' | 'sweeps'>,
+  runs: { repo: string; goal: string }[],
+) =>
+  (rig.sweeps ?? SWEEPS).filter(
+    s => def.nodes[s] && !runs.some(r => r.repo === rig.repo && r.goal === sweepGoal(s)),
+  )
 
-/** each watched repo keeps one run per sweep its factory has: abort one to stop it, rm it to let it start again */
+/** each rig keeps one run per sweep it asks for: abort one to stop it, rm it to let it start again */
 async function sweep() {
   const runs = runIds().map(id => loadRun(id))
-  for (const w of watched()) {
+  for (const rig of rigs()) {
     try {
-      const preview = await loadFactory(factorySource(w.factory, w.repo))
-      for (const station of missingSweeps(preview, w.repo, runs)) {
+      const preview = await loadFactory(factorySource(rig.factory, rig.repo))
+      for (const station of missingSweeps(preview, rig, runs)) {
         const goal = sweepGoal(station)
-        await assertRoom()
-        const linked = beadFor(w.repo, goal)
-        const { run, def } = await createTracked(w.factory, preview.name, w.repo, goal, linked.bead)
+        await assertRoom(rig.repo)
+        const linked = beadFor(rig.repo, goal)
+        const { run, def } = await createTracked(rig.factory, preview.name, rig.repo, goal, linked.bead)
         if (station !== def.start) post(run.id, { type: 'GOTO', node: station })
-        console.log(`${new Date().toISOString()} sweep ${station} for ${w.repo} → ${run.id}`)
+        console.log(`${new Date().toISOString()} sweep ${station} for rig ${rig.name} → ${run.id}`)
       }
     } catch (err) {
-      console.error(`${new Date().toISOString()} sweeps for ${w.repo}: ${(err as Error).message}`)
+      console.error(`${new Date().toISOString()} sweeps for rig ${rig.name}: ${(err as Error).message}`)
     }
   }
 }
 
-/** ticks forever, so runs advance, watched repos dispatch and their sweeps stay running with no console open */
+/** ticks forever, so runs advance, the rigs dispatch and their sweeps stay running with no console open */
 async function loop(intervalMs: number) {
   for (;;) {
     await sweep()
@@ -631,27 +640,49 @@ function beadFor(repo: string, goal: string, extra: string[] = []) {
 
 const isBusy = (r: Row) => r.node !== 'done' && r.node !== 'aborted' && r.sub !== 'waiting' && !r.gate
 
-type Watch = { repo: string; factory: string }
-const watchFile = () => join(HOME, 'watch.json')
-const watched = (): Watch[] => (existsSync(watchFile()) ? readJson(watchFile()) : [])
+/**
+ * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, it keeps its
+ * sweeps running, and `maxRuns` caps its own busy runs under the town's FACTORY_MAX_RUNS. The town is
+ * FACTORY_HOME; its rigs.json is written by `factory rig add` and can be edited by hand.
+ */
+export type Rig = { name: string; repo: string; factory: string; maxRuns?: number; sweeps?: string[] }
+const rigsFile = () => join(HOME, 'rigs.json')
+const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
+const toplevel = (path: string) =>
+  git(resolve(path.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
+/** a rig's name stands for its repo wherever a command takes one */
+const repoOf = (arg: string) => rigs().find(r => r.name === arg)?.repo ?? toplevel(arg)
 
-/** watched repos' ready `factory` beads become runs while there is room */
+/** how many more runs may hold a worker in `rig`, given the rigs of the runs that hold one now */
+export const room = (
+  rig: Pick<Rig, 'name' | 'maxRuns'> | undefined,
+  busy: (string | undefined)[],
+  max = MAX_BUSY,
+) =>
+  Math.min(
+    max - busy.length,
+    rig?.maxRuns === undefined ? Infinity : rig.maxRuns - busy.filter(b => b === rig.name).length,
+  )
+
+/** the rigs' ready `factory` beads become runs while each rig, and the town, has room */
 async function dispatch(out: { runs: Row[]; started: string[] }) {
   const stamp = join(HOME, 'dispatch.stamp')
-  if (!watched().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS)) return
+  if (!rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS)) return
   writeFileSync(stamp, '')
-  let room = MAX_BUSY - out.runs.filter(isBusy).length
+  const busy = out.runs.filter(isBusy).map(r => r.rig)
   // live runs only: a finished run's deferred bead, undeferred by a person, is new work again
   const linked = new Set(
     out.runs.filter(r => r.node !== 'done' && r.node !== 'aborted').flatMap(r => r.bead ?? []),
   )
-  for (const w of watched()) {
+  for (const rig of rigs()) {
     try {
-      const preview = await loadFactory(factorySource(w.factory, w.repo))
-      for (const bead of dispatchable(beads(w.repo, 'factory').ready(), linked, room)) {
+      const preview = await loadFactory(factorySource(rig.factory, rig.repo))
+      const ready = beads(rig.repo, 'factory').ready()
+      for (const bead of dispatchable(ready, linked, Math.max(0, room(rig, busy)))) {
         let run, def
         try {
-          ;({ run, def } = await createTracked(w.factory, preview.name, w.repo, goalOf(bead), bead.id))
+          ;({ run, def } = await createTracked(rig.factory, preview.name, rig.repo, goalOf(bead), bead.id))
         } catch (err) {
           if (/already claimed/.test((err as Error).message)) continue // lost the race to another worker
           throw err
@@ -659,33 +690,63 @@ async function dispatch(out: { runs: Row[]; started: string[] }) {
         const at = stationOf(bead)
         if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
         out.started.push(`${bead.id} → ${run.id}`)
-        room--
+        busy.push(rig.name)
       }
     } catch (err) {
-      out.runs.push({ id: `watch:${basename(w.repo)}`, error: (err as Error).message })
+      out.runs.push({ id: `rig:${rig.name}`, error: (err as Error).message })
     }
   }
 }
 
-/** a run holding a worker counts; a wait or a gate costs nothing */
-async function assertRoom() {
-  let busy = 0
+/** the rig of every run holding a worker; a wait or a gate costs nothing */
+async function busyRigs() {
+  const busy: (string | undefined)[] = []
   for (const id of runIds()) {
     const { run, value } = current(id)
     const [node, sub] = where(value)
     const n = (await loadFactory(run.factory)).nodes[node]
-    if (n && !n.gate && sub !== 'waiting') busy++
+    if (n && !n.gate && sub !== 'waiting') busy.push(rigOf(run.repo)?.name)
   }
-  if (busy >= MAX_BUSY)
-    fail(`${busy} runs are busy (FACTORY_MAX_RUNS=${MAX_BUSY}): finish, abort or rm one first`)
+  return busy
+}
+
+async function assertRoom(repo: string) {
+  const busy = await busyRigs()
+  const rig = rigOf(repo)
+  if (busy.length >= MAX_BUSY)
+    fail(`${busy.length} runs are busy (FACTORY_MAX_RUNS=${MAX_BUSY}): finish, abort or rm one first`)
+  if (room(rig, busy) <= 0)
+    fail(`rig ${rig!.name} has ${rig!.maxRuns} busy runs, its maxRuns: finish, abort or rm one first`)
+}
+
+/** a rig as `rig add` defines it, checked: its repo tracks beads, its factory loads, its sweeps exist */
+async function defineRig(name: string, path: string, factory: string, max?: string, sweeps?: string) {
+  if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
+  const repo = toplevel(path)
+  if (!hasBeads(repo)) fail(`${repo} has no .beads: run bd init there first`)
+  const def = await loadFactory(factorySource(factory, repo))
+  const rig: Rig = { name, repo, factory }
+  if (max !== undefined) {
+    if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
+    rig.maxRuns = Number(max)
+  }
+  if (sweeps !== undefined) {
+    rig.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
+    const unknown = rig.sweeps.filter(s => !SWEEPS.includes(s) || !def.nodes[s])
+    if (unknown.length)
+      fail(
+        `no sweep ${unknown.join(', ')} in ${def.name}: ${SWEEPS.filter(s => def.nodes[s]).join(', ') || 'none'}`,
+      )
+  }
+  return rig
 }
 
 async function start(factory: string | undefined, repo: string | undefined, goal: string) {
-  if (!factory || !repo || !goal) fail('usage: factory start <factory>[@station] <repo> <goal...>')
-  await assertRoom()
+  if (!factory || !repo || !goal) fail('usage: factory start <factory>[@station] <rig|repo> <goal...>')
+  const root = repoOf(repo!)
+  await assertRoom(root)
   // <factory>@<station> starts past the triage when the caller already knows the kind of work
   const [spec, at] = factory!.split(/@(?=[^@/]+$)/)
-  const root = resolve(repo!.replace(/^~(?=\/|$)/, homedir()))
   // the checkout's version answers the station question; the run pins the version its own commit holds
   const preview = await loadFactory(factorySource(spec!, root))
   if (at && !preview.nodes[at])
@@ -704,7 +765,7 @@ async function fork(id: string | undefined, station: string | undefined, note: s
   const def = await loadFactory(src.factory)
   if (!def.nodes[station ?? ''])
     fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
-  await assertRoom()
+  await assertRoom(src.repo)
   const saved = readJson<Saved>(join(runDir(src.id), 'state.json'))
   const bead = src.bead
     ? beads(src.repo, 'factory').create(
@@ -754,11 +815,13 @@ async function show(id: string | undefined) {
   }
 }
 
-/** each watched repo's work: what the factory will start, and what waits for a person to queue it */
-function backlog() {
-  return watched().map(w => {
+/** each rig's work: what the factory will start, and what waits for a person to queue it */
+async function backlog() {
+  const busy = await busyRigs()
+  return rigs().map(rig => {
+    const w = { ...rig, busy: busy.filter(b => b === rig.name).length }
     try {
-      const b = beads(w.repo, 'factory')
+      const b = beads(rig.repo, 'factory')
       const slim = (x: Bead) => ({
         id: x.id,
         title: x.title,
@@ -807,14 +870,15 @@ async function status(id: string | undefined) {
 const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
 
-  start <factory>[@station] <repo> <goal...|bead>   new run: herdr worktree off <repo>, first worker launched
-  watch [<repo> [factory]] | unwatch <repo>   a watched repo's ready beads labeled factory start as runs
-  init <repo> [template]             copy a factory into <repo>/.factory/ for the repo to own and improve
-  queue <repo> <bead> [station]      hand a bead to the factory (labels it factory)
+  start <factory>[@station] <rig|repo> <goal...|bead>   new run: herdr worktree off the repo, first worker launched
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] | rm <name>]   the town's rigs: repos whose
+                                     ready beads labeled factory start as runs, each with its own cap and sweeps
+  init <rig|repo> [template]         copy a factory into <repo>/.factory/ for the repo to own and improve
+  queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog               JSON for the manager's views
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
-  tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping watched repos' sweeps running
+  tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
@@ -824,8 +888,9 @@ const usage = `factory — herdr software factories on xstate
   rm <run>                           finished run: drop its worktree and state, keep its branch
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
-else the template in ${join(ROOT, 'factories')}. Each run pins its factory. State lives in ${HOME}.
-start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker.
+else the template in ${join(ROOT, 'factories')}. Each run pins its factory. State lives in ${HOME}, the town:
+its rigs are in rigs.json. start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
+or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
 if (import.meta.main)
@@ -850,15 +915,15 @@ if (import.meta.main)
         console.log(JSON.stringify(await show(args[0])))
         break
       case 'backlog':
-        console.log(JSON.stringify(backlog()))
+        console.log(JSON.stringify(await backlog()))
         break
       case 'queue': {
         const [repo, id, station] = args
-        if (!repo || !id) fail('usage: factory queue <repo> <bead> [station]')
-        const root = git(resolve(repo!.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
+        if (!repo || !id) fail('usage: factory queue <rig|repo> <bead> [station]')
+        const root = repoOf(repo!)
         beads(root, 'factory').queue(id!, station)
         console.log(
-          `queued ${id}${station ? ` at ${station}` : ''}: ${watched().some(w => w.repo === root) ? 'it starts at the next dispatch' : 'watch the repo for it to start'}`,
+          `queued ${id}${station ? ` at ${station}` : ''}: ${rigOf(root) ? 'it starts at the next dispatch' : 'make the repo a rig (factory rig add) for it to start'}`,
         )
         break
       }
@@ -941,8 +1006,8 @@ if (import.meta.main)
         break
       case 'init': {
         const [repo, name = 'lifecycle'] = args
-        if (!repo) fail('usage: factory init <repo> [template]')
-        const root = git(resolve(repo!.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
+        if (!repo) fail('usage: factory init <rig|repo> [template]')
+        const root = repoOf(repo!)
         const target = join(root, OWN, `${name}.ts`)
         const template = join(ROOT, 'factories', `${name}.ts`)
         if (existsSync(target)) fail(`${target} exists: it is the repo's own now, edit it there`)
@@ -965,28 +1030,45 @@ if (import.meta.main)
         if (unreachable.length) console.log(`only reached by @station or goto: ${unreachable.join(', ')}`)
         break
       }
-      case 'watch': {
-        const [repo, factory = 'lifecycle'] = args
-        if (!repo) {
-          for (const w of watched()) console.log(`${w.repo}  ${w.factory}`)
-          if (!watched().length) console.log('no repos watched: factory watch <repo> [factory]')
-          break
-        }
-        const root = git(resolve(repo.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
-        if (!hasBeads(root)) fail(`${root} has no .beads: run bd init there first`)
-        await loadFactory(factorySource(factory, root))
-        mkdirSync(HOME, { recursive: true })
-        writeJson(watchFile(), [...watched().filter(w => w.repo !== root), { repo: root, factory }])
-        console.log(`watching ${root}: its ready beads labeled factory start as ${factory} runs`)
-        break
-      }
-      case 'unwatch': {
-        const root = resolve((args[0] ?? '').replace(/^~(?=\/|$)/, homedir()))
-        writeJson(
-          watchFile(),
-          watched().filter(w => w.repo !== root),
-        )
-        console.log(`stopped watching ${root}`)
+      case 'rig': {
+        const opt = (flag: string) =>
+          args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
+        const [max, sweeps] = [opt('--max'), opt('--sweeps')]
+        const [sub = 'list', name, repo, factory = 'lifecycle'] = args
+        if (sub === 'add') {
+          if (!name || !repo)
+            fail('usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none]')
+          const rig = await defineRig(name!, repo!, factory, max, sweeps)
+          mkdirSync(HOME, { recursive: true })
+          // one rig per repo: redefining either replaces it
+          writeJson(rigsFile(), [...rigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
+          console.log(
+            `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}`,
+          )
+        } else if (sub === 'rm') {
+          if (!rigs().some(r => r.name === name))
+            fail(
+              `no rig "${name}" (rigs: ${
+                rigs()
+                  .map(r => r.name)
+                  .join(', ') || 'none'
+              })`,
+            )
+          writeJson(
+            rigsFile(),
+            rigs().filter(r => r.name !== name),
+          )
+          console.log(`removed rig ${name}: nothing new starts there; its runs carry on`)
+        } else if (sub === 'list') {
+          const busy = await busyRigs()
+          if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
+          for (const r of rigs()) {
+            const n = busy.filter(b => b === r.name).length
+            console.log(
+              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${(r.sweeps ?? SWEEPS).join(',') || 'none'}`,
+            )
+          }
+        } else fail(`unknown rig command "${sub}": add, rm or list`)
         break
       }
       case 'rm': {

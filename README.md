@@ -18,10 +18,11 @@ claude-smart --new --plugin-dir ~/repos/workspaces/claude-factory/mod
 In the manager session:
 
 ```
-/factory start lifecycle ~/repos/my-app Add a /health endpoint with tests
-/factory start lifecycle@monitor ~/repos/my-app watch production
-/factory start lifecycle@maintain ~/repos/my-app keep it maintained
-/factory start lifecycle@improve ~/repos/my-app keep improving it
+/factory rig add my-app ~/repos/my-app --max 3   # a rig: a repo the factory works
+/factory start lifecycle my-app Add a /health endpoint with tests
+/factory start lifecycle@monitor my-app watch production
+/factory start lifecycle@maintain my-app keep it maintained
+/factory start lifecycle@improve my-app keep improving it
 /factory                      # the board: runs, stations, workers, gates, manager mail
 /factory status <run>         # one run's full journal
 ```
@@ -40,9 +41,28 @@ quiet manager never stalls a run.
 
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats
-(a fresh session per visit, a durable identity in the run), the tick's nudges and session
-resumes are the Witness, the mod's timer is the daemon, and mail escalates from worker to
-manager to you.
+(a fresh session per visit, a durable identity in the run), each repo the factory works is
+a rig, the tick's nudges and session resumes are the Witness, the mod's timer is the daemon,
+and mail escalates from worker to manager to you.
+
+## Rigs
+
+A rig is a repo the factory works, by name. Its ready beads labeled `factory` start as runs,
+it keeps its sweeps running, and it has its own cap on busy runs under the town's
+`FACTORY_MAX_RUNS`. The town is `FACTORY_HOME`, and its `rigs.json` defines every rig:
+
+```sh
+factory rig add web ~/repos/web --max 4                     # all of lifecycle's sweeps
+factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor
+factory rig add docs ~/repos/docs review-loop --sweeps none
+factory rig                                                 # each rig, its busy runs and sweeps
+factory rig rm docs                                         # nothing new starts; its runs carry on
+```
+
+A rig's name stands for its repo in every command (`start lifecycle web ...`, `queue web
+fx-12`). The board tags each run with its rig and the backlog is grouped by rig, with its
+room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
+redefine a rig with `rig add`; there is one rig per repo.
 
 ## The lifecycle factory
 
@@ -59,7 +79,7 @@ manager to you.
 
 Sweeps never end: each pass files what it finds as runs of its own (`lifecycle@incident`,
 `@plan`, `@baseline`, `@characterize`), skipping duplicates. `factory loop` ticks with no
-console open and keeps one run of each sweep per watched repo: abort a sweep to stop it, `rm`
+console open and keeps one run of each of a rig's sweeps: abort a sweep to stop it, `rm`
 it to let the loop start it again. **approve** is a gate: nothing
 merges or deploys until you decide it, with the board's buttons or `/factory decide`.
 Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews security.
@@ -72,7 +92,7 @@ Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews 
 `factory init <repo>` copies the lifecycle template into `<repo>/.factory/lifecycle.ts`;
 commit it, and the repo owns its factory like any other code:
 
-- **Runs pin their factory.** `start lifecycle` (and `watch`) use the repo's own
+- **Runs pin their factory.** `start lifecycle` (and a rig's dispatch) use the repo's own
   `.factory/lifecycle.ts` as of the commit the run starts from, copied into the run, so no
   later edit, the run's own included, changes the graph under it. Without a repo copy, the
   template in `factories/` is used. `factory status <run>` says which version a run follows.
@@ -104,9 +124,9 @@ In a repo with `.beads/`, beads is the factory's task tracker:
   sweep's routine passes excepted), and workers' bd writes carry `factory/<run>/<station>`.
 - **The end of a run settles its bead**: shipped or otherwise finished closes it; a hold, an
   abort, or a run that ends with open tasks defers it, unassigned. Undefer it to hand it back.
-- **The backlog dispatches itself**: `factory watch <repo>` turns that repo's ready,
-  unassigned, top-level beads labeled `factory` into runs, every 30 s while there is room
-  under `FACTORY_MAX_RUNS`. A `station:<name>` label starts one at that station.
+- **The backlog dispatches itself**: every rig's ready, unassigned, top-level beads labeled
+  `factory` become runs, every 30 s while the rig and the town have room. A
+  `station:<name>` label starts one at that station.
 - **Sweeps file to the backlog**: incidents and security fixes labeled `factory` start on
   their own; everything else is filed unlabeled for you to prioritize by adding the label.
 - **Leases**: the run heartbeats its claim every 2 minutes, so a `bd reclaim` reaper never

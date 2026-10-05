@@ -77,7 +77,7 @@ export function patrol(
   ]
   const board = live.map(
     r =>
-      `- ${r.id} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : ''}: ${line(r.goal ?? '', 100)}`,
+      `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : ''}: ${line(r.goal ?? '', 100)}`,
   )
   const text = [
     '[factory] patrol',

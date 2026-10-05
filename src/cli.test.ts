@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, validate } from './machine'
-import { missingSweeps, ownCopy } from './cli'
+import { missingSweeps, ownCopy, room } from './cli'
 
 test("a repo's own copy loads without this project and says how it is changed", async () => {
   const copy = ownCopy(readFileSync(join(import.meta.dir, '../factories/lifecycle.ts'), 'utf8'), 'lifecycle')
@@ -27,6 +27,17 @@ test('the loop starts only the sweeps a repo has no run for', async () => {
     { repo: '/b', goal: 'sweep: maintain' },
     { repo: '/a', goal: 'add a feature' },
   ]
-  expect(missingSweeps(def, '/a', runs)).toEqual(['maintain', 'improve'])
-  expect(missingSweeps({ ...def, nodes: { triage: def.nodes.triage } }, '/a', [])).toEqual([])
+  expect(missingSweeps(def, { repo: '/a' }, runs)).toEqual(['maintain', 'improve'])
+  expect(missingSweeps(def, { repo: '/a', sweeps: ['maintain'] }, runs)).toEqual(['maintain'])
+  expect(missingSweeps(def, { repo: '/a', sweeps: [] }, runs)).toEqual([])
+  expect(missingSweeps({ ...def, nodes: { triage: def.nodes.triage } }, { repo: '/a' }, [])).toEqual([])
+})
+
+test("a rig has room under its own cap and the town's", () => {
+  const busy = ['web', 'web', 'api', undefined]
+  expect(room({ name: 'web', maxRuns: 3 }, busy, 8)).toBe(1)
+  expect(room({ name: 'web', maxRuns: 2 }, busy, 8)).toBe(0)
+  expect(room({ name: 'api' }, busy, 8)).toBe(4) // no cap of its own: the town's
+  expect(room({ name: 'api', maxRuns: 5 }, busy, 5)).toBe(1) // the town fills first
+  expect(room(undefined, busy, 8)).toBe(4) // a run outside any rig
 })

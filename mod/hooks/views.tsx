@@ -184,6 +184,7 @@ function card(p: Base, r: FactoryRun, draft: FactoryDraft) {
     <Box key={`card-${r.id}`} flexDirection="column" borderStyle="round" borderColor={s.color} paddingX={1}>
       <Box justifyContent="space-between">
         <Text wrap="truncate-end">
+          <Text color="magenta">{r.rig ? `${r.rig}  ` : ''}</Text>
           <Text bold>{r.id}</Text>
           <Text color="cyan">{r.bead ? `  ${r.bead}` : ''}</Text>
         </Text>
@@ -233,7 +234,7 @@ export function boardView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
     return (
       <Box key="board" flexDirection="column">
         <Text dimColor>No runs yet.</Text>
-        <Text dimColor>5 starts one; 3 shows the backlog a watched repo feeds.</Text>
+        <Text dimColor>5 starts one; 3 shows the backlog each rig feeds.</Text>
       </Box>
     )
   return (
@@ -444,15 +445,19 @@ export function backlogView(p: Base, backlog: FactoryBacklog) {
     return (
       <Box key="backlog" flexDirection="column">
         <Text dimColor>
-          No repos watched. `factory watch {'<repo>'}` turns its beads labeled factory into runs.
+          No rigs. `factory rig add {'<name> <repo>'}` turns a repo's beads labeled factory into runs.
         </Text>
       </Box>
     )
   return (
     <Box key="backlog" flexDirection="column">
       {backlog.map(r => (
-        <Box key={`repo-${r.repo}`} flexDirection="column" marginBottom={1}>
-          {rule(p, r.repo.split('/').at(-1)!, shortPath(r.factory))}
+        <Box key={`rig-${r.name}`} flexDirection="column" marginBottom={1}>
+          {rule(
+            p,
+            r.name,
+            `${shortPath(r.repo)} · ${shortPath(r.factory)} · busy ${r.busy}${r.maxRuns ? `/${r.maxRuns}` : ''}`,
+          )}
           {r.error && <Text color="red">! {r.error}</Text>}
           <Text color="green">will start ({String(r.queued.length)})</Text>
           {r.queued.length === 0 && <Text dimColor> nothing queued</Text>}
@@ -503,7 +508,7 @@ export function newView(p: Base, draft: FactoryDraft, cwd: string) {
     <Box key="new" flexDirection="column" gap={1}>
       <Input
         key="new-repo"
-        label="repo"
+        label="rig or repo"
         placeholder={cwd}
         value={draft.repo}
         onInput={v => p.act.draft({ repo: v })}
