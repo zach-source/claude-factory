@@ -26,6 +26,24 @@ In the manager session:
 /factory status <run>         # one run's full journal
 ```
 
+## The manager drives
+
+You talk to the manager session; it runs the factory. With `autopilot` on (the default)
+the mod wakes the manager model with a `[factory] patrol` whenever there is mail for it (a
+worker's question, a stuck station, a gate, a finished run), when a worker is blocked on a
+prompt, and every 10 minutes while workers run. A patrol answers mail, unsticks runs
+(`retry`, `goto`, `fork`, `abort`), pokes workers (`factory poke <run> [steer]`), takes the
+next work from the backlog when there is room, brings gates to you, and ends with a report
+of at most three lines. Underneath, the runtime stays mechanical: it ticks every 5 s,
+launches and resumes workers, nudges an idle one twice and retries with backoff, so a
+quiet manager never stalls a run.
+
+The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
+Mayor (your one point of contact, which hands out the work), station workers are polecats
+(a fresh session per visit, a durable identity in the run), the tick's nudges and session
+resumes are the Witness, the mod's timer is the daemon, and mail escalates from worker to
+manager to you.
+
 ## The lifecycle factory
 
 [`factories/lifecycle.ts`](factories/lifecycle.ts) is the whole software lifecycle in one graph:

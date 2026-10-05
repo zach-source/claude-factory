@@ -781,6 +781,7 @@ const usage = `factory — herdr software factories on xstate
   report <run> <seq> <outcome> <summary...>   worker: finish its station
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
+  poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
@@ -868,6 +869,18 @@ if (import.meta.main)
           text: text.join(' '),
         })
         console.log(`mailed ${to}`)
+        break
+      }
+      case 'poke': {
+        // the manager's nudge: lands in the current worker's session on the next tick
+        const [id, ...text] = args
+        const { run, value, c } = current(id)
+        const [node, sub] = where(value)
+        if (sub !== 'working' || (await loadFactory(run.factory)).nodes[node]?.gate)
+          fail(`${run.id} has no worker to poke: it is at ${node}${sub ? `/${sub}` : ''}`)
+        const nudge = `[factory] The manager is checking in. When you are finished run: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"; if something blocks you, mail the manager what it is.`
+        post(run.id, { type: 'MAIL', from: 'manager', to: node, text: text.join(' ') || nudge })
+        console.log(`poked ${node} of ${run.id}`)
         break
       }
       case 'retry':

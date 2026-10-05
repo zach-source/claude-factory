@@ -1,5 +1,5 @@
 // The manager session: ticks every factory run, draws the console (a pane) and the band above
-// the prompt, and hands manager mail to this session's model. All run state lives with the
+// the prompt, and wakes this session's model to patrol the factory. All run state lives with the
 // factory CLI (../bin/factory); this module drives it and keeps only what the console shows.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
@@ -26,9 +26,12 @@ import {
   type Actions,
   type UI,
 } from './views'
+import { patrol } from './view'
 
 const PANE = 'factory'
 const TICK_MS = 5000
+// ponytail: a heartbeat costs one manager turn per interval while workers run; make it a setting if that hurts
+const PATROL_MS = 10 * 60_000
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
 const view = atom({ plugin: 'factory', key: 'view' } as const, 'board' as FactoryView)
 const selected = atom({ plugin: 'factory', key: 'selected' } as const, null as string | null)
@@ -51,16 +54,23 @@ const draft = atom(
 const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'new'])
 
 const manual = (cli: string) => `## Software factory manager
-This session is the manager of herdr software factories. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. Messages starting "[factory]" come from that runtime: a stuck station, a worker's question, a gate awaiting a decision, a finished run.
-Quarterback with the factory CLI through Bash:
+You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
+A message starting "[factory] patrol" is your loop. It lists what is new and the board; work through it in this order:
+1. Mail: answer a worker's question yourself (\`mail\`) when the goal or the journal settles it; otherwise ask the person and name the run that waits.
+2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog).
+3. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
+4. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
+5. Finished runs and free room: say what shipped. With room for more runs, read \`${cli} backlog\` and hand the factory what is worth doing next (\`queue\` or \`start\`); leave what needs the person's priority to them, and list it.
+6. Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
+The factory CLI, through Bash:
 - \`${cli} status [run]\`: every run, or one run's full journal
 - \`${cli} mail <run> <station> "<text>"\`: answer or steer a worker (delivered into its session)
+- \`${cli} poke <run> ["<steer>"]\`: nudge the worker at the run's current station; with no text it is told to report or say what blocks it
 - \`${cli} retry <run>\` (a stuck station), \`${cli} goto <run> <station|done>\` (also skips a timed wait), \`${cli} abort <run>\`, \`${cli} fork <run> <station> "<note>"\`, \`${cli} rm <run>\` (finished runs)
 - \`${cli} start <factory>[@station] <repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}; lifecycle covers build, release, incidents, optimization, refactoring and the monitor, maintain and improve sweeps
 - \`herdr pane read <pane> --source recent --lines 80\`: see what a worker is doing
-In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. The backlog is that repo's beads: \`${cli} watch <repo>\` makes its ready beads labeled \`factory\` start as runs (\`station:<name>\` starts one at that station); sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred. \`${cli} start lifecycle <repo> <bead-id>\` runs one bead now.
-A repo owns its factory once \`${cli} init <repo>\` copies the template to \`.factory/lifecycle.ts\` and it is committed: each run follows the version its starting commit holds, the improve sweep and postmortems propose changes to it, and those ship through review and the approve gate like any change. \`${cli} check <file>\` validates one. When the person wants the factory itself changed, file that as work on \`.factory/\` rather than editing it in this session.
-Gates are the person's decisions, never yours: when a gate awaits, show them the question and the evidence, and run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog). Answer worker questions yourself when the goal settles them; ask the person when it does not. Never approve a worker's permission prompt for them.`
+In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. The backlog is that repo's beads: \`${cli} watch <repo>\` makes its ready beads labeled \`factory\` start as runs while there is room (\`${cli} queue <repo> <bead> [station]\` labels one; \`station:<name>\` starts it at that station); sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred. \`${cli} start lifecycle <repo> <bead-id>\` runs one bead now.
+A repo owns its factory once \`${cli} init <repo>\` copies the template to \`.factory/lifecycle.ts\` and it is committed: each run follows the version its starting commit holds, the improve sweep and postmortems propose changes to it, and those ship through review and the approve gate like any change. \`${cli} check <file>\` validates one. When the person wants the factory itself changed, file that as work on \`.factory/\` rather than editing it in this session.`
 
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
 const rt = {
@@ -70,6 +80,12 @@ const rt = {
   isAutopilot: true,
   cwd: '',
   agents: new Map<string, string | null | undefined>(),
+  /** manager mail no patrol has carried yet */
+  unsent: [] as FactoryMail[],
+  /** blocked workers a patrol already reported */
+  seen: new Set<string>(),
+  patrolAt: 0,
+  isPatrolling: false,
 }
 
 async function factory($: EngineInterface, args: string[]) {
@@ -107,18 +123,35 @@ async function tick($: EngineInterface) {
       rt.agents.set(r.id, r.agent)
     }
 
-    if (res.manager.length) {
-      const lines = res.manager.map(m => `- ${m.run} / ${m.from}: ${m.text}`)
-      $.ui.toast(`factory: ${res.manager.length} message(s) for the manager`)
-      // not awaited: it resolves only once the session is idle and the turn starts
-      if (rt.isAutopilot)
-        void $.prompt.submit({ text: `[factory] mail for the manager:\n${lines.join('\n')}` }).catch(() => {})
+    if (res.manager.length) $.ui.toast(`factory: ${res.manager.length} message(s) for the manager`)
+    if (rt.isAutopilot) {
+      rt.unsent.push(...res.manager)
+      await patrolNow($, res.runs)
     }
   } catch (err) {
     $.ui.status(String(err).slice(0, 80))
   } finally {
     rt.isTicking = false
   }
+}
+
+/** wake this session's model to patrol, one patrol at a time */
+async function patrolNow($: EngineInterface, runs: FactoryRun[]) {
+  if (rt.isPatrolling) return
+  const now = await $.clock.now()
+  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS)
+  if (!due) return
+  rt.unsent = []
+  for (const key of due.keys) rt.seen.add(key)
+  rt.patrolAt = now
+  rt.isPatrolling = true
+  // not awaited: it resolves only once the session is idle and the patrol's turn starts
+  void $.prompt
+    .submit({ text: due.text })
+    .catch(() => {})
+    .finally(() => {
+      rt.isPatrolling = false
+    })
 }
 
 async function ensureTicking($: EngineInterface) {
