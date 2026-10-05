@@ -70,7 +70,7 @@ factory rig rm docs                                         # nothing new starts
 ```
 
 A rig's name stands for its repo in every command (`start lifecycle web ...`, `queue web
-fx-12`). The board tags each run with its rig and the backlog is grouped by rig, with its
+fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). The board tags each run with its rig and the backlog is grouped by rig, with its
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
 redefine a rig with `rig add`; there is one rig per repo.
 

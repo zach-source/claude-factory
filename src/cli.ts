@@ -182,7 +182,15 @@ function freshBase(repo: string) {
   return isBehind ? git(repo, 'rev-parse', ref) : head
 }
 const loadFactory = async (file: string): Promise<Factory> => validate((await import(file)).default)
-const runIds = () => (existsSync(join(HOME, 'runs')) ? readdirSync(join(HOME, 'runs')).sort() : [])
+// a run moved to another factory leaves a link behind, so its workers' reports still reach it:
+// only the factory holding the run's directory ticks and lists it
+const runIds = () =>
+  existsSync(join(HOME, 'runs'))
+    ? readdirSync(join(HOME, 'runs'), { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name)
+        .sort()
+    : []
 function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
   return existsSync(file) ? readJson(file) : fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
@@ -668,8 +676,18 @@ const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
 const expand = (path: string) => resolve(path.replace(/^~(?=\/|$)/, homedir()))
 const toplevel = (path: string) => git(expand(path), 'rev-parse', '--show-toplevel')
-/** a rig's name stands for its repo wherever a command takes one */
-const repoOf = (arg: string) => rigs().find(r => r.name === arg)?.repo ?? toplevel(arg)
+/** a rig's name stands for its repo wherever a command takes one; a path says so (`/`, `.` or `~`) */
+const repoOf = (arg: string) =>
+  rigs().find(r => r.name === arg)?.repo ??
+  (/^[.~]|\//.test(arg)
+    ? toplevel(arg)
+    : fail(
+        `no rig "${arg}" in the factory ${HOME} (rigs: ${
+          rigs()
+            .map(r => r.name)
+            .join(', ') || 'none'
+        })`,
+      ))
 
 /** how many more runs may hold a worker in `rig`, given the rigs of the runs that hold one now */
 export const room = (
