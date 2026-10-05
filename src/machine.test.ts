@@ -33,10 +33,13 @@ test('loop graph routes outcomes and carries summaries as mail', () => {
   expect(now().context.seq).toBe(1)
 
   send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 1 })
-  let s = send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'built', at: 2 })
+  send({ type: 'SESSION', seq: 1, session: 'abc', at: 1 })
+  let s = send({ type: 'SPAWNED', seq: 1, pane: 'w1:p2', isResume: true, at: 1 })
+  expect(s.context).toMatchObject({ pane: 'w1:p2', session: 'abc', resumes: 1, seq: 1 })
+  s = send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'built', at: 2 })
   expect(where(s.value)).toEqual(['review', 'working'])
   expect(s.context.mail.review).toEqual([{ from: 'implement', text: 'built', at: 2 }])
-  expect(s.context.pane).toBeNull()
+  expect(s.context).toMatchObject({ pane: null, session: null, resumes: 0 })
 
   s = send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'fix the tests', at: 3 })
   expect(where(s.value)).toEqual(['implement', 'working'])

@@ -2,15 +2,18 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import {
-  appendFileSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
@@ -42,6 +45,9 @@ type Run = {
   ws: string
   worktree: string
   branch: string
+  /** the commit the run branched from: what its stations committed is base..HEAD */
+  base?: string
+  forkedFrom?: string
 }
 type Saved = { cursor: number; snapshot: Snapshot<unknown> & { value: unknown; context: Ctx } }
 type Input = Ev extends infer E ? (E extends Ev ? Omit<E, 'at'> : never) : never
@@ -62,8 +68,18 @@ export type Row = {
 
 const runDir = (id: string) => join(HOME, 'runs', id)
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
+/** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
+function durable(path: string, text: string, flag: 'w' | 'a') {
+  const fd = openSync(path, flag)
+  try {
+    writeSync(fd, text)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+}
 function writeJson(path: string, value: unknown) {
-  writeFileSync(`${path}.tmp`, JSON.stringify(value, null, 2))
+  durable(`${path}.tmp`, JSON.stringify(value, null, 2), 'w')
   renameSync(`${path}.tmp`, path) // atomic: a reader never sees half a snapshot
 }
 const fail = (msg: string): never => {
@@ -77,13 +93,22 @@ function herdr(...args: string[]) {
   return out.startsWith('{') ? JSON.parse(out).result : out
 }
 
-/** the pane's agent status, or null once the pane is gone */
-function agentStatus(pane: string): string | null {
+/** the pane's agent status and Claude session id, or null once the pane is gone */
+function paneInfo(pane: string): { status: string; session?: string } | null {
   const p = Bun.spawnSync(['herdr', 'pane', 'get', pane])
   const out = JSON.parse(p.stdout.toString() || '{}')
   if (out.error?.code === 'pane_not_found') return null
   if (p.exitCode !== 0) fail(`herdr pane get: ${out.error?.message ?? p.stderr.toString()}`)
-  return out.result.pane.agent_status
+  const info = out.result.pane
+  return {
+    status: info.agent_status,
+    session: info.agent === 'claude' ? info.agent_session?.value : undefined,
+  }
+}
+
+function git(cwd: string, ...args: string[]) {
+  const p = Bun.spawnSync(['git', '-C', cwd, ...args])
+  return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
 }
 
 const factoryPath = (arg: string) => (existsSync(arg) ? resolve(arg) : join(ROOT, 'factories', `${arg}.ts`))
@@ -99,11 +124,13 @@ const inboxLines = (id: string) => {
   return existsSync(file) ? readFileSync(file, 'utf8').split('\n').slice(0, -1) : []
 }
 const post = (id: string, e: Input) =>
-  appendFileSync(join(runDir(id), 'inbox.jsonl'), JSON.stringify({ ...e, at: Date.now() }) + '\n')
+  durable(join(runDir(id), 'inbox.jsonl'), JSON.stringify({ ...e, at: Date.now() }) + '\n', 'a')
 
 function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
+  // a fresh worker is told what earlier ones already committed, so it builds on it rather than redoing it
+  const committed = run.base ? git(run.worktree, 'log', '--oneline', '-n', '30', `${run.base}..HEAD`) : ''
   return [
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
@@ -114,6 +141,9 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     '## Your task',
     n.prompt.trim(),
     ...(lastFail ? ['', '## The previous attempt failed', lastFail.summary] : []),
+    ...(committed
+      ? ['', '## Already committed on this branch (build on it, do not redo it)', committed]
+      : []),
     ...(inbox.length ? ['', '## Inbox', ...inbox.map(m => `- from ${m.from}: ${m.text}`)] : []),
     '',
     '## Reporting (required)',
@@ -126,9 +156,14 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   ].join('\n')
 }
 
-function spawn(run: Run, def: Factory, node: string, c: Ctx) {
-  const prompt = join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
-  writeFileSync(prompt, brief(run, def, node, c, c.mail[node] ?? []))
+const resumeNote = (run: Run, node: string, c: Ctx) =>
+  `[factory] Your pane closed and this session was resumed. Carry on as the "${node}" station where you left off: ` +
+  `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
+
+/** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
+function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
+  const prompt = join(runDir(run.id), 'prompts', `${c.seq}-${node}${session ? '-resume' : ''}.md`)
+  writeFileSync(prompt, session ? resumeNote(run, node, c) : brief(run, def, node, c, c.mail[node] ?? []))
   const tab = () =>
     herdr(
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
@@ -155,7 +190,10 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  herdr('pane', 'run', pane, `${def.nodes[node]!.agent ?? def.agent ?? AGENT} "$(cat '${prompt}')"`)
+  const agent = def.nodes[node]!.agent ?? def.agent ?? AGENT
+  // ponytail: resume assumes a claude-style CLI; only a pane herdr saw running claude ever has a session
+  const cmd = session ? `${agent.replace(/\s--new\b/, '')} --resume ${session}` : agent
+  herdr('pane', 'run', pane, `${cmd} "$(cat '${prompt}')"`)
   return pane
 }
 
@@ -168,7 +206,14 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
   }
-  const status = agentStatus(c.pane)
+  const info = paneInfo(c.pane)
+  if (info?.session && info.session !== c.session)
+    send({ type: 'SESSION', seq: c.seq, session: info.session })
+  if (info === null && c.session && c.resumes < 1) {
+    send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session), isResume: true })
+    return 'resuming'
+  }
+  const status = info?.status ?? null
   const timeoutMin = def.nodes[node]!.timeoutMin ?? 60
   const inbox = unread(c, node)
   if (status === null) send({ type: 'FAIL', seq: c.seq, reason: `worker pane ${c.pane} was closed` })
@@ -232,7 +277,7 @@ async function tickRun(run: Run, now: number) {
   const [node, sub] = where(actor.getSnapshot().value)
   try {
     if (sub === 'working') agent = reconcile(run, def, ctx(), node, send, now)
-    else if (ctx().pane) agent = agentStatus(ctx().pane!)
+    else if (ctx().pane) agent = paneInfo(ctx().pane!)?.status ?? null
   } catch (err) {
     error = (err as Error).message
   }
@@ -272,34 +317,65 @@ async function tick() {
   }
 }
 
-async function start(factory: string | undefined, repo: string | undefined, goal: string) {
-  if (!factory || !repo || !goal) fail('usage: factory start <factory> <repo> <goal...>')
-  const file = factoryPath(factory!)
-  const def = await loadFactory(file)
-  const root = resolve(repo!.replace(/^~(?=\/|$)/, homedir()))
+/** a run is a branch + herdr worktree + snapshot; a fork starts from another run's branch and snapshot */
+function createRun(
+  def: Factory,
+  file: string,
+  repo: string,
+  goal: string,
+  from?: { run: Run; saved: Saved },
+) {
   const id = `${def.name}-${Date.now().toString(36)}`
   const branch = `factory/${id}`
+  const base = from?.run.base ?? git(repo, 'rev-parse', 'HEAD')
   const created = herdr(
-    ...['worktree', 'create', '--cwd', root, '--branch', branch],
-    ...['--label', `${basename(root)}/${id}`, '--no-focus', '--json'],
+    ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? base],
+    ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
   )
   const run: Run = {
     id,
     factory: file,
-    repo: root,
+    repo,
     goal,
     branch,
+    base,
     ws: created.workspace.workspace_id,
     worktree: created.worktree.path,
+    ...(from && { forkedFrom: from.run.id }),
   }
+  // the source's worker stays the source's: the fork launches its own
+  const snapshot = from
+    ? {
+        ...from.saved.snapshot,
+        context: { ...from.saved.snapshot.context, pane: null, session: null, resumes: 0 },
+      }
+    : createActor(compile(def)).getPersistedSnapshot()
   mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
   writeJson(join(runDir(id), 'run.json'), run)
-  writeJson(join(runDir(id), 'state.json'), {
-    cursor: 0,
-    snapshot: createActor(compile(def)).getPersistedSnapshot(),
-  })
+  writeJson(join(runDir(id), 'state.json'), { cursor: 0, snapshot })
+  return run
+}
+
+async function start(factory: string | undefined, repo: string | undefined, goal: string) {
+  if (!factory || !repo || !goal) fail('usage: factory start <factory> <repo> <goal...>')
+  const file = factoryPath(factory!)
+  const run = createRun(await loadFactory(file), file, resolve(repo!.replace(/^~(?=\/|$)/, homedir())), goal)
   await tick() // launches the first worker now rather than at the next tick
-  console.log(`started ${id} in ${run.worktree} (herdr workspace ${run.ws})`)
+  console.log(`started ${run.id} in ${run.worktree} (herdr workspace ${run.ws})`)
+}
+
+async function fork(id: string | undefined, station: string | undefined, note: string) {
+  const { run: src, value } = current(id)
+  const def = await loadFactory(src.factory)
+  if (!def.nodes[station ?? ''])
+    fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
+  const saved = readJson<Saved>(join(runDir(src.id), 'state.json'))
+  const run = createRun(def, src.factory, src.repo, src.goal, { run: src, saved })
+  const [node, sub] = where(value)
+  if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station! })
+  if (note) post(run.id, { type: 'MAIL', from: 'manager', to: station!, text: note })
+  await tick()
+  console.log(`forked ${src.id} at ${station} into ${run.id}: branch ${run.branch} from ${src.branch}`)
 }
 
 function current(id: string | undefined) {
@@ -312,7 +388,13 @@ async function status(id: string | undefined) {
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
   for (const runId of id ? [id] : runIds()) {
     const { run, value, c } = current(runId)
-    const r = row(run, await loadFactory(run.factory), value, c, c.pane ? agentStatus(c.pane) : undefined)
+    const r = row(
+      run,
+      await loadFactory(run.factory),
+      value,
+      c,
+      c.pane ? paneInfo(c.pane)?.status : undefined,
+    )
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
     console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     console.log(`  goal: ${r.goal}`)
@@ -333,6 +415,7 @@ const usage = `factory — herdr software factories on xstate
   report <run> <seq> <outcome> <summary...>   worker: finish its station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
+  fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
 
 <factory> is a path or a name under ${join(ROOT, 'factories')}; state lives in ${HOME}.`
@@ -341,6 +424,9 @@ try {
   switch (cmd) {
     case 'start':
       await start(args[0], args[1], args.slice(2).join(' '))
+      break
+    case 'fork':
+      await fork(args[0], args[1], args.slice(2).join(' '))
       break
     case 'tick':
       console.log(JSON.stringify(await tick()))

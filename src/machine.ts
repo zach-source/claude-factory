@@ -35,6 +35,9 @@ export type Ctx = {
   seq: number
   attempt: number
   pane: string | null
+  /** the worker's own Claude session, so a lost pane resumes the conversation instead of restarting it */
+  session: string | null
+  resumes: number
   startedAt: number
   nudgedAt: number
   nudges: number
@@ -53,7 +56,8 @@ type At = { at: number }
 export type Ev = At &
   (
     | { type: 'TICK' }
-    | { type: 'SPAWNED'; seq: number; pane: string }
+    | { type: 'SPAWNED'; seq: number; pane: string; isResume?: boolean }
+    | { type: 'SESSION'; seq: number; session: string }
     | { type: 'NUDGED'; seq: number }
     | { type: 'DONE'; seq: number; outcome: string; summary: string }
     | { type: 'FAIL'; seq: number; reason: string }
@@ -123,6 +127,8 @@ export function compile(def: Factory) {
           entry: assign(({ context }) => ({
             seq: context.seq + 1,
             pane: null,
+            session: null,
+            resumes: 0,
             startedAt: 0,
             nudgedAt: 0,
             nudges: 0,
@@ -132,8 +138,13 @@ export function compile(def: Factory) {
           on: {
             SPAWNED: {
               guard: isCurrent,
-              actions: assign(({ event }) => ({ pane: event.pane, startedAt: event.at })),
+              actions: assign(({ context, event }) => ({
+                pane: event.pane,
+                startedAt: event.at,
+                resumes: context.resumes + (event.isResume ? 1 : 0),
+              })),
             },
+            SESSION: { guard: isCurrent, actions: assign(({ event }) => ({ session: event.session })) },
             NUDGED: {
               guard: isCurrent,
               actions: assign(({ context, event }) => ({ nudges: context.nudges + 1, nudgedAt: event.at })),
@@ -210,6 +221,8 @@ export function compile(def: Factory) {
       seq: 0,
       attempt: 1,
       pane: null,
+      session: null,
+      resumes: 0,
       startedAt: 0,
       nudgedAt: 0,
       nudges: 0,
