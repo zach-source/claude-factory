@@ -1,15 +1,54 @@
-// The manager session: ticks every factory run, draws the board, and hands
-// manager mail to this session's model. All state lives with the factory CLI
-// (../bin/factory); this module only drives and shows it.
+// The manager session: ticks every factory run, draws the console (a pane) and the band above
+// the prompt, and hands manager mail to this session's model. All run state lives with the
+// factory CLI (../bin/factory); this module drives it and keeps only what the console shows.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { FactoryBoard, FactoryMail, FactoryRun } from '../types'
+import type {
+  FactoryBacklog,
+  FactoryBoard,
+  FactoryDetail,
+  FactoryDraft,
+  FactoryMail,
+  FactoryRun,
+  FactoryView,
+} from '../types'
+import {
+  backlogView,
+  band,
+  boardView,
+  footer,
+  header,
+  isLive,
+  mailView,
+  newView,
+  runView,
+  type Actions,
+  type UI,
+} from './views'
 
 const PANE = 'factory'
 const TICK_MS = 5000
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
-const isLive = (r: FactoryRun) => r.node !== undefined && r.node !== 'done' && r.node !== 'aborted'
+const view = atom({ plugin: 'factory', key: 'view' } as const, 'board' as FactoryView)
+const selected = atom({ plugin: 'factory', key: 'selected' } as const, null as string | null)
+const detail = atom({ plugin: 'factory', key: 'detail' } as const, null as FactoryDetail | null)
+const peek = atom({ plugin: 'factory', key: 'peek' } as const, '')
+const backlog = atom({ plugin: 'factory', key: 'backlog' } as const, [] as FactoryBacklog)
+/** runs holding a worker, one sample a tick: the header's sparkline */
+const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
+const draft = atom(
+  { plugin: 'factory', key: 'draft' } as const,
+  {
+    repo: '',
+    factory: 'lifecycle',
+    goal: '',
+    mail: '',
+    target: '',
+    notes: {},
+  } as FactoryDraft,
+)
+const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'new'])
 
 const manual = (cli: string) => `## Software factory manager
 This session is the manager of herdr software factories. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. Messages starting "[factory]" come from that runtime: a stuck station, a worker's question, a gate awaiting a decision, a finished run.
@@ -29,6 +68,7 @@ const rt = {
   timer: undefined as { cancel: () => void } | undefined,
   isTicking: false,
   isAutopilot: true,
+  cwd: '',
   agents: new Map<string, string | null | undefined>(),
 }
 
@@ -42,7 +82,7 @@ async function tick($: EngineInterface) {
   rt.isTicking = true
   try {
     const { isOk, out } = await factory($, ['tick'])
-    if (!isOk) return $.ui.status(`factory: ${out.split('\n')[0]?.slice(0, 80)}`)
+    if (!isOk) return $.ui.status(out.split('\n')[0]?.slice(0, 80))
     const res = JSON.parse(out) as {
       busy?: true
       runs: FactoryRun[]
@@ -50,13 +90,16 @@ async function tick($: EngineInterface) {
       started?: string[]
     }
     if (res.busy) return
-    await update($, board, b => ({ runs: res.runs, mail: [...b.mail, ...res.manager].slice(-20) }))
-
+    await update($, board, b => ({ runs: res.runs, mail: [...b.mail, ...res.manager].slice(-50) }))
     const live = res.runs.filter(isLive)
+    const busy = live.filter(r => !r.gate && r.sub !== 'waiting').length
+    await update($, history, h => [...h, busy].slice(-120))
+    await refresh($)
+
     const stuck = live.filter(r => r.sub === 'stuck').length
     const gates = live.filter(r => r.gate).length
     const notes = [stuck && `${stuck} stuck`, gates && `${gates} awaiting you`].filter(Boolean)
-    $.ui.status(live.length ? `factory: ${[`${live.length} running`, ...notes].join(', ')}` : undefined)
+    $.ui.status(live.length ? [`${live.length} running`, ...notes].join(', ') : undefined)
     if (res.started?.length) $.ui.toast(`factory: started from beads ${res.started.join(', ')}`)
     for (const r of res.runs) {
       if (r.agent === 'blocked' && rt.agents.get(r.id) !== 'blocked')
@@ -72,7 +115,7 @@ async function tick($: EngineInterface) {
         void $.prompt.submit({ text: `[factory] mail for the manager:\n${lines.join('\n')}` }).catch(() => {})
     }
   } catch (err) {
-    $.ui.status(`factory: ${String(err).slice(0, 80)}`)
+    $.ui.status(String(err).slice(0, 80))
   } finally {
     rt.isTicking = false
   }
@@ -86,16 +129,83 @@ async function ensureTicking($: EngineInterface) {
   void tick($)
 }
 
-async function act($: EngineInterface, ...args: string[]) {
+/** what the open view needs beyond the board: a run's whole record and its worker's screen, or the backlog */
+async function refresh($: EngineInterface) {
+  const shown = await read($, view)
+  if (shown === 'run') {
+    const id = await read($, selected)
+    if (!id) return
+    const { isOk, out } = await factory($, ['show', id])
+    if (!isOk) return
+    const d = JSON.parse(out) as FactoryDetail
+    await update($, detail, () => d)
+    const tail = d.pane
+      ? await $.process
+          .run(['herdr', 'pane', 'read', d.pane, '--source', 'recent-unwrapped', '--lines', '10'])
+          .catch(() => undefined)
+      : undefined
+    await update($, peek, () => (tail?.exitCode === 0 ? tail.stdout.trimEnd() : ''))
+  } else if (shown === 'backlog') {
+    const { isOk, out } = await factory($, ['backlog'])
+    if (isOk) await update($, backlog, () => JSON.parse(out) as FactoryBacklog)
+  }
+}
+
+async function act($: EngineInterface, args: string[]) {
   const { out } = await factory($, args)
-  $.ui.toast(out || `${args.join(' ')}: queued`)
+  $.ui.toast(out.split('\n').at(-1) || `${args.join(' ')}: queued`)
   await tick($)
+}
+
+async function show($: EngineInterface, next: FactoryView, run?: string) {
+  if (run && run !== (await read($, selected))) {
+    await update($, selected, () => run)
+    await update($, detail, () => null)
+    await update($, peek, () => '')
+    await update($, draft, d => ({ ...d, target: '', mail: '' }))
+  }
+  await update($, view, () => next)
+  await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40 })
+  await refresh($)
+}
+
+/** a gate answered with the note the person typed for it, which then clears */
+async function decide($: EngineInterface, run: string, outcome: string) {
+  const note = (await read($, draft)).notes[run] ?? ''
+  await act($, ['decide', run, outcome, ...(note ? [note] : [])])
+  await update($, draft, d => ({ ...d, notes: { ...d.notes, [run]: '' } }))
+}
+
+async function startRun($: EngineInterface) {
+  const d = await read($, draft)
+  if (!d.goal.trim()) return $.ui.toast('factory: write a goal first')
+  await act($, ['start', d.factory.trim() || 'lifecycle', d.repo.trim() || rt.cwd, d.goal.trim()])
+  await update($, draft, x => ({ ...x, goal: '' }))
+  await show($, 'board')
+}
+
+/** herdr focuses the worker's pane: the person takes over that terminal */
+async function jump($: EngineInterface, pane: string) {
+  const r = await $.process.run(['herdr', 'agent', 'focus', pane]).catch(() => undefined)
+  if (r?.exitCode !== 0) $.ui.toast(`factory: could not focus ${pane}`)
+}
+
+function actions($: EngineInterface): Actions {
+  return {
+    cli: (...args) => void act($, args),
+    show: (next, run) => void show($, next, run),
+    draft: patch => void update($, draft, d => ({ ...d, ...patch })),
+    decide: (run, outcome) => void decide($, run, outcome),
+    start: () => void startRun($),
+    jump: pane => void jump($, pane),
+  }
 }
 
 export const register: Register = (on, options) => {
   rt.isAutopilot = options.autopilot !== false
 
   on('session.start', async ($, e, next) => {
+    rt.cwd = e.cwd
     await $.command.register({
       name: 'factory',
       description:
@@ -109,9 +219,10 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'factory' }, async ($, e) => {
     await ensureTicking($) // a hot reload drops the timer
     const args = e.args.trim().split(/\s+/).filter(Boolean)
-    if (!args.length) {
-      await $.ui.open({ id: PANE, title: 'Factory' })
-      return { text: 'Factory pane opened.' }
+    // `/factory`, `/factory backlog`, `/factory run <id>`: the console at that view
+    if (!args.length || VIEWS.has(args[0]!)) {
+      await show($, (args[0] as FactoryView | undefined) ?? 'board', args[1])
+      return { text: 'Factory console opened.' }
     }
     const { out } = await factory($, args)
     void tick($)
@@ -137,82 +248,46 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const { runs, mail } = await read($, board)
-
+    const ui = $.ui.resolve(e) as unknown as UI
+    const { Box } = ui
+    // nothing here may be named h: JSX compiles to calls of the global h
+    const [b, shown, d, tail, bl, samples, dr, now] = await Promise.all([
+      read($, board),
+      read($, view),
+      read($, detail),
+      read($, peek),
+      read($, backlog),
+      read($, history),
+      read($, draft),
+      $.clock.now(),
+    ])
+    const p = { ui, act: actions($), width: e.props.bodyColumns, now }
+    const body =
+      shown === 'run'
+        ? runView(p, d, tail, dr)
+        : shown === 'backlog'
+          ? backlogView(p, bl)
+          : shown === 'mail'
+            ? mailView(p, b)
+            : shown === 'new'
+              ? newView(p, dr, rt.cwd)
+              : boardView(p, b, dr)
     return (
       <Box flexDirection="column">
-        {runs.length === 0 && <Text dimColor>No runs. /factory start lifecycle {'<repo> <goal>'}</Text>}
-        {runs.map(r => (
-          <Box key={r.id} flexDirection="column" marginBottom={1}>
-            <Box>
-              <Text
-                bold
-                color={r.sub === 'stuck' || r.error ? 'red' : isLive(r) ? 'green' : undefined}
-                dimColor={!isLive(r)}
-              >
-                {r.id}
-              </Text>
-              {r.bead && <Text color="cyan"> {r.bead}</Text>}
-              <Text>
-                {'  '}
-                {r.sub ? `${r.node} › ${r.sub}` : r.node}
-                {r.attempt ? `  try ${r.attempt}/${r.attempts}` : ''}
-              </Text>
-              <Text dimColor>{r.pane || r.agent ? `  ${r.pane ?? ''} ${r.agent ?? ''}` : ''} </Text>
-              {r.sub === 'stuck' && (
-                <Button key={`retry-${r.id}`} label="retry" onPress={() => act($, 'retry', r.id)} />
-              )}
-              {isLive(r) && (
-                <Button key={`abort-${r.id}`} label="abort" dimColor onPress={() => act($, 'abort', r.id)} />
-              )}
-            </Box>
-            {r.goal && (
-              <Text dimColor wrap="truncate-end">
-                {'  '}
-                {r.goal}
-              </Text>
-            )}
-            {r.gate && (
-              <Box flexDirection="column">
-                <Text color="yellow">
-                  {'  ? '}
-                  {r.gate.question}
-                </Text>
-                <Box>
-                  <Text>{'    '}</Text>
-                  {r.gate.outcomes.map((outcome, i) => (
-                    <Button
-                      key={`${r.id}-${outcome}`}
-                      label={outcome}
-                      variant={i === 0 ? 'primary' : undefined}
-                      onPress={() => act($, 'decide', r.id, outcome)}
-                    />
-                  ))}
-                </Box>
-              </Box>
-            )}
-            {r.error && (
-              <Text color="red" wrap="truncate-end">
-                {'  ! '}
-                {r.error}
-              </Text>
-            )}
-            {r.last && (
-              <Text dimColor wrap="truncate-end">
-                {'  '}
-                {r.last.node} {r.last.outcome}: {r.last.summary.replace(/\s+/g, ' ')}
-              </Text>
-            )}
-          </Box>
-        ))}
-        {mail.length > 0 && <Text bold>Manager mail</Text>}
-        {mail.slice(-5).map(m => (
-          <Text key={`${m.run}-${m.at}`} wrap="truncate-end">
-            {m.run} / {m.from}: {m.text.replace(/\s+/g, ' ')}
-          </Text>
-        ))}
+        {header(p, b, samples, shown)}
+        {body}
+        {footer(p)}
       </Box>
     )
+  })
+
+  // with the console closed, the band keeps the factory in view and answers the first gate in place
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const b = await read($, board)
+    const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown)
+    if (e.props.hasSurvey || isOpen || !b.runs.some(isLive)) return next(e)
+    const ui = $.ui.resolve(e) as unknown as UI
+    const p = { ui, act: actions($), width: e.props.bodyColumns, now: await $.clock.now() }
+    return band(p, b, await read($, draft))
   })
 }

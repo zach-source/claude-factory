@@ -137,7 +137,7 @@ test('timed edges park the run without a worker; goto skips the wait', () => {
   const wake = 1000 + 30 * 60_000
   let s = send({ type: 'DONE', seq: 1, outcome: 'quiet', summary: 'all good', at: 1000 })
   expect(where(s.value)).toEqual(['look', 'waiting'])
-  expect(s.context).toMatchObject({ wakeAt: wake, seq: 1 })
+  expect(s.context).toMatchObject({ wakeAt: wake, seq: 1, pane: null })
   expect(s.context.mail.look?.map(m => m.text)).toEqual(['all good'])
 
   s = send({ type: 'TICK', at: wake - 1 })

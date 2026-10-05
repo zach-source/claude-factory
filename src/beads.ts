@@ -14,6 +14,8 @@ export type Bead = {
   parent?: string
   status?: string
   assignee?: string
+  priority?: number
+  issue_type?: string
 }
 
 export const LABEL = 'factory'
@@ -53,6 +55,25 @@ export const beads = (repo: string, actor: string) => ({
   },
   ready: (): Bead[] =>
     JSON.parse(must(bd(repo, actor, 'ready', '--label', LABEL, '--json', '-n', '50'), 'ready')),
+  /** ready work nobody has handed to the factory yet: what a person prioritizes */
+  unqueued: (): Bead[] =>
+    (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '100'), 'ready')) as Bead[]).filter(
+      b => !b.parent && !b.assignee && !b.labels?.includes(LABEL),
+    ),
+  /** hands a bead to the factory: a watched repo starts it at the next dispatch */
+  queue: (id: string, station?: string) =>
+    must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        '--add-label',
+        LABEL,
+        ...(station ? ['--add-label', `station:${station}`] : []),
+      ),
+      'update',
+    ),
   /** atomic: false when someone else holds it */
   claim: (id: string) => bd(repo, actor, 'update', id, '--claim').isOk,
   create: (title: string, description: string, ...extra: string[]) =>

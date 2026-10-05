@@ -202,9 +202,16 @@ export function compile(def: Factory) {
                 const mail = post(context.mail, to, { from: id, text: summary, at })
                 const delay = delayOf(edge)
                 // the wait already bounds the rate, so a cadence loop refills its budget instead of being held
+                // the worker has reported: its pane goes now, not when a timed wait ends
                 return delay
-                  ? { log, mail, wakeAt: at + delay * 60_000, budget: context.seq + (def.maxSteps ?? 20) }
-                  : { log, mail }
+                  ? {
+                      log,
+                      mail,
+                      pane: null,
+                      wakeAt: at + delay * 60_000,
+                      budget: context.seq + (def.maxSteps ?? 20),
+                    }
+                  : { log, mail, pane: null }
               }),
             })),
             FAIL: [

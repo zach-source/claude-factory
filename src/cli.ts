@@ -32,7 +32,7 @@ import {
   type Factory,
   type Mail,
 } from './machine'
-import { actorOf, beads, dispatchable, goalOf, hasBeads, stationOf } from './beads'
+import { actorOf, beads, dispatchable, goalOf, hasBeads, stationOf, type Bead } from './beads'
 
 const ROOT = resolve(import.meta.dir, '..')
 const HOME = process.env.FACTORY_HOME ?? join(ROOT, '.factory-state')
@@ -87,6 +87,11 @@ export type Row = {
   last?: Entry
   gate?: { question: string; outcomes: string[] }
   bead?: string
+  /** the stations of the last 40 reports, oldest first: the board draws the run's path from it */
+  trail?: string[]
+  /** when the current worker started, or when a timed wait ends */
+  since?: number
+  wakeAt?: number
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
@@ -379,6 +384,9 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     error: error ?? c.error,
     last: c.log.at(-1),
     bead: run.bead,
+    trail: c.log.slice(-40).map(e => e.node),
+    ...(c.startedAt && { since: c.startedAt }),
+    ...(c.wakeAt && { wakeAt: c.wakeAt }),
     ...(n?.gate &&
       sub === 'working' && { gate: { question: n.prompt.trim(), outcomes: Object.keys(n.next) } }),
   }
@@ -682,6 +690,56 @@ function current(id: string | undefined) {
   return { run, value: saved.snapshot.value, c: saved.snapshot.context }
 }
 
+/** everything the manager's run view draws, in one read */
+async function show(id: string | undefined) {
+  const { run, value, c } = current(id)
+  const def = await loadFactory(run.factory)
+  const [node, sub] = where(value)
+  const tasks = run.bead ? beads(run.repo, 'factory').children(run.bead) : null
+  return {
+    ...row(run, def, value, c, agentOf(def, value, c)),
+    seq: c.seq,
+    wakeAt: c.wakeAt,
+    startedAt: c.startedAt,
+    run: { ...run, factory: run.factoryFrom ?? run.factory },
+    log: c.log,
+    inbox: unread(c, node),
+    start: def.start,
+    stations: Object.entries(def.nodes).map(([sid, n]) => ({
+      id: sid,
+      gate: n.gate === true,
+      next: Object.entries(n.next).map(([outcome, edge]) =>
+        typeof edge === 'string' ? { outcome, to: edge } : { outcome, ...edge },
+      ),
+    })),
+    tasks: tasks?.map(t => ({ id: t.id, title: t.title, status: t.status ?? 'open' })) ?? null,
+    isWorking: sub === 'working',
+  }
+}
+
+/** each watched repo's work: what the factory will start, and what waits for a person to queue it */
+function backlog() {
+  return watched().map(w => {
+    try {
+      const b = beads(w.repo, 'factory')
+      const slim = (x: Bead) => ({
+        id: x.id,
+        title: x.title,
+        priority: x.priority,
+        type: x.issue_type,
+        labels: x.labels,
+      })
+      return {
+        ...w,
+        queued: dispatchable(b.ready(), new Set(), 50).map(slim),
+        unqueued: b.unqueued().map(slim),
+      }
+    } catch (err) {
+      return { ...w, queued: [], unqueued: [], error: (err as Error).message }
+    }
+  })
+}
+
 async function status(id: string | undefined) {
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
   for (const runId of id ? [id] : runIds()) {
@@ -715,6 +773,8 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <repo> <goal...|bead>   new run: herdr worktree off <repo>, first worker launched
   watch [<repo> [factory]] | unwatch <repo>   a watched repo's ready beads labeled factory start as runs
   init <repo> [template]             copy a factory into <repo>/.factory/ for the repo to own and improve
+  queue <repo> <bead> [station]      hand a bead to the factory (labels it factory)
+  show <run> | backlog               JSON for the manager's views
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   tick                               advance every run once (the manager mod does this every 5s)
@@ -742,6 +802,22 @@ if (import.meta.main)
       case 'tick':
         console.log(JSON.stringify(await tick()))
         break
+      case 'show':
+        console.log(JSON.stringify(await show(args[0])))
+        break
+      case 'backlog':
+        console.log(JSON.stringify(backlog()))
+        break
+      case 'queue': {
+        const [repo, id, station] = args
+        if (!repo || !id) fail('usage: factory queue <repo> <bead> [station]')
+        const root = git(resolve(repo!.replace(/^~(?=\/|$)/, homedir())), 'rev-parse', '--show-toplevel')
+        beads(root, 'factory').queue(id!, station)
+        console.log(
+          `queued ${id}${station ? ` at ${station}` : ''}: ${watched().some(w => w.repo === root) ? 'it starts at the next dispatch' : 'watch the repo for it to start'}`,
+        )
+        break
+      }
       case 'status':
         await status(args[0])
         break
