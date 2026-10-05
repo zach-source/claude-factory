@@ -33,7 +33,8 @@ import {
 const ROOT = resolve(import.meta.dir, '..')
 const HOME = process.env.FACTORY_HOME ?? join(ROOT, '.factory')
 const CLI = join(ROOT, 'bin', 'factory')
-const AGENT = 'claude-smart --new --no-channels'
+// yolo: workers run unattended in their own worktree, so permission prompts would only stall them
+const AGENT = 'claude-smart --new --no-channels --dangerously-skip-permissions'
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const NUDGES = 2 // ...this many times, then fails
 
