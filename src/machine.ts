@@ -3,10 +3,18 @@
 // persisted snapshot is the whole truth. The runner (cli.ts) does the effects.
 import { assign, setup } from 'xstate'
 
+/** where an outcome goes: a node id or 'done', or a timed edge that parks the run, with no worker, for delayMin */
+export type Edge = string | { to: string; delayMin: number }
+export const edgeTo = (e: Edge) => (typeof e === 'string' ? e : e.to)
+const delayOf = (e: Edge) => (typeof e === 'string' ? 0 : e.delayMin)
+
 export type Node = {
+  /** the worker's task; for a gate, the question put to the person */
   prompt: string
-  /** outcome reported by the worker -> next node id, or 'done' */
-  next: Record<string, string>
+  /** outcome reported by the worker (or decided at a gate) -> where the run goes */
+  next: Record<string, Edge>
+  /** no worker: the person decides the outcome through the manager (`factory decide`) */
+  gate?: true
   /** extra attempts after the first failure before the node is stuck (default 2) */
   retries?: number
   /** minutes before a silent worker counts as failed (default 60) */
@@ -22,8 +30,10 @@ export type Factory = {
   agent?: string
   /** first retry delay, doubled per attempt (default 30) */
   backoffSec?: number
-  /** worker launches a run may make before it pages the manager (default 20); each RETRY grants as many again */
+  /** worker launches a run may make before it pages the manager (default 20); RETRY and every timed edge grant as many again */
   maxSteps?: number
+  /** house rules every worker's brief carries */
+  rules?: string
   nodes: Record<string, Node>
 }
 
@@ -44,6 +54,8 @@ export type Ctx = {
   retryAt: number
   /** launches allowed before the run is held as stuck */
   budget: number
+  /** 0, or when a timed edge lets the node's worker start */
+  wakeAt: number
   error: string | null
   /** a node's box holds its whole visit: emptied when the node is left, so retries see it all */
   mail: Record<string, Mail[]>
@@ -76,12 +88,22 @@ export function validate(def: Factory): Factory {
     !def.name && 'name is required',
     !ids.includes(def.start) && `start "${def.start}" is not a node`,
     ...ids.filter(id => RESERVED.has(id)).map(id => `node id "${id}" is reserved`),
-    ...ids.flatMap(id =>
-      Object.entries(def.nodes[id]!.next).flatMap(([outcome, to]) => [
-        outcome === 'fail' && `${id}: outcome "fail" is reserved for retries`,
-        to !== 'done' && !ids.includes(to) && `${id}: outcome "${outcome}" goes to unknown node "${to}"`,
-      ]),
-    ),
+    ...ids.flatMap(id => {
+      const node = def.nodes[id]!
+      return [
+        !Object.keys(node.next).length && `${id}: has no outcomes`,
+        node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
+        ...Object.entries(node.next).flatMap(([outcome, edge]) => [
+          outcome === 'fail' && `${id}: outcome "fail" is reserved for retries`,
+          edgeTo(edge) !== 'done' &&
+            !ids.includes(edgeTo(edge)) &&
+            `${id}: outcome "${outcome}" goes to unknown node "${edgeTo(edge)}"`,
+          typeof edge !== 'string' &&
+            !(edge.delayMin > 0) &&
+            `${id}: outcome "${outcome}" needs delayMin > 0`,
+        ]),
+      ]
+    }),
   ].filter(Boolean)
   if (problems.length) throw new Error(`factory ${def.name ?? '?'}:\n  ${problems.join('\n  ')}`)
   return def
@@ -104,13 +126,23 @@ export function compile(def: Factory) {
       }
     })
     return {
-      initial: 'working',
+      initial: 'waiting',
       entry: assign({ attempt: 1 }),
       exit: assign(({ context }) => ({
         mail: { ...context.mail, [id]: [] },
         seen: { ...context.seen, [id]: 0 },
       })),
       states: {
+        // a timed edge parks the run here, with no worker, until wakeAt; any other arrival passes straight through
+        waiting: {
+          always: { guard: ({ context }: { context: Ctx }) => context.wakeAt === 0, target: 'working' },
+          on: {
+            TICK: {
+              guard: ({ context, event }: { context: Ctx; event: Ev }) => event.at >= context.wakeAt,
+              target: 'working',
+            },
+          },
+        },
         working: {
           // a loop that keeps cycling is held for the manager instead of burning tokens
           always: {
@@ -133,6 +165,7 @@ export function compile(def: Factory) {
             nudgedAt: 0,
             nudges: 0,
             error: null,
+            wakeAt: 0,
             seen: { ...context.seen, [id]: 0 },
           })),
           on: {
@@ -149,16 +182,21 @@ export function compile(def: Factory) {
               guard: isCurrent,
               actions: assign(({ context, event }) => ({ nudges: context.nudges + 1, nudgedAt: event.at })),
             },
-            DONE: Object.entries(node.next).map(([outcome, to]) => ({
+            DONE: Object.entries(node.next).map(([outcome, edge]) => ({
               guard: ({ context, event }: { context: Ctx; event: Ev }) =>
                 isCurrent({ context, event }) && event.type === 'DONE' && event.outcome === outcome,
-              target: `#factory.${to}`,
+              target: `#factory.${edgeTo(edge)}`,
               reenter: true, // a self-loop (iterate -> iterate) starts a fresh worker
               actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
                 const { summary, at } = event as Extract<Ev, { type: 'DONE' }>
                 const log = [...context.log, { node: id, attempt: context.attempt, outcome, summary, at }]
-                const to2 = to === 'done' ? 'manager' : to
-                return { log, mail: post(context.mail, to2, { from: id, text: summary, at }) }
+                const to = edgeTo(edge) === 'done' ? 'manager' : edgeTo(edge)
+                const mail = post(context.mail, to, { from: id, text: summary, at })
+                const delay = delayOf(edge)
+                // the wait already bounds the rate, so a cadence loop refills its budget instead of being held
+                return delay
+                  ? { log, mail, wakeAt: at + delay * 60_000, budget: context.seq + (def.maxSteps ?? 20) }
+                  : { log, mail }
               }),
             })),
             FAIL: [
@@ -228,6 +266,7 @@ export function compile(def: Factory) {
       nudges: 0,
       retryAt: 0,
       budget: def.maxSteps ?? 20,
+      wakeAt: 0,
       error: null,
       mail: {},
       seen: {},
@@ -250,6 +289,7 @@ export function compile(def: Factory) {
           guard: ({ event }: { event: Ev }) => event.type === 'GOTO' && event.node === id,
           target: `.${id}`,
           reenter: true,
+          actions: assign({ wakeAt: 0 }), // goto skips any wait: "run it now"
         })),
       ABORT: '.aborted',
     },

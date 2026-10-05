@@ -12,14 +12,14 @@ const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mai
 const isLive = (r: FactoryRun) => r.node !== undefined && r.node !== 'done' && r.node !== 'aborted'
 
 const manual = (cli: string) => `## Software factory manager
-This session is the manager of herdr software factories. Each run is an xstate machine over a graph of stations (nodes); every station is worked by its own Claude session in a herdr pane of the run's git worktree, and its reported outcome routes the run along the graph. Messages starting "[factory]" come from that runtime: a stuck station, a worker's question, a finished run.
+This session is the manager of herdr software factories. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. Messages starting "[factory]" come from that runtime: a stuck station, a worker's question, a gate awaiting a decision, a finished run.
 Quarterback with the factory CLI through Bash:
-- \`${cli} status [run]\`: every run, or one run's full log
+- \`${cli} status [run]\`: every run, or one run's full journal
 - \`${cli} mail <run> <station> "<text>"\`: answer or steer a worker (delivered into its session)
-- \`${cli} retry <run>\` (a stuck station), \`${cli} goto <run> <station|done>\`, \`${cli} abort <run>\`, \`${cli} rm <run>\` (finished runs)
-- \`${cli} start <factory> <repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}
+- \`${cli} retry <run>\` (a stuck station), \`${cli} goto <run> <station|done>\` (also skips a timed wait), \`${cli} abort <run>\`, \`${cli} fork <run> <station> "<note>"\`, \`${cli} rm <run>\` (finished runs)
+- \`${cli} start <factory>[@station] <repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}; lifecycle covers build, release, incidents, optimization, refactoring and the monitor, maintain and improve sweeps
 - \`herdr pane read <pane> --source recent --lines 80\`: see what a worker is doing
-Answer worker questions yourself when the goal settles them; ask the person when it does not. Never approve a worker's permission prompt for them.`
+Gates are the person's decisions, never yours: when a gate awaits, show them the question and the evidence, and run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog). Answer worker questions yourself when the goal settles them; ask the person when it does not. Never approve a worker's permission prompt for them.`
 
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
 const rt = {
@@ -47,7 +47,9 @@ async function tick($: EngineInterface) {
 
     const live = res.runs.filter(isLive)
     const stuck = live.filter(r => r.sub === 'stuck').length
-    $.ui.status(live.length ? `factory: ${live.length} running${stuck ? `, ${stuck} stuck` : ''}` : undefined)
+    const gates = live.filter(r => r.gate).length
+    const notes = [stuck && `${stuck} stuck`, gates && `${gates} awaiting you`].filter(Boolean)
+    $.ui.status(live.length ? `factory: ${[`${live.length} running`, ...notes].join(', ')}` : undefined)
     for (const r of res.runs) {
       if (r.agent === 'blocked' && rt.agents.get(r.id) !== 'blocked')
         $.ui.toast(`factory: ${r.id} ${r.node} worker is waiting on a prompt in pane ${r.pane}`)
@@ -76,9 +78,9 @@ async function ensureTicking($: EngineInterface) {
   void tick($)
 }
 
-async function act($: EngineInterface, verb: string, id: string) {
-  const { out } = await factory($, [verb, id])
-  $.ui.toast(out || `${verb} ${id}: queued`)
+async function act($: EngineInterface, ...args: string[]) {
+  const { out } = await factory($, args)
+  $.ui.toast(out || `${args.join(' ')}: queued`)
   await tick($)
 }
 
@@ -89,8 +91,8 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'factory',
       description:
-        'Factory dashboard; or run a factory command (start, status, mail, retry, goto, abort, rm)',
-      argumentHint: '[start|status|mail|retry|goto|abort|rm ...]',
+        'Factory dashboard; or a factory command (start, status, decide, mail, retry, goto, fork, abort, rm)',
+      argumentHint: '[start|status|decide|mail|retry|goto|fork|abort|rm ...]',
     })
     await ensureTicking($)
     return next(e)
@@ -108,6 +110,16 @@ export const register: Register = (on, options) => {
     return { text: out || 'ok' }
   })
 
+  // a gate is the person's call: the model may run decide only after they confirm it here
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    if (!/\bfactory\s+decide\b/.test(e.command)) return next(e)
+    const question = `The manager model wants to decide a factory gate: ${e.command.slice(0, 300)}. Allow it?`
+    const answer = await $.ui.ask(question, ['Allow', 'Deny']).catch(() => 'Deny')
+    return answer === 'Allow'
+      ? next(e)
+      : { deny: 'The person did not confirm this gate decision. Ask them which outcome they want.' }
+  })
+
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     if (!rt.cli) return composed
@@ -122,7 +134,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        {runs.length === 0 && <Text dimColor>No runs. /factory start {'<factory> <repo> <goal>'}</Text>}
+        {runs.length === 0 && <Text dimColor>No runs. /factory start lifecycle {'<repo> <goal>'}</Text>}
         {runs.map(r => (
           <Box key={r.id} flexDirection="column" marginBottom={1}>
             <Box>
@@ -138,7 +150,7 @@ export const register: Register = (on, options) => {
                 {r.sub ? `${r.node} › ${r.sub}` : r.node}
                 {r.attempt ? `  try ${r.attempt}/${r.attempts}` : ''}
               </Text>
-              <Text dimColor>{r.pane ? `  ${r.pane} ${r.agent ?? ''}` : ''} </Text>
+              <Text dimColor>{r.pane || r.agent ? `  ${r.pane ?? ''} ${r.agent ?? ''}` : ''} </Text>
               {r.sub === 'stuck' && (
                 <Button key={`retry-${r.id}`} label="retry" onPress={() => act($, 'retry', r.id)} />
               )}
@@ -151,6 +163,25 @@ export const register: Register = (on, options) => {
                 {'  '}
                 {r.goal}
               </Text>
+            )}
+            {r.gate && (
+              <Box flexDirection="column">
+                <Text color="yellow">
+                  {'  ? '}
+                  {r.gate.question}
+                </Text>
+                <Box>
+                  <Text>{'    '}</Text>
+                  {r.gate.outcomes.map((outcome, i) => (
+                    <Button
+                      key={`${r.id}-${outcome}`}
+                      label={outcome}
+                      variant={i === 0 ? 'primary' : undefined}
+                      onPress={() => act($, 'decide', r.id, outcome)}
+                    />
+                  ))}
+                </Box>
+              </Box>
             )}
             {r.error && (
               <Text color="red" wrap="truncate-end">

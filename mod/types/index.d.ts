@@ -11,6 +11,8 @@ export type FactoryRun = {
   agent?: string | null
   error?: string | null
   last?: { node: string; attempt: number; outcome: string; summary: string }
+  /** set while the run waits at a gate for the person */
+  gate?: { question: string; outcomes: string[] }
 }
 export type FactoryMail = { run: string; from: string; text: string; at: number }
 export type FactoryBoard = { runs: FactoryRun[]; mail: FactoryMail[] }

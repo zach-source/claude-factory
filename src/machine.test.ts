@@ -126,9 +126,51 @@ test('a run that keeps looping is held once its step budget is used', () => {
   expect(s.context).toMatchObject({ seq: 5, budget: 7 })
 })
 
+test('timed edges park the run without a worker; goto skips the wait', () => {
+  const watch: Factory = {
+    name: 'watch',
+    start: 'look',
+    maxSteps: 2,
+    nodes: { look: { prompt: 'look', next: { quiet: { to: 'look', delayMin: 30 }, stop: 'done' } } },
+  }
+  const { send } = run(watch)
+  const wake = 1000 + 30 * 60_000
+  let s = send({ type: 'DONE', seq: 1, outcome: 'quiet', summary: 'all good', at: 1000 })
+  expect(where(s.value)).toEqual(['look', 'waiting'])
+  expect(s.context).toMatchObject({ wakeAt: wake, seq: 1 })
+  expect(s.context.mail.look?.map(m => m.text)).toEqual(['all good'])
+
+  s = send({ type: 'TICK', at: wake - 1 })
+  expect(where(s.value)).toEqual(['look', 'waiting'])
+  s = send({ type: 'TICK', at: wake })
+  expect(where(s.value)).toEqual(['look', 'working'])
+  expect(s.context).toMatchObject({ seq: 2, wakeAt: 0 })
+
+  // a budget of 2 would hold the third launch, but every timed edge refills it
+  send({ type: 'DONE', seq: 2, outcome: 'quiet', summary: 'still good', at: wake })
+  s = send({ type: 'TICK', at: 2 * wake })
+  expect(where(s.value)).toEqual(['look', 'working'])
+  expect(s.context.seq).toBe(3)
+
+  send({ type: 'DONE', seq: 3, outcome: 'quiet', summary: 'fine', at: 2 * wake })
+  s = send({ type: 'GOTO', node: 'look', at: 2 * wake + 1 })
+  expect(where(s.value)).toEqual(['look', 'working'])
+  expect(s.context.seq).toBe(4)
+})
+
 test('validate rejects broken graphs', () => {
   expect(() =>
     validate({ ...def, start: 'nope', nodes: { done: { prompt: '', next: { x: 'ghost', fail: 'done' } } } }),
   ).toThrow(/start "nope"[\s\S]*"done" is reserved[\s\S]*unknown node "ghost"[\s\S]*"fail" is reserved/)
+  expect(() =>
+    validate({
+      name: 'x',
+      start: 'a',
+      nodes: {
+        a: { prompt: '', next: { later: { to: 'a', delayMin: 0 } } },
+        g: { prompt: '?', gate: true, agent: 'claude', next: {} },
+      },
+    }),
+  ).toThrow(/"later" needs delayMin > 0[\s\S]*g: has no outcomes[\s\S]*a gate has no worker/)
   expect(validate(def)).toBe(def)
 })
