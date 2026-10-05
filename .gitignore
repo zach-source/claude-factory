@@ -1,0 +1,6 @@
+node_modules/
+.factory/
+.claude/
+mod/.claude-plugin/types/
+mod/tsconfig.json
+.claude-uuid-session

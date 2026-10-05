@@ -1,0 +1,17 @@
+{
+  "name": "factory",
+  "version": "0.1.0",
+  "description": "Quarterback herdr software factories from this session: ticks every run, live dashboard pane, manager mailbox.",
+  "author": {
+    "name": "ztaylor"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "autopilot": {
+      "type": "boolean",
+      "title": "Wake the manager model on factory mail",
+      "description": "On: mail for the manager (a stuck station, a worker's question, a finished run) is submitted as a prompt so this session's model handles it. Off: it only shows in the pane and a toast.",
+      "default": true
+    }
+  }
+}

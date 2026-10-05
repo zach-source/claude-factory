@@ -1,0 +1,2 @@
+#!/bin/sh
+exec bun "$(dirname "$(realpath "$0")")/../src/cli.ts" "$@"
