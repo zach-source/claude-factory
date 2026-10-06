@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, validate } from './machine'
-import { deadline, missingSweeps, ownCopy, room } from './cli'
+import { deadline, missingSweeps, ownCopy, relaunch, room } from './cli'
 
 test('a worker still working at its time limit is warned once and given half again', () => {
   const min = 60_000
@@ -49,4 +49,11 @@ test("a rig has room under its own cap and the town's", () => {
   expect(room({ name: 'api' }, busy, 8)).toBe(4) // no cap of its own: the town's
   expect(room({ name: 'api', maxRuns: 5 }, busy, 5)).toBe(1) // the town fills first
   expect(room(undefined, busy, 8)).toBe(4) // a run outside any rig
+})
+
+test('a launch the shell swallowed gets Enter, then the command again, then fails', () => {
+  expect(relaunch(60_000, 0)).toBeNull() // Claude may still be starting
+  expect(relaunch(91_000, 0)).toBe('enter')
+  expect(relaunch(91_000, 1)).toBe('retype')
+  expect(relaunch(91_000, 2)).toBe('fail')
 })

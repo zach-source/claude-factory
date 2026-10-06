@@ -55,6 +55,9 @@ const DREAM_MS = 24 * 3600_000
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const NUDGES = 2 // ...this many times, then fails
+// a worker whose Claude has not appeared this long after launch never started: the shell was still
+// starting (direnv, under load) when herdr typed the command, and swallowed the Enter
+const LAUNCH_MS = 90_000
 
 type Run = {
   id: string
@@ -135,7 +138,7 @@ function herdr(...args: string[]) {
 }
 
 /** the pane's agent status and Claude session id, or null once the pane is gone */
-function paneInfo(pane: string): { status: string; session?: string } | null {
+function paneInfo(pane: string): { status: string; agent?: string; session?: string } | null {
   const p = Bun.spawnSync(['herdr', 'pane', 'get', pane])
   const out = JSON.parse(p.stdout.toString() || '{}')
   if (out.error?.code === 'pane_not_found') return null
@@ -143,6 +146,7 @@ function paneInfo(pane: string): { status: string; session?: string } | null {
   const info = out.result.pane
   return {
     status: info.agent_status,
+    agent: info.agent,
     session: info.agent === 'claude' ? info.agent_session?.value : undefined,
   }
 }
@@ -314,7 +318,7 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
 
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
-  const prompt = join(runDir(run.id), 'prompts', `${c.seq}-${node}${session ? '-resume' : ''}.md`)
+  const prompt = session ? promptOf(run, node, c).replace(/\.md$/, '-resume.md') : promptOf(run, node, c)
   writeFileSync(prompt, session ? resumeNote(run, node, c) : brief(run, def, node, c, c.mail[node] ?? []))
   const tab = () =>
     herdr(
@@ -343,11 +347,26 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  const agent = def.nodes[node]!.agent ?? def.agent ?? AGENT
+  herdr('pane', 'run', pane, launch(def, node, prompt, session))
+  return pane
+}
+
+const agentOfNode = (def: Factory, node: string) => def.nodes[node]!.agent ?? def.agent ?? AGENT
+const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
+function launch(def: Factory, node: string, prompt: string, session?: string) {
+  const agent = agentOfNode(def, node)
   // ponytail: resume assumes a claude-style CLI; only a pane herdr saw running claude ever has a session
   const cmd = session ? `${agent.replace(/\s--new\b/, '')} --resume ${session}` : agent
-  herdr('pane', 'run', pane, `${cmd} "$(cat '${prompt}')"`)
-  return pane
+  return `${cmd} "$(cat '${prompt}')"`
+}
+
+/**
+ * what to do about a launch that has not shown its Claude yet: wait, press Enter (the command sat
+ * unsent on the line), type it again, then give up. Each step counts as a nudge.
+ */
+export function relaunch(sinceMs: number, nudges: number) {
+  if (sinceMs <= LAUNCH_MS) return null
+  return nudges === 0 ? 'enter' : nudges < NUDGES ? 'retype' : 'fail'
 }
 
 /**
@@ -392,6 +411,25 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     return 'resuming'
   }
   const status = info?.status ?? null
+  // only a claude worker shows herdr an agent; another command (a script, a fake worker) never would
+  if (info && !info.agent && !c.session && /\bclaude/.test(agentOfNode(def, node))) {
+    const step = relaunch(now - Math.max(c.startedAt, c.nudgedAt), c.nudges)
+    if (step === 'fail') {
+      send({
+        type: 'FAIL',
+        seq: c.seq,
+        reason: `the worker never started in pane ${c.pane} (no Claude after ${NUDGES} relaunches)`,
+      })
+      return status
+    }
+    if (step === 'enter') herdr('pane', 'send-keys', c.pane, 'Enter')
+    if (step === 'retype') {
+      herdr('pane', 'send-keys', c.pane, 'ctrl+u') // whatever is left on the line
+      herdr('pane', 'run', c.pane, launch(def, node, promptOf(run, node, c)))
+    }
+    if (step) send({ type: 'NUDGED', seq: c.seq })
+    return step ? 'relaunching' : 'starting'
+  }
   const timeoutMin = n.timeoutMin ?? 60
   const inbox = unread(c, node)
   // a worker waiting on the manager's answer is idle by design: no nudges until the answer arrives
