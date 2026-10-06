@@ -286,7 +286,11 @@ export function runView(p: Base, d: FactoryDetail | null, peek: string, draft: F
           {d.attempt && d.attempt > 1 ? ` · try ${d.attempt}/${d.attempts}` : ''}
         </Text>
       </Box>
-      <Text wrap="wrap">{d.run.goal}</Text>
+      <Text wrap="wrap">
+        {d.run.goal.length > 1200
+          ? `${d.run.goal.slice(0, 1200)}… (the rest: bd show ${d.run.bead ?? d.id})`
+          : d.run.goal}
+      </Text>
       <Text dimColor wrap="truncate-end">
         follows {shortPath(d.run.factory)} · branch {d.run.branch}
       </Text>

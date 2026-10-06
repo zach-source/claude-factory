@@ -405,7 +405,9 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
   return {
     id: run.id,
     factory: def.name,
-    goal: run.goal,
+    // a bead's goal carries its whole description (a fabriek spec is 20 KB): the board's row gets the
+    // title line, every 5 s; show, the brief and bd show have the rest
+    goal: clip(run.goal.split('\n')[0]!, 300),
     node,
     sub,
     attempt: c.attempt,
@@ -414,7 +416,7 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     agent,
     ws: run.ws,
     error: error ?? c.error,
-    last: c.log.at(-1),
+    ...(c.log.length && { last: { ...c.log.at(-1)!, summary: clip(c.log.at(-1)!.summary, 400) } }),
     bead: run.bead,
     rig: rigOf(run.repo)?.name,
     trail: c.log.slice(-40).map(e => e.node),
