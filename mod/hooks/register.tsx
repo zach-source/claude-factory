@@ -68,7 +68,7 @@ The factory CLI, through Bash:
 - \`${cli} mail <run> <station> "<text>"\`: answer or steer a worker (delivered into its session)
 - \`${cli} poke <run> ["<steer>"]\`: nudge the worker at the run's current station; with no text it is told to report or say what blocks it
 - \`${cli} retry <run>\` (a stuck station), \`${cli} goto <run> <station|done>\` (also skips a timed wait), \`${cli} abort <run>\`, \`${cli} fork <run> <station> "<note>"\`, \`${cli} rm <run>\` (finished runs)
-- \`${cli} start <factory>[@station] <rig|repo> "<goal>"\`: factories are files in ${cli.replace(/^.* |bin\/factory$/g, '')}factories/; lifecycle covers build, release, incidents, optimization, refactoring and the monitor, maintain and improve sweeps
+- \`${cli} start <factory>[@station] <rig|repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}; lifecycle covers build, release, incidents, optimization, refactoring and the monitor, maintain and improve sweeps
 - \`herdr pane read <pane> --source recent --lines 80\`: see what a worker is doing
 The factory works rigs: named repos, listed by \`${cli} rig\`. A rig's ready beads labeled \`factory\` start as runs, it keeps the sweeps it asks for running, and its own cap (\`--max\`) bounds its busy runs under the town's. A rig's name stands for its repo in every command. \`${cli} rig add <name> <repo> [factory] [--max n] [--sweeps monitor,maintain,improve|none] [--goal <text>]\` defines or redefines one and \`${cli} rig rm <name>\` drops it (its runs carry on); do either only when the person asks.
 In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. A rig's backlog is its beads: \`${cli} queue <rig> <bead> [station]\` labels one \`factory\`; \`station:<name>\` starts it at that station; sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred. \`${cli} start lifecycle <rig> <bead-id>\` runs one bead now.
@@ -77,8 +77,8 @@ A repo owns its factory once \`${cli} adopt <rig>\` copies the template to \`.fa
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
 const rt = {
   cli: '',
-  /** the CLI as the model runs it: pinned to this session's factory, wherever its shell has cd'd */
-  pinned: '',
+  /** this session's factory: every command the model runs works it, wherever its shell has cd'd */
+  home: '',
   timer: undefined as { cancel: () => void } | undefined,
   isTicking: false,
   isAutopilot: true,
@@ -165,7 +165,7 @@ async function ensureTicking($: EngineInterface) {
   rt.cli = `${root.realPath ?? $.plugin.root}/../bin/factory`
   // the session's directory decides its factory once; the model's Bash cd's freely after that
   const { isOk, out } = await factory($, ['home'])
-  if (isOk) rt.pinned = `FACTORY_HOME='${out}' ${rt.cli}`
+  if (isOk) rt.home = out
   rt.timer = $.clock.every(TICK_MS, () => void tick($))
   void tick($)
 }
@@ -270,13 +270,15 @@ export const register: Register = (on, options) => {
     return { text: out || 'ok' }
   })
 
-  // a gate is the person's call: the model may run decide only after they confirm it here
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    if (!/\bfactory\s+decide\b/.test(e.command)) return next(e)
+    // the model's shell cd's into rigs to read them: its factory commands still work this factory
+    const pinned = rt.home ? { ...e, command: `export FACTORY_HOME='${rt.home}'\n${e.command}` } : e
+    // a gate is the person's call: the model may run decide only after they confirm it here
+    if (!/\bfactory\s+decide\b/.test(e.command)) return next(pinned)
     const question = `The manager model wants to decide a factory gate: ${e.command.slice(0, 300)}. Allow it?`
     const answer = await $.ui.ask(question, ['Allow', 'Deny']).catch(() => 'Deny')
     return answer === 'Allow'
-      ? next(e)
+      ? next(pinned)
       : { deny: 'The person did not confirm this gate decision. Ask them which outcome they want.' }
   })
 
@@ -284,10 +286,7 @@ export const register: Register = (on, options) => {
     const composed = await next(e)
     if (!rt.cli) return composed
     return {
-      sections: [
-        ...composed.sections,
-        { id: 'factory:manager', text: manual(rt.pinned || rt.cli), scope: 'session' },
-      ],
+      sections: [...composed.sections, { id: 'factory:manager', text: manual(rt.cli), scope: 'session' }],
     }
   })
 
