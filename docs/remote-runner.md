@@ -1,21 +1,23 @@
 # Remote runner: station workers in AX microVMs on gtr
 
-**Status (2026-10-06): everything that doesn't depend on a gate is done.** The prototype is built and
-tested behind `rig add --runner ax`, and the worker image's Dockerfile lints clean. Nothing is installed on
-gtr. Next: push images once you name a registry (Question 1), then install Substrate on gtr with the k0s
-changes below, then run one station end to end. The loop checks the gates every 30 minutes.
+**Status (2026-10-06 12:30): the images are ready to build and push, but you have to start the push.**
+You answered the questions (see the end of this doc), and `hack/push-images.sh` builds every image on gtr's
+own amd64 buildkit and pushes it to `ghcr.io/stigenai`. The auto-mode classifier refused to let the loop run
+it ("Untrusted Code Integration": it builds Substrate and AX from GitHub and pushes them to the org), so you
+have to run it (see Turning it on). After that: install Substrate on gtr with the k0s changes below, then run
+one station end to end. The agent token still needs a way in (Question 2 below).
 
 ## Gates
 
 | Gate                                                    | State                                                                                                            |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | gtr serves ClusterTrustBundle and PodCertificateRequest | **open** (2026-10-06: `kubectl --context gtr api-resources --api-group=certificates.k8s.io` lists both, v1beta1) |
-| A registry to push Substrate, AX and worker images      | **closed**: waiting on you (Question 1)                                                                          |
+| A registry to push Substrate, AX and worker images      | **open**: private `ghcr.io/stigenai/*` (your answer); the first push is yours to run                             |
 | Laptop 5-min load under 12 for a kind trial or a build  | **closed**: 36-46 through 2026-10-06 11:40                                                                       |
 
-**The registry gate is what blocks an install.** Substrate v0.3.0 publishes no images that can be pulled without credentials. Every Substrate, AX and worker image has to be built and pushed somewhere gtr can pull from. Loading images straight onto the nodes would mean changing the nodes, which is off-limits.
+**The first image push is what blocks an install.** Substrate v0.3.0 publishes no images that can be pulled without credentials. Every Substrate, AX and worker image has to be built and pushed somewhere gtr can pull from.
 
-The load rule also covers local image builds, not only the kind trial. OrbStack here is arm64, so building the amd64 worker image runs under emulation, and that would starve your other factories.
+The load rule no longer matters for images: `hack/push-images.sh` builds on the `gtr-amd64` buildx builder (buildkit running on gtr), not on the laptop. It needs no ko. Each Go component is built from a git ref into the image ko would make, with the binary at `/ko-app/<name>` on the base from Substrate's `.ko.yaml` at v0.3.0 and the same version ldflags.
 
 ## What works
 
@@ -85,8 +87,13 @@ The VM never holds a real credential. The Task's env comes from `FACTORY_AX_ENV`
 ### Turning it on
 
 ```sh
+# once: build and push every image on gtr's buildkit (needs `docker login ghcr.io` with write:packages)
+hack/push-images.sh    # prints each image@digest
+```
+
+```sh
 # on the laptop running the factory loop
-export FACTORY_AX_IMAGE=<registry>/factory-worker@sha256:…   # Dockerfile.worker
+export FACTORY_AX_IMAGE=ghcr.io/stigenai/factory-worker@sha256:…   # from push-images.sh
 export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # proxy, CA, dummy keys (see Credentials)
 export AX_SERVER=…                                           # or let ax find it from the kube context
 factory rig add web ~/repos/web --runner ax                   # rigs.json: "runner": "ax"
@@ -111,10 +118,29 @@ Substrate's installer (`go run ./cmd/ate-setup deploy ate-system`, behind `hack/
 - Cost of `ax ssh` per tick: one gRPC exec per working worker every 5 s. If that is too heavy, poll less often, or serve the outbox from the runner through `atenet-router`.
 - Does agent-vault inject GitHub credentials into git's https Basic auth as it does for bearer APIs? If not, the Task sets `GIT_ASKPASS` to print the dummy token, and agent-vault swaps it.
 
+## Answers (2026-10-06)
+
+1. **Registry**: push to private `ghcr.io/stigenai/*`. Images: `substrate/<component>:v0.3.0`
+   (`ate-setup deploy --image-repo ghcr.io/stigenai/substrate --image-tag v0.3.0`), `ax/ax-server:ac23328`,
+   `factory-worker:<commit>`. Each namespace needs a pull secret, and atelet needs another way to pull
+   actor images, because it doesn't read pull secrets (see Substrate on k0s).
+2. **Agent token**: mount it, don't put it in `spec.env`. But see Question 2 below: AX can't mount one.
+3. **Memory search in the VM**: an empty search is fine for a first run.
+4. **Node labels**: label only gtr-150..153 with `ate.dev/substrate-version`.
+5. **Worker commits**: keep the bot identity (`claude-factory worker`), as the image does today.
+
 ## Questions for the user
 
-1. **Registry**: may I push the Substrate, AX and worker images to private `ghcr.io/stigenai/*` packages? That needs a pull secret in `ate-system`, `ax-system` and the task namespace, plus a way for atelet to pull actor images (it does not read pull secrets). The alternative is public packages: the images hold no secrets, only Substrate, AX, Claude Code and this CLI. Until you choose, images are built locally only.
-2. **Agent token in the Task**: AX's `spec.env` is plain text and has no secretRef. The agent-vault agent token in `HTTPS_PROXY` is scoped to the proxy and revocable. May it go in `spec.env`, or should the image read it from a mounted Secret?
-3. **Memory search in the VM**: remote workers get `CORE.md` and the topic list in their brief, but their `memory search` finds nothing. Is that enough for a first run? Otherwise, ship a copy of the memory in the Workspace and grep it, or carry the bge-small model in the image.
-4. **Node labels**: may Substrate's install label gtr-150..153 with `ate.dev/substrate-version`, and only those, so atelet runs on the four KVM nodes and not on spark-* or the control plane?
-5. **Worker commits**: the image commits as `claude-factory worker <factory-worker@users.noreply.github.com>`. Should remote workers commit as you instead, as local workers do?
+2. **How the agent token gets in.** AX at ac23328 can't mount a Secret into a Task. `TaskSpec` has plain
+   `env` only, and the controller turns the env into the ActorTemplate's env, still as plain text. The one
+   secret it resolves (`gemini-api-secret` in the task's atespace) ends up in that env the same way. So a
+   "mounted" token has to come in some other way:
+   - **(a) Patch AX** (we build it from source anyway): resolve `env[].valueFrom.secretKeyRef` through the
+     controller's existing `SecretResolver`. That is about 20 lines. The value would still sit in the
+     ActorTemplate's env, but not in the Task, `ax get task` or `AX_TASK_YAML`.
+   - **(b) A per-run agent token**: the laptop runs `agent-vault agent create` for each task and revokes it
+     when the task is deleted. A token that leaks dies with its run. No AX change.
+   - **(c) The token in `spec.env`** after all, scoped to the proxy and revocable. That is what the
+     prototype does now.
+
+   I'd go with (b) and add (a) later if you want it out of the ActorTemplate too. Which one?
