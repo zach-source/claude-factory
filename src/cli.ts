@@ -329,6 +329,17 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   return pane
 }
 
+/**
+ * what a station's time limit calls for: a worker still at it when its time is up is warned once and
+ * gets half the limit again to commit and report (under load a fabriek implement and verify were each
+ * killed mid-work at the limit and redone from scratch); one that is not, or still silent after that, fails
+ */
+export function deadline(elapsedMs: number, timeoutMin: number, isWorking: boolean, isWarned: boolean) {
+  if (elapsedMs <= timeoutMin * 60_000) return null
+  if (!isWorking || elapsedMs > timeoutMin * 90_000) return 'fail'
+  return isWarned ? null : 'warn'
+}
+
 /** level-triggered: make the world match the current state, report what happened as events */
 function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input) => void, now: number) {
   const n = def.nodes[node]!
@@ -367,10 +378,19 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
+  const due = deadline(
+    now - c.startedAt,
+    timeoutMin,
+    status === 'working',
+    (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt),
+  )
   if (status === null) send({ type: 'FAIL', seq: c.seq, reason: `worker pane ${c.pane} was closed` })
-  else if (now - c.startedAt > timeoutMin * 60_000)
-    send({ type: 'FAIL', seq: c.seq, reason: `no report within ${timeoutMin} min` })
-  else if (inbox.length && status !== 'blocked') {
+  else if (due === 'fail') send({ type: 'FAIL', seq: c.seq, reason: `no report within ${timeoutMin} min` })
+  else if (due === 'warn') {
+    const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
+    const text = `[factory] This station's ${timeoutMin} minutes are up. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
+    send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail
+  } else if (inbox.length && status !== 'blocked') {
     herdr('agent', 'prompt', c.pane, inbox.map(m => `[factory mail from ${m.from}] ${m.text}`).join('\n\n'))
     send({ type: 'READ', box: node, seen: c.mail[node]!.length })
   } else if (
@@ -506,10 +526,15 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
-  } else if (!isOver && now - t.beatAt > HEARTBEAT_MS) {
-    if (!b.heartbeat(id)) throw new Error(`lost the claim on ${id} to another worker`)
-    t.beatAt = now
-  }
+  } else if (!isOver) beat(run, t, now)
+}
+
+/** keeps a live run's claim: bd's lease is 5 minutes */
+function beat(run: Run, t: Track, now: number) {
+  if (now - t.beatAt <= HEARTBEAT_MS) return
+  if (!beads(run.repo, actorOf(run.id)).heartbeat(run.bead!))
+    throw new Error(`lost the claim on ${run.bead} to another worker`)
+  t.beatAt = now
 }
 
 const isAlive = (pid: number) => {
@@ -565,6 +590,24 @@ async function beadsPass() {
   const release = hold('beads.lock')
   if (!release) return
   try {
+    // every live claim first: a pass over slow bd takes minutes, longer than the lease, if the claims
+    // wait behind every run's comments
+    for (const id of runIds()) {
+      try {
+        const { run, value } = current(id)
+        if (!run.bead || ['done', 'aborted'].includes(where(value)[0])) continue
+        const t = trackOf(id)
+        if (t.isSettled) continue // a revived run: track reopens it below
+        try {
+          beat(run, t, Date.now())
+        } catch (err) {
+          t.error = `beads: ${(err as Error).message}`
+        }
+        writeJson(join(runDir(id), 'track.json'), t)
+      } catch {
+        // removed mid-pass
+      }
+    }
     for (const id of runIds()) {
       try {
         const run = loadRun(id)

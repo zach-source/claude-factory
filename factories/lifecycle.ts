@@ -101,7 +101,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
     implement: {
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how.
-For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned.
+For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, mail the manager the question and wait for the answer.
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
       next: { ready: 'verify', abandon: 'done' },
     },

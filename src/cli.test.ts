@@ -3,7 +3,16 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, validate } from './machine'
-import { missingSweeps, ownCopy, room } from './cli'
+import { deadline, missingSweeps, ownCopy, room } from './cli'
+
+test('a worker still working at its time limit is warned once and given half again', () => {
+  const min = 60_000
+  expect(deadline(59 * min, 60, true, false)).toBeNull()
+  expect(deadline(61 * min, 60, false, false)).toBe('fail') // idle or gone at the limit: no grace
+  expect(deadline(61 * min, 60, true, false)).toBe('warn')
+  expect(deadline(75 * min, 60, true, true)).toBeNull() // warned, still inside the grace
+  expect(deadline(91 * min, 60, true, true)).toBe('fail')
+})
 
 test("a repo's own copy loads without this project and says how it is changed", async () => {
   const copy = ownCopy(readFileSync(join(import.meta.dir, '../factories/lifecycle.ts'), 'utf8'), 'lifecycle')
