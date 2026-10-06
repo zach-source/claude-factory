@@ -228,7 +228,13 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
       ? [
           '',
           '## Run journal (what each station reported, oldest first)',
-          ...c.log.slice(-25).map(e => `- ${e.node}#${e.attempt} ${e.outcome}: ${clip(e.summary, 1500)}`),
+          ...c.log
+            .slice(-25)
+            .map(e =>
+              inbox.some(m => m.from === e.node && m.at === e.at)
+                ? `- ${e.node}#${e.attempt} ${e.outcome}: in full in your Inbox below`
+                : `- ${e.node}#${e.attempt} ${e.outcome}: ${clip(e.summary, 1500)}`,
+            ),
         ]
       : []),
     ...(lastFail ? ['', '## The previous attempt failed', lastFail.summary] : []),
