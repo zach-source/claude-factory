@@ -12,12 +12,10 @@ the `factory` atespace and the agent-vault, then one station end to end.
 | Gate                                                    | State                                                                                                            |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | gtr serves ClusterTrustBundle and PodCertificateRequest | **open** (2026-10-06: `kubectl --context gtr api-resources --api-group=certificates.k8s.io` lists both, v1beta1) |
-| A registry to push Substrate, AX and worker images      | **open**: private `ghcr.io/stigenai/*` (your answer); the first push is yours to run                             |
-| Laptop 5-min load under 12 for a kind trial or a build  | **closed**: 36-46 through 2026-10-06 11:40                                                                       |
+| Registry for the worker image                           | **open**: private `ghcr.io/stigenai/factory-worker` (your answer); you run the push                              |
+| Laptop 5-min load under 12 for a kind trial             | moot: Substrate and AX are installed on gtr, so no kind trial is needed                                          |
 
-**The first image push is what blocks an install.** Substrate v0.3.0 publishes no images that can be pulled without credentials. Every Substrate, AX and worker image has to be built and pushed somewhere gtr can pull from.
-
-The load rule no longer matters for images: `hack/push-images.sh` builds on the `gtr-amd64` buildx builder (buildkit running on gtr), not on the laptop. It needs no ko. Each Go component is built from a git ref into the image ko would make, with the binary at `/ko-app/<name>` on the base from Substrate's `.ko.yaml` at v0.3.0 and the same version ldflags.
+`hack/push-worker.sh` builds the worker image on the `gtr-amd64` buildx builder (buildkit running on gtr), not on the arm64 laptop, and pushes it.
 
 ## What works
 
@@ -89,13 +87,13 @@ The VM does hold an agent token, which lets it use the proxy. AX can't mount a S
 ### Turning it on
 
 ```sh
-# once: build and push every image on gtr's buildkit (needs `docker login ghcr.io` with write:packages)
-hack/push-images.sh    # prints each image@digest
+# build and push the worker image on gtr's buildkit (needs `docker login ghcr.io` with write:packages)
+hack/push-worker.sh    # prints image@digest
 ```
 
 ```sh
 # on the laptop running the factory loop
-export FACTORY_AX_IMAGE=ghcr.io/stigenai/factory-worker@sha256:…   # from push-images.sh
+export FACTORY_AX_IMAGE=ghcr.io/stigenai/factory-worker@sha256:…   # from push-worker.sh
 export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # CA and dummy keys, no token
 export FACTORY_AX_VAULT=factory@agent-vault.<ns>:14322       # one agent per task; needs `agent-vault auth login` here
 export AX_SERVER=…                                           # or let ax find it from the kube context
