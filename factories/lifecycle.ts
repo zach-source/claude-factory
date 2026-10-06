@@ -117,13 +117,15 @@ Report green with the evidence, or red with a numbered list of every failure and
       timeoutMin: 45,
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
-Report approve; changes with a numbered list of exactly what to fix, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence.`,
+Post the review on the pull request: push the branch and open it as a draft if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
+Report approve; changes with a numbered list of exactly what to fix, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link.`,
       next: { approve: 'release', changes: 'implement', security: 'security' },
     },
     security: {
       agent: FABLE,
       timeoutMin: 45,
       prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section. Change no code.
+Post it on the pull request the way review does.
 Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
       next: { approve: 'release', changes: 'implement' },
     },
@@ -131,7 +133,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
     // ── the outer loop: ship it, watch it, undo it ───────────────────────────
     release: {
       timeoutMin: 60,
-      prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and open a pull request, or update the one this run already opened. Its description carries the plan's summary, the verification evidence and the rollback plan. Wait for CI and read every failing check.
+      prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and update the pull request review opened (open one if there is none) and mark it ready for review. Its description carries the plan's summary, the verification evidence and the rollback plan. Wait for CI and read every failing check.
 Report ready with the pull request link, the CI status and exactly what shipping will do; or red with the failures.`,
       next: { ready: 'approve', red: 'implement' },
     },
