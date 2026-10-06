@@ -275,6 +275,12 @@ function tracking(run: Run, node: string) {
     `  - that starts on its own: add -l factory; for a person to prioritize: no factory label`,
     `  - to start at a station: add -l station:<name>`,
     `- Never close or defer ${b} itself: the factory does when the run ends.`,
+    // a fabriek verify worker's bd init held the shared server's lock for minutes, stalling every repo's bd
+    ...(process.env.BEADS_DOLT_SHARED_SERVER === '1'
+      ? [
+          `- bd here shares one Dolt server with every repo on this machine, and bd init, migrations and other server-wide operations lock all of them for minutes. For a scratch database (a test, an experiment) use BEADS_DOLT_SHARED_SERVER=0 bd init in a temporary directory, unless the task is about the shared server itself.`,
+        ]
+      : []),
   ]
 }
 
@@ -740,10 +746,12 @@ async function dispatch(out: { runs: Row[]; started: string[] }) {
   for (const rig of rigs()) {
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
-      const ready = beads(rig.repo, 'factory').ready()
+      if (room(rig, busy) <= 0) continue // full: no bd calls at all
       const b = beads(rig.repo, 'factory')
-      const whole = ready.filter(x => !openChildren(b, x.id).length)
-      for (const bead of dispatchable(whole, linked, Math.max(0, room(rig, busy)))) {
+      // children are looked up only for the candidates, until the rig is full
+      const candidates = dispatchable(b.ready(), linked, Infinity).filter(x => !openChildren(b, x.id).length)
+      for (const bead of candidates) {
+        if (room(rig, busy) <= 0) break
         let run, def
         try {
           ;({ run, def } = await createTracked(rig.factory, preview.name, rig.repo, goalOf(bead), bead.id))
