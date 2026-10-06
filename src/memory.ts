@@ -1,0 +1,178 @@
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+
+// A factory's shared memory: what its workers learned, three levels deep so a brief stays short and a
+// search finds the rest.
+//   CORE.md              the few lessons nearly every run needs: every brief carries it whole
+//   <topic>/README.md    what the topic covers, then its notes in order of importance: briefs list topics
+//   <topic>/<note>.md    one learning each, found by `factory memory search`
+//   inbox/<note>.md      new notes, until the dream files them under a topic
+// The dream (`factory dream`) grooms it daily. The folder is its own git repo, so every pass can be undone.
+
+export type Note = { path: string; summary: string; rig?: string; from?: string; at?: string; body: string }
+
+const MODEL = 'Xenova/bge-small-en-v1.5'
+const QUERY = 'Represent this sentence for searching relevant passages: ' // bge's retrieval instruction
+const TOPIC_WEIGHT = 0.25 // a note's own match, lifted by its topic's: the hierarchy disambiguates short notes
+
+export const parse = (path: string, text: string): Note => {
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)
+  const meta: Record<string, string> = Object.fromEntries(
+    [...(m?.[1] ?? '').matchAll(/^(\w+):[ \t]*(.*)$/gm)].map(([, k, v]) => [k, v]),
+  )
+  const body = text.slice(m?.[0].length ?? 0).trim()
+  return {
+    path,
+    summary: meta.summary ?? body.split('\n')[0] ?? '',
+    rig: meta.rig,
+    from: meta.from,
+    at: meta.at,
+    body,
+  }
+}
+
+export const format = (n: Omit<Note, 'path'>) =>
+  [
+    '---',
+    `summary: ${n.summary.replace(/\n/g, ' ')}`,
+    ...(n.rig ? [`rig: ${n.rig}`] : []),
+    ...(n.from ? [`from: ${n.from}`] : []),
+    ...(n.at ? [`at: ${n.at}`] : []),
+    '---',
+    n.body.trim(),
+    '',
+  ].join('\n')
+
+/** every note, with its topic's README beside it: the dot folders (.git, the index) are not memory */
+function walk(dir: string) {
+  const notes: Note[] = []
+  const topics = new Map<string, Note>()
+  if (!existsSync(dir)) return { notes, topics }
+  for (const topic of readdirSync(dir, { withFileTypes: true })) {
+    if (!topic.isDirectory() || topic.name.startsWith('.')) continue
+    for (const f of readdirSync(join(dir, topic.name))) {
+      if (!f.endsWith('.md')) continue
+      const n = parse(join(topic.name, f), readFileSync(join(dir, topic.name, f), 'utf8'))
+      if (f === 'README.md') topics.set(topic.name, n)
+      else notes.push(n)
+    }
+  }
+  return { notes, topics }
+}
+
+export const topicOf = (n: Note) => dirname(n.path)
+const dot = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i]!, 0)
+/** a note of another rig never comes up; a note with no rig holds everywhere */
+export const rank = (
+  notes: Note[],
+  vec: (n: Note) => number[],
+  topicVec: (topic: string) => number[] | undefined,
+  query: number[],
+  rig?: string,
+) =>
+  notes
+    .filter(n => !n.rig || !rig || n.rig === rig)
+    .map(n => {
+      const own = dot(vec(n), query)
+      const t = topicVec(topicOf(n))
+      return { note: n, score: t ? (1 - TOPIC_WEIGHT) * own + TOPIC_WEIGHT * dot(t, query) : own }
+    })
+    .sort((a, b) => b.score - a.score)
+
+let embedder: ((texts: string[], o: object) => Promise<{ tolist(): number[][] }>) | undefined
+async function embed(texts: string[]) {
+  if (!texts.length) return []
+  // loaded on first use only: every other command, the tick above all, never pays for the model
+  const { pipeline } = await import('@huggingface/transformers')
+  embedder ??= (await pipeline('feature-extraction', MODEL, { dtype: 'q8' })) as unknown as typeof embedder
+  return (await embedder!(texts, { pooling: 'cls', normalize: true })).tolist()
+}
+
+type Index = { model: string; vecs: Record<string, { hash: string; vec: number[] }> }
+const textOf = (n: Note) => `${n.summary}\n${n.body}`.slice(0, 2000) // bge reads 512 tokens
+const hashOf = (text: string) => createHash('sha1').update(text).digest('hex')
+
+/** the notes' vectors, embedding only what changed since the last search */
+async function vectors(dir: string, all: Note[]) {
+  const file = join(dir, '.index.json')
+  const old: Index = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { model: MODEL, vecs: {} }
+  const prev = old.model === MODEL ? old.vecs : {}
+  const stale = all.filter(n => prev[n.path]?.hash !== hashOf(textOf(n)))
+  const fresh = await embed(stale.map(textOf))
+  const vecs = Object.fromEntries(
+    all.map(n => {
+      const i = stale.indexOf(n)
+      return [n.path, i < 0 ? prev[n.path]! : { hash: hashOf(textOf(n)), vec: fresh[i]! }]
+    }),
+  )
+  if (stale.length || Object.keys(prev).length !== all.length) {
+    writeFileSync(`${file}.tmp`, JSON.stringify({ model: MODEL, vecs }))
+    renameSync(`${file}.tmp`, file) // two searches at once: the last one's cache wins, both are right
+  }
+  return (n: Note) => vecs[n.path]!.vec
+}
+
+export async function search(
+  dir: string,
+  query: string,
+  { rig, limit = 5 }: { rig?: string; limit?: number } = {},
+) {
+  const { notes, topics } = walk(dir)
+  const vec = await vectors(dir, [...notes, ...topics.values()])
+  const [q] = await embed([QUERY + query])
+  return rank(notes, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig).slice(0, limit)
+}
+
+const slug = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60) || 'note'
+
+/** a new note goes to the inbox; the dream files it */
+export function add(dir: string, note: Omit<Note, 'path'>) {
+  mkdirSync(join(dir, 'inbox'), { recursive: true })
+  const base = join(dir, 'inbox', slug(note.summary))
+  let file = `${base}.md`
+  for (let i = 2; existsSync(file); i++) file = `${base}-${i}.md`
+  writeFileSync(file, format(note))
+  return file
+}
+
+/** level 0 and level 1, for a brief: the core in full, then one line per topic */
+export function outline(dir: string) {
+  const core = existsSync(join(dir, 'CORE.md')) ? readFileSync(join(dir, 'CORE.md'), 'utf8').trim() : ''
+  const { notes, topics } = walk(dir)
+  const count = (t: string) => notes.filter(n => topicOf(n) === t).length
+  const lines = [...new Set([...topics.keys(), ...notes.map(topicOf)])]
+    .filter(t => t !== 'inbox')
+    .sort()
+    .map(t => `- ${t} (${count(t)}): ${topics.get(t)?.summary ?? ''}`.trimEnd())
+  const inbox = count('inbox')
+  return { core, topics: inbox ? [...lines, `- inbox (${inbox}): new notes, not yet filed`] : lines }
+}
+
+export const inboxCount = (dir: string) => walk(dir).notes.filter(n => topicOf(n) === 'inbox').length
+
+export const dreamPrompt = (
+  dir: string,
+  journal: string[],
+) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
+
+The structure, three levels:
+- CORE.md: at most 25 lines, the lessons nearly every run needs, most important first. Every rig's workers read it: only what holds for all of them and is verified (a note with a rig never goes here); link nothing, say it.
+- <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
+- <topic>/<note>.md: one learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
+- inbox/: new notes from workers. Empty it every pass.
+
+This pass:
+1. File every inbox note under a topic (git mv, or write a new file and git rm the old one). One that says what an existing note says: merge it into that note and git rm it.
+2. Merge duplicates anywhere; when two notes disagree, keep what the newer evidence shows and say so. Remove what is wrong, stale, or so specific to one run that no other would use it.
+3. Read the run journal below for lessons no note holds yet: a station that failed for a reason the next worker could have avoided, a fix that worked, a review finding that recurs, a person's decision later runs should follow. Write each as a note. Skip the routine.
+4. Rewrite each touched topic's README and CORE.md so their order is by importance.
+Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm); the factory commits what you leave. Finish with one paragraph saying what you changed.
+
+## Run journal since the last dream (run, rig, station#attempt outcome: report)
+${journal.join('\n') || '(nothing new)'}`

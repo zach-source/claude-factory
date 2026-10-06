@@ -120,6 +120,30 @@ commit it, and the repo owns its factory like any other code:
   way to `done` from every station. A factory whose starting commit does not validate is
   refused before any worker starts, and its bead is deferred with the reason.
 
+## Shared memory and the dream
+
+A factory's workers share what they learn in `<factory>/memory/`, three levels deep so a
+brief stays short and a search finds the rest:
+
+```
+memory/
+  CORE.md              the few lessons nearly every run needs: every brief carries it whole
+  <topic>/README.md    what the topic covers, its notes most important first: briefs list topics
+  <topic>/<note>.md    one learning each (summary, rig, from, at, body): found by search
+  inbox/<note>.md      new notes, until the dream files them
+```
+
+- Workers search before they start and save what a later worker would otherwise relearn:
+  `factory memory search [--rig r] <query>` (local embeddings, bge-small, no service; a note
+  ranks by its own match and its topic's, and another rig's notes never show) and
+  `factory memory add [--rig r] [--from run/station] <summary> [body]`. The manager searches
+  it before answering a worker and saves the person's decisions that later runs should follow.
+- **The dream** (`factory dream`; each tick starts one a day) is a headless Claude that can only
+  edit inside the memory: it files the inbox under topics, merges duplicates, drops what is
+  wrong or stale, writes lessons from the run journals since the last dream, and reorders the
+  READMEs and `CORE.md` by importance. The memory is its own git repo, committed before and
+  after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
+
 ## Beads: planning and execution
 
 In a repo with `.beads/`, beads is the factory's task tracker:

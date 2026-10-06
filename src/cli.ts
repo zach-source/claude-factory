@@ -34,6 +34,7 @@ import {
   type Mail,
 } from './machine'
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
+import * as memory from './memory'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -48,6 +49,9 @@ const CLI = join(ROOT, 'bin', 'factory')
 const AGENT = 'claude-smart --new --no-channels --dangerously-skip-permissions'
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 8)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
+/** what the factory's workers learned, shared by every run and groomed by the dream */
+const MEMORY = join(HOME, 'memory')
+const DREAM_MS = 24 * 3600_000
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const NUDGES = 2 // ...this many times, then fails
@@ -221,6 +225,8 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     `This run follows the factory pinned when it started (${run.factoryFrom ?? run.factory}): changes to ${OWN}/ on any branch reach only runs that start after they merge. Check an edited factory file with ${CLI} check <file>.`,
     ...(def.rules ? ['', '## House rules', def.rules.trim()] : []),
     '',
+    ...remembered(run, node),
+    '',
     '## Goal',
     run.goal,
     '',
@@ -256,6 +262,20 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     '',
     ...tracking(run, node),
   ].join('\n')
+}
+
+/** the memory's top two levels, and how to reach the third: search before, add what was learned */
+function remembered(run: Run, node: string) {
+  const { core, topics } = memory.outline(MEMORY)
+  const rig = rigOf(run.repo)?.name
+  return [
+    '## Factory memory',
+    `What this factory's workers learned before you, in ${MEMORY}.`,
+    ...(core ? [core] : []),
+    ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
+    `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
+    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node}${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so.`,
+  ]
 }
 
 /** how a worker records tasks and files separate work: beads when the repo has them */
@@ -653,6 +673,78 @@ const kickBeads = () =>
     env: { ...process.env, FACTORY_HOME: HOME },
   }).unref()
 
+/** the journal entries the dream has not read yet, newest kept when there are too many */
+const journalSince = (since: number) =>
+  runIds()
+    .flatMap(id => {
+      try {
+        const run = loadRun(id)
+        const { log } = readJson<Saved>(join(runDir(id), 'state.json')).snapshot.context
+        const rig = rigOf(run.repo)?.name ?? basename(run.repo)
+        return log
+          .filter(e => e.at > since)
+          .map(e => ({
+            at: e.at,
+            line: `- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${clip(e.summary, 600)}`,
+          }))
+      } catch {
+        return [] // removed mid-read
+      }
+    })
+    .sort((a, b) => a.at - b.at)
+    .slice(-300)
+    .map(e => e.line)
+
+const commitMemory = (message: string) => {
+  git(MEMORY, 'add', '-A')
+  if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
+}
+
+/**
+ * grooms the memory with a headless worker that can only edit inside it: files the inbox under topics,
+ * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
+ */
+async function dream() {
+  const release = hold('dream.lock')
+  if (!release) return 'a dream is already running'
+  try {
+    const stamp = join(HOME, 'dream.stamp')
+    const since = existsSync(stamp) ? statSync(stamp).mtimeMs : 0
+    writeFileSync(stamp, '') // a failed dream waits for the next day too, rather than retrying every tick
+    const journal = journalSince(since)
+    if (!journal.length && !memory.inboxCount(MEMORY)) return 'nothing new since the last dream'
+    mkdirSync(MEMORY, { recursive: true })
+    if (!existsSync(join(MEMORY, '.git'))) {
+      git(MEMORY, 'init', '-q')
+      writeFileSync(join(MEMORY, '.gitignore'), '.index.json*\n')
+    }
+    commitMemory('notes since the last dream')
+    // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
+    const p = Bun.spawnSync(
+      [
+        ...['claude-smart', '--new', '--no-channels', '-p', '--permission-mode', 'acceptEdits'],
+        ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
+      ],
+      { cwd: MEMORY, stdin: Buffer.from(memory.dreamPrompt(MEMORY, journal)), timeout: 45 * 60_000 },
+    )
+    const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
+    commitMemory(`dream: ${said}`)
+    return said
+  } finally {
+    release()
+  }
+}
+/** once a day; the dream itself skips when nothing is new */
+const kickDream = () => {
+  const stamp = join(HOME, 'dream.stamp')
+  if (isHeld('dream.lock') || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DREAM_MS)) return
+  spawnChild(CLI, ['dream'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 async function tick() {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
@@ -676,7 +768,10 @@ async function tick() {
     return out
   } finally {
     release()
-    if (rigs().length || runIds().length) kickBeads()
+    if (rigs().length || runIds().length) {
+      kickBeads()
+      kickDream()
+    }
   }
 }
 
@@ -1112,6 +1207,10 @@ const usage = `factory — herdr software factories on xstate
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   home                               the factory these commands work: FACTORY_HOME, else found from here
+  memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
+  memory add [--rig r] [--from run/station] <summary> [body...]   save a learning to the memory's inbox
+  dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
+                                     (each tick starts one a day)
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
@@ -1147,6 +1246,39 @@ if (import.meta.main)
         break
       case 'home':
         console.log(HOME)
+        break
+      case 'memory': {
+        const opt = (flag: string) =>
+          args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
+        const [rig, from] = [opt('--rig'), opt('--from')]
+        const [sub, ...words] = args
+        if (sub === 'search' && words.length) {
+          const found = await memory.search(MEMORY, words.join(' '), { rig })
+          console.log(
+            found
+              .map(({ note: n, score }) =>
+                [
+                  `${score.toFixed(2)}  ${join(MEMORY, n.path)}  [${memory.topicOf(n)}${n.rig ? `, ${n.rig}` : ''}]`,
+                  `  ${n.summary}`,
+                  ...clip(n.body, 800)
+                    .split('\n')
+                    .map(l => `    ${l}`),
+                ].join('\n'),
+              )
+              .join('\n\n') || `nothing in ${MEMORY} yet`,
+          )
+        } else if (sub === 'add' && words[0]) {
+          const [summary, ...body] = words
+          const at = new Date().toISOString().slice(0, 10)
+          console.log(memory.add(MEMORY, { summary: summary!, body: body.join(' '), rig, from, at }))
+        } else
+          fail(
+            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] <summary> [body...]',
+          )
+        break
+      }
+      case 'dream':
+        console.log(await dream())
         break
       case 'loop': {
         const ms = args[0] === '--interval' ? Number(args[1]) : 5000

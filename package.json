@@ -9,6 +9,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "xstate": "^5.33.2"
   },
   "scripts": {
