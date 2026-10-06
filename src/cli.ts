@@ -1546,7 +1546,13 @@ if (import.meta.main)
             )
           const rig = await defineRig(name!, repo!, factory, { max, sweeps, goal })
           mkdirSync(HOME, { recursive: true })
-          // one rig per repo: redefining either replaces it
+          // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
+          // name for a rigged repo would silently drop the first
+          const taken = rigs().find(r => r.repo === rig.repo && r.name !== rig.name)
+          if (taken)
+            fail(
+              `${rig.repo} is already rig ${taken.name}: redefine it under that name, or rig rm ${taken.name} first`,
+            )
           writeJson(rigsFile(), [...rigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
           console.log(
             `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}`,
