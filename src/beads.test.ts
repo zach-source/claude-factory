@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test'
-import { dispatchable, goalOf, stationOf, type Bead } from './beads'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { beads, dispatchable, goalOf, stationOf, type Bead } from './beads'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 
@@ -23,4 +26,28 @@ test('a bead becomes a goal and may name its station', () => {
   expect(stationOf(b)).toBe('incident')
   expect(stationOf(bead('fx-8', { labels: ['factory'] }))).toBeUndefined()
   expect(goalOf(bead('fx-7'))).toBe('fx-7: title fx-7')
+})
+
+test('a heartbeat bd cannot make keeps the claim: lost only to a named other assignee', () => {
+  const bin = join(tmpdir(), `fake-bd-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  // heartbeat and claim always fail; show answers with $SHOW, or fails when it is unset
+  const script =
+    '#!/bin/sh\ncase "$1" in show) [ -n "$SHOW" ] && echo "$SHOW" && exit 0;; esac\necho locked >&2; exit 1\n'
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    delete process.env.SHOW
+    expect(() => b.heartbeat('fx-1')).toThrow('bd unavailable')
+    process.env.SHOW = '[{"id":"fx-1","assignee":"factory/run-1"}]'
+    expect(b.heartbeat('fx-1')).toBe(true)
+    process.env.SHOW = '[{"id":"fx-1","assignee":"someone-else"}]'
+    expect(b.heartbeat('fx-1')).toBe(false)
+  } finally {
+    process.env.PATH = path
+    delete process.env.SHOW
+  }
 })

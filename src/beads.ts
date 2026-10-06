@@ -38,7 +38,7 @@ export const dispatchable = (ready: Bead[], linked: Set<string>, room: number) =
   ready.filter(b => !b.parent && !b.assignee && !linked.has(b.id)).slice(0, Math.max(0, room))
 
 function bd(repo: string, actor: string, ...args: string[]) {
-  const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo })
+  const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo, env: process.env })
   const out = p.stdout.toString().trim()
   return { isOk: p.exitCode === 0, out, err: p.stderr.toString().trim() || out }
 }
@@ -78,9 +78,17 @@ export const beads = (repo: string, actor: string) => ({
   claim: (id: string) => bd(repo, actor, 'update', id, '--claim').isOk,
   create: (title: string, description: string, ...extra: string[]) =>
     must(bd(repo, actor, 'create', title, '-d', description, '-l', LABEL, '--silent', ...extra), 'create'),
-  /** keeps the claim's lease alive, taking it back if a reaper reclaimed it */
-  heartbeat: (id: string) =>
-    bd(repo, actor, 'heartbeat', id).isOk || bd(repo, actor, 'update', id, '--claim').isOk,
+  /**
+   * keeps the claim's lease alive, taking it back if a reaper reclaimed it. Lost only when the bead
+   * names another assignee: bd being unreachable (a shared server's maintenance lock) throws instead
+   */
+  heartbeat: (id: string) => {
+    if (bd(repo, actor, 'heartbeat', id).isOk || bd(repo, actor, 'update', id, '--claim').isOk) return true
+    const r = bd(repo, actor, 'show', id, '--json')
+    const b = r.isOk ? [JSON.parse(r.out)].flat()[0] : null
+    if (!b) throw new Error(`bd unavailable, the claim is kept and retried: ${r.err.split('\n')[0]}`)
+    return !b.assignee || b.assignee === actor
+  },
   comment: (id: string, text: string) => must(bd(repo, actor, 'comment', id, text), 'comment'),
   /** false when bd refuses, e.g. while the bead still has open tasks */
   close: (id: string, reason: string) => bd(repo, actor, 'close', id, '--reason', reason).isOk,
