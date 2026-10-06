@@ -160,7 +160,19 @@ export function header(p: Base, board: FactoryBoard, history: number[], view: Fa
         {stat(gates, 'yellow', 'awaiting you')}
         {stat(stuck, 'red', 'stuck')}
         {stat(waiting, 'blue', 'waiting')}
-        {live.length === 0 && <Text dimColor>idle</Text>}
+        {live.length === 0 && !board.halt && <Text dimColor>idle</Text>}
+        {board.halt && (
+          <Text bold color="yellow">
+            {board.halt === 'paused' ? '⏸ paused' : '… stopping'}
+          </Text>
+        )}
+        {board.halt ? (
+          <Button key="halt-resume" label="resume" variant="primary" onPress={() => p.act.cli('resume')} />
+        ) : (
+          live.length > 0 && (
+            <Button key="halt-stop" label="stop" dimColor onPress={() => p.act.cli('stop')} />
+          )
+        )}
       </Box>
       <Box gap={1}>
         {TABS.map(([v, label, key]) => (

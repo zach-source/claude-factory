@@ -25,7 +25,13 @@ export type FactoryRun = {
 export type FactoryEntry = { node: string; attempt: number; outcome: string; summary: string; at: number }
 export type FactoryMail = { run: string; from: string; text: string; at: number }
 /** the tick's runs and rigs, and the manager's mail so far; rigs is missing in a board saved before rigs were drawn */
-export type FactoryBoard = { runs: FactoryRun[]; mail: FactoryMail[]; rigs?: FactoryRig[] }
+export type FactoryBoard = {
+  runs: FactoryRun[]
+  mail: FactoryMail[]
+  rigs?: FactoryRig[]
+  /** set while `factory stop` winds the workers down, and while the factory stays paused */
+  halt?: 'stopping' | 'paused'
+}
 
 // what `factory show <run>` prints: everything the run view draws
 export type FactoryEdge = { outcome: string; to: string; delayMin?: number; defer?: true }

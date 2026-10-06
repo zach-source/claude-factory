@@ -77,6 +77,8 @@ export type Ev = At &
     | { type: 'SESSION'; seq: number; session: string }
     | { type: 'NUDGED'; seq: number }
     | { type: 'WORKING'; seq: number }
+    /** a worker brought back after the factory was stopped: its clock and its nudges start over */
+    | { type: 'RESUMED'; seq: number; pane: string }
     | { type: 'DONE'; seq: number; outcome: string; summary: string }
     | { type: 'FAIL'; seq: number; reason: string }
     | { type: 'MAIL'; from: string; to: string; text: string }
@@ -189,6 +191,16 @@ export function compile(def: Factory) {
               })),
             },
             SESSION: { guard: isCurrent, actions: assign(({ event }) => ({ session: event.session })) },
+            RESUMED: {
+              guard: isCurrent,
+              actions: assign(({ event }) => ({
+                pane: event.pane,
+                startedAt: event.at,
+                nudges: 0,
+                nudgedAt: event.at,
+                resumes: 0,
+              })),
+            },
             NUDGED: {
               guard: isCurrent,
               actions: assign(({ context, event }) => ({ nudges: context.nudges + 1, nudgedAt: event.at })),

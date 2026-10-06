@@ -95,6 +95,16 @@ test('only nudges a worker ignores count: seen working, it starts over', () => {
   expect(s.context.nudgedAt).toBe(300)
 })
 
+test('a worker resumed after a stop gets a new pane and a fresh clock, nudges and resume', () => {
+  const { send } = run()
+  send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 100 })
+  send({ type: 'SPAWNED', seq: 1, pane: 'w1:p2', isResume: true, at: 200 })
+  send({ type: 'NUDGED', seq: 1, at: 300 })
+  const s = send({ type: 'RESUMED', seq: 1, pane: 'w1:p3', at: 9_000 })
+  expect(s.context).toMatchObject({ pane: 'w1:p3', startedAt: 9_000, nudges: 0, resumes: 0 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+})
+
 test('mail, read, goto, self-loop and abort', () => {
   const { send } = run()
   let s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'use bun', at: 1 })

@@ -118,12 +118,14 @@ async function tick($: EngineInterface) {
       runs: FactoryRun[]
       manager: FactoryMail[]
       rigs?: FactoryRig[]
+      halt?: 'stopping' | 'paused'
     }
     if (res.busy) return
     await update($, board, b => ({
       runs: res.runs,
       mail: [...b.mail, ...res.manager].slice(-50),
       rigs: res.rigs ?? [],
+      halt: res.halt,
     }))
     const live = res.runs.filter(isLive)
     const busy = live.filter(r => !r.gate && r.sub !== 'waiting').length
@@ -143,7 +145,9 @@ async function tick($: EngineInterface) {
     if (res.manager.length) $.ui.toast(`factory: ${res.manager.length} message(s) for the manager`)
     if (rt.isAutopilot) {
       rt.unsent.push(...res.manager)
-      await patrolNow($, res.runs, res.rigs ?? [])
+      // paused, nothing should start: only mail wakes the manager, not the heartbeat or a rig's goal
+      if (!res.halt || rt.unsent.length)
+        await patrolNow($, res.halt ? [] : res.runs, res.halt ? [] : (res.rigs ?? []))
     }
   } catch (err) {
     $.ui.status(String(err).slice(0, 80))

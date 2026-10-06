@@ -52,6 +52,31 @@ const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
 const DREAM_MS = 24 * 3600_000
+const HALT_GRACE_MS = 5 * 60_000 // how long stop waits for a working worker to commit and go quiet
+
+/**
+ * a graceful stop (`factory stop`): each working worker is told to commit and wait, its pane closes once
+ * it is quiet or the grace is up, and the factory stays paused until `factory resume` brings each one back
+ * in its own conversation. While halted nothing launches, nudges, times out, dispatches or dreams.
+ */
+type Halt = {
+  state: 'stopping' | 'paused'
+  at: number
+  told: Record<string, number>
+  closed: Record<string, number>
+}
+const haltFile = () => join(HOME, 'halt.json')
+const resumeFile_ = () => join(HOME, 'resume.json')
+const halted = (): Halt | null => (existsSync(haltFile()) ? readJson(haltFile()) : null)
+
+/** what a stop does next to one working worker */
+export function haltStep(isAlive: boolean, isTold: boolean, isWorking: boolean, sinceToldMs: number) {
+  if (!isAlive) return 'gone'
+  if (!isTold) return 'tell'
+  return isWorking && sinceToldMs < HALT_GRACE_MS ? 'wait' : 'close'
+}
+const STOP_NOTE =
+  '[factory] The factory is shutting down. Commit your work in progress now (a WIP commit is fine: say in its message what is left), then stop and wait. Do not report: you will be resumed in this conversation, and carry on from there.'
 const DREAM_SOON_MS = 2 * 3600_000
 const INBOX_FULL = 12
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
@@ -142,7 +167,8 @@ function herdr(...args: string[]) {
 /** the pane's agent status and Claude session id, or null once the pane is gone */
 function paneInfo(pane: string): { status: string; agent?: string; session?: string } | null {
   const p = Bun.spawnSync(['herdr', 'pane', 'get', pane])
-  const out = JSON.parse(p.stdout.toString() || '{}')
+  // herdr answers a missing pane on stderr
+  const out = JSON.parse(p.stdout.toString() || p.stderr.toString() || '{}')
   if (out.error?.code === 'pane_not_found') return null
   if (p.exitCode !== 0) fail(`herdr pane get: ${out.error?.message ?? p.stderr.toString()}`)
   const info = out.result.pane
@@ -531,7 +557,43 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
   }
 }
 
-async function tickRun(run: Run, now: number) {
+/** a stop's or a resume's part in one working run; null when neither applies and the run reconciles as usual */
+function haltRun(
+  run: Run,
+  def: Factory,
+  node: string,
+  c: Ctx,
+  send: (e: Input) => void,
+  halt: Halt | null,
+  now: number,
+) {
+  if (def.nodes[node]!.gate) return null // a gate holds no worker: it still asks and can be decided
+  const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
+  if (!halt && back[run.id] === c.seq) {
+    const pane = spawn(run, def, node, c, c.session ?? undefined)
+    send({ type: 'RESUMED', seq: c.seq, pane })
+    const { [run.id]: _, ...rest } = back
+    writeJson(resumeFile_(), rest)
+    return 'resumed'
+  }
+  if (!halt) return null
+  if (halt.state === 'paused' || halt.closed[run.id] === c.seq) return 'paused'
+  const info = c.pane ? paneInfo(c.pane) : null
+  // a pane with no agent in it (a script worker, a Claude already gone) has nobody to tell
+  const isTold = halt.told[run.id] === c.seq || !info?.agent
+  const step = haltStep(!!info, isTold, info?.status === 'working', now - halt.at)
+  if (step === 'tell') {
+    herdr('agent', 'prompt', c.pane!, STOP_NOTE)
+    halt.told[run.id] = c.seq
+  } else if (step === 'close' || step === 'gone') {
+    if (step === 'close') Bun.spawnSync(['herdr', 'pane', 'close', c.pane!])
+    halt.closed[run.id] = c.seq
+  }
+  writeJson(haltFile(), halt)
+  return step === 'wait' || step === 'tell' ? 'stopping' : 'paused'
+}
+
+async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   const def = await loadFactory(run.factory)
   const file = join(runDir(run.id), 'state.json')
   const saved = readJson<Saved>(file)
@@ -560,7 +622,8 @@ async function tickRun(run: Run, now: number) {
   let error: string | undefined
   const [node, sub] = where(actor.getSnapshot().value)
   try {
-    if (sub === 'working') agent = reconcile(run, def, ctx(), node, send, now)
+    if (sub === 'working')
+      agent = haltRun(run, def, node, ctx(), send, halt, now) ?? reconcile(run, def, ctx(), node, send, now)
     else agent = agentOf(def, actor.getSnapshot().value, ctx())
   } catch (err) {
     error = (err as Error).message
@@ -860,9 +923,10 @@ async function tick() {
       manager: [] as (Mail & { run: string })[],
       rigs: rigs(), // the manager's patrol works toward their goals
     }
+    const halt = halted()
     for (const id of runIds()) {
       try {
-        const { row, manager } = await tickRun(loadRun(id), now)
+        const { row, manager } = await tickRun(loadRun(id), now, halted())
         out.runs.push(row)
         out.manager.push(...manager)
       } catch (err) {
@@ -870,12 +934,15 @@ async function tick() {
       }
     }
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
-    return out
+    // stopped once no worker is still being told to stop: everything that was working has closed
+    if (halt?.state === 'stopping' && !out.runs.some(r => r.agent === 'stopping'))
+      writeJson(haltFile(), { ...halted()!, state: 'paused' })
+    return { ...out, halt: halted()?.state }
   } finally {
     release()
     if (rigs().length || runIds().length) {
-      kickBeads()
-      kickDream()
+      kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
+      if (!halted()) kickDream()
     }
   }
 }
@@ -895,6 +962,7 @@ export const missingSweeps = (
 
 /** each rig keeps one run per sweep it asks for: abort one to stop it, rm it to let it start again */
 async function sweep() {
+  if (halted()) return
   const runs = runIds().map(id => loadRun(id))
   for (const rig of rigs()) {
     try {
@@ -1082,7 +1150,8 @@ const dispatchFile = () => join(HOME, 'dispatch.json')
 
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
-  if (!rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS)) return
+  if (halted() || !rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS))
+    return
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const busy = await busyRigs()
@@ -1135,6 +1204,7 @@ async function busyRigs() {
 }
 
 async function assertRoom(repo: string) {
+  if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
   const busy = await busyRigs()
   const rig = rigOf(repo)
   if (busy.length >= MAX_BUSY)
@@ -1270,6 +1340,13 @@ async function backlog() {
 }
 
 async function status(id: string | undefined) {
+  const halt = halted()
+  if (halt && !id)
+    console.log(
+      halt.state === 'paused'
+        ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
+        : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
+    )
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
   for (const runId of id ? [id] : runIds()) {
     const { run, value, c } = current(runId)
@@ -1312,6 +1389,8 @@ const usage = `factory — herdr software factories on xstate
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   home                               the factory these commands work: FACTORY_HOME, else found from here
+  stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
+                                     launches or dispatches; resume brings each back in its own conversation
   memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
   memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping
@@ -1354,6 +1433,25 @@ if (import.meta.main)
       case 'home':
         console.log(HOME)
         break
+      case 'stop': {
+        if (halted()) fail(`already ${halted()!.state}`)
+        writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
+        console.log(
+          `stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most ${HALT_GRACE_MS / 60_000} min. Ticks carry it out; factory status shows it. factory resume brings them back.`,
+        )
+        break
+      }
+      case 'resume': {
+        const halt = halted() ?? fail('the factory is not stopped')
+        // the runs whose workers stop closed, at the station they were at: the next tick resumes each
+        const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
+        writeJson(resumeFile_(), { ...back, ...halt.closed })
+        rmSync(haltFile())
+        console.log(
+          `resuming ${Object.keys(halt.closed).length} worker(s) in their own conversations at the next tick`,
+        )
+        break
+      }
       case 'memory': {
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined

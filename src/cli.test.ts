@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, validate } from './machine'
-import { deadline, missingSweeps, ownCopy, relaunch, room } from './cli'
+import { deadline, haltStep, missingSweeps, ownCopy, relaunch, room } from './cli'
 
 test('a worker still working at its time limit is warned once and given half again', () => {
   const min = 60_000
@@ -56,4 +56,12 @@ test('a launch the shell swallowed gets Enter, then the command again, then fail
   expect(relaunch(91_000, 0)).toBe('enter')
   expect(relaunch(91_000, 1)).toBe('retype')
   expect(relaunch(91_000, 2)).toBe('fail')
+})
+
+test('a stop tells each worker once, waits while it works, then closes its pane', () => {
+  expect(haltStep(false, false, false, 0)).toBe('gone') // its pane is gone already: nothing to stop
+  expect(haltStep(true, false, true, 0)).toBe('tell')
+  expect(haltStep(true, true, true, 60_000)).toBe('wait') // committing
+  expect(haltStep(true, true, false, 60_000)).toBe('close') // quiet: done committing
+  expect(haltStep(true, true, true, 6 * 60_000)).toBe('close') // past the grace
 })
