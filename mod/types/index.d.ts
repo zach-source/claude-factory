@@ -24,7 +24,8 @@ export type FactoryRun = {
 }
 export type FactoryEntry = { node: string; attempt: number; outcome: string; summary: string; at: number }
 export type FactoryMail = { run: string; from: string; text: string; at: number }
-export type FactoryBoard = { runs: FactoryRun[]; mail: FactoryMail[] }
+/** the tick's runs and rigs, and the manager's mail so far; rigs is missing in a board saved before rigs were drawn */
+export type FactoryBoard = { runs: FactoryRun[]; mail: FactoryMail[]; rigs?: FactoryRig[] }
 
 // what `factory show <run>` prints: everything the run view draws
 export type FactoryEdge = { outcome: string; to: string; delayMin?: number; defer?: true }
@@ -68,7 +69,7 @@ export type FactoryBacklog = (FactoryRig & {
   error?: string
 })[]
 
-export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'new'
+export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'new' | 'rigs'
 /** what the person has typed and not sent */
 export type FactoryDraft = {
   repo: string

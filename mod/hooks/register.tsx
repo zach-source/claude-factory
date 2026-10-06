@@ -16,6 +16,7 @@ import type {
 } from '../types'
 import {
   backlogView,
+  rigsView,
   band,
   boardView,
   footer,
@@ -52,7 +53,7 @@ const draft = atom(
     notes: {},
   } as FactoryDraft,
 )
-const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'new'])
+const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'new', 'rigs'])
 
 const manual = (cli: string) => `## Software factory manager
 You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
@@ -115,7 +116,11 @@ async function tick($: EngineInterface) {
       rigs?: FactoryRig[]
     }
     if (res.busy) return
-    await update($, board, b => ({ runs: res.runs, mail: [...b.mail, ...res.manager].slice(-50) }))
+    await update($, board, b => ({
+      runs: res.runs,
+      mail: [...b.mail, ...res.manager].slice(-50),
+      rigs: res.rigs ?? [],
+    }))
     const live = res.runs.filter(isLive)
     const busy = live.filter(r => !r.gate && r.sub !== 'waiting').length
     await update($, history, h => [...h, busy].slice(-120))
@@ -328,7 +333,9 @@ export const register: Register = (on, options) => {
             ? mailView(p, b)
             : shown === 'new'
               ? newView(p, dr, rt.cwd)
-              : boardView(p, b, dr)
+              : shown === 'rigs'
+                ? rigsView(p, b)
+                : boardView(p, b, dr)
     return (
       <Box flexDirection="column">
         {header(p, b, samples, shown)}

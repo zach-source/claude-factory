@@ -1,6 +1,6 @@
 // the mod's pure helpers, tested here because the mod's own tests run under `claude plugin test`
 import { expect, test } from 'bun:test'
-import { bar, dur, line, patrol, sparkline, track } from '../mod/hooks/view'
+import { bar, dur, line, patrol, rigStats, sparkline, track } from '../mod/hooks/view'
 
 test('track folds loops and marks where the run is', () => {
   expect(track(['triage', 'plan', 'implement', 'verify', 'implement'], 'verify')).toEqual([
@@ -83,4 +83,29 @@ test("patrol keeps the manager working toward a rig's goal while the rig has roo
   expect(patrol([run('a', 'waiting'), run('b', 'waiting')], [], new Set(), true, [fab])).not.toBeNull()
   // at its cap with no worker running, a rig has nothing for the manager to add
   expect(patrol([run('a', 'backoff'), run('b', 'backoff')], [], new Set(), true, [fab])).toBeNull()
+})
+
+test("a rig's stats count its own runs only, by station, with what needs the person", () => {
+  const runs = [
+    { id: 'a', rig: 'web', node: 'implement', sub: 'working' },
+    { id: 'b', rig: 'web', node: 'implement', sub: 'stuck' },
+    { id: 'c', rig: 'web', node: 'approve', sub: 'working', gate: { question: 'ship?', outcomes: ['ship'] } },
+    { id: 'd', rig: 'web', node: 'soak', sub: 'waiting' },
+    { id: 'e', rig: 'web', node: 'done' },
+    { id: 'f', rig: 'api', node: 'plan', sub: 'working' },
+  ]
+  expect(rigStats({ name: 'web', maxRuns: 3 }, runs)).toEqual({
+    busy: 2, // a and b hold workers; the gate and the timer do not
+    room: 1,
+    stations: [
+      { node: 'implement', n: 2 },
+      { node: 'approve', n: 1 },
+      { node: 'soak', n: 1 },
+    ],
+    gates: ['c'],
+    stuck: ['b'],
+    done: 1,
+    aborted: 0,
+  })
+  expect(rigStats({ name: 'api' }, runs).room).toBeNull() // no cap of its own
 })

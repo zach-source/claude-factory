@@ -56,6 +56,28 @@ export const clockOf = (ms: number) =>
 
 const blockKey = (r: FactoryRun) => `${r.id}:${r.node}:${r.since}`
 
+const isRunLive = (r: FactoryRun) => !!r.node && r.node !== 'done' && r.node !== 'aborted'
+/** a run holding a worker: neither waiting on a timer nor at a gate */
+const isBusy = (r: FactoryRun) => isRunLive(r) && r.sub !== 'waiting' && !r.gate
+
+/** one rig at a glance: its live runs by station, what needs the person, what has ended */
+export function rigStats(rig: Pick<FactoryRig, 'name' | 'maxRuns'>, runs: readonly FactoryRun[]) {
+  const mine = runs.filter(r => r.rig === rig.name)
+  const live = mine.filter(isRunLive)
+  const stations = new Map<string, number>()
+  for (const r of live) stations.set(r.node!, (stations.get(r.node!) ?? 0) + 1)
+  const busy = live.filter(isBusy).length
+  return {
+    busy,
+    room: rig.maxRuns === undefined ? null : Math.max(0, rig.maxRuns - busy),
+    stations: [...stations].map(([node, n]) => ({ node, n })),
+    gates: live.filter(r => r.gate).map(r => r.id),
+    stuck: live.filter(r => r.sub === 'stuck' || r.agent === 'blocked').map(r => r.id),
+    done: mine.filter(r => r.node === 'done').length,
+    aborted: mine.filter(r => r.node === 'aborted').length,
+  }
+}
+
 /**
  * The manager's loop: what to wake this session's model with, or null when nothing calls for it.
  * New mail and newly blocked workers wake it at once; `isDue` adds a heartbeat while any worker runs
@@ -69,10 +91,10 @@ export function patrol(
   isDue: boolean,
   rigs: readonly FactoryRig[] = [],
 ) {
-  const live = runs.filter(r => r.node && r.node !== 'done' && r.node !== 'aborted')
+  const live = runs.filter(isRunLive)
   const blocked = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
   const isWorking = live.some(r => r.sub === 'working' && !r.gate)
-  const busy = (g: FactoryRig) => live.filter(r => r.rig === g.name && r.sub !== 'waiting' && !r.gate).length
+  const busy = (g: FactoryRig) => rigStats(g, runs).busy
   const goals = rigs.filter(g => g.goal)
   const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
   if (!mail.length && !blocked.length && !(isDue && (isWorking || hasRoom))) return null

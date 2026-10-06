@@ -12,7 +12,7 @@ import type {
   FactoryRun,
   FactoryView,
 } from '../types'
-import { bar, clockOf, dur, line, sparkline, track } from './view'
+import { bar, clockOf, dur, line, rigStats, sparkline, track } from './view'
 
 /** what every surface the console draws on has; mobile has no Input or Select */
 export type UI = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button' | 'Code'> &
@@ -64,6 +64,7 @@ const TABS: [FactoryView, string, string][] = [
   ['backlog', 'Backlog', '3'],
   ['mail', 'Mail', '4'],
   ['new', 'New run', '5'],
+  ['rigs', 'Rigs', '6'],
 ]
 
 function rule({ ui, width }: Base, title: string, note = '') {
@@ -475,6 +476,87 @@ export function backlogView(p: Base, backlog: FactoryBacklog) {
   )
 }
 
+/** every rig: its cap and how full it is, its goal, where its runs stand, what needs the person */
+export function rigsView(p: Base, board: FactoryBoard) {
+  const { Box, Text, Button } = p.ui
+  const rigs = board.rigs ?? []
+  const loose = board.runs.filter(r => isLive(r) && !r.rig)
+  if (!rigs.length)
+    return (
+      <Box key="rigs" flexDirection="column">
+        <Text dimColor>
+          No rigs. `factory rig add {'<name> <repo>'}` names a repo for the factory to work, with its own cap,
+          sweeps and goal.
+        </Text>
+      </Box>
+    )
+  return (
+    <Box key="rigs" flexDirection="column">
+      {rigs.map(g => {
+        const s = rigStats(g, board.runs)
+        const sweeps =
+          g.sweeps === undefined ? 'all sweeps' : g.sweeps.length ? g.sweeps.join(', ') : 'no sweeps'
+        return (
+          <Box key={`rigs-${g.name}`} flexDirection="column" marginBottom={1}>
+            {rule(p, g.name, `${shortPath(g.repo)} · ${shortPath(g.factory)} · ${sweeps}`)}
+            <Box gap={1}>
+              <Text color={s.room === 0 ? 'yellow' : 'green'}>
+                {g.maxRuns ? bar(s.busy, g.maxRuns, Math.min(g.maxRuns, 20)) : '∞'}
+              </Text>
+              <Text>
+                busy {String(s.busy)}
+                {g.maxRuns ? `/${g.maxRuns}` : ''}
+              </Text>
+              <Text dimColor>
+                {s.room === 0 ? '· full' : s.room ? `· room for ${s.room}` : '· no cap of its own'}
+              </Text>
+            </Box>
+            {g.goal && <Text wrap="wrap">◎ {g.goal}</Text>}
+            {s.stations.length > 0 ? (
+              <Text wrap="wrap">
+                {s.stations.map(({ node, n }, i) => (
+                  <Text color="cyan">
+                    {i ? ' · ' : ''}
+                    {node} {String(n)}
+                  </Text>
+                ))}
+              </Text>
+            ) : (
+              <Text dimColor>no live runs</Text>
+            )}
+            {s.gates.length > 0 && <Text color="yellow">awaiting you: {s.gates.join(', ')}</Text>}
+            {s.stuck.length > 0 && <Text color="red">stuck: {s.stuck.join(', ')}</Text>}
+            <Text dimColor>
+              finished {String(s.done)}
+              {s.aborted ? ` · aborted ${s.aborted}` : ''}
+            </Text>
+            <Box gap={1}>
+              <Button key={`rigs-backlog-${g.name}`} label="backlog" onPress={() => p.act.show('backlog')} />
+              <Button
+                key={`rigs-new-${g.name}`}
+                label="new run here"
+                dimColor
+                onPress={() => {
+                  p.act.draft({ repo: g.name })
+                  p.act.show('new')
+                }}
+              />
+            </Box>
+          </Box>
+        )
+      })}
+      {loose.length > 0 && rule(p, 'outside any rig', String(loose.length))}
+      {loose.map(r => (
+        <Box key={`rigs-loose-${r.id}`} gap={1}>
+          <Text bold>{r.id}</Text>
+          <Text color={standing(r, p.now).color}>{r.node}</Text>
+          <Button key={`rigs-open-${r.id}`} label="open" dimColor onPress={() => p.act.show('run', r.id)} />
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 export function mailView(p: Base, board: FactoryBoard) {
   const { Box, Text, Button } = p.ui
   const mail = [...board.mail].reverse()
@@ -548,7 +630,7 @@ export function newView(p: Base, draft: FactoryDraft, cwd: string) {
 
 export function footer(p: Base) {
   const { Text } = p.ui
-  return <Text dimColor>1-5 views · tab between controls · enter presses · esc back to the prompt</Text>
+  return <Text dimColor>1-6 views · tab between controls · enter presses · esc back to the prompt</Text>
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */
