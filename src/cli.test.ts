@@ -3,7 +3,13 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, validate } from './machine'
-import { deadline, haltStep, missingSweeps, ownCopy, relaunch, room } from './cli'
+import { deadline, haltStep, missingSweeps, ownCopy, relaunch, room, withoutFleet } from './cli'
+
+test("the factory's Claudes load every mod but herdr-fleet", () => {
+  expect(withoutFleet('/m/herdr-fleet').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
+  expect(withoutFleet('/m/herdr-fleet:/m/other').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('/m/other')
+  expect(withoutFleet('').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
+})
 
 test('a worker still working at its time limit is warned once and given half again', () => {
   const min = 60_000

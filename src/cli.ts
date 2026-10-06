@@ -391,8 +391,23 @@ function launch(def: Factory, node: string, prompt: string, session?: string) {
   const agent = agentOfNode(def, node)
   // ponytail: resume assumes a claude-style CLI; only a pane herdr saw running claude ever has a session
   const cmd = session ? `${agent.replace(/\s--new\b/, '')} --resume ${session}` : agent
-  return `${cmd} "$(cat '${prompt}')"`
+  const quiet = /\bclaude/.test(agent) ? ` --settings '${JSON.stringify(withoutFleet())}'` : ''
+  return `${cmd}${quiet} "$(cat '${prompt}')"`
 }
+
+/**
+ * the factory's own Claudes run without the herdr-fleet mod: its agent-status band, pane naming and
+ * /fanout workers would compete with the runner, which owns its workers' panes. The mods come from
+ * CLAUDE_CODE_PLUGIN_DIRS in the user's settings env, which the shell cannot override: --settings can.
+ */
+export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => ({
+  env: {
+    CLAUDE_CODE_PLUGIN_DIRS: dirs
+      .split(':')
+      .filter(d => d && basename(d) !== 'herdr-fleet')
+      .join(':'),
+  },
+})
 
 /**
  * what to do about a launch that has not shown its Claude yet: wait, press Enter (the command sat
@@ -868,6 +883,7 @@ async function dream() {
     const p = Bun.spawnSync(
       [
         ...['claude-smart', '--new', '--no-channels', '-p', '--permission-mode', 'acceptEdits'],
+        ...['--settings', JSON.stringify(withoutFleet())],
         ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
       ],
       { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
@@ -1617,7 +1633,7 @@ if (import.meta.main)
           [
             `a new factory in ${dir}. Commands run in that directory work it; add its rigs there:`,
             `  cd ${dir} && ${CLI} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
-            `and run its manager there: CLAUDE_CODE_NO_FLICKER=1 claude-smart --new --plugin-dir ${join(ROOT, 'mod')} (fullscreen, so the console docks beside the chat)`,
+            `and run its manager there: CLAUDE_CODE_NO_FLICKER=1 claude-smart --new --plugin-dir ${join(ROOT, 'mod')} --settings '${JSON.stringify(withoutFleet())}' (fullscreen, so the console docks beside the chat; without herdr-fleet)`,
           ].join('\n'),
         )
         break

@@ -15,7 +15,9 @@ bin/factory init ~/my-factory   # a new factory: a directory for its rigs and ru
 cd ~/my-factory
 # the manager session, in a herdr pane: a session started in a factory's directory works it
 # fullscreen layout: the console docks right of the chat (herdr and tmux default to the main screen)
-CLAUDE_CODE_NO_FLICKER=1 claude-smart --new --plugin-dir ~/repos/workspaces/claude-factory/mod
+# --settings drops the herdr-fleet mod: the runner owns its workers' panes (workers get the same)
+CLAUDE_CODE_NO_FLICKER=1 claude-smart --new --plugin-dir ~/repos/workspaces/claude-factory/mod \
+  --settings '{"env":{"CLAUDE_CODE_PLUGIN_DIRS":""}}'
 ```
 
 In the manager session:
