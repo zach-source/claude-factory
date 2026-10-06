@@ -16,6 +16,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs'
+import { spawn as spawnChild } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
@@ -71,10 +72,12 @@ type Run = {
 type Saved = {
   cursor: number
   snapshot: Snapshot<unknown> & { value: unknown; context: Ctx }
-  /** bead bookkeeping: journal entries mirrored, last heartbeat, whether the run's end was recorded */
+  /** where bead bookkeeping was kept before it moved to track.json */
   track?: Track
 }
-type Track = { mirrored: number; beatAt: number; isSettled: boolean }
+/** bead bookkeeping, the beads pass's own file: journal entries mirrored, last heartbeat, whether the run's
+ * end was recorded, and what last went wrong */
+type Track = { mirrored: number; beatAt: number; isSettled: boolean; error?: string }
 type Input = Ev extends infer E ? (E extends Ev ? Omit<E, 'at'> : never) : never
 export type Row = {
   id: string
@@ -434,12 +437,11 @@ async function tickRun(run: Run, now: number) {
   const actor = createActor(compile(def), { snapshot: saved.snapshot }).start()
   const lines = inboxLines(run.id)
   const ctx = () => actor.getSnapshot().context
-  const t: Track = { mirrored: 0, beatAt: 0, isSettled: false, ...saved.track }
   const save = () =>
     writeJson(file, {
       cursor: lines.length,
       snapshot: actor.getPersistedSnapshot(),
-      ...(run.bead && { track: t }),
+      ...(saved.track && { track: saved.track }),
     })
   const send = (e: Input, at = now) => {
     const pane = ctx().pane
@@ -463,11 +465,7 @@ async function tickRun(run: Run, now: number) {
     error = (err as Error).message
   }
 
-  try {
-    if (run.bead) track(run, def, actor.getSnapshot().value, ctx(), t, now)
-  } catch (err) {
-    error ??= `beads: ${(err as Error).message}`
-  }
+  error ??= run.bead ? trackOf(run.id, saved).error : undefined
 
   const manager = unread(ctx(), 'manager')
   if (manager.length) send({ type: 'READ', box: 'manager', seen: ctx().mail.manager!.length })
@@ -514,20 +512,112 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
   }
 }
 
-async function tick() {
-  const lock = join(HOME, 'tick.lock')
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as { code?: string }).code === 'EPERM'
+  }
+}
+
+/** a lock held while its process lives, however long it takes: a pass over slow bd can take minutes */
+function hold(name: string): (() => void) | null {
+  const dir = join(HOME, name)
   mkdirSync(HOME, { recursive: true })
   try {
-    mkdirSync(lock)
+    mkdirSync(dir)
   } catch {
-    if (Date.now() - statSync(lock).mtimeMs < 120_000) return { busy: true }
+    try {
+      const pid = existsSync(join(dir, 'pid')) ? Number(readFileSync(join(dir, 'pid'), 'utf8')) : 0
+      // no pid yet: just taken, or an older runner's lock, which went stale after two minutes
+      if (pid ? isAlive(pid) : Date.now() - statSync(dir).mtimeMs < 120_000) return null
+      // ponytail: two takers of a dead holder's lock can race, and a reused pid looks alive; holders
+      // rarely die, flock if either bites
+      rmSync(dir, { recursive: true, force: true })
+      mkdirSync(dir)
+    } catch {
+      return null // the holder let go meanwhile, or another taker won: the next try gets it
+    }
   }
+  writeFileSync(join(dir, 'pid'), String(process.pid))
+  return () => rmSync(dir, { recursive: true, force: true })
+}
+
+const trackOf = (id: string, saved?: Saved): Track => {
+  const file = join(runDir(id), 'track.json')
+  return existsSync(file)
+    ? readJson(file)
+    : {
+        mirrored: 0,
+        beatAt: 0,
+        isSettled: false,
+        ...(saved ?? readJson<Saved>(join(runDir(id), 'state.json'))).track,
+      }
+}
+
+/**
+ * every run's beads, out of the tick: under load one bd call can take a minute, and launching, nudging and
+ * failing workers must not wait on it. Mirrors reports, heartbeats claims, settles finished runs, then
+ * dispatches the rigs' ready beads. One pass at a time; each tick starts one when none is running.
+ */
+async function beadsPass() {
+  const release = hold('beads.lock')
+  if (!release) return
+  try {
+    for (const id of runIds()) {
+      try {
+        const run = loadRun(id)
+        if (!run.bead) continue
+        const saved = readJson<Saved>(join(runDir(id), 'state.json'))
+        const t = trackOf(id, saved)
+        try {
+          track(
+            run,
+            await loadFactory(run.factory),
+            saved.snapshot.value,
+            saved.snapshot.context,
+            t,
+            Date.now(),
+          )
+          delete t.error
+        } catch (err) {
+          t.error = `beads: ${(err as Error).message}`
+        }
+        writeJson(join(runDir(id), 'track.json'), t)
+      } catch {
+        // removed mid-pass
+      }
+    }
+    await dispatch()
+  } finally {
+    release()
+  }
+}
+const isHeld = (name: string) => {
+  try {
+    return isAlive(Number(readFileSync(join(HOME, name, 'pid'), 'utf8')))
+  } catch {
+    return false
+  }
+}
+/** starts a beads pass unless one is running: checked here, so a busy pass costs no process every tick */
+const kickBeads = () =>
+  isHeld('beads.lock') ||
+  spawnChild(CLI, ['beads'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+
+async function tick() {
+  const release = hold('tick.lock')
+  if (!release) return { busy: true }
   try {
     const now = Date.now()
     const out = {
       runs: [] as Row[],
       manager: [] as (Mail & { run: string })[],
-      started: [] as string[],
       rigs: rigs(), // the manager's patrol works toward their goals
     }
     for (const id of runIds()) {
@@ -539,10 +629,11 @@ async function tick() {
         out.runs.push({ id, error: (err as Error).message })
       }
     }
-    await dispatch(out)
+    out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
     return out
   } finally {
-    rmSync(lock, { recursive: true, force: true })
+    release()
+    if (rigs().length || runIds().length) kickBeads()
   }
 }
 
@@ -583,8 +674,7 @@ async function sweep() {
 async function loop(intervalMs: number) {
   for (;;) {
     await sweep()
-    const out = await tick()
-    if ('runs' in out) for (const s of out.started) console.log(`${new Date().toISOString()} started ${s}`)
+    await tick()
     await Bun.sleep(intervalMs)
   }
 }
@@ -696,8 +786,6 @@ function beadFor(repo: string, goal: string, extra: string[] = []) {
   return { goal, bead: b.create(clip(goal.split('\n')[0]!, 100), goal, ...extra) }
 }
 
-const isBusy = (r: Row) => r.node !== 'done' && r.node !== 'aborted' && r.sub !== 'waiting' && !r.gate
-
 /**
  * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, it keeps its
  * sweeps running, and `maxRuns` caps its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's
@@ -742,14 +830,21 @@ export const room = (
   )
 
 /** the rigs' ready `factory` beads become runs while each rig, and the factory, has room */
-async function dispatch(out: { runs: Row[]; started: string[] }) {
+/** what the last dispatch could not do, per rig: the board shows it as rows */
+const dispatchFile = () => join(HOME, 'dispatch.json')
+
+async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
   if (!rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS)) return
   writeFileSync(stamp, '')
-  const busy = out.runs.filter(isBusy).map(r => r.rig)
+  const errors: Row[] = []
+  const busy = await busyRigs()
   // live runs only: a finished run's deferred bead, undeferred by a person, is new work again
   const linked = new Set(
-    out.runs.filter(r => r.node !== 'done' && r.node !== 'aborted').flatMap(r => r.bead ?? []),
+    runIds().flatMap(id => {
+      const { run, value } = current(id)
+      return run.bead && !['done', 'aborted'].includes(where(value)[0]) ? [run.bead] : []
+    }),
   )
   for (const rig of rigs()) {
     try {
@@ -769,13 +864,13 @@ async function dispatch(out: { runs: Row[]; started: string[] }) {
         }
         const at = stationOf(bead)
         if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
-        out.started.push(`${bead.id} → ${run.id}`)
         busy.push(rig.name)
       }
     } catch (err) {
-      out.runs.push({ id: `rig:${rig.name}`, error: (err as Error).message })
+      errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
     }
   }
+  writeJson(dispatchFile(), errors)
 }
 
 /** the rig of every run holding a worker; a wait or a gate costs nothing */
@@ -967,6 +1062,7 @@ const usage = `factory — herdr software factories on xstate
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   home                               the factory these commands work: FACTORY_HOME, else found from here
+  beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
   decide <run> <outcome> [note...]   the person: answer a gate station
@@ -993,6 +1089,9 @@ if (import.meta.main)
         break
       case 'tick':
         console.log(JSON.stringify(await tick()))
+        break
+      case 'beads':
+        await beadsPass()
         break
       case 'home':
         console.log(HOME)

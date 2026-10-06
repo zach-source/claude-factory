@@ -112,7 +112,6 @@ async function tick($: EngineInterface) {
       busy?: true
       runs: FactoryRun[]
       manager: FactoryMail[]
-      started?: string[]
       rigs?: FactoryRig[]
     }
     if (res.busy) return
@@ -126,7 +125,6 @@ async function tick($: EngineInterface) {
     const gates = live.filter(r => r.gate).length
     const notes = [stuck && `${stuck} stuck`, gates && `${gates} awaiting you`].filter(Boolean)
     $.ui.status(live.length ? [`${live.length} running`, ...notes].join(', ') : undefined)
-    if (res.started?.length) $.ui.toast(`factory: started from beads ${res.started.join(', ')}`)
     for (const r of res.runs) {
       if (r.agent === 'blocked' && rt.agents.get(r.id) !== 'blocked')
         $.ui.toast(`factory: ${r.id} ${r.node} worker is waiting on a prompt in pane ${r.pane}`)
