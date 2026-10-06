@@ -4,7 +4,7 @@ Each release is tagged `v<version>` and its version is set in `package.json` and
 `mod/.claude-plugin/plugin.json`. Versions follow [semver](https://semver.org); until 1.0 a
 minor release may change the factory format, the CLI or the run state.
 
-## Unreleased
+## 0.2.0 (2026-10-06)
 
 - herdr's sidebar shows each run's station and what holds it (`$factory` on the run's workspace:
   working, needs you, stuck, parked, or when a timed wait ends), and each manager's workspace
