@@ -138,10 +138,13 @@ memory/
   ranks by its own match and its topic's, and another rig's notes never show) and
   `factory memory add [--rig r] [--from run/station] <summary> [body]`. The manager searches
   it before answering a worker and saves the person's decisions that later runs should follow.
+  `factory memory helped <note>` marks a note that saved a worker time; with how often searches
+  return each note, it is what the dream orders by.
 - **The dream** (`factory dream`; each tick starts one a day) is a headless Claude that can only
   edit inside the memory: it files the inbox under topics, merges duplicates, drops what is
   wrong or stale, writes lessons from the run journals since the last dream, and reorders the
-  READMEs and `CORE.md` by importance. The memory is its own git repo, committed before and
+  READMEs and `CORE.md` by importance. A lesson that holds only while a bead is open names it;
+  the dream is told which named beads have closed and retires what waited on them. The memory is its own git repo, committed before and
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
 
 ## Beads: planning and execution

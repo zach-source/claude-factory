@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 
 // A factory's shared memory: what its workers learned, three levels deep so a brief stays short and a
@@ -155,10 +163,69 @@ export function outline(dir: string) {
 }
 
 export const inboxCount = (dir: string) => walk(dir).notes.filter(n => topicOf(n) === 'inbox').length
+/** all of it as one text, to find the beads it names */
+export const corpus = (dir: string) =>
+  [
+    existsSync(join(dir, 'CORE.md')) ? readFileSync(join(dir, 'CORE.md'), 'utf8') : '',
+    ...[...walk(dir).topics.values(), ...walk(dir).notes].map(n => `${n.summary}\n${n.body}`),
+  ].join('\n')
+
+// how notes get used, the signal the dream orders by: a search shows a note, a worker says it helped
+export type Use = { path: string; shown: number; helped: number; at: number }
+const usageFile = (dir: string) => join(dir, '.usage.jsonl')
+/** appended only while workers search, one short line each, so concurrent writers do not interleave */
+export const use = (dir: string, paths: string[], kind: 'shown' | 'helped', at = Date.now()) => {
+  if (paths.length)
+    appendFileSync(
+      usageFile(dir),
+      paths.map(path => JSON.stringify({ path, [kind]: 1, at })).join('\n') + '\n',
+    )
+}
+/** each note's totals, under the name the dream gave it */
+export const tally = (lines: string[], renamed: Record<string, string> = {}) => {
+  const out = new Map<string, Use>()
+  for (const line of lines.filter(Boolean)) {
+    const u: Partial<Use> & { path: string; at: number } = JSON.parse(line)
+    const path = renamed[u.path] ?? u.path
+    const t = out.get(path) ?? { path, shown: 0, helped: 0, at: 0 }
+    out.set(path, {
+      path,
+      shown: t.shown + (u.shown ?? 0),
+      helped: t.helped + (u.helped ?? 0),
+      at: Math.max(t.at, u.at),
+    })
+  }
+  return out
+}
+export const usage = (dir: string, renamed?: Record<string, string>) =>
+  tally(existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : [], renamed)
+/** after a dream: one line per note left, renames followed; a removed note's counts go with it */
+export function compact(dir: string, renamed: Record<string, string>) {
+  const kept = [...usage(dir, renamed).values()].filter(u => existsSync(join(dir, u.path)))
+  writeFileSync(`${usageFile(dir)}.tmp`, kept.map(u => JSON.stringify(u) + '\n').join(''))
+  // ponytail: a search appending between the read and this rename loses its count; a lock if counts must be exact
+  renameSync(`${usageFile(dir)}.tmp`, usageFile(dir))
+}
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+/** one line per note for the dream, the unused ones included: they are what it may drop */
+export const usageLines = (dir: string) => {
+  const used = usage(dir)
+  return walk(dir)
+    .notes.filter(n => topicOf(n) !== 'inbox')
+    .map(n => used.get(n.path) ?? { path: n.path, shown: 0, helped: 0, at: 0 })
+    .sort((a, b) => b.helped - a.helped || b.shown - a.shown)
+    .map(u =>
+      u.at
+        ? `- ${u.path}: helped ${u.helped}, shown ${u.shown}, last used ${day(u.at)}`
+        : `- ${u.path}: never shown`,
+    )
+}
 
 export const dreamPrompt = (
   dir: string,
   journal: string[],
+  uses: string[],
+  closed: string[],
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
 The structure, three levels:
@@ -166,13 +233,20 @@ The structure, three levels:
 - <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
 - <topic>/<note>.md: one learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
 - inbox/: new notes from workers. Empty it every pass.
+A lesson that holds only while some bead is open (an owner's hold, a pending decision, a known outage) names that bead ("until fab-8aq4 closes") and never goes in CORE.md: when the bead closes, it is retired.
 
 This pass:
 1. File every inbox note under a topic (git mv, or write a new file and git rm the old one). One that says what an existing note says: merge it into that note and git rm it.
-2. Merge duplicates anywhere; when two notes disagree, keep what the newer evidence shows and say so. Remove what is wrong, stale, or so specific to one run that no other would use it.
+2. Merge duplicates anywhere; when two notes disagree, keep what the newer evidence shows and say so. Remove what is wrong, stale, or so specific to one run that no other would use it. Retire or rewrite whatever waits on a bead in "Closed beads" below. A note never shown in a search for 30 days and never helping is a candidate to drop, unless it is newer than that.
 3. Read the run journal below for lessons no note holds yet: a station that failed for a reason the next worker could have avoided, a fix that worked, a review finding that recurs, a person's decision later runs should follow. Write each as a note. Skip the routine.
-4. Rewrite each touched topic's README and CORE.md so their order is by importance.
+4. Rewrite each touched topic's README and CORE.md so their order is by importance: what helped workers most (Usage below) first, then what holds most broadly. A note that keeps helping belongs higher, its lesson in CORE.md when it holds for every rig.
 Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm); the factory commits what you leave. Finish with one paragraph saying what you changed.
+
+## Usage (helped: a worker said the note helped; shown: a search returned it)
+${uses.join('\n') || '(no notes yet)'}
+
+## Closed beads this memory names
+${closed.join('\n') || '(none)'}
 
 ## Run journal since the last dream (run, rig, station#attempt outcome: report)
 ${journal.join('\n') || '(nothing new)'}`

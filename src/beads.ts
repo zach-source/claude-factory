@@ -13,6 +13,7 @@ export type Bead = {
   labels?: string[]
   parent?: string
   status?: string
+  close_reason?: string
   assignee?: string
   priority?: number
   issue_type?: string
@@ -52,6 +53,10 @@ const must = (r: ReturnType<typeof bd>, what: string) => {
 }
 
 export const beads = (repo: string, actor: string) => ({
+  prefix: () => {
+    const r = bd(repo, actor, 'config', 'get', 'issue_prefix')
+    return r.isOk ? r.out : ''
+  },
   show: (id: string): Bead | null => {
     const r = bd(repo, actor, 'show', id, '--json')
     const parsed = r.isOk ? JSON.parse(r.out) : null

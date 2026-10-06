@@ -274,7 +274,8 @@ function remembered(run: Run, node: string) {
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
     `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
-    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node}${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so.`,
+    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node}${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so. A lesson that holds only while a bead is open names it ("until <bead> closes").`,
+    `- When a note saved you time or a mistake, say so: ${CLI} memory helped <note path>. That is how the most useful notes rise to the top of what later workers read.`,
   ]
 }
 
@@ -700,6 +701,24 @@ const commitMemory = (message: string) => {
   if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
 }
 
+/** beads the memory names that have closed since: what waited on them is stale */
+function closedBeads() {
+  const text = memory.corpus(MEMORY)
+  return rigs()
+    .filter(r => hasBeads(r.repo))
+    .flatMap(r => {
+      const b = beads(r.repo, 'factory/dream')
+      const prefix = b.prefix()
+      const ids = prefix ? new Set(text.match(new RegExp(`\\b${prefix}-[a-z0-9]+(?:\\.\\d+)*\\b`, 'g'))) : []
+      return [...ids].flatMap(id => {
+        const bead = b.show(id) // not a bead after all (a word with the prefix's shape): null
+        return bead?.status === 'closed'
+          ? [`- ${id} (${r.name}): ${bead.title}. Closed: ${clip(bead.close_reason ?? '', 300)}`]
+          : []
+      })
+    })
+}
+
 /**
  * grooms the memory with a headless worker that can only edit inside it: files the inbox under topics,
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
@@ -712,21 +731,23 @@ async function dream() {
     mkdirSync(MEMORY, { recursive: true })
     if (!existsSync(join(MEMORY, '.git'))) {
       git(MEMORY, 'init', '-q')
-      writeFileSync(join(MEMORY, '.gitignore'), '.index.json*\n')
     }
+    writeFileSync(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl*\n') // caches, not memory
     commitMemory('notes since the last dream')
     // the journal since the last dream that finished: a failed one leaves its entries to the next
     const since = Number(git(MEMORY, 'log', '-1', '--grep=^dream:', '--format=%at')) * 1000
     const journal = journalSince(since)
     if (!journal.length && !memory.inboxCount(MEMORY)) return 'nothing new since the last dream'
     const start = Date.now()
+    const before = git(MEMORY, 'rev-parse', 'HEAD')
+    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads())
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
       [
         ...['claude-smart', '--new', '--no-channels', '-p', '--permission-mode', 'acceptEdits'],
         ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
       ],
-      { cwd: MEMORY, stdin: Buffer.from(memory.dreamPrompt(MEMORY, journal)), timeout: 45 * 60_000 },
+      { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
     )
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
     writeFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
@@ -742,6 +763,14 @@ async function dream() {
       '-m',
       `dream: ${said}`,
     )
+    // a filed or renamed note keeps its counts
+    const renamed = Object.fromEntries(
+      git(MEMORY, 'diff', '-M', '--name-status', before, 'HEAD')
+        .split('\n')
+        .filter(l => l.startsWith('R'))
+        .map(l => l.split('\t').slice(1)),
+    )
+    memory.compact(MEMORY, renamed)
     return said
   } finally {
     release()
@@ -1222,6 +1251,7 @@ const usage = `factory — herdr software factories on xstate
   home                               the factory these commands work: FACTORY_HOME, else found from here
   memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
   memory add [--rig r] [--from run/station] <summary> [body...]   save a learning to the memory's inbox
+  memory helped <note path...>       a note helped: the dream ranks notes by this
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
                                      (each tick starts one a day)
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
@@ -1267,6 +1297,11 @@ if (import.meta.main)
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
           const found = await memory.search(MEMORY, words.join(' '), { rig })
+          memory.use(
+            MEMORY,
+            found.map(f => f.note.path),
+            'shown',
+          )
           console.log(
             found
               .map(({ note: n, score }) =>
@@ -1284,9 +1319,15 @@ if (import.meta.main)
           const [summary, ...body] = words
           const at = new Date().toISOString().slice(0, 10)
           console.log(memory.add(MEMORY, { summary: summary!, body: body.join(' '), rig, from, at }))
+        } else if (sub === 'helped' && words.length) {
+          const paths = words.map(w => relative(MEMORY, resolve(MEMORY, w)))
+          const bad = paths.filter(p => p.startsWith('..') || !existsSync(join(MEMORY, p)))
+          if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
+          memory.use(MEMORY, paths, 'helped')
+          console.log(`noted: ${paths.join(', ')}`)
         } else
           fail(
-            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] <summary> [body...]',
+            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] <summary> [body...] | helped <note path...>',
           )
         break
       }

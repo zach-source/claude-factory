@@ -2,7 +2,20 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { add, format, inboxCount, outline, parse, rank, search, type Note } from './memory'
+import {
+  add,
+  compact,
+  format,
+  inboxCount,
+  outline,
+  parse,
+  rank,
+  search,
+  usage,
+  usageLines,
+  use,
+  type Note,
+} from './memory'
 
 test('a note keeps its summary, rig and provenance through a write and a read', () => {
   const note = {
@@ -63,3 +76,24 @@ test('semantic search finds the note that means the query, not the one that shar
   const [top] = await search(dir, 'why is the issue tracker frozen for all projects?')
   expect(top!.note.summary).toContain('stalls every repo')
 }, 60_000)
+
+test('usage follows a note the dream files, and is dropped with a note it removes', () => {
+  const dir = join(tmpdir(), `memory-usage-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const day = Date.parse('2026-10-06T12:00:00Z')
+  use(dir, ['inbox/lock.md', 'inbox/gone.md'], 'shown', day)
+  use(dir, ['inbox/lock.md'], 'shown', day + 1)
+  use(dir, ['inbox/lock.md'], 'helped', day + 2)
+  expect(usage(dir).get('inbox/lock.md')).toEqual({ path: 'inbox/lock.md', shown: 2, helped: 1, at: day + 2 })
+
+  // the dream moved lock.md under beads/ and removed gone.md
+  writeFileSync(join(dir, 'beads', 'lock.md'), format({ summary: 'bd init locks every repo', body: '' }))
+  writeFileSync(join(dir, 'beads', 'unused.md'), format({ summary: 'never searched for', body: '' }))
+  compact(dir, { 'inbox/lock.md': 'beads/lock.md' })
+  expect([...usage(dir).keys()]).toEqual(['beads/lock.md'])
+  expect(usageLines(dir)).toEqual([
+    '- beads/lock.md: helped 1, shown 2, last used 2026-10-06',
+    '- beads/unused.md: never shown',
+  ])
+})
