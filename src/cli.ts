@@ -653,11 +653,26 @@ async function createTracked(
 }
 
 /** the bead a new run works: the one its goal names, or a new one when the repo tracks beads */
+/** a run's tasks are its bead's children, and its release waits on every one: a bead whose children
+ * already exist is worked child by child, a run each */
+const openChildren = (b: ReturnType<typeof beads>, id: string) =>
+  b.children(id).filter(x => x.status !== 'closed')
+
 function beadFor(repo: string, goal: string, extra: string[] = []) {
   if (!hasBeads(repo)) return { goal }
   const b = beads(repo, 'factory')
   const named = /^[a-z][\w-]*-[\w.]+$/i.test(goal.trim()) ? b.show(goal.trim()) : null
-  if (named) return { goal: goalOf(named), bead: named.id }
+  if (named) {
+    const open = openChildren(b, named.id)
+    if (open.length)
+      fail(
+        `${named.id} has ${open.length} open child bead(s), which its release would wait on: start those instead (${open
+          .slice(0, 6)
+          .map(x => `${x.id} ${x.status}`)
+          .join(', ')})`,
+      )
+    return { goal: goalOf(named), bead: named.id }
+  }
   return { goal, bead: b.create(clip(goal.split('\n')[0]!, 100), goal, ...extra) }
 }
 
@@ -720,7 +735,9 @@ async function dispatch(out: { runs: Row[]; started: string[] }) {
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
       const ready = beads(rig.repo, 'factory').ready()
-      for (const bead of dispatchable(ready, linked, Math.max(0, room(rig, busy)))) {
+      const b = beads(rig.repo, 'factory')
+      const whole = ready.filter(x => !openChildren(b, x.id).length)
+      for (const bead of dispatchable(whole, linked, Math.max(0, room(rig, busy)))) {
         let run, def
         try {
           ;({ run, def } = await createTracked(rig.factory, preview.name, rig.repo, goalOf(bead), bead.id))
