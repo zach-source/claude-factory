@@ -423,7 +423,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const isClaude = /\bclaude/.test(agentOfNode(def, node))
   // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
   // resume the conversation in the same pane, once, as for a pane that closed
-  if (info && !info.agent && c.session && isClaude) {
+  // a just-resumed Claude takes seconds to show: give it the launch grace before calling it gone again
+  if (info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
     if (c.resumes >= 1) {
       send({ type: 'FAIL', seq: c.seq, reason: `the worker's Claude exited in pane ${c.pane}` })
       return status
