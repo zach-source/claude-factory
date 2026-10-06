@@ -148,7 +148,8 @@ Report ready with the pull request link, the CI status and exactly what shipping
       timeoutMin: 90,
       prompt: `Ship the approved pull request the repo's way. First check what is already done (merged? tagged? deployed?) and do only what is not.
 Before the change lands, record the production baseline it will be compared against: error rate, latency, saturation and cost signals. Then merge, tag or publish, run or watch the deploy pipeline to the end, verify the rollout (for example kubectl rollout status) and run a smoke check.
-Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a change to .factory/ only, which runs started from now on follow); failed when the rollout did not complete.`,
+Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a change to .factory/ only, which runs started from now on follow); failed when the rollout did not complete.
+When the pull request cannot land yet because the repo wants something only a person can give (an approving review, an admin merge, a required check a human runs), or a queue or another release holds it, do not report failed: nothing has reached production. Report blocked with the pull request link and exactly what it waits for, so the person is asked; you are woken to check again.`,
       next: { deployed: { to: 'soak', delayMin: 15 }, published: 'done', failed: 'rollback' },
     },
     soak: {

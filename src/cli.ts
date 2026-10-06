@@ -23,6 +23,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
   compile,
+  isParked,
   reach,
   unread,
   validate,
@@ -252,6 +253,7 @@ const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-dig
 function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
+  const parked = isParked(c, node) ? c.log.at(-1) : undefined
   // a fresh worker is told what earlier ones already committed, so it builds on it rather than redoing it
   const committed = run.base ? git(run.worktree, 'log', '--oneline', '-n', '30', `${run.base}..HEAD`) : ''
   return [
@@ -282,6 +284,14 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
         ]
       : []),
     ...(lastFail ? ['', '## The previous attempt failed', lastFail.summary] : []),
+    ...(parked
+      ? [
+          '',
+          '## The previous worker was blocked',
+          parked.summary,
+          'Check whether that still holds before anything else; if it does, report blocked again.',
+        ]
+      : []),
     ...(committed
       ? ['', '## Already committed on this branch (build on it, do not redo it)', committed]
       : []),
@@ -293,6 +303,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
+    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed.`,
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
     '',
     ...tracking(run, node),
@@ -1624,7 +1635,7 @@ if (import.meta.main)
         const [node] = where(value)
         const n = (await loadFactory(run.factory)).nodes[node]
         if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
-        const outcomes = Object.keys(n?.next ?? {}).concat('fail')
+        const outcomes = Object.keys(n?.next ?? {}).concat('fail', 'blocked')
         if (Number(seq) !== c.seq)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
@@ -1633,7 +1644,9 @@ if (import.meta.main)
           run.id,
           outcome === 'fail'
             ? { type: 'FAIL', seq: c.seq, reason: text }
-            : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
+            : outcome === 'blocked'
+              ? { type: 'BLOCKED', seq: c.seq, reason: text }
+              : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
         )
         console.log(`reported ${outcome} for ${node}; you are done, stop now`)
         break

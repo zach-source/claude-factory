@@ -207,3 +207,42 @@ test('validate rejects broken graphs', () => {
   )
   expect(validate(def)).toBe(def)
 })
+
+test('a blocked worker parks its station without spending an attempt, and mail or the clock wakes it', () => {
+  const { send } = run()
+  send({ type: 'FAIL', seq: 1, reason: 'flaky', at: 1 })
+  let s = send({ type: 'TICK', at: 20_000 })
+  expect(s.context.attempt).toBe(2) // implement allows 2: one more fail would be stuck
+  s = send({ type: 'BLOCKED', seq: 2, reason: 'PR #7 needs a human approval', at: 30_000 })
+  expect(where(s.value)).toEqual(['implement', 'waiting'])
+  expect(s.context).toMatchObject({ attempt: 2, pane: null, wakeAt: 30_000 + 60 * 60_000 })
+  expect(s.context.mail.manager?.at(-1)?.text).toStartWith('implement is parked, waiting on: PR #7')
+
+  // mail for another station, or the manager, leaves it parked; mail to it wakes a fresh worker at once
+  s = send({ type: 'MAIL', from: 'manager', to: 'review', text: 'fyi', at: 40_000 })
+  expect(where(s.value)).toEqual(['implement', 'waiting'])
+  s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'merged it', at: 50_000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context).toMatchObject({ attempt: 2, seq: 3, wakeAt: 0 })
+  expect(s.context.mail.implement?.at(-1)?.text).toBe('merged it')
+
+  // blocked again: the clock wakes it
+  send({ type: 'BLOCKED', seq: 3, reason: 'still waiting', at: 60_000 })
+  s = send({ type: 'TICK', at: 60_000 + 60 * 60_000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context.attempt).toBe(2)
+  expect(s.context.log.map(e => e.outcome)).toEqual(['fail', 'blocked', 'blocked'])
+})
+
+test('a timed edge is not cut short by mail', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { prompt: 'x', next: { ready: { to: 'review', delayMin: 15 } } } },
+  })
+  const s = send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'built', at: 1 })
+  expect(where(s.value)).toEqual(['review', 'waiting'])
+  expect(where(send({ type: 'MAIL', from: 'manager', to: 'review', text: 'hi', at: 2 }).value)).toEqual([
+    'review',
+    'waiting',
+  ])
+})

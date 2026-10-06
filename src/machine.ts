@@ -20,6 +20,8 @@ export type Node = {
   gate?: true
   /** extra attempts after the first failure before the node is stuck (default 2) */
   retries?: number
+  /** minutes a worker that reported blocked is parked before a fresh one checks again (default 60) */
+  parkMin?: number
   /** minutes before a silent worker counts as failed (default 60) */
   timeoutMin?: number
   /** worker command for this node, overrides the factory's */
@@ -81,6 +83,8 @@ export type Ev = At &
     | { type: 'RESUMED'; seq: number; pane: string }
     | { type: 'DONE'; seq: number; outcome: string; summary: string }
     | { type: 'FAIL'; seq: number; reason: string }
+    /** the worker waits on something outside the run (a person, another run, a review): park, spend no attempt */
+    | { type: 'BLOCKED'; seq: number; reason: string }
     | { type: 'MAIL'; from: string; to: string; text: string }
     | { type: 'READ'; box: string; seen: number }
     | { type: 'RETRY' }
@@ -102,7 +106,7 @@ export function validate(def: Factory): Factory {
         !Object.keys(node.next).length && `${id}: has no outcomes`,
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
         ...Object.entries(node.next).flatMap(([outcome, edge]) => [
-          outcome === 'fail' && `${id}: outcome "fail" is reserved for retries`,
+          (outcome === 'fail' || outcome === 'blocked') && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&
             !ids.includes(edgeTo(edge)) &&
             `${id}: outcome "${outcome}" goes to unknown node "${edgeTo(edge)}"`,
@@ -123,6 +127,15 @@ export function validate(def: Factory): Factory {
 }
 
 const post = (mail: Ctx['mail'], to: string, m: Mail) => ({ ...mail, [to]: [...(mail[to] ?? []), m] })
+const withMail = ({ context, event }: { context: Ctx; event: Ev }) => {
+  const { from, to, text, at } = event as Extract<Ev, { type: 'MAIL' }>
+  return { mail: post(context.mail, to, { from, text, at }) }
+}
+/** parked by its own worker's blocked report, as opposed to waiting out a timed edge */
+export const isParked = (c: Ctx, node: string) => {
+  const last = c.log.at(-1)
+  return last?.node === node && last.outcome === 'blocked'
+}
 
 export function compile(def: Factory) {
   validate(def)
@@ -147,9 +160,19 @@ export function compile(def: Factory) {
       })),
       states: {
         // a timed edge parks the run here, with no worker, until wakeAt; any other arrival passes straight through
+        // a blocked worker parks here too, and mail to the station wakes it early
         waiting: {
           always: { guard: ({ context }: { context: Ctx }) => context.wakeAt === 0, target: 'working' },
           on: {
+            MAIL: [
+              {
+                guard: ({ context, event }: { context: Ctx; event: Ev }) =>
+                  event.type === 'MAIL' && event.to === id && isParked(context, id),
+                target: 'working',
+                actions: assign(withMail),
+              },
+              { actions: assign(withMail) },
+            ],
             TICK: {
               guard: ({ context, event }: { context: Ctx; event: Ev }) => event.at >= context.wakeAt,
               target: 'working',
@@ -235,6 +258,24 @@ export function compile(def: Factory) {
                   : { log, mail, pane: null }
               }),
             })),
+            BLOCKED: {
+              guard: isCurrent,
+              target: 'waiting',
+              actions: assign(({ context, event }) => {
+                const { reason, at } = event as Extract<Ev, { type: 'BLOCKED' }>
+                const wakeAt = at + (node.parkMin ?? 60) * 60_000
+                const text = `${id} is parked, waiting on: ${reason}. It checks again at ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
+                return {
+                  log: [
+                    ...context.log,
+                    { node: id, attempt: context.attempt, outcome: 'blocked', summary: reason, at },
+                  ],
+                  mail: post(context.mail, 'manager', { from: id, text, at }),
+                  pane: null,
+                  wakeAt,
+                }
+              }),
+            },
             FAIL: [
               {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
@@ -309,11 +350,7 @@ export function compile(def: Factory) {
       log: [],
     },
     on: {
-      MAIL: {
-        actions: assign(({ context, event }) => ({
-          mail: post(context.mail, event.to, { from: event.from, text: event.text, at: event.at }),
-        })),
-      },
+      MAIL: { actions: assign(withMail) },
       READ: {
         actions: assign(({ context, event }) => ({
           seen: { ...context.seen, [event.box]: event.seen },

@@ -203,7 +203,7 @@ export default {
 } satisfies Factory
 ```
 
-Per station: `retries` (default 2), `timeoutMin` (60), `agent` (worker command), and
+Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command), and
 `gate: true` for a station the person decides instead of a worker. An edge can wait:
 `{ to: 'soak', delayMin: 15 }` parks the run with no worker; `goto` skips the wait.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
@@ -225,6 +225,11 @@ edge refills it, so a sweep loops forever). Edits apply at the next tick.
   without reporting (after two nudges) backs off and retries with a fresh worker.
   Out of retries, the station is stuck and the manager is paged. Stations with
   side effects you never want repeated: `retries: 0`.
+- **Parking**: a worker waiting on something outside the run (a person's decision, a
+  human review or merge, another run) reports `blocked "<what>"`. The run parks at that
+  station with no worker and no attempt spent, the manager is told what it waits for, and
+  a fresh worker checks again after `parkMin` or as soon as the station is mailed. Deploy
+  parks this way on a pull request the repo will only let a person approve or merge.
 - **Durable workers**: a worker whose pane dies resumes its own Claude session once
   before falling back to a retry; fresh workers are told what the branch already
   committed. Reports carry the worker's `seq`, so stale and duplicate ones drop.
