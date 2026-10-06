@@ -81,6 +81,8 @@ const rt = {
   home: '',
   timer: undefined as { cancel: () => void } | undefined,
   isTicking: false,
+  /** a tick was asked for while one ran: run another right after it, so an action shows at once */
+  isTickWanted: false,
   isAutopilot: true,
   cwd: '',
   agents: new Map<string, string | null | undefined>(),
@@ -98,7 +100,10 @@ async function factory($: EngineInterface, args: string[]) {
 }
 
 async function tick($: EngineInterface) {
-  if (rt.isTicking) return
+  if (rt.isTicking) {
+    rt.isTickWanted = true
+    return
+  }
   rt.isTicking = true
   try {
     const { isOk, out } = await factory($, ['tick'])
@@ -137,6 +142,10 @@ async function tick($: EngineInterface) {
     $.ui.status(String(err).slice(0, 80))
   } finally {
     rt.isTicking = false
+    if (rt.isTickWanted) {
+      rt.isTickWanted = false
+      void tick($)
+    }
   }
 }
 
@@ -193,9 +202,10 @@ async function refresh($: EngineInterface) {
 }
 
 async function act($: EngineInterface, args: string[]) {
-  const { out } = await factory($, args)
+  const { isOk, out } = await factory($, args)
   $.ui.toast(out.split('\n').at(-1) || `${args.join(' ')}: queued`)
-  await tick($)
+  void tick($)
+  return isOk
 }
 
 async function show($: EngineInterface, next: FactoryView, run?: string) {
@@ -213,7 +223,13 @@ async function show($: EngineInterface, next: FactoryView, run?: string) {
 /** a gate answered with the note the person typed for it, which then clears */
 async function decide($: EngineInterface, run: string, outcome: string) {
   const note = (await read($, draft)).notes[run] ?? ''
-  await act($, ['decide', run, outcome, ...(note ? [note] : [])])
+  if (!(await act($, ['decide', run, outcome, ...(note ? [note] : [])]))) return
+  // the decision lands at the next tick, seconds away under load: the board says so now, so the gate's
+  // buttons do not look like they did nothing
+  await update($, board, b => ({
+    ...b,
+    runs: b.runs.map(r => (r.id === run ? { ...r, gate: undefined, agent: `${outcome} decided` } : r)),
+  }))
   await update($, draft, d => ({ ...d, notes: { ...d.notes, [run]: '' } }))
 }
 
