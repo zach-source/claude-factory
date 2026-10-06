@@ -708,17 +708,18 @@ async function dream() {
   const release = hold('dream.lock')
   if (!release) return 'a dream is already running'
   try {
-    const stamp = join(HOME, 'dream.stamp')
-    const since = existsSync(stamp) ? statSync(stamp).mtimeMs : 0
-    writeFileSync(stamp, '') // a failed dream waits for the next day too, rather than retrying every tick
-    const journal = journalSince(since)
-    if (!journal.length && !memory.inboxCount(MEMORY)) return 'nothing new since the last dream'
+    writeFileSync(join(HOME, 'dream.stamp'), '') // a failed dream waits for the next day too, rather than retrying every tick
     mkdirSync(MEMORY, { recursive: true })
     if (!existsSync(join(MEMORY, '.git'))) {
       git(MEMORY, 'init', '-q')
       writeFileSync(join(MEMORY, '.gitignore'), '.index.json*\n')
     }
     commitMemory('notes since the last dream')
+    // the journal since the last dream that finished: a failed one leaves its entries to the next
+    const since = Number(git(MEMORY, 'log', '-1', '--grep=^dream:', '--format=%at')) * 1000
+    const journal = journalSince(since)
+    if (!journal.length && !memory.inboxCount(MEMORY)) return 'nothing new since the last dream'
+    const start = Date.now()
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
       [
@@ -728,7 +729,19 @@ async function dream() {
       { cwd: MEMORY, stdin: Buffer.from(memory.dreamPrompt(MEMORY, journal)), timeout: 45 * 60_000 },
     )
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
-    commitMemory(`dream: ${said}`)
+    writeFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
+    if (p.exitCode !== 0) return said
+    git(MEMORY, 'add', '-A')
+    // committed even when it changed nothing, and dated when it began: what was journaled meanwhile is the next one's
+    git(
+      MEMORY,
+      'commit',
+      '-q',
+      '--allow-empty',
+      `--date=@${Math.floor(start / 1000)}`,
+      '-m',
+      `dream: ${said}`,
+    )
     return said
   } finally {
     release()
