@@ -16,6 +16,7 @@ export type Bead = {
   assignee?: string
   priority?: number
   issue_type?: string
+  metadata?: Record<string, unknown>
 }
 
 export const LABEL = 'factory'
@@ -28,6 +29,9 @@ export const goalOf = (b: Bead) =>
   [`${b.id}: ${b.title}`, b.description, b.acceptance_criteria && `Acceptance: ${b.acceptance_criteria}`]
     .filter(Boolean)
     .join('\n\n')
+
+/** its owner recorded decisions governing it (fabriek's pilots): the owner hands it out, not the factory */
+export const isOwned = (b: Bead) => !!b.metadata?.owner_decisions
 
 /** a `station:<name>` label starts the run there instead of at the factory's start */
 export const stationOf = (b: Bead) =>

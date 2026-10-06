@@ -33,7 +33,7 @@ import {
   type Factory,
   type Mail,
 } from './machine'
-import { actorOf, beads, dispatchable, goalOf, hasBeads, stationOf, type Bead } from './beads'
+import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -811,11 +811,15 @@ async function createTracked(
 const openChildren = (b: ReturnType<typeof beads>, id: string) =>
   b.children(id).filter(x => x.status !== 'closed')
 
-function beadFor(repo: string, goal: string, extra: string[] = []) {
+function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk = false } = {}) {
   if (!hasBeads(repo)) return { goal }
   const b = beads(repo, 'factory')
   const named = /^[a-z][\w-]*-[\w.]+$/i.test(goal.trim()) ? b.show(goal.trim()) : null
   if (named) {
+    if (isOwned(named) && !isOwnerOk)
+      fail(
+        `${named.id} carries its owner's decisions (metadata.owner_decisions): it is theirs to hand out. Start it only when the person names it, with --owned`,
+      )
     const open = openChildren(b, named.id)
     if (open.length)
       fail(
@@ -895,7 +899,9 @@ async function dispatch() {
       if (room(rig, busy) <= 0) continue // full: no bd calls at all
       const b = beads(rig.repo, 'factory')
       // children are looked up only for the candidates, until the rig is full
-      const candidates = dispatchable(b.ready(), linked, Infinity).filter(x => !openChildren(b, x.id).length)
+      const candidates = dispatchable(b.ready(), linked, Infinity).filter(
+        x => !isOwned(x) && !openChildren(b, x.id).length,
+      )
       for (const bead of candidates) {
         if (room(rig, busy) <= 0) break
         let run, def
@@ -964,7 +970,7 @@ async function defineRig(
   return rig
 }
 
-async function start(factory: string | undefined, repo: string | undefined, goal: string) {
+async function start(factory: string | undefined, repo: string | undefined, goal: string, isOwnerOk = false) {
   if (!factory || !repo || !goal) fail('usage: factory start <factory>[@station] <rig|repo> <goal...>')
   const root = repoOf(repo!)
   await assertRoom(root)
@@ -974,7 +980,7 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   const preview = await loadFactory(factorySource(spec!, root))
   if (at && !preview.nodes[at])
     fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
-  const linked = beadFor(root, goal)
+  const linked = beadFor(root, goal, { isOwnerOk })
   const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
   if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
   await tick() // launches the first worker now rather than at the next tick
@@ -1094,7 +1100,8 @@ async function status(id: string | undefined) {
 const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
 
-  start <factory>[@station] <rig|repo> <goal...|bead>   new run: herdr worktree off the repo, first worker launched
+  start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
+                                     launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--goal text...] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
@@ -1124,9 +1131,11 @@ In a repo with .beads, every run works a bead: the one its goal names, or a new 
 if (import.meta.main)
   try {
     switch (cmd) {
-      case 'start':
-        await start(args[0], args[1], args.slice(2).join(' '))
+      case 'start': {
+        const words = args.slice(2)
+        await start(args[0], args[1], words.filter(w => w !== '--owned').join(' '), words.includes('--owned'))
         break
+      }
       case 'fork':
         await fork(args[0], args[1], args.slice(2).join(' '))
         break

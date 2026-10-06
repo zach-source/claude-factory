@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { beads, dispatchable, goalOf, stationOf, type Bead } from './beads'
+import { beads, dispatchable, goalOf, isOwned, stationOf, type Bead } from './beads'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 
@@ -26,6 +26,12 @@ test('a bead becomes a goal and may name its station', () => {
   expect(stationOf(b)).toBe('incident')
   expect(stationOf(bead('fx-8', { labels: ['factory'] }))).toBeUndefined()
   expect(goalOf(bead('fx-7'))).toBe('fx-7: title fx-7')
+})
+
+test("a bead carrying its owner's decisions is theirs, not the factory's", () => {
+  expect(isOwned(bead('fx-1', { metadata: { owner_decisions: { pilot: {} } } }))).toBe(true)
+  expect(isOwned(bead('fx-2', { metadata: { speckit: {} } }))).toBe(false)
+  expect(isOwned(bead('fx-3'))).toBe(false)
 })
 
 test('a heartbeat bd cannot make keeps the claim: lost only to a named other assignee', () => {
