@@ -42,7 +42,7 @@ test("a station's model comes from its herdr agent command", () => {
   expect(ax.modelOf('claude-smart --new --dangerously-skip-permissions')).toBeUndefined()
 })
 
-test('a launch applies the run branch as the workspace and the brief as a file, and names the worker', () => {
+test('a launch applies the run branch as the workspace and the brief in the env, and names the worker', () => {
   const pane = ax.launch({
     name: 'f-r1-1',
     repo: 'https://github.com/o/app.git',
@@ -66,10 +66,7 @@ test('a launch applies the run branch as the workspace and the brief as a file, 
       dir: 'repo',
     },
   ])
-  expect(ws.spec.files[0]).toEqual({
-    path: '.factory-worker/brief.md',
-    content: 'do it',
-  })
+  expect(task.spec.env).toContainEqual({ name: 'FACTORY_BRIEF', value: 'do it' })
   expect(task.spec.command).toEqual(['factory', 'worker', 'serve', '--model', 'claude-opus-5'])
   expect(task.spec.workspaces).toEqual([{ name: 'f-r1-1', path: '/workspace/w' }])
   expect(task.spec.env).toContainEqual({
@@ -114,7 +111,7 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   const repo = join(dir, 'repo')
   mkdirSync(own, { recursive: true })
   mkdirSync(repo, { recursive: true })
-  writeFileSync(join(own, 'brief.md'), 'the brief')
+  process.env.FACTORY_BRIEF = 'the brief'
   // a fake claude: records its argv, prints a stream-json init event
   const claude = join(dir, 'claude')
   writeFileSync(

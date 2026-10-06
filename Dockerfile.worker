@@ -4,9 +4,9 @@
 # `factory worker serve`, which runs Claude headless. Build from this repo's root:
 #   docker buildx build --platform linux/amd64 -f Dockerfile.worker -t factory-worker .
 
-# AX's runner, at the commit docs/remote-runner.md was written against
+# AX's runner, at the release installed on gtr
 FROM golang:1.27-bookworm AS runner
-ARG AX_COMMIT=ac2332829f22360ff97b0ba34d94dd0dd782f17e
+ARG AX_COMMIT=v0.3.1
 RUN git clone https://github.com/google/ax /ax && git -C /ax checkout ${AX_COMMIT}
 WORKDIR /ax
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /ax-task-runner ./cmd/ax-task-runner

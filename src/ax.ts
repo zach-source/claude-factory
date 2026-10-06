@@ -48,7 +48,6 @@ export function manifest(l: Launch) {
     metadata,
     spec: {
       git: [{ name: 'origin', repo: l.repo, branch: l.branch, dir: 'repo' }],
-      files: [{ path: '.factory-worker/brief.md', content: l.brief }],
     },
   }
   const task = {
@@ -61,6 +60,8 @@ export function manifest(l: Launch) {
       env: Object.entries({
         ...l.env,
         FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
+        // AX v0.3.1's Workspace has no files, so the brief rides in the env
+        FACTORY_BRIEF: l.brief,
       }).map(([name, value]) => ({
         name,
         value,

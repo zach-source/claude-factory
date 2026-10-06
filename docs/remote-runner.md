@@ -1,11 +1,11 @@
 # Remote runner: station workers in AX microVMs on gtr
 
-**Status (2026-10-06 12:30): the images are ready to build and push, but you have to start the push.**
-You answered the questions (see the end of this doc), and `hack/push-images.sh` builds every image on gtr's
-own amd64 buildkit and pushes it to `ghcr.io/stigenai`. The auto-mode classifier refused to let the loop run
-it ("Untrusted Code Integration": it builds Substrate and AX from GitHub and pushes them to the org), so you
-have to run it (see Turning it on). After that: install Substrate on gtr with the k0s changes below, then run
-one station end to end. The agent token still needs a way in (Question 2 below).
+**Status (2026-10-06 13:30): Substrate v0.3.0 and AX v0.3.1 are installed on gtr** (images
+`ghcr.io/stigenai/substrate/*:v0.3.0-stigenai.2` and `ghcr.io/stigenai/ax/*`; atelet runs on gtr-150..153 only,
+which carry `ate.dev/substrate-version`). Only the `gvisor-default` SandboxConfig exists: no microVM class yet.
+The prototype now targets AX v0.3.1, whose Workspace has no `files`, so the brief travels in the Task's env
+(`FACTORY_BRIEF`). Next: a worker image with the v0.3.1 runner, an `ax` CLI built at v0.3.1 on the laptop,
+the `factory` atespace and the agent-vault, then one station end to end.
 
 ## Gates
 
@@ -43,10 +43,10 @@ podcertificaterequests                    certificates.k8s.io/v1beta1   true    
   - a worker that asked the manager is suspended, the answer resumes it first, and the mail is delivered on the next tick
 - **The worker image**: `docker buildx build --check -f Dockerfile.worker .` reports `Check complete, no warnings found.`, and every base image resolves, including `golang:1.27-bookworm` and the stigenai agent-vault digest. It has not been built yet (load gate).
 
-## What AX gives us (read from google/ax at ac23328)
+## What AX gives us (read from google/ax at ac23328; installed: v0.3.1)
 
 - **Task**: `spec.image`, `spec.command`, `spec.env`, `spec.resources`, `spec.workspaces`, `spec.debug`. Phases are `Pending`, `Running`, `Suspended`, `Failed` and `Terminating`.
-- **Workspace**: `spec.git` (repo, branch, `dir`) and `spec.files`. The runner prepares each workspace once, using a marker under `/ax`, and the directory survives suspend and resume.
+- **Workspace**: `spec.git` (repo, branch, `dir`); `spec.files` exists at ac23328 but not in v0.3.1. The runner prepares each workspace once, using a marker under `/ax`, and the directory survives suspend and resume.
 - **Runner contract** (docs/runner.md): PID 1 is `/usr/local/bin/ax-task-runner`. It serves `/healthz` and `/readyz` on port 80 and runs `spec.command` in the first workspace. It stays up after the command exits and forwards SIGTERM.
 - **CLI**: `ax apply -f -`, `ax get task <n>` (YAML), `ax suspend task`, `ax resume task`, `ax delete task|workspace`, and `ax ssh <task> -- cmd` (needs `spec.debug: true`). `ax` parses `-a`, `-n`, `--server` and `--context` anywhere on its command line, including after `--`. That is why prompts travel as base64.
 - **Networking**: tasks have no Service. Everything goes through `atenet-router` with header `ate-target-actor: <atespace>/<task>`, and the router **resumes a suspended task** before it proxies the request.
@@ -61,7 +61,7 @@ A herdr worker is touched in four places: `spawn`, `paneInfo`, `herdr agent prom
 ### A station as an AX Task
 
 - **One Task per worker launch**, named `f-<run>-<seq>` (an RFC 1123 label of at most 63 characters, keeping the seq), in atespace `factory` (`FACTORY_AX_ATESPACE`). It has one Workspace of the same name, mounted at `/workspace/w`.
-- **Workspace**: the run's branch cloned into `/workspace/w/repo` (`git: [{repo: <https remote>, branch, dir: repo}]`). The brief is written to `/workspace/w/.factory-worker/brief.md`, outside the repo so a worker can't commit it. Before applying the Task, the laptop pushes the run branch, because the VM clones it from GitHub. A `git@` remote is rewritten to https, because the VM has no ssh key and agent-vault brokers the GitHub credential.
+- **Workspace**: the run's branch cloned into `/workspace/w/repo` (`git: [{repo: <https remote>, branch, dir: repo}]`). The brief travels in the Task's env as `FACTORY_BRIEF` (v0.3.1's Workspace has no `files`), so it never lands in the repo. Before applying the Task, the laptop pushes the run branch, because the VM clones it from GitHub. A `git@` remote is rewritten to https, because the VM has no ssh key and agent-vault brokers the GitHub credential.
 - **Brief**: the same brief a herdr worker gets, with the laptop's CLI path replaced by `factory` and the worktree path replaced by `/workspace/w/repo`. It adds one line: push to `origin <branch>` before reporting.
 - **Command**: `factory worker serve [--model M]` (`src/worker.ts`). It runs `claude -p --dangerously-skip-permissions --output-format stream-json --verbose` on the brief and takes the session id from the stream. Each queued prompt (`.factory-worker/prompts/`) then runs as another `--resume <session>` turn, one at a time, and the file is deleted only after its turn. **A nudge or a mail reply continues the same session.**
 - **Session survival**: Claude keeps sessions in `~/.claude`, which a resumed task loses, because only `/workspace` is restored. So the Task sets `CLAUDE_CONFIG_DIR=/workspace/w/.factory-worker/claude`, and `serve` reads `state.json` so it never briefs a session twice.

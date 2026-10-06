@@ -64,8 +64,10 @@ export async function serve(model?: string, { idleMs = 1000, once = false } = {}
   let session = state()?.session
   const set = (status: State['status']) => save({ status, session, pid: process.pid })
   if (!session) {
+    const brief = process.env.FACTORY_BRIEF
+    if (!brief) throw new Error('FACTORY_BRIEF is not set: the task carries the brief in its env')
     set('working')
-    session = await turn(readFileSync(join(own(), 'brief.md'), 'utf8'), model)
+    session = await turn(brief, model)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
