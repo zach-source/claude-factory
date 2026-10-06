@@ -320,8 +320,8 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
 
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
-  const prompt = session ? promptOf(run, node, c).replace(/\.md$/, '-resume.md') : promptOf(run, node, c)
-  writeFileSync(prompt, session ? resumeNote(run, node, c) : brief(run, def, node, c, c.mail[node] ?? []))
+  const prompt = session ? resumeFile(run, node, c) : promptOf(run, node, c)
+  if (!session) writeFileSync(prompt, brief(run, def, node, c, c.mail[node] ?? []))
   const tab = () =>
     herdr(
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
@@ -353,6 +353,12 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   return pane
 }
 
+/** the note a resumed worker is sent, written where its launch reads it */
+function resumeFile(run: Run, node: string, c: Ctx) {
+  const file = promptOf(run, node, c).replace(/\.md$/, '-resume.md')
+  writeFileSync(file, resumeNote(run, node, c))
+  return file
+}
 const agentOfNode = (def: Factory, node: string) => def.nodes[node]!.agent ?? def.agent ?? AGENT
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
 function launch(def: Factory, node: string, prompt: string, session?: string) {
@@ -414,7 +420,20 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   }
   const status = info?.status ?? null
   // only a claude worker shows herdr an agent; another command (a script, a fake worker) never would
-  if (info && !info.agent && !c.session && /\bclaude/.test(agentOfNode(def, node))) {
+  const isClaude = /\bclaude/.test(agentOfNode(def, node))
+  // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
+  // resume the conversation in the same pane, once, as for a pane that closed
+  if (info && !info.agent && c.session && isClaude) {
+    if (c.resumes >= 1) {
+      send({ type: 'FAIL', seq: c.seq, reason: `the worker's Claude exited in pane ${c.pane}` })
+      return status
+    }
+    herdr('pane', 'send-keys', c.pane, 'ctrl+u')
+    herdr('pane', 'run', c.pane, launch(def, node, resumeFile(run, node, c), c.session))
+    send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
+    return 'resuming'
+  }
+  if (info && !info.agent && !c.session && isClaude) {
     const step = relaunch(now - Math.max(c.startedAt, c.nudgedAt), c.nudges)
     if (step === 'fail') {
       send({
