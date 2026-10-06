@@ -4,6 +4,12 @@ Each release is tagged `v<version>` and its version is set in `package.json` and
 `mod/.claude-plugin/plugin.json`. Versions follow [semver](https://semver.org); until 1.0 a
 minor release may change the factory format, the CLI or the run state.
 
+## Unreleased
+
+- `factory manager` starts a factory's manager lean: Bash and file tools only, no MCP servers,
+  claude.ai connectors or Chrome. A manager started with `claude-smart` carried ~134k tokens of
+  tool definitions into every call; this one starts at ~29k.
+
 ## 0.2.0 (2026-10-06)
 
 - herdr's sidebar shows each run's station and what holds it (`$factory` on the run's workspace:

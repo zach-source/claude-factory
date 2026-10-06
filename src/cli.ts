@@ -419,6 +419,28 @@ function launch(run: Run, def: Factory, node: string, prompt: string, session?: 
  * /fanout workers would compete with the runner, which owns its workers' panes. The mods come from
  * CLAUDE_CODE_PLUGIN_DIRS in the user's settings env, which the shell cannot override: --settings can.
  */
+/**
+ * The manager drives the factory through Bash and the factory CLI, and every call it makes re-reads its
+ * whole tool list: a session with the user's MCP servers, connectors, Chrome and every built-in carried
+ * ~130k tokens of tool definitions into each patrol. So it starts with only what it uses.
+ */
+const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion'
+export const managerCommand = (extra: string[] = []) => [
+  'claude',
+  '--model',
+  'opus[1m]',
+  '--allow-dangerously-skip-permissions',
+  '--strict-mcp-config', // and no --mcp-config: no MCP servers
+  '--no-chrome',
+  '--tools',
+  MANAGER_TOOLS,
+  '--plugin-dir',
+  join(ROOT, 'mod'),
+  '--settings',
+  JSON.stringify({ env: { ...withoutFleet().env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } }),
+  ...extra,
+]
+
 export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => ({
   env: {
     CLAUDE_CODE_PLUGIN_DIRS: dirs
@@ -1501,6 +1523,7 @@ const usage = `factory — herdr software factories on xstate
                                      the approve gate, review loops, failures by kind, each station's outcomes
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
+  manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
@@ -1543,6 +1566,14 @@ if (import.meta.main)
       case 'beads':
         await beadsPass()
         break
+      case 'manager': {
+        // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
+        const p = Bun.spawnSync(managerCommand(args), {
+          stdio: ['inherit', 'inherit', 'inherit'],
+          env: { ...process.env, CLAUDE_CODE_NO_FLICKER: '1' },
+        })
+        process.exit(p.exitCode ?? 1)
+      }
       case 'home':
         console.log(HOME)
         break
@@ -1753,7 +1784,7 @@ if (import.meta.main)
           [
             `a new factory in ${dir}. Commands run in that directory work it; add its rigs there:`,
             `  cd ${dir} && ${CLI} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
-            `and run its manager there: CLAUDE_CODE_NO_FLICKER=1 claude-smart --new --plugin-dir ${join(ROOT, 'mod')} --settings '${JSON.stringify(withoutFleet())}' (fullscreen, so the console docks beside the chat; without herdr-fleet)`,
+            `and run its manager there: ${CLI} manager (fullscreen, so the console docks beside the chat; lean: no MCP servers, without herdr-fleet)`,
           ].join('\n'),
         )
         break
