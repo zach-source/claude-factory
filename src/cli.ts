@@ -1339,6 +1339,8 @@ if (import.meta.main)
       case 'rm': {
         const { run, value } = current(args[0])
         if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
+        // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
+        rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
         // no --force: herdr refuses a worktree with uncommitted work; the branch always stays
         herdr('worktree', 'remove', '--workspace', run.ws)
         rmSync(runDir(run.id), { recursive: true })
