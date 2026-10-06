@@ -133,8 +133,8 @@ In a repo with `.beads/`, beads is the factory's task tracker:
 - **The journal mirrors into the bead**: every station's report becomes a comment (a
   sweep's routine passes excepted), and workers' bd writes carry `factory/<run>/<station>`.
 - **The end of a run settles its bead**: shipped or otherwise finished closes it; a hold or an
-  abort defers it, unassigned (undefer it to hand it back); a run that ends with open child beads
-  leaves it open and unassigned for them.
+  abort defers it, unassigned (undefer it to hand it back); with open child beads, however the run
+  ended, it stays open and unassigned for them.
 - **The backlog dispatches itself**: every rig's ready, unassigned, top-level beads labeled
   `factory` become runs, every 30 s while the rig and the town have room. A
   `station:<name>` label starts one at that station.

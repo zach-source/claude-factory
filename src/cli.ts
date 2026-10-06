@@ -495,15 +495,16 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     const last = c.log.at(-1)
     const edge = last && def.nodes[last.node]?.next[last.outcome]
     const reason = clip(last ? `${last.node} ${last.outcome}: ${last.summary}` : node, 500)
-    // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
-    if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
-    else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
-    else if (!b.close(id, reason)) {
-      // open children: what is left is theirs to start, so the bead stays open, not deferred out of
-      // sight (dispatch skips a bead with open children, so it does not come straight back)
+    // open children, however the run ended: what is left is theirs to start, so the bead stays open
+    // rather than deferred out of sight (dispatch skips it, so it does not come straight back)
+    if (openChildren(b, id).length) {
       b.release(id)
       b.comment(id, `run ${run.id} ended with open child beads, so this stays open for them: ${reason}`)
     }
+    // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
+    else if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
+    else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
+    else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
