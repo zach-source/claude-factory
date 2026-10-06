@@ -84,6 +84,17 @@ test('failures back off, retry, then get stuck and page the manager', () => {
   expect(s.context).toMatchObject({ attempt: 1, seq: 3 })
 })
 
+test('only nudges a worker ignores count: seen working, it starts over', () => {
+  const { send } = run()
+  send({ type: 'NUDGED', seq: 1, at: 100 })
+  let s = send({ type: 'NUDGED', seq: 1, at: 200 })
+  expect(s.context).toMatchObject({ nudges: 2, nudgedAt: 200 })
+  s = send({ type: 'WORKING', seq: 1, at: 300 })
+  expect(s.context).toMatchObject({ nudges: 0, nudgedAt: 300 })
+  s = send({ type: 'WORKING', seq: 9, at: 400 }) // a stale worker's activity is not this one's
+  expect(s.context.nudgedAt).toBe(300)
+})
+
 test('mail, read, goto, self-loop and abort', () => {
   const { send } = run()
   let s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'use bun', at: 1 })

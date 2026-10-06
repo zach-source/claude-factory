@@ -52,7 +52,9 @@ export type Ctx = {
   session: string | null
   resumes: number
   startedAt: number
+  /** when the worker was last nudged or seen working: its idle time counts from here */
   nudgedAt: number
+  /** nudges since the worker was last seen working */
   nudges: number
   retryAt: number
   /** launches allowed before the run is held as stuck */
@@ -74,6 +76,7 @@ export type Ev = At &
     | { type: 'SPAWNED'; seq: number; pane: string; isResume?: boolean }
     | { type: 'SESSION'; seq: number; session: string }
     | { type: 'NUDGED'; seq: number }
+    | { type: 'WORKING'; seq: number }
     | { type: 'DONE'; seq: number; outcome: string; summary: string }
     | { type: 'FAIL'; seq: number; reason: string }
     | { type: 'MAIL'; from: string; to: string; text: string }
@@ -189,6 +192,12 @@ export function compile(def: Factory) {
             NUDGED: {
               guard: isCurrent,
               actions: assign(({ context, event }) => ({ nudges: context.nudges + 1, nudgedAt: event.at })),
+            },
+            // a worker that answers a nudge by working is alive (waiting on a background task, say):
+            // only nudges it ignores count toward failing it, and the station's timeout bounds the rest
+            WORKING: {
+              guard: isCurrent,
+              actions: assign(({ event }) => ({ nudges: 0, nudgedAt: event.at })),
             },
             DONE: Object.entries(node.next).map(([outcome, edge]) => ({
               guard: ({ context, event }: { context: Ctx; event: Ev }) =>

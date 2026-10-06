@@ -351,6 +351,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
+  if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   if (status === null) send({ type: 'FAIL', seq: c.seq, reason: `worker pane ${c.pane} was closed` })
   else if (now - c.startedAt > timeoutMin * 60_000)
     send({ type: 'FAIL', seq: c.seq, reason: `no report within ${timeoutMin} min` })
@@ -365,7 +366,12 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (c.nudges >= NUDGES) send({ type: 'FAIL', seq: c.seq, reason: 'worker stopped without reporting' })
     else {
       const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
-      herdr('agent', 'prompt', c.pane, `[factory] You have not reported. If you are finished run: ${cmd}`)
+      herdr(
+        'agent',
+        'prompt',
+        c.pane,
+        `[factory] You have not reported. If you are finished run: ${cmd}. If you are still working or waiting on something, say in one line what, and carry on.`,
+      )
       send({ type: 'NUDGED', seq: c.seq })
     }
   }
@@ -888,7 +894,8 @@ async function status(id: string | undefined) {
     const r = row(run, def, value, c, agentOf(def, value, c))
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
     console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
-    console.log(`  goal: ${r.goal}`)
+    // a bead's goal carries its whole description: bd show <bead> has it
+    console.log(`  goal: ${clip(r.goal!.split('\n')[0]!, 200)}`)
     if (id) console.log(`  factory: ${run.factoryFrom ?? run.factory}`)
     if (r.error) console.log(`  error: ${r.error}`)
     if (id && run.bead) {
