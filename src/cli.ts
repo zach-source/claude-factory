@@ -52,6 +52,8 @@ const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
 const DREAM_MS = 24 * 3600_000
+const DREAM_SOON_MS = 2 * 3600_000
+const INBOX_FULL = 12
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const NUDGES = 2 // ...this many times, then fails
@@ -270,15 +272,15 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
 
 /** the memory's top two levels, and how to reach the third: search before, add what was learned */
 function remembered(run: Run, node: string) {
-  const { core, topics } = memory.outline(MEMORY)
   const rig = rigOf(run.repo)?.name
+  const { core, topics } = memory.outline(MEMORY, rig)
   return [
     '## Factory memory',
     `What this factory's workers learned before you, in ${MEMORY}.`,
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
     `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
-    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node}${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so. A lesson that holds only while a bead is open names it ("until <bead> closes").`,
+    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node}${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so. A lesson that holds only while a bead is open names it ("until <bead> closes"). What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     `- When a note saved you time or a mistake, say so: ${CLI} memory helped <note path>. That is how the most useful notes rise to the top of what later workers read.`,
   ]
 }
@@ -814,10 +816,13 @@ async function dream() {
     release()
   }
 }
-/** once a day; the dream itself skips when nothing is new */
+/** once a day, or sooner when the inbox fills; the dream itself skips when nothing is new */
 const kickDream = () => {
   const stamp = join(HOME, 'dream.stamp')
-  if (isHeld('dream.lock') || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DREAM_MS)) return
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  // fabriek's workers filed 25 notes in the first 7 hours: a day's wait leaves them unfiled and duplicated
+  const isFull = age >= DREAM_SOON_MS && memory.inboxCount(MEMORY) >= INBOX_FULL
+  if (isHeld('dream.lock') || (age < DREAM_MS && !isFull)) return
   spawnChild(CLI, ['dream'], {
     detached: true,
     stdio: 'ignore',
@@ -1288,7 +1293,8 @@ const usage = `factory — herdr software factories on xstate
   status [run]                       runs at a glance, or one run's full log
   home                               the factory these commands work: FACTORY_HOME, else found from here
   memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
-  memory add [--rig r] [--from run/station] <summary> [body...]   save a learning to the memory's inbox
+  memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]   save a learning to the memory's
+                                     inbox; one an existing note already says counts as that note helping
   memory helped <note path...>       a note helped: the dream ranks notes by this
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
                                      (each tick starts one a day)
@@ -1354,9 +1360,21 @@ if (import.meta.main)
               .join('\n\n') || `nothing in ${MEMORY} yet`,
           )
         } else if (sub === 'add' && words[0]) {
-          const [summary, ...body] = words
-          const at = new Date().toISOString().slice(0, 10)
-          console.log(memory.add(MEMORY, { summary: summary!, body: body.join(' '), rig, from, at }))
+          const isAnyway = words.includes('--anyway')
+          const [summary, ...body] = words.filter(w => w !== '--anyway')
+          const note = { summary: summary!, body: body.join(' '), rig }
+          const dup = isAnyway ? null : await memory.same(MEMORY, note)
+          if (dup) {
+            // a hit, not a new note: the copy would only crowd search results until a dream merged it
+            memory.use(MEMORY, [dup.note.path], 'helped')
+            console.log(
+              `already noted (${dup.score.toFixed(2)}): ${join(MEMORY, dup.note.path)}\n  ${dup.note.summary}\n` +
+                `counted as helping instead. If yours adds something it lacks, add it again with --anyway.`,
+            )
+          } else {
+            const at = new Date().toISOString().slice(0, 10)
+            console.log(memory.add(MEMORY, { ...note, from, at }))
+          }
         } else if (sub === 'helped' && words.length) {
           const paths = words.map(w => relative(MEMORY, resolve(MEMORY, w)))
           const bad = paths.filter(p => p.startsWith('..') || !existsSync(join(MEMORY, p)))
@@ -1365,7 +1383,7 @@ if (import.meta.main)
           console.log(`noted: ${paths.join(', ')}`)
         } else
           fail(
-            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] <summary> [body...] | helped <note path...>',
+            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped <note path...>',
           )
         break
       }

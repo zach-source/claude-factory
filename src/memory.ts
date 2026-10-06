@@ -23,6 +23,14 @@ export type Note = { path: string; summary: string; rig?: string; from?: string;
 const MODEL = 'Xenova/bge-small-en-v1.5'
 const QUERY = 'Represent this sentence for searching relevant passages: ' // bge's retrieval instruction
 const TOPIC_WEIGHT = 0.25 // a note's own match, lifted by its topic's: the hierarchy disambiguates short notes
+// measured on fabriek's first 25 notes, summary against summary: five copies of one lesson scored
+// 0.88-0.99 with each other, the closest two distinct notes 0.815 (full texts separate them less: a short
+// note against a long one scored 0.89)
+const SAME = 0.88
+// a search's matches scored 0.80-0.88, the unrelated filler after them 0.58-0.65
+// ponytail: fixed cutoffs for bge-small; recalibrate them with a different model
+const FLOOR = 0.6
+const SPREAD = 0.1
 
 export const parse = (path: string, text: string): Note => {
   const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)
@@ -129,7 +137,24 @@ export async function search(
   const { notes, topics } = walk(dir)
   const vec = await vectors(dir, [...notes, ...topics.values()])
   const [q] = await embed([QUERY + query])
-  return rank(notes, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig).slice(0, limit)
+  return close(
+    rank(notes, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig),
+    limit,
+  )
+}
+
+/** the matches, not the filler: what scores near the best and above the floor */
+export const close = <T extends { score: number }>(ranked: T[], limit: number) =>
+  ranked.filter(r => r.score >= Math.max(FLOOR, (ranked[0]?.score ?? 0) - SPREAD)).slice(0, limit)
+
+/** the note that already says this, if one does: the same lesson, by a worker who did not search first */
+export async function same(dir: string, note: Pick<Note, 'summary' | 'rig'>) {
+  const mine = walk(dir).notes.filter(n => !n.rig || !note.rig || n.rig === note.rig)
+  // ponytail: every summary embedded on each add, ~1 s per few hundred notes; cache them beside the
+  // full-text vectors if the memory grows past that
+  const [v, ...vs] = await embed([note.summary, ...mine.map(n => n.summary)])
+  const best = mine.map((n, i) => ({ note: n, score: dot(vs[i]!, v!) })).sort((a, b) => b.score - a.score)[0]
+  return best && best.score >= SAME ? best : null
 }
 
 const slug = (s: string) =>
@@ -149,9 +174,23 @@ export function add(dir: string, note: Omit<Note, 'path'>) {
   return file
 }
 
+/** CORE.md for one rig: what holds everywhere, and its own `## rig: <name>` section; other rigs' go */
+export function coreFor(text: string, rig?: string) {
+  let section: string | null = null
+  const kept = text.split('\n').filter(line => {
+    const m = /^##\s+rig:\s*(\S+)/.exec(line)
+    if (m) section = m[1]!
+    else if (/^##\s/.test(line)) section = null
+    return section === null || section === rig
+  })
+  return kept.join('\n').trim()
+}
+
 /** level 0 and level 1, for a brief: the core in full, then one line per topic */
-export function outline(dir: string) {
-  const core = existsSync(join(dir, 'CORE.md')) ? readFileSync(join(dir, 'CORE.md'), 'utf8').trim() : ''
+export function outline(dir: string, rig?: string) {
+  const core = existsSync(join(dir, 'CORE.md'))
+    ? coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig)
+    : ''
   const { notes, topics } = walk(dir)
   const count = (t: string) => notes.filter(n => topicOf(n) === t).length
   const lines = [...new Set([...topics.keys(), ...notes.map(topicOf)])]
@@ -229,11 +268,12 @@ export const dreamPrompt = (
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
 The structure, three levels:
-- CORE.md: at most 25 lines, the lessons nearly every run needs, most important first. Every rig's workers read it: only what holds for all of them and is verified (a note with a rig never goes here); link nothing, say it.
+- CORE.md: the lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig (at most 15 lines); a \`## rig: <name>\` section (at most 15 lines each) holds what nearly every run in that rig needs, and only that rig's workers read it.
 - <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
 - <topic>/<note>.md: one learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
 - inbox/: new notes from workers. Empty it every pass.
 A lesson that holds only while some bead is open (an owner's hold, a pending decision, a known outage) names that bead ("until fab-8aq4 closes") and never goes in CORE.md: when the bead closes, it is retired.
+A note about one bead's own status (already fixed on main, a duplicate of another, still live at HEAD) is not memory: it belongs in that bead's comments. Drop it, unless it teaches something about how to tell (how to check that a bead is already done, say).
 
 This pass:
 1. File every inbox note under a topic (git mv, or write a new file and git rm the old one). One that says what an existing note says: merge it into that note and git rm it.
