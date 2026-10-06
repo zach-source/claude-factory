@@ -2,6 +2,7 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import {
+  appendFileSync,
   closeSync,
   copyFileSync,
   existsSync,
@@ -35,6 +36,7 @@ import {
 } from './machine'
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
 import * as memory from './memory'
+import { createdAt, metrics, render, type RunRecord } from './metrics'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -1355,6 +1357,24 @@ async function backlog() {
   })
 }
 
+/** the runs metrics count: every live run, and the ones factory rm kept in metrics.jsonl */
+function records(): RunRecord[] {
+  const file = join(HOME, 'metrics.jsonl')
+  const kept: RunRecord[] = existsSync(file)
+    ? readFileSync(file, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l))
+    : []
+  const live = runIds().map(id => record(id))
+  const liveIds = new Set(live.map(r => r.id))
+  return [...kept.filter(r => !liveIds.has(r.id)), ...live]
+}
+function record(id: string): RunRecord {
+  const { run, value, c } = current(id)
+  return { id, rig: rigOf(run.repo)?.name, node: where(value)[0], createdAt: createdAt(id), log: c.log }
+}
+
 async function status(id: string | undefined) {
   const halt = halted()
   if (halt && !id)
@@ -1402,6 +1422,8 @@ const usage = `factory — herdr software factories on xstate
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog               JSON for the manager's views
+  metrics [--rig r] [--since 7d] [--json]   how the factory performs: fates, ship rate, time to ship and on
+                                     the approve gate, review loops, failures by kind, each station's outcomes
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   home                               the factory these commands work: FACTORY_HOME, else found from here
@@ -1533,6 +1555,27 @@ if (import.meta.main)
       case 'show':
         console.log(JSON.stringify(await show(args[0])))
         break
+      case 'metrics': {
+        const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
+        const rig = opt('--rig')
+        const since = opt('--since')
+        const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
+        if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json]')
+        const picked = records().filter(
+          r => (!rig || r.rig === rig) && Date.now() - r.createdAt < days * 86_400_000,
+        )
+        const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
+        const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
+        if (args.includes('--json'))
+          console.log(
+            JSON.stringify({ all: metrics(picked), rigs: Object.fromEntries(groups.map(g => [g, of(g)])) }),
+          )
+        else {
+          console.log(render(metrics(picked), `${basename(HOME)}${since ? `, last ${days}d` : ''}`))
+          if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g))
+        }
+        break
+      }
       case 'backlog':
         console.log(JSON.stringify(await backlog()))
         break
@@ -1725,6 +1768,8 @@ if (import.meta.main)
         rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
         // no --force: herdr refuses a worktree with uncommitted work; the branch always stays
         herdr('worktree', 'remove', '--workspace', run.ws)
+        // its record outlives it: metrics count removed runs too
+        appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
         rmSync(runDir(run.id), { recursive: true })
         console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
         break
