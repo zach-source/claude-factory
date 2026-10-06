@@ -1519,7 +1519,7 @@ if (import.meta.main)
           [
             `a new factory in ${dir}. Commands run in that directory work it; add its rigs there:`,
             `  cd ${dir} && ${CLI} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
-            `and run its manager there: claude-smart --new --plugin-dir ${join(ROOT, 'mod')}`,
+            `and run its manager there: CLAUDE_CODE_NO_FLICKER=1 claude-smart --new --plugin-dir ${join(ROOT, 'mod')} (fullscreen, so the console docks beside the chat)`,
           ].join('\n'),
         )
         break

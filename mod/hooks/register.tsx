@@ -95,6 +95,8 @@ const rt = {
   seen: new Set<string>(),
   patrolAt: 0,
   isPatrolling: false,
+  /** told once that the console sits above the prompt because the layout cannot dock it */
+  isInlineTold: false,
 }
 
 async function factory($: EngineInterface, args: string[]) {
@@ -221,7 +223,8 @@ async function show($: EngineInterface, next: FactoryView, run?: string) {
     await update($, draft, d => ({ ...d, target: '', mail: '' }))
   }
   await update($, view, () => next)
-  await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40 })
+  // columns: the dock's width beside a fullscreen transcript; rows: its height inline above the prompt
+  await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40, columns: 100 })
   await refresh($)
 }
 
@@ -355,6 +358,13 @@ export const register: Register = (on, options) => {
       $.clock.now(),
     ])
     const p = { ui, act: actions($), width: e.props.bodyColumns, now }
+    // only the fullscreen layout docks a pane beside the chat; herdr, like tmux, defaults to the main screen
+    if (e.props.placement === 'inline' && !rt.isInlineTold) {
+      rt.isInlineTold = true
+      $.ui.toast(
+        'factory: the console docks to the right of the chat only in the fullscreen layout: start Claude with CLAUDE_CODE_NO_FLICKER=1 (and 110+ columns)',
+      )
+    }
     const body =
       shown === 'run'
         ? runView(p, d, tail, dr)

@@ -14,7 +14,8 @@ bun install
 bin/factory init ~/my-factory   # a new factory: a directory for its rigs and runs
 cd ~/my-factory
 # the manager session, in a herdr pane: a session started in a factory's directory works it
-claude-smart --new --plugin-dir ~/repos/workspaces/claude-factory/mod
+# fullscreen layout: the console docks right of the chat (herdr and tmux default to the main screen)
+CLAUDE_CODE_NO_FLICKER=1 claude-smart --new --plugin-dir ~/repos/workspaces/claude-factory/mod
 ```
 
 In the manager session:
