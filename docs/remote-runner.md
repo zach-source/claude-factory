@@ -1,11 +1,10 @@
 # Remote runner: station workers in AX microVMs on gtr
 
-**Status (2026-10-06 13:30): Substrate v0.3.0 and AX v0.3.1 are installed on gtr** (images
-`ghcr.io/stigenai/substrate/*:v0.3.0-stigenai.2` and `ghcr.io/stigenai/ax/*`; atelet runs on gtr-150..153 only,
-which carry `ate.dev/substrate-version`). Only the `gvisor-default` SandboxConfig exists: no microVM class yet.
-The prototype now targets AX v0.3.1, whose Workspace has no `files`, so the brief travels in the Task's env
-(`FACTORY_BRIEF`). Next: a worker image with the v0.3.1 runner, an `ax` CLI built at v0.3.1 on the laptop,
-the `factory` atespace and the agent-vault, then one station end to end.
+**Status (2026-10-06 15:35): the worker image runs as an AX task on gtr; HTTPS egress is the blocker.**
+`ghcr.io/stigenai/factory-worker:1f12c04` (AX v0.3.1 runner) pulled and ran in gVisor about 25 s after
+`ax apply`, every tool answered over `ax ssh` (1.7 s round trip), but Substrate's egress gateway drops every
+TLS passthrough connection (below). Cleartext HTTP egress works. Next: find out why passthrough fails, or send
+all worker traffic through agent-vault over cleartext HTTP, then run one station.
 
 ## Gates
 
@@ -40,6 +39,26 @@ podcertificaterequests                    certificates.k8s.io/v1beta1   true    
   - a tick replays an AX worker's report from its outbox, advances the run and deletes the task and workspace
   - a worker that asked the manager is suspended, the answer resumes it first, and the mail is delivered on the next tick
 - **The worker image**: `docker buildx build --check -f Dockerfile.worker .` reports `Check complete, no warnings found.`, and every base image resolves, including `golang:1.27-bookworm` and the stigenai agent-vault digest. It has not been built yet (load gate).
+
+## On gtr (2026-10-06, Substrate v0.3.0-stigenai.2, AX v0.3.1, gVisor)
+
+- CLIs: `go install github.com/google/ax/cmd/ax@v0.3.1`, which tunnels to `ax-system/svc/ax-server` through
+  the kube context on its own. `kubectl-ate` has to be built from the v0.3.0 source tree, because
+  `go install` refuses it over its replace directives.
+- An atespace (`factory`) exists as soon as something is applied to it.
+- A smoke Task with the worker image went Pending to Running in about 25 s. Over `ax ssh`: Claude Code
+  2.1.291, bd 1.3.0, gh 2.98.0, agent-vault, bun 1.3.13, `factory worker poll 0` →
+  `{"status":"exited","lines":[]}`, uid 0 with `IS_SANDBOX=1`, kernel `4.19.0-gvisor`.
+- **Egress is per actor, and AX sets none.** Without an EgressPolicy the gateway logs
+  `egress denied: actor has no egress policy`. The policy lives in Substrate, not AX:
+  `kubectl ate create egress-policy <task> -a factory -f policy.yaml`. The runner will have to create it
+  after `ax apply`. That suits the design: a worker's policy can allow agent-vault and nothing else.
+- With `http: {hostnames: ["example.com"]}`, `curl http://example.com/` returned 200 in 0.097 s.
+- With `tls_passthrough: {hostnames: ["api.anthropic.com"]}`, `curl https://api.anthropic.com/` fails with
+  `SSL_ERROR_SYSCALL` after 1 s. The gateway opens the tunnel (`egress tunnel opened`), but its passthrough
+  leg logs `flags=UH upstream=null` and Envoy warns `original_dst_load_balancer: No downstream connection or
+no original_dst`. A host the policy doesn't allow (api.github.com) fails the same way, so the gateway's
+  passthrough dataplane is broken, not the rule.
 
 ## What AX gives us (read from google/ax at ac23328; installed: v0.3.1)
 
