@@ -6,7 +6,8 @@ no route for HTTPS out of an actor: `tls_passthrough` isn't implemented in v0.3.
 MITM egress gateway (`--experimental-use-sdsmint`), which this install doesn't deploy, and cleartext rules
 match on the upstream's name, so they refuse the agent-vault proxy's `CONNECT`. Unblocking it means
 reinstalling Substrate's egress gateway with sdsmint (whoever owns the gtr install), then `https` rules for
-the vault's upstreams, or for the vault itself if it is given a TLS listener.
+the vault's upstreams, or for the vault itself if it is given a TLS listener. Asked of the install's owner
+(2026-10-06); the scratch agent-vault in `factory-spike-ax` stays up until then.
 
 ## Gates
 
