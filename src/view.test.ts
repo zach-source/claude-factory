@@ -1,6 +1,6 @@
 // the mod's pure helpers, tested here because the mod's own tests run under `claude plugin test`
 import { expect, test } from 'bun:test'
-import { bar, dur, line, patrol, rigStats, sparkline, track } from '../mod/hooks/view'
+import { bar, dur, line, mailKey, patrol, quickAnswer, rigStats, sparkline, track } from '../mod/hooks/view'
 
 test('track folds loops and marks where the run is', () => {
   expect(track(['triage', 'plan', 'implement', 'verify', 'implement'], 'verify')).toEqual([
@@ -108,4 +108,22 @@ test("a rig's stats count its own runs only, by station, with what needs the per
     aborted: 0,
   })
   expect(rigStats({ name: 'api' }, runs).room).toBeNull() // no cap of its own
+})
+
+test('a quick answer goes to the asking station, or tells the station the run moved on to what it answers', () => {
+  const m = { run: 'r1', from: 'implement', text: 'May I drop the legacy endpoint?', at: 5 }
+  expect(mailKey(m)).toBe('r1@5')
+  expect(quickAnswer(m, { node: 'implement' }, 'approve', '')).toEqual({
+    to: 'implement',
+    text: 'The person approves: go ahead.',
+  })
+  expect(quickAnswer(m, { node: 'implement' }, 'reject', 'keep it a release longer')!.text).toBe(
+    'The person rejects it: do not go ahead. keep it a release longer',
+  )
+  const moved = quickAnswer(m, { node: 'verify' }, 'reply', 'yes, behind a flag')!
+  expect(moved.to).toBe('verify')
+  expect(moved.text).toBe(
+    'About the implement station\'s message "May I drop the legacy endpoint?": The person answers: yes, behind a flag',
+  )
+  expect(quickAnswer(m, { node: 'done' }, 'approve', '')).toBeNull() // nobody would read it
 })

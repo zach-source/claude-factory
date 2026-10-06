@@ -56,7 +56,35 @@ export const clockOf = (ms: number) =>
 
 const blockKey = (r: FactoryRun) => `${r.id}:${r.node}:${r.since}`
 
-const isRunLive = (r: FactoryRun) => !!r.node && r.node !== 'done' && r.node !== 'aborted'
+/** one manager message, across ticks: a run's mail is told apart by when it was sent */
+export const mailKey = (m: Pick<FactoryMail, 'run' | 'at'>) => `${m.run}@${m.at}`
+
+/**
+ * the person's quick answer to a worker's mail, and the mailbox it goes to: the asking station's, or the
+ * station the run has moved on to, told what it answers. null when the run is over and nobody would read it.
+ */
+export function quickAnswer(
+  m: FactoryMail,
+  run: Pick<FactoryRun, 'node'> | undefined,
+  kind: 'approve' | 'reject' | 'reply',
+  note: string,
+) {
+  if (!run || !isRunLive(run)) return null
+  const said = note.trim()
+  const text =
+    kind === 'approve'
+      ? `The person approves: go ahead.${said ? ` ${said}` : ''}`
+      : kind === 'reject'
+        ? `The person rejects it: do not go ahead.${said ? ` ${said}` : ''}`
+        : `The person answers: ${said}`
+  const to = run.node === m.from ? m.from : run.node!
+  return {
+    to,
+    text: to === m.from ? text : `About the ${m.from} station's message "${line(m.text, 120)}": ${text}`,
+  }
+}
+
+const isRunLive = (r: Pick<FactoryRun, 'node'>) => !!r.node && r.node !== 'done' && r.node !== 'aborted'
 /** a run holding a worker: neither waiting on a timer nor at a gate */
 const isBusy = (r: FactoryRun) => isRunLive(r) && r.sub !== 'waiting' && !r.gate
 

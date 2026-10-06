@@ -80,6 +80,10 @@ export type FactoryDraft = {
   target: string
   /** a gate's note, per run */
   notes: Record<string, string>
+  /** what the person is typing back to a worker's mail, per message (mailKey) */
+  replies?: Record<string, string>
+  /** what the person already answered, per message */
+  answered?: Record<string, string>
 }
 
 declare module 'claude-code' {

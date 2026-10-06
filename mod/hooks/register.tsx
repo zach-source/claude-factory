@@ -28,7 +28,7 @@ import {
   type Actions,
   type UI,
 } from './views'
-import { patrol } from './view'
+import { mailKey, patrol, quickAnswer } from './view'
 
 const PANE = 'factory'
 const TICK_MS = 5000
@@ -51,6 +51,8 @@ const draft = atom(
     mail: '',
     target: '',
     notes: {},
+    replies: {},
+    answered: {},
   } as FactoryDraft,
 )
 const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'new', 'rigs'])
@@ -236,6 +238,34 @@ async function decide($: EngineInterface, run: string, outcome: string) {
   await update($, draft, d => ({ ...d, notes: { ...d.notes, [run]: '' } }))
 }
 
+/**
+ * the person's quick answer from the mailbox, mailed to the worker. The manager hears of it at its next
+ * patrol, so it does not answer the same question again.
+ */
+async function answer($: EngineInterface, m: FactoryMail, kind: 'approve' | 'reject' | 'reply') {
+  const d = await read($, draft)
+  const key = mailKey(m)
+  const reply = quickAnswer(
+    m,
+    (await read($, board)).runs.find(r => r.id === m.run),
+    kind,
+    d.replies?.[key] ?? '',
+  )
+  if (!reply) return $.ui.toast(`factory: ${m.run} has ended, nobody would read the answer`)
+  if (!(await act($, ['mail', m.run, reply.to, reply.text]))) return
+  rt.unsent.push({
+    run: m.run,
+    from: 'person',
+    text: `answered ${m.from}'s message in the console: ${reply.text}`,
+    at: Date.now(),
+  })
+  await update($, draft, x => ({
+    ...x,
+    replies: { ...x.replies, [key]: '' },
+    answered: Object.fromEntries([...Object.entries(x.answered ?? {}), [key, reply.text]].slice(-100)),
+  }))
+}
+
 async function startRun($: EngineInterface) {
   const d = await read($, draft)
   if (!d.goal.trim()) return $.ui.toast('factory: write a goal first')
@@ -256,6 +286,7 @@ function actions($: EngineInterface): Actions {
     show: (next, run) => void show($, next, run),
     draft: patch => void update($, draft, d => ({ ...d, ...patch })),
     decide: (run, outcome) => void decide($, run, outcome),
+    answer: (m, kind) => void answer($, m, kind),
     start: () => void startRun($),
     jump: pane => void jump($, pane),
   }
@@ -330,7 +361,7 @@ export const register: Register = (on, options) => {
         : shown === 'backlog'
           ? backlogView(p, bl)
           : shown === 'mail'
-            ? mailView(p, b)
+            ? mailView(p, b, dr)
             : shown === 'new'
               ? newView(p, dr, rt.cwd)
               : shown === 'rigs'

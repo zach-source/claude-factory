@@ -9,10 +9,11 @@ import type {
   FactoryDetail,
   FactoryDraft,
   FactoryEdge,
+  FactoryMail,
   FactoryRun,
   FactoryView,
 } from '../types'
-import { bar, clockOf, dur, line, rigStats, sparkline, track } from './view'
+import { bar, clockOf, dur, line, mailKey, rigStats, sparkline, track } from './view'
 
 /** what every surface the console draws on has; mobile has no Input or Select */
 export type UI = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button' | 'Code'> &
@@ -24,6 +25,8 @@ export type Actions = {
   show: (view: FactoryView, run?: string) => void
   draft: (patch: Partial<FactoryDraft>) => void
   decide: (run: string, outcome: string) => void
+  /** the person's quick answer to a worker's mail: approve, reject, or what they typed */
+  answer: (m: FactoryMail, kind: 'approve' | 'reject' | 'reply') => void
   start: () => void
   jump: (pane: string) => void
 }
@@ -557,9 +560,59 @@ export function rigsView(p: Base, board: FactoryBoard) {
   )
 }
 
-export function mailView(p: Base, board: FactoryBoard) {
+/** the answers a person gives a worker's mail in one keypress, or a gate's own outcomes */
+function quickAnswers(
+  p: Base,
+  m: FactoryMail,
+  r: FactoryRun | undefined,
+  draft: FactoryDraft,
+  isNewest: boolean,
+) {
+  const { Box, Text, Button, Input } = p.ui
+  const key = mailKey(m)
+  const done = draft.answered?.[key]
+  if (done) return <Text dimColor>✓ you: {line(done, 200)}</Text>
+  if (!r || !isLive(r)) return <Text dimColor>the run has ended</Text>
+  // a gate's question is answered by deciding it
+  if (r.gate && r.node === m.from)
+    // one gate, one set of buttons: an earlier message from it points at the newest
+    return isNewest ? gate(p, r, draft) : <Text dimColor>answer it at its newest message above</Text>
+  const typed = draft.replies?.[key] ?? ''
+  return (
+    <Box flexDirection="column">
+      {Input && (
+        <Input
+          key={`reply-${key}`}
+          placeholder="feedback for the worker (optional with approve or reject)"
+          value={typed}
+          onInput={v => p.act.draft({ replies: { ...draft.replies, [key]: v } })}
+          onSubmit={v => {
+            p.act.draft({ replies: { ...draft.replies, [key]: v } })
+            if (v.trim()) p.act.answer(m, 'reply')
+          }}
+        />
+      )}
+      <Box gap={1}>
+        <Button
+          key={`approve-${key}`}
+          label="approve"
+          variant="primary"
+          onPress={() => p.act.answer(m, 'approve')}
+        />
+        <Button key={`reject-${key}`} label="reject" onPress={() => p.act.answer(m, 'reject')} />
+        {Input && typed.trim() && (
+          <Button key={`send-${key}`} label="send feedback" onPress={() => p.act.answer(m, 'reply')} />
+        )}
+      </Box>
+    </Box>
+  )
+}
+
+export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   const { Box, Text, Button } = p.ui
   const mail = [...board.mail].reverse()
+  // oldest first, so each run and station keeps its newest message's key
+  const newest = new Set(new Map(board.mail.map(m => [`${m.run}/${m.from}`, mailKey(m)])).values())
   return (
     <Box key="mail" flexDirection="column">
       {mail.length === 0 && <Text dimColor>No mail for the manager yet.</Text>}
@@ -577,6 +630,13 @@ export function mailView(p: Base, board: FactoryBoard) {
             />
           </Box>
           <Text wrap="wrap">{line(m.text, 800)}</Text>
+          {quickAnswers(
+            p,
+            m,
+            board.runs.find(r => r.id === m.run),
+            draft,
+            newest.has(mailKey(m)),
+          )}
         </Box>
       ))}
     </Box>
