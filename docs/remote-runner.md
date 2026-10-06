@@ -82,7 +82,9 @@ A worker that is idle and has asked the manager (the existing `isAsking`) is sus
 
 ### Credentials: agent-vault brokers everything
 
-The VM never holds a real credential. The Task's env comes from `FACTORY_AX_ENV`, a JSON file on the laptop: dummy `ANTHROPIC_API_KEY` and `GH_TOKEN`, `HTTPS_PROXY=http://<agent-token>:<vault>@agent-vault.<ns>:14322`, and the vault's CA (`NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`). agent-vault swaps the dummies for the real keys on the way out. The real keys enter agent-vault only through you.
+The VM never holds a real credential. agent-vault swaps the dummy `ANTHROPIC_API_KEY` and `GH_TOKEN` for the real keys on the way out, and the real keys enter agent-vault only through you.
+
+The VM does hold an agent token, which lets it use the proxy. AX can't mount a Secret into a Task, so the token goes in the Task's env. To keep it short-lived, **every task gets its own agent** (your choice, (b)). With `FACTORY_AX_VAULT=<vault>@<host:port>` set, a launch runs `agent-vault agent create <task> --vault <vault>:proxy --token-only` with the laptop's agent-vault session, and sets `HTTPS_PROXY`/`HTTP_PROXY=http://<token>:<vault>@<host:port>`. Deleting the task runs `agent-vault agent delete <task>`, so a leaked token dies with its run. A launch that fails to apply deletes its agent straight away. `FACTORY_AX_ENV` (a JSON file) still adds the dummy keys and the vault's CA (`NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`), but no token.
 
 ### Turning it on
 
@@ -94,7 +96,8 @@ hack/push-images.sh    # prints each image@digest
 ```sh
 # on the laptop running the factory loop
 export FACTORY_AX_IMAGE=ghcr.io/stigenai/factory-worker@sha256:…   # from push-images.sh
-export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # proxy, CA, dummy keys (see Credentials)
+export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # CA and dummy keys, no token
+export FACTORY_AX_VAULT=factory@agent-vault.<ns>:14322       # one agent per task; needs `agent-vault auth login` here
 export AX_SERVER=…                                           # or let ax find it from the kube context
 factory rig add web ~/repos/web --runner ax                   # rigs.json: "runner": "ax"
 ```
@@ -124,23 +127,11 @@ Substrate's installer (`go run ./cmd/ate-setup deploy ate-system`, behind `hack/
    (`ate-setup deploy --image-repo ghcr.io/stigenai/substrate --image-tag v0.3.0`), `ax/ax-server:ac23328`,
    `factory-worker:<commit>`. Each namespace needs a pull secret, and atelet needs another way to pull
    actor images, because it doesn't read pull secrets (see Substrate on k0s).
-2. **Agent token**: mount it, don't put it in `spec.env`. But see Question 2 below: AX can't mount one.
+2. **Agent token**: AX can't mount a Secret, so (b): one agent-vault agent per task, deleted with it (built; see the credentials section).
 3. **Memory search in the VM**: an empty search is fine for a first run.
 4. **Node labels**: label only gtr-150..153 with `ate.dev/substrate-version`.
 5. **Worker commits**: keep the bot identity (`claude-factory worker`), as the image does today.
 
 ## Questions for the user
 
-2. **How the agent token gets in.** AX at ac23328 can't mount a Secret into a Task. `TaskSpec` has plain
-   `env` only, and the controller turns the env into the ActorTemplate's env, still as plain text. The one
-   secret it resolves (`gemini-api-secret` in the task's atespace) ends up in that env the same way. So a
-   "mounted" token has to come in some other way:
-   - **(a) Patch AX** (we build it from source anyway): resolve `env[].valueFrom.secretKeyRef` through the
-     controller's existing `SecretResolver`. That is about 20 lines. The value would still sit in the
-     ActorTemplate's env, but not in the Task, `ax get task` or `AX_TASK_YAML`.
-   - **(b) A per-run agent token**: the laptop runs `agent-vault agent create` for each task and revokes it
-     when the task is deleted. A token that leaks dies with its run. No AX change.
-   - **(c) The token in `spec.env`** after all, scoped to the proxy and revocable. That is what the
-     prototype does now.
-
-   I'd go with (b) and add (a) later if you want it out of the ActorTemplate too. Which one?
+None open.

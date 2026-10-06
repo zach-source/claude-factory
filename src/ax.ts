@@ -99,8 +99,36 @@ function must(args: string[], stdin?: string) {
   return r.out
 }
 
+const VAULT_CLI = () => process.env.FACTORY_AGENT_VAULT ?? 'agent-vault'
+/** FACTORY_AX_VAULT=<vault>@<host:port>, the agent-vault proxy as the VM reaches it; unset, no per-task agent */
+const vaultOf = () =>
+  process.env.FACTORY_AX_VAULT?.match(/^([^@]+)@(.+)$/)?.slice(1) as [string, string] | undefined
+function vault(args: string[]) {
+  const p = Bun.spawnSync([VAULT_CLI(), ...args])
+  return { ok: p.exitCode === 0, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
+}
+
+/**
+ * the proxy env for one task: AX can't mount a Secret, so the agent token rides in the Task's env, and each
+ * task gets its own proxy-only agent, named after it and deleted with it, so a leaked token dies with its run
+ */
+export function proxyEnv(task: string): Record<string, string> {
+  const v = vaultOf()
+  if (!v) return {}
+  const r = vault(['agent', 'create', task, '--vault', `${v[0]}:proxy`, '--token-only'])
+  if (!r.ok || !r.out) throw new Error(`agent-vault agent create: ${r.err || 'no token'}`)
+  const url = `http://${r.out}:${v[0]}@${v[1]}`
+  return { HTTPS_PROXY: url, HTTP_PROXY: url }
+}
+
 export const launch = (l: Launch) => {
-  must(['apply', '-f', '-'], manifest(l))
+  const env = { ...l.env, ...proxyEnv(l.name) }
+  try {
+    must(['apply', '-f', '-'], manifest({ ...l, env }))
+  } catch (e) {
+    if (vaultOf()) vault(['agent', 'delete', l.name])
+    throw e
+  }
   return `ax:${l.name}`
 }
 export function phase(task: string) {
@@ -116,8 +144,9 @@ export const prompt = (task: string, text: string) =>
   must(['ssh', task, '--', 'factory', 'worker', 'prompt', Buffer.from(text).toString('base64')])
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])
-/** the task and its workspace; gone already is fine */
+/** the task, its workspace and its agent; gone already is fine */
 export function remove(task: string) {
   ax(['delete', 'task', task])
   ax(['delete', 'workspace', task])
+  if (vaultOf()) vault(['agent', 'delete', task])
 }

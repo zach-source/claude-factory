@@ -153,3 +153,28 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   ])
   expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
 })
+
+test('with FACTORY_AX_VAULT each task gets its own proxy agent, deleted with the task', () => {
+  const vlog = join(dir, 'vault.log')
+  const fakeVault = join(dir, 'agent-vault')
+  writeFileSync(fakeVault, `#!/bin/sh\necho "$*" >> ${vlog}\n[ "$2" = create ] && echo tok-$3\nexit 0\n`)
+  chmodSync(fakeVault, 0o755)
+  process.env.FACTORY_AGENT_VAULT = fakeVault
+  process.env.FACTORY_AX_VAULT = 'factory@agent-vault.av:14322'
+  try {
+    ax.launch({ name: 'f-r2-1', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env.HTTPS_PROXY).toBe('http://tok-f-r2-1:factory@agent-vault.av:14322')
+    ax.remove('f-r2-1')
+    expect(readFileSync(vlog, 'utf8').trim().split('\n')).toEqual([
+      'agent create f-r2-1 --vault factory:proxy --token-only',
+      'agent delete f-r2-1',
+    ])
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+    delete process.env.FACTORY_AGENT_VAULT
+  }
+})
