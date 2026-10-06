@@ -1,10 +1,12 @@
 # Remote runner: station workers in AX microVMs on gtr
 
-**Status (2026-10-06 15:35): the worker image runs as an AX task on gtr; HTTPS egress is the blocker.**
-`ghcr.io/stigenai/factory-worker:1f12c04` (AX v0.3.1 runner) pulled and ran in gVisor about 25 s after
-`ax apply`, every tool answered over `ax ssh` (1.7 s round trip), but Substrate's egress gateway drops every
-TLS passthrough connection (below). Cleartext HTTP egress works. Next: find out why passthrough fails, or send
-all worker traffic through agent-vault over cleartext HTTP, then run one station.
+**Status (2026-10-06 15:50): blocked on Substrate's egress. An AX task on gtr can't reach HTTPS anywhere,
+not even through agent-vault.** The worker image runs, and cleartext HTTP egress works, but this install has
+no route for HTTPS out of an actor: `tls_passthrough` isn't implemented in v0.3.0, `https` rules need the
+MITM egress gateway (`--experimental-use-sdsmint`), which this install doesn't deploy, and cleartext rules
+match on the upstream's name, so they refuse the agent-vault proxy's `CONNECT`. Unblocking it means
+reinstalling Substrate's egress gateway with sdsmint (whoever owns the gtr install), then `https` rules for
+the vault's upstreams, or for the vault itself if it is given a TLS listener.
 
 ## Gates
 
@@ -54,11 +56,17 @@ podcertificaterequests                    certificates.k8s.io/v1beta1   true    
   `kubectl ate create egress-policy <task> -a factory -f policy.yaml`. The runner will have to create it
   after `ax apply`. That suits the design: a worker's policy can allow agent-vault and nothing else.
 - With `http: {hostnames: ["example.com"]}`, `curl http://example.com/` returned 200 in 0.097 s.
-- With `tls_passthrough: {hostnames: ["api.anthropic.com"]}`, `curl https://api.anthropic.com/` fails with
-  `SSL_ERROR_SYSCALL` after 1 s. The gateway opens the tunnel (`egress tunnel opened`), but its passthrough
-  leg logs `flags=UH upstream=null` and Envoy warns `original_dst_load_balancer: No downstream connection or
-no original_dst`. A host the policy doesn't allow (api.github.com) fails the same way, so the gateway's
-  passthrough dataplane is broken, not the rule.
+- `tls_passthrough` rules do nothing in v0.3.0 (`internal/egresspolicy/egresspolicy.go`: "tls_passthrough
+  rules match nothing for now"): the tunnel opens with `sniRules: 0`, and the TLS is closed (`flags=UH`).
+- An `https: {hostnames: ["api.github.com"]}` rule registers (`sniRules: 1`), but the connection still
+  fails: `https` means the gateway terminates the TLS, and this install's gateway runs without MITM ("No
+  MITM here" in its Envoy config; the demo turns it on with `--experimental-use-sdsmint`).
+- Through agent-vault (scratch vault in `factory-spike-ax`, policy allowing only cleartext HTTP to its
+  Service): `agent-vault ca fetch` from the task worked, so plain requests to the vault pass. The proxy's
+  `CONNECT api.github.com:443` got 403 from the gateway (`egress denied: no rule allows the destination`,
+  `method: CONNECT`, `host: api.github.com:443`). Cleartext rules match the request's Host, which for a
+  proxy is the upstream, not the vault, and a rule for the upstream would send the request around the vault.
+  agent-vault offers only `CONNECT` and absolute-form proxying, both of which name the upstream.
 
 ## What AX gives us (read from google/ax at ac23328; installed: v0.3.1)
 
