@@ -498,7 +498,12 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
     if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
     else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
-    else if (!b.close(id, reason)) b.defer(id, `run ${run.id} ended with open tasks: ${reason}`)
+    else if (!b.close(id, reason)) {
+      // open children: what is left is theirs to start, so the bead stays open, not deferred out of
+      // sight (dispatch skips a bead with open children, so it does not come straight back)
+      b.release(id)
+      b.comment(id, `run ${run.id} ended with open child beads, so this stays open for them: ${reason}`)
+    }
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
