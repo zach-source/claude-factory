@@ -77,6 +77,21 @@ fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). Th
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
 redefine a rig with `rig add`; there is one rig per repo.
 
+### Harnesses and MCP servers
+
+A station's worker is a shell command (`agent` on the station, or on the factory). Claude Code,
+Codex and pi all work: herdr tracks each one's status and session, and the runner spells the
+launch, the resume and the MCP config the way that harness expects. `--agent` runs every station
+of a rig with one command, and `--mcp` gives its workers the servers in a Claude-shaped
+`{ "mcpServers": { ... } }` file: `--mcp-config` for Claude, `-c mcp_servers.<name>=…` for Codex.
+pi has no MCP client, so its pane says that the file was not loaded.
+
+```sh
+factory rig add web ~/repos/web --agent "codex --dangerously-bypass-approvals-and-sandbox"
+factory rig add api ~/repos/api --agent "pi --model anthropic/claude-sonnet-5" --sweeps none
+factory rig add infra ~/repos/infra --mcp ~/.config/factory/infra-mcp.json
+```
+
 ## The lifecycle factory
 
 [`factories/lifecycle.ts`](factories/lifecycle.ts) is the whole software lifecycle in one graph:

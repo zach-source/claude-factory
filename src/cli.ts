@@ -35,6 +35,7 @@ import {
   type Mail,
 } from './machine'
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
+import { command, harnessOf, readMcp } from './harness'
 import * as memory from './memory'
 import { createdAt, metrics, render, type RunRecord } from './metrics'
 
@@ -177,7 +178,7 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
   return {
     status: info.agent_status,
     agent: info.agent,
-    session: info.agent === 'claude' ? info.agent_session?.value : undefined,
+    session: info.agent ? info.agent_session?.value : undefined,
   }
 }
 
@@ -377,7 +378,7 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  herdr('pane', 'run', pane, launch(def, node, prompt, session))
+  herdr('pane', 'run', pane, launch(run, def, node, prompt, session))
   return pane
 }
 
@@ -387,14 +388,18 @@ function resumeFile(run: Run, node: string, c: Ctx) {
   writeFileSync(file, resumeNote(run, node, c))
   return file
 }
-const agentOfNode = (def: Factory, node: string) => def.nodes[node]!.agent ?? def.agent ?? AGENT
+/** the worker command: the rig's own (one harness for all its stations) over the station's and the factory's */
+const agentOfNode = (run: Run, def: Factory, node: string) =>
+  rigOf(run.repo)?.agent ?? def.nodes[node]!.agent ?? def.agent ?? AGENT
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
-function launch(def: Factory, node: string, prompt: string, session?: string) {
-  const agent = agentOfNode(def, node)
-  // ponytail: resume assumes a claude-style CLI; only a pane herdr saw running claude ever has a session
-  const cmd = session ? `${agent.replace(/\s--new\b/, '')} --resume ${session}` : agent
-  const quiet = /\bclaude/.test(agent) ? ` --settings '${JSON.stringify(withoutFleet())}'` : ''
-  return `${cmd}${quiet} "$(cat '${prompt}')"`
+function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
+  const rig = rigOf(run.repo)
+  const extra = ` --settings '${JSON.stringify(withoutFleet())}'`
+  return command(agentOfNode(run, def, node), prompt, {
+    session,
+    extra,
+    mcp: rig?.mcp ? readMcp(rig.mcp) : undefined,
+  })
 }
 
 /**
@@ -462,8 +467,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     return 'resuming'
   }
   const status = info?.status ?? null
-  // only a claude worker shows herdr an agent; another command (a script, a fake worker) never would
-  const isClaude = /\bclaude/.test(agentOfNode(def, node))
+  // only a harness herdr knows (claude, codex, pi) shows it an agent; a script or a fake worker never would
+  const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
   // resume the conversation in the same pane, once, as for a pane that closed
   // a just-resumed Claude takes seconds to show: give it the launch grace before calling it gone again
@@ -473,7 +478,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return status
     }
     herdr('pane', 'send-keys', c.pane, 'ctrl+u')
-    herdr('pane', 'run', c.pane, launch(def, node, resumeFile(run, node, c), c.session))
+    herdr('pane', 'run', c.pane, launch(run, def, node, resumeFile(run, node, c), c.session))
     send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
     return 'resuming'
   }
@@ -490,7 +495,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (step === 'enter') herdr('pane', 'send-keys', c.pane, 'Enter')
     if (step === 'retype') {
       herdr('pane', 'send-keys', c.pane, 'ctrl+u') // whatever is left on the line
-      herdr('pane', 'run', c.pane, launch(def, node, promptOf(run, node, c)))
+      herdr('pane', 'run', c.pane, launch(run, def, node, promptOf(run, node, c)))
     }
     if (step) send({ type: 'NUDGED', seq: c.seq })
     return step ? 'relaunching' : 'starting'
@@ -1132,6 +1137,10 @@ export type Rig = {
   sweeps?: string[]
   /** what the manager works toward there while the rig has room */
   goal?: string
+  /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
+  agent?: string
+  /** MCP servers every worker here loads, a file in Claude's --mcp-config shape ({ mcpServers }) */
+  mcp?: string
 }
 const rigsFile = () => join(HOME, 'rigs.json')
 const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
@@ -1236,13 +1245,28 @@ async function defineRig(
   name: string,
   path: string,
   factory: string,
-  { max, sweeps, goal }: { max?: string; sweeps?: string; goal?: string },
+  {
+    max,
+    sweeps,
+    goal,
+    agent,
+    mcp,
+  }: { max?: string; sweeps?: string; goal?: string; agent?: string; mcp?: string },
 ) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
   const repo = toplevel(path)
   if (!hasBeads(repo)) fail(`${repo} has no .beads: run bd init there first`)
   const def = await loadFactory(factorySource(factory, repo))
-  const rig: Rig = { name, repo, factory, ...(goal && { goal }) }
+  const rig: Rig = { name, repo, factory, ...(goal && { goal }), ...(agent && { agent }) }
+  if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
+  if (mcp !== undefined) {
+    rig.mcp = expand(mcp)
+    try {
+      readMcp(rig.mcp)
+    } catch (err) {
+      fail(`--mcp ${mcp}: ${(err as Error).message}`)
+    }
+  }
   if (max !== undefined) {
     if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
     rig.maxRuns = Number(max)
@@ -1416,9 +1440,11 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--goal text...] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--goal text...] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
-                                     own cap, sweeps and a goal the manager works toward
+                                     own cap, sweeps and a goal the manager works toward; --agent runs every
+                                     station as that command (claude, codex or pi), --mcp gives its workers
+                                     the MCP servers in a Claude-shaped mcpServers file
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog               JSON for the manager's views
@@ -1714,14 +1740,14 @@ if (import.meta.main)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
-        const [max, sweeps] = [opt('--max'), opt('--sweeps')]
+        const [max, sweeps, agent, mcp] = [opt('--max'), opt('--sweeps'), opt('--agent'), opt('--mcp')]
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              'usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--goal text...]',
+              'usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--goal text...]',
             )
-          const rig = await defineRig(name!, repo!, factory, { max, sweeps, goal })
+          const rig = await defineRig(name!, repo!, factory, { max, sweeps, goal, agent, mcp })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
@@ -1757,6 +1783,8 @@ if (import.meta.main)
               `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${(r.sweeps ?? SWEEPS).join(',') || 'none'}`,
             )
             if (r.goal) console.log(`  goal: ${r.goal}`)
+            if (r.agent) console.log(`  agent: ${r.agent}`)
+            if (r.mcp) console.log(`  mcp: ${r.mcp}`)
           }
         } else fail(`unknown rig command "${sub}": add, rm or list`)
         break
