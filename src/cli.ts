@@ -37,6 +37,7 @@ import {
 } from './machine'
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
 import { command, harnessOf, readMcp } from './harness'
+import { tokens } from './sidebar'
 import * as memory from './memory'
 import { createdAt, metrics, render, type RunRecord } from './metrics'
 
@@ -947,7 +948,43 @@ const kickDream = () => {
   }).unref()
 }
 
-async function tick() {
+const SIDEBAR_TTL_MS = 5 * 60_000
+/** the workspace of the pane this runs in, when that pane sits in this factory's directory */
+function managerWorkspace(): string | undefined {
+  const id = process.env['HERDR_PANE_ID']
+  if (!id) return undefined
+  const pane = JSON.parse(Bun.spawnSync(['herdr', 'pane', 'get', id]).stdout.toString() || '{}').result?.pane
+  const isOurs = pane?.cwd && (factoryAt(pane.cwd) ?? join(ROOT, '.factory-state')) === HOME
+  return isOurs ? pane.workspace_id : undefined
+}
+/**
+ * herdr's sidebar renders $factory on each run's workspace and the rollup on the manager's. Only a patrol
+ * tick from a pane whose directory is this factory's names the manager: a start or fork run for another
+ * factory, or a background session forked from a manager, ticks from someone else's pane.
+ * Only changes are reported, refreshed before the TTL, so a stopped factory's lapse.
+ */
+function showInSidebar(rows: Row[], now: number, isPatrol: boolean) {
+  const { byWs, rollup } = tokens(rows)
+  const file = join(HOME, 'sidebar.json')
+  const was = existsSync(file)
+    ? readJson<{ at: number; ws: Record<string, string>; manager?: string }>(file)
+    : { at: 0, ws: {} as Record<string, string>, manager: undefined }
+  const manager = isPatrol ? (managerWorkspace() ?? was.manager) : was.manager
+  const want: Record<string, string> = { ...byWs, ...(manager && { [manager]: rollup }) }
+  const isStale = now - was.at > SIDEBAR_TTL_MS / 2
+  const report = (ws: string, token: string[]) =>
+    // a workspace closed since is fine: nothing to show it on
+    Bun.spawnSync(['herdr', 'workspace', 'report-metadata', ws, '--source', 'claude-factory', ...token])
+  const changed = Object.entries(want).filter(([ws, text]) => isStale || was.ws[ws] !== text)
+  const gone = Object.keys(was.ws).filter(ws => !(ws in want))
+  for (const [ws, text] of changed)
+    report(ws, ['--token', `factory=${text}`, '--ttl-ms', String(SIDEBAR_TTL_MS)])
+  for (const ws of gone) report(ws, ['--clear-token', 'factory'])
+  if (changed.length || gone.length || manager !== was.manager)
+    writeJson(file, { at: isStale ? now : was.at, ws: want, manager })
+}
+
+async function tick(isPatrol = false) {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
   try {
@@ -968,6 +1005,7 @@ async function tick() {
       }
     }
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
+    showInSidebar(out.runs, now, isPatrol)
     // stopped once no worker is still being told to stop: everything that was working has closed
     if (halt?.state === 'stopping' && !out.runs.some(r => r.agent === 'stopping'))
       writeJson(haltFile(), { ...halted()!, state: 'paused' })
@@ -1500,7 +1538,7 @@ if (import.meta.main)
         await fork(args[0], args[1], args.slice(2).join(' '))
         break
       case 'tick':
-        console.log(JSON.stringify(await tick()))
+        console.log(JSON.stringify(await tick(true)))
         break
       case 'beads':
         await beadsPass()

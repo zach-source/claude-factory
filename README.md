@@ -210,6 +210,21 @@ Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, do
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
 edge refills it, so a sweep loops forever). Edits apply at the next tick.
 
+## herdr sidebar
+
+Every tick reports a `$factory` token: on each run's workspace, its station and what holds it
+(`deploy · parked`, `approve · needs you`), and on the manager's workspace the rollup
+(`5 running · 1 need you · 1 parked`). Show it by adding a Space row to herdr's `config.toml`:
+
+```toml
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status"],
+  [{ token = "$factory", rules = [{ contains = "need", fg = "#f38ba8", bold = true }, { contains = "stuck", fg = "#fab387" }, { contains = "parked", fg = "#f9e2af" }] }],
+]
+```
+
 ## How a run behaves
 
 - **Snapshots**: `.factory-state/runs/<run>/state.json` is the run (`FACTORY_HOME` moves it). Every tick restores
