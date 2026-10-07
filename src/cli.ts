@@ -398,13 +398,12 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   return pane
 }
 
-/** an https remote a VM can clone: the agent-vault proxy brokers GitHub's credential, not an ssh key */
+/** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
 export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
 
 /**
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
- * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds the agent-vault proxy and the
- * dummy keys it swaps.
+ * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
  */
 function launchTask(run: Run, def: Factory, node: string, c: Ctx, text: string) {
   const image =

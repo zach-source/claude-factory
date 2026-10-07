@@ -4,6 +4,9 @@
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
 const AX = () => process.env.FACTORY_AX ?? 'ax'
+const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
+/** the cluster's kube context for both ax and kubectl; unset, their current context */
+const context = () => (process.env.FACTORY_AX_CONTEXT ? ['--context', process.env.FACTORY_AX_CONTEXT] : [])
 export const ATESPACE = () => process.env.FACTORY_AX_ATESPACE ?? 'factory'
 /** where the task's one workspace is mounted, and the repo and the worker's own files inside it */
 export const WS = '/workspace/w'
@@ -30,7 +33,7 @@ export const modelOf = (agent: string) => agent.match(/--model\s+'?([^'\s]+)'?/)
 
 export type Launch = {
   name: string
-  /** an https remote the VM can clone, and the run's branch, already pushed */
+  /** an https remote the VM clones, and the run's branch, already pushed */
   repo: string
   branch: string
   image: string
@@ -46,9 +49,9 @@ export function manifest(l: Launch) {
     apiVersion: 'ax.io/v1alpha1',
     kind: 'Workspace',
     metadata,
-    spec: {
-      git: [{ name: 'origin', repo: l.repo, branch: l.branch, dir: 'repo' }],
-    },
+    // ponytail: no git here. AX clones inside the VM before the task's egress policy exists, so the clone
+    // fails and the workspace is still Ready (seen on gtr); `factory worker serve` clones once it can
+    spec: {},
   }
   const task = {
     apiVersion: 'ax.io/v1alpha1',
@@ -60,6 +63,8 @@ export function manifest(l: Launch) {
       env: Object.entries({
         ...l.env,
         FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
+        FACTORY_REPO: l.repo,
+        FACTORY_BRANCH: l.branch,
         // AX v0.3.1's Workspace has no files, so the brief rides in the env
         FACTORY_BRIEF: l.brief,
       }).map(([name, value]) => ({
@@ -85,7 +90,7 @@ export type Poll = {
 }
 
 function ax(args: string[], stdin?: string) {
-  const p = Bun.spawnSync([AX(), '-a', ATESPACE(), ...args], {
+  const p = Bun.spawnSync([AX(), ...context(), '-a', ATESPACE(), ...args], {
     stdin: stdin ? Buffer.from(stdin) : undefined,
   })
   return {
@@ -100,34 +105,78 @@ function must(args: string[], stdin?: string) {
   return r.out
 }
 
-const VAULT_CLI = () => process.env.FACTORY_AGENT_VAULT ?? 'agent-vault'
-/** FACTORY_AX_VAULT=<vault>@<host:port>, the agent-vault proxy as the VM reaches it; unset, no per-task agent */
-const vaultOf = () =>
-  process.env.FACTORY_AX_VAULT?.match(/^([^@]+)@(.+)$/)?.slice(1) as [string, string] | undefined
-function vault(args: string[]) {
-  const p = Bun.spawnSync([VAULT_CLI(), ...args])
-  return { ok: p.exitCode === 0, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
+const EGRESS_CA = 'egress-mitm.ate.dev:mitm:primary-bundle'
+/**
+ * the egress gateway's public CA, which the VM must trust because every HTTPS request out is decrypted by the
+ * gateway; Substrate hands it only to actors whose template asks for it, and AX's templates don't
+ */
+export function egressCA() {
+  const p = Bun.spawnSync([
+    KUBECTL(),
+    ...context(),
+    ...['get', 'clustertrustbundle', EGRESS_CA, '-o', 'jsonpath={.spec.trustBundle}'],
+  ])
+  const ca = p.stdout.toString().trim()
+  if (p.exitCode !== 0 || !ca)
+    throw new Error(`the egress gateway's CA: ${p.stderr.toString().trim() || 'empty'}`)
+  return ca
 }
 
 /**
- * the proxy env for one task: AX can't mount a Secret, so the agent token rides in the Task's env, and each
- * task gets its own proxy-only agent, named after it and deleted with it, so a leaked token dies with its run
+ * a worker's EgressPolicy: HTTPS to Anthropic and GitHub and nothing else. With FACTORY_AX_SECRET=<ns>/<secret>
+ * the gateway swaps the placeholder in each auth header for that Secret's key: `anthropic` (an API key),
+ * `github` (a token) and `github-basic` (base64 of `x-access-token:<token>`, which git sends as Basic auth)
  */
-export function proxyEnv(task: string): Record<string, string> {
-  const v = vaultOf()
-  if (!v) return {}
-  const r = vault(['agent', 'create', task, '--vault', `${v[0]}:proxy`, '--token-only'])
-  if (!r.ok || !r.out) throw new Error(`agent-vault agent create: ${r.err || 'no token'}`)
-  const url = `http://${r.out}:${v[0]}@${v[1]}`
-  return { HTTPS_PROXY: url, HTTP_PROXY: url }
+export function egressPolicy(secret = process.env.FACTORY_AX_SECRET) {
+  const uri = (key: string) => `ate-secret://k8s.io/default/${secret}/${key}`
+  const rule = (hostnames: string[], header: string, prefix: string, key: string) => ({
+    https: {
+      hostnames,
+      ...(secret && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
+    },
+  })
+  return {
+    rules: [
+      rule(['api.anthropic.com'], 'x-api-key', '', 'anthropic'),
+      rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'github'),
+      rule(['github.com'], 'Authorization', 'Basic ', 'github-basic'),
+    ],
+  }
 }
 
-export const launch = (l: Launch) => {
-  const env = { ...l.env, ...proxyEnv(l.name) }
+/** the task's actor appears a moment after `ax apply`; its policy can only be created once it has */
+function createPolicy(task: string, { tries = 30, waitMs = 2000 } = {}) {
+  let err = ''
+  for (let i = 0; i < tries; i++) {
+    const p = Bun.spawnSync(
+      [KUBECTL(), ...context(), 'ate', 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
+      { stdin: Buffer.from(JSON.stringify(egressPolicy())) },
+    )
+    if (p.exitCode === 0) return
+    err = p.stderr.toString().trim()
+    Bun.sleepSync(waitMs)
+  }
+  throw new Error(`egress policy for ${task}: ${err}`)
+}
+
+/**
+ * apply the task, then give it its egress policy; until the policy exists the VM can reach nothing, which
+ * `serve` waits out. The keys in the VM are placeholders: the gateway puts the real ones in on the way out.
+ */
+export const launch = (l: Launch, { tries = 30, waitMs = 2000 } = {}) => {
+  const env = {
+    ...l.env,
+    FACTORY_CA: egressCA(),
+    ANTHROPIC_API_KEY: 'placeholder',
+    GH_TOKEN: 'placeholder',
+    // the policy allows only Anthropic's API and GitHub, so skip the telemetry it would refuse
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+  }
+  must(['apply', '-f', '-'], manifest({ ...l, env }))
   try {
-    must(['apply', '-f', '-'], manifest({ ...l, env }))
+    createPolicy(l.name, { tries, waitMs })
   } catch (e) {
-    if (vaultOf()) vault(['agent', 'delete', l.name])
+    remove(l.name)
     throw e
   }
   return `ax:${l.name}`
@@ -145,9 +194,8 @@ export const prompt = (task: string, text: string) =>
   must(['ssh', task, '--', 'factory', 'worker', 'prompt', Buffer.from(text).toString('base64')])
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])
-/** the task, its workspace and its agent; gone already is fine */
+/** the task (its actor's egress policy goes with it) and its workspace; gone already is fine */
 export function remove(task: string) {
   ax(['delete', 'task', task])
   ax(['delete', 'workspace', task])
-  if (vaultOf()) vault(['agent', 'delete', task])
 }

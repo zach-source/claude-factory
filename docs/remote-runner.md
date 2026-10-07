@@ -89,7 +89,7 @@ A herdr worker is touched in four places: `spawn`, `paneInfo`, `herdr agent prom
 ### A station as an AX Task
 
 - **One Task per worker launch**, named `f-<run>-<seq>` (an RFC 1123 label of at most 63 characters, keeping the seq), in atespace `factory` (`FACTORY_AX_ATESPACE`). It has one Workspace of the same name, mounted at `/workspace/w`.
-- **Workspace**: the run's branch cloned into `/workspace/w/repo` (`git: [{repo: <https remote>, branch, dir: repo}]`). The brief travels in the Task's env as `FACTORY_BRIEF` (v0.3.1's Workspace has no `files`), so it never lands in the repo. Before applying the Task, the laptop pushes the run branch, because the VM clones it from GitHub. A `git@` remote is rewritten to https, because the VM has no ssh key and agent-vault brokers the GitHub credential.
+- **Workspace**: an empty volume. `serve` clones the run's branch into `/workspace/w/repo` itself (`FACTORY_REPO`, `FACTORY_BRANCH`), retrying until the task's egress policy exists. AX's own `git:` workspace clones inside the VM before any policy can exist, fails, and still reports the workspace Ready (seen on gtr). The brief travels in the Task's env as `FACTORY_BRIEF` (v0.3.1's Workspace has no `files`), so it never lands in the repo. Before applying the Task, the laptop pushes the run branch, because the VM clones it from GitHub. A `git@` remote is rewritten to https, because the VM has no ssh key and the egress gateway supplies GitHub's token.
 - **Brief**: the same brief a herdr worker gets, with the laptop's CLI path replaced by `factory` and the worktree path replaced by `/workspace/w/repo`. It adds one line: push to `origin <branch>` before reporting.
 - **Command**: `factory worker serve [--model M]` (`src/worker.ts`). It runs `claude -p --dangerously-skip-permissions --output-format stream-json --verbose` on the brief and takes the session id from the stream. Each queued prompt (`.factory-worker/prompts/`) then runs as another `--resume <session>` turn, one at a time, and the file is deleted only after its turn. **A nudge or a mail reply continues the same session.**
 - **Session survival**: Claude keeps sessions in `~/.claude`, which a resumed task loses, because only `/workspace` is restored. So the Task sets `CLAUDE_CONFIG_DIR=/workspace/w/.factory-worker/claude`, and `serve` reads `state.json` so it never briefs a session twice.
@@ -108,11 +108,14 @@ Pulling means nothing on gtr ever needs a route back to the laptop.
 
 A worker that is idle and has asked the manager (the existing `isAsking`) is suspended with `ax suspend task`. Its status shows `suspended` on the board, and it is not polled. When the answer arrives, `deliver` sees the task is not `Running` and runs `ax resume task`, and the mail stays unread. The next tick delivers it to the running task.
 
-### Credentials: agent-vault brokers everything
+### Keys: Substrate's egress gateway puts them in
 
-The VM never holds a real credential. agent-vault swaps the dummy `ANTHROPIC_API_KEY` and `GH_TOKEN` for the real keys on the way out, and the real keys enter agent-vault only through you.
+The VM holds no key and no token. Every HTTPS request out goes through Substrate's egress gateway, which decrypts it (sdsmint), checks it against the task's EgressPolicy, and, for a rule with `replaceHeaders`, swaps the placeholder in an auth header for a key it reads from a Kubernetes Secret (`k8s-credential-provider`). This replaced agent-vault (2026-10-07): agent-vault's proxy can't sit behind the gateway (its `CONNECT` names the upstream), and it needed a per-task token in the VM.
 
-The VM does hold an agent token, which lets it use the proxy. AX can't mount a Secret into a Task, so the token goes in the Task's env. To keep it short-lived, **every task gets its own agent** (your choice, (b)). With `FACTORY_AX_VAULT=<vault>@<host:port>` set, a launch runs `agent-vault agent create <task> --vault <vault>:proxy --token-only` with the laptop's agent-vault session, and sets `HTTPS_PROXY`/`HTTP_PROXY=http://<token>:<vault>@<host:port>`. Deleting the task runs `agent-vault agent delete <task>`, so a leaked token dies with its run. A launch that fails to apply deletes its agent straight away. `FACTORY_AX_ENV` (a JSON file) still adds the dummy keys and the vault's CA (`NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`), but no token.
+- **Launch** (`src/ax.ts`): reads the gateway's public CA (ClusterTrustBundle `egress-mitm.ate.dev:mitm:primary-bundle`), applies the Task with it in `FACTORY_CA` and `ANTHROPIC_API_KEY`/`GH_TOKEN` set to `placeholder`, then creates the task's policy with `kubectl ate create egress-policy`, retrying until AX has created the actor. A policy that never takes deletes the task.
+- **Policy**: HTTPS to `api.anthropic.com` (`x-api-key` ← key `anthropic`), `api.github.com` and `uploads.github.com` (`Authorization: Bearer` ← `github`), and `github.com` (`Authorization: Basic` ← `github-basic`, which holds base64 of `x-access-token:<token>`, since git sends Basic auth). Nothing else, so the task sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Without `FACTORY_AX_SECRET` the policy has the hosts and no injection.
+- **In the VM** (`setup()` in `src/worker.ts`, on every start): writes the CA and points `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` and `SSL_CERT_FILE` at it (the gateway re-signs every host the VM may reach, so it is the only root needed), and sets git's `http.https://github.com/.extraHeader` to `Authorization: Basic placeholder` for the gateway to fill in.
+- **Cluster side, once** (the install's owner): grant atespace `factory` the Secret's namespace in ConfigMap `ate-system/k8s-credential-provider-namespace-policy` and restart the provider. The real keys go into that Secret, by you.
 
 ### Turning it on
 
@@ -124,9 +127,9 @@ hack/push-worker.sh    # prints image@digest
 ```sh
 # on the laptop running the factory loop
 export FACTORY_AX_IMAGE=ghcr.io/stigenai/factory-worker@sha256:…   # from push-worker.sh
-export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # CA and dummy keys, no token
-export FACTORY_AX_VAULT=factory@agent-vault.<ns>:14322       # one agent per task; needs `agent-vault auth login` here
-export AX_SERVER=…                                           # or let ax find it from the kube context
+export FACTORY_AX_CONTEXT=gtr                                # kube context for ax and kubectl (kubectl-ate on PATH)
+export FACTORY_AX_SECRET=factory-spike-ax/factory-keys       # <ns>/<secret> with keys anthropic, github, github-basic
+export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # optional: more env for the task, never a real key
 factory rig add web ~/repos/web --runner ax                   # rigs.json: "runner": "ax"
 ```
 

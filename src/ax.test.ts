@@ -23,9 +23,24 @@ esac
 )
 chmodSync(fake, 0o755)
 process.env.FACTORY_AX = fake
+// a fake kubectl: the gateway's CA, and an egress policy refused until the actor exists (the second try)
+const kubectl = join(dir, 'kubectl')
+writeFileSync(
+  kubectl,
+  `#!/bin/sh
+echo "kubectl $*" >> ${calls}
+case "$1" in
+  get) printf 'CA-PEM' ;;
+  ate) cat > ${dir}/policy; [ -f ${dir}/actor ] || { touch ${dir}/actor; echo 'actor not found' >&2; exit 1; } ;;
+esac
+`,
+)
+chmodSync(kubectl, 0o755)
+process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied']) rmSync(join(dir, f), { force: true })
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor'])
+    rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
 
@@ -42,41 +57,85 @@ test("a station's model comes from its herdr agent command", () => {
   expect(ax.modelOf('claude-smart --new --dangerously-skip-permissions')).toBeUndefined()
 })
 
-test('a launch applies the run branch as the workspace and the brief in the env, and names the worker', () => {
-  const pane = ax.launch({
-    name: 'f-r1-1',
-    repo: 'https://github.com/o/app.git',
-    branch: 'factory/r1',
-    image: 'img@sha256:abc',
-    brief: 'do it',
-    model: 'claude-opus-5',
-    env: { HTTPS_PROXY: 'http://proxy' },
-  })
+test('a launch applies the task with the run branch, the brief and the CA in its env, then its egress policy', () => {
+  const pane = ax.launch(
+    {
+      name: 'f-r1-1',
+      repo: 'https://github.com/o/app.git',
+      branch: 'factory/r1',
+      image: 'img@sha256:abc',
+      brief: 'do it',
+      model: 'claude-opus-5',
+      env: { FACTORY_FROM: 'implement' },
+    },
+    { waitMs: 0 },
+  )
   expect(pane).toBe('ax:f-r1-1')
-  expect(logged()).toEqual(['-a factory apply -f -'])
+  const ate = 'kubectl ate create egress-policy f-r1-1 -a factory -f -'
+  expect(logged()).toEqual([
+    'kubectl get clustertrustbundle egress-mitm.ate.dev:mitm:primary-bundle -o jsonpath={.spec.trustBundle}',
+    '-a factory apply -f -',
+    ate,
+    ate,
+  ])
   const [ws, task] = readFileSync(join(dir, 'applied'), 'utf8')
     .split('\n---\n')
     .map(d => JSON.parse(d))
   expect(ws.kind).toBe('Workspace')
-  expect(ws.spec.git).toEqual([
-    {
-      name: 'origin',
-      repo: 'https://github.com/o/app.git',
-      branch: 'factory/r1',
-      dir: 'repo',
-    },
-  ])
-  expect(task.spec.env).toContainEqual({ name: 'FACTORY_BRIEF', value: 'do it' })
+  expect(ws.spec).toEqual({})
+  const env = Object.fromEntries(task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]))
+  expect(env).toMatchObject({
+    FACTORY_BRIEF: 'do it',
+    FACTORY_REPO: 'https://github.com/o/app.git',
+    FACTORY_BRANCH: 'factory/r1',
+    FACTORY_CA: 'CA-PEM',
+    FACTORY_FROM: 'implement',
+    ANTHROPIC_API_KEY: 'placeholder',
+    FACTORY_OUTBOX: '/workspace/w/.factory-worker/outbox.jsonl',
+  })
   expect(task.spec.command).toEqual(['factory', 'worker', 'serve', '--model', 'claude-opus-5'])
   expect(task.spec.workspaces).toEqual([{ name: 'f-r1-1', path: '/workspace/w' }])
-  expect(task.spec.env).toContainEqual({
-    name: 'HTTPS_PROXY',
-    value: 'http://proxy',
+  expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy())
+})
+
+test('a task whose policy never takes is deleted', () => {
+  const ok = process.env.FACTORY_KUBECTL
+  process.env.FACTORY_KUBECTL = join(dir, 'kubectl-never')
+  writeFileSync(
+    process.env.FACTORY_KUBECTL,
+    `#!/bin/sh\necho "kubectl $*" >> ${calls}\n[ "$1" = get ] && { printf CA; exit 0; }\nexit 1\n`,
+  )
+  chmodSync(process.env.FACTORY_KUBECTL, 0o755)
+  try {
+    expect(() =>
+      ax.launch(
+        { name: 't9', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} },
+        { tries: 2, waitMs: 0 },
+      ),
+    ).toThrow('egress policy for t9')
+    expect(logged().slice(-2)).toEqual(['-a factory delete task t9', '-a factory delete workspace t9'])
+  } finally {
+    process.env.FACTORY_KUBECTL = ok
+  }
+})
+
+test("a worker's egress policy allows Anthropic and GitHub, and injects keys only from a named Secret", () => {
+  expect(ax.egressPolicy('')).toEqual({
+    rules: [
+      { https: { hostnames: ['api.anthropic.com'] } },
+      { https: { hostnames: ['api.github.com', 'uploads.github.com'] } },
+      { https: { hostnames: ['github.com'] } },
+    ],
   })
-  expect(task.spec.env).toContainEqual({
-    name: 'FACTORY_OUTBOX',
-    value: '/workspace/w/.factory-worker/outbox.jsonl',
-  })
+  const [anthropic, , git] = ax.egressPolicy('factory-spike-ax/factory-keys').rules
+  expect(anthropic!.https.effects!.replaceHeaders).toEqual([
+    {
+      header: 'x-api-key',
+      prefix: '',
+      credentialUri: 'ate-secret://k8s.io/default/factory-spike-ax/factory-keys/anthropic',
+    },
+  ])
+  expect(git!.https.effects!.replaceHeaders[0]).toMatchObject({ header: 'Authorization', prefix: 'Basic ' })
 })
 
 test("a task's phase is read from ax get, and a deleted task has none", () => {
@@ -151,27 +210,41 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
 })
 
-test('with FACTORY_AX_VAULT each task gets its own proxy agent, deleted with the task', () => {
-  const vlog = join(dir, 'vault.log')
-  const fakeVault = join(dir, 'agent-vault')
-  writeFileSync(fakeVault, `#!/bin/sh\necho "$*" >> ${vlog}\n[ "$2" = create ] && echo tok-$3\nexit 0\n`)
-  chmodSync(fakeVault, 0o755)
-  process.env.FACTORY_AGENT_VAULT = fakeVault
-  process.env.FACTORY_AX_VAULT = 'factory@agent-vault.av:14322'
+test('setup trusts the CA and clones the branch once, retrying while egress is closed', async () => {
+  const origin = join(dir, 'origin.git')
+  const seed = join(dir, 'seed')
+  const own = join(dir, 'own2')
+  const repo = join(dir, 'repo2')
+  mkdirSync(own, { recursive: true })
+  const git = (cwd: string, ...a: string[]) => Bun.spawnSync(['git', ...a], { cwd }).exitCode
+  git(dir, 'init', '-q', '--bare', origin)
+  git(dir, 'init', '-q', '-b', 'factory/r1', seed)
+  git(seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'one')
+  const home = join(dir, 'home')
+  mkdirSync(home, { recursive: true })
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    HOME: home,
+    GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CA: 'CA-PEM',
+    FACTORY_REPO: origin,
+    FACTORY_BRANCH: 'factory/r1',
+  })
   try {
-    ax.launch({ name: 'f-r2-1', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} })
-    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
-    const env = Object.fromEntries(
-      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    // the branch arrives only after the first try, as egress opens only once the policy exists
+    const pushing = Bun.sleep(30).then(() => git(seed, 'push', '-q', origin, 'factory/r1'))
+    await worker.setup({ tries: 20, waitMs: 20 })
+    await pushing
+    expect(readFileSync(join(own, 'egress-ca.crt'), 'utf8')).toBe('CA-PEM')
+    expect(process.env.GIT_SSL_CAINFO).toBe(join(own, 'egress-ca.crt'))
+    expect(existsSync(join(repo, '.git'))).toBe(true)
+    expect(readFileSync(join(home, '.gitconfig'), 'utf8')).toContain(
+      'extraHeader = Authorization: Basic placeholder',
     )
-    expect(env.HTTPS_PROXY).toBe('http://tok-f-r2-1:factory@agent-vault.av:14322')
-    ax.remove('f-r2-1')
-    expect(readFileSync(vlog, 'utf8').trim().split('\n')).toEqual([
-      'agent create f-r2-1 --vault factory:proxy --token-only',
-      'agent delete f-r2-1',
-    ])
+    await worker.setup({ tries: 1, waitMs: 0 }) // a resumed task keeps its clone
   } finally {
-    delete process.env.FACTORY_AX_VAULT
-    delete process.env.FACTORY_AGENT_VAULT
+    process.env = saved
   }
 })

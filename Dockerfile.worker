@@ -1,7 +1,7 @@
 # The image an AX task runs a station's worker in (docs/remote-runner.md). AX starts
 # /usr/local/bin/ax-task-runner as PID 1: AX's own runner, built from source because Substrate and AX
-# publish no pullable images. It prepares the workspace (the run's branch) and runs the task's command,
-# `factory worker serve`, which runs Claude headless. Build from this repo's root:
+# publish no pullable images. It mounts the workspace and runs the task's command, `factory worker serve`,
+# which clones the run's branch and runs Claude headless. Build from this repo's root:
 #   docker buildx build --platform linux/amd64 -f Dockerfile.worker -t factory-worker .
 
 # AX's runner, at the release installed on gtr
@@ -10,9 +10,6 @@ ARG AX_COMMIT=v0.3.1
 RUN git clone https://github.com/google/ax /ax && git -C /ax checkout ${AX_COMMIT}
 WORKDIR /ax
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /ax-task-runner ./cmd/ax-task-runner
-
-# the agent-vault CLI, for `agent-vault run`, from the image the gtr spike ran
-FROM ghcr.io/stigenai/agent-vault@sha256:60217837fd35d5ede2f5005855e5da98e6776954e3ea959c560406779cccefe6 AS vault
 
 FROM oven/bun:1.3.13-debian AS bun
 
@@ -29,7 +26,6 @@ RUN curl -fsSL https://github.com/steveyegge/beads/releases/download/v${BD_VERSI
   | tar -xz -C /usr/local/bin bd
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && npm cache clean --force
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
-COPY --from=vault /usr/local/bin/agent-vault /usr/local/bin/agent-vault
 COPY --from=runner /ax-task-runner /usr/local/bin/ax-task-runner
 
 # the factory CLI: `factory worker serve`, and report, mail and memory add, which queue in the outbox
@@ -41,7 +37,7 @@ COPY src src
 COPY factories factories
 RUN ln -s /opt/factory/bin/factory /usr/local/bin/factory
 
-# workers commit as the factory; the agent-vault proxy (HTTPS_PROXY in the task's env) carries the credentials
+# workers commit as the factory; Substrate's egress gateway puts the real keys in on the way out
 RUN git config --system user.name 'claude-factory worker' \
   && git config --system user.email 'factory-worker@users.noreply.github.com'
 # the runner is PID 1 and root, and Claude refuses to skip permissions as root outside a declared sandbox:

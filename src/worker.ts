@@ -47,12 +47,50 @@ async function turn(text: string, model?: string, session?: string) {
       ...(session ? ['--resume', session] : []),
       text,
     ],
-    { cwd: repo(), stdout: 'pipe', stderr: 'inherit' },
+    // env spelled out: Bun's default is the env at startup, without what setup() added
+    { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'inherit' },
   )
   const out = await new Response(p.stdout).text()
   await p.exited
   appendFileSync(join(own(), 'claude.jsonl'), out)
   return out.match(/"session_id":"([^"]+)"/)?.[1] ?? session
+}
+
+function sh(cmd: string[], cwd?: string) {
+  const p = Bun.spawnSync(cmd, { cwd, env: { ...process.env }, stderr: 'pipe' })
+  return { ok: p.exitCode === 0, err: p.stderr.toString().trim() }
+}
+
+/**
+ * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
+ * HTTPS out), have git send an auth header for the gateway to fill in, and clone the run's branch, retrying
+ * while the task's egress policy does not exist yet
+ */
+export async function setup({ tries = 60, waitMs = 5000 } = {}) {
+  if (process.env.FACTORY_CA) {
+    const ca = join(own(), 'egress-ca.crt')
+    writeFileSync(ca, process.env.FACTORY_CA)
+    // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
+    Object.assign(process.env, { NODE_EXTRA_CA_CERTS: ca, GIT_SSL_CAINFO: ca, SSL_CERT_FILE: ca })
+  }
+  const remote = process.env.FACTORY_REPO
+  if (!remote || existsSync(join(repo(), '.git'))) return
+  sh([
+    'git',
+    'config',
+    '--global',
+    'http.https://github.com/.extraHeader',
+    'Authorization: Basic placeholder',
+  ])
+  let err = ''
+  for (let i = 0; i < tries; i++) {
+    rmSync(repo(), { recursive: true, force: true })
+    const r = sh(['git', 'clone', '--branch', process.env.FACTORY_BRANCH ?? 'main', remote, repo()])
+    if (r.ok) return
+    err = r.err
+    await Bun.sleep(waitMs)
+  }
+  throw new Error(`git clone ${remote}: ${err}`)
 }
 
 /**
@@ -61,6 +99,7 @@ async function turn(text: string, model?: string, session?: string) {
  */
 export async function serve(model?: string, { idleMs = 1000, once = false } = {}) {
   mkdirSync(prompts(), { recursive: true })
+  await setup()
   let session = state()?.session
   const set = (status: State['status']) => save({ status, session, pid: process.pid })
   if (!session) {
