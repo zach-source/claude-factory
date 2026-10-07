@@ -111,6 +111,8 @@ export type FactoryDraft = {
   answered?: Record<string, string>
   /** the mail view's sub-tab */
   mailTab?: 'open' | 'answered'
+  /** the board lists finished runs */
+  isFinishedShown?: boolean
 }
 
 declare module 'claude-code' {

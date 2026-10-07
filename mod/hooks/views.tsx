@@ -247,7 +247,8 @@ function card(p: Base, r: FactoryRun, draft: FactoryDraft) {
 export function boardView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   const { Box, Text, Button } = p.ui
   const live = board.runs.filter(isLive).sort((a, b) => urgency(a) - urgency(b))
-  const over = board.runs.filter(r => !isLive(r))
+  // newest first; the rest stay until `factory rm`
+  const over = board.runs.filter(r => !isLive(r)).sort((a, b) => (b.last?.at ?? 0) - (a.last?.at ?? 0))
   if (!board.runs.length)
     return (
       <Box key="board" flexDirection="column">
@@ -258,8 +259,21 @@ export function boardView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   return (
     <Box key="board" flexDirection="column">
       {live.map(r => card(p, r, draft))}
-      {over.length > 0 && rule(p, 'Finished', String(over.length))}
-      {over.map(r => (
+      {over.length > 0 && (
+        <Box gap={1}>
+          {rule({ ...p, width: p.width - 8 }, 'Finished', String(over.length))}
+          <Button
+            key="finished-toggle"
+            label={draft.isFinishedShown ? 'hide' : 'show'}
+            dimColor
+            onPress={() => p.act.draft({ isFinishedShown: !draft.isFinishedShown })}
+          />
+        </Box>
+      )}
+      {draft.isFinishedShown && over.length > 10 && (
+        <Text dimColor>the last 10 of {String(over.length)}</Text>
+      )}
+      {(draft.isFinishedShown ? over.slice(0, 10) : []).map(r => (
         <Box key={`over-${r.id}`} gap={1}>
           <Text color={standing(r, p.now).color}>{r.node === 'done' ? '✓' : r.node ? '✗' : '!'}</Text>
           <Text bold>{r.id}</Text>

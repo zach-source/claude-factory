@@ -45,6 +45,8 @@ minor release may change the factory format, the CLI or the run state.
   drafts left out, with what each waits on (conflicts, failing checks, approval, the merge) and its
   run's station or gate.
 
+- The board's finished runs fold away (show/hide, folded at first) and list only the last 10.
+
 ## 0.2.0 (2026-10-06)
 
 - herdr's sidebar shows each run's station and what holds it (`$factory` on the run's workspace:
