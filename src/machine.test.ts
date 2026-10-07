@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
-import { compile, reach, unread, validate, where, type Ev, type Factory } from './machine'
+import { compile, parkDelayMin, reach, unread, validate, where, type Ev, type Factory } from './machine'
 
 const def: Factory = {
   name: 'review-loop',
@@ -226,12 +226,25 @@ test('a blocked worker parks its station without spending an attempt, and mail o
   expect(s.context).toMatchObject({ attempt: 2, seq: 3, wakeAt: 0 })
   expect(s.context.mail.implement?.at(-1)?.text).toBe('merged it')
 
-  // blocked again: the clock wakes it
+  // blocked again: it waits twice as long, then the clock wakes it
   send({ type: 'BLOCKED', seq: 3, reason: 'still waiting', at: 60_000 })
   s = send({ type: 'TICK', at: 60_000 + 60 * 60_000 })
+  expect(where(s.value)).toEqual(['implement', 'waiting'])
+  s = send({ type: 'TICK', at: 60_000 + 120 * 60_000 })
   expect(where(s.value)).toEqual(['implement', 'working'])
   expect(s.context.attempt).toBe(2)
   expect(s.context.log.map(e => e.outcome)).toEqual(['fail', 'blocked', 'blocked'])
+})
+
+test('each blocked report in a row doubles the park, up to 8h', () => {
+  const ctx = (n: number) =>
+    ({
+      log: [{ node: 'plan', outcome: 'ready' }, ...Array(n).fill({ node: 'deploy', outcome: 'blocked' })],
+    }) as never
+  expect([0, 1, 2, 3, 4, 9].map(n => parkDelayMin(ctx(n), 'deploy', 60))).toEqual([
+    60, 120, 240, 480, 480, 480,
+  ])
+  expect(parkDelayMin(ctx(3), 'deploy', 600)).toBe(600)
 })
 
 test('a timed edge is not cut short by mail', () => {

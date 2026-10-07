@@ -161,9 +161,27 @@ async function tick($: EngineInterface) {
   }
 }
 
+/**
+ * A background fork of the manager inherits its HERDR_PANE_ID and this mod, and would patrol as a second
+ * manager (and its hooks would type into the real manager's pane). Only the session herdr sees running in
+ * the pane patrols; outside herdr, or when herdr can't say, this session does.
+ */
+async function isPaneSession($: EngineInterface) {
+  const r = await $.process.run(['sh', '-c', '[ -n "$HERDR_PANE_ID" ] && herdr pane get "$HERDR_PANE_ID"'], {
+    timeoutMs: 10_000,
+  })
+  try {
+    const owner = JSON.parse(r.stdout).result.pane.agent_session?.value
+    return !owner || owner === (await $.session.id())
+  } catch {
+    return true
+  }
+}
+
 /** wake this session's model to patrol, one patrol at a time */
 async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRig[]) {
   if (rt.isPatrolling) return
+  if (!(await isPaneSession($))) return
   const now = await $.clock.now()
   const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs)
   if (!due) return

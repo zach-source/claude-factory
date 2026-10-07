@@ -137,6 +137,14 @@ export const isParked = (c: Ctx, node: string) => {
   return last?.node === node && last.outcome === 'blocked'
 }
 
+/** how long a station parks: parkMin, doubled for each blocked report it already made in a row, at most 8h */
+export const parkDelayMin = (c: Ctx, node: string, parkMin: number) => {
+  let n = 0
+  for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node && c.log[i]?.outcome === 'blocked'; i--)
+    n++
+  return Math.min(parkMin * 2 ** n, Math.max(parkMin, 480))
+}
+
 export function compile(def: Factory) {
   validate(def)
   const m = setup({ types: { context: {} as Ctx, events: {} as Ev } })
@@ -263,7 +271,8 @@ export function compile(def: Factory) {
               target: 'waiting',
               actions: assign(({ context, event }) => {
                 const { reason, at } = event as Extract<Ev, { type: 'BLOCKED' }>
-                const wakeAt = at + (node.parkMin ?? 60) * 60_000
+                // each report that finds it still blocked doubles the wait, up to 8h: a re-check is a whole worker
+                const wakeAt = at + parkDelayMin(context as Ctx, id, node.parkMin ?? 60) * 60_000
                 const text = `${id} is parked, waiting on: ${reason}. It checks again at ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
                 return {
                   log: [
