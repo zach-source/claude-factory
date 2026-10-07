@@ -1,14 +1,15 @@
 # Remote runner: station workers in AX microVMs on gtr
 
-**Status (2026-10-06 18:20): HTTPS out of an AX task works on gtr, except to api.anthropic.com.**
-The egress gateway runs sdsmint (an init-container sidecar), so `https` rules MITM: with the gateway's CA
-trusted, example.com and api.github.com return 200 and unlisted hosts are refused. Three things remain:
-(1) api.anthropic.com gets Envoy's 503 `UF`, because the gateway's DNS cache (`dns_lookup_family: ALL`)
-picks its IPv6 address and gtr has no IPv6 route out, which is for the install's owner (`V4_PREFERRED` or
-IPv6 egress); (2) AX v0.3.1 doesn't ask Substrate for the `egress-mitm.ate.dev` trust bundle, so the
-runner has to carry the public CA into the VM itself; (3) the install also runs Substrate's egress
-credential injection (`k8s-credential-provider`), which does agent-vault's job at the gateway with no
-token in the VM, so agent-vault may no longer be needed.
+**Status (2026-10-06 19:40): every host a worker needs is reachable over HTTPS from an AX task on gtr.**
+The egress gateway runs sdsmint (an init-container sidecar), so `https` rules MITM, and its DNS cache is
+now `V4_PREFERRED` (with `ALL` it picked api.anthropic.com's IPv6 address, which gtr can't route). With the
+gateway's public CA trusted in the VM: api.anthropic.com 401 without a key (`claude -p` reaches it and fails
+only on the dummy key), api.github.com and github.com 200, `git ls-remote https://github.com/google/ax.git`
+works, unlisted hosts are refused. Oddity for the install's owner: example.com (Cloudflare, 172.66.147.243)
+gets 503, the gateway's upstream TLS reporting a certificate for api.anthropic.com. Remaining runner work:
+carry the CA into the VM (AX v0.3.1 doesn't ask Substrate for the `egress-mitm.ate.dev` trust bundle),
+create each task's egress policy, and choose how keys reach the APIs: agent-vault, or Substrate's egress
+credential injection (`k8s-credential-provider`, on in this install), which keeps every token out of the VM.
 
 ## Gates
 
