@@ -352,8 +352,8 @@ export const register: Register = (on, options) => {
     // a gate is the person's call: the model may run decide only after they confirm it here
     if (!/\bfactory\s+decide\b/.test(e.command)) return next(pinned)
     const question = `The manager model wants to decide a factory gate: ${e.command.slice(0, 300)}. Allow it?`
-    const answer = await $.ui.ask(question, ['Allow', 'Deny']).catch(() => 'Deny')
-    return answer === 'Allow'
+    const choice = await $.ui.ask(question, ['Allow', 'Deny']).catch(() => 'Deny')
+    return choice === 'Allow'
       ? next(pinned)
       : { deny: 'The person did not confirm this gate decision. Ask them which outcome they want.' }
   })
