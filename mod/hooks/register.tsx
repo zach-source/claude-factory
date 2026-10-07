@@ -95,6 +95,9 @@ const rt = {
   /** blocked workers a patrol already reported */
   seen: new Set<string>(),
   patrolAt: 0,
+  /** the board and rig goals the manager was last sent, and when */
+  board: undefined as string | undefined,
+  boardAt: 0,
   isPatrolling: false,
   /** told once that the console sits above the prompt because the layout cannot dock it */
   isInlineTold: false,
@@ -183,8 +186,11 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   if (rt.isPatrolling) return
   if (!(await isPaneSession($))) return
   const now = await $.clock.now()
-  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs)
+  // ponytail: the whole board again each hour, so a manager that compacted it away gets it back
+  const last = now - rt.boardAt < 3_600_000 ? rt.board : undefined
+  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last)
   if (!due) return
+  if (due.board !== last) [rt.board, rt.boardAt] = [due.board, now]
   rt.unsent = []
   for (const key of due.keys) rt.seen.add(key)
   rt.patrolAt = now

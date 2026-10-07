@@ -70,6 +70,25 @@ test('patrol wakes the manager for mail, a newly blocked worker, or a heartbeat 
   expect(patrol([blocked], [], new Set(first.keys), false)).toBeNull() // reported once per worker
 })
 
+test('patrol sends the board only when it changed, and caps each message', () => {
+  const working = { id: 'r1', node: 'implement', sub: 'working', goal: 'Add /health', since: 1 }
+  const beat = patrol([working], [], new Set(), true)!
+  expect(beat.board).toContain('- r1 at implement/working')
+  const again = patrol([working], [], new Set(), true, [], beat.board)!
+  expect(again.text).toContain('Board and rig goals: unchanged')
+  expect(again.text).not.toContain('Add /health')
+  expect(patrol([{ ...working, node: 'verify' }], [], new Set(), true, [], beat.board)!.text).toContain(
+    'r1 at verify',
+  )
+  const long = patrol(
+    [working],
+    [{ run: 'r1', from: 'plan', text: 'x'.repeat(5000), at: 2 }],
+    new Set(),
+    false,
+  )!
+  expect(long.text.length).toBeLessThan(600)
+})
+
 test("patrol keeps the manager working toward a rig's goal while the rig has room", () => {
   const fab = { name: 'fab', repo: '/r/fab', factory: 'lifecycle', maxRuns: 2, goal: 'finish the features' }
   const run = (id: string, sub: string) => ({ id, rig: 'fab', node: 'implement', sub, goal: id, since: 1 })

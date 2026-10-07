@@ -274,12 +274,15 @@ export function compile(def: Factory) {
                 // each report that finds it still blocked doubles the wait, up to 8h: a re-check is a whole worker
                 const wakeAt = at + parkDelayMin(context as Ctx, id, node.parkMin ?? 60) * 60_000
                 const text = `${id} is parked, waiting on: ${reason}. It checks again at ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
+                // the manager hears when a station parks, not each re-check that finds nothing changed
+                const last = context.log.at(-1)
+                const isRepeat = last?.node === id && last.outcome === 'blocked'
                 return {
                   log: [
                     ...context.log,
                     { node: id, attempt: context.attempt, outcome: 'blocked', summary: reason, at },
                   ],
-                  mail: post(context.mail, 'manager', { from: id, text, at }),
+                  mail: isRepeat ? context.mail : post(context.mail, 'manager', { from: id, text, at }),
                   pane: null,
                   wakeAt,
                 }

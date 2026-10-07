@@ -431,7 +431,7 @@ const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion'
 export const managerCommand = (extra: string[] = []) => [
   'claude',
   '--model',
-  'opus[1m]',
+  'opus', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
   '--allow-dangerously-skip-permissions',
   '--strict-mcp-config', // and no --mcp-config: no MCP servers
   '--no-chrome',

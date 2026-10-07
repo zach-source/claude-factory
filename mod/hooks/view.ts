@@ -110,7 +110,8 @@ export function rigStats(rig: Pick<FactoryRig, 'name' | 'maxRuns'>, runs: readon
  * The manager's loop: what to wake this session's model with, or null when nothing calls for it.
  * New mail and newly blocked workers wake it at once; `isDue` adds a heartbeat while any worker runs
  * or a rig with a goal has room for more runs. `keys` are the blocked workers this patrol reports,
- * for the caller to remember in `seen`.
+ * for the caller to remember in `seen`. The board and rig goals are sent only when they differ from
+ * `lastBoard`, the `board` an earlier patrol returned: every patrol stays in the manager's context.
  */
 export function patrol(
   runs: readonly FactoryRun[],
@@ -118,6 +119,7 @@ export function patrol(
   seen: ReadonlySet<string>,
   isDue: boolean,
   rigs: readonly FactoryRig[] = [],
+  lastBoard?: string,
 ) {
   const live = runs.filter(isRunLive)
   const blocked = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
@@ -127,18 +129,15 @@ export function patrol(
   const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
   if (!mail.length && !blocked.length && !(isDue && (isWorking || hasRoom))) return null
   const news = [
-    ...mail.map(m => `- ${m.run} / ${m.from}: ${m.text}`),
+    // the whole report is a `factory show` away; a parked station's can run to pages
+    ...mail.map(m => `- ${m.run} / ${m.from}: ${line(m.text, 300)}`),
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
   ]
   const board = live.map(
     r =>
       `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : ''}: ${line(r.goal ?? '', 100)}`,
   )
-  const text = [
-    '[factory] patrol',
-    news.length
-      ? `New:\n${news.join('\n')}`
-      : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
+  const state = [
     board.length ? `Board:\n${board.join('\n')}` : 'Board: no runs.',
     ...(goals.length
       ? [
@@ -148,5 +147,12 @@ export function patrol(
         ]
       : []),
   ].join('\n')
-  return { text, keys: blocked.map(blockKey) }
+  const text = [
+    '[factory] patrol',
+    news.length
+      ? `New:\n${news.join('\n')}`
+      : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
+    state === lastBoard ? 'Board and rig goals: unchanged since the last patrol.' : state,
+  ].join('\n')
+  return { text, keys: blocked.map(blockKey), board: state }
 }

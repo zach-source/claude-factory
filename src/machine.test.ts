@@ -226,8 +226,10 @@ test('a blocked worker parks its station without spending an attempt, and mail o
   expect(s.context).toMatchObject({ attempt: 2, seq: 3, wakeAt: 0 })
   expect(s.context.mail.implement?.at(-1)?.text).toBe('merged it')
 
-  // blocked again: it waits twice as long, then the clock wakes it
-  send({ type: 'BLOCKED', seq: 3, reason: 'still waiting', at: 60_000 })
+  // blocked again: it waits twice as long, then the clock wakes it; the manager already knows it parked
+  const told = s.context.mail.manager?.length
+  s = send({ type: 'BLOCKED', seq: 3, reason: 'still waiting', at: 60_000 })
+  expect(s.context.mail.manager?.length).toBe(told)
   s = send({ type: 'TICK', at: 60_000 + 60 * 60_000 })
   expect(where(s.value)).toEqual(['implement', 'waiting'])
   s = send({ type: 'TICK', at: 60_000 + 120 * 60_000 })

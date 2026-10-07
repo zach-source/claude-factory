@@ -14,6 +14,10 @@ minor release may change the factory format, the CLI or the run state.
 - Only the session herdr sees in the manager's pane patrols. A background fork of the manager
   inherited its pane and patrolled as a second manager, and its stale-session hook typed
   `/compact` into the real manager's pane.
+- The manager's context stays small. A station that parks again tells the manager nothing new; the
+  patrol caps each message at 300 characters and sends the board and rig goals only when they
+  change (and hourly); and `factory manager` runs `opus`, which Claude Code compacts, instead of
+  `opus[1m]`. Managers had grown to 400–550k tokens, re-read on every call.
 
 ## 0.2.0 (2026-10-06)
 
