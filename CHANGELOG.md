@@ -18,6 +18,8 @@ minor release may change the factory format, the CLI or the run state.
   patrol caps each message at 300 characters and sends the board and rig goals only when they
   change (and hourly); and `factory manager` runs `opus`, which Claude Code compacts, instead of
   `opus[1m]`. Managers had grown to 400–550k tokens, re-read on every call.
+- `factory waiting`: everything that waits on the person, by rig: gates, parked stations with what
+  holds them and their pull requests, stuck runs, and the command that answers each.
 
 ## 0.2.0 (2026-10-06)
 

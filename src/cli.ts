@@ -37,7 +37,7 @@ import {
 } from './machine'
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
 import { command, harnessOf, readMcp } from './harness'
-import { tokens } from './sidebar'
+import { tokens, waiting } from './sidebar'
 import * as memory from './memory'
 import { createdAt, metrics, render, type RunRecord } from './metrics'
 
@@ -1526,6 +1526,7 @@ const usage = `factory — herdr software factories on xstate
                                      the approve gate, review loops, failures by kind, each station's outcomes
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
+  waiting                            everything that waits on the person, by rig, and how to answer each
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
@@ -1701,6 +1702,17 @@ if (import.meta.main)
       case 'status':
         await status(args[0])
         break
+      case 'waiting': {
+        const rows = await Promise.all(
+          runIds().map(async id => {
+            const { run, value, c } = current(id)
+            const def = await loadFactory(run.factory)
+            return row(run, def, value, c, agentOf(def, value, c))
+          }),
+        )
+        console.log(waiting(rows, Date.now()))
+        break
+      }
       case 'report': {
         const [id, seq, outcome, ...summary] = args
         const { run, value, c } = current(id)
