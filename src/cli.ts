@@ -144,6 +144,8 @@ export type Row = {
   /** when the current worker started, or when a timed wait ends */
   since?: number
   wakeAt?: number
+  /** when its current station's box last got mail: a reply to what it asked */
+  mailedAt?: number
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
@@ -659,6 +661,7 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     trail: c.log.slice(-40).map(e => e.node),
     ...(c.startedAt && { since: c.startedAt }),
     ...(c.wakeAt && { wakeAt: c.wakeAt }),
+    ...(c.mail[node]?.length && { mailedAt: Math.max(...c.mail[node]!.map(m => m.at ?? 0)) }),
     ...(n?.gate &&
       sub === 'working' && { gate: { question: n.prompt.trim(), outcomes: Object.keys(n.next) } }),
   }

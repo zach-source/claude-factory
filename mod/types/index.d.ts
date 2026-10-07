@@ -21,6 +21,8 @@ export type FactoryRun = {
   trail?: string[]
   since?: number
   wakeAt?: number
+  /** when its current station's box last got mail: a reply to what it asked */
+  mailedAt?: number
 }
 export type FactoryEntry = { node: string; attempt: number; outcome: string; summary: string; at: number }
 export type FactoryMail = { run: string; from: string; text: string; at: number }

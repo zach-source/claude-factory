@@ -159,16 +159,22 @@ test('a quick answer goes to the asking station, or tells the station the run mo
   expect(quickAnswer(m, { node: 'done' }, 'approve', '')).toBeNull() // nobody would read it
 })
 
-test('mail answered in the console, or from an ended run, leaves the not-answered tab', () => {
+test('mail answered in the console or by mail, reported past, or from an ended run, leaves the not-answered tab', () => {
   const m = (run: string, at: number) => ({ run, from: 'implement', at, text: '?' })
   const runs = [
     { id: 'a', node: 'implement' },
     { id: 'b', node: 'done' },
+    { id: 'c', node: 'implement', mailedAt: 5 },
+    {
+      id: 'd',
+      node: 'verify',
+      last: { node: 'implement', attempt: 1, outcome: 'ready', summary: '', at: 5 },
+    },
   ] as Parameters<typeof mailTabs>[1]
-  const mail = [m('a', 1), m('a', 2), m('b', 3)]
+  const mail = [m('a', 1), m('a', 2), m('b', 3), m('c', 4), m('c', 6), m('d', 4)]
   const { open, answered } = mailTabs(mail, runs, { [mailKey(m('a', 1))]: 'approve' })
-  expect(open).toEqual([m('a', 2)])
-  expect(answered).toEqual([m('a', 1), m('b', 3)])
+  expect(open).toEqual([m('a', 2), m('c', 6)])
+  expect(answered).toEqual([m('a', 1), m('b', 3), m('c', 4), m('d', 4)])
 })
 
 test('a pull request names what it waits on, worst first', () => {
