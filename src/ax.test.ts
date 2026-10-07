@@ -90,7 +90,7 @@ test('a launch applies the task with the run branch, the brief and the CA in its
     FACTORY_BRANCH: 'factory/r1',
     FACTORY_CA: 'CA-PEM',
     FACTORY_FROM: 'implement',
-    ANTHROPIC_API_KEY: 'placeholder',
+    CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
     FACTORY_OUTBOX: '/workspace/w/.factory-worker/outbox.jsonl',
   })
   expect(task.spec.command).toEqual(['factory', 'worker', 'serve', '--model', 'claude-opus-5'])
@@ -130,8 +130,8 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
   const [anthropic, , git] = ax.egressPolicy('factory-spike-ax/factory-keys').rules
   expect(anthropic!.https.effects!.replaceHeaders).toEqual([
     {
-      header: 'x-api-key',
-      prefix: '',
+      header: 'Authorization',
+      prefix: 'Bearer ',
       credentialUri: 'ate-secret://k8s.io/default/factory-spike-ax/factory-keys/anthropic',
     },
   ])

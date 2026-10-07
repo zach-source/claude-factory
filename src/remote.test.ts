@@ -22,7 +22,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 
-test('git remotes become https remotes the VM clones through the proxy', () => {
+test('git remotes become https remotes the VM clones', () => {
   expect(httpsRemote('git@github.com:o/app.git')).toBe('https://github.com/o/app.git')
   expect(httpsRemote('ssh://git@github.com/o/app.git')).toBe('https://github.com/o/app.git')
   expect(httpsRemote('https://github.com/o/app.git')).toBe('https://github.com/o/app.git')

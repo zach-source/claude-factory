@@ -124,7 +124,7 @@ export function egressCA() {
 
 /**
  * a worker's EgressPolicy: HTTPS to Anthropic and GitHub and nothing else. With FACTORY_AX_SECRET=<ns>/<secret>
- * the gateway swaps the placeholder in each auth header for that Secret's key: `anthropic` (an API key),
+ * the gateway swaps the placeholder in each auth header for that Secret's key: `anthropic` (a Claude OAuth token, from `claude setup-token`),
  * `github` (a token) and `github-basic` (base64 of `x-access-token:<token>`, which git sends as Basic auth)
  */
 export function egressPolicy(secret = process.env.FACTORY_AX_SECRET) {
@@ -137,7 +137,7 @@ export function egressPolicy(secret = process.env.FACTORY_AX_SECRET) {
   })
   return {
     rules: [
-      rule(['api.anthropic.com'], 'x-api-key', '', 'anthropic'),
+      rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'anthropic'),
       rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'github'),
       rule(['github.com'], 'Authorization', 'Basic ', 'github-basic'),
     ],
@@ -168,7 +168,8 @@ export const launch = (l: Launch, { tries = 30, waitMs = 2000 } = {}) => {
   const env = {
     ...l.env,
     FACTORY_CA: egressCA(),
-    ANTHROPIC_API_KEY: 'placeholder',
+    // Claude sends an OAuth token as `Authorization: Bearer`, which the gateway replaces
+    CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
     GH_TOKEN: 'placeholder',
     // the policy allows only Anthropic's API and GitHub, so skip the telemetry it would refuse
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
