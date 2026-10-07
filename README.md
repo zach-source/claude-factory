@@ -20,6 +20,9 @@ cd ~/my-factory
 ~/repos/workspaces/claude-factory/bin/factory manager   # add --resume <session> to bring one back
 ```
 
+Or in one step from a herdr pane: `bin/factory-up [factory-dir] [--resume <session>]` installs deps,
+inits the factory (default `$FACTORY_HOME`, else `~/factory`) if new, and starts its manager.
+
 In the manager session:
 
 ```

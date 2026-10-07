@@ -1,0 +1,36 @@
+#!/bin/sh
+# Start a factory's manager in one step: install deps, make the factory if it
+# is new, then run `factory manager` in it. Extra args go to the manager
+# (e.g. `--resume <session>`).
+#
+#   bin/factory-up [factory-dir] [manager args...]
+#
+# factory-dir defaults to $FACTORY_HOME, else ~/factory.
+set -eu
+
+ROOT=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
+FACTORY=$ROOT/bin/factory
+
+case "${1:-}" in
+  '' | -*) DIR=${FACTORY_HOME:-$HOME/factory} ;;
+  *) DIR=$1; shift ;;
+esac
+
+for tool in bun claude; do
+  command -v "$tool" >/dev/null || { echo "factory-up: $tool not on PATH" >&2; exit 1; }
+done
+
+# ponytail: reinstall only when there is no node_modules or the lockfile is newer
+if [ ! -d "$ROOT/node_modules" ] || [ "$ROOT/bun.lock" -nt "$ROOT/node_modules" ]; then
+  (cd "$ROOT" && bun install --frozen-lockfile) && touch "$ROOT/node_modules"
+fi
+
+[ -f "$DIR/rigs.json" ] || "$FACTORY" init "$DIR"
+
+# The manager drives herdr panes for its workers; outside herdr it can still
+# run, but workers have nowhere to go.
+[ "${HERDR_ENV:-}" = 1 ] || echo "factory-up: not in a herdr pane; start herdr first so workers get panes" >&2
+
+cd "$DIR"
+export FACTORY_HOME="$DIR"
+exec "$FACTORY" manager "$@"
