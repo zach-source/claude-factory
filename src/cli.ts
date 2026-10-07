@@ -187,6 +187,31 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
   }
 }
 
+/**
+ * commits on the run's base that name its bead: a quarter of triage's rejects were beads already fixed by a
+ * commit naming them. ponytail: handed to the worker, not a skip, as a third of hits are partial earlier work
+ */
+function priorWork(run: Run) {
+  if (!run.bead || !run.base) return ''
+  // commits name a bead by its short id too, with or without a prefix: infra-blocks-4t9a, ib-4t9a, (4t9a)
+  const short = run.bead.slice(run.bead.lastIndexOf('-') + 1).replaceAll('.', '\\.')
+  const grep = `--grep=(^|[^a-z0-9.])([a-z]+-)*${short}([^a-z0-9.]|$)`
+  // not git(): a missing base must not stop the worker's launch
+  const p = Bun.spawnSync([
+    'git',
+    '-C',
+    run.worktree,
+    'log',
+    run.base,
+    '-n',
+    '10',
+    '--format=%h %s',
+    '-E',
+    grep,
+  ])
+  return p.exitCode === 0 ? p.stdout.toString().trim() : ''
+}
+
 function git(cwd: string, ...args: string[]) {
   const p = Bun.spawnSync(['git', '-C', cwd, ...args])
   return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
@@ -260,6 +285,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   const parked = isParked(c, node) ? c.log.at(-1) : undefined
   // a fresh worker is told what earlier ones already committed, so it builds on it rather than redoing it
   const committed = run.base ? git(run.worktree, 'log', '--oneline', '-n', '30', `${run.base}..HEAD`) : ''
+  const prior = node === def.start ? priorWork(run) : ''
   return [
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
@@ -294,6 +320,14 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
           '## The previous worker was blocked',
           parked.summary,
           'Check whether that still holds before anything else; if it does, report blocked again.',
+        ]
+      : []),
+    ...(prior
+      ? [
+          '',
+          '## Commits already on the default branch that name this bead',
+          prior,
+          'Check whether they already do what the goal asks before planning anything new: some are only part of it.',
         ]
       : []),
     ...(committed

@@ -26,6 +26,8 @@ minor release may change the factory format, the CLI or the run state.
 - Fewer review rounds: implement and verify now run review's mechanical checks (merge with
   origin/main, break each guard, check doc claims and documented commands, fix a finding's
   siblings), and review lists everything it finds in one pass.
+- A run's first station is shown the commits already on the default branch that name its bead,
+  so triage checks them instead of rediscovering an existing fix.
 
 ## 0.2.0 (2026-10-06)
 
