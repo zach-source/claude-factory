@@ -37,6 +37,9 @@ minor release may change the factory format, the CLI or the run state.
   branch stay until `factory rm`, which removes the worktree with git once the workspace is gone),
   and a Claude idle in a live run's workspace that is not its worker.
 
+- The console's mail splits into not answered and answered: mail you answer, or whose run has
+  ended, leaves the list you work from.
+
 ## 0.2.0 (2026-10-06)
 
 - herdr's sidebar shows each run's station and what holds it (`$factory` on the run's workspace:

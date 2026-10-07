@@ -1,6 +1,17 @@
 // the mod's pure helpers, tested here because the mod's own tests run under `claude plugin test`
 import { expect, test } from 'bun:test'
-import { bar, dur, line, mailKey, patrol, quickAnswer, rigStats, sparkline, track } from '../mod/hooks/view'
+import {
+  bar,
+  dur,
+  line,
+  mailKey,
+  mailTabs,
+  patrol,
+  quickAnswer,
+  rigStats,
+  sparkline,
+  track,
+} from '../mod/hooks/view'
 
 test('track folds loops and marks where the run is', () => {
   expect(track(['triage', 'plan', 'implement', 'verify', 'implement'], 'verify')).toEqual([
@@ -145,4 +156,16 @@ test('a quick answer goes to the asking station, or tells the station the run mo
     'About the implement station\'s message "May I drop the legacy endpoint?": The person answers: yes, behind a flag',
   )
   expect(quickAnswer(m, { node: 'done' }, 'approve', '')).toBeNull() // nobody would read it
+})
+
+test('mail answered in the console, or from an ended run, leaves the not-answered tab', () => {
+  const m = (run: string, at: number) => ({ run, from: 'implement', at, text: '?' })
+  const runs = [
+    { id: 'a', node: 'implement' },
+    { id: 'b', node: 'done' },
+  ] as Parameters<typeof mailTabs>[1]
+  const mail = [m('a', 1), m('a', 2), m('b', 3)]
+  const { open, answered } = mailTabs(mail, runs, { [mailKey(m('a', 1))]: 'approve' })
+  expect(open).toEqual([m('a', 2)])
+  expect(answered).toEqual([m('a', 1), m('b', 3)])
 })

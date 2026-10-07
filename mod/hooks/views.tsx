@@ -13,7 +13,7 @@ import type {
   FactoryRun,
   FactoryView,
 } from '../types'
-import { bar, clockOf, dur, line, mailKey, rigStats, sparkline, track } from './view'
+import { bar, clockOf, dur, line, mailKey, mailTabs, rigStats, sparkline, track } from './view'
 
 /** what every surface the console draws on has; mobile has no Input or Select */
 export type UI = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button' | 'Code'> &
@@ -622,12 +622,28 @@ function quickAnswers(
 
 export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   const { Box, Text, Button } = p.ui
-  const mail = [...board.mail].reverse()
+  const tabs = mailTabs(board.mail, board.runs, draft.answered)
+  const tab = draft.mailTab ?? 'open'
+  const mail = [...tabs[tab]].reverse()
   // oldest first, so each run and station keeps its newest message's key
   const newest = new Set(new Map(board.mail.map(m => [`${m.run}/${m.from}`, mailKey(m)])).values())
   return (
     <Box key="mail" flexDirection="column">
-      {mail.length === 0 && <Text dimColor>No mail for the manager yet.</Text>}
+      <Box gap={1} marginBottom={1}>
+        {(['open', 'answered'] as const).map(t => (
+          <Button
+            key={`mail-tab-${t}`}
+            label={`${t === 'open' ? 'not answered' : 'answered'} (${tabs[t].length})`}
+            plain
+            variant={tab === t ? 'primary' : undefined}
+            dimColor={tab !== t}
+            onPress={() => p.act.draft({ mailTab: t })}
+          />
+        ))}
+      </Box>
+      {mail.length === 0 && (
+        <Text dimColor>{tab === 'open' ? 'Nothing waits on your answer.' : 'Nothing answered yet.'}</Text>
+      )}
       {mail.map(m => (
         <Box key={`mail-${m.run}-${m.at}`} flexDirection="column" marginBottom={1}>
           <Box gap={1}>

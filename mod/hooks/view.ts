@@ -59,6 +59,17 @@ const blockKey = (r: FactoryRun) => `${r.id}:${r.node}:${r.since}`
 /** one manager message, across ticks: a run's mail is told apart by when it was sent */
 export const mailKey = (m: Pick<FactoryMail, 'run' | 'at'>) => `${m.run}@${m.at}`
 
+/** mail the person still owes an answer, and mail done with: answered in the console, or its run has ended */
+export function mailTabs(
+  mail: readonly FactoryMail[],
+  runs: readonly FactoryRun[],
+  answered: Record<string, string> = {},
+) {
+  const live = new Set(runs.filter(r => r.node && r.node !== 'done' && r.node !== 'aborted').map(r => r.id))
+  const isDone = (m: FactoryMail) => !!answered[mailKey(m)] || !live.has(m.run)
+  return { open: mail.filter(m => !isDone(m)), answered: mail.filter(isDone) }
+}
+
 /**
  * the person's quick answer to a worker's mail, and the mailbox it goes to: the asking station's, or the
  * station the run has moved on to, told what it answers. null when the run is over and nobody would read it.

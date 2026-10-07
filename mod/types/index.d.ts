@@ -90,6 +90,8 @@ export type FactoryDraft = {
   replies?: Record<string, string>
   /** what the person already answered, per message */
   answered?: Record<string, string>
+  /** the mail view's sub-tab */
+  mailTab?: 'open' | 'answered'
 }
 
 declare module 'claude-code' {
