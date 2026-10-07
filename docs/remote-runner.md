@@ -1,15 +1,16 @@
 # Remote runner: station workers in AX microVMs on gtr
 
-**Status (2026-10-06 19:40): every host a worker needs is reachable over HTTPS from an AX task on gtr.**
-The egress gateway runs sdsmint (an init-container sidecar), so `https` rules MITM, and its DNS cache is
-now `V4_PREFERRED` (with `ALL` it picked api.anthropic.com's IPv6 address, which gtr can't route). With the
-gateway's public CA trusted in the VM: api.anthropic.com 401 without a key (`claude -p` reaches it and fails
-only on the dummy key), api.github.com and github.com 200, `git ls-remote https://github.com/google/ax.git`
-works, unlisted hosts are refused. Oddity for the install's owner: example.com (Cloudflare, 172.66.147.243)
-gets 503, the gateway's upstream TLS reporting a certificate for api.anthropic.com. Remaining runner work:
-carry the CA into the VM (AX v0.3.1 doesn't ask Substrate for the `egress-mitm.ate.dev` trust bundle),
-create each task's egress policy, and choose how keys reach the APIs: agent-vault, or Substrate's egress
-credential injection (`k8s-credential-provider`, on in this install), which keeps every token out of the VM.
+**Status (2026-10-07 11:30): the AX runner works on gtr up to the keys.** With image
+`factory-worker:26670e1`, a launch through `src/ax.ts` applied the task and its egress policy; `serve` trusted
+the gateway's CA, cloned the branch once the policy existed, ran Claude (which reached Anthropic and said
+"Not logged in": no Secret yet), and went idle with a session. A prompt ran as a second turn of that session;
+suspend and resume kept the clone and the session and did not brief again; a `factory mail` in the VM came
+back through `poll`; deleting the task took its policy. Waiting on: the keys Secret (`factory-keys` in
+`factory-spike-ax`, by the user) and the atespace grant in `k8s-credential-provider-namespace-policy` (the
+install's owner). Then: one real station end to end. Egress history: sdsmint makes `https` rules MITM; the
+gateway's DNS cache is `V4_PREFERRED` on gtr (with `ALL` it picked api.anthropic.com's IPv6 address, which gtr
+can't route). Oddity for the install's owner: example.com (Cloudflare, 172.66.147.243) gets 503, the gateway's
+upstream TLS reporting a certificate for api.anthropic.com.
 
 ## Gates
 
