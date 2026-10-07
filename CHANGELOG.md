@@ -6,9 +6,11 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
-- `FACTORY_CLAUDE` swaps the Claude Code command (default `claude-smart --new --no-channels`) for
-  the stock templates, the default worker and the dream; a wrapper it names runs as Claude, with
-  resume and `--mcp-config`. It was hardcoded to `claude-smart` in each of them.
+- A factory's `params` are what its worker commands name as `{name}`: lifecycle's launcher
+  (`claude`, default `claude-smart --new --no-channels`) and its three models. A rig sets them
+  (`factory rig add ... --param exec_model=...`), else `FACTORY_<NAME>` in the environment
+  (`FACTORY_CLAUDE`), else the factory's default; `factory check` names any it does not give. The
+  default worker and the dream follow `FACTORY_CLAUDE` too, and a wrapper it names runs as Claude.
 - `factory manager` starts a factory's manager lean: Bash and file tools only, no MCP servers,
   claude.ai connectors or Chrome. A manager started with `claude-smart` carried ~134k tokens of
   tool definitions into every call; this one starts at ~29k.
@@ -31,6 +33,9 @@ minor release may change the factory format, the CLI or the run state.
   siblings), and review lists everything it finds in one pass.
 - A run's first station is shown the commits already on the default branch that name its bead,
   so triage checks them instead of rediscovering an existing fix.
+- The tick reaps what herdr holds that no run needs: a finished run's workspace (its worktree and
+  branch stay until `factory rm`, which removes the worktree with git once the workspace is gone),
+  and a Claude idle in a live run's workspace that is not its worker.
 
 ## 0.2.0 (2026-10-06)
 

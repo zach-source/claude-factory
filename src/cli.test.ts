@@ -2,8 +2,18 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { compile, validate } from './machine'
-import { deadline, haltStep, missingSweeps, ownCopy, relaunch, room, withoutFleet } from './cli'
+import { compile, fill, validate } from './machine'
+import {
+  deadline,
+  haltStep,
+  missingSweeps,
+  ownCopy,
+  paramsOf,
+  reapable,
+  relaunch,
+  room,
+  withoutFleet,
+} from './cli'
 
 test("the factory's Claudes load every mod but herdr-fleet", () => {
   expect(withoutFleet('/m/herdr-fleet').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
@@ -70,4 +80,55 @@ test('a stop tells each worker once, waits while it works, then closes its pane'
   expect(haltStep(true, true, true, 60_000)).toBe('wait') // committing
   expect(haltStep(true, true, false, 60_000)).toBe('close') // quiet: done committing
   expect(haltStep(true, true, true, 6 * 60_000)).toBe('close') // past the grace
+})
+
+test("the reaper closes a finished run's workspace and an idle Claude that is not a live run's worker", () => {
+  const p = (
+    pane_id: string,
+    workspace_id: string,
+    cwd: string,
+    agent_status = 'unknown',
+    agent: string | null = null,
+  ) => ({
+    pane_id,
+    workspace_id,
+    cwd,
+    agent,
+    agent_status,
+  })
+  const runs = [
+    { ws: 'w1', worktree: '/wt/a', isOver: true },
+    { ws: 'w2', worktree: '/wt/b', isOver: true }, // closed already: w2 is someone else's now
+    { ws: 'w3', worktree: '/wt/c', isOver: false, pane: 'w3:p2' },
+  ]
+  const panes = [
+    p('w1:p1', 'w1', '/wt/a'),
+    p('w2:p1', 'w2', '/home/other'),
+    p('w3:p1', 'w3', '/wt/c'), // the shell the worktree opened with
+    p('w3:p2', 'w3', '/wt/c', 'idle', 'claude'), // the run's worker, between turns
+    p('w3:p3', 'w3', '/wt/c/src', 'done', 'claude'), // a duplicate
+    p('w3:p4', 'w3', '/wt/c', 'working', 'claude'), // left to finish
+    p('w3:p5', 'w3', '/wt/cc', 'idle', 'claude'), // another worktree
+  ]
+  expect(reapable(runs, panes)).toEqual({ workspaces: ['w1'], panes: ['w3:p3'] })
+})
+
+test("a worker command's {params} come from the rig, then FACTORY_<NAME>, then the factory", () => {
+  const def = { params: { claude: 'claude-smart --new', exec_model: 'sonnet', judge_model: 'opus' } }
+  const env = { FACTORY_CLAUDE: 'claude --x', FACTORY_EXEC_MODEL: '  ' }
+  const params = paramsOf(def, { params: { judge_model: 'fable' } }, env)
+  expect(params).toEqual({ claude: 'claude --x', exec_model: 'sonnet', judge_model: 'fable' })
+  expect(fill(`{claude} --model '{judge_model}' --settings '{"a":1}' {other}`, params)).toBe(
+    `claude --x --model 'fable' --settings '{"a":1}' {other}`,
+  )
+  const node = { prompt: 'p', next: { ok: 'done' } }
+  expect(() =>
+    validate({
+      name: 'f',
+      start: 'a',
+      agent: '{claude} {typo}',
+      params: { claude: 'c' },
+      nodes: { a: node },
+    }),
+  ).toThrow('agent names {typo}, which params does not give')
 })

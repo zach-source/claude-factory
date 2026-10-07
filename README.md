@@ -89,16 +89,18 @@ of a rig with one command, and `--mcp` gives its workers the servers in a Claude
 `{ "mcpServers": { ... } }` file: `--mcp-config` for Claude, `-c mcp_servers.<name>=…` for Codex.
 pi has no MCP client, so its pane says that the file was not loaded.
 
-The Claude Code command itself is `FACTORY_CLAUDE`, default `claude-smart --new --no-channels`:
-the stock templates, the default worker and the dream start from it, and its executable is
-treated as Claude. Set it in the factory's environment to run plain Claude Code or another
-wrapper, e.g. `FACTORY_CLAUDE=claude factory loop`. A repo's own copy of a template (`factory
-adopt`) reads it too, once it is adopted after this change.
+A factory's `params` are what its worker commands name as `{name}`: lifecycle's are `claude` (the
+Claude Code launcher, default `claude-smart --new --no-channels`), `exec_model`, `judge_model` and
+`security_model`. A rig sets one with `--param name=value`; otherwise the factory's environment
+can, as `FACTORY_<NAME>` (e.g. `FACTORY_CLAUDE=claude factory loop`); otherwise the default holds.
+The default worker and the dream start from `FACTORY_CLAUDE` too, and its executable is treated
+as Claude.
 
 ```sh
 factory rig add web ~/repos/web --agent "codex --dangerously-bypass-approvals-and-sandbox"
 factory rig add api ~/repos/api --agent "pi --model anthropic/claude-sonnet-5" --sweeps none
 factory rig add infra ~/repos/infra --mcp ~/.config/factory/infra-mcp.json
+factory rig add docs ~/repos/docs --param exec_model=claude-haiku-4-5-20251001 --param claude=claude
 ```
 
 ## The lifecycle factory

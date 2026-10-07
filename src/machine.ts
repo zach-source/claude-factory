@@ -33,6 +33,11 @@ export type Factory = {
   start: string
   /** worker command; the prompt is appended as one argument */
   agent?: string
+  /**
+   * what worker commands name as {name} (the launcher, the models), with their defaults; a rig's
+   * `--param name=value` and the environment's FACTORY_<NAME> override them
+   */
+  params?: Record<string, string>
   /** first retry delay, doubled per attempt (default 30) */
   backoffSec?: number
   /** worker launches a run may make before it pages the manager (default 20); RETRY and every timed edge grant as many again */
@@ -94,10 +99,20 @@ export type Ev = At &
 
 export const RESERVED = new Set(['done', 'aborted', 'manager', 'fail'])
 
+const PARAM = /\{([a-z][a-z0-9_]*)\}/g
+/** a worker command with its {name}s filled in; a name `params` lacks stays as it is */
+export const fill = (cmd: string, params: Record<string, string>) =>
+  cmd.replace(PARAM, (all, name: string) => params[name] ?? all)
+
 export function validate(def: Factory): Factory {
   const ids = Object.keys(def.nodes ?? {})
+  const commands = [def.agent, ...ids.map(id => def.nodes[id]!.agent)].filter(Boolean) as string[]
+  const unknown = [...new Set(commands.flatMap(c => [...c.matchAll(PARAM)].map(m => m[1]!)))].filter(
+    name => !(name in (def.params ?? {})),
+  )
   const problems = [
     !def.name && 'name is required',
+    unknown.length && `agent names {${unknown.join('}, {')}}, which params does not give`,
     !ids.includes(def.start) && `start "${def.start}" is not a node`,
     ...ids.filter(id => RESERVED.has(id)).map(id => `node id "${id}" is reserved`),
     ...ids.flatMap(id => {

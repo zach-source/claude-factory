@@ -23,6 +23,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
   compile,
+  fill,
   isParked,
   reach,
   unread,
@@ -439,9 +440,19 @@ function resumeFile(run: Run, node: string, c: Ctx) {
   writeFileSync(file, resumeNote(run, node, c))
   return file
 }
+/** a factory's params: its defaults, under FACTORY_<NAME>, under the rig's own --param */
+export const paramsOf = (def: Pick<Factory, 'params'>, rig?: Pick<Rig, 'params'>, env = process.env) =>
+  Object.fromEntries(
+    Object.entries(def.params ?? {}).map(([k, v]) => [
+      k,
+      rig?.params?.[k] ?? (env[`FACTORY_${k.toUpperCase()}`]?.trim() || v),
+    ]),
+  )
 /** the worker command: the rig's own (one harness for all its stations) over the station's and the factory's */
-const agentOfNode = (run: Run, def: Factory, node: string) =>
-  rigOf(run.repo)?.agent ?? def.nodes[node]!.agent ?? def.agent ?? AGENT
+const agentOfNode = (run: Run, def: Factory, node: string) => {
+  const rig = rigOf(run.repo)
+  return fill(rig?.agent ?? def.nodes[node]!.agent ?? def.agent ?? AGENT, paramsOf(def, rig))
+}
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
 function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
@@ -1047,6 +1058,58 @@ function showInSidebar(rows: Row[], now: number, isPatrol: boolean) {
     writeJson(file, { at: isStale ? now : was.at, ws: want, manager })
 }
 
+type HerdrPane = {
+  pane_id: string
+  workspace_id: string
+  cwd?: string
+  agent?: string | null
+  agent_status?: string
+}
+const herdrPanes = (): HerdrPane[] =>
+  JSON.parse(Bun.spawnSync(['herdr', 'pane', 'list']).stdout.toString() || '{}').result?.panes ?? []
+// herdr reuses workspace ids, so a run's workspace is still its own only while a pane there sits in its worktree
+const isIn = (p: HerdrPane, r: Pick<Run, 'ws' | 'worktree'>) =>
+  p.workspace_id === r.ws && !!p.cwd && (p.cwd === r.worktree || p.cwd.startsWith(`${r.worktree}/`))
+
+/**
+ * what herdr still holds that no run needs: a finished run's workspace (its worktree and branch stay for
+ * `factory rm`), and a Claude idle in a live run's workspace that is not the run's worker (a duplicate
+ * launch, a worker its run moved on from).
+ */
+export function reapable(
+  runs: (Pick<Run, 'ws' | 'worktree'> & { isOver: boolean; pane?: string | null })[],
+  panes: HerdrPane[],
+) {
+  const workspaces = runs.filter(r => r.isOver && panes.some(p => isIn(p, r))).map(r => r.ws)
+  // ponytail: idle and done only; a working duplicate is left to finish, as closing it loses its turn
+  const strays = runs
+    .filter(r => !r.isOver)
+    .flatMap(r =>
+      panes.filter(
+        p =>
+          isIn(p, r) &&
+          p.agent &&
+          p.pane_id !== r.pane &&
+          (p.agent_status === 'idle' || p.agent_status === 'done'),
+      ),
+    )
+    .map(p => p.pane_id)
+  return { workspaces: [...new Set(workspaces)], panes: strays }
+}
+
+function reap(rows: Row[]) {
+  const runs = rows.flatMap(r => {
+    if (!r.node || !existsSync(join(runDir(r.id), 'run.json'))) return []
+    const run = loadRun(r.id)
+    return [{ ...run, isOver: r.node === 'done' || r.node === 'aborted', pane: r.pane }]
+  })
+  const { workspaces, panes } = reapable(runs, herdrPanes())
+  for (const ws of workspaces) Bun.spawnSync(['herdr', 'workspace', 'close', ws])
+  for (const pane of panes) Bun.spawnSync(['herdr', 'pane', 'close', pane])
+  for (const what of [...workspaces.map(w => `workspace ${w}`), ...panes.map(p => `pane ${p}`)])
+    console.error(`${new Date().toISOString()} reaped ${what}`)
+}
+
 async function tick(isPatrol = false) {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
@@ -1069,6 +1132,7 @@ async function tick(isPatrol = false) {
     }
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
     showInSidebar(out.runs, now, isPatrol)
+    reap(out.runs)
     // stopped once no worker is still being told to stop: everything that was working has closed
     if (halt?.state === 'stopping' && !out.runs.some(r => r.agent === 'stopping'))
       writeJson(haltFile(), { ...halted()!, state: 'paused' })
@@ -1253,6 +1317,8 @@ export type Rig = {
   agent?: string
   /** MCP servers every worker here loads, a file in Claude's --mcp-config shape ({ mcpServers }) */
   mcp?: string
+  /** the factory's params, set for this rig (`--param name=value`) */
+  params?: Record<string, string>
 }
 const rigsFile = () => join(HOME, 'rigs.json')
 const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
@@ -1363,7 +1429,8 @@ async function defineRig(
     goal,
     agent,
     mcp,
-  }: { max?: string; sweeps?: string; goal?: string; agent?: string; mcp?: string },
+    params,
+  }: { max?: string; sweeps?: string; goal?: string; agent?: string; mcp?: string; params?: string[] },
 ) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
   const repo = toplevel(path)
@@ -1378,6 +1445,14 @@ async function defineRig(
     } catch (err) {
       fail(`--mcp ${mcp}: ${(err as Error).message}`)
     }
+  }
+  for (const p of params ?? []) {
+    const [k, v] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
+    if (!p.includes('=') || !(k in (def.params ?? {})))
+      fail(
+        `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
+      )
+    rig.params = { ...rig.params, [k]: v }
   }
   if (max !== undefined) {
     if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
@@ -1552,7 +1627,7 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--goal text...] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--param name=value]... [--goal text...] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -1876,13 +1951,15 @@ if (import.meta.main)
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
         const [max, sweeps, agent, mcp] = [opt('--max'), opt('--sweeps'), opt('--agent'), opt('--mcp')]
+        const params: string[] = []
+        while (args.includes('--param')) params.push(opt('--param') ?? '')
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              'usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--goal text...]',
+              'usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--param name=value]... [--goal text...]',
             )
-          const rig = await defineRig(name!, repo!, factory, { max, sweeps, goal, agent, mcp })
+          const rig = await defineRig(name!, repo!, factory, { max, sweeps, goal, agent, mcp, params })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
@@ -1920,6 +1997,7 @@ if (import.meta.main)
             if (r.goal) console.log(`  goal: ${r.goal}`)
             if (r.agent) console.log(`  agent: ${r.agent}`)
             if (r.mcp) console.log(`  mcp: ${r.mcp}`)
+            for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
           }
         } else fail(`unknown rig command "${sub}": add, rm or list`)
         break
@@ -1929,8 +2007,10 @@ if (import.meta.main)
         if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
         // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
         rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
-        // no --force: herdr refuses a worktree with uncommitted work; the branch always stays
-        herdr('worktree', 'remove', '--workspace', run.ws)
+        // no --force: herdr and git refuse a worktree with uncommitted work; the branch always stays.
+        // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
+        if (herdrPanes().some(p => isIn(p, run))) herdr('worktree', 'remove', '--workspace', run.ws)
+        else if (existsSync(run.worktree)) git(run.repo, 'worktree', 'remove', run.worktree)
         // its record outlives it: metrics count removed runs too
         appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
         rmSync(runDir(run.id), { recursive: true })

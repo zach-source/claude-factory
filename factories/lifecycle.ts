@@ -20,13 +20,12 @@ import type { Factory } from '../src/machine'
 // factory is the repo's code: improve's factory lens and postmortems file changes to it, and they ship
 // like any change, through review and approve. Each run follows the version its starting commit holds.
 
-// FACTORY_CLAUDE swaps the Claude Code command (default claude-smart); read here, as a repo's own copy imports nothing
-const CLAUDE = process.env.FACTORY_CLAUDE?.trim() || 'claude-smart --new --no-channels'
-const claude = (model?: string) =>
-  `${CLAUDE} --dangerously-skip-permissions${model ? ` --model '${model}'` : ''}`
-const SONNET = claude('claude-sonnet-5[1m]') // execution
-const OPUS = claude() // the command's default model: planning, judgment, review
-const FABLE = claude('claude-fable-5') // security and architecture
+// The worker commands name params (below); the runner fills them in from a rig's --param, the
+// environment's FACTORY_<NAME> (FACTORY_CLAUDE, FACTORY_EXEC_MODEL, ...) or these defaults.
+const claude = (model: string) => `{claude} --dangerously-skip-permissions --model '{${model}}'`
+const SONNET = claude('exec_model')
+const OPUS = claude('judge_model')
+const FABLE = claude('security_model')
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
@@ -41,6 +40,12 @@ export default {
   name: 'lifecycle',
   start: 'triage',
   agent: SONNET,
+  params: {
+    claude: 'claude-smart --new --no-channels', // the Claude Code launcher
+    exec_model: 'claude-sonnet-5[1m]', // execution
+    judge_model: 'claude-opus-5-5[1m]', // planning, judgment, review
+    security_model: 'claude-fable-5', // security and architecture
+  },
   backoffSec: 60,
   maxSteps: 24,
   rules,
