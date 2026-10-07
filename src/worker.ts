@@ -63,8 +63,7 @@ function sh(cmd: string[], cwd?: string) {
 
 /**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
- * HTTPS out), have git send an auth header for the gateway to fill in, and clone the run's branch, retrying
- * while the task's egress policy does not exist yet
+ * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
 export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   if (process.env.FACTORY_CA) {
@@ -75,13 +74,6 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   }
   const remote = process.env.FACTORY_REPO
   if (!remote || existsSync(join(repo(), '.git'))) return
-  sh([
-    'git',
-    'config',
-    '--global',
-    'http.https://github.com/.extraHeader',
-    'Authorization: Basic placeholder',
-  ])
   let err = ''
   for (let i = 0; i < tries; i++) {
     rmSync(repo(), { recursive: true, force: true })

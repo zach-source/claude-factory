@@ -90,12 +90,37 @@ test('a launch applies the task with the run branch, the brief and the CA in its
     FACTORY_BRANCH: 'factory/r1',
     FACTORY_CA: 'CA-PEM',
     FACTORY_FROM: 'implement',
-    CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
     FACTORY_OUTBOX: '/workspace/w/.factory-worker/outbox.jsonl',
   })
+  expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined() // no Secret, nothing for the gateway to fill in
+  expect(env.GIT_CONFIG_COUNT).toBeUndefined()
   expect(task.spec.command).toEqual(['factory', 'worker', 'serve', '--model', 'claude-opus-5'])
   expect(task.spec.workspaces).toEqual([{ name: 'f-r1-1', path: '/workspace/w' }])
   expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy())
+})
+
+test('with a Secret named, the task sends placeholder auth headers for the gateway to fill in', () => {
+  writeFileSync(join(dir, 'actor'), '')
+  process.env.FACTORY_AX_SECRET = 'factory-spike-ax/factory-keys'
+  try {
+    ax.launch({ name: 't2', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} }, { waitMs: 0 })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env).toMatchObject({
+      CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
+      GH_TOKEN: 'placeholder',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
+      GIT_CONFIG_VALUE_0: 'Authorization: Basic placeholder',
+    })
+    expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(
+      ax.egressPolicy('factory-spike-ax/factory-keys'),
+    )
+  } finally {
+    delete process.env.FACTORY_AX_SECRET
+  }
 })
 
 test('a task whose policy never takes is deleted', () => {
@@ -240,9 +265,7 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     expect(readFileSync(join(own, 'egress-ca.crt'), 'utf8')).toBe('CA-PEM')
     expect(process.env.GIT_SSL_CAINFO).toBe(join(own, 'egress-ca.crt'))
     expect(existsSync(join(repo, '.git'))).toBe(true)
-    expect(readFileSync(join(home, '.gitconfig'), 'utf8')).toContain(
-      'extraHeader = Authorization: Basic placeholder',
-    )
+    expect(existsSync(join(home, '.gitconfig'))).toBe(false) // git's auth header comes in the task's env
     await worker.setup({ tries: 1, waitMs: 0 }) // a resumed task keeps its clone
   } finally {
     process.env = saved

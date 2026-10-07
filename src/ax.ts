@@ -168,11 +168,18 @@ export const launch = (l: Launch, { tries = 30, waitMs = 2000 } = {}) => {
   const env = {
     ...l.env,
     FACTORY_CA: egressCA(),
-    // Claude sends an OAuth token as `Authorization: Bearer`, which the gateway replaces
-    CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
-    GH_TOKEN: 'placeholder',
     // the policy allows only Anthropic's API and GitHub, so skip the telemetry it would refuse
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    // only when the gateway injects: GitHub answers a placeholder Basic header with 400, even for a public clone
+    ...(process.env.FACTORY_AX_SECRET && {
+      // Claude sends an OAuth token as `Authorization: Bearer`
+      CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
+      GH_TOKEN: 'placeholder',
+      // git's config from the env, so every git in the VM sends the header
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
+      GIT_CONFIG_VALUE_0: 'Authorization: Basic placeholder',
+    }),
   }
   must(['apply', '-f', '-'], manifest({ ...l, env }))
   try {
