@@ -20,10 +20,12 @@ import type { Factory } from '../src/machine'
 // factory is the repo's code: improve's factory lens and postmortems file changes to it, and they ship
 // like any change, through review and approve. Each run follows the version its starting commit holds.
 
+// FACTORY_CLAUDE swaps the Claude Code command (default claude-smart); read here, as a repo's own copy imports nothing
+const CLAUDE = process.env.FACTORY_CLAUDE?.trim() || 'claude-smart --new --no-channels'
 const claude = (model?: string) =>
-  `claude-smart --new --no-channels --dangerously-skip-permissions${model ? ` --model '${model}'` : ''}`
+  `${CLAUDE} --dangerously-skip-permissions${model ? ` --model '${model}'` : ''}`
 const SONNET = claude('claude-sonnet-5[1m]') // execution
-const OPUS = claude() // claude-smart's default model: planning, judgment, review
+const OPUS = claude() // the command's default model: planning, judgment, review
 const FABLE = claude('claude-fable-5') // security and architecture
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.

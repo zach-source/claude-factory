@@ -16,10 +16,18 @@ export type McpServer = {
 }
 export type Mcp = { file: string; servers: Record<string, McpServer> }
 
+const exeOf = (cmd: string) => basename(cmd.trim().split(/\s+/)[0] ?? '')
+
+/**
+ * the command that starts a fresh Claude Code session: FACTORY_CLAUDE swaps the wrapper (plain `claude`,
+ * another wrapper) and its own flags. Read on each call, so a factory follows its environment.
+ */
+export const claudeCommand = () => process.env.FACTORY_CLAUDE?.trim() || 'claude-smart --new --no-channels'
+
 /** the harness a worker command runs, from its first word; null for anything else (a script, a fake) */
 export function harnessOf(agent: string): Harness | null {
-  const exe = basename(agent.trim().split(/\s+/)[0] ?? '')
-  if (/^claude/.test(exe)) return 'claude' // claude, claude-smart
+  const exe = exeOf(agent)
+  if (/^claude/.test(exe) || exe === exeOf(claudeCommand())) return 'claude' // claude, claude-smart, FACTORY_CLAUDE's
   return exe === 'codex' || exe === 'pi' ? exe : null
 }
 

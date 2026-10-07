@@ -36,7 +36,7 @@ import {
   type Mail,
 } from './machine'
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
-import { command, harnessOf, readMcp } from './harness'
+import { claudeCommand, command, harnessOf, readMcp } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as memory from './memory'
 import { createdAt, metrics, render, type RunRecord } from './metrics'
@@ -54,7 +54,7 @@ const HOME = process.env.FACTORY_HOME
 const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
-const AGENT = 'claude-smart --new --no-channels --dangerously-skip-permissions'
+const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 8)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 /** what the factory's workers learned, shared by every run and groomed by the dream */
@@ -963,7 +963,8 @@ async function dream() {
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
       [
-        ...['claude-smart', '--new', '--no-channels', '-p', '--permission-mode', 'acceptEdits'],
+        ...claudeCommand().split(/\s+/),
+        ...['-p', '--permission-mode', 'acceptEdits'],
         ...['--settings', JSON.stringify(withoutFleet())],
         ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
       ],

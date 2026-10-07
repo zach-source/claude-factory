@@ -6,6 +6,9 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `FACTORY_CLAUDE` swaps the Claude Code command (default `claude-smart --new --no-channels`) for
+  the stock templates, the default worker and the dream; a wrapper it names runs as Claude, with
+  resume and `--mcp-config`. It was hardcoded to `claude-smart` in each of them.
 - `factory manager` starts a factory's manager lean: Bash and file tools only, no MCP servers,
   claude.ai connectors or Chrome. A manager started with `claude-smart` carried ~134k tokens of
   tool definitions into every call; this one starts at ~29k.

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { command, harnessOf, readMcp } from './harness'
+import { claudeCommand, command, harnessOf, readMcp } from './harness'
 
 const mcp = { file: '/f/mcp.json', servers: { fx: { command: 'fx-mcp', args: ['--x'] } } }
 
@@ -11,6 +11,21 @@ test('a worker command names its harness by its executable', () => {
   expect(harnessOf('/opt/homebrew/bin/codex --full-auto')).toBe('codex')
   expect(harnessOf('pi --model anthropic/claude-sonnet-5')).toBe('pi')
   expect(harnessOf('bun fake-worker.ts')).toBeNull()
+})
+
+test('FACTORY_CLAUDE swaps the Claude Code command, and its executable still runs as claude', () => {
+  const was = process.env.FACTORY_CLAUDE
+  try {
+    delete process.env.FACTORY_CLAUDE
+    expect(claudeCommand()).toBe('claude-smart --new --no-channels')
+    expect(harnessOf('my-cc --model x')).toBeNull()
+    process.env.FACTORY_CLAUDE = '/opt/bin/my-cc --profile w'
+    expect(claudeCommand()).toBe('/opt/bin/my-cc --profile w')
+    expect(harnessOf('my-cc --model x')).toBe('claude')
+  } finally {
+    if (was === undefined) delete process.env.FACTORY_CLAUDE
+    else process.env.FACTORY_CLAUDE = was
+  }
 })
 
 test('claude resumes with --resume, takes the MCP file as is and its settings', () => {
