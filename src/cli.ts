@@ -46,7 +46,10 @@ const ROOT = resolve(import.meta.dir, '..')
 const factoryAt = (dir: string): string | undefined =>
   existsSync(join(dir, 'rigs.json')) ? dir : dirname(dir) === dir ? undefined : factoryAt(dirname(dir))
 // a session or `loop` started inside a factory's directory works that factory
-const HOME = process.env.FACTORY_HOME ?? factoryAt(process.cwd()) ?? join(ROOT, '.factory-state')
+// absolute, so a relative FACTORY_HOME (`FACTORY_HOME=.`) still matches pane cwds and survives a cd
+const HOME = process.env.FACTORY_HOME
+  ? resolve(process.env.FACTORY_HOME)
+  : (factoryAt(process.cwd()) ?? join(ROOT, '.factory-state'))
 /** where a repo keeps its own factories, versioned with its code */
 const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
