@@ -1,13 +1,14 @@
 # Remote runner: station workers in AX microVMs on gtr
 
-**Status (2026-10-06 15:50): blocked on Substrate's egress. An AX task on gtr can't reach HTTPS anywhere,
-not even through agent-vault.** The worker image runs, and cleartext HTTP egress works, but this install has
-no route for HTTPS out of an actor: `tls_passthrough` isn't implemented in v0.3.0, `https` rules need the
-MITM egress gateway (`--experimental-use-sdsmint`), which this install doesn't deploy, and cleartext rules
-match on the upstream's name, so they refuse the agent-vault proxy's `CONNECT`. Unblocking it means
-reinstalling Substrate's egress gateway with sdsmint (whoever owns the gtr install), then `https` rules for
-the vault's upstreams, or for the vault itself if it is given a TLS listener. Asked of the install's owner
-(2026-10-06); the scratch agent-vault in `factory-spike-ax` stays up until then.
+**Status (2026-10-06 18:20): HTTPS out of an AX task works on gtr, except to api.anthropic.com.**
+The egress gateway runs sdsmint (an init-container sidecar), so `https` rules MITM: with the gateway's CA
+trusted, example.com and api.github.com return 200 and unlisted hosts are refused. Three things remain:
+(1) api.anthropic.com gets Envoy's 503 `UF`, because the gateway's DNS cache (`dns_lookup_family: ALL`)
+picks its IPv6 address and gtr has no IPv6 route out, which is for the install's owner (`V4_PREFERRED` or
+IPv6 egress); (2) AX v0.3.1 doesn't ask Substrate for the `egress-mitm.ate.dev` trust bundle, so the
+runner has to carry the public CA into the VM itself; (3) the install also runs Substrate's egress
+credential injection (`k8s-credential-provider`), which does agent-vault's job at the gateway with no
+token in the VM, so agent-vault may no longer be needed.
 
 ## Gates
 
