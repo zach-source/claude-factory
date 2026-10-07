@@ -148,8 +148,9 @@ export function egressPolicy(secret = process.env.FACTORY_AX_SECRET) {
 function createPolicy(task: string, { tries = 30, waitMs = 2000 } = {}) {
   let err = ''
   for (let i = 0; i < tries; i++) {
+    // a kubectl plugin takes kubectl's flags only after its name
     const p = Bun.spawnSync(
-      [KUBECTL(), ...context(), 'ate', 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
+      [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
       { stdin: Buffer.from(JSON.stringify(egressPolicy())) },
     )
     if (p.exitCode === 0) return
