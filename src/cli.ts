@@ -89,7 +89,7 @@ const DREAM_SOON_MS = 2 * 3600_000
 const INBOX_FULL = 12
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
-const NUDGES = 2 // ...this many times, then fails
+const NUDGES = 4 // ...this many times, each wait twice the last (90s to 24 min), then fails
 // a worker whose Claude has not appeared this long after launch never started: the shell was still
 // starting (direnv, under load) when herdr typed the command, and swallowed the Enter
 const LAUNCH_MS = 90_000
@@ -308,6 +308,8 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
     `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed.`,
+    // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
+    "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
     '',
     ...tracking(run, node),
@@ -459,7 +461,7 @@ export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? ''
  */
 export function relaunch(sinceMs: number, nudges: number) {
   if (sinceMs <= LAUNCH_MS) return null
-  return nudges === 0 ? 'enter' : nudges < NUDGES ? 'retype' : 'fail'
+  return nudges === 0 ? 'enter' : nudges < 2 ? 'retype' : 'fail'
 }
 
 /**
@@ -547,7 +549,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const due = deadline(
     now - c.startedAt,
     timeoutMin,
-    status === 'working',
+    status === 'working' || isAsking, // waiting on the manager's answer is work: warned, not failed
     (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt),
   )
   if (status === null) send({ type: 'FAIL', seq: c.seq, reason: `worker pane ${c.pane} was closed` })
@@ -562,7 +564,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   } else if (
     !isAsking &&
     (status === 'idle' || status === 'done') &&
-    now - Math.max(c.startedAt, c.nudgedAt) > GRACE_MS
+    // a worker waiting on its own build answers a nudge and goes idle again: give it longer each time
+    now - Math.max(c.startedAt, c.nudgedAt) > GRACE_MS * 2 ** c.nudges
   ) {
     if (c.nudges >= NUDGES) send({ type: 'FAIL', seq: c.seq, reason: 'worker stopped without reporting' })
     else {

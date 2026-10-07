@@ -20,6 +20,12 @@ minor release may change the factory format, the CLI or the run state.
   `opus[1m]`. Managers had grown to 400–550k tokens, re-read on every call.
 - `factory waiting`: everything that waits on the person, by rig: gates, parked stations with what
   holds them and their pull requests, stuck runs, and the command that answers each.
+- Fewer lost workers: a worker waiting on the manager's answer is warned at its deadline, not failed;
+  an idle worker is nudged four times, each wait twice the last, before it fails; and workers are
+  told to wait on builds and CI in the foreground. verify and release get 75 minutes.
+- Fewer review rounds: implement and verify now run review's mechanical checks (merge with
+  origin/main, break each guard, check doc claims and documented commands, fix a finding's
+  siblings), and review lists everything it finds in one pass.
 
 ## 0.2.0 (2026-10-06)
 
