@@ -75,7 +75,24 @@ export type FactoryBacklog = (FactoryRig & {
   error?: string
 })[]
 
-export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'new' | 'rigs'
+/** each rig's open pull requests from run branches, not drafts (`factory prs`) */
+export type FactoryPrs = {
+  rig: string
+  error?: string
+  prs: {
+    number: number
+    title: string
+    url: string
+    run: string
+    /** APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or '' */
+    reviewDecision: string
+    /** CLEAN, BLOCKED, DIRTY, UNSTABLE, BEHIND, UNKNOWN */
+    mergeStateStatus: string
+    updatedAt: string
+  }[]
+}[]
+
+export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'prs' | 'new' | 'rigs'
 /** what the person has typed and not sent */
 export type FactoryDraft = {
   repo: string
@@ -103,6 +120,7 @@ declare module 'claude-code' {
       detail: FactoryDetail | null
       peek: string
       backlog: FactoryBacklog
+      prs: FactoryPrs
       history: number[]
       draft: FactoryDraft
     }

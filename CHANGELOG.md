@@ -40,6 +40,10 @@ minor release may change the factory format, the CLI or the run state.
 - The console's mail splits into not answered and answered: mail you answer, or whose run has
   ended, leaves the list you work from.
 
+- The console's PRs tab (7, or `factory prs`): each rig's open pull requests from run branches,
+  drafts left out, with what each waits on (conflicts, failing checks, approval, the merge) and its
+  run's station or gate.
+
 ## 0.2.0 (2026-10-06)
 
 - herdr's sidebar shows each run's station and what holds it (`$factory` on the run's workspace:

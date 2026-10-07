@@ -6,6 +6,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type {
   FactoryBacklog,
+  FactoryPrs,
   FactoryBoard,
   FactoryDetail,
   FactoryDraft,
@@ -23,6 +24,7 @@ import {
   header,
   isLive,
   mailView,
+  prsView,
   newView,
   runView,
   type Actions,
@@ -40,6 +42,7 @@ const selected = atom({ plugin: 'factory', key: 'selected' } as const, null as s
 const detail = atom({ plugin: 'factory', key: 'detail' } as const, null as FactoryDetail | null)
 const peek = atom({ plugin: 'factory', key: 'peek' } as const, '')
 const backlog = atom({ plugin: 'factory', key: 'backlog' } as const, [] as FactoryBacklog)
+const prs = atom({ plugin: 'factory', key: 'prs' } as const, [] as FactoryPrs)
 /** runs holding a worker, one sample a tick: the header's sparkline */
 const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
 const draft = atom(
@@ -55,7 +58,7 @@ const draft = atom(
     answered: {},
   } as FactoryDraft,
 )
-const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'new', 'rigs'])
+const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'prs', 'new', 'rigs'])
 
 const manual = (cli: string) => `## Software factory manager
 You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
@@ -95,6 +98,8 @@ const rt = {
   /** blocked workers a patrol already reported */
   seen: new Set<string>(),
   patrolAt: 0,
+  /** when the PRs tab last asked GitHub */
+  prsAt: 0,
   /** the board and rig goals the manager was last sent, and when */
   board: undefined as string | undefined,
   boardAt: 0,
@@ -234,6 +239,13 @@ async function refresh($: EngineInterface) {
   } else if (shown === 'backlog') {
     const { isOk, out } = await factory($, ['backlog'])
     if (isOk) await update($, backlog, () => JSON.parse(out) as FactoryBacklog)
+  } else if (shown === 'prs') {
+    // ponytail: a gh call per rig, at most once a minute while the tab is open
+    const now = await $.clock.now()
+    if (now - rt.prsAt < 60_000) return
+    rt.prsAt = now
+    const { isOk, out } = await factory($, ['prs'])
+    if (isOk) await update($, prs, () => JSON.parse(out) as FactoryPrs)
   }
 }
 
@@ -376,12 +388,13 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, shown, d, tail, bl, samples, dr, now] = await Promise.all([
+    const [b, shown, d, tail, bl, pr, samples, dr, now] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
       read($, peek),
       read($, backlog),
+      read($, prs),
       read($, history),
       read($, draft),
       $.clock.now(),
@@ -401,11 +414,13 @@ export const register: Register = (on, options) => {
           ? backlogView(p, bl)
           : shown === 'mail'
             ? mailView(p, b, dr)
-            : shown === 'new'
-              ? newView(p, dr, rt.cwd)
-              : shown === 'rigs'
-                ? rigsView(p, b)
-                : boardView(p, b, dr)
+            : shown === 'prs'
+              ? prsView(p, pr, b)
+              : shown === 'new'
+                ? newView(p, dr, rt.cwd)
+                : shown === 'rigs'
+                  ? rigsView(p, b)
+                  : boardView(p, b, dr)
     return (
       <Box flexDirection="column">
         {header(p, b, samples, shown)}

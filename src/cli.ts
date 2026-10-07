@@ -1568,6 +1568,24 @@ async function backlog() {
   })
 }
 
+/** each rig's open pull requests from run branches, drafts left out: what waits on a review or a merge */
+function prs() {
+  const fields = 'number,title,url,headRefName,isDraft,reviewDecision,mergeStateStatus,updatedAt'
+  return rigs().map(rig => {
+    const p = Bun.spawnSync(['gh', 'pr', 'list', '--state', 'open', '--limit', '100', '--json', fields], {
+      cwd: rig.repo,
+    })
+    if (p.exitCode) return { rig: rig.name, prs: [], error: p.stderr.toString().trim() }
+    const all: { headRefName: string; isDraft: boolean }[] = JSON.parse(p.stdout.toString())
+    return {
+      rig: rig.name,
+      prs: all
+        .filter(x => !x.isDraft && x.headRefName.startsWith('factory/'))
+        .map(({ headRefName, isDraft: _, ...x }) => ({ ...x, run: headRefName.slice('factory/'.length) })),
+    }
+  })
+}
+
 /** the runs metrics count: every live run, and the ones factory rm kept in metrics.jsonl */
 function records(): RunRecord[] {
   const file = join(HOME, 'metrics.jsonl')
@@ -1634,7 +1652,7 @@ const usage = `factory — herdr software factories on xstate
                                      the MCP servers in a Claude-shaped mcpServers file
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
-  show <run> | backlog               JSON for the manager's views
+  show <run> | backlog | prs         JSON for the manager's views
   metrics [--rig r] [--since 7d] [--json]   how the factory performs: fates, ship rate, time to ship and on
                                      the approve gate, review loops, failures by kind, each station's outcomes
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
@@ -1801,6 +1819,9 @@ if (import.meta.main)
       }
       case 'backlog':
         console.log(JSON.stringify(await backlog()))
+        break
+      case 'prs':
+        console.log(JSON.stringify(prs()))
         break
       case 'queue': {
         const [repo, id, station] = args

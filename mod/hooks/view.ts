@@ -1,5 +1,5 @@
 // Pure layout helpers for the factory console: no `$`, no elements.
-import type { FactoryMail, FactoryRig, FactoryRun } from '../types'
+import type { FactoryMail, FactoryPrs, FactoryRig, FactoryRun } from '../types'
 
 /** one station on a run's path: how often it ran, and whether the run is there now */
 export type Stop = { id: string; runs: number; isCurrent: boolean }
@@ -166,4 +166,16 @@ export function patrol(
     state === lastBoard ? 'Board and rig goals: unchanged since the last patrol.' : state,
   ].join('\n')
   return { text, keys: blocked.map(blockKey), board: state }
+}
+
+/** what an open pull request waits on, worst first: conflicts, failing checks, a review, then the merge */
+export function prNeed(pr: Pick<FactoryPrs[number]['prs'][number], 'reviewDecision' | 'mergeStateStatus'>) {
+  if (pr.mergeStateStatus === 'DIRTY') return { word: 'conflicts', color: 'red' }
+  if (pr.reviewDecision === 'CHANGES_REQUESTED') return { word: 'changes requested', color: 'red' }
+  if (pr.mergeStateStatus === 'UNSTABLE') return { word: 'checks failing', color: 'yellow' }
+  if (pr.mergeStateStatus === 'BEHIND') return { word: 'behind its base', color: 'yellow' }
+  if (pr.reviewDecision === 'REVIEW_REQUIRED') return { word: 'needs approval', color: 'yellow' }
+  if (pr.mergeStateStatus === 'CLEAN') return { word: 'ready to merge', color: 'green' }
+  if (pr.mergeStateStatus === 'BLOCKED') return { word: 'blocked by a rule', color: 'yellow' }
+  return { word: 'checking', color: 'gray' }
 }

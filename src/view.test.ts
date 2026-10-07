@@ -6,6 +6,7 @@ import {
   line,
   mailKey,
   mailTabs,
+  prNeed,
   patrol,
   quickAnswer,
   rigStats,
@@ -168,4 +169,13 @@ test('mail answered in the console, or from an ended run, leaves the not-answere
   const { open, answered } = mailTabs(mail, runs, { [mailKey(m('a', 1))]: 'approve' })
   expect(open).toEqual([m('a', 2)])
   expect(answered).toEqual([m('a', 1), m('b', 3)])
+})
+
+test('a pull request names what it waits on, worst first', () => {
+  const need = (reviewDecision: string, mergeStateStatus: string) =>
+    prNeed({ reviewDecision, mergeStateStatus }).word
+  expect(need('REVIEW_REQUIRED', 'DIRTY')).toBe('conflicts')
+  expect(need('REVIEW_REQUIRED', 'BLOCKED')).toBe('needs approval')
+  expect(need('APPROVED', 'CLEAN')).toBe('ready to merge')
+  expect(need('', 'BLOCKED')).toBe('blocked by a rule')
 })

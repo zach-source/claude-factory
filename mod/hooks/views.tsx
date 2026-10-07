@@ -4,6 +4,7 @@ import type { Elements } from 'claude-code'
 
 import type {
   FactoryBacklog,
+  FactoryPrs,
   FactoryBead,
   FactoryBoard,
   FactoryDetail,
@@ -13,7 +14,7 @@ import type {
   FactoryRun,
   FactoryView,
 } from '../types'
-import { bar, clockOf, dur, line, mailKey, mailTabs, rigStats, sparkline, track } from './view'
+import { bar, clockOf, dur, line, mailKey, mailTabs, prNeed, rigStats, sparkline, track } from './view'
 
 /** what every surface the console draws on has; mobile has no Input or Select */
 export type UI = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button' | 'Code'> &
@@ -68,6 +69,7 @@ const TABS: [FactoryView, string, string][] = [
   ['mail', 'Mail', '4'],
   ['new', 'New run', '5'],
   ['rigs', 'Rigs', '6'],
+  ['prs', 'PRs', '7'],
 ]
 
 function rule({ ui, width }: Base, title: string, note = '') {
@@ -671,6 +673,55 @@ export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   )
 }
 
+/** the factory's open pull requests by rig, each with what it waits on and where its run stands */
+export function prsView(p: Base, rigs: FactoryPrs, board: FactoryBoard) {
+  const { Box, Text, Button } = p.ui
+  if (!rigs.length)
+    return (
+      <Text key="prs" dimColor>
+        Asking GitHub…
+      </Text>
+    )
+  return (
+    <Box key="prs" flexDirection="column">
+      {rigs.map(rig => (
+        <Box key={`prs-${rig.rig}`} flexDirection="column" marginBottom={1}>
+          {rule(p, rig.rig, String(rig.prs.length))}
+          {rig.error && <Text color="red">! {line(rig.error, 200)}</Text>}
+          {!rig.error && rig.prs.length === 0 && <Text dimColor>no open pull requests from runs</Text>}
+          {rig.prs.map(pr => {
+            const need = prNeed(pr)
+            const r = board.runs.find(x => x.id === pr.run)
+            return (
+              <Box key={`pr-${rig.rig}-${pr.number}`} flexDirection="column">
+                <Box gap={1}>
+                  <Text bold>#{String(pr.number)}</Text>
+                  <Text color={need.color}>{need.word}</Text>
+                  <Text wrap="truncate-end">{pr.title}</Text>
+                </Box>
+                <Box gap={1}>
+                  <Text dimColor>{pr.url}</Text>
+                  {r && isLive(r) ? (
+                    <Button
+                      key={`pr-open-${pr.run}`}
+                      label={`${r.gate ? 'decide' : r.node} ›`}
+                      dimColor={!r.gate}
+                      variant={r.gate ? 'primary' : undefined}
+                      onPress={() => p.act.show('run', r.id)}
+                    />
+                  ) : (
+                    <Text dimColor>run {r ? 'ended' : 'removed'}</Text>
+                  )}
+                </Box>
+              </Box>
+            )
+          })}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 export function newView(p: Base, draft: FactoryDraft, cwd: string) {
   const { Box, Text, Button, Input } = p.ui
   if (!Input)
@@ -718,7 +769,7 @@ export function newView(p: Base, draft: FactoryDraft, cwd: string) {
 
 export function footer(p: Base) {
   const { Text } = p.ui
-  return <Text dimColor>1-6 views · tab between controls · enter presses · esc back to the prompt</Text>
+  return <Text dimColor>1-7 views · tab between controls · enter presses · esc back to the prompt</Text>
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */
