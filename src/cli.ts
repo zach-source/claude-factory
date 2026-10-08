@@ -1407,21 +1407,26 @@ async function dispatch() {
       return run.bead && !['done', 'aborted'].includes(where(value)[0]) ? [run.bead] : []
     }),
   )
-  const synced = existsSync(syncFile()) ? readJson<Record<string, number>>(syncFile()) : {}
+  // a sync's error stands until the next sync: dispatch passes every 30 s would clear it
+  const synced = existsSync(syncFile())
+    ? readJson<Record<string, { at: number; error?: string }>>(syncFile())
+    : {}
   for (const rig of rigs()) {
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
       const b = beads(rig.repo, 'factory')
       // full or not: our claims and closes reach other machines either way
-      if (existsSync(join(rig.repo, '.beads')) && Date.now() - (synced[rig.repo] ?? 0) > SYNC_MS) {
-        synced[rig.repo] = Date.now() // a failing sync retries next interval, not every pass
-        writeJson(syncFile(), synced)
+      if (existsSync(join(rig.repo, '.beads')) && Date.now() - (synced[rig.repo]?.at ?? 0) > SYNC_MS) {
+        synced[rig.repo] = { at: Date.now() } // a failing sync retries next interval, not every pass
         try {
           b.sync()
         } catch (err) {
-          errors.push({ id: `rig:${rig.name}`, error: (err as Error).message }) // dispatch goes on: local beads are still true
+          synced[rig.repo]!.error = (err as Error).message
         }
+        writeJson(syncFile(), synced)
       }
+      const syncError = synced[rig.repo]?.error
+      if (syncError) errors.push({ id: `rig:${rig.name}`, error: syncError }) // dispatch goes on: local beads are still true
       if (room(rig, busy) <= 0) continue // full: no more bd calls
       // children are looked up only for the candidates, until the rig is full
       const candidates = dispatchable(b.ready(), linked, Infinity).filter(
