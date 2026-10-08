@@ -221,6 +221,25 @@ Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, do
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
 edge refills it, so a sweep loops forever). Edits apply at the next tick.
 
+A factory can also be data: `.json`, `.yaml`/`.yml` or `.toml`, the same shape. And it can
+extend another instead of copying it: `extends` names a factory (a path, a file beside it, else a
+built-in), its `nodes` add stations or change only the fields they name (`next` outcome by
+outcome), `params` merge and `rules` append. Adding a station to lifecycle is a new node and one
+rewired outcome, e.g. `.factory/lifecycle.yaml` in a repo (it extends the built-in, not itself):
+
+```yaml
+extends: lifecycle
+nodes:
+  a11y:
+    prompt: Check the change's accessibility against WCAG 2.2 AA. Report "pass", or "fix" with what to change.
+    next: { pass: release, fix: implement }
+  review:
+    next: { approve: a11y } # review's other outcomes stay
+```
+
+`factory check <file>` validates one. A run pins its factory resolved, so a base changed later
+reaches only new runs.
+
 ## herdr sidebar
 
 Every tick reports a `$factory` token: on each run's workspace, its station and what holds it

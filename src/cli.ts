@@ -4,7 +4,6 @@
 import {
   appendFileSync,
   closeSync,
-  copyFileSync,
   existsSync,
   fsyncSync,
   mkdirSync,
@@ -19,10 +18,11 @@ import {
 } from 'node:fs'
 import { spawn as spawnChild } from 'node:child_process'
 import { homedir } from 'node:os'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
   compile,
+  extend,
   fill,
   isParked,
   reach,
@@ -32,6 +32,7 @@ import {
   type Ctx,
   type Edge,
   type Entry,
+  type Extension,
   type Ev,
   type Factory,
   type Mail,
@@ -224,10 +225,43 @@ function git(cwd: string, ...args: string[]) {
  * the factory a new run follows: a path as given; else the repo's own `.factory/<name>.ts` in `checkout`
  * (the run's worktree, so the version in the commit it starts from); else the template of that name
  */
+/** a factory is a module (default export) or data: JSON, YAML or TOML, in that order of precedence after .ts */
+const FACTORY_EXTS = ['.ts', '.json', '.yaml', '.yml', '.toml']
+const findIn = (dir: string, spec: string, except?: string) =>
+  FACTORY_EXTS.map(ext => join(dir, `${spec}${ext}`)).find(f => f !== except && existsSync(f))
 function factorySource(spec: string, checkout: string) {
   if (existsSync(spec)) return resolve(spec)
-  const own = join(checkout, OWN, `${spec}.ts`)
-  return existsSync(own) ? own : join(ROOT, 'factories', `${spec}.ts`)
+  return (
+    findIn(join(checkout, OWN), spec) ??
+    findIn(join(ROOT, 'factories'), spec) ??
+    join(ROOT, 'factories', `${spec}.ts`)
+  )
+}
+/** what `extends` names, from the extending file's directory: a path, a sibling, else a built-in; never itself */
+function baseSource(spec: string, file: string) {
+  const at = resolve(dirname(file), spec)
+  if (at !== file && existsSync(at)) return at
+  return (
+    findIn(dirname(file), spec, file) ??
+    findIn(join(ROOT, 'factories'), spec, file) ??
+    fail(`extends "${spec}": no such factory`)
+  )
+}
+async function readFactory(file: string, seen: string[] = []): Promise<Factory> {
+  const text = () => readFileSync(file, 'utf8')
+  const ext = extname(file)
+  const raw =
+    ext === '.ts'
+      ? (await import(file)).default
+      : ext === '.json'
+        ? JSON.parse(text())
+        : ext === '.toml'
+          ? Bun.TOML.parse(text())
+          : Bun.YAML.parse(text())
+  if (!raw?.extends) return raw
+  if (seen.includes(file)) throw new Error(`extends loops: ${[...seen, file].join(' → ')}`)
+  const { extends: spec, ...rest } = raw as Extension
+  return extend(await readFactory(baseSource(spec, file), [...seen, file]), rest)
 }
 
 /** a template made the repo's own: no import back into this project, and a note on how it is changed */
@@ -256,7 +290,7 @@ function freshBase(repo: string) {
   const isBehind = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', head, ref]).exitCode === 0
   return isBehind ? git(repo, 'rev-parse', ref) : head
 }
-const loadFactory = async (file: string): Promise<Factory> => validate((await import(file)).default)
+export const loadFactory = async (file: string): Promise<Factory> => validate(await readFactory(file))
 // a run moved to another factory leaves a link behind, so its workers' reports still reach it:
 // only the factory holding the run's directory ticks and lists it
 const runIds = () =>
@@ -1211,12 +1245,13 @@ async function createRun(
   const ws: string = created.workspace.workspace_id
   const worktree: string = created.worktree.path
   const source = from ? from.run.factory : factorySource(spec, worktree)
-  const pinned = join(runDir(id), 'factory.ts')
+  // pinned resolved, as data: a base it extends may change after the run starts
+  const pinned = join(runDir(id), 'factory.json')
   mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
-  copyFileSync(source, pinned)
   let def: Factory
   try {
-    def = await loadFactory(pinned)
+    def = await loadFactory(source)
+    writeJson(pinned, def)
   } catch (err) {
     herdr('worktree', 'remove', '--workspace', ws, '--force') // fresh, nothing in it yet
     rmSync(runDir(id), { recursive: true, force: true })

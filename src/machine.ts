@@ -47,6 +47,31 @@ export type Factory = {
   nodes: Record<string, Node>
 }
 
+/**
+ * a factory file that extends another (`extends`: a factory name or path): its nodes add stations to
+ * the base's or change the fields they name, `next` outcome by outcome, so wiring a new station in is
+ * one outcome on the station before it; params merge, rules append, anything else replaces the base's
+ */
+export type Extension = Partial<Omit<Factory, 'nodes'>> & {
+  extends: string
+  nodes?: Record<string, Partial<Node>>
+}
+
+export function extend(base: Factory, ext: Omit<Extension, 'extends'>): Factory {
+  const { nodes = {}, params, rules, ...rest } = ext
+  const merged = Object.entries(nodes).map(([id, n]) => {
+    const was = base.nodes[id]
+    return [id, was ? { ...was, ...n, next: { ...was.next, ...n.next } } : n] as const
+  })
+  return {
+    ...base,
+    ...rest,
+    ...((base.params || params) && { params: { ...base.params, ...params } }),
+    ...((base.rules || rules) && { rules: [base.rules, rules].filter(Boolean).join('\n') }),
+    nodes: { ...base.nodes, ...(Object.fromEntries(merged) as Record<string, Node>) },
+  }
+}
+
 export type Mail = { from: string; text: string; at: number }
 export type Entry = { node: string; attempt: number; outcome: string; summary: string; at: number }
 
@@ -118,9 +143,10 @@ export function validate(def: Factory): Factory {
     ...ids.flatMap(id => {
       const node = def.nodes[id]!
       return [
-        !Object.keys(node.next).length && `${id}: has no outcomes`,
+        typeof node.prompt !== 'string' && `${id}: has no prompt`,
+        !Object.keys(node.next ?? {}).length && `${id}: has no outcomes`,
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
-        ...Object.entries(node.next).flatMap(([outcome, edge]) => [
+        ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           (outcome === 'fail' || outcome === 'blocked') && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&
             !ids.includes(edgeTo(edge)) &&

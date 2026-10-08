@@ -6,6 +6,7 @@ import { compile, fill, validate } from './machine'
 import {
   deadline,
   haltStep,
+  loadFactory,
   missingSweeps,
   ownCopy,
   paramsOf,
@@ -131,4 +132,50 @@ test("a worker command's {params} come from the rig, then FACTORY_<NAME>, then t
       nodes: { a: node },
     }),
   ).toThrow('agent names {typo}, which params does not give')
+})
+
+test('a factory file in YAML adds a station to lifecycle by extending it and rewiring one outcome', async () => {
+  const dir = join(tmpdir(), `ext-${Date.now()}`)
+  mkdirSync(join(dir, '.factory'), { recursive: true })
+  const file = join(dir, '.factory', 'lifecycle.yaml')
+  writeFileSync(
+    file,
+    `extends: lifecycle
+params: { exec_model: m }
+nodes:
+  a11y:
+    prompt: Check the change's accessibility.
+    next: { pass: release, fix: implement }
+  review:
+    next: { approve: a11y }
+`,
+  )
+  const def = await loadFactory(file) // extends its own name: the built-in, not itself
+  expect(def.name).toBe('lifecycle')
+  expect(def.nodes.review!.next).toMatchObject({
+    approve: 'a11y',
+    changes: 'implement',
+    security: 'security',
+  })
+  expect(def.nodes.review!.prompt).toContain('Review') // unnamed fields stay the base's
+  expect(def.nodes.a11y!.next.pass).toBe('release')
+  expect(def.params).toMatchObject({ exec_model: 'm', judge_model: expect.any(String) })
+})
+
+test('a factory in TOML or JSON, checked like one in TypeScript, and an extends loop refused', async () => {
+  const dir = join(tmpdir(), `data-${Date.now()}`)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'tiny.toml'),
+    `name = "tiny"\nstart = "work"\n[nodes.work]\nprompt = "Do it."\nnext = { ok = "done" }\n`,
+  )
+  expect((await loadFactory(join(dir, 'tiny.toml'))).nodes.work!.next).toEqual({ ok: 'done' })
+  writeFileSync(
+    join(dir, 'more.json'),
+    JSON.stringify({ extends: 'tiny', nodes: { work: { next: { ok: 'gone' } } } }),
+  )
+  await expect(loadFactory(join(dir, 'more.json'))).rejects.toThrow('unknown node "gone"')
+  writeFileSync(join(dir, 'a.json'), JSON.stringify({ extends: 'b.json' }))
+  writeFileSync(join(dir, 'b.json'), JSON.stringify({ extends: 'a.json' }))
+  await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
 })

@@ -6,6 +6,11 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Factories extend each other: `extends: lifecycle` and only the stations you add or change, where
+  a node merges into the base's field by field and `next` outcome by outcome. A factory can be
+  written in JSON, YAML or TOML as well as TypeScript. Runs pin their factory resolved, as
+  `factory.json`; runs started before keep their pinned `factory.ts`.
+
 ## 0.3.0 (2026-10-07)
 
 - A factory's `params` are what its worker commands name as `{name}`: lifecycle's launcher
