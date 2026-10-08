@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Pull request labels act: `close` closes the PR (and aborts its run), `conflict` starts a run of the
+  new one-station `rework` factory (YAML) that merges the base in, resolves, tests and pushes.
 - Beads sync: every 5 minutes, each rig whose beads have a Dolt remote runs `bd sync`, so work
   and claims from other machines reach dispatch and the factory's reach them. Failures, such as a
   remote nobody seeded yet, show as the rig's error and don't stop its dispatch.

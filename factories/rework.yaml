@@ -1,0 +1,24 @@
+# One station: bring a pull request labeled `conflict` up to date with its base. The label pass
+# starts it (and takes the label off); its goal names the PR, its branch and its base.
+name: rework
+start: resolve
+agent: "{claude} --dangerously-skip-permissions --model '{exec_model}'"
+params:
+  claude: claude-smart --new --no-channels
+  exec_model: claude-sonnet-5[1m]
+rules: |-
+  - Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions and commands win over your habits.
+  - Change what the conflicts need and nothing else. Never skip or weaken a test, never rebase or force-push.
+nodes:
+  resolve:
+    prompt: |-
+      Your goal names a pull request whose branch conflicts with its base. Bring the branch up to date without changing what it does:
+      1. `git fetch origin <branch> <base>`, then `git checkout --detach origin/<branch>`: the branch may be checked out in another worktree, so you push by ref.
+      2. `git merge origin/<base>`. Resolve each conflict keeping both sides' intent; where the intent is unclear, stop and report cannot.
+      3. Build and run the tests the repo defines, and fix what the merge broke.
+      4. Commit the merge, `git push origin HEAD:<branch>`, and `gh pr comment <number>` with what you resolved and how you checked it.
+      If you report cannot, first `gh pr comment <number>` with which conflicts need a person and why.
+    next:
+      resolved: done
+      cannot: done
+    timeoutMin: 60

@@ -60,6 +60,10 @@ const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 8)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 const SYNC_MS = 5 * 60_000 // how often each rig's beads sync with its Dolt remote
+const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below
+// ponytail: pr-merger's default label names; make them a rig setting when a repo uses others
+const CLOSE_LABEL = 'close'
+const CONFLICT_LABEL = 'conflict'
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
 const DREAM_MS = 24 * 3600_000
@@ -922,6 +926,7 @@ async function beadsPass() {
       }
     }
     await dispatch()
+    await labelPass()
   } finally {
     release()
   }
@@ -1169,6 +1174,9 @@ async function tick(isPatrol = false) {
       }
     }
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
+    out.runs.push(
+      ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
+    )
     showInSidebar(out.runs, now, isPatrol)
     reap(out.runs)
     // stopped once no worker is still being told to stop: everything that was working has closed
@@ -1453,6 +1461,94 @@ async function dispatch() {
 }
 
 /** the rig of every run holding a worker; a wait or a gate costs nothing */
+export type LabeledPr = {
+  number: number
+  url: string
+  headRefName: string
+  baseRefName: string
+  isCrossRepository: boolean
+  labels: { name: string }[]
+}
+/** what a person's label on a pull request asks: close it (and its run), or a rework run for its conflicts */
+export function labelAction(pr: LabeledPr) {
+  const has = (name: string) => pr.labels.some(l => l.name === name)
+  if (has(CLOSE_LABEL)) return 'close'
+  if (!has(CONFLICT_LABEL)) return undefined
+  return pr.isCrossRepository ? 'fork' : 'rework' // a fork's branch is not ours to push
+}
+export const reworkGoal = (pr: LabeledPr) =>
+  `Resolve the merge conflicts of pull request #${pr.number} (${pr.url}): branch ${pr.headRefName}, base ${pr.baseRefName}.`
+
+/**
+ * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
+ * aborts the run whose branch it is; `conflict` starts a rework run when the rig has room, then takes the
+ * label off so it starts one only. Out of the tick, like dispatch.
+ */
+async function labelPass() {
+  const stamp = join(HOME, 'labels.stamp')
+  if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < LABELS_MS)) return
+  writeFileSync(stamp, '')
+  const errors: Row[] = []
+  const busy = await busyRigs()
+  const fields = 'number,url,headRefName,baseRefName,isCrossRepository,labels'
+  for (const rig of rigs()) {
+    const gh = (...args: string[]) => {
+      const p = Bun.spawnSync(['gh', ...args], { cwd: rig.repo, timeout: 60_000 })
+      if (p.exitCode !== 0)
+        throw new Error(`gh ${args[0]} ${args[1]}: ${p.stderr.toString().trim().split('\n')[0]}`)
+      return p.stdout.toString()
+    }
+    try {
+      const search = `label:${CLOSE_LABEL},${CONFLICT_LABEL}` // a comma is OR in GitHub search
+      const labeled: LabeledPr[] = JSON.parse(
+        gh('pr', 'list', '--state', 'open', '--search', search, '--json', fields),
+      )
+      for (const pr of labeled) {
+        const action = labelAction(pr)
+        const runId = pr.headRefName.startsWith('factory/')
+          ? pr.headRefName.slice('factory/'.length)
+          : undefined
+        if (action === 'close') {
+          gh(
+            'pr',
+            'close',
+            String(pr.number),
+            '--comment',
+            `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`,
+          )
+          if (
+            runId &&
+            runIds().includes(runId) &&
+            !['done', 'aborted'].includes(where(current(runId).value)[0])
+          )
+            post(runId, { type: 'ABORT' })
+          console.log(`${new Date().toISOString()} closed ${pr.url}${runId ? ` (run ${runId})` : ''}`)
+        } else if (action === 'fork') {
+          errors.push({
+            id: `rig:${rig.name}`,
+            error: `${pr.url} is labeled ${CONFLICT_LABEL} but comes from a fork: resolve it there`,
+          })
+        } else if (action === 'rework' && room(rig, busy) > 0) {
+          const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
+          busy.push(rig.name)
+          gh('pr', 'edit', String(pr.number), '--remove-label', CONFLICT_LABEL)
+          gh(
+            'pr',
+            'comment',
+            String(pr.number),
+            '--body',
+            `claude-factory run \`${run.id}\` is resolving the conflicts.`,
+          )
+          console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
+        }
+      }
+    } catch (err) {
+      errors.push({ id: `rig:${rig.name}`, error: `labels: ${(err as Error).message}` })
+    }
+  }
+  writeJson(join(HOME, 'labels.json'), errors)
+}
+
 async function busyRigs() {
   const busy: (string | undefined)[] = []
   for (const id of runIds()) {

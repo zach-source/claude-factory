@@ -176,6 +176,19 @@ memory/
   the dream is told which named beads have closed and retires what waited on them. The memory is its own git repo, committed before and
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
 
+## Pull request labels
+
+Every 2 minutes the factory checks each rig's open pull requests for the labels
+pr-merger's review buttons put on them, which only label and leave the
+acting to a later bot:
+
+- **`close`**: the factory closes the PR with a comment, and aborts the run whose branch it is
+  (`factory/<run>`), which defers its bead.
+- **`conflict`**: when the rig has room, a [rework](factories/rework.yaml) run merges the base into the
+  PR's branch, resolves the conflicts, runs the tests and pushes; the label comes off and a comment names
+  the run. A worker that can't tell how to resolve one says so on the PR. A PR from a fork shows as
+  the rig's error instead, since its branch is not ours to push.
+
 ## Beads: planning and execution
 
 In a repo with `.beads/`, beads is the factory's task tracker:

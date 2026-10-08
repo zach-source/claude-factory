@@ -6,12 +6,14 @@ import { compile, fill, validate } from './machine'
 import {
   deadline,
   haltStep,
+  labelAction,
   loadFactory,
   missingSweeps,
   ownCopy,
   paramsOf,
   reapable,
   relaunch,
+  reworkGoal,
   room,
   withoutFleet,
 } from './cli'
@@ -178,4 +180,26 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
   writeFileSync(join(dir, 'a.json'), JSON.stringify({ extends: 'b.json' }))
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ extends: 'a.json' }))
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
+})
+
+test("a PR's close label closes it, its conflict label reworks it unless it comes from a fork", () => {
+  const pr = (labels: string[], isCrossRepository = false) => ({
+    number: 7,
+    url: 'https://github.com/o/r/pull/7',
+    headRefName: 'feat/x',
+    baseRefName: 'main',
+    isCrossRepository,
+    labels: labels.map(name => ({ name })),
+  })
+  expect(labelAction(pr(['close', 'conflict']))).toBe('close') // closing wins: no rework for a PR going away
+  expect(labelAction(pr(['conflict']))).toBe('rework')
+  expect(labelAction(pr(['conflict'], true))).toBe('fork')
+  expect(labelAction(pr(['bug']))).toBeUndefined()
+  expect(reworkGoal(pr(['conflict']))).toContain('branch feat/x, base main')
+})
+
+test('the rework factory is valid data and ends at done either way', async () => {
+  const def = await loadFactory(join(import.meta.dir, '..', 'factories', 'rework.yaml'))
+  expect(Object.keys(def.nodes)).toEqual(['resolve'])
+  expect(Object.values(def.nodes.resolve!.next)).toEqual(['done', 'done'])
 })
