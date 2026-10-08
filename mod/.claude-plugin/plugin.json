@@ -1,6 +1,6 @@
 {
   "name": "factory",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run herdr software factories through this session: it ticks every run, patrols the factory as its manager, and draws a live console.",
   "author": {
     "name": "ztaylor"

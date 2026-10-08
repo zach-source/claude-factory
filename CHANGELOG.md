@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+## 0.3.0 (2026-10-07)
+
 - A factory's `params` are what its worker commands name as `{name}`: lifecycle's launcher
   (`claude`, default `claude-smart --new --no-channels`) and its three models. A rig sets them
   (`factory rig add ... --param exec_model=...`), else `FACTORY_<NAME>` in the environment
@@ -36,15 +38,12 @@ minor release may change the factory format, the CLI or the run state.
 - The tick reaps what herdr holds that no run needs: a finished run's workspace (its worktree and
   branch stay until `factory rm`, which removes the worktree with git once the workspace is gone),
   and a Claude idle in a live run's workspace that is not its worker.
-
 - The console's mail splits into not answered and answered: mail you answer (in the console, by
   `factory mail` or through the manager), mail its run has reported past, and mail whose run has
   ended leave the list you work from.
-
 - The console's PRs tab (7, or `factory prs`): each rig's open pull requests from run branches,
   drafts left out, with what each waits on (conflicts, failing checks, approval, the merge) and its
   run's station or gate.
-
 - The board's finished runs fold away (show/hide, folded at first) and list only the last 10.
 
 ## 0.2.0 (2026-10-06)
