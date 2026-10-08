@@ -196,6 +196,10 @@ In a repo with `.beads/`, beads is the factory's task tracker:
   `station:<name>` label starts one at that station.
 - **Sweeps file to the backlog**: incidents and security fixes labeled `factory` start on
   their own; everything else is filed unlabeled for you to prioritize by adding the label.
+- **Sync**: every 5 minutes each rig with a Dolt remote runs `bd sync` (pull, repair, push), so
+  beads and claims from other machines reach dispatch and the factory's reach them. A remote
+  nobody has pushed to yet, or a conflict sync won't settle, shows as the rig's error in the
+  console; seed a new remote once with `bd dolt push`.
 - **Leases**: the run heartbeats its claim every 2 minutes, so a `bd reclaim` reaper never
   takes live work. Without `.beads/`, runs keep task lists in their reports instead.
 

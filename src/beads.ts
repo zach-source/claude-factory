@@ -117,4 +117,20 @@ export const beads = (repo: string, actor: string) => ({
     const r = bd(repo, actor, 'children', id, '--json')
     return r.isOk ? JSON.parse(r.out) : []
   },
+  /**
+   * pull, repair and push against the repo's Dolt remote (`bd sync`), so other machines' beads and
+   * claims reach dispatch and ours reach them; false with no remote. Bounded: a hung remote must not
+   * hold the pass that heartbeats every claim.
+   */
+  sync: () => {
+    if (/No remotes configured/.test(bd(repo, actor, 'dolt', 'remote', 'list').out)) return false
+    const p = Bun.spawnSync(['bd', 'sync', '--actor', actor], { cwd: repo, timeout: 120_000 })
+    const out = `${p.stdout}\n${p.stderr}`.trim()
+    // a remote nobody pushed to yet: seeding it publishes the repo's beads, so that is the person's call
+    if (/not found on remote/.test(out))
+      throw new Error('bd sync: the remote holds no beads yet; seed it once with bd dolt push')
+    if (p.exitCode !== 0 || /sync failed/.test(out))
+      throw new Error(`bd sync: ${out.split('\n').at(-1) || 'timed out'}`)
+    return true
+  },
 })

@@ -59,6 +59,7 @@ const CLI = join(ROOT, 'bin', 'factory')
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 8)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
+const SYNC_MS = 5 * 60_000 // how often each rig's beads sync with its Dolt remote
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
 const DREAM_MS = 24 * 3600_000
@@ -1390,6 +1391,7 @@ export const room = (
 /** the rigs' ready `factory` beads become runs while each rig, and the factory, has room */
 /** what the last dispatch could not do, per rig: the board shows it as rows */
 const dispatchFile = () => join(HOME, 'dispatch.json')
+const syncFile = () => join(HOME, 'sync.json')
 
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
@@ -1405,11 +1407,22 @@ async function dispatch() {
       return run.bead && !['done', 'aborted'].includes(where(value)[0]) ? [run.bead] : []
     }),
   )
+  const synced = existsSync(syncFile()) ? readJson<Record<string, number>>(syncFile()) : {}
   for (const rig of rigs()) {
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
-      if (room(rig, busy) <= 0) continue // full: no bd calls at all
       const b = beads(rig.repo, 'factory')
+      // full or not: our claims and closes reach other machines either way
+      if (existsSync(join(rig.repo, '.beads')) && Date.now() - (synced[rig.repo] ?? 0) > SYNC_MS) {
+        synced[rig.repo] = Date.now() // a failing sync retries next interval, not every pass
+        writeJson(syncFile(), synced)
+        try {
+          b.sync()
+        } catch (err) {
+          errors.push({ id: `rig:${rig.name}`, error: (err as Error).message }) // dispatch goes on: local beads are still true
+        }
+      }
+      if (room(rig, busy) <= 0) continue // full: no more bd calls
       // children are looked up only for the candidates, until the rig is full
       const candidates = dispatchable(b.ready(), linked, Infinity).filter(
         x => !isOwned(x) && !openChildren(b, x.id).length,

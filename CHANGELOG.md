@@ -6,6 +6,9 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Beads sync: every 5 minutes, each rig whose beads have a Dolt remote runs `bd sync`, so work
+  and claims from other machines reach dispatch and the factory's reach them. Failures, such as a
+  remote nobody seeded yet, show as the rig's error and don't stop its dispatch.
 - Factories extend each other: `extends: lifecycle` and only the stations you add or change, where
   a node merges into the base's field by field and `next` outcome by outcome. A factory can be
   written in JSON, YAML or TOML as well as TypeScript. Runs pin their factory resolved, as
