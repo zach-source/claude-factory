@@ -6,6 +6,13 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A station parked on pull requests (its blocked report links them) is watched with `gh` and mailed
+  awake when one is merged, closed or updated, instead of a fresh worker re-checking on a timer;
+  the timer backstops it at 8 hours. Deploy re-checks were most of infra-blocks' worker launches.
+- A run on a repo Claude does not trust starts no worker (it would stall at the trust dialog until
+  its timeout, every attempt); the manager is paged once, and `rig add` warns.
+- Stations take `rounds`: past that many reports of one outcome in a run, the next is held for the
+  manager. Lifecycle's review has 3, so a review loop that is not converging gets a person.
 - Pull request labels act: `close` closes the PR (and aborts its run), `conflict` starts a run of the
   new one-station `rework` factory (YAML) that merges the base in, resolves, tests and pushes.
   `rework` starts the same run for a PR that needs changes: it triages the PR, makes what its reviews

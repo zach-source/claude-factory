@@ -24,6 +24,11 @@ export type Node = {
   parkMin?: number
   /** minutes before a silent worker counts as failed (default 60) */
   timeoutMin?: number
+  /**
+   * times the station may report one outcome in a run (review's changes, say) before the next such report
+   * is held for the manager instead of followed: a loop that has not converged by then needs a person
+   */
+  rounds?: number
   /** worker command for this node, overrides the factory's */
   agent?: string
 }
@@ -146,6 +151,7 @@ export function validate(def: Factory): Factory {
         typeof node.prompt !== 'string' && `${id}: has no prompt`,
         !Object.keys(node.next ?? {}).length && `${id}: has no outcomes`,
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
+        node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           (outcome === 'fail' || outcome === 'blocked') && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&
@@ -177,6 +183,13 @@ export const isParked = (c: Ctx, node: string) => {
   const last = c.log.at(-1)
   return last?.node === node && last.outcome === 'blocked'
 }
+
+/** the pull requests a blocked report names: the runner watches them and mails the station when one changes */
+export const prsIn = (text: string) => [
+  ...new Set(text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g) ?? []),
+]
+/** how long a station that waits on pull requests parks: the watch wakes it sooner, so this only backstops it */
+export const WATCHED_PARK_MIN = 480
 
 /** how long a station parks: parkMin, doubled for each blocked report it already made in a row, at most 8h */
 export const parkDelayMin = (c: Ctx, node: string, parkMin: number) => {
@@ -283,38 +296,67 @@ export function compile(def: Factory) {
               guard: isCurrent,
               actions: assign(({ event }) => ({ nudges: 0, nudgedAt: event.at })),
             },
-            DONE: Object.entries(node.next).map(([outcome, edge]) => ({
-              guard: ({ context, event }: { context: Ctx; event: Ev }) =>
-                isCurrent({ context, event }) && event.type === 'DONE' && event.outcome === outcome,
-              target: `#factory.${edgeTo(edge)}`,
-              reenter: true, // a self-loop (iterate -> iterate) starts a fresh worker
-              actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
-                const { summary, at } = event as Extract<Ev, { type: 'DONE' }>
-                const log = [...context.log, { node: id, attempt: context.attempt, outcome, summary, at }]
-                const to = edgeTo(edge) === 'done' ? 'manager' : edgeTo(edge)
-                const mail = post(context.mail, to, { from: id, text: summary, at })
-                const delay = delayOf(edge)
-                // the wait already bounds the rate, so a cadence loop refills its budget instead of being held
-                // the worker has reported: its pane goes now, not when a timed wait ends
-                return delay
-                  ? {
-                      log,
-                      mail,
-                      pane: null,
-                      wakeAt: at + delay * 60_000,
-                      budget: context.seq + (def.maxSteps ?? 20),
-                    }
-                  : { log, mail, pane: null }
-              }),
-            })),
+            DONE: [
+              ...(node.rounds
+                ? [
+                    {
+                      guard: ({ context, event }: { context: Ctx; event: Ev }) =>
+                        isCurrent({ context, event }) &&
+                        event.type === 'DONE' &&
+                        context.log.filter(e => e.node === id && e.outcome === event.outcome).length >=
+                          node.rounds!,
+                      target: 'stuck',
+                      actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
+                        const { outcome, summary, at } = event as Extract<Ev, { type: 'DONE' }>
+                        const reason = `${id} reported ${outcome} more than ${node.rounds} times`
+                        const text = `${reason}: held instead of going to ${edgeTo(node.next[outcome]!)}. goto a station to go on, retry for a fresh ${id}, or abort. Its report: ${summary}`
+                        return {
+                          log: [...context.log, { node: id, attempt: context.attempt, outcome, summary, at }],
+                          mail: post(context.mail, 'manager', { from: id, text, at }),
+                          pane: null,
+                          error: reason,
+                        }
+                      }),
+                    },
+                  ]
+                : []),
+              ...Object.entries(node.next).map(([outcome, edge]) => ({
+                guard: ({ context, event }: { context: Ctx; event: Ev }) =>
+                  isCurrent({ context, event }) && event.type === 'DONE' && event.outcome === outcome,
+                target: `#factory.${edgeTo(edge)}`,
+                reenter: true, // a self-loop (iterate -> iterate) starts a fresh worker
+                actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
+                  const { summary, at } = event as Extract<Ev, { type: 'DONE' }>
+                  const log = [...context.log, { node: id, attempt: context.attempt, outcome, summary, at }]
+                  const to = edgeTo(edge) === 'done' ? 'manager' : edgeTo(edge)
+                  const mail = post(context.mail, to, { from: id, text: summary, at })
+                  const delay = delayOf(edge)
+                  // the wait already bounds the rate, so a cadence loop refills its budget instead of being held
+                  // the worker has reported: its pane goes now, not when a timed wait ends
+                  return delay
+                    ? {
+                        log,
+                        mail,
+                        pane: null,
+                        wakeAt: at + delay * 60_000,
+                        budget: context.seq + (def.maxSteps ?? 20),
+                      }
+                    : { log, mail, pane: null }
+                }),
+              })),
+            ],
             BLOCKED: {
               guard: isCurrent,
               target: 'waiting',
               actions: assign(({ context, event }) => {
                 const { reason, at } = event as Extract<Ev, { type: 'BLOCKED' }>
                 // each report that finds it still blocked doubles the wait, up to 8h: a re-check is a whole worker
-                const wakeAt = at + parkDelayMin(context as Ctx, id, node.parkMin ?? 60) * 60_000
-                const text = `${id} is parked, waiting on: ${reason}. It checks again at ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
+                const isWatched = prsIn(reason).length > 0
+                const wakeAt =
+                  at +
+                  (isWatched ? WATCHED_PARK_MIN : parkDelayMin(context as Ctx, id, node.parkMin ?? 60)) *
+                    60_000
+                const text = `${id} is parked, waiting on: ${reason}. It checks again ${isWatched ? 'when one of its pull requests changes, at the latest' : 'at'} ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
                 // the manager hears when a station parks, not each re-check that finds nothing changed
                 const last = context.log.at(-1)
                 const isRepeat = last?.node === id && last.outcome === 'blocked'

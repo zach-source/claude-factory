@@ -25,6 +25,7 @@ import {
   extend,
   fill,
   isParked,
+  prsIn,
   reach,
   unread,
   validate,
@@ -66,6 +67,7 @@ const CLOSE_LABEL = 'close'
 const CONFLICT_LABEL = 'conflict'
 const REWORK_LABEL = 'rework'
 const REWORK_LABELS = [CONFLICT_LABEL, REWORK_LABEL]
+const WATCH_MS = 5 * 60_000 // how often the pull requests parked stations wait on are looked at
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
 const DREAM_MS = 24 * 3600_000
@@ -385,7 +387,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
-    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed.`,
+    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
@@ -563,6 +565,23 @@ export function deadline(elapsedMs: number, timeoutMin: number, isWorking: boole
   return isWarned ? null : 'warn'
 }
 
+/**
+ * whether Claude trusts a repo: its trust dialog was accepted for it or a folder above it. A worktree's
+ * trust is its main repo's. Unreadable config counts as trusted, so the check never stops a factory itself.
+ */
+export function isTrusted(repo: string, configDir = process.env.CLAUDE_CONFIG_DIR ?? homedir()) {
+  let projects: Record<string, { hasTrustDialogAccepted?: boolean }>
+  try {
+    projects = readJson<{ projects?: typeof projects }>(join(configDir, '.claude.json')).projects ?? {}
+  } catch {
+    return true
+  }
+  for (let dir = resolve(repo); ; dir = dirname(dir)) {
+    if (projects[dir]?.hasTrustDialogAccepted) return true
+    if (dir === dirname(dir)) return false
+  }
+}
+
 /** level-triggered: make the world match the current state, report what happened as events */
 function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input) => void, now: number) {
   const n = def.nodes[node]!
@@ -579,7 +598,20 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     }
     return 'awaiting decision'
   }
+  // only a harness herdr knows (claude, codex, pi) shows it an agent; a script or a fake worker never would
+  const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   if (!c.pane) {
+    // a Claude in an untrusted repo sits at its trust dialog until the station times out, every attempt
+    if (isClaude && !isTrusted(run.repo)) {
+      const paged = join(HOME, 'untrusted.json')
+      const repos = existsSync(paged) ? readJson<string[]>(paged) : []
+      if (!repos.includes(run.repo)) {
+        const text = `${run.repo} is not trusted by Claude, so no worker starts there: its trust dialog would stall it. Trust it once (run claude in ${run.repo} and accept), and the waiting runs start on the next tick.`
+        send({ type: 'MAIL', from: node, to: 'manager', text })
+        writeJson(paged, [...repos, run.repo])
+      }
+      return 'awaiting trust'
+    }
     const pane = spawn(run, def, node, c)
     send({ type: 'SPAWNED', seq: c.seq, pane })
     const box = c.mail[node] ?? [] // the brief carried the whole box
@@ -594,8 +626,6 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     return 'resuming'
   }
   const status = info?.status ?? null
-  // only a harness herdr knows (claude, codex, pi) shows it an agent; a script or a fake worker never would
-  const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
   // resume the conversation in the same pane, once, as for a pane that closed
   // a just-resumed Claude takes seconds to show: give it the launch grace before calling it gone again
@@ -929,6 +959,7 @@ async function beadsPass() {
     }
     await dispatch()
     await labelPass()
+    watchPass()
   } finally {
     release()
   }
@@ -1557,6 +1588,40 @@ async function labelPass() {
   writeJson(join(HOME, 'labels.json'), errors)
 }
 
+/**
+ * a station parked on pull requests (its blocked report links them) is woken by mail when one is updated
+ * after it parked: merged, closed, reviewed, commented on or pushed to. A gh call each instead of a worker each re-check.
+ */
+function watchPass() {
+  const stamp = join(HOME, 'watch.stamp')
+  if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < WATCH_MS)) return
+  writeFileSync(stamp, '')
+  for (const id of runIds()) {
+    try {
+      const { run, value, c } = current(id)
+      const [node, sub] = where(value)
+      if (sub !== 'waiting' || !isParked(c, node)) continue
+      const parked = c.log.at(-1)!
+      for (const url of prsIn(parked.summary)) {
+        const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state,updatedAt'], {
+          cwd: run.repo,
+          timeout: 60_000,
+        })
+        if (p.exitCode !== 0) continue // gh down or the PR gone: the park's own timer still wakes it
+        const pr: { state: string; updatedAt: string } = JSON.parse(p.stdout.toString())
+        // a merge or a close updates it too; a PR already merged when it parked (linked as context) never wakes it
+        if (Date.parse(pr.updatedAt) <= parked.at) continue
+        const text = `[factory] ${url} changed since you parked: it is ${pr.state.toLowerCase()}, updated ${pr.updatedAt}. Check where it stands now.`
+        post(id, { type: 'MAIL', from: 'factory', to: node, text })
+        console.log(`${new Date().toISOString()} ${id}: ${url} changed, waking ${node}`)
+        break
+      }
+    } catch {
+      // removed mid-pass
+    }
+  }
+}
+
 async function busyRigs() {
   const busy: (string | undefined)[] = []
   for (const id of runIds()) {
@@ -1595,6 +1660,10 @@ async function defineRig(
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
   const repo = toplevel(path)
   if (!hasBeads(repo)) fail(`${repo} has no .beads: run bd init there first`)
+  if (!isTrusted(repo))
+    console.warn(
+      `warning: Claude does not trust ${repo} yet, so its runs wait to start: run claude there once and accept its trust dialog`,
+    )
   const def = await loadFactory(factorySource(factory, repo))
   const rig: Rig = { name, repo, factory, ...(goal && { goal }), ...(agent && { agent }) }
   if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')

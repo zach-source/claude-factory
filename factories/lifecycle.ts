@@ -123,6 +123,7 @@ Report green with the evidence, or red with a numbered list of every failure and
     review: {
       agent: OPUS,
       timeoutMin: 45,
+      rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 Post the review on the pull request: push the branch and open it as a draft if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).

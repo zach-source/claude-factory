@@ -1,6 +1,17 @@
 import { expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
-import { compile, parkDelayMin, reach, unread, validate, where, type Ev, type Factory } from './machine'
+import {
+  compile,
+  parkDelayMin,
+  prsIn,
+  reach,
+  unread,
+  validate,
+  where,
+  WATCHED_PARK_MIN,
+  type Ev,
+  type Factory,
+} from './machine'
 
 const def: Factory = {
   name: 'review-loop',
@@ -260,4 +271,42 @@ test('a timed edge is not cut short by mail', () => {
     'review',
     'waiting',
   ])
+})
+
+test('a station blocked on pull requests parks long: the runner watches them and mails it awake', () => {
+  const pr = 'https://github.com/o/r/pull/7'
+  expect(prsIn(`${pr} needs an approving review; ${pr} again, and o/r#8 is not a link`)).toEqual([pr])
+  const { send } = run()
+  const s = send({ type: 'BLOCKED', seq: 1, reason: `${pr} needs an approving review`, at: 1 })
+  expect(s.context.wakeAt).toBe(1 + WATCHED_PARK_MIN * 60_000)
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('when one of its pull requests changes')
+})
+
+test('a station that reports one outcome more than its rounds is held for the manager', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 2 } },
+  })
+  let seq = 1
+  const round = () => {
+    send({ type: 'DONE', seq: seq++, outcome: 'ready', summary: 'built', at: seq })
+    return send({ type: 'DONE', seq: seq++, outcome: 'changes', summary: 'fix the nil check', at: seq })
+  }
+  expect(where(round().value)).toEqual(['implement', 'working'])
+  expect(where(round().value)).toEqual(['implement', 'working'])
+  const s = round()
+  expect(where(s.value)).toEqual(['review', 'stuck'])
+  expect(s.context.error).toBe('review reported changes more than 2 times')
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('held instead of going to implement')
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('fix the nil check')
+  expect(s.context.log.filter(e => e.outcome === 'changes')).toHaveLength(3)
+  // only the outcome that looped counts: a fresh review that approves goes on
+  expect(where(send({ type: 'RETRY', at: 99 }).value)).toEqual(['review', 'working'])
+  expect(where(send({ type: 'DONE', seq: 7, outcome: 'approve', summary: 'ok', at: 100 }).value)).toEqual([
+    'done',
+    '',
+  ])
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 0 } } }),
+  ).toThrow('rounds is at least 1')
 })

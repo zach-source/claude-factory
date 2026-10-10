@@ -236,8 +236,9 @@ export default {
 } satisfies Factory
 ```
 
-Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command), and
-`gate: true` for a station the person decides instead of a worker. An edge can wait:
+Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
+`rounds` (how many times it may report one outcome in a run before the next such report is held for
+the manager; lifecycle's review has 3), and `gate: true` for a station the person decides instead of a worker. An edge can wait:
 `{ to: 'soak', delayMin: 15 }` parks the run with no worker; `goto` skips the wait.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
@@ -296,7 +297,10 @@ rows = [
   human review or merge, another run) reports `blocked "<what>"`. The run parks at that
   station with no worker and no attempt spent, the manager is told what it waits for, and
   a fresh worker checks again after `parkMin` or as soon as the station is mailed. Deploy
-  parks this way on a pull request the repo will only let a person approve or merge.
+  parks this way on a pull request the repo will only let a person approve or merge. When the
+  report links pull requests, the factory watches them (`gh`, every 5 minutes) and mails the
+  station once one is merged, closed or updated, instead of launching a worker to look; the
+  timer only backstops that, at 8 hours.
 - **Durable workers**: a worker whose pane dies resumes its own Claude session once
   before falling back to a retry; fresh workers are told what the branch already
   committed. Reports carry the worker's `seq`, so stale and duplicate ones drop.
@@ -308,9 +312,10 @@ rows = [
 
 - Workers run `--dangerously-skip-permissions` by default, each in its own
   worktree. Set `agent` to change that.
-- Claude trusts a worktree through its main repo. Start runs on repos you have
-  already opened in Claude, or each worker stops at the folder-trust dialog (the
-  board shows it as blocked).
+- Claude trusts a worktree through its main repo. A run on a repo Claude does not trust
+  yet starts no worker (it would stop at the folder-trust dialog): the board shows it
+  awaiting trust, the manager is paged once, and `rig add` warns. Run `claude` in the
+  repo once and accept.
 - Station prompts are stack-agnostic and defer to the repo's own CLAUDE.md,
   CONTRIBUTING and CI. Deploy, soak, rollback and monitor need the workers to reach
   your deploy tooling and telemetry (kubectl, gh, the Grafana MCP) the way you do.

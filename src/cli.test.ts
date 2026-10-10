@@ -1,11 +1,12 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import {
   deadline,
   haltStep,
+  isTrusted,
   labelAction,
   loadFactory,
   missingSweeps,
@@ -208,4 +209,14 @@ test('the rework factory is valid data and ends at done either way', async () =>
   const def = await loadFactory(join(import.meta.dir, '..', 'factories', 'rework.yaml'))
   expect(Object.keys(def.nodes)).toEqual(['resolve'])
   expect(Object.values(def.nodes.resolve!.next)).toEqual(['done', 'done', 'done'])
+})
+
+test("a repo is trusted when Claude's trust dialog was accepted for it or a folder above it", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'trust-'))
+  expect(isTrusted('/a/b', dir)).toBe(true) // no config: the check never stops a factory itself
+  const projects = { '/a': { hasTrustDialogAccepted: true }, '/x/y': { hasTrustDialogAccepted: false } }
+  writeFileSync(join(dir, '.claude.json'), JSON.stringify({ projects }))
+  expect(isTrusted('/a/b/c', dir)).toBe(true)
+  expect(isTrusted('/x/y', dir)).toBe(false)
+  expect(isTrusted('/z', dir)).toBe(false)
 })
