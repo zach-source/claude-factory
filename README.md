@@ -188,6 +188,11 @@ acting to a later bot:
   PR's branch, resolves the conflicts, runs the tests and pushes; the label comes off and a comment names
   the run. A worker that can't tell how to resolve one says so on the PR. A PR from a fork shows as
   the rig's error instead, since its branch is not ours to push.
+- **`rework`**: the same run, for a PR that needs changes: it reads the PR's reviews, comments and
+  checks, makes the changes asked for, tests and pushes. A PR with both labels gets one run for both.
+
+The rework run triages first: a PR that is no longer wanted (already on the base, superseded, or
+rejected in review) gets a comment and the `close` label, and the next pass closes it.
 
 ## Beads: planning and execution
 

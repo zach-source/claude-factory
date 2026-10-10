@@ -182,7 +182,7 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
 })
 
-test("a PR's close label closes it, its conflict label reworks it unless it comes from a fork", () => {
+test("a PR's close label closes it, its conflict or rework label reworks it unless it comes from a fork", () => {
   const pr = (labels: string[], isCrossRepository = false) => ({
     number: 7,
     url: 'https://github.com/o/r/pull/7',
@@ -195,11 +195,17 @@ test("a PR's close label closes it, its conflict label reworks it unless it come
   expect(labelAction(pr(['conflict']))).toBe('rework')
   expect(labelAction(pr(['conflict'], true))).toBe('fork')
   expect(labelAction(pr(['bug']))).toBeUndefined()
-  expect(reworkGoal(pr(['conflict']))).toContain('branch feat/x, base main')
+  expect(labelAction(pr(['rework']))).toBe('rework')
+  expect(labelAction(pr(['close', 'rework']))).toBe('close')
+  expect(reworkGoal(pr(['conflict']))).toContain('Branch feat/x, base main')
+  expect(reworkGoal(pr(['conflict', 'rework']))).toContain(
+    'labeled conflict and rework: resolve its merge conflicts and make the changes',
+  )
+  expect(reworkGoal(pr(['rework']))).not.toContain('conflicts')
 })
 
 test('the rework factory is valid data and ends at done either way', async () => {
   const def = await loadFactory(join(import.meta.dir, '..', 'factories', 'rework.yaml'))
   expect(Object.keys(def.nodes)).toEqual(['resolve'])
-  expect(Object.values(def.nodes.resolve!.next)).toEqual(['done', 'done'])
+  expect(Object.values(def.nodes.resolve!.next)).toEqual(['done', 'done', 'done'])
 })

@@ -64,6 +64,8 @@ const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked fo
 // ponytail: pr-merger's default label names; make them a rig setting when a repo uses others
 const CLOSE_LABEL = 'close'
 const CONFLICT_LABEL = 'conflict'
+const REWORK_LABEL = 'rework'
+const REWORK_LABELS = [CONFLICT_LABEL, REWORK_LABEL]
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
 const DREAM_MS = 24 * 3600_000
@@ -1469,20 +1471,26 @@ export type LabeledPr = {
   isCrossRepository: boolean
   labels: { name: string }[]
 }
-/** what a person's label on a pull request asks: close it (and its run), or a rework run for its conflicts */
+const reworkLabels = (pr: LabeledPr) => REWORK_LABELS.filter(name => pr.labels.some(l => l.name === name))
+/** what a person's label on a pull request asks: close it (and its run), or a rework run for its conflicts or changes */
 export function labelAction(pr: LabeledPr) {
-  const has = (name: string) => pr.labels.some(l => l.name === name)
-  if (has(CLOSE_LABEL)) return 'close'
-  if (!has(CONFLICT_LABEL)) return undefined
+  if (pr.labels.some(l => l.name === CLOSE_LABEL)) return 'close'
+  if (!reworkLabels(pr).length) return undefined
   return pr.isCrossRepository ? 'fork' : 'rework' // a fork's branch is not ours to push
 }
-export const reworkGoal = (pr: LabeledPr) =>
-  `Resolve the merge conflicts of pull request #${pr.number} (${pr.url}): branch ${pr.headRefName}, base ${pr.baseRefName}.`
+export function reworkGoal(pr: LabeledPr) {
+  const asks = reworkLabels(pr).map(name =>
+    name === CONFLICT_LABEL
+      ? 'resolve its merge conflicts'
+      : 'make the changes its reviews and checks ask for',
+  )
+  return `Pull request #${pr.number} (${pr.url}) is stuck, labeled ${reworkLabels(pr).join(' and ')}: ${asks.join(' and ')}. Branch ${pr.headRefName}, base ${pr.baseRefName}.`
+}
 
 /**
  * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
- * aborts the run whose branch it is; `conflict` starts a rework run when the rig has room, then takes the
- * label off so it starts one only. Out of the tick, like dispatch.
+ * aborts the run whose branch it is; `conflict` or `rework` starts a rework run when the rig has room, then
+ * takes the labels off so it starts one only. Out of the tick, like dispatch.
  */
 async function labelPass() {
   const stamp = join(HOME, 'labels.stamp')
@@ -1499,7 +1507,7 @@ async function labelPass() {
       return p.stdout.toString()
     }
     try {
-      const search = `label:${CLOSE_LABEL},${CONFLICT_LABEL}` // a comma is OR in GitHub search
+      const search = `label:${[CLOSE_LABEL, ...REWORK_LABELS].join(',')}` // a comma is OR in GitHub search
       const labeled: LabeledPr[] = JSON.parse(
         gh('pr', 'list', '--state', 'open', '--search', search, '--json', fields),
       )
@@ -1526,18 +1534,18 @@ async function labelPass() {
         } else if (action === 'fork') {
           errors.push({
             id: `rig:${rig.name}`,
-            error: `${pr.url} is labeled ${CONFLICT_LABEL} but comes from a fork: resolve it there`,
+            error: `${pr.url} is labeled ${reworkLabels(pr).join(', ')} but comes from a fork: rework it there`,
           })
         } else if (action === 'rework' && room(rig, busy) > 0) {
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
           busy.push(rig.name)
-          gh('pr', 'edit', String(pr.number), '--remove-label', CONFLICT_LABEL)
+          gh('pr', 'edit', String(pr.number), '--remove-label', reworkLabels(pr).join(','))
           gh(
             'pr',
             'comment',
             String(pr.number),
             '--body',
-            `claude-factory run \`${run.id}\` is resolving the conflicts.`,
+            `claude-factory run \`${run.id}\` is reworking this.`,
           )
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
         }
