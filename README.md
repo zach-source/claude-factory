@@ -322,6 +322,11 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
   workers use (MCP tools stay deferred behind ToolSearch; auto memory is off). The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
   cost ~40k tokens on every turn and are left out; the repo's own CLAUDE.md and settings
   still apply. `FACTORY_LEAN=0` launches workers with the user's setup again.
+- **Usage limits**: a worker whose turn is refused for the account's usage limit (weekly or
+  5-hour) is restarted on the next account: `ccswitch switch-to` moves
+  every Claude on the machine to the next account in its sequence whose limit has reset, and
+  the worker resumes its session there. With every account at its limit, workers hold (no
+  nudges, no timeout) until the first reset, and the manager hears once.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
   from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>

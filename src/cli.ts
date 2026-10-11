@@ -537,8 +537,8 @@ export function lastContext(tail: string) {
   }
   return 0
 }
-/** a Claude worker's context now: the last turn of its session's transcript */
-function contextOf(worktree: string, session: string) {
+/** the end of a Claude worker's session transcript; empty when there is none */
+function tailOf(worktree: string, session: string) {
   const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
   const file = join(dir, 'projects', worktree.replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
   try {
@@ -547,10 +547,69 @@ function contextOf(worktree: string, session: string) {
     const fd = openSync(file, 'r')
     readSync(fd, buf, 0, buf.length, size - buf.length)
     closeSync(fd)
-    return lastContext(buf.toString())
+    return buf.toString()
   } catch {
-    return 0
+    return ''
   }
+}
+
+/** the usage limit that refused a Claude transcript's last turn: when, which (seven_day, five_hour) and when it resets, in ms */
+export function limitHit(tail: string) {
+  for (const line of tail.split('\n').reverse()) {
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'assistant') continue
+      if (e.error !== 'rate_limit' || e.quotaLimits?.status !== 'rejected') return null
+      const kind: string = e.quotaLimits.rateLimitType ?? 'usage'
+      return { at: Date.parse(e.timestamp), kind, resetsAt: (e.quotaLimits.resetsAt ?? 0) * 1000 }
+    } catch {
+      // the first line of the tail is cut
+    }
+  }
+  return null
+}
+
+/** the account to move to: the next in ccswitch's sequence after the active one (itself last) whose limit has reset */
+export function nextAccount(sequence: string[], active: string, limits: Record<string, number>, now: number) {
+  const i = sequence.indexOf(active)
+  return (
+    [...sequence.slice(i + 1), ...sequence.slice(0, Math.max(0, i)), active].find(
+      a => (limits[a] ?? 0) <= now,
+    ) ?? null
+  )
+}
+
+/**
+ * Workers run on the user's active Claude account. When one hits that account's usage limit, ccswitch
+ * moves every Claude on this machine to the next account whose limit has reset, and the worker restarts
+ * on it; a hit from before the last move only restarts. With every account at its limit, workers wait
+ * for the first reset. Returns that wait's end, or 0 to restart now
+ */
+function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
+  const file = join(HOME, 'accounts.json')
+  const s = existsSync(file)
+    ? readJson<{ at: number; limits: Record<string, number> }>(file)
+    : { at: 0, limits: {} }
+  if (hit.at < s.at) return 0
+  let seq: { activeAccountId: string; sequence: string[] }
+  try {
+    seq = readJson(join(homedir(), '.claude-switch-backup', 'sequence.json'))
+  } catch {
+    return hit.resetsAt // no ccswitch: wait out the limit
+  }
+  s.limits[seq.activeAccountId] = Math.max(
+    s.limits[seq.activeAccountId] ?? 0,
+    hit.resetsAt || now + 3_600_000,
+  )
+  const next = nextAccount(seq.sequence, seq.activeAccountId, s.limits, now)
+  const ok =
+    next === seq.activeAccountId ||
+    (next !== null && Bun.spawnSync(['ccswitch', 'switch-to', next], { timeout: 30_000 }).exitCode === 0)
+  if (next && !ok) s.limits[next] = now + 3_600_000 // it would not switch (a lapsed login): try the others
+  if (ok) s.at = now
+  writeJson(file, s)
+  return ok ? 0 : Math.min(...seq.sequence.map(a => s.limits[a] ?? now))
 }
 
 /**
@@ -761,10 +820,27 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
+  const tail = isClaude && c.session ? tailOf(run.worktree, c.session) : ''
+  const hit = limitHit(tail)
+  if (hit && hit.at > c.startedAt) {
+    const until = swapAccount(hit, now)
+    if (until > now) {
+      const paged = join(HOME, 'limit-paged.json')
+      if (!existsSync(paged) || readJson<number>(paged) < until) {
+        const text = `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+        send({ type: 'MAIL', from: node, to: 'manager', text })
+        writeJson(paged, until)
+      }
+      return 'usage limit'
+    }
+    Bun.spawnSync(['herdr', 'pane', 'close', c.pane]) // its Claude sits at the limit message
+    send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session!) })
+    return 'account swapped'
+  }
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   // every turn re-reads the whole context: past the limit the worker hands off to a fresh one
   const maxK = def.maxContextK ?? 200
-  const k = isClaude && c.session ? Math.round(contextOf(run.worktree, c.session) / 1000) : 0
+  const k = Math.round(lastContext(tail) / 1000)
   const isHandoffAsked = (c.mail[node] ?? []).some(
     m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(HANDOFF_ASK),
   )
