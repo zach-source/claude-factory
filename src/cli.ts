@@ -10,6 +10,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -25,6 +26,7 @@ import {
   extend,
   fill,
   isParked,
+  WORKER_OUTCOMES,
   parkDelayMin,
   prsIn,
   reach,
@@ -40,10 +42,19 @@ import {
   type Mail,
 } from './machine'
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
-import { claudeCommand, command, harnessOf, readMcp } from './harness'
+import { claudeCommand, command, harnessOf, readMcp, sq } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as memory from './memory'
-import { createdAt, metrics, render, type RunRecord } from './metrics'
+import {
+  createdAt,
+  fate,
+  metrics,
+  render,
+  renderTokens,
+  sessionOf,
+  type RunRecord,
+  type Session,
+} from './metrics'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -105,6 +116,8 @@ const NUDGES = 4 // ...this many times, each wait twice the last (90s to 24 min)
 // a worker whose Claude has not appeared this long after launch never started: the shell was still
 // starting (direnv, under load) when herdr typed the command, and swallowed the Enter
 const LAUNCH_MS = 90_000
+const TIME_UP = 'minutes are up' // marks the deadline's warning among the factory's mail
+const HANDOFF_ASK = "past the factory's limit" // marks the ask to hand off
 
 type Run = {
   id: string
@@ -330,6 +343,8 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
   const parked = isParked(c, node) ? c.log.at(-1) : undefined
+  const handedOff =
+    c.log.at(-1)?.node === node && c.log.at(-1)?.outcome === 'handoff' ? c.log.at(-1) : undefined
   // a fresh worker is told what earlier ones already committed, so it builds on it rather than redoing it
   const committed = run.base ? git(run.worktree, 'log', '--oneline', '-n', '30', `${run.base}..HEAD`) : ''
   const prior = node === def.start ? priorWork(run) : ''
@@ -361,6 +376,14 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
         ]
       : []),
     ...(lastFail ? ['', '## The previous attempt failed', lastFail.summary] : []),
+    ...(handedOff
+      ? [
+          '',
+          '## You take over from a worker that handed off',
+          'Its context grew too long, so it stopped and left you these notes. Its commits are on the branch; check git status for anything it left uncommitted, and carry on from where it stopped.',
+          handedOff.summary,
+        ]
+      : []),
     ...(parked
       ? [
           '',
@@ -500,9 +523,77 @@ const agentOfNode = (run: Run, def: Factory, node: string) => {
   return fill(rig?.agent ?? def.nodes[node]!.agent ?? def.agent ?? AGENT, paramsOf(def, rig))
 }
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
+/** the context of the last turn in a Claude transcript's tail, in tokens; 0 when it has none */
+export function lastContext(tail: string) {
+  for (const line of tail.split('\n').reverse()) {
+    if (!line.includes('"usage"')) continue
+    try {
+      const u = JSON.parse(line)?.message?.usage
+      if (u)
+        return (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0)
+    } catch {
+      // the first line of the tail is cut
+    }
+  }
+  return 0
+}
+/** a Claude worker's context now: the last turn of its session's transcript */
+function contextOf(worktree: string, session: string) {
+  const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  const file = join(dir, 'projects', worktree.replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+  try {
+    const size = statSync(file).size
+    const buf = Buffer.alloc(Math.min(size, 512 * 1024))
+    const fd = openSync(file, 'r')
+    readSync(fd, buf, 0, buf.length, size - buf.length)
+    closeSync(fd)
+    return lastContext(buf.toString())
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * a worker's own Claude settings, in full: none of the user's (their plugins, agents, skills, global
+ * CLAUDE.md and compaction window cost every turn ~40k tokens a worker never uses), so these win. It keeps
+ * their hooks (secret guards, herdr's session hook) and environment, never asks before skipping
+ * permissions, and compacts well past the handoff limit, as a backstop only
+ */
+export const workerSettings = (
+  user: { env?: Record<string, string>; hooks?: unknown },
+  maxContextK: number,
+) => ({
+  env: {
+    ...user.env,
+    ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
+    ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+  },
+  ...(user.hooks ? { hooks: user.hooks } : {}),
+  skipDangerousModePermissionPrompt: true,
+  autoCompactWindow: Math.max(100, 2 * maxContextK) * 1000,
+})
+// what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn
+const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch'
+
+/** the flags that give a Claude worker its own settings, system prompt and tools; FACTORY_LEAN=0 turns them off */
+function workerFlags(def: Factory) {
+  if (process.env.FACTORY_LEAN === '0') return ` --settings '${JSON.stringify(withoutFleet())}'`
+  let user = {}
+  try {
+    user = readJson(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'settings.json'))
+  } catch {
+    // no user settings: nothing to carry over
+  }
+  const file = join(HOME, 'worker-settings.json')
+  writeJson(file, workerSettings(user, def.maxContextK ?? 200))
+  const prompt = join(ROOT, 'src', 'worker-system.md')
+  // --tools first: it takes every word up to the next flag, so last it would swallow the prompt
+  return ` --tools ${WORKER_TOOLS} --setting-sources project,local --settings ${sq(file)} --system-prompt-file ${sq(prompt)}`
+}
+
 function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
-  const extra = ` --settings '${JSON.stringify(withoutFleet())}'`
+  const extra = workerFlags(def)
   return command(agentOfNode(run, def, node), prompt, {
     session,
     extra,
@@ -665,17 +756,33 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
+  // every turn re-reads the whole context: past the limit the worker hands off to a fresh one
+  const maxK = def.maxContextK ?? 200
+  const k = isClaude && c.session ? Math.round(contextOf(run.worktree, c.session) / 1000) : 0
+  const isHandoffAsked = (c.mail[node] ?? []).some(
+    m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(HANDOFF_ASK),
+  )
+  if (k > maxK * 1.25 && isHandoffAsked) {
+    const summary = `The factory cut the previous worker off at ${k}k tokens of context (limit ${maxK}k): it was asked to hand off and did not. What it did not commit is still in the worktree; read the journal and git status before redoing anything.`
+    send({ type: 'HANDOFF', seq: c.seq, summary })
+    return 'handed off'
+  }
+  if (k > maxK && !isHandoffAsked) {
+    const cmd = `${CLI} report ${run.id} ${c.seq} handoff "<what is done, what is left and how, what you learned that the code does not show>"`
+    const text = `[factory] This session's context is ${k}k tokens, ${HANDOFF_ASK} of ${maxK}k: every turn re-reads all of it. At the next safe point, commit your work in progress (a WIP commit is fine) and hand off to a fresh worker, then stop: ${cmd}`
+    send({ type: 'MAIL', from: 'factory', to: node, text })
+  }
   const due = deadline(
     now - c.startedAt,
     timeoutMin,
     status === 'working' || isAsking, // waiting on the manager's answer is work: warned, not failed
-    (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt),
+    (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(TIME_UP)),
   )
   if (status === null) send({ type: 'FAIL', seq: c.seq, reason: `worker pane ${c.pane} was closed` })
   else if (due === 'fail') send({ type: 'FAIL', seq: c.seq, reason: `no report within ${timeoutMin} min` })
   else if (due === 'warn') {
     const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
-    const text = `[factory] This station's ${timeoutMin} minutes are up. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
+    const text = `[factory] This station's ${timeoutMin} ${TIME_UP}. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail
   } else if (inbox.length && status !== 'blocked') {
     herdr('agent', 'prompt', c.pane, inbox.map(m => `[factory mail from ${m.from}] ${m.text}`).join('\n\n'))
@@ -1856,6 +1963,27 @@ function prs() {
 }
 
 /** the runs metrics count: every live run, and the ones factory rm kept in metrics.jsonl */
+/** what each Claude worker session of a run spent, from the transcripts in its worktree's project dir */
+function sessionsOf(run: Run): Session[] {
+  const dir = join(
+    process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+    'projects',
+    run.worktree.replace(/[^a-zA-Z0-9]/g, '-'),
+  )
+  if (!existsSync(dir)) return []
+  const prompts = join(runDir(run.id), 'prompts')
+  const nodes = new Map(
+    (existsSync(prompts) ? readdirSync(prompts) : []).flatMap(f => {
+      const m = /^(\d+)-(.+)\.md$/.exec(f)
+      return m ? [[Number(m[1]), m[2]!.replace(/-resume$/, '')] as const] : []
+    }),
+  )
+  return readdirSync(dir)
+    .filter(f => f.endsWith('.jsonl'))
+    .map(f => sessionOf(readFileSync(join(dir, f), 'utf8').split('\n'), run.id, seq => nodes.get(seq) ?? '?'))
+    .filter(s => s.turns > 0)
+}
+
 function records(): RunRecord[] {
   const file = join(HOME, 'metrics.jsonl')
   const kept: RunRecord[] = existsSync(file)
@@ -2070,7 +2198,7 @@ if (import.meta.main)
         const rig = opt('--rig')
         const since = opt('--since')
         const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
-        if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json]')
+        if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]')
         const picked = records().filter(
           r => (!rig || r.rig === rig) && Date.now() - r.createdAt < days * 86_400_000,
         )
@@ -2083,6 +2211,16 @@ if (import.meta.main)
         else {
           console.log(render(metrics(picked), `${basename(HOME)}${since ? `, last ${days}d` : ''}`))
           if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g))
+        }
+        if (args.includes('--tokens')) {
+          const live = picked.filter(r => runIds().includes(r.id))
+          console.log(
+            '\n' +
+              renderTokens(
+                live.flatMap(r => sessionsOf(loadRun(r.id))),
+                new Set(live.filter(r => fate(r) === 'shipped').map(r => r.id)),
+              ),
+          )
         }
         break
       }
@@ -2122,7 +2260,7 @@ if (import.meta.main)
         const [node] = where(value)
         const n = (await loadFactory(run.factory)).nodes[node]
         if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
-        const outcomes = Object.keys(n?.next ?? {}).concat('fail', 'blocked')
+        const outcomes = Object.keys(n?.next ?? {}).concat(WORKER_OUTCOMES)
         if (Number(seq) !== c.seq)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
@@ -2133,7 +2271,9 @@ if (import.meta.main)
             ? { type: 'FAIL', seq: c.seq, reason: text }
             : outcome === 'blocked'
               ? { type: 'BLOCKED', seq: c.seq, reason: text }
-              : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
+              : outcome === 'handoff'
+                ? { type: 'HANDOFF', seq: c.seq, summary: text }
+                : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
         )
         console.log(`reported ${outcome} for ${node}; you are done, stop now`)
         break

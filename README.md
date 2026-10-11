@@ -247,7 +247,8 @@ the manager; lifecycle's review has 3), and `gate: true` for a station the perso
 `{ to: 'soak', delayMin: 15 }` parks the run with no worker; `goto` skips the wait.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
-edge refills it, so a sweep loops forever). Edits apply at the next tick.
+edge refills it, so a sweep loops forever), `maxContextK` (200: the context, in thousands of
+tokens, past which a Claude worker hands off to a fresh one). Edits apply at the next tick.
 
 A factory can also be data: `.json`, `.yaml`/`.yml` or `.toml`, the same shape. And it can
 extend another instead of copying it: `extends` names a factory (a path, a file beside it, else a
@@ -310,6 +311,19 @@ rows = [
 - **Durable workers**: a worker whose pane dies resumes its own Claude session once
   before falling back to a retry; fresh workers are told what the branch already
   committed. Reports carry the worker's `seq`, so stale and duplicate ones drop.
+- **Handoff**: every turn re-reads a session's whole context, so a long session costs
+  quadratically. Past `maxContextK` the runner asks the worker to commit and report
+  `handoff` with notes; a fresh worker at the same station starts from them, spending no
+  attempt. One that keeps going to 1.25x the limit is cut off and handed off anyway; its
+  uncommitted changes stay in the worktree.
+- **Lean workers**: a Claude worker gets its own settings, not the user's: `--setting-sources
+project,local` plus a `--settings` file that keeps only the user's hooks and environment,
+  a short worker system prompt ([src/worker-system.md](src/worker-system.md)) and the tools
+  workers use. The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
+  cost ~40k tokens on every turn and are left out; the repo's own CLAUDE.md and settings
+  still apply. `FACTORY_LEAN=0` launches workers with the user's setup again.
+- **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
+  from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
   stays). `start` and `fork` refuse past `FACTORY_MAX_RUNS` (8) runs holding a worker.

@@ -8,6 +8,7 @@ import {
   haltStep,
   isTrusted,
   labelAction,
+  lastContext,
   prOwner,
   loadFactory,
   missingSweeps,
@@ -17,6 +18,7 @@ import {
   relaunch,
   reworkGoal,
   watchWake,
+  workerSettings,
   room,
   withoutFleet,
 } from './cli'
@@ -248,4 +250,36 @@ test('a watched park wakes when a PR changes, or on the plain timer once none is
   expect(watchWake([pr('MERGED', '2026-10-11T09:00:00Z')], at, at + 30 * 60_000, 60)).toBeUndefined()
   expect(watchWake([pr('MERGED', '2026-10-11T09:00:00Z')], at, at + 60 * 60_000, 60)).toContain('None of')
   expect(watchWake([], at, at + 9 * 3600_000, 60)).toBeUndefined() // gh could not say: the backstop wakes it
+})
+
+test("a worker's context is its transcript's last turn, read from a tail that may start mid-line", () => {
+  const turn = (input: number, read: number) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { usage: { input_tokens: input, cache_read_input_tokens: read } },
+    })
+  const tail = ['ge":{"usage":{"input_tokens":9', turn(10, 1000), turn(5, 2000), '{"type":"user"}', ''].join(
+    '\n',
+  )
+  expect(lastContext(tail)).toBe(2005)
+  expect(lastContext('{"type":"user"}')).toBe(0)
+})
+
+test("a worker's settings are its own: the user's hooks and environment, none of their plugins", () => {
+  const hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'guard' }] }] }
+  const user = {
+    env: { A: '1', CLAUDE_CODE_PLUGIN_DIRS: '/x/herdr-fleet:/y/mine' },
+    hooks,
+    enabledPlugins: { p: true },
+  }
+  const w = workerSettings(user, 200)
+  expect(w.hooks).toBe(hooks)
+  expect(w.env).toMatchObject({
+    A: '1',
+    CLAUDE_CODE_PLUGIN_DIRS: '/y/mine',
+    ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+  })
+  expect(w).toMatchObject({ skipDangerousModePermissionPrompt: true, autoCompactWindow: 400_000 })
+  expect('enabledPlugins' in w).toBe(false)
+  expect(workerSettings({}, 30).autoCompactWindow).toBe(100_000) // Claude Code's floor
 })

@@ -174,14 +174,25 @@ export function add(dir: string, note: Omit<Note, 'path'>) {
   return file
 }
 
-/** CORE.md for one rig: what holds everywhere, and its own `## rig: <name>` section; other rigs' go */
+/** bytes each part of CORE.md (its top, a rig's section) may put in a brief: every worker turn re-reads it */
+export const CORE_BUDGET = 2500
+
+/**
+ * CORE.md for one rig: what holds everywhere, and its own `## rig: <name>` section; other rigs' go. Each
+ * part is cut at CORE_BUDGET, most important first being the dream's job, so it can never grow every brief
+ */
 export function coreFor(text: string, rig?: string) {
   let section: string | null = null
-  const kept = text.split('\n').filter(line => {
+  const used = new Map<string | null, number>()
+  const kept = text.split('\n').flatMap(line => {
     const m = /^##\s+rig:\s*(\S+)/.exec(line)
     if (m) section = m[1]!
     else if (/^##\s/.test(line)) section = null
-    return section === null || section === rig
+    if (section !== null && section !== rig) return []
+    const was = used.get(section) ?? 0
+    used.set(section, was + line.length + 1)
+    if (was + line.length + 1 <= CORE_BUDGET) return [line]
+    return was <= CORE_BUDGET ? ['- (cut: over the budget; memory search finds the rest)'] : []
   })
   return kept.join('\n').trim()
 }
@@ -268,7 +279,7 @@ export const dreamPrompt = (
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
 The structure, three levels:
-- CORE.md: the lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig (at most 15 lines); a \`## rig: <name>\` section (at most 15 lines each) holds what nearly every run in that rig needs, and only that rig's workers read it.
+- CORE.md: the lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig; a \`## rig: <name>\` section holds what nearly every run in that rig needs, and only that rig's workers read it. Every worker re-reads it on every turn, so each part (the top, each rig section) stays under ${CORE_BUDGET} bytes, one short line per lesson (at most 200 characters: the rule, not its story; the story goes in a note). Briefs cut a part at that budget, so what is past it is lost to them: move detail into topic notes, which search finds.
 - <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
 - <topic>/<note>.md: one learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
 - inbox/: new notes from workers. Empty it every pass.

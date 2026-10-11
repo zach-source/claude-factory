@@ -47,6 +47,11 @@ export type Factory = {
   backoffSec?: number
   /** worker launches a run may make before it pages the manager (default 20); RETRY and every timed edge grant as many again */
   maxSteps?: number
+  /**
+   * thousands of tokens a Claude worker's context may reach before it is asked to commit and hand off to a
+   * fresh worker (default 200): every turn re-reads the whole context, so a long session costs quadratically
+   */
+  maxContextK?: number
   /** house rules every worker's brief carries */
   rules?: string
   nodes: Record<string, Node>
@@ -118,6 +123,8 @@ export type Ev = At &
     | { type: 'RESUMED'; seq: number; pane: string }
     | { type: 'DONE'; seq: number; outcome: string; summary: string }
     | { type: 'FAIL'; seq: number; reason: string }
+    /** the worker's context grew too long: a fresh worker carries on from its notes, spending no attempt */
+    | { type: 'HANDOFF'; seq: number; summary: string }
     /** the worker waits on something outside the run (a person, another run, a review): park, spend no attempt */
     | { type: 'BLOCKED'; seq: number; reason: string }
     | { type: 'MAIL'; from: string; to: string; text: string }
@@ -128,6 +135,8 @@ export type Ev = At &
   )
 
 export const RESERVED = new Set(['done', 'aborted', 'manager', 'fail'])
+/** outcomes every worker can report, which no station may define */
+export const WORKER_OUTCOMES = ['fail', 'blocked', 'handoff']
 
 const PARAM = /\{([a-z][a-z0-9_]*)\}/g
 /** a worker command with its {name}s filled in; a name `params` lacks stays as it is */
@@ -153,7 +162,7 @@ export function validate(def: Factory): Factory {
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
-          (outcome === 'fail' || outcome === 'blocked') && `${id}: outcome "${outcome}" is reserved`,
+          WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&
             !ids.includes(edgeTo(edge)) &&
             `${id}: outcome "${outcome}" goes to unknown node "${edgeTo(edge)}"`,
@@ -345,6 +354,20 @@ export function compile(def: Factory) {
                 }),
               })),
             ],
+            HANDOFF: {
+              guard: isCurrent,
+              target: 'working',
+              reenter: true, // a fresh worker: entry bumps seq and clears the pane
+              actions: assign(({ context, event }) => {
+                const { summary, at } = event as Extract<Ev, { type: 'HANDOFF' }>
+                return {
+                  log: [
+                    ...context.log,
+                    { node: id, attempt: context.attempt, outcome: 'handoff', summary, at },
+                  ],
+                }
+              }),
+            },
             BLOCKED: {
               guard: isCurrent,
               target: 'waiting',

@@ -6,6 +6,7 @@ import {
   add,
   close,
   compact,
+  CORE_BUDGET,
   coreFor,
   format,
   inboxCount,
@@ -147,3 +148,16 @@ test('adding what a note already says finds that note', async () => {
     }),
   ).toBeNull()
 }, 60_000)
+
+test('each part of CORE.md is cut at its budget, so it cannot grow every brief', () => {
+  const long = (tag: string) =>
+    Array.from({ length: 40 }, (_, i) => `- ${tag} lesson ${i} ${'x'.repeat(100)}`)
+  const core = [...long('top'), '## rig: web', ...long('web'), '## rig: api', ...long('api')].join('\n')
+  const brief = coreFor(core, 'web')
+  expect(brief).toContain('top lesson 0')
+  expect(brief).toContain('web lesson 0')
+  expect(brief).not.toContain('api lesson')
+  expect(brief).not.toContain('top lesson 39')
+  expect(brief.match(/cut: over the budget/g)).toHaveLength(2)
+  expect(brief.length).toBeLessThan(2 * CORE_BUDGET + 200)
+})

@@ -6,6 +6,16 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Lean workers: a Claude worker runs on its own settings (the user's hooks and environment only),
+  a short worker system prompt and the tools workers use, leaving out the user's plugins, agents,
+  skills, global CLAUDE.md and connectors. A worker's first turn dropped from ~75k tokens of
+  context to ~25k, and every turn carries the difference. `FACTORY_LEAN=0` turns it off.
+- Handoff: past `maxContextK` (200k) a Claude worker is asked to commit and report `handoff` with
+  notes, and a fresh worker carries on at the same station; at 1.25x it is cut off. Implement
+  sessions had reached 567k, re-read on every turn.
+- CORE.md is cut at 2.5 KB a part (its top, each rig's section) in briefs, and the dream keeps it
+  to one short line a lesson; it had grown to 16 KB in every brief.
+- `factory metrics --tokens`: what the live runs' workers spent, by station.
 - A `conflict` or `rework` label on a PR a live run owns (its branch, or linked in its reports) mails
   that run's station instead of starting a second worker on the same branch; `close` aborts that run.
 - A parked station whose linked PRs are all merged or closed wakes on its plain `parkMin` timer, not

@@ -112,3 +112,61 @@ export function render(m: ReturnType<typeof metrics>, title: string) {
     )
   return lines.join('\n')
 }
+
+/** one Claude worker session's spend, from its transcript */
+export type Session = { run: string; node: string; turns: number; tokens: number; out: number; peak: number }
+
+/**
+ * a transcript's spend: every turn re-sends its context (input, cache writes and reads) and adds its output.
+ * Claude Code writes a turn once per content block, under one message id, so each id counts once
+ */
+export function sessionOf(lines: string[], run: string, nodeOfSeq: (seq: number) => string): Session {
+  const seen = new Set<string>()
+  const s: Session = { run, node: '?', turns: 0, tokens: 0, out: 0, peak: 0 }
+  for (const line of lines) {
+    if (!line) continue
+    let e: { type?: string; message?: { id?: string; content?: unknown; usage?: Record<string, number> } }
+    try {
+      e = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (s.node === '?' && e.type === 'user') {
+      const text =
+        typeof e.message?.content === 'string' ? e.message.content : JSON.stringify(e.message?.content)
+      const m = new RegExp(`${run} (\\d+) <outcome>`).exec(text ?? '') // the brief's report line names its seq
+      if (m) s.node = nodeOfSeq(Number(m[1]))
+    }
+    const u = e.message?.usage
+    if (e.type !== 'assistant' || !u || seen.has(e.message!.id ?? '')) continue
+    seen.add(e.message!.id ?? '')
+    const context =
+      (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0)
+    s.turns++
+    s.tokens += context + (u.output_tokens ?? 0)
+    s.out += u.output_tokens ?? 0
+    s.peak = Math.max(s.peak, context)
+  }
+  return s
+}
+
+const mtok = (n: number) => `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)}M`
+
+/** tokens by station, and per run and per shipped run */
+export function renderTokens(sessions: Session[], shipped: Set<string>) {
+  const total = sessions.reduce((a, s) => a + s.tokens, 0)
+  const runs = new Set(sessions.map(s => s.run))
+  const ofShipped = sessions.filter(s => shipped.has(s.run)).reduce((a, s) => a + s.tokens, 0)
+  const lines = [
+    `tokens: ${mtok(total)} over ${sessions.length} worker sessions in ${runs.size} runs; ${mtok(total / Math.max(1, runs.size))} a run, ${shipped.size ? mtok(ofShipped / shipped.size) : '-'} a shipped run`,
+    '  station      sessions   tokens  median/session  turns/session  peak context',
+  ]
+  const by = Map.groupBy(sessions, s => s.node)
+  for (const [node, ss] of [...by].sort(
+    (a, b) => b[1].reduce((x, s) => x + s.tokens, 0) - a[1].reduce((x, s) => x + s.tokens, 0),
+  ))
+    lines.push(
+      `  ${node.padEnd(12)} ${String(ss.length).padStart(8)}  ${mtok(ss.reduce((a, s) => a + s.tokens, 0)).padStart(7)}  ${mtok(median(ss.map(s => s.tokens))!).padStart(14)}  ${String(Math.round(ss.reduce((a, s) => a + s.turns, 0) / ss.length)).padStart(13)}  ${`${Math.round(Math.max(...ss.map(s => s.peak)) / 1000)}k`.padStart(12)}`,
+    )
+  return lines.join('\n')
+}

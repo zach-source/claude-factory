@@ -310,3 +310,23 @@ test('a station that reports one outcome more than its rounds is held for the ma
     validate({ ...def, nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 0 } } }),
   ).toThrow('rounds is at least 1')
 })
+
+test('a handoff starts a fresh worker at the same station without spending an attempt', () => {
+  const { send } = run()
+  let s = send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 1 })
+  s = send({ type: 'HANDOFF', seq: 1, summary: 'tasks 1-3 done, 4 left', at: 2 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context).toMatchObject({ seq: 2, attempt: 1, pane: null })
+  expect(s.context.log.at(-1)).toMatchObject({
+    node: 'implement',
+    outcome: 'handoff',
+    summary: 'tasks 1-3 done, 4 left',
+  })
+  expect(where(send({ type: 'HANDOFF', seq: 1, summary: 'stale', at: 3 }).value)).toEqual([
+    'implement',
+    'working',
+  ])
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, review: { prompt: 'x', next: { handoff: 'done' } } } }),
+  ).toThrow('outcome "handoff" is reserved')
+})
