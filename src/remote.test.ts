@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
 import { httpsRemote } from './cli'
+import { runnerOf, runners } from './runner'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `remote-${process.pid}`)
@@ -132,4 +133,32 @@ test('a worker waiting on the manager is suspended, and woken by the answer befo
   factory(['tick'])
   const text = Buffer.from('[factory mail from manager] postgres').toString('base64')
   expect(called()).toContain(`-a factory ssh t -- factory worker prompt ${text}`)
+})
+
+test("a worker's address picks its runner: a bare pane id is herdr's, `<name>:` is that runner's", () => {
+  expect(runnerOf('w1-2').name).toBe('herdr')
+  expect(runnerOf('ax:f-r1-1').name).toBe('ax')
+  expect(runnerOf('nope:x').name).toBe('herdr') // not registered: runs in flight keep their herdr behavior
+  expect(Object.keys(runners).sort()).toEqual(['ax', 'herdr'])
+  expect(runners.herdr!.local).toBe(true)
+  expect(runners.ax!.local).toBe(false)
+})
+
+/** a git repo with beads, which is what a rig needs to be defined */
+function repo() {
+  const r = join(dir, 'repo')
+  mkdirSync(join(r, '.beads'), { recursive: true })
+  Bun.spawnSync(['git', '-C', r, 'init', '-q'])
+  return r
+}
+test('rig add --runner names a registered runner, and the error lists them', () => {
+  const r = repo()
+  const bad = factory(['rig', 'add', 'x', r, '--runner', 'nope'])
+  expect(bad.code).not.toBe(0)
+  expect(bad.err).toContain('--runner is herdr, ax (not "nope")')
+  expect(factory(['rig', 'add', 'x', r, '--runner', 'ax']).code).toBe(0)
+  expect(JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0]).toMatchObject({ runner: 'ax' })
+  // herdr is the default: it is not stored
+  expect(factory(['rig', 'add', 'x', r, '--runner', 'herdr']).code).toBe(0)
+  expect(JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0].runner).toBeUndefined()
 })
