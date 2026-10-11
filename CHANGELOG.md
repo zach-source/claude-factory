@@ -6,6 +6,10 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A `conflict` or `rework` label on a PR a live run owns (its branch, or linked in its reports) mails
+  that run's station instead of starting a second worker on the same branch; `close` aborts that run.
+- A parked station whose linked PRs are all merged or closed wakes on its plain `parkMin` timer, not
+  the 8-hour backstop: nothing will change those PRs.
 - A station parked on pull requests (its blocked report links them) is watched with `gh` and mailed
   awake when one is merged, closed or updated, instead of a fresh worker re-checking on a timer;
   the timer backstops it at 8 hours. Deploy re-checks were most of infra-blocks' worker launches.

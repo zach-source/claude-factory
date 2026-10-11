@@ -25,6 +25,7 @@ import {
   extend,
   fill,
   isParked,
+  parkDelayMin,
   prsIn,
   reach,
   unread,
@@ -959,7 +960,7 @@ async function beadsPass() {
     }
     await dispatch()
     await labelPass()
-    watchPass()
+    await watchPass()
   } finally {
     release()
   }
@@ -1509,19 +1510,26 @@ export function labelAction(pr: LabeledPr) {
   if (!reworkLabels(pr).length) return undefined
   return pr.isCrossRepository ? 'fork' : 'rework' // a fork's branch is not ours to push
 }
-export function reworkGoal(pr: LabeledPr) {
-  const asks = reworkLabels(pr).map(name =>
-    name === CONFLICT_LABEL
-      ? 'resolve its merge conflicts'
-      : 'make the changes its reviews and checks ask for',
-  )
-  return `Pull request #${pr.number} (${pr.url}) is stuck, labeled ${reworkLabels(pr).join(' and ')}: ${asks.join(' and ')}. Branch ${pr.headRefName}, base ${pr.baseRefName}.`
-}
+const asksOf = (pr: LabeledPr) =>
+  `labeled ${reworkLabels(pr).join(' and ')}: ${reworkLabels(pr)
+    .map(name =>
+      name === CONFLICT_LABEL
+        ? 'resolve its merge conflicts'
+        : 'make the changes its reviews and checks ask for',
+    )
+    .join(' and ')}`
+export const reworkGoal = (pr: LabeledPr) =>
+  `Pull request #${pr.number} (${pr.url}) is stuck, ${asksOf(pr)}. Branch ${pr.headRefName}, base ${pr.baseRefName}.`
+/** the live run a pull request belongs to: its branch is the run's, or the run's reports link it */
+export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: string; log: Entry[] }[]) =>
+  live.find(r => pr.headRefName === `factory/${r.id}` || r.log.some(e => prsIn(e.summary).includes(pr.url)))
+    ?.id
 
 /**
  * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
- * aborts the run whose branch it is; `conflict` or `rework` starts a rework run when the rig has room, then
- * takes the labels off so it starts one only. Out of the tick, like dispatch.
+ * aborts the live run it belongs to; `conflict` or `rework` mails that run's station (so two workers never
+ * push to one branch), or starts a rework run when no run owns it and the rig has room. The labels then
+ * come off, so each acts once. Out of the tick, like dispatch.
  */
 async function labelPass() {
   const stamp = join(HOME, 'labels.stamp')
@@ -1530,6 +1538,10 @@ async function labelPass() {
   const errors: Row[] = []
   const busy = await busyRigs()
   const fields = 'number,url,headRefName,baseRefName,isCrossRepository,labels'
+  const live = runIds()
+    .map(id => ({ id, ...current(id) }))
+    .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
+    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log }))
   for (const rig of rigs()) {
     const gh = (...args: string[]) => {
       const p = Bun.spawnSync(['gh', ...args], { cwd: rig.repo, timeout: 60_000 })
@@ -1544,9 +1556,7 @@ async function labelPass() {
       )
       for (const pr of labeled) {
         const action = labelAction(pr)
-        const runId = pr.headRefName.startsWith('factory/')
-          ? pr.headRefName.slice('factory/'.length)
-          : undefined
+        const runId = prOwner(pr, live)
         if (action === 'close') {
           gh(
             'pr',
@@ -1555,18 +1565,26 @@ async function labelPass() {
             '--comment',
             `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`,
           )
-          if (
-            runId &&
-            runIds().includes(runId) &&
-            !['done', 'aborted'].includes(where(current(runId).value)[0])
-          )
-            post(runId, { type: 'ABORT' })
+          if (runId) post(runId, { type: 'ABORT' })
           console.log(`${new Date().toISOString()} closed ${pr.url}${runId ? ` (run ${runId})` : ''}`)
         } else if (action === 'fork') {
           errors.push({
             id: `rig:${rig.name}`,
             error: `${pr.url} is labeled ${reworkLabels(pr).join(', ')} but comes from a fork: rework it there`,
           })
+        } else if (action === 'rework' && runId) {
+          const node = live.find(r => r.id === runId)!.node
+          const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
+          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
+          gh('pr', 'edit', String(pr.number), '--remove-label', reworkLabels(pr).join(','))
+          gh(
+            'pr',
+            'comment',
+            String(pr.number),
+            '--body',
+            `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`,
+          )
+          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
         } else if (action === 'rework' && room(rig, busy) > 0) {
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
           busy.push(rig.name)
@@ -1589,10 +1607,28 @@ async function labelPass() {
 }
 
 /**
+ * why a station parked on pull requests should wake, if it should: one was updated after it parked (a merge
+ * or a close updates it too), or none is open, so nothing will change them (a deploy waiting on CI after
+ * the merge, say) and it wakes on the timer it would have had without links
+ */
+export function watchWake(
+  prs: { url: string; state: string; updatedAt: string }[],
+  parkedAt: number,
+  now: number,
+  plainMin: number,
+) {
+  const changed = prs.find(p => Date.parse(p.updatedAt) > parkedAt)
+  if (changed)
+    return `[factory] ${changed.url} changed since you parked: it is ${changed.state.toLowerCase()}, updated ${changed.updatedAt}. Check where it stands now.`
+  if (prs.length && !prs.some(p => p.state === 'OPEN') && now - parkedAt >= plainMin * 60_000)
+    return `[factory] None of the pull requests you linked is open, so they will not change: check again whether what you wait on is done.`
+}
+
+/**
  * a station parked on pull requests (its blocked report links them) is woken by mail when one is updated
  * after it parked: merged, closed, reviewed, commented on or pushed to. A gh call each instead of a worker each re-check.
  */
-function watchPass() {
+async function watchPass() {
   const stamp = join(HOME, 'watch.stamp')
   if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < WATCH_MS)) return
   writeFileSync(stamp, '')
@@ -1602,20 +1638,24 @@ function watchPass() {
       const [node, sub] = where(value)
       if (sub !== 'waiting' || !isParked(c, node)) continue
       const parked = c.log.at(-1)!
-      for (const url of prsIn(parked.summary)) {
+      const prs = prsIn(parked.summary).flatMap(url => {
         const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state,updatedAt'], {
           cwd: run.repo,
           timeout: 60_000,
         })
-        if (p.exitCode !== 0) continue // gh down or the PR gone: the park's own timer still wakes it
-        const pr: { state: string; updatedAt: string } = JSON.parse(p.stdout.toString())
-        // a merge or a close updates it too; a PR already merged when it parked (linked as context) never wakes it
-        if (Date.parse(pr.updatedAt) <= parked.at) continue
-        const text = `[factory] ${url} changed since you parked: it is ${pr.state.toLowerCase()}, updated ${pr.updatedAt}. Check where it stands now.`
-        post(id, { type: 'MAIL', from: 'factory', to: node, text })
-        console.log(`${new Date().toISOString()} ${id}: ${url} changed, waking ${node}`)
-        break
-      }
+        // gh down or the PR gone: the park's own timer still wakes it
+        return p.exitCode === 0 ? [{ url, ...JSON.parse(p.stdout.toString()) }] : []
+      })
+      // the plain park this report would have had, had it linked nothing
+      const plainMin = parkDelayMin(
+        { ...c, log: c.log.slice(0, -1) },
+        node,
+        (await loadFactory(run.factory)).nodes[node]?.parkMin ?? 60,
+      )
+      const text = watchWake(prs, parked.at, Date.now(), plainMin)
+      if (!text) continue
+      post(id, { type: 'MAIL', from: 'factory', to: node, text })
+      console.log(`${new Date().toISOString()} ${id}: waking ${node}: ${text}`)
     } catch {
       // removed mid-pass
     }

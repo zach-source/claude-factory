@@ -8,6 +8,7 @@ import {
   haltStep,
   isTrusted,
   labelAction,
+  prOwner,
   loadFactory,
   missingSweeps,
   ownCopy,
@@ -15,6 +16,7 @@ import {
   reapable,
   relaunch,
   reworkGoal,
+  watchWake,
   room,
   withoutFleet,
 } from './cli'
@@ -219,4 +221,31 @@ test("a repo is trusted when Claude's trust dialog was accepted for it or a fold
   expect(isTrusted('/a/b/c', dir)).toBe(true)
   expect(isTrusted('/x/y', dir)).toBe(false)
   expect(isTrusted('/z', dir)).toBe(false)
+})
+
+test('a labeled PR belongs to the live run whose branch it is or whose reports link it', () => {
+  const url = 'https://github.com/o/r/pull/21'
+  const log = (summary: string) => [{ node: 'review', attempt: 1, outcome: 'changes', summary, at: 1 }]
+  const live = [
+    { id: 'a', log: log('PR https://github.com/o/r/pull/212 needs work') }, // #212 is not #21
+    { id: 'b', log: log(`PR ${url} has 3 findings`) },
+  ]
+  expect(prOwner({ url, headRefName: 'fix/x' }, live)).toBe('b')
+  expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'factory/a' }, live)).toBe('a')
+  expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'fix/x' }, live)).toBeUndefined()
+})
+
+test('a watched park wakes when a PR changes, or on the plain timer once none is open', () => {
+  const pr = (state: string, updatedAt: string) => ({
+    url: 'https://github.com/o/r/pull/1',
+    state,
+    updatedAt,
+  })
+  const at = Date.parse('2026-10-11T10:00:00Z')
+  expect(watchWake([pr('OPEN', '2026-10-11T09:00:00Z')], at, at + 9 * 3600_000, 60)).toBeUndefined()
+  expect(watchWake([pr('MERGED', '2026-10-11T10:05:00Z')], at, at + 600_000, 60)).toContain('it is merged')
+  // merged before it parked (a deploy waiting on CI after the merge): the plain timer, not 8h
+  expect(watchWake([pr('MERGED', '2026-10-11T09:00:00Z')], at, at + 30 * 60_000, 60)).toBeUndefined()
+  expect(watchWake([pr('MERGED', '2026-10-11T09:00:00Z')], at, at + 60 * 60_000, 60)).toContain('None of')
+  expect(watchWake([], at, at + 9 * 3600_000, 60)).toBeUndefined() // gh could not say: the backstop wakes it
 })

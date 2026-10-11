@@ -182,14 +182,19 @@ Every 2 minutes the factory checks each rig's open pull requests for the labels
 pr-merger's review buttons put on them, which only label and leave the
 acting to a later bot:
 
-- **`close`**: the factory closes the PR with a comment, and aborts the run whose branch it is
-  (`factory/<run>`), which defers its bead.
+A PR belongs to a live run when its branch is the run's (`factory/<run>`) or the run's reports link it.
+
+- **`close`**: the factory closes the PR with a comment, and aborts the run it belongs to, which
+  defers its bead.
 - **`conflict`**: when the rig has room, a [rework](factories/rework.yaml) run merges the base into the
   PR's branch, resolves the conflicts, runs the tests and pushes; the label comes off and a comment names
   the run. A worker that can't tell how to resolve one says so on the PR. A PR from a fork shows as
   the rig's error instead, since its branch is not ours to push.
 - **`rework`**: the same run, for a PR that needs changes: it reads the PR's reviews, comments and
   checks, makes the changes asked for, tests and pushes. A PR with both labels gets one run for both.
+
+A `conflict` or `rework` PR that belongs to a live run goes to that run instead: its current station
+is mailed what the label asks (a parked one wakes), so two workers never push to one branch.
 
 The rework run triages first: a PR that is no longer wanted (already on the base, superseded, or
 rejected in review) gets a comment and the `close` label, and the next pass closes it.
@@ -300,7 +305,8 @@ rows = [
   parks this way on a pull request the repo will only let a person approve or merge. When the
   report links pull requests, the factory watches them (`gh`, every 5 minutes) and mails the
   station once one is merged, closed or updated, instead of launching a worker to look; the
-  timer only backstops that, at 8 hours.
+  timer only backstops that, at 8 hours. When none of them is open (a deploy waiting on CI after
+  the merge), the station wakes on the plain `parkMin` timer instead.
 - **Durable workers**: a worker whose pane dies resumes its own Claude session once
   before falling back to a retry; fresh workers are told what the branch already
   committed. Reports carry the worker's `seq`, so stale and duplicate ones drop.
