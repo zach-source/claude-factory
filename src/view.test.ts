@@ -1,6 +1,18 @@
 // the mod's pure helpers, tested here because the mod's own tests run under `claude plugin test`
 import { expect, test } from 'bun:test'
-import { bar, dur, line, patrol, rigStats, sparkline, track } from '../mod/hooks/view'
+import {
+  bar,
+  dur,
+  line,
+  mailKey,
+  mailTabs,
+  prNeed,
+  patrol,
+  quickAnswer,
+  rigStats,
+  sparkline,
+  track,
+} from '../mod/hooks/view'
 
 test('track folds loops and marks where the run is', () => {
   expect(track(['triage', 'plan', 'implement', 'verify', 'implement'], 'verify')).toEqual([
@@ -70,6 +82,25 @@ test('patrol wakes the manager for mail, a newly blocked worker, or a heartbeat 
   expect(patrol([blocked], [], new Set(first.keys), false)).toBeNull() // reported once per worker
 })
 
+test('patrol sends the board only when it changed, and caps each message', () => {
+  const working = { id: 'r1', node: 'implement', sub: 'working', goal: 'Add /health', since: 1 }
+  const beat = patrol([working], [], new Set(), true)!
+  expect(beat.board).toContain('- r1 at implement/working')
+  const again = patrol([working], [], new Set(), true, [], beat.board)!
+  expect(again.text).toContain('Board and rig goals: unchanged')
+  expect(again.text).not.toContain('Add /health')
+  expect(patrol([{ ...working, node: 'verify' }], [], new Set(), true, [], beat.board)!.text).toContain(
+    'r1 at verify',
+  )
+  const long = patrol(
+    [working],
+    [{ run: 'r1', from: 'plan', text: 'x'.repeat(5000), at: 2 }],
+    new Set(),
+    false,
+  )!
+  expect(long.text.length).toBeLessThan(600)
+})
+
 test("patrol keeps the manager working toward a rig's goal while the rig has room", () => {
   const fab = { name: 'fab', repo: '/r/fab', factory: 'lifecycle', maxRuns: 2, goal: 'finish the features' }
   const run = (id: string, sub: string) => ({ id, rig: 'fab', node: 'implement', sub, goal: id, since: 1 })
@@ -108,4 +139,49 @@ test("a rig's stats count its own runs only, by station, with what needs the per
     aborted: 0,
   })
   expect(rigStats({ name: 'api' }, runs).room).toBeNull() // no cap of its own
+})
+
+test('a quick answer goes to the asking station, or tells the station the run moved on to what it answers', () => {
+  const m = { run: 'r1', from: 'implement', text: 'May I drop the legacy endpoint?', at: 5 }
+  expect(mailKey(m)).toBe('r1@5')
+  expect(quickAnswer(m, { node: 'implement' }, 'approve', '')).toEqual({
+    to: 'implement',
+    text: 'The person approves: go ahead.',
+  })
+  expect(quickAnswer(m, { node: 'implement' }, 'reject', 'keep it a release longer')!.text).toBe(
+    'The person rejects it: do not go ahead. keep it a release longer',
+  )
+  const moved = quickAnswer(m, { node: 'verify' }, 'reply', 'yes, behind a flag')!
+  expect(moved.to).toBe('verify')
+  expect(moved.text).toBe(
+    'About the implement station\'s message "May I drop the legacy endpoint?": The person answers: yes, behind a flag',
+  )
+  expect(quickAnswer(m, { node: 'done' }, 'approve', '')).toBeNull() // nobody would read it
+})
+
+test('mail answered in the console or by mail, reported past, or from an ended run, leaves the not-answered tab', () => {
+  const m = (run: string, at: number) => ({ run, from: 'implement', at, text: '?' })
+  const runs = [
+    { id: 'a', node: 'implement' },
+    { id: 'b', node: 'done' },
+    { id: 'c', node: 'implement', mailedAt: 5 },
+    {
+      id: 'd',
+      node: 'verify',
+      last: { node: 'implement', attempt: 1, outcome: 'ready', summary: '', at: 5 },
+    },
+  ] as Parameters<typeof mailTabs>[1]
+  const mail = [m('a', 1), m('a', 2), m('b', 3), m('c', 4), m('c', 6), m('d', 4)]
+  const { open, answered } = mailTabs(mail, runs, { [mailKey(m('a', 1))]: 'approve' })
+  expect(open).toEqual([m('a', 2), m('c', 6)])
+  expect(answered).toEqual([m('a', 1), m('b', 3), m('c', 4), m('d', 4)])
+})
+
+test('a pull request names what it waits on, worst first', () => {
+  const need = (reviewDecision: string, mergeStateStatus: string) =>
+    prNeed({ reviewDecision, mergeStateStatus }).word
+  expect(need('REVIEW_REQUIRED', 'DIRTY')).toBe('conflicts')
+  expect(need('REVIEW_REQUIRED', 'BLOCKED')).toBe('needs approval')
+  expect(need('APPROVED', 'CLEAN')).toBe('ready to merge')
+  expect(need('', 'BLOCKED')).toBe('blocked by a rule')
 })

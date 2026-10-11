@@ -1,6 +1,17 @@
 import { expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
-import { compile, reach, unread, validate, where, type Ev, type Factory } from './machine'
+import {
+  compile,
+  parkDelayMin,
+  prsIn,
+  reach,
+  unread,
+  validate,
+  where,
+  WATCHED_PARK_MIN,
+  type Ev,
+  type Factory,
+} from './machine'
 
 const def: Factory = {
   name: 'review-loop',
@@ -93,6 +104,16 @@ test('only nudges a worker ignores count: seen working, it starts over', () => {
   expect(s.context).toMatchObject({ nudges: 0, nudgedAt: 300 })
   s = send({ type: 'WORKING', seq: 9, at: 400 }) // a stale worker's activity is not this one's
   expect(s.context.nudgedAt).toBe(300)
+})
+
+test('a worker resumed after a stop gets a new pane and a fresh clock, nudges and resume', () => {
+  const { send } = run()
+  send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 100 })
+  send({ type: 'SPAWNED', seq: 1, pane: 'w1:p2', isResume: true, at: 200 })
+  send({ type: 'NUDGED', seq: 1, at: 300 })
+  const s = send({ type: 'RESUMED', seq: 1, pane: 'w1:p3', at: 9_000 })
+  expect(s.context).toMatchObject({ pane: 'w1:p3', startedAt: 9_000, nudges: 0, resumes: 0 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
 })
 
 test('mail, read, goto, self-loop and abort', () => {
@@ -196,4 +217,116 @@ test('validate rejects broken graphs', () => {
     /"later" needs delayMin > 0[\s\S]*only an edge into done defers[\s\S]*g: has no outcomes[\s\S]*a gate has no worker/,
   )
   expect(validate(def)).toBe(def)
+})
+
+test('a blocked worker parks its station without spending an attempt, and mail or the clock wakes it', () => {
+  const { send } = run()
+  send({ type: 'FAIL', seq: 1, reason: 'flaky', at: 1 })
+  let s = send({ type: 'TICK', at: 20_000 })
+  expect(s.context.attempt).toBe(2) // implement allows 2: one more fail would be stuck
+  s = send({ type: 'BLOCKED', seq: 2, reason: 'PR #7 needs a human approval', at: 30_000 })
+  expect(where(s.value)).toEqual(['implement', 'waiting'])
+  expect(s.context).toMatchObject({ attempt: 2, pane: null, wakeAt: 30_000 + 60 * 60_000 })
+  expect(s.context.mail.manager?.at(-1)?.text).toStartWith('implement is parked, waiting on: PR #7')
+
+  // mail for another station, or the manager, leaves it parked; mail to it wakes a fresh worker at once
+  s = send({ type: 'MAIL', from: 'manager', to: 'review', text: 'fyi', at: 40_000 })
+  expect(where(s.value)).toEqual(['implement', 'waiting'])
+  s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'merged it', at: 50_000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context).toMatchObject({ attempt: 2, seq: 3, wakeAt: 0 })
+  expect(s.context.mail.implement?.at(-1)?.text).toBe('merged it')
+
+  // blocked again: it waits twice as long, then the clock wakes it; the manager already knows it parked
+  const told = s.context.mail.manager?.length
+  s = send({ type: 'BLOCKED', seq: 3, reason: 'still waiting', at: 60_000 })
+  expect(s.context.mail.manager?.length).toBe(told)
+  s = send({ type: 'TICK', at: 60_000 + 60 * 60_000 })
+  expect(where(s.value)).toEqual(['implement', 'waiting'])
+  s = send({ type: 'TICK', at: 60_000 + 120 * 60_000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context.attempt).toBe(2)
+  expect(s.context.log.map(e => e.outcome)).toEqual(['fail', 'blocked', 'blocked'])
+})
+
+test('each blocked report in a row doubles the park, up to 8h', () => {
+  const ctx = (n: number) =>
+    ({
+      log: [{ node: 'plan', outcome: 'ready' }, ...Array(n).fill({ node: 'deploy', outcome: 'blocked' })],
+    }) as never
+  expect([0, 1, 2, 3, 4, 9].map(n => parkDelayMin(ctx(n), 'deploy', 60))).toEqual([
+    60, 120, 240, 480, 480, 480,
+  ])
+  expect(parkDelayMin(ctx(3), 'deploy', 600)).toBe(600)
+})
+
+test('a timed edge is not cut short by mail', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { prompt: 'x', next: { ready: { to: 'review', delayMin: 15 } } } },
+  })
+  const s = send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'built', at: 1 })
+  expect(where(s.value)).toEqual(['review', 'waiting'])
+  expect(where(send({ type: 'MAIL', from: 'manager', to: 'review', text: 'hi', at: 2 }).value)).toEqual([
+    'review',
+    'waiting',
+  ])
+})
+
+test('a station blocked on pull requests parks long: the runner watches them and mails it awake', () => {
+  const pr = 'https://github.com/o/r/pull/7'
+  expect(prsIn(`${pr} needs an approving review; ${pr} again, and o/r#8 is not a link`)).toEqual([pr])
+  const { send } = run()
+  const s = send({ type: 'BLOCKED', seq: 1, reason: `${pr} needs an approving review`, at: 1 })
+  expect(s.context.wakeAt).toBe(1 + WATCHED_PARK_MIN * 60_000)
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('when one of its pull requests changes')
+})
+
+test('a station that reports one outcome more than its rounds is held for the manager', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 2 } },
+  })
+  let seq = 1
+  const round = () => {
+    send({ type: 'DONE', seq: seq++, outcome: 'ready', summary: 'built', at: seq })
+    return send({ type: 'DONE', seq: seq++, outcome: 'changes', summary: 'fix the nil check', at: seq })
+  }
+  expect(where(round().value)).toEqual(['implement', 'working'])
+  expect(where(round().value)).toEqual(['implement', 'working'])
+  const s = round()
+  expect(where(s.value)).toEqual(['review', 'stuck'])
+  expect(s.context.error).toBe('review reported changes more than 2 times')
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('held instead of going to implement')
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('fix the nil check')
+  expect(s.context.log.filter(e => e.outcome === 'changes')).toHaveLength(3)
+  // only the outcome that looped counts: a fresh review that approves goes on
+  expect(where(send({ type: 'RETRY', at: 99 }).value)).toEqual(['review', 'working'])
+  expect(where(send({ type: 'DONE', seq: 7, outcome: 'approve', summary: 'ok', at: 100 }).value)).toEqual([
+    'done',
+    '',
+  ])
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 0 } } }),
+  ).toThrow('rounds is at least 1')
+})
+
+test('a handoff starts a fresh worker at the same station without spending an attempt', () => {
+  const { send } = run()
+  let s = send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 1 })
+  s = send({ type: 'HANDOFF', seq: 1, summary: 'tasks 1-3 done, 4 left', at: 2 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context).toMatchObject({ seq: 2, attempt: 1, pane: null })
+  expect(s.context.log.at(-1)).toMatchObject({
+    node: 'implement',
+    outcome: 'handoff',
+    summary: 'tasks 1-3 done, 4 left',
+  })
+  expect(where(send({ type: 'HANDOFF', seq: 1, summary: 'stale', at: 3 }).value)).toEqual([
+    'implement',
+    'working',
+  ])
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, review: { prompt: 'x', next: { handoff: 'done' } } } }),
+  ).toThrow('outcome "handoff" is reserved')
 })

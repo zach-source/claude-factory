@@ -6,6 +6,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type {
   FactoryBacklog,
+  FactoryPrs,
   FactoryBoard,
   FactoryDetail,
   FactoryDraft,
@@ -23,12 +24,13 @@ import {
   header,
   isLive,
   mailView,
+  prsView,
   newView,
   runView,
   type Actions,
   type UI,
 } from './views'
-import { patrol } from './view'
+import { mailKey, patrol, quickAnswer } from './view'
 
 const PANE = 'factory'
 const TICK_MS = 5000
@@ -40,6 +42,7 @@ const selected = atom({ plugin: 'factory', key: 'selected' } as const, null as s
 const detail = atom({ plugin: 'factory', key: 'detail' } as const, null as FactoryDetail | null)
 const peek = atom({ plugin: 'factory', key: 'peek' } as const, '')
 const backlog = atom({ plugin: 'factory', key: 'backlog' } as const, [] as FactoryBacklog)
+const prs = atom({ plugin: 'factory', key: 'prs' } as const, [] as FactoryPrs)
 /** runs holding a worker, one sample a tick: the header's sparkline */
 const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
 const draft = atom(
@@ -51,9 +54,11 @@ const draft = atom(
     mail: '',
     target: '',
     notes: {},
+    replies: {},
+    answered: {},
   } as FactoryDraft,
 )
-const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'new', 'rigs'])
+const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'prs', 'new', 'rigs'])
 
 const manual = (cli: string) => `## Software factory manager
 You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
@@ -61,6 +66,7 @@ A message starting "[factory] patrol" is your loop. It lists what is new and the
 1. Mail: answer a worker's question yourself (\`mail\`) when the goal, the journal or the factory's memory (\`${cli} memory search <query>\`) settles it; otherwise ask the person and name the run that waits. What the person decides that later runs should follow too, save: \`${cli} memory add "<summary>" "<the decision and why>"\`.
 2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog).
 3. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
+   Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, an admin merge, a decision), ask them and name the pull request; when it is resolved, mail that station and it wakes at once. \`${cli} waiting\` lists everything that waits on the person, with how to answer each: show it when they ask what they owe the factory.
 4. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
 5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: pass --owned only when the person names that bead; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
 6. Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
@@ -92,7 +98,14 @@ const rt = {
   /** blocked workers a patrol already reported */
   seen: new Set<string>(),
   patrolAt: 0,
+  /** when the PRs tab last asked GitHub */
+  prsAt: 0,
+  /** the board and rig goals the manager was last sent, and when */
+  board: undefined as string | undefined,
+  boardAt: 0,
   isPatrolling: false,
+  /** told once that the console sits above the prompt because the layout cannot dock it */
+  isInlineTold: false,
 }
 
 async function factory($: EngineInterface, args: string[]) {
@@ -114,12 +127,14 @@ async function tick($: EngineInterface) {
       runs: FactoryRun[]
       manager: FactoryMail[]
       rigs?: FactoryRig[]
+      halt?: 'stopping' | 'paused'
     }
     if (res.busy) return
     await update($, board, b => ({
       runs: res.runs,
       mail: [...b.mail, ...res.manager].slice(-50),
       rigs: res.rigs ?? [],
+      halt: res.halt,
     }))
     const live = res.runs.filter(isLive)
     const busy = live.filter(r => !r.gate && r.sub !== 'waiting').length
@@ -139,7 +154,9 @@ async function tick($: EngineInterface) {
     if (res.manager.length) $.ui.toast(`factory: ${res.manager.length} message(s) for the manager`)
     if (rt.isAutopilot) {
       rt.unsent.push(...res.manager)
-      await patrolNow($, res.runs, res.rigs ?? [])
+      // paused, nothing should start: only mail wakes the manager, not the heartbeat or a rig's goal
+      if (!res.halt || rt.unsent.length)
+        await patrolNow($, res.halt ? [] : res.runs, res.halt ? [] : (res.rigs ?? []))
     }
   } catch (err) {
     $.ui.status(String(err).slice(0, 80))
@@ -152,12 +169,33 @@ async function tick($: EngineInterface) {
   }
 }
 
+/**
+ * A background fork of the manager inherits its HERDR_PANE_ID and this mod, and would patrol as a second
+ * manager (and its hooks would type into the real manager's pane). Only the session herdr sees running in
+ * the pane patrols; outside herdr, or when herdr can't say, this session does.
+ */
+async function isPaneSession($: EngineInterface) {
+  const r = await $.process.run(['sh', '-c', '[ -n "$HERDR_PANE_ID" ] && herdr pane get "$HERDR_PANE_ID"'], {
+    timeoutMs: 10_000,
+  })
+  try {
+    const owner = JSON.parse(r.stdout).result.pane.agent_session?.value
+    return !owner || owner === (await $.session.id())
+  } catch {
+    return true
+  }
+}
+
 /** wake this session's model to patrol, one patrol at a time */
 async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRig[]) {
   if (rt.isPatrolling) return
+  if (!(await isPaneSession($))) return
   const now = await $.clock.now()
-  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs)
+  // ponytail: the whole board again each hour, so a manager that compacted it away gets it back
+  const last = now - rt.boardAt < 3_600_000 ? rt.board : undefined
+  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last)
   if (!due) return
+  if (due.board !== last) [rt.board, rt.boardAt] = [due.board, now]
   rt.unsent = []
   for (const key of due.keys) rt.seen.add(key)
   rt.patrolAt = now
@@ -201,6 +239,13 @@ async function refresh($: EngineInterface) {
   } else if (shown === 'backlog') {
     const { isOk, out } = await factory($, ['backlog'])
     if (isOk) await update($, backlog, () => JSON.parse(out) as FactoryBacklog)
+  } else if (shown === 'prs') {
+    // ponytail: a gh call per rig, at most once a minute while the tab is open
+    const now = await $.clock.now()
+    if (now - rt.prsAt < 60_000) return
+    rt.prsAt = now
+    const { isOk, out } = await factory($, ['prs'])
+    if (isOk) await update($, prs, () => JSON.parse(out) as FactoryPrs)
   }
 }
 
@@ -219,7 +264,8 @@ async function show($: EngineInterface, next: FactoryView, run?: string) {
     await update($, draft, d => ({ ...d, target: '', mail: '' }))
   }
   await update($, view, () => next)
-  await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40 })
+  // columns: the dock's width beside a fullscreen transcript; rows: its height inline above the prompt
+  await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40, columns: 100 })
   await refresh($)
 }
 
@@ -234,6 +280,34 @@ async function decide($: EngineInterface, run: string, outcome: string) {
     runs: b.runs.map(r => (r.id === run ? { ...r, gate: undefined, agent: `${outcome} decided` } : r)),
   }))
   await update($, draft, d => ({ ...d, notes: { ...d.notes, [run]: '' } }))
+}
+
+/**
+ * the person's quick answer from the mailbox, mailed to the worker. The manager hears of it at its next
+ * patrol, so it does not answer the same question again.
+ */
+async function answer($: EngineInterface, m: FactoryMail, kind: 'approve' | 'reject' | 'reply') {
+  const d = await read($, draft)
+  const key = mailKey(m)
+  const reply = quickAnswer(
+    m,
+    (await read($, board)).runs.find(r => r.id === m.run),
+    kind,
+    d.replies?.[key] ?? '',
+  )
+  if (!reply) return $.ui.toast(`factory: ${m.run} has ended, nobody would read the answer`)
+  if (!(await act($, ['mail', m.run, reply.to, reply.text]))) return
+  rt.unsent.push({
+    run: m.run,
+    from: 'person',
+    text: `answered ${m.from}'s message in the console: ${reply.text}`,
+    at: Date.now(),
+  })
+  await update($, draft, x => ({
+    ...x,
+    replies: { ...x.replies, [key]: '' },
+    answered: Object.fromEntries([...Object.entries(x.answered ?? {}), [key, reply.text]].slice(-100)),
+  }))
 }
 
 async function startRun($: EngineInterface) {
@@ -256,6 +330,7 @@ function actions($: EngineInterface): Actions {
     show: (next, run) => void show($, next, run),
     draft: patch => void update($, draft, d => ({ ...d, ...patch })),
     decide: (run, outcome) => void decide($, run, outcome),
+    answer: (m, kind) => void answer($, m, kind),
     start: () => void startRun($),
     jump: pane => void jump($, pane),
   }
@@ -295,8 +370,8 @@ export const register: Register = (on, options) => {
     // a gate is the person's call: the model may run decide only after they confirm it here
     if (!/\bfactory\s+decide\b/.test(e.command)) return next(pinned)
     const question = `The manager model wants to decide a factory gate: ${e.command.slice(0, 300)}. Allow it?`
-    const answer = await $.ui.ask(question, ['Allow', 'Deny']).catch(() => 'Deny')
-    return answer === 'Allow'
+    const choice = await $.ui.ask(question, ['Allow', 'Deny']).catch(() => 'Deny')
+    return choice === 'Allow'
       ? next(pinned)
       : { deny: 'The person did not confirm this gate decision. Ask them which outcome they want.' }
   })
@@ -313,29 +388,39 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, shown, d, tail, bl, samples, dr, now] = await Promise.all([
+    const [b, shown, d, tail, bl, pr, samples, dr, now] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
       read($, peek),
       read($, backlog),
+      read($, prs),
       read($, history),
       read($, draft),
       $.clock.now(),
     ])
     const p = { ui, act: actions($), width: e.props.bodyColumns, now }
+    // only the fullscreen layout docks a pane beside the chat; herdr, like tmux, defaults to the main screen
+    if (e.props.placement === 'inline' && !rt.isInlineTold) {
+      rt.isInlineTold = true
+      $.ui.toast(
+        'factory: the console docks to the right of the chat only in the fullscreen layout: start Claude with CLAUDE_CODE_NO_FLICKER=1 (and 110+ columns)',
+      )
+    }
     const body =
       shown === 'run'
         ? runView(p, d, tail, dr)
         : shown === 'backlog'
           ? backlogView(p, bl)
           : shown === 'mail'
-            ? mailView(p, b)
-            : shown === 'new'
-              ? newView(p, dr, rt.cwd)
-              : shown === 'rigs'
-                ? rigsView(p, b)
-                : boardView(p, b, dr)
+            ? mailView(p, b, dr)
+            : shown === 'prs'
+              ? prsView(p, pr, b)
+              : shown === 'new'
+                ? newView(p, dr, rt.cwd)
+                : shown === 'rigs'
+                  ? rigsView(p, b)
+                  : boardView(p, b, dr)
     return (
       <Box flexDirection="column">
         {header(p, b, samples, shown)}

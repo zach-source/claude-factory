@@ -14,8 +14,14 @@ bun install
 bin/factory init ~/my-factory   # a new factory: a directory for its rigs and runs
 cd ~/my-factory
 # the manager session, in a herdr pane: a session started in a factory's directory works it
-claude-smart --new --plugin-dir ~/repos/workspaces/claude-factory/mod
+# fullscreen layout: the console docks right of the chat (herdr and tmux default to the main screen)
+# it runs lean (Bash and file tools, no MCP servers, connectors or Chrome: each patrol re-reads every tool
+# definition) and without the herdr-fleet mod, since the runner owns its workers' panes
+~/repos/workspaces/claude-factory/bin/factory manager   # add --resume <session> to bring one back
 ```
+
+Or in one step from a herdr pane: `bin/factory-up [factory-dir] [--resume <session>]` installs deps,
+inits the factory (default `$FACTORY_HOME`, else `~/factory`) if new, and starts its manager.
 
 In the manager session:
 
@@ -73,6 +79,29 @@ A rig's name stands for its repo in every command (`start lifecycle web ...`, `q
 fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). The board tags each run with its rig and the backlog is grouped by rig, with its
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
 redefine a rig with `rig add`; there is one rig per repo.
+
+### Harnesses and MCP servers
+
+A station's worker is a shell command (`agent` on the station, or on the factory). Claude Code,
+Codex and pi all work: herdr tracks each one's status and session, and the runner spells the
+launch, the resume and the MCP config the way that harness expects. `--agent` runs every station
+of a rig with one command, and `--mcp` gives its workers the servers in a Claude-shaped
+`{ "mcpServers": { ... } }` file: `--mcp-config` for Claude, `-c mcp_servers.<name>=…` for Codex.
+pi has no MCP client, so its pane says that the file was not loaded.
+
+A factory's `params` are what its worker commands name as `{name}`: lifecycle's are `claude` (the
+Claude Code launcher, default `claude-smart --new --no-channels`), `exec_model`, `judge_model` and
+`security_model`. A rig sets one with `--param name=value`; otherwise the factory's environment
+can, as `FACTORY_<NAME>` (e.g. `FACTORY_CLAUDE=claude factory loop`); otherwise the default holds.
+The default worker and the dream start from `FACTORY_CLAUDE` too, and its executable is treated
+as Claude.
+
+```sh
+factory rig add web ~/repos/web --agent "codex --dangerously-bypass-approvals-and-sandbox"
+factory rig add api ~/repos/api --agent "pi --model anthropic/claude-sonnet-5" --sweeps none
+factory rig add infra ~/repos/infra --mcp ~/.config/factory/infra-mcp.json
+factory rig add docs ~/repos/docs --param exec_model=claude-haiku-4-5-20251001 --param claude=claude
+```
 
 ## The lifecycle factory
 
@@ -147,6 +176,29 @@ memory/
   the dream is told which named beads have closed and retires what waited on them. The memory is its own git repo, committed before and
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
 
+## Pull request labels
+
+Every 2 minutes the factory checks each rig's open pull requests for the labels
+pr-merger's review buttons put on them, which only label and leave the
+acting to a later bot:
+
+A PR belongs to a live run when its branch is the run's (`factory/<run>`) or the run's reports link it.
+
+- **`close`**: the factory closes the PR with a comment, and aborts the run it belongs to, which
+  defers its bead.
+- **`conflict`**: when the rig has room, a [rework](factories/rework.yaml) run merges the base into the
+  PR's branch, resolves the conflicts, runs the tests and pushes; the label comes off and a comment names
+  the run. A worker that can't tell how to resolve one says so on the PR. A PR from a fork shows as
+  the rig's error instead, since its branch is not ours to push.
+- **`rework`**: the same run, for a PR that needs changes: it reads the PR's reviews, comments and
+  checks, makes the changes asked for, tests and pushes. A PR with both labels gets one run for both.
+
+A `conflict` or `rework` PR that belongs to a live run goes to that run instead: its current station
+is mailed what the label asks (a parked one wakes), so two workers never push to one branch.
+
+The rework run triages first: a PR that is no longer wanted (already on the base, superseded, or
+rejected in review) gets a comment and the `close` label, and the next pass closes it.
+
 ## Beads: planning and execution
 
 In a repo with `.beads/`, beads is the factory's task tracker:
@@ -167,6 +219,10 @@ In a repo with `.beads/`, beads is the factory's task tracker:
   `station:<name>` label starts one at that station.
 - **Sweeps file to the backlog**: incidents and security fixes labeled `factory` start on
   their own; everything else is filed unlabeled for you to prioritize by adding the label.
+- **Sync**: every 5 minutes each rig with a Dolt remote runs `bd sync` (pull, repair, push), so
+  beads and claims from other machines reach dispatch and the factory's reach them. A remote
+  nobody has pushed to yet, or a conflict sync won't settle, shows as the rig's error in the
+  console; seed a new remote once with `bd dolt push`.
 - **Leases**: the run heartbeats its claim every 2 minutes, so a `bd reclaim` reaper never
   takes live work. Without `.beads/`, runs keep task lists in their reports instead.
 
@@ -185,12 +241,48 @@ export default {
 } satisfies Factory
 ```
 
-Per station: `retries` (default 2), `timeoutMin` (60), `agent` (worker command), and
-`gate: true` for a station the person decides instead of a worker. An edge can wait:
+Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
+`rounds` (how many times it may report one outcome in a run before the next such report is held for
+the manager; lifecycle's review has 3), and `gate: true` for a station the person decides instead of a worker. An edge can wait:
 `{ to: 'soak', delayMin: 15 }` parks the run with no worker; `goto` skips the wait.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
-edge refills it, so a sweep loops forever). Edits apply at the next tick.
+edge refills it, so a sweep loops forever), `maxContextK` (200: the context, in thousands of
+tokens, past which a Claude worker hands off to a fresh one). Edits apply at the next tick.
+
+A factory can also be data: `.json`, `.yaml`/`.yml` or `.toml`, the same shape. And it can
+extend another instead of copying it: `extends` names a factory (a path, a file beside it, else a
+built-in), its `nodes` add stations or change only the fields they name (`next` outcome by
+outcome), `params` merge and `rules` append. Adding a station to lifecycle is a new node and one
+rewired outcome, e.g. `.factory/lifecycle.yaml` in a repo (it extends the built-in, not itself):
+
+```yaml
+extends: lifecycle
+nodes:
+  a11y:
+    prompt: Check the change's accessibility against WCAG 2.2 AA. Report "pass", or "fix" with what to change.
+    next: { pass: release, fix: implement }
+  review:
+    next: { approve: a11y } # review's other outcomes stay
+```
+
+`factory check <file>` validates one. A run pins its factory resolved, so a base changed later
+reaches only new runs.
+
+## herdr sidebar
+
+Every tick reports a `$factory` token: on each run's workspace, its station and what holds it
+(`deploy · parked`, `approve · needs you`), and on the manager's workspace the rollup
+(`5 running · 1 need you · 1 parked`). Show it by adding a Space row to herdr's `config.toml`:
+
+```toml
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status"],
+  [{ token = "$factory", rules = [{ contains = "need", fg = "#f38ba8", bold = true }, { contains = "stuck", fg = "#fab387" }, { contains = "parked", fg = "#f9e2af" }] }],
+]
+```
 
 ## How a run behaves
 
@@ -207,9 +299,31 @@ edge refills it, so a sweep loops forever). Edits apply at the next tick.
   without reporting (after two nudges) backs off and retries with a fresh worker.
   Out of retries, the station is stuck and the manager is paged. Stations with
   side effects you never want repeated: `retries: 0`.
+- **Parking**: a worker waiting on something outside the run (a person's decision, a
+  human review or merge, another run) reports `blocked "<what>"`. The run parks at that
+  station with no worker and no attempt spent, the manager is told what it waits for, and
+  a fresh worker checks again after `parkMin` or as soon as the station is mailed. Deploy
+  parks this way on a pull request the repo will only let a person approve or merge. When the
+  report links pull requests, the factory watches them (`gh`, every 5 minutes) and mails the
+  station once one is merged, closed or updated, instead of launching a worker to look; the
+  timer only backstops that, at 8 hours. When none of them is open (a deploy waiting on CI after
+  the merge), the station wakes on the plain `parkMin` timer instead.
 - **Durable workers**: a worker whose pane dies resumes its own Claude session once
   before falling back to a retry; fresh workers are told what the branch already
   committed. Reports carry the worker's `seq`, so stale and duplicate ones drop.
+- **Handoff**: every turn re-reads a session's whole context, so a long session costs
+  quadratically. Past `maxContextK` the runner asks the worker to commit and report
+  `handoff` with notes; a fresh worker at the same station starts from them, spending no
+  attempt. One that keeps going to 1.25x the limit is cut off and handed off anyway; its
+  uncommitted changes stay in the worktree.
+- **Lean workers**: a Claude worker gets its own settings, not the user's: `--setting-sources
+project,local` plus a `--settings` file that keeps only the user's hooks and environment,
+  a short worker system prompt ([src/worker-system.md](src/worker-system.md)) and the tools
+  workers use (MCP tools stay deferred behind ToolSearch; auto memory is off). The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
+  cost ~40k tokens on every turn and are left out; the repo's own CLAUDE.md and settings
+  still apply. `FACTORY_LEAN=0` launches workers with the user's setup again.
+- **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
+  from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
   stays). `start` and `fork` refuse past `FACTORY_MAX_RUNS` (8) runs holding a worker.
@@ -218,9 +332,10 @@ edge refills it, so a sweep loops forever). Edits apply at the next tick.
 
 - Workers run `--dangerously-skip-permissions` by default, each in its own
   worktree. Set `agent` to change that.
-- Claude trusts a worktree through its main repo. Start runs on repos you have
-  already opened in Claude, or each worker stops at the folder-trust dialog (the
-  board shows it as blocked).
+- Claude trusts a worktree through its main repo. A run on a repo Claude does not trust
+  yet starts no worker (it would stop at the folder-trust dialog): the board shows it
+  awaiting trust, the manager is paged once, and `rig add` warns. Run `claude` in the
+  repo once and accept.
 - Station prompts are stack-agnostic and defer to the repo's own CLAUDE.md,
   CONTRIBUTING and CI. Deploy, soak, rollback and monitor need the workers to reach
   your deploy tooling and telemetry (kubectl, gh, the Grafana MCP) the way you do.

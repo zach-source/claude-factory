@@ -21,11 +21,19 @@ export type FactoryRun = {
   trail?: string[]
   since?: number
   wakeAt?: number
+  /** when its current station's box last got mail: a reply to what it asked */
+  mailedAt?: number
 }
 export type FactoryEntry = { node: string; attempt: number; outcome: string; summary: string; at: number }
 export type FactoryMail = { run: string; from: string; text: string; at: number }
 /** the tick's runs and rigs, and the manager's mail so far; rigs is missing in a board saved before rigs were drawn */
-export type FactoryBoard = { runs: FactoryRun[]; mail: FactoryMail[]; rigs?: FactoryRig[] }
+export type FactoryBoard = {
+  runs: FactoryRun[]
+  mail: FactoryMail[]
+  rigs?: FactoryRig[]
+  /** set while `factory stop` winds the workers down, and while the factory stays paused */
+  halt?: 'stopping' | 'paused'
+}
 
 // what `factory show <run>` prints: everything the run view draws
 export type FactoryEdge = { outcome: string; to: string; delayMin?: number; defer?: true }
@@ -69,7 +77,24 @@ export type FactoryBacklog = (FactoryRig & {
   error?: string
 })[]
 
-export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'new' | 'rigs'
+/** each rig's open pull requests from run branches, not drafts (`factory prs`) */
+export type FactoryPrs = {
+  rig: string
+  error?: string
+  prs: {
+    number: number
+    title: string
+    url: string
+    run: string
+    /** APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or '' */
+    reviewDecision: string
+    /** CLEAN, BLOCKED, DIRTY, UNSTABLE, BEHIND, UNKNOWN */
+    mergeStateStatus: string
+    updatedAt: string
+  }[]
+}[]
+
+export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'prs' | 'new' | 'rigs'
 /** what the person has typed and not sent */
 export type FactoryDraft = {
   repo: string
@@ -80,6 +105,14 @@ export type FactoryDraft = {
   target: string
   /** a gate's note, per run */
   notes: Record<string, string>
+  /** what the person is typing back to a worker's mail, per message (mailKey) */
+  replies?: Record<string, string>
+  /** what the person already answered, per message */
+  answered?: Record<string, string>
+  /** the mail view's sub-tab */
+  mailTab?: 'open' | 'answered'
+  /** the board lists finished runs */
+  isFinishedShown?: boolean
 }
 
 declare module 'claude-code' {
@@ -91,6 +124,7 @@ declare module 'claude-code' {
       detail: FactoryDetail | null
       peek: string
       backlog: FactoryBacklog
+      prs: FactoryPrs
       history: number[]
       draft: FactoryDraft
     }

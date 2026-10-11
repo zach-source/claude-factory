@@ -20,11 +20,12 @@ import type { Factory } from '../src/machine'
 // factory is the repo's code: improve's factory lens and postmortems file changes to it, and they ship
 // like any change, through review and approve. Each run follows the version its starting commit holds.
 
-const claude = (model?: string) =>
-  `claude-smart --new --no-channels --dangerously-skip-permissions${model ? ` --model '${model}'` : ''}`
-const SONNET = claude('claude-sonnet-5[1m]') // execution
-const OPUS = claude() // claude-smart's default model: planning, judgment, review
-const FABLE = claude('claude-fable-5') // security and architecture
+// The worker commands name params (below); the runner fills them in from a rig's --param, the
+// environment's FACTORY_<NAME> (FACTORY_CLAUDE, FACTORY_EXEC_MODEL, ...) or these defaults.
+const claude = (model: string) => `{claude} --dangerously-skip-permissions --model '{${model}}'`
+const SONNET = claude('exec_model')
+const OPUS = claude('judge_model')
+const FABLE = claude('security_model')
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
@@ -39,6 +40,12 @@ export default {
   name: 'lifecycle',
   start: 'triage',
   agent: SONNET,
+  params: {
+    claude: 'claude-smart --new --no-channels', // the Claude Code launcher
+    exec_model: 'claude-sonnet-5[1m]', // execution
+    judge_model: 'claude-opus-5-5[1m]', // planning, judgment, review
+    security_model: 'claude-fable-5', // security and architecture
+  },
   backoffSec: 60,
   maxSteps: 24,
   rules,
@@ -100,25 +107,27 @@ Report pinned with the invariants the refactor must keep and the area's coverage
     // ── the inner loop: build it, prove it, review it ────────────────────────
     implement: {
       timeoutMin: 120,
-      prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how.
+      prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line.
+Before you report ready, do what review would: merge origin/main and resolve any conflict; for each new branch, error path and guard, break it and see a test fail; check each claim you wrote in a doc, ADR or docstring against the code, and run each command you documented exactly as written. Say in the summary that you did.
 For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, mail the manager the question and wait for the answer.
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
       next: { ready: 'verify', abandon: 'done' },
     },
     verify: {
-      timeoutMin: 60,
+      timeoutMin: 75,
       prompt: `Check the branch independently; trust no earlier report and change no code.
-Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green. For a change to .factory/, run the factory check on every changed file.
+Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. Then try to fail it as review would: \`git merge-tree\` it against origin/main (a conflict is red); break each new guard or comparison and see a test fail; check that each fixture can occur in real data, each claim in a changed doc matches the code, and each documented command runs as written. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green. For a change to .factory/, run the factory check on every changed file.
 Report green with the evidence, or red with a numbered list of every failure and how to reproduce it, each also recorded as a bug task of this run (see Tracking).`,
       next: { green: 'review', red: 'implement' },
     },
     review: {
       agent: OPUS,
       timeoutMin: 45,
+      rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 Post the review on the pull request: push the branch and open it as a draft if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
-Report approve; changes with a numbered list of exactly what to fix, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link.`,
+Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link.`,
       next: { approve: 'release', changes: 'implement', security: 'security' },
     },
     security: {
@@ -132,7 +141,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
 
     // ── the outer loop: ship it, watch it, undo it ───────────────────────────
     release: {
-      timeoutMin: 60,
+      timeoutMin: 75,
       prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and update the pull request review opened (open one if there is none) and mark it ready for review. Its description carries the plan's summary, the verification evidence and the rollback plan. Wait for CI and read every failing check.
 Report ready with the pull request link, the CI status and exactly what shipping will do; or red with the failures.`,
       next: { ready: 'approve', red: 'implement' },
@@ -148,7 +157,8 @@ Report ready with the pull request link, the CI status and exactly what shipping
       timeoutMin: 90,
       prompt: `Ship the approved pull request the repo's way. First check what is already done (merged? tagged? deployed?) and do only what is not.
 Before the change lands, record the production baseline it will be compared against: error rate, latency, saturation and cost signals. Then merge, tag or publish, run or watch the deploy pipeline to the end, verify the rollout (for example kubectl rollout status) and run a smoke check.
-Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a change to .factory/ only, which runs started from now on follow); failed when the rollout did not complete.`,
+Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a change to .factory/ only, which runs started from now on follow); failed when the rollout did not complete.
+When the pull request cannot land yet because the repo wants something only a person can give (an approving review, an admin merge, a required check a human runs), or a queue or another release holds it, do not report failed: nothing has reached production. Report blocked with the pull request link and exactly what it waits for, so the person is asked; you are woken to check again.`,
       next: { deployed: { to: 'soak', delayMin: 15 }, published: 'done', failed: 'rollback' },
     },
     soak: {

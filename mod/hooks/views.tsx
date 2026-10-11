@@ -4,15 +4,17 @@ import type { Elements } from 'claude-code'
 
 import type {
   FactoryBacklog,
+  FactoryPrs,
   FactoryBead,
   FactoryBoard,
   FactoryDetail,
   FactoryDraft,
   FactoryEdge,
+  FactoryMail,
   FactoryRun,
   FactoryView,
 } from '../types'
-import { bar, clockOf, dur, line, rigStats, sparkline, track } from './view'
+import { bar, clockOf, dur, line, mailKey, mailTabs, prNeed, rigStats, sparkline, track } from './view'
 
 /** what every surface the console draws on has; mobile has no Input or Select */
 export type UI = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button' | 'Code'> &
@@ -24,6 +26,8 @@ export type Actions = {
   show: (view: FactoryView, run?: string) => void
   draft: (patch: Partial<FactoryDraft>) => void
   decide: (run: string, outcome: string) => void
+  /** the person's quick answer to a worker's mail: approve, reject, or what they typed */
+  answer: (m: FactoryMail, kind: 'approve' | 'reject' | 'reply') => void
   start: () => void
   jump: (pane: string) => void
 }
@@ -65,6 +69,7 @@ const TABS: [FactoryView, string, string][] = [
   ['mail', 'Mail', '4'],
   ['new', 'New run', '5'],
   ['rigs', 'Rigs', '6'],
+  ['prs', 'PRs', '7'],
 ]
 
 function rule({ ui, width }: Base, title: string, note = '') {
@@ -157,7 +162,19 @@ export function header(p: Base, board: FactoryBoard, history: number[], view: Fa
         {stat(gates, 'yellow', 'awaiting you')}
         {stat(stuck, 'red', 'stuck')}
         {stat(waiting, 'blue', 'waiting')}
-        {live.length === 0 && <Text dimColor>idle</Text>}
+        {live.length === 0 && !board.halt && <Text dimColor>idle</Text>}
+        {board.halt && (
+          <Text bold color="yellow">
+            {board.halt === 'paused' ? '⏸ paused' : '… stopping'}
+          </Text>
+        )}
+        {board.halt ? (
+          <Button key="halt-resume" label="resume" variant="primary" onPress={() => p.act.cli('resume')} />
+        ) : (
+          live.length > 0 && (
+            <Button key="halt-stop" label="stop" dimColor onPress={() => p.act.cli('stop')} />
+          )
+        )}
       </Box>
       <Box gap={1}>
         {TABS.map(([v, label, key]) => (
@@ -230,7 +247,8 @@ function card(p: Base, r: FactoryRun, draft: FactoryDraft) {
 export function boardView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   const { Box, Text, Button } = p.ui
   const live = board.runs.filter(isLive).sort((a, b) => urgency(a) - urgency(b))
-  const over = board.runs.filter(r => !isLive(r))
+  // newest first; the rest stay until `factory rm`
+  const over = board.runs.filter(r => !isLive(r)).sort((a, b) => (b.last?.at ?? 0) - (a.last?.at ?? 0))
   if (!board.runs.length)
     return (
       <Box key="board" flexDirection="column">
@@ -241,8 +259,21 @@ export function boardView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   return (
     <Box key="board" flexDirection="column">
       {live.map(r => card(p, r, draft))}
-      {over.length > 0 && rule(p, 'Finished', String(over.length))}
-      {over.map(r => (
+      {over.length > 0 && (
+        <Box gap={1}>
+          {rule({ ...p, width: p.width - 8 }, 'Finished', String(over.length))}
+          <Button
+            key="finished-toggle"
+            label={draft.isFinishedShown ? 'hide' : 'show'}
+            dimColor
+            onPress={() => p.act.draft({ isFinishedShown: !draft.isFinishedShown })}
+          />
+        </Box>
+      )}
+      {draft.isFinishedShown && over.length > 10 && (
+        <Text dimColor>the last 10 of {String(over.length)}</Text>
+      )}
+      {(draft.isFinishedShown ? over.slice(0, 10) : []).map(r => (
         <Box key={`over-${r.id}`} gap={1}>
           <Text color={standing(r, p.now).color}>{r.node === 'done' ? '✓' : r.node ? '✗' : '!'}</Text>
           <Text bold>{r.id}</Text>
@@ -557,12 +588,78 @@ export function rigsView(p: Base, board: FactoryBoard) {
   )
 }
 
-export function mailView(p: Base, board: FactoryBoard) {
+/** the answers a person gives a worker's mail in one keypress, or a gate's own outcomes */
+function quickAnswers(
+  p: Base,
+  m: FactoryMail,
+  r: FactoryRun | undefined,
+  draft: FactoryDraft,
+  isNewest: boolean,
+) {
+  const { Box, Text, Button, Input } = p.ui
+  const key = mailKey(m)
+  const done = draft.answered?.[key]
+  if (done) return <Text dimColor>✓ you: {line(done, 200)}</Text>
+  if (!r || !isLive(r)) return <Text dimColor>the run has ended</Text>
+  // a gate's question is answered by deciding it
+  if (r.gate && r.node === m.from)
+    // one gate, one set of buttons: an earlier message from it points at the newest
+    return isNewest ? gate(p, r, draft) : <Text dimColor>answer it at its newest message above</Text>
+  const typed = draft.replies?.[key] ?? ''
+  return (
+    <Box flexDirection="column">
+      {Input && (
+        <Input
+          key={`reply-${key}`}
+          placeholder="feedback for the worker (optional with approve or reject)"
+          value={typed}
+          onInput={v => p.act.draft({ replies: { ...draft.replies, [key]: v } })}
+          onSubmit={v => {
+            p.act.draft({ replies: { ...draft.replies, [key]: v } })
+            if (v.trim()) p.act.answer(m, 'reply')
+          }}
+        />
+      )}
+      <Box gap={1}>
+        <Button
+          key={`approve-${key}`}
+          label="approve"
+          variant="primary"
+          onPress={() => p.act.answer(m, 'approve')}
+        />
+        <Button key={`reject-${key}`} label="reject" onPress={() => p.act.answer(m, 'reject')} />
+        {Input && typed.trim() && (
+          <Button key={`send-${key}`} label="send feedback" onPress={() => p.act.answer(m, 'reply')} />
+        )}
+      </Box>
+    </Box>
+  )
+}
+
+export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   const { Box, Text, Button } = p.ui
-  const mail = [...board.mail].reverse()
+  const tabs = mailTabs(board.mail, board.runs, draft.answered)
+  const tab = draft.mailTab ?? 'open'
+  const mail = [...tabs[tab]].reverse()
+  // oldest first, so each run and station keeps its newest message's key
+  const newest = new Set(new Map(board.mail.map(m => [`${m.run}/${m.from}`, mailKey(m)])).values())
   return (
     <Box key="mail" flexDirection="column">
-      {mail.length === 0 && <Text dimColor>No mail for the manager yet.</Text>}
+      <Box gap={1} marginBottom={1}>
+        {(['open', 'answered'] as const).map(t => (
+          <Button
+            key={`mail-tab-${t}`}
+            label={`${t === 'open' ? 'not answered' : 'answered'} (${tabs[t].length})`}
+            plain
+            variant={tab === t ? 'primary' : undefined}
+            dimColor={tab !== t}
+            onPress={() => p.act.draft({ mailTab: t })}
+          />
+        ))}
+      </Box>
+      {mail.length === 0 && (
+        <Text dimColor>{tab === 'open' ? 'Nothing waits on your answer.' : 'Nothing answered yet.'}</Text>
+      )}
       {mail.map(m => (
         <Box key={`mail-${m.run}-${m.at}`} flexDirection="column" marginBottom={1}>
           <Box gap={1}>
@@ -577,6 +674,62 @@ export function mailView(p: Base, board: FactoryBoard) {
             />
           </Box>
           <Text wrap="wrap">{line(m.text, 800)}</Text>
+          {quickAnswers(
+            p,
+            m,
+            board.runs.find(r => r.id === m.run),
+            draft,
+            newest.has(mailKey(m)),
+          )}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
+/** the factory's open pull requests by rig, each with what it waits on and where its run stands */
+export function prsView(p: Base, rigs: FactoryPrs, board: FactoryBoard) {
+  const { Box, Text, Button } = p.ui
+  if (!rigs.length)
+    return (
+      <Text key="prs" dimColor>
+        Asking GitHub…
+      </Text>
+    )
+  return (
+    <Box key="prs" flexDirection="column">
+      {rigs.map(rig => (
+        <Box key={`prs-${rig.rig}`} flexDirection="column" marginBottom={1}>
+          {rule(p, rig.rig, String(rig.prs.length))}
+          {rig.error && <Text color="red">! {line(rig.error, 200)}</Text>}
+          {!rig.error && rig.prs.length === 0 && <Text dimColor>no open pull requests from runs</Text>}
+          {rig.prs.map(pr => {
+            const need = prNeed(pr)
+            const r = board.runs.find(x => x.id === pr.run)
+            return (
+              <Box key={`pr-${rig.rig}-${pr.number}`} flexDirection="column">
+                <Box gap={1}>
+                  <Text bold>#{String(pr.number)}</Text>
+                  <Text color={need.color}>{need.word}</Text>
+                  <Text wrap="truncate-end">{pr.title}</Text>
+                </Box>
+                <Box gap={1}>
+                  <Text dimColor>{pr.url}</Text>
+                  {r && isLive(r) ? (
+                    <Button
+                      key={`pr-open-${pr.run}`}
+                      label={`${r.gate ? 'decide' : r.node} ›`}
+                      dimColor={!r.gate}
+                      variant={r.gate ? 'primary' : undefined}
+                      onPress={() => p.act.show('run', r.id)}
+                    />
+                  ) : (
+                    <Text dimColor>run {r ? 'ended' : 'removed'}</Text>
+                  )}
+                </Box>
+              </Box>
+            )
+          })}
         </Box>
       ))}
     </Box>
@@ -630,7 +783,7 @@ export function newView(p: Base, draft: FactoryDraft, cwd: string) {
 
 export function footer(p: Base) {
   const { Text } = p.ui
-  return <Text dimColor>1-6 views · tab between controls · enter presses · esc back to the prompt</Text>
+  return <Text dimColor>1-7 views · tab between controls · enter presses · esc back to the prompt</Text>
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */

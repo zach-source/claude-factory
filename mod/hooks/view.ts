@@ -1,5 +1,5 @@
 // Pure layout helpers for the factory console: no `$`, no elements.
-import type { FactoryMail, FactoryRig, FactoryRun } from '../types'
+import type { FactoryMail, FactoryPrs, FactoryRig, FactoryRun } from '../types'
 
 /** one station on a run's path: how often it ran, and whether the run is there now */
 export type Stop = { id: string; runs: number; isCurrent: boolean }
@@ -56,7 +56,51 @@ export const clockOf = (ms: number) =>
 
 const blockKey = (r: FactoryRun) => `${r.id}:${r.node}:${r.since}`
 
-const isRunLive = (r: FactoryRun) => !!r.node && r.node !== 'done' && r.node !== 'aborted'
+/** one manager message, across ticks: a run's mail is told apart by when it was sent */
+export const mailKey = (m: Pick<FactoryMail, 'run' | 'at'>) => `${m.run}@${m.at}`
+
+/** mail the person still owes an answer, and mail done with: answered (in the console, by mail, or by a report since), or its run has ended */
+export function mailTabs(
+  mail: readonly FactoryMail[],
+  runs: readonly FactoryRun[],
+  answered: Record<string, string> = {},
+) {
+  const byId = new Map(runs.map(r => [r.id, r]))
+  const isDone = (m: FactoryMail) => {
+    const r = byId.get(m.run)
+    if (answered[mailKey(m)] || !r?.node || r.node === 'done' || r.node === 'aborted') return true
+    // the run reported since (the asker carried on, or a gate was decided), or its station was mailed back
+    return (r.last?.at ?? 0) > m.at || (r.node === m.from && (r.mailedAt ?? 0) > m.at)
+  }
+  return { open: mail.filter(m => !isDone(m)), answered: mail.filter(isDone) }
+}
+
+/**
+ * the person's quick answer to a worker's mail, and the mailbox it goes to: the asking station's, or the
+ * station the run has moved on to, told what it answers. null when the run is over and nobody would read it.
+ */
+export function quickAnswer(
+  m: FactoryMail,
+  run: Pick<FactoryRun, 'node'> | undefined,
+  kind: 'approve' | 'reject' | 'reply',
+  note: string,
+) {
+  if (!run || !isRunLive(run)) return null
+  const said = note.trim()
+  const text =
+    kind === 'approve'
+      ? `The person approves: go ahead.${said ? ` ${said}` : ''}`
+      : kind === 'reject'
+        ? `The person rejects it: do not go ahead.${said ? ` ${said}` : ''}`
+        : `The person answers: ${said}`
+  const to = run.node === m.from ? m.from : run.node!
+  return {
+    to,
+    text: to === m.from ? text : `About the ${m.from} station's message "${line(m.text, 120)}": ${text}`,
+  }
+}
+
+const isRunLive = (r: Pick<FactoryRun, 'node'>) => !!r.node && r.node !== 'done' && r.node !== 'aborted'
 /** a run holding a worker: neither waiting on a timer nor at a gate */
 const isBusy = (r: FactoryRun) => isRunLive(r) && r.sub !== 'waiting' && !r.gate
 
@@ -82,7 +126,8 @@ export function rigStats(rig: Pick<FactoryRig, 'name' | 'maxRuns'>, runs: readon
  * The manager's loop: what to wake this session's model with, or null when nothing calls for it.
  * New mail and newly blocked workers wake it at once; `isDue` adds a heartbeat while any worker runs
  * or a rig with a goal has room for more runs. `keys` are the blocked workers this patrol reports,
- * for the caller to remember in `seen`.
+ * for the caller to remember in `seen`. The board and rig goals are sent only when they differ from
+ * `lastBoard`, the `board` an earlier patrol returned: every patrol stays in the manager's context.
  */
 export function patrol(
   runs: readonly FactoryRun[],
@@ -90,6 +135,7 @@ export function patrol(
   seen: ReadonlySet<string>,
   isDue: boolean,
   rigs: readonly FactoryRig[] = [],
+  lastBoard?: string,
 ) {
   const live = runs.filter(isRunLive)
   const blocked = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
@@ -99,18 +145,15 @@ export function patrol(
   const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
   if (!mail.length && !blocked.length && !(isDue && (isWorking || hasRoom))) return null
   const news = [
-    ...mail.map(m => `- ${m.run} / ${m.from}: ${m.text}`),
+    // the whole report is a `factory show` away; a parked station's can run to pages
+    ...mail.map(m => `- ${m.run} / ${m.from}: ${line(m.text, 300)}`),
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
   ]
   const board = live.map(
     r =>
       `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : ''}: ${line(r.goal ?? '', 100)}`,
   )
-  const text = [
-    '[factory] patrol',
-    news.length
-      ? `New:\n${news.join('\n')}`
-      : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
+  const state = [
     board.length ? `Board:\n${board.join('\n')}` : 'Board: no runs.',
     ...(goals.length
       ? [
@@ -120,5 +163,24 @@ export function patrol(
         ]
       : []),
   ].join('\n')
-  return { text, keys: blocked.map(blockKey) }
+  const text = [
+    '[factory] patrol',
+    news.length
+      ? `New:\n${news.join('\n')}`
+      : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
+    state === lastBoard ? 'Board and rig goals: unchanged since the last patrol.' : state,
+  ].join('\n')
+  return { text, keys: blocked.map(blockKey), board: state }
+}
+
+/** what an open pull request waits on, worst first: conflicts, failing checks, a review, then the merge */
+export function prNeed(pr: Pick<FactoryPrs[number]['prs'][number], 'reviewDecision' | 'mergeStateStatus'>) {
+  if (pr.mergeStateStatus === 'DIRTY') return { word: 'conflicts', color: 'red' }
+  if (pr.reviewDecision === 'CHANGES_REQUESTED') return { word: 'changes requested', color: 'red' }
+  if (pr.mergeStateStatus === 'UNSTABLE') return { word: 'checks failing', color: 'yellow' }
+  if (pr.mergeStateStatus === 'BEHIND') return { word: 'behind its base', color: 'yellow' }
+  if (pr.reviewDecision === 'REVIEW_REQUIRED') return { word: 'needs approval', color: 'yellow' }
+  if (pr.mergeStateStatus === 'CLEAN') return { word: 'ready to merge', color: 'green' }
+  if (pr.mergeStateStatus === 'BLOCKED') return { word: 'blocked by a rule', color: 'yellow' }
+  return { word: 'checking', color: 'gray' }
 }

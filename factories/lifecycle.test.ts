@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import { createActor } from 'xstate'
-import { compile, where, type Factory } from '../src/machine'
+import { compile, validate, where, type Factory } from '../src/machine'
 import lifecycle from './lifecycle'
 
 /** drives a run by outcomes (waking it from any timed wait) and returns the stations it visited */
@@ -25,7 +25,7 @@ function walk(def: Factory, outcomes: string[], at = 'triage') {
 test('every factory in factories/ compiles', async () => {
   const files = readdirSync(import.meta.dir).filter(f => f.endsWith('.ts') && !f.endsWith('.test.ts'))
   expect(files).toContain('lifecycle.ts')
-  for (const file of files) compile((await import(`./${file}`)).default)
+  for (const file of files) compile(validate((await import(`./${file}`)).default))
 })
 
 test('build: inner loops, a security review, the approval gate, a soak', () => {

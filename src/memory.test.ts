@@ -4,12 +4,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   add,
+  close,
   compact,
+  CORE_BUDGET,
+  coreFor,
   format,
   inboxCount,
   outline,
   parse,
   rank,
+  same,
   search,
   usage,
   usageLines,
@@ -96,4 +100,64 @@ test('usage follows a note the dream files, and is dropped with a note it remove
     '- beads/lock.md: helped 1, shown 2, last used 2026-10-06',
     '- beads/unused.md: never shown',
   ])
+})
+
+test('a search keeps the matches and drops the filler after them', () => {
+  const r = (score: number) => ({ score })
+  expect(close([r(0.88), r(0.87), r(0.7), r(0.65)], 5)).toEqual([r(0.88), r(0.87)])
+  expect(close([r(0.65), r(0.62), r(0.58)], 5)).toEqual([r(0.65), r(0.62)]) // weak, but above the floor
+  expect(close([r(0.5)], 5)).toEqual([])
+})
+
+test("each rig's workers read the core for every rig and their own rig's section only", () => {
+  const core = [
+    '- verify before you report',
+    '## rig: web',
+    '- npm, not yarn',
+    '## rig: api',
+    '- uv run --frozen',
+    '## Why',
+    '- notes',
+  ].join('\n')
+  expect(coreFor(core, 'web')).toBe(
+    ['- verify before you report', '## rig: web', '- npm, not yarn', '## Why', '- notes'].join('\n'),
+  )
+  expect(coreFor(core)).toBe(['- verify before you report', '## Why', '- notes'].join('\n'))
+})
+
+test('adding what a note already says finds that note', async () => {
+  const dir = join(tmpdir(), `memory-same-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  add(dir, {
+    summary: 'fabriek has no CHANGELOG file or per-PR version bump convention',
+    body: 'checked the whole history',
+    rig: 'fabriek',
+  })
+  add(dir, { summary: 'kubectl rollout status confirms a deploy finished', body: '' })
+  const dup = await same(dir, {
+    summary: 'no changelog or version bump convention exists in fabriek',
+    rig: 'fabriek',
+  })
+  expect(dup?.note.summary).toContain('CHANGELOG')
+  expect(await same(dir, { summary: 'the dashboard CSP is default-src self', rig: 'fabriek' })).toBeNull()
+  // another rig's note is not this rig's lesson
+  expect(
+    await same(dir, {
+      summary: 'no changelog or version bump convention exists in fabriek',
+      rig: 'api',
+    }),
+  ).toBeNull()
+}, 60_000)
+
+test('each part of CORE.md is cut at its budget, so it cannot grow every brief', () => {
+  const long = (tag: string) =>
+    Array.from({ length: 40 }, (_, i) => `- ${tag} lesson ${i} ${'x'.repeat(100)}`)
+  const core = [...long('top'), '## rig: web', ...long('web'), '## rig: api', ...long('api')].join('\n')
+  const brief = coreFor(core, 'web')
+  expect(brief).toContain('top lesson 0')
+  expect(brief).toContain('web lesson 0')
+  expect(brief).not.toContain('api lesson')
+  expect(brief).not.toContain('top lesson 39')
+  expect(brief.match(/cut: over the budget/g)).toHaveLength(2)
+  expect(brief.length).toBeLessThan(2 * CORE_BUDGET + 200)
 })
