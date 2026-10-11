@@ -123,23 +123,24 @@ export function egressCA() {
 }
 
 /**
- * a worker's EgressPolicy: HTTPS to Anthropic and GitHub and nothing else. With FACTORY_AX_SECRET=<ns>/<secret>
- * the gateway swaps the placeholder in each auth header for that Secret's key: `anthropic` (a Claude OAuth token, from `claude setup-token`),
- * `github` (a token) and `github-basic` (base64 of `x-access-token:<token>`, which git sends as Basic auth)
+ * a worker's EgressPolicy: HTTPS to Anthropic and GitHub and nothing else. With FACTORY_AX_VAULT=<vault> the gateway
+ * swaps the placeholder in each auth header for that agent-vault vault's credential: `ANTHROPIC` (a Claude OAuth token),
+ * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
+ * Basic auth). agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  */
-export function egressPolicy(secret = process.env.FACTORY_AX_SECRET) {
-  const uri = (key: string) => `ate-secret://k8s.io/default/${secret}/${key}`
+export function egressPolicy(vault = process.env.FACTORY_AX_VAULT) {
+  const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
   const rule = (hostnames: string[], header: string, prefix: string, key: string) => ({
     https: {
       hostnames,
-      ...(secret && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
+      ...(vault && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
     },
   })
   return {
     rules: [
-      rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'anthropic'),
-      rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'github'),
-      rule(['github.com'], 'Authorization', 'Basic ', 'github-basic'),
+      rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
+      rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'GITHUB'),
+      rule(['github.com'], 'Authorization', 'Basic ', 'GITHUB_BASIC'),
     ],
   }
 }
@@ -171,7 +172,7 @@ export const launch = (l: Launch, { tries = 30, waitMs = 2000 } = {}) => {
     // the policy allows only Anthropic's API and GitHub, so skip the telemetry it would refuse
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     // only when the gateway injects: GitHub answers a placeholder Basic header with 400, even for a public clone
-    ...(process.env.FACTORY_AX_SECRET && {
+    ...(process.env.FACTORY_AX_VAULT && {
       // Claude sends an OAuth token as `Authorization: Bearer`
       CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
       GH_TOKEN: 'placeholder',

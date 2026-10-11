@@ -1,0 +1,143 @@
+# The factory's agent-vault on gtr: Substrate's egress gateway asks it for each AX worker's keys
+# (--credential-provider-address and --credential-provider-server-name agent-vault-substrate.factory-spike-ax.svc,
+# whose name the servicedns certificate carries). No key is copied in: ANTHROPIC is read from 1Password Connect,
+# GITHUB/GITHUB_BASIC are minted from the nixfleet-axel GitHub App, its private key read from 1Password at mint time.
+# The image is agent-vault PRs #12 (atespace-wide agent) and #13 (github-app source) merged, until they land.
+# Made outside this file: Secret onepassword-connect-token (op connect token create, read-only on Personal Agents),
+# Secret agent-vault-pr12-master (a random master password), ConfigMap onepassword-connect-ca (Connect's TLS CA).
+# After the pod starts: agent-vault auth register, then agent-vault config apply --yes --file /etc/agent-vault/factory.toml.
+# 1Password references use IDs (vault Personal Agents, items claude-code-oauth and nixfleet-axel): names gave invalid_reference.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: agent-vault, namespace: factory-spike-ax }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: agent-vault-pr12, namespace: factory-spike-ax }
+data:
+  server.toml: |
+    schema_version = 1
+
+    [[secret_providers]]
+    name = "onepassword"
+    kind = "onepassword-connect"
+    address = "https://onepassword-connect-tls.onepassword.svc:8443"
+    token = "file:///var/run/secrets/onepassword/token"
+
+    [[secret_providers]]
+    name = "axel"
+    kind = "github-app"
+    app_id = "2954702"
+    installation_id = "112589902"
+    private_key_provider = "onepassword"
+    private_key_ref = "p3cee6l54chv7pinbxbhsmeizu/4wjvfdfyt2zmf42rmygqwtto5a/private_key"
+
+    [substrate_provider]
+    listen_address = "0.0.0.0:50051"
+    server_cred_bundle = "/run/servicedns.podcert.ate.dev/credential-bundle.pem"
+    client_ca_file = "/run/podidentity.podcert.ate.dev/trust-bundle.pem"
+  factory.toml: |
+    schema_version = 1
+    manager = "claude-factory"
+
+    [[agents]]
+    name = "factory-tasks"
+    spiffe_id = "spiffe://substrate-actor.local/actor/factory/*"
+
+    [[vaults]]
+    name = "factory"
+
+    [[vaults.grants]]
+    agent = "factory-tasks"
+    role = "proxy"
+
+    [[vaults.credentials]]
+    name = "ANTHROPIC"
+    mode = "reference"
+    source = "onepassword"
+    ref = "p3cee6l54chv7pinbxbhsmeizu/osr7x4do5yy4g5qiicbg7t76le/CLAUDE_CODE_OAUTH_TOKEN"
+    refresh_interval = "5m"
+    max_staleness = "1h"
+
+    [[vaults.credentials]]
+    name = "GITHUB"
+    mode = "reference"
+    source = "axel"
+    ref = "token"
+    refresh_interval = "5m"
+    max_staleness = "10m"
+
+    [[vaults.credentials]]
+    name = "GITHUB_BASIC"
+    mode = "reference"
+    source = "axel"
+    ref = "basic"
+    refresh_interval = "5m"
+    max_staleness = "10m"
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: agent-vault-pr12, namespace: factory-spike-ax, labels: { app: agent-vault-pr12 } }
+spec:
+  serviceAccountName: agent-vault
+  nodeSelector: { kubernetes.io/arch: amd64 }
+  containers:
+    - name: agent-vault
+      image: ghcr.io/stigenai/agent-vault@sha256:4bd93818f0bb7a10c6a4d5d377a0a3705d67ac8807dc7ef2ee99b48308408936
+      args: [server, --config, /etc/agent-vault/server.toml]
+      env:
+        - name: AGENT_VAULT_MASTER_PASSWORD
+          valueFrom: { secretKeyRef: { name: agent-vault-pr12-master, key: password } }
+        - { name: AGENT_VAULT_TELEMETRY, value: 'false' }
+        # adds gtr's fleet CA (signs 1Password Connect's TLS) to the system roots
+        - { name: SSL_CERT_DIR, value: '/etc/ssl/certs:/etc/onepassword-ca' }
+      ports: [{ containerPort: 14321 }, { containerPort: 50051 }]
+      volumeMounts:
+        - { name: data, mountPath: /data }
+        - { name: config, mountPath: /etc/agent-vault }
+        - { name: connect-token, mountPath: /var/run/secrets/onepassword, readOnly: true }
+        - { name: connect-ca, mountPath: /etc/onepassword-ca, readOnly: true }
+        - { name: servicedns, mountPath: /run/servicedns.podcert.ate.dev }
+        - { name: podidentity, mountPath: /run/podidentity.podcert.ate.dev }
+  volumes:
+    - { name: data, emptyDir: {} }
+    - { name: config, configMap: { name: agent-vault-pr12 } }
+    - { name: connect-token, secret: { secretName: onepassword-connect-token } }
+    - { name: connect-ca, configMap: { name: onepassword-connect-ca } }
+    - name: servicedns
+      projected:
+        {
+          sources:
+            [
+              {
+                podCertificate:
+                  {
+                    signerName: servicedns.podcert.ate.dev/identity,
+                    keyType: ECDSAP256,
+                    credentialBundlePath: credential-bundle.pem,
+                  },
+              },
+            ],
+        }
+    - name: podidentity
+      projected:
+        {
+          sources:
+            [
+              {
+                clusterTrustBundle:
+                  {
+                    signerName: podidentity.podcert.ate.dev/identity,
+                    labelSelector: { matchLabels: { podcert.ate.dev/canarying: live } },
+                    path: trust-bundle.pem,
+                  },
+              },
+            ],
+        }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: agent-vault-substrate, namespace: factory-spike-ax }
+spec:
+  selector: { app: agent-vault-pr12 }
+  ports: [{ name: grpc, port: 50051 }]

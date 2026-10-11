@@ -92,16 +92,16 @@ test('a launch applies the task with the run branch, the brief and the CA in its
     FACTORY_FROM: 'implement',
     FACTORY_OUTBOX: '/workspace/w/.factory-worker/outbox.jsonl',
   })
-  expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined() // no Secret, nothing for the gateway to fill in
+  expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined() // no vault, nothing for the gateway to fill in
   expect(env.GIT_CONFIG_COUNT).toBeUndefined()
   expect(task.spec.command).toEqual(['factory', 'worker', 'serve', '--model', 'claude-opus-5'])
   expect(task.spec.workspaces).toEqual([{ name: 'f-r1-1', path: '/workspace/w' }])
   expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy())
 })
 
-test('with a Secret named, the task sends placeholder auth headers for the gateway to fill in', () => {
+test('with a vault named, the task sends placeholder auth headers for the gateway to fill in', () => {
   writeFileSync(join(dir, 'actor'), '')
-  process.env.FACTORY_AX_SECRET = 'factory-spike-ax/factory-keys'
+  process.env.FACTORY_AX_VAULT = 'factory'
   try {
     ax.launch({ name: 't2', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} }, { waitMs: 0 })
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
@@ -115,11 +115,9 @@ test('with a Secret named, the task sends placeholder auth headers for the gatew
       GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
       GIT_CONFIG_VALUE_0: 'Authorization: Basic placeholder',
     })
-    expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(
-      ax.egressPolicy('factory-spike-ax/factory-keys'),
-    )
+    expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy('factory'))
   } finally {
-    delete process.env.FACTORY_AX_SECRET
+    delete process.env.FACTORY_AX_VAULT
   }
 })
 
@@ -144,7 +142,7 @@ test('a task whose policy never takes is deleted', () => {
   }
 })
 
-test("a worker's egress policy allows Anthropic and GitHub, and injects keys only from a named Secret", () => {
+test("a worker's egress policy allows Anthropic and GitHub, and injects keys only from a named vault", () => {
   expect(ax.egressPolicy('')).toEqual({
     rules: [
       { https: { hostnames: ['api.anthropic.com'] } },
@@ -152,12 +150,12 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
       { https: { hostnames: ['github.com'] } },
     ],
   })
-  const [anthropic, , git] = ax.egressPolicy('factory-spike-ax/factory-keys').rules
+  const [anthropic, , git] = ax.egressPolicy('factory').rules
   expect(anthropic!.https.effects!.replaceHeaders).toEqual([
     {
       header: 'Authorization',
       prefix: 'Bearer ',
-      credentialUri: 'ate-secret://k8s.io/default/factory-spike-ax/factory-keys/anthropic',
+      credentialUri: 'ate-secret://agent-vault/factory/ANTHROPIC',
     },
   ])
   expect(git!.https.effects!.replaceHeaders[0]).toMatchObject({ header: 'Authorization', prefix: 'Basic ' })

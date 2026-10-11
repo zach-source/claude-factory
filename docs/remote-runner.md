@@ -1,16 +1,17 @@
 # Remote runner: station workers in AX microVMs on gtr
 
-**Status (2026-10-07 11:30): the AX runner works on gtr up to the keys.** With image
-`factory-worker:26670e1`, a launch through `src/ax.ts` applied the task and its egress policy; `serve` trusted
-the gateway's CA, cloned the branch once the policy existed, ran Claude (which reached Anthropic and said
-"Not logged in": no Secret yet), and went idle with a session. A prompt ran as a second turn of that session;
-suspend and resume kept the clone and the session and did not brief again; a `factory mail` in the VM came
-back through `poll`; deleting the task took its policy. Waiting on: the keys Secret (`factory-keys` in
-`factory-spike-ax`, by the user) and the atespace grant in `k8s-credential-provider-namespace-policy` (the
-install's owner). Then: one real station end to end. Egress history: sdsmint makes `https` rules MITM; the
-gateway's DNS cache is `V4_PREFERRED` on gtr (with `ALL` it picked api.anthropic.com's IPv6 address, which gtr
-can't route). Oddity for the install's owner: example.com (Cloudflare, 172.66.147.243) gets 503, the gateway's
-upstream TLS reporting a certificate for api.anthropic.com.
+**Status (2026-10-11 13:02): a worker runs end to end on gtr, with agent-vault supplying every key.** A
+read-only smoke task (image `factory-worker:26670e1`, `FACTORY_AX_VAULT=factory`) cloned private
+`stigenai/spindle` through the egress gateway as the nixfleet-axel bot, ran Claude (Anthropic answered), called
+`gh api` (the installation's 48 repos) and reported back through the outbox. No key was copied anywhere:
+agent-vault reads the Claude token from 1Password Connect and mints the GitHub token from the axel App, whose
+private key it reads from 1Password. Running on the agent-vault PRs #12 and #13 (merged into one test image) and
+with the gateway pointed at the factory's agent-vault in `factory-spike-ax`, not six-city's. Next: one real
+station end to end. Earlier (2026-10-07): suspend and resume kept the clone and the session; a `factory mail` in
+the VM came back through `poll`. Egress history: sdsmint makes `https` rules MITM; the gateway's DNS cache is
+`V4_PREFERRED` on gtr (with `ALL` it picked api.anthropic.com's IPv6 address, which gtr can't route). Oddity for
+the install's owner: example.com (Cloudflare, 172.66.147.243) gets 503, the gateway's upstream TLS reporting a
+certificate for api.anthropic.com.
 
 ## Gates
 
@@ -109,16 +110,16 @@ Pulling means nothing on gtr ever needs a route back to the laptop.
 
 A worker that is idle and has asked the manager (the existing `isAsking`) is suspended with `ax suspend task`. Its status shows `suspended` on the board, and it is not polled. When the answer arrives, `deliver` sees the task is not `Running` and runs `ax resume task`, and the mail stays unread. The next tick delivers it to the running task.
 
-### Keys: Substrate's egress gateway puts them in
+### Keys: the egress gateway puts them in, from agent-vault
 
-The VM holds no key and no token. Every HTTPS request out goes through Substrate's egress gateway, which decrypts it (sdsmint), checks it against the task's EgressPolicy, and, for a rule with `replaceHeaders`, swaps the placeholder in an auth header for a key it reads from a Kubernetes Secret (`k8s-credential-provider`). This replaced agent-vault (2026-10-07): agent-vault's proxy can't sit behind the gateway (its `CONNECT` names the upstream), and it needed a per-task token in the VM.
+The VM holds no key and no token. Every HTTPS request out goes through Substrate's egress gateway, which decrypts it (sdsmint), checks it against the task's EgressPolicy, and, for a rule with `replaceHeaders`, swaps the placeholder in an auth header for a credential it fetches from its credential provider: agent-vault (`ate-secret://agent-vault/<vault>/<KEY>`). A gateway serves one provider. Substrate's reference provider reads Kubernetes Secrets, which would mean copying keys into them; agent-vault reads them from where they live.
 
 - **Launch** (`src/ax.ts`): reads the gateway's public CA (ClusterTrustBundle `egress-mitm.ate.dev:mitm:primary-bundle`), applies the Task with it in `FACTORY_CA`, then creates the task's policy with `kubectl ate create egress-policy`, retrying until AX has created the actor. A policy that never takes deletes the task.
-- **Placeholders** (only with `FACTORY_AX_SECRET`, because GitHub answers a placeholder Basic header with 400 even for a public clone): `CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` set to `placeholder`, and git's `http.https://github.com/.extraHeader` set to `Authorization: Basic placeholder` through `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0`, so every git in the VM sends it.
-- **Policy**: HTTPS to `api.anthropic.com` (`Authorization: Bearer` ← key `anthropic`, a Claude OAuth token from `claude setup-token`), `api.github.com` and `uploads.github.com` (`Authorization: Bearer` ← `github`), and `github.com` (`Authorization: Basic` ← `github-basic`, which holds base64 of `x-access-token:<token>`, since git sends Basic auth). Nothing else, so the task sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Without `FACTORY_AX_SECRET` the policy has the hosts and no injection.
+- **Placeholders** (only with `FACTORY_AX_VAULT`, because GitHub answers a placeholder Basic header with 400 even for a public clone): `CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` set to `placeholder`, and git's `http.https://github.com/.extraHeader` set to `Authorization: Basic placeholder` through `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0`, so every git in the VM sends it.
+- **Policy**: HTTPS to `api.anthropic.com` (`Authorization: Bearer` ← `ANTHROPIC`), `api.github.com` and `uploads.github.com` (`Authorization: Bearer` ← `GITHUB`), and `github.com` (`Authorization: Basic` ← `GITHUB_BASIC`, base64 of `x-access-token:<token>`, since git sends Basic auth). Nothing else, so the task sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Without `FACTORY_AX_VAULT` the policy has the hosts and no injection.
 - **In the VM** (`setup()` in `src/worker.ts`, on every start): writes the CA and points `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` and `SSL_CERT_FILE` at it (the gateway re-signs every host the VM may reach, so it is the only root needed), then clones the run's branch.
-- **GitHub as the nixfleet-axel bot**: the `github` and `github-basic` keys hold an installation token of the GitHub App nixfleet-axel (stigenai org, all repos), which expires after an hour. `hack/github-token-refresher.yaml` is a CronJob that mints a fresh one every 30 minutes and patches `factory-keys`; the App's private key is Secret `axel-github-app` (from 1Password `Personal Agents/nixfleet-axel`). The provider reads the Secret on every request, so a refresh takes effect at once. `anthropic` holds the `claude-code-oauth` setup-token (2026-10-11).
-- **Cluster side, once** (the install's owner): grant atespace `factory` the Secret's namespace in ConfigMap `ate-system/k8s-credential-provider-namespace-policy` and restart the provider. The real keys go into that Secret, by you.
+- **Who may fetch**: Substrate makes one actor per task (`spiffe://substrate-actor.local/actor/factory/<task>`). One agent-vault agent, `factory-tasks`, registered as `spiffe://substrate-actor.local/actor/factory/*` with `proxy` on vault `factory`, covers every task in the atespace (agent-vault PR #12), so the runner registers nothing per task.
+- **Where the keys come from** (`hack/agent-vault.yaml`): `ANTHROPIC` is a reference to 1Password `Personal Agents/claude-code-oauth/CLAUDE_CODE_OAUTH_TOKEN` through gtr's 1Password Connect; `GITHUB` and `GITHUB_BASIC` are references to a `github-app` source (agent-vault PR #13) that mints a nixfleet-axel installation token (stigenai org, all repos) with the App's private key read from 1Password, refreshed every 5 minutes and refused once 10 minutes stale. The only Secret is the Connect token (read-only on Personal Agents).
 
 ### Turning it on
 
@@ -131,7 +132,7 @@ hack/push-worker.sh    # prints image@digest
 # on the laptop running the factory loop
 export FACTORY_AX_IMAGE=ghcr.io/stigenai/factory-worker@sha256:…   # from push-worker.sh
 export FACTORY_AX_CONTEXT=gtr                                # kube context for ax and kubectl (kubectl-ate on PATH)
-export FACTORY_AX_SECRET=factory-spike-ax/factory-keys       # <ns>/<secret> with keys anthropic, github, github-basic
+export FACTORY_AX_VAULT=factory                              # agent-vault vault with ANTHROPIC, GITHUB, GITHUB_BASIC
 export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # optional: more env for the task, never a real key
 factory rig add web ~/repos/web --runner ax                   # rigs.json: "runner": "ax"
 ```
