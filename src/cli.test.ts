@@ -9,6 +9,9 @@ import {
   isTrusted,
   labelAction,
   lastContext,
+  limitHit,
+  nextAccount,
+  servedAt,
   prOwner,
   loadFactory,
   missingSweeps,
@@ -287,4 +290,25 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   expect(w).toMatchObject({ autoMemoryEnabled: false })
   expect(workerSettings({}, 200, '/h/.claude/CLAUDE.md').claudeMdExcludes).toEqual(['/h/.claude/CLAUDE.md'])
   expect(workerSettings({}, 30).autoCompactWindow).toBe(100_000) // Claude Code's floor
+})
+
+test("a usage limit is read from the transcript's last turn, and the next account is one whose limit has reset", () => {
+  const turn = (extra: object) =>
+    JSON.stringify({ type: 'assistant', timestamp: '2026-10-11T12:00:00.000Z', message: {}, ...extra })
+  const refused = turn({
+    error: 'rate_limit',
+    quotaLimits: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: 1_800_000_000 },
+  })
+  expect(limitHit(['cut {', turn({}), refused, JSON.stringify({ type: 'user' }), ''].join('\n'))).toEqual({
+    at: Date.parse('2026-10-11T12:00:00.000Z'),
+    kind: 'seven_day',
+    resetsAt: 1_800_000_000_000,
+  })
+  expect(limitHit([refused, turn({})].join('\n'))).toBeNull() // it went on since
+  expect(servedAt([refused, turn({})].join('\n'))).toBeGreaterThan(0)
+  expect(servedAt([turn({}), refused].join('\n'))).toBe(0)
+  expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9 }, 5)).toBe('c')
+  expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9, c: 9 }, 5)).toBe('a')
+  expect(nextAccount(['a', 'b', 'c'], 'b', { a: 9, b: 3, c: 9 }, 5)).toBe('b')
+  expect(nextAccount(['a', 'b', 'c'], 'b', { a: 9, b: 9, c: 9 }, 5)).toBeNull()
 })

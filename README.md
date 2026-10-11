@@ -329,6 +329,19 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
   workers use (MCP tools stay deferred behind ToolSearch; auto memory is off). The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
   cost ~40k tokens on every turn and are left out; the repo's own CLAUDE.md and settings
   still apply. `FACTORY_LEAN=0` launches workers with the user's setup again.
+- **Usage limits**: a worker whose turn is refused for the account's usage limit (weekly or
+  5-hour) is restarted on the next account: `ccswitch switch-to` moves
+  every Claude on the machine to the next account in its sequence whose limit has reset, and
+  the worker resumes its session there. With every account at its limit, workers hold (no
+  nudges, no timeout) until the first reset, and the manager hears once. `factory manager`
+  does the same for the manager: it checks the manager's transcript each minute and, refused,
+  swaps the account and resumes the manager's session.
+- **Manager skills**: the manager gets the factory's own skills, playbooks for the work it
+  keeps repeating, from `memory/.manager/.claude/skills/` (an `--add-dir`, so Claude Code picks
+  up edits mid-session). `factory manager` records its sessions, and the dream reads what each
+  was asked and ran since the last dream: work done the same way three or more times becomes a
+  skill, and a skill unused for 30 days, or one that no longer fits, is reaped. Skills are in
+  the memory's git history like its notes.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
   from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>

@@ -677,8 +677,8 @@ export function lastContext(tail: string) {
   }
   return 0
 }
-/** a Claude worker's context now: the last turn of its session's transcript */
-function contextOf(worktree: string, session: string) {
+/** the end of a Claude worker's session transcript; empty when there is none */
+function tailOf(worktree: string, session: string) {
   const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
   const file = join(dir, 'projects', worktree.replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
   try {
@@ -687,10 +687,107 @@ function contextOf(worktree: string, session: string) {
     const fd = openSync(file, 'r')
     readSync(fd, buf, 0, buf.length, size - buf.length)
     closeSync(fd)
-    return lastContext(buf.toString())
+    return buf.toString()
   } catch {
-    return 0
+    return ''
   }
+}
+
+/** the usage limit that refused a Claude transcript's last turn: when, which (seven_day, five_hour) and when it resets, in ms */
+export function limitHit(tail: string) {
+  for (const line of tail.split('\n').reverse()) {
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'assistant') continue
+      if (e.error !== 'rate_limit' || e.quotaLimits?.status !== 'rejected') return null
+      const kind: string = e.quotaLimits.rateLimitType ?? 'usage'
+      return { at: Date.parse(e.timestamp), kind, resetsAt: (e.quotaLimits.resetsAt ?? 0) * 1000 }
+    } catch {
+      // the first line of the tail is cut
+    }
+  }
+  return null
+}
+
+/** when a Claude transcript's last turn was answered, not refused for a usage limit; 0 when it was not */
+export function servedAt(tail: string) {
+  for (const line of tail.split('\n').reverse()) {
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type === 'assistant') return e.error ? 0 : Date.parse(e.timestamp)
+    } catch {
+      // the first line of the tail is cut
+    }
+  }
+  return 0
+}
+
+/** the account to move to: the next in ccswitch's sequence after the active one (itself last) whose limit has reset */
+export function nextAccount(sequence: string[], active: string, limits: Record<string, number>, now: number) {
+  const i = sequence.indexOf(active)
+  return (
+    [...sequence.slice(i + 1), ...sequence.slice(0, Math.max(0, i)), active].find(
+      a => (limits[a] ?? 0) <= now,
+    ) ?? null
+  )
+}
+
+/**
+ * Workers run on the user's active Claude account. When one hits that account's usage limit, ccswitch
+ * moves every Claude on this machine to the next account whose limit has reset, and the worker restarts
+ * on it; a hit from before the last move only restarts. With every account at its limit, workers wait
+ * for the first reset. Returns that wait's end, or 0 to restart now
+ */
+// shared by every factory on the machine, as the account is: one factory's swap is not another's to redo
+const LIMITS = join(homedir(), '.claude-switch-backup', 'factory-limits.json')
+type Limits = { at: number; limits: Record<string, number>; hitAt?: Record<string, number> }
+
+/**
+ * A turn the active account answered after its limit was recorded means the limit is gone (reset early, or
+ * a plan change): forget it, or a stale limit would hold every worker when the other accounts are limited too
+ */
+export function clearLimit(at: number) {
+  if (!at || !existsSync(LIMITS)) return
+  const s = readJson<Limits>(LIMITS)
+  let active: string
+  try {
+    active = readJson<{ activeAccountId: string }>(
+      join(homedir(), '.claude-switch-backup', 'sequence.json'),
+    ).activeAccountId
+  } catch {
+    return
+  }
+  if (!(active in s.limits) || at <= (s.hitAt?.[active] ?? s.at)) return
+  delete s.limits[active]
+  delete s.hitAt?.[active]
+  writeJson(LIMITS, s)
+}
+
+function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
+  const file = LIMITS
+  const s: Limits = existsSync(file) ? readJson<Limits>(file) : { at: 0, limits: {} }
+  if (hit.at < s.at) return 0
+  let seq: { activeAccountId: string; sequence: string[] }
+  try {
+    seq = readJson(join(homedir(), '.claude-switch-backup', 'sequence.json'))
+  } catch {
+    return hit.resetsAt // no ccswitch: wait out the limit
+  }
+  s.limits[seq.activeAccountId] = Math.max(
+    s.limits[seq.activeAccountId] ?? 0,
+    hit.resetsAt || now + 3_600_000,
+  )
+  s.hitAt = { ...s.hitAt, [seq.activeAccountId]: hit.at }
+  const next = nextAccount(seq.sequence, seq.activeAccountId, s.limits, now)
+  const ok =
+    next === seq.activeAccountId ||
+    (next !== null && Bun.spawnSync(['ccswitch', 'switch-to', next], { timeout: 30_000 }).exitCode === 0)
+  if (next && !ok) s.limits[next] = now + 3_600_000 // it would not switch (a lapsed login): try the others
+  if (ok) s.at = now
+  writeJson(file, s)
+  return ok ? 0 : Math.min(...seq.sequence.map(a => s.limits[a] ?? now))
 }
 
 /**
@@ -757,7 +854,7 @@ function launch(run: Run, def: Factory, node: string, prompt: string, session?: 
  * whole tool list: a session with the user's MCP servers, connectors, Chrome and every built-in carried
  * ~130k tokens of tool definitions into each patrol. So it starts with only what it uses.
  */
-const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion'
+const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill'
 export const managerCommand = (extra: string[] = []) => [
   'claude',
   '--model',
@@ -773,6 +870,46 @@ export const managerCommand = (extra: string[] = []) => [
   JSON.stringify({ env: { ...withoutFleet().env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } }),
   ...extra,
 ]
+
+/**
+ * runs the manager's Claude until it exits. Its ticks run inside it, so it cannot restart itself: this does.
+ * When its account's usage limit refuses it, the account swaps as for a worker and it resumes its session
+ */
+async function superviseManager(args: string[]) {
+  const i = args.findIndex(a => a === '--resume' || a === '-r')
+  const session = i >= 0 && args[i + 1] ? args[i + 1]! : crypto.randomUUID()
+  // its skills: an --add-dir's .claude/skills, which Claude Code watches, so the dream's edits apply at once
+  mkdirSync(memory.skillsDir(MEMORY), { recursive: true })
+  const rest = [
+    ...(i >= 0 ? args.filter((_, j) => j !== i && j !== i + 1) : args),
+    '--add-dir',
+    memory.managerDir(MEMORY),
+  ]
+  // the dream learns from the manager's sessions
+  const file = join(HOME, 'manager-sessions.json')
+  const known = existsSync(file) ? readJson<{ session: string; cwd: string }[]>(file) : []
+  if (!known.some(k => k.session === session)) writeJson(file, [...known, { session, cwd: process.cwd() }])
+  for (let flag = i >= 0 ? '--resume' : '--session-id'; ; flag = '--resume') {
+    const startedAt = Date.now()
+    const child = Bun.spawn(managerCommand([...rest, flag, session]), {
+      stdio: ['inherit', 'inherit', 'inherit'],
+      env: { ...process.env, CLAUDE_CODE_NO_FLICKER: '1' },
+    })
+    let isSwapped = false
+    const watch = setInterval(() => {
+      const tail = tailOf(process.cwd(), session)
+      const hit = limitHit(tail)
+      if (!hit) clearLimit(servedAt(tail))
+      if (hit && hit.at > startedAt && swapAccount(hit, Date.now()) === 0) {
+        isSwapped = true
+        child.kill()
+      }
+    }, 60_000)
+    const code = await child.exited
+    clearInterval(watch)
+    if (!isSwapped) return code
+  }
+}
 
 export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => ({
   env: {
@@ -903,11 +1040,29 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
+  // a remote worker's transcript is in its VM, not in ~/.claude here: no limit or context to read
+  const tail = isClaude && runner.local && c.session ? tailOf(run.worktree, c.session) : ''
+  const hit = limitHit(tail)
+  if (!hit) clearLimit(servedAt(tail))
+  if (hit && hit.at > c.startedAt) {
+    const until = swapAccount(hit, now)
+    if (until > now) {
+      const paged = join(HOME, 'limit-paged.json')
+      if (!existsSync(paged) || readJson<number>(paged) < until) {
+        const text = `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+        send({ type: 'MAIL', from: node, to: 'manager', text })
+        writeJson(paged, until)
+      }
+      return 'usage limit'
+    }
+    runner.close(c.pane) // its Claude sits at the limit message
+    send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session!) })
+    return 'account swapped'
+  }
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   // every turn re-reads the whole context: past the limit the worker hands off to a fresh one
   const maxK = def.maxContextK ?? 200
-  // a remote worker's transcript is in its VM, not in ~/.claude here: no context to read, so no handoff by size
-  const k = isClaude && runner.local && c.session ? Math.round(contextOf(run.worktree, c.session) / 1000) : 0
+  const k = Math.round(lastContext(tail) / 1000)
   const isHandoffAsked = (c.mail[node] ?? []).some(
     m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(HANDOFF_ASK),
   )
@@ -1259,6 +1414,23 @@ const journalSince = (since: number) =>
     .slice(-300)
     .map(e => e.line)
 
+/** what the manager did since, from its sessions' transcripts, and its skills with their uses */
+function managerSince(since: number) {
+  const file = join(HOME, 'manager-sessions.json')
+  const sessions = existsSync(file) ? readJson<{ session: string; cwd: string }[]>(file) : []
+  const dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
+  const lines = sessions.flatMap(({ session, cwd }) => {
+    const path = join(dir, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+    return existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []
+  })
+  const { activity, used } = memory.managerActivity(lines, since)
+  const skills = memory.skills(MEMORY).map(s => {
+    const u = used.get(s.name)
+    return `- ${s.name}: ${u ? `${u.n}, last ${new Date(u.last).toISOString().slice(0, 10)}` : 'never used'}: ${s.description}`
+  })
+  return { activity: activity.slice(-400), skills } // ponytail: the newest 400 lines; a day's patrols fit
+}
+
 const commitMemory = (message: string) => {
   git(MEMORY, 'add', '-A')
   if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
@@ -1300,10 +1472,12 @@ async function dream() {
     // the journal since the last dream that finished: a failed one leaves its entries to the next
     const since = Number(git(MEMORY, 'log', '-1', '--grep=^dream:', '--format=%at')) * 1000
     const journal = journalSince(since)
-    if (!journal.length && !memory.inboxCount(MEMORY)) return 'nothing new since the last dream'
+    const manager = managerSince(since)
+    if (!journal.length && !memory.inboxCount(MEMORY) && !manager.activity.length)
+      return 'nothing new since the last dream'
     const start = Date.now()
     const before = git(MEMORY, 'rev-parse', 'HEAD')
-    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads())
+    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads(), manager)
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
       [
@@ -2302,14 +2476,9 @@ if (import.meta.main && !queued)
       case 'beads':
         await beadsPass()
         break
-      case 'manager': {
+      case 'manager':
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
-        const p = Bun.spawnSync(managerCommand(args), {
-          stdio: ['inherit', 'inherit', 'inherit'],
-          env: { ...process.env, CLAUDE_CODE_NO_FLICKER: '1' },
-        })
-        process.exit(p.exitCode ?? 1)
-      }
+        process.exit(await superviseManager(args))
       case 'home':
         console.log(HOME)
         break
