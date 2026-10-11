@@ -20,7 +20,7 @@ import {
 import { spawn as spawnChild } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
-import { createActor, type Snapshot } from 'xstate'
+import { createActor, transition, type Snapshot } from 'xstate'
 import {
   compile,
   extend,
@@ -212,6 +212,13 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
     agent: info.agent,
     session: info.agent ? info.agent_session?.value : undefined,
   }
+}
+
+/** A failed or unconfirmed close must hold replacement, not leave two workers running. */
+function closeWorker(pane: string) {
+  if (paneInfo(pane) === null) return
+  herdr('pane', 'close', pane)
+  if (paneInfo(pane) !== null) fail(`worker pane ${pane} is still present after close`)
 }
 
 /**
@@ -469,7 +476,15 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
   `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
 
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
-function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
+function spawn(
+  run: Run,
+  def: Factory,
+  node: string,
+  c: Ctx,
+  started: (pane: string) => void,
+  session?: string,
+) {
+  if (c.pane) closeWorker(c.pane)
   const prompt = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   if (!session) writeFileSync(prompt, brief(run, def, node, c, c.mail[node] ?? []))
   const tab = () =>
@@ -499,6 +514,8 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
+  // Retain ownership before launch: a lost launch response must not create an untracked worker.
+  started(pane)
   herdr('pane', 'run', pane, launch(run, def, node, prompt, session))
   return pane
 }
@@ -645,7 +662,7 @@ export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? ''
 
 /**
  * what to do about a launch that has not shown its Claude yet: wait, press Enter (the command sat
- * unsent on the line), type it again, then give up. Each step counts as a nudge.
+ * unsent on the line), replace its pane and launch again, then give up. Each step counts as a nudge.
  */
 export function relaunch(sinceMs: number, nudges: number) {
   if (sinceMs <= LAUNCH_MS) return null
@@ -710,8 +727,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       }
       return 'awaiting trust'
     }
-    const pane = spawn(run, def, node, c)
-    send({ type: 'SPAWNED', seq: c.seq, pane })
+    spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane }))
     const box = c.mail[node] ?? [] // the brief carried the whole box
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
@@ -720,21 +736,19 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   if (info?.session && info.session !== c.session)
     send({ type: 'SESSION', seq: c.seq, session: info.session })
   if (info === null && c.session && c.resumes < 1) {
-    send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session), isResume: true })
+    spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane, isResume: true }), c.session)
     return 'resuming'
   }
   const status = info?.status ?? null
   // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
-  // resume the conversation in the same pane, once, as for a pane that closed
+  // replace the pane before resuming: missing agent detection does not prove the process exited
   // a just-resumed Claude takes seconds to show: give it the launch grace before calling it gone again
   if (info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
     if (c.resumes >= 1) {
       send({ type: 'FAIL', seq: c.seq, reason: `the worker's Claude exited in pane ${c.pane}` })
       return status
     }
-    herdr('pane', 'send-keys', c.pane, 'ctrl+u')
-    herdr('pane', 'run', c.pane, launch(run, def, node, resumeFile(run, node, c), c.session))
-    send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
+    spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane, isResume: true }), c.session)
     return 'resuming'
   }
   if (info && !info.agent && !c.session && isClaude) {
@@ -747,12 +761,11 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       })
       return status
     }
+    if (step) send({ type: 'NUDGED', seq: c.seq })
     if (step === 'enter') herdr('pane', 'send-keys', c.pane, 'Enter')
     if (step === 'retype') {
-      herdr('pane', 'send-keys', c.pane, 'ctrl+u') // whatever is left on the line
-      herdr('pane', 'run', c.pane, launch(run, def, node, promptOf(run, node, c)))
+      spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane }))
     }
-    if (step) send({ type: 'NUDGED', seq: c.seq })
     return step ? 'relaunching' : 'starting'
   }
   const timeoutMin = n.timeoutMin ?? 60
@@ -865,8 +878,7 @@ function haltRun(
   if (def.nodes[node]!.gate) return null // a gate holds no worker: it still asks and can be decided
   const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
   if (!halt && back[run.id] === c.seq) {
-    const pane = spawn(run, def, node, c, c.session ?? undefined)
-    send({ type: 'RESUMED', seq: c.seq, pane })
+    spawn(run, def, node, c, pane => send({ type: 'RESUMED', seq: c.seq, pane }), c.session ?? undefined)
     const { [run.id]: _, ...rest } = back
     writeJson(resumeFile_(), rest)
     return 'resumed'
@@ -881,7 +893,7 @@ function haltRun(
     herdr('agent', 'prompt', c.pane!, STOP_NOTE)
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
-    if (step === 'close') Bun.spawnSync(['herdr', 'pane', 'close', c.pane!])
+    if (step === 'close') closeWorker(c.pane!)
     halt.closed[run.id] = c.seq
   }
   writeJson(haltFile(), halt)
@@ -892,7 +904,8 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   const def = await loadFactory(run.factory)
   const file = join(runDir(run.id), 'state.json')
   const saved = readJson<Saved>(file)
-  const actor = createActor(compile(def), { snapshot: saved.snapshot }).start()
+  const machine = compile(def)
+  const actor = createActor(machine, { snapshot: saved.snapshot }).start()
   const lines = inboxLines(run.id)
   const ctx = () => actor.getSnapshot().context
   const save = () =>
@@ -903,8 +916,14 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     })
   const send = (e: Input, at = now) => {
     const pane = ctx().pane
-    actor.send({ ...e, at } as Ev)
-    if (pane && pane !== ctx().pane) Bun.spawnSync(['herdr', 'pane', 'close', pane]) // gone already is fine
+    const event = { ...e, at } as Ev
+    const [next] = transition(machine, actor.getSnapshot(), event)
+    const launched = e.type === 'SPAWNED' || e.type === 'RESUMED'
+    // Close before advancing state, so a failure retains the old pane and retries its cleanup.
+    // spawn already closed its predecessor before creating the new pane (IDs can be reused).
+    if (!launched && pane && pane !== next.context.pane) closeWorker(pane)
+    actor.send(event)
+    if (launched) save()
   }
 
   for (const line of lines.slice(saved.cursor)) {
@@ -2262,26 +2281,40 @@ if (import.meta.main)
       }
       case 'report': {
         const [id, seq, outcome, ...summary] = args
-        const { run, value, c } = current(id)
-        const [node] = where(value)
-        const n = (await loadFactory(run.factory)).nodes[node]
-        if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
-        const outcomes = Object.keys(n?.next ?? {}).concat(WORKER_OUTCOMES)
-        if (Number(seq) !== c.seq)
-          fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
-        if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
-        const text = summary.join(' ')
-        post(
-          run.id,
-          outcome === 'fail'
-            ? { type: 'FAIL', seq: c.seq, reason: text }
-            : outcome === 'blocked'
-              ? { type: 'BLOCKED', seq: c.seq, reason: text }
-              : outcome === 'handoff'
-                ? { type: 'HANDOFF', seq: c.seq, summary: text }
-                : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
-        )
-        console.log(`reported ${outcome} for ${node}; you are done, stop now`)
+        const release =
+          hold(`${loadRun(id).id}.report.lock`) ??
+          fail('another report is being submitted; retry after it finishes')
+        try {
+          const { run, value, c } = current(id)
+          const [node, sub] = where(value)
+          const n = (await loadFactory(run.factory)).nodes[node]
+          if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
+          const outcomes = Object.keys(n?.next ?? {}).concat(WORKER_OUTCOMES)
+          if (Number(seq) !== c.seq || sub !== 'working')
+            fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
+          if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
+          if (
+            inboxLines(run.id).some(line => {
+              const e = JSON.parse(line) as Ev
+              return 'seq' in e && e.seq === c.seq && ['DONE', 'FAIL', 'BLOCKED', 'HANDOFF'].includes(e.type)
+            })
+          )
+            fail(`station attempt ${seq} already reported; stop here`)
+          const text = summary.join(' ')
+          post(
+            run.id,
+            outcome === 'fail'
+              ? { type: 'FAIL', seq: c.seq, reason: text }
+              : outcome === 'blocked'
+                ? { type: 'BLOCKED', seq: c.seq, reason: text }
+                : outcome === 'handoff'
+                  ? { type: 'HANDOFF', seq: c.seq, summary: text }
+                  : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
+          )
+          console.log(`reported ${outcome} for ${node}; you are done, stop now`)
+        } finally {
+          release()
+        }
         break
       }
       case 'decide': {
