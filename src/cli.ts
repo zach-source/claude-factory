@@ -677,7 +677,7 @@ function launch(run: Run, def: Factory, node: string, prompt: string, session?: 
  * whole tool list: a session with the user's MCP servers, connectors, Chrome and every built-in carried
  * ~130k tokens of tool definitions into each patrol. So it starts with only what it uses.
  */
-const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion'
+const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill'
 export const managerCommand = (extra: string[] = []) => [
   'claude',
   '--model',
@@ -701,7 +701,17 @@ export const managerCommand = (extra: string[] = []) => [
 async function superviseManager(args: string[]) {
   const i = args.findIndex(a => a === '--resume' || a === '-r')
   const session = i >= 0 && args[i + 1] ? args[i + 1]! : crypto.randomUUID()
-  const rest = i >= 0 ? args.filter((_, j) => j !== i && j !== i + 1) : args
+  // its skills: an --add-dir's .claude/skills, which Claude Code watches, so the dream's edits apply at once
+  mkdirSync(memory.skillsDir(MEMORY), { recursive: true })
+  const rest = [
+    ...(i >= 0 ? args.filter((_, j) => j !== i && j !== i + 1) : args),
+    '--add-dir',
+    memory.managerDir(MEMORY),
+  ]
+  // the dream learns from the manager's sessions
+  const file = join(HOME, 'manager-sessions.json')
+  const known = existsSync(file) ? readJson<{ session: string; cwd: string }[]>(file) : []
+  if (!known.some(k => k.session === session)) writeJson(file, [...known, { session, cwd: process.cwd() }])
   for (let flag = i >= 0 ? '--resume' : '--session-id'; ; flag = '--resume') {
     const startedAt = Date.now()
     const child = Bun.spawn(managerCommand([...rest, flag, session]), {
@@ -1221,6 +1231,23 @@ const journalSince = (since: number) =>
     .slice(-300)
     .map(e => e.line)
 
+/** what the manager did since, from its sessions' transcripts, and its skills with their uses */
+function managerSince(since: number) {
+  const file = join(HOME, 'manager-sessions.json')
+  const sessions = existsSync(file) ? readJson<{ session: string; cwd: string }[]>(file) : []
+  const dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
+  const lines = sessions.flatMap(({ session, cwd }) => {
+    const path = join(dir, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+    return existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []
+  })
+  const { activity, used } = memory.managerActivity(lines, since)
+  const skills = memory.skills(MEMORY).map(s => {
+    const u = used.get(s.name)
+    return `- ${s.name}: ${u ? `${u.n}, last ${new Date(u.last).toISOString().slice(0, 10)}` : 'never used'}: ${s.description}`
+  })
+  return { activity: activity.slice(-400), skills } // ponytail: the newest 400 lines; a day's patrols fit
+}
+
 const commitMemory = (message: string) => {
   git(MEMORY, 'add', '-A')
   if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
@@ -1262,10 +1289,12 @@ async function dream() {
     // the journal since the last dream that finished: a failed one leaves its entries to the next
     const since = Number(git(MEMORY, 'log', '-1', '--grep=^dream:', '--format=%at')) * 1000
     const journal = journalSince(since)
-    if (!journal.length && !memory.inboxCount(MEMORY)) return 'nothing new since the last dream'
+    const manager = managerSince(since)
+    if (!journal.length && !memory.inboxCount(MEMORY) && !manager.activity.length)
+      return 'nothing new since the last dream'
     const start = Date.now()
     const before = git(MEMORY, 'rev-parse', 'HEAD')
-    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads())
+    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads(), manager)
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
       [

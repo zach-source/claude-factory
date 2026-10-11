@@ -329,6 +329,12 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
   nudges, no timeout) until the first reset, and the manager hears once. `factory manager`
   does the same for the manager: it checks the manager's transcript each minute and, refused,
   swaps the account and resumes the manager's session.
+- **Manager skills**: the manager gets the factory's own skills, playbooks for the work it
+  keeps repeating, from `memory/.manager/.claude/skills/` (an `--add-dir`, so Claude Code picks
+  up edits mid-session). `factory manager` records its sessions, and the dream reads what each
+  was asked and ran since the last dream: work done the same way three or more times becomes a
+  skill, and a skill unused for 30 days, or one that no longer fits, is reaped. Skills are in
+  the memory's git history like its notes.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
   from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>

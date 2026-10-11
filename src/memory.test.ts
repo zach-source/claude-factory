@@ -10,6 +10,7 @@ import {
   coreFor,
   format,
   inboxCount,
+  managerActivity,
   outline,
   parse,
   rank,
@@ -160,4 +161,35 @@ test('each part of CORE.md is cut at its budget, so it cannot grow every brief',
   expect(brief).not.toContain('top lesson 39')
   expect(brief.match(/cut: over the budget/g)).toHaveLength(2)
   expect(brief.length).toBeLessThan(2 * CORE_BUDGET + 200)
+})
+
+test("the manager's activity: what it was asked and ran since, and every skill's uses", () => {
+  const at = (m: number) => `2026-10-11T12:${String(m).padStart(2, '0')}:00.000Z`
+  const ran = (m: number, name: string, input: object) =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: at(m),
+      message: { content: [{ type: 'tool_use', name, input }] },
+    })
+  const lines = [
+    JSON.stringify({ type: 'user', timestamp: at(1), message: { content: 'old ask' } }),
+    ran(2, 'Skill', { skill: 'triage-stuck' }),
+    JSON.stringify({ type: 'user', timestamp: at(5), message: { content: '[factory] patrol\nmail: 2' } }),
+    JSON.stringify({ type: 'user', timestamp: at(5), isMeta: true, message: { content: 'meta' } }),
+    JSON.stringify({
+      type: 'user',
+      timestamp: at(6),
+      message: { content: [{ type: 'tool_result', content: 'x' }] },
+    }),
+    ran(7, 'Bash', { command: 'factory status r-1' }),
+    ran(8, 'Skill', { skill: 'triage-stuck' }),
+    'not json',
+  ]
+  const { activity, used } = managerActivity(lines, Date.parse(at(3)))
+  expect(activity).toEqual([
+    '- 2026-10-11 12:05 asked: [factory] patrol mail: 2',
+    '- 2026-10-11 12:07 Bash: factory status r-1',
+    '- 2026-10-11 12:08 Skill: triage-stuck',
+  ])
+  expect(used.get('triage-stuck')).toEqual({ n: 2, last: Date.parse(at(8)) })
 })
