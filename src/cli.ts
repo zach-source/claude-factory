@@ -46,6 +46,7 @@ import { claudeCommand, command, harnessOf, readMcp, sq } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as memory from './memory'
 import * as ax from './ax'
+import type { Egress } from './ax'
 import * as worker from './worker'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -589,6 +590,10 @@ export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const image =
     process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the worker image for AX tasks')
+  const rig = rigOf(run.repo)
+  const agent = agentOfNode(run, def, node)
+  const harness = harnessOf(agent)
+  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
   const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
   return ax.launch({
@@ -596,7 +601,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     repo: httpsRemote(git(run.worktree, 'remote', 'get-url', 'origin')),
     branch: run.branch,
     image,
-    model: ax.modelOf(def.nodes[node]!.agent ?? def.agent ?? AGENT),
+    model: ax.modelOf(agent),
+    harness: harness!,
+    provider: ax.providerOf(agent),
+    claudeFlags: harness === 'claude' ? vmClaudeFlags(def) : undefined,
+    egress: rig?.egress,
     brief: [
       text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
       `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
@@ -606,10 +615,32 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       FACTORY_FROM: node,
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
       FACTORY_HOME: `${ax.OWN}/home`,
-      // on the workspace volume, so the session survives a suspend
+      // each agent's config and sessions on the workspace volume, so a session survives a suspend
       CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
+      CODEX_HOME: `${ax.OWN}/codex`,
+      PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
     },
   })
+}
+
+/**
+ * the part of workerFlags that holds in a VM: the same tools, no user settings or project-level mods, the
+ * worker system prompt (the image carries it), settings for no auto memory and a compaction backstop. Left
+ * out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global CLAUDE.md to exclude.
+ */
+export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
+  if (process.env.FACTORY_LEAN === '0') return []
+  const settings = {
+    autoMemoryEnabled: false,
+    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
+    skipDangerousModePermissionPrompt: true,
+    autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
+  }
+  return [
+    ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
+    ...['--settings', JSON.stringify(settings)],
+    ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
+  ]
 }
 
 /** the note a resumed worker is sent, written where its launch reads it */
@@ -1625,6 +1656,8 @@ export type Rig = {
   agent?: string
   /** MCP servers every worker here loads, a file in Claude's --mcp-config shape ({ mcpServers }) */
   mcp?: string
+  /** extra HTTPS hosts its workers may reach (the ax runner's egress policy), and the vault keys injected for them */
+  egress?: Egress[]
   /** the factory's params, set for this rig (`--param name=value`) */
   params?: Record<string, string>
 }
@@ -1923,6 +1956,7 @@ async function defineRig(
     agent,
     mcp,
     params,
+    egress,
   }: {
     max?: string
     sweeps?: string
@@ -1931,6 +1965,7 @@ async function defineRig(
     agent?: string
     mcp?: string
     params?: string[]
+    egress?: string[]
   },
 ) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
@@ -1946,6 +1981,19 @@ async function defineRig(
   if (runner !== undefined) {
     if (!(runner in runners)) fail(`--runner is ${Object.keys(runners).join(', ')} (not "${runner}")`)
     if (runner !== DEFAULT_RUNNER) rig.runner = runner
+  }
+  const remote = runners[rig.runner ?? DEFAULT_RUNNER]!.local === false
+  if (remote && mcp !== undefined)
+    fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
+  if (remote && agent !== undefined && !harnessOf(agent))
+    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
+  if (egress?.length) {
+    if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
+    try {
+      rig.egress = egress.map(ax.parseEgress)
+    } catch (err) {
+      fail((err as Error).message)
+    }
   }
   if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
   if (mcp !== undefined) {
@@ -2176,11 +2224,12 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--goal text...] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
-                                     the MCP servers in a Claude-shaped mcpServers file
+                                     the MCP servers in a Claude-shaped mcpServers file; --egress (repeatable, runner ax) lets the VM reach
+                                     those hosts, injecting the agent-vault credential KEY for them
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog | prs         JSON for the manager's views
@@ -2543,11 +2592,13 @@ if (import.meta.main && !queued)
         ]
         const params: string[] = []
         while (args.includes('--param')) params.push(opt('--param') ?? '')
+        const egress: string[] = []
+        while (args.includes('--egress')) egress.push(opt('--egress') ?? '')
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
@@ -2557,6 +2608,7 @@ if (import.meta.main && !queued)
             agent,
             mcp,
             params,
+            egress,
           })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second

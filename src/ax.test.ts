@@ -269,3 +269,181 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     process.env = saved
   }
 })
+
+test("a turn is the headless command of the rig's agent, resuming by that agent's own session", () => {
+  for (const k of ['FACTORY_CLAUDE', 'FACTORY_CODEX', 'FACTORY_PI']) delete process.env[k] // an earlier test's fakes
+  const pi = { piDir: '/o/pi' }
+  expect(worker.turnArgv('codex', 'go', { model: 'o3' })).toEqual([
+    ...['codex', 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
+    ...['-m', 'o3', '--', 'go'],
+  ])
+  expect(worker.turnArgv('codex', '-dash', { session: 'th-1' })).toEqual([
+    ...['codex', 'exec', 'resume', '--json', '--dangerously-bypass-approvals-and-sandbox'],
+    ...['--skip-git-repo-check', '--', 'th-1', '-dash'],
+  ])
+  expect(worker.turnArgv('pi', 'go', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
+    ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
+    ...['--provider', 'anthropic', '--model', 'm', 'go'],
+  ])
+  expect(worker.turnArgv('claude', 'go', { session: 's', claudeFlags: ['--tools', 'Bash'] })).toEqual([
+    ...['claude', '-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'],
+    ...['--tools', 'Bash', '--resume', 's', 'go'],
+  ])
+  expect(
+    worker.sessionIn('codex', '{"type":"thread.started","thread_id":"th-9"}\n{"type":"turn.started"}'),
+  ).toBe('th-9')
+  expect(worker.sessionIn('codex', '{"type":"turn.started"}')).toBeUndefined()
+})
+
+test('a codex worker briefs once, then resumes the thread its first turn named', async () => {
+  const own = join(dir, 'own3')
+  const repo = join(dir, 'repo3')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const codex = join(dir, 'codex')
+  writeFileSync(
+    codex,
+    `#!/bin/sh\necho "$*" >> ${dir}/codex.log\necho '{"type":"thread.started","thread_id":"th-1"}'\n`,
+  )
+  chmodSync(codex, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX: codex,
+    FACTORY_BRIEF: 'codex brief',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    await worker.serve('o3', { once: true })
+    worker.prompt(Buffer.from('more').toString('base64'))
+    await worker.serve('o3', { once: true })
+    const turns = readFileSync(join(dir, 'codex.log'), 'utf8').trim().split('\n')
+    expect(turns[0]).toEndWith('-m o3 -- codex brief')
+    expect(turns[1]).toStartWith('exec resume --json')
+    expect(turns[1]).toEndWith('-m o3 -- th-1 more')
+    expect(worker.poll(0).session).toBe('th-1')
+    expect(existsSync(join(own, 'codex.jsonl'))).toBe(true)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('a pi worker names its own session and keeps it across turns', async () => {
+  const own = join(dir, 'own4')
+  const repo = join(dir, 'repo4')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const pi = join(dir, 'pi')
+  writeFileSync(pi, `#!/bin/sh\necho "$*" >> ${dir}/pi.log\n`)
+  chmodSync(pi, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_HARNESS: 'pi',
+    FACTORY_PI: pi,
+    FACTORY_BRIEF: 'pi brief',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    await worker.serve(undefined, { once: true })
+    worker.prompt(Buffer.from('more').toString('base64'))
+    await worker.serve(undefined, { once: true })
+    const [first, second] = readFileSync(join(dir, 'pi.log'), 'utf8').trim().split('\n')
+    const id = worker.poll(0).session!
+    expect(id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} pi brief`)
+    expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} more`)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('--egress parses hosts, a vault key, and its header and prefix', () => {
+  expect(ax.parseEgress('api.openai.com')).toEqual({ hosts: ['api.openai.com'] })
+  expect(ax.parseEgress('api.openai.com,auth.openai.com=OPENAI')).toEqual({
+    hosts: ['api.openai.com', 'auth.openai.com'],
+    key: 'OPENAI',
+  })
+  expect(ax.parseEgress('api.example.com=EX_KEY:x-api-key:')).toEqual({
+    hosts: ['api.example.com'],
+    key: 'EX_KEY',
+    header: 'x-api-key',
+    prefix: '',
+  })
+  expect(ax.parseEgress('h.example.com=K:Authorization:Token a:b').prefix).toBe('Token a:b')
+  expect(() => ax.parseEgress('https://api.openai.com')).toThrow('not a hostname')
+  expect(() => ax.parseEgress('localhost')).toThrow('not a hostname')
+  expect(() => ax.parseEgress('a.example.com=openai')).toThrow('SCREAMING_SNAKE_CASE')
+  expect(() => ax.parseEgress('a.example.com=K:bad header:')).toThrow('header name')
+})
+
+test("a rig's egress rules follow the defaults, injected only from a named vault", () => {
+  const extra = [ax.parseEgress('api.openai.com=OPENAI'), ax.parseEgress('pypi.org,files.pythonhosted.org')]
+  expect(ax.egressPolicy('', extra).rules.slice(3)).toEqual([
+    { https: { hostnames: ['api.openai.com'] } },
+    { https: { hostnames: ['pypi.org', 'files.pythonhosted.org'] } },
+  ])
+  const rules = ax.egressPolicy('factory', extra).rules
+  expect(rules).toHaveLength(5)
+  expect(rules[3]!.https).toEqual({
+    hostnames: ['api.openai.com'],
+    effects: {
+      replaceHeaders: [
+        {
+          header: 'Authorization',
+          prefix: 'Bearer ',
+          credentialUri: 'ate-secret://agent-vault/factory/OPENAI',
+        },
+      ],
+    },
+  })
+  expect(rules[4]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
+})
+
+test("a codex task gets its harness, its extra egress and OpenAI's placeholder key", () => {
+  writeFileSync(join(dir, 'actor'), '')
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    ax.launch(
+      {
+        name: 't3',
+        repo: 'r',
+        branch: 'b',
+        image: 'i',
+        brief: 'x',
+        harness: 'codex',
+        egress: [ax.parseEgress('api.openai.com=OPENAI')],
+        env: {},
+      },
+      { waitMs: 0 },
+    )
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env).toMatchObject({
+      FACTORY_HARNESS: 'codex',
+      OPENAI_API_KEY: 'placeholder',
+      CODEX_API_KEY: 'placeholder',
+    })
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+    expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(
+      ax.egressPolicy('factory', [ax.parseEgress('api.openai.com=OPENAI')]),
+    )
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
+test("a station's model reads codex's -m too, and pi's provider", () => {
+  expect(ax.modelOf('codex --dangerously-bypass-approvals-and-sandbox -m o3')).toBe('o3')
+  expect(ax.modelOf('pi --provider anthropic --model claude-x')).toBe('claude-x')
+  expect(ax.providerOf('pi --provider anthropic --model claude-x')).toBe('anthropic')
+  expect(ax.providerOf('pi')).toBeUndefined()
+})

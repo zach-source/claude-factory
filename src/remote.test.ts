@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
-import { httpsRemote } from './cli'
+import { httpsRemote, vmClaudeFlags } from './cli'
 import { runnerOf, runners } from './runner'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
@@ -161,4 +161,89 @@ test('rig add --runner names a registered runner, and the error lists them', () 
   // herdr is the default: it is not stored
   expect(factory(['rig', 'add', 'x', r, '--runner', 'herdr']).code).toBe(0)
   expect(JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0].runner).toBeUndefined()
+})
+
+test('rig add --egress and --agent are for a runner that can take them', () => {
+  const r = repo()
+  const add = (...a: string[]) => factory(['rig', 'add', 'x', r, ...a])
+  expect(add('--egress', 'api.openai.com=OPENAI').err).toContain('add --runner ax')
+  expect(add('--runner', 'ax', '--egress', 'https://x.com').err).toContain('not a hostname')
+  expect(add('--runner', 'ax', '--egress', 'api.openai.com=openai').err).toContain('SCREAMING_SNAKE_CASE')
+  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude, codex or pi')
+  expect(add('--runner', 'ax', '--mcp', join(dir, 'mcp.json')).err).toContain('--mcp does not reach')
+  const ok = add(
+    ...['--runner', 'ax', '--agent', 'codex -m o3', '--egress', 'api.openai.com=OPENAI'],
+    ...['--egress', 'pypi.org,files.pythonhosted.org'],
+  )
+  expect(ok.code).toBe(0)
+  expect(JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0]).toMatchObject({
+    runner: 'ax',
+    agent: 'codex -m o3',
+    egress: [{ hosts: ['api.openai.com'], key: 'OPENAI' }, { hosts: ['pypi.org', 'files.pythonhosted.org'] }],
+  })
+})
+
+test("inside a VM Claude keeps the worker's tools and prompt but none of the laptop's settings", () => {
+  const flags = vmClaudeFlags({ maxContextK: 150 })
+  expect(flags.slice(0, 4)).toEqual([
+    '--tools',
+    expect.stringContaining('Bash,Read,Edit'),
+    '--setting-sources',
+    'project,local',
+  ])
+  const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
+  expect(settings).toEqual({
+    autoMemoryEnabled: false,
+    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
+    skipDangerousModePermissionPrompt: true,
+    autoCompactWindow: 300_000,
+  })
+  expect(flags.at(-1)).toBe('/opt/factory/src/worker-system.md')
+})
+
+test("Claude's trust dialog does not hold an AX rig's run: the VM runs the agent headless", () => {
+  const worktree = join(dir, 'wt')
+  mkdirSync(worktree, { recursive: true })
+  const config = join(dir, 'claude-config')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(join(config, '.claude.json'), JSON.stringify({ projects: {} })) // trusts nothing
+  const runDir = join(home, 'runs', 'r3')
+  mkdirSync(join(runDir, 'prompts'), { recursive: true })
+  writeFileSync(join(home, 'dream.stamp'), '')
+  writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(def)}`)
+  writeFileSync(
+    join(runDir, 'run.json'),
+    JSON.stringify({
+      id: 'r3',
+      factory: join(runDir, 'factory.ts'),
+      repo: worktree,
+      goal: 'g',
+      ws: 'w1',
+      worktree,
+      branch: 'factory/r3',
+    }),
+  )
+  const actor = createActor(compile(def)).start()
+  actor.send({ type: 'TICK', at: Date.now() })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  const rig = (runner?: string) =>
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', ...(runner && { runner }) }]),
+    )
+  const tick = () =>
+    JSON.parse(factory(['tick'], { CLAUDE_CONFIG_DIR: config }).out).runs.find(
+      (r: { id: string }) => r.id === 'r3',
+    )
+
+  rig() // a herdr rig waits at the dialog
+  expect(tick().agent).toBe('awaiting trust')
+  rig('ax') // an ax rig goes on to launch, which here has no image to launch with
+  const row = tick()
+  expect(row.agent).not.toBe('awaiting trust')
+  expect(row.error).toContain('FACTORY_AX_IMAGE')
+  rmSync(runDir, { recursive: true })
 })

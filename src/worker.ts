@@ -1,5 +1,5 @@
 // Inside an AX task's microVM: `factory worker serve` is the task's command. It runs the station's
-// Claude headless on the brief, then each prompt the laptop queues (a nudge, a mail, the time warning)
+// agent (Claude, codex or pi) headless on the brief, then each prompt the laptop queues (a nudge, a mail, the time warning)
 // as another turn of the same session. The factory commands a worker runs only append to the outbox;
 // the laptop pulls it with `factory worker poll` and replays it there.
 import {
@@ -37,23 +37,74 @@ export function queue(argv: string[]) {
   appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
 }
 
-/** one Claude turn; returns its session id, read from the stream's init event */
+type Harness = 'claude' | 'codex' | 'pi'
+const harness = (): Harness => (process.env.FACTORY_HARNESS as Harness | undefined) ?? 'claude'
+
+/**
+ * the argv of one headless turn of an agent: the brief when there is no session yet, else the next prompt
+ * resuming it. Claude: `-p --resume <id>`; codex: `exec`, then `exec resume <id>`; pi: `-p --session-id <id>`,
+ * which pi creates on first use. The agents' permission prompts are off: the microVM is the sandbox.
+ */
+export function turnArgv(
+  h: Harness,
+  text: string,
+  o: { model?: string; provider?: string; session?: string; claudeFlags?: string[]; piDir?: string } = {},
+) {
+  const model = (flag: string) => (o.model ? [flag, o.model] : [])
+  switch (h) {
+    case 'claude':
+      return [
+        process.env.FACTORY_CLAUDE ?? 'claude',
+        ...['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'],
+        ...(o.claudeFlags ?? []),
+        ...model('--model'),
+        ...(o.session ? ['--resume', o.session] : []),
+        text,
+      ]
+    case 'codex':
+      return [
+        process.env.FACTORY_CODEX ?? 'codex',
+        ...['exec', ...(o.session ? ['resume'] : [])],
+        ...['--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
+        ...model('-m'),
+        // after --, so a prompt that starts with a dash is not a flag
+        ...['--', ...(o.session ? [o.session] : []), text],
+      ]
+    case 'pi':
+      return [
+        process.env.FACTORY_PI ?? 'pi',
+        ...['-p', '--session-dir', o.piDir!, '--session-id', o.session!],
+        ...(o.provider ? ['--provider', o.provider] : []),
+        ...model('--model'),
+        text,
+      ]
+  }
+}
+
+/** the session a turn's output names: Claude's init event, codex's thread.started; pi's id is ours, given up front */
+export function sessionIn(h: Harness, out: string) {
+  if (h === 'claude') return out.match(/"session_id":"([^"]+)"/)?.[1]
+  if (h === 'codex') return out.match(/"type":"thread\.started"[^\n]*?"thread_id":"([^"]+)"/)?.[1]
+}
+
+/** one turn of the station's agent; returns its session id, given the one before */
 async function turn(text: string, model?: string, session?: string) {
-  const p = Bun.spawn(
-    [
-      process.env.FACTORY_CLAUDE ?? 'claude',
-      ...['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'],
-      ...(model ? ['--model', model] : []),
-      ...(session ? ['--resume', session] : []),
-      text,
-    ],
-    // env spelled out: Bun's default is the env at startup, without what setup() added
-    { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'inherit' },
-  )
+  const h = harness()
+  // pi has no output to read an id from: it takes one on first use
+  const id = h === 'pi' ? (session ?? crypto.randomUUID()) : session
+  const argv = turnArgv(h, text, {
+    model,
+    provider: process.env.FACTORY_PROVIDER,
+    session: id,
+    claudeFlags: process.env.FACTORY_CLAUDE_FLAGS ? JSON.parse(process.env.FACTORY_CLAUDE_FLAGS) : [],
+    piDir: join(own(), 'pi'),
+  })
+  // env spelled out: Bun's default is the env at startup, without what setup() added
+  const p = Bun.spawn(argv, { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'inherit' })
   const out = await new Response(p.stdout).text()
   await p.exited
-  appendFileSync(join(own(), 'claude.jsonl'), out)
-  return out.match(/"session_id":"([^"]+)"/)?.[1] ?? session
+  appendFileSync(join(own(), `${h}.jsonl`), out)
+  return h === 'pi' ? id : (sessionIn(h, out) ?? session)
 }
 
 function sh(cmd: string[], cwd?: string) {

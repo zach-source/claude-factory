@@ -28,8 +28,41 @@ export function taskName(run: string, seq: number) {
   return head + tail
 }
 
-/** the station's model, read from its herdr agent command (`--model 'claude-sonnet-5[1m]'`) */
-export const modelOf = (agent: string) => agent.match(/--model\s+'?([^'\s]+)'?/)?.[1]
+/** where the image keeps the factory (Dockerfile.worker), and with it the workers' system prompt */
+export const FACTORY_DIR = '/opt/factory'
+
+/** the station's model, read from its agent command (`--model 'claude-sonnet-5[1m]'`, codex's `-m o3`) */
+export const modelOf = (agent: string) => agent.match(/(?:^|\s)(?:--model|-m)[\s=]+'?([^'\s]+)'?/)?.[1]
+/** pi's provider, read from its agent command (`--provider anthropic`); pi defaults to google */
+export const providerOf = (agent: string) => agent.match(/(?:^|\s)--provider[\s=]+'?([^'\s]+)'?/)?.[1]
+
+/** the agents a VM can run headless and resume: see worker.ts */
+export type Harness = 'claude' | 'codex' | 'pi'
+
+/**
+ * a rig's extra egress rule: HTTPS to `hosts`, and with a vault `key` the gateway puts that agent-vault credential in
+ * `header` (after `prefix`) on the way out. No key: reachable as it is.
+ */
+export type Egress = { hosts: string[]; key?: string; header?: string; prefix?: string }
+
+const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i
+/**
+ * `--egress <host>[,<host>...][=<KEY>[:<Header>:<Prefix>]]`: hosts, then optionally the vault key that is
+ * injected, and the header and prefix it goes in (default `Authorization` and `Bearer `)
+ */
+export function parseEgress(spec: string): Egress {
+  const eq = spec.indexOf('=')
+  const hosts = (eq < 0 ? spec : spec.slice(0, eq)).split(',')
+  const bad = hosts.find(h => !HOST.test(h))
+  if (bad !== undefined) throw new Error(`--egress host "${bad}" is not a hostname (api.openai.com)`)
+  if (eq < 0) return { hosts }
+  const [key, header, ...prefix] = spec.slice(eq + 1).split(':')
+  if (!/^[A-Z][A-Z0-9_]*$/.test(key!))
+    throw new Error(`--egress key "${key}" is SCREAMING_SNAKE_CASE, as agent-vault names it (OPENAI)`)
+  if (header !== undefined && !/^[A-Za-z][A-Za-z0-9-]*$/.test(header))
+    throw new Error(`--egress header "${header}" is a header name (Authorization)`)
+  return { hosts, key, ...(header !== undefined && { header, prefix: prefix.join(':') }) }
+}
 
 export type Launch = {
   name: string
@@ -39,6 +72,13 @@ export type Launch = {
   image: string
   brief: string
   model?: string
+  /** the agent the VM runs (claude when absent) and, for pi, its provider */
+  harness?: Harness
+  provider?: string
+  /** Claude's flags for a worker: tools, settings, system prompt (what workerFlags gives a pane's Claude) */
+  claudeFlags?: string[]
+  /** the rig's extra egress rules, after the defaults */
+  egress?: Egress[]
   env: Record<string, string>
 }
 
@@ -67,6 +107,9 @@ export function manifest(l: Launch) {
         FACTORY_BRANCH: l.branch,
         // AX v0.3.1's Workspace has no files, so the brief rides in the env
         FACTORY_BRIEF: l.brief,
+        FACTORY_HARNESS: l.harness ?? 'claude',
+        ...(l.provider && { FACTORY_PROVIDER: l.provider }),
+        ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
       }).map(([name, value]) => ({
         name,
         value,
@@ -123,12 +166,12 @@ export function egressCA() {
 }
 
 /**
- * a worker's EgressPolicy: HTTPS to Anthropic and GitHub and nothing else. With FACTORY_AX_VAULT=<vault> the gateway
+ * a worker's EgressPolicy: HTTPS to Anthropic and GitHub, plus the rig's own rules, and nothing else. With FACTORY_AX_VAULT=<vault> the gateway
  * swaps the placeholder in each auth header for that agent-vault vault's credential: `ANTHROPIC` (a Claude OAuth token),
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
  * Basic auth). agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  */
-export function egressPolicy(vault = process.env.FACTORY_AX_VAULT) {
+export function egressPolicy(vault = process.env.FACTORY_AX_VAULT, extra: Egress[] = []) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
   const rule = (hostnames: string[], header: string, prefix: string, key: string) => ({
     https: {
@@ -141,18 +184,23 @@ export function egressPolicy(vault = process.env.FACTORY_AX_VAULT) {
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
       rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'GITHUB'),
       rule(['github.com'], 'Authorization', 'Basic ', 'GITHUB_BASIC'),
+      ...extra.map(({ hosts, key, header, prefix }) =>
+        key
+          ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key)
+          : { https: { hostnames: hosts } },
+      ),
     ],
   }
 }
 
 /** the task's actor appears a moment after `ax apply`; its policy can only be created once it has */
-function createPolicy(task: string, { tries = 30, waitMs = 2000 } = {}) {
+function createPolicy(task: string, extra: Egress[], { tries = 30, waitMs = 2000 } = {}) {
   let err = ''
   for (let i = 0; i < tries; i++) {
     // a kubectl plugin takes kubectl's flags only after its name
     const p = Bun.spawnSync(
       [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
-      { stdin: Buffer.from(JSON.stringify(egressPolicy())) },
+      { stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra))) },
     )
     if (p.exitCode === 0) return
     err = p.stderr.toString().trim()
@@ -169,12 +217,13 @@ export const launch = (l: Launch, { tries = 30, waitMs = 2000 } = {}) => {
   const env = {
     ...l.env,
     FACTORY_CA: egressCA(),
-    // the policy allows only Anthropic's API and GitHub, so skip the telemetry it would refuse
+    // the policy allows only the hosts it names, so skip the telemetry it would refuse
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     // only when the gateway injects: GitHub answers a placeholder Basic header with 400, even for a public clone
     ...(process.env.FACTORY_AX_VAULT && {
-      // Claude sends an OAuth token as `Authorization: Bearer`
-      CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
+      // each agent sends its key as `Authorization: Bearer`; the rig's egress rule names the vault key behind it
+      ...((l.harness ?? 'claude') === 'claude' && { CLAUDE_CODE_OAUTH_TOKEN: 'placeholder' }),
+      ...(l.harness === 'codex' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
       GH_TOKEN: 'placeholder',
       // git's config from the env, so every git in the VM sends the header
       GIT_CONFIG_COUNT: '1',
@@ -184,7 +233,7 @@ export const launch = (l: Launch, { tries = 30, waitMs = 2000 } = {}) => {
   }
   must(['apply', '-f', '-'], manifest({ ...l, env }))
   try {
-    createPolicy(l.name, { tries, waitMs })
+    createPolicy(l.name, l.egress ?? [], { tries, waitMs })
   } catch (e) {
     remove(l.name)
     throw e
