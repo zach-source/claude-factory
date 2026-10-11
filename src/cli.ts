@@ -242,6 +242,16 @@ export function replayable(
   return null
 }
 
+/** an outbox line's argv; null for a line that is not `{argv: string[]}`, which the VM may write */
+export function outboxArgv(line: string): string[] | null {
+  try {
+    const { argv } = JSON.parse(line)
+    return Array.isArray(argv) && argv.every(a => typeof a === 'string') ? argv : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
  * or suspended task is not polled, and a failed or deleted one is gone, like a closed pane
@@ -263,21 +273,21 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   let cursor = existsSync(cursorFile) ? Number(readFileSync(cursorFile, 'utf8')) : 0
   const polled = ax.poll(task, cursor)
   for (const line of polled.lines) {
-    const { argv } = JSON.parse(line) as { argv: string[] }
-    const cmd = side && replayable(argv, side, run.id)
+    const argv = outboxArgv(line)
+    const cmd = side && argv && replayable(argv, side, run.id)
     // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
     const env = { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '', FACTORY_FROM: side?.node }
     const p = cmd ? Bun.spawnSync([CLI, ...cmd], { env }) : null
     if (!p)
       ax.prompt(
         task,
-        `[factory] \`factory ${argv.join(' ')}\` is not yours to run: a worker reports on its own attempt, mails, and adds memory`,
+        `[factory] \`factory ${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, and adds memory`,
       )
     else if (p.exitCode !== 0)
-      ax.prompt(task, `[factory] \`factory ${argv.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
+      ax.prompt(task, `[factory] \`factory ${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
     // the worker pushed before reporting, and the local worktree is what the next launch pushes back:
     // best effort, the report stands either way
-    else if (argv[0] === 'report')
+    else if (argv![0] === 'report')
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
     writeFileSync(cursorFile, String(++cursor))
   }

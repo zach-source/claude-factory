@@ -87,7 +87,7 @@ export function manifest(l: Launch) {
     kind: 'Workspace',
     metadata,
     // ponytail: no git here. AX clones inside the VM before the task's egress policy exists, so the clone
-    // fails and the workspace is still Ready (seen on gtr); `factory worker serve` clones once it can
+    // fails and the workspace is still Ready; `factory worker serve` clones once it can
     spec: {},
   }
   const task = {

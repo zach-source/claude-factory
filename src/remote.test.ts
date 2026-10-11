@@ -147,13 +147,15 @@ test("an outbox replays only the worker's own report, its run's mail and memory,
       line(['report', 'r3', String(seq + 1), 'ready', 'not my attempt']),
       line(['report', 'other', String(seq), 'ready', 'not my run']),
       line(['mail', 'r3', 'manager', 'hi'], 'manager'),
+      'not json',
+      JSON.stringify({ argv: ['report', 'r3', seq] }), // not all strings
     ],
   })
   factory(['tick'])
-  expect(readFileSync(join(home, 'runs', 'r3', 't.cursor'), 'utf8')).toBe('4')
+  expect(readFileSync(join(home, 'runs', 'r3', 't.cursor'), 'utf8')).toBe('6') // a malformed line is refused and passed, not retried every tick
   expect(inbox('r3')).not.toContain('"outcome"')
   expect(inbox('r3')).toContain('"from":"a","to":"manager","text":"hi"') // not as the manager it claimed
-  expect(called().match(/worker prompt/g)).toHaveLength(3) // each refusal told to the worker
+  expect(called().match(/worker prompt/g)).toHaveLength(5) // each refusal told to the worker
   rmSync(join(home, 'runs', 'r3'), { recursive: true })
 })
 
