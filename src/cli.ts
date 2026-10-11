@@ -869,7 +869,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
   // resume the conversation in the same pane, once, as for a pane that closed
   // a just-resumed Claude takes seconds to show: give it the launch grace before calling it gone again
-  if (info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
+  if (runner.local && info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
     if (c.resumes >= 1) {
       send({ type: 'FAIL', seq: c.seq, reason: `the worker's Claude exited in pane ${c.pane}` })
       return status
@@ -879,7 +879,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
     return 'resuming'
   }
-  if (info && !info.agent && !c.session && isClaude) {
+  if (runner.local && info && !info.agent && !c.session && isClaude) {
     const step = relaunch(now - Math.max(c.startedAt, c.nudgedAt), c.nudges)
     if (step === 'fail') {
       send({
@@ -1416,7 +1416,8 @@ export function reapable(
   const workspaces = runs.filter(r => r.isOver && panes.some(p => isIn(p, r))).map(r => r.ws)
   // ponytail: idle and done only; a working duplicate is left to finish, as closing it loses its turn
   const strays = runs
-    .filter(r => !r.isOver)
+    // a remote worker has no pane here: the panes in its workspace are the person's
+    .filter(r => !r.isOver && (!r.pane || runnerOf(r.pane).local))
     .flatMap(r =>
       panes.filter(
         p =>

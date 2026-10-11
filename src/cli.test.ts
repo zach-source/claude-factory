@@ -119,6 +119,9 @@ test("the reaper closes a finished run's workspace and an idle Claude that is no
     p('w3:p5', 'w3', '/wt/cc', 'idle', 'claude'), // another worktree
   ]
   expect(reapable(runs, panes)).toEqual({ workspaces: ['w1'], panes: ['w3:p3'] })
+  // an AX worker has no pane here, so an agent idling in its workspace is the person's, not a stray
+  const remote = [{ ws: 'w3', worktree: '/wt/c', isOver: false, pane: 'ax:f-r1-1' }]
+  expect(reapable(remote, panes)).toEqual({ workspaces: [], panes: [] })
 })
 
 test("a worker command's {params} come from the rig, then FACTORY_<NAME>, then the factory", () => {
