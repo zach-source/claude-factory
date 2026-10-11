@@ -84,19 +84,80 @@ podcertificaterequests                    certificates.k8s.io/v1beta1   true    
 
 ## Design (as built)
 
-### The seam in the runner
+### The Runner interface
 
-A herdr worker is touched in four places: `spawn`, `paneInfo`, `herdr agent prompt` and `herdr pane close`. The run's context already keeps the worker's address in `c.pane`. An AX worker's address is `ax:<task>`, and that prefix routes the four calls to `launchTask`, `taskInfo`, `deliver` and `closeWorker` (`src/cli.ts`, over `src/ax.ts`). The machine and the snapshots are unchanged, and herdr runs take the same code path as before.
+Where a worker runs is one interface, `Runner` in `src/runner.ts`. The reconciler holds a worker's address in the run's context (`c.pane`) and calls `runnerOf(address)` for everything it does to it. A rig's `runner` names the runner that launches its workers.
+
+```ts
+export type Runner = {
+  name: string
+  /** the worker's pane and conversation live on this machine: it can be restarted in place, its transcript read, the trust dialog matters */
+  local: boolean
+  launch(job: Job): string // the worker's address
+  info(run: Run, address: string): WorkerInfo | null // { status, agent?, session? }; null once gone
+  deliver(address: string, text: string): boolean // false: not delivered yet, try next tick
+  close(address: string): void
+  suspend?(address: string): void // park a worker that waits on someone
+  phase?(address: string): string | null // state without side effects, for listings
+}
+export const runners: Record<string, Runner> // the registry
+export function runnerOf(address: string): Runner
+```
+
+`Job` is what a launch needs: the run, factory, station, context, the session to resume (if any), the prompt file, and `brief()` (the whole brief, for a runner whose workers start with no conversation).
+
+- **herdr** is one implementation. Its address is the bare pane id, as before, so runs in flight keep working; `local: true`.
+- **ax** is another (this document). Its address is `ax:<task>`; `local: false`; it implements `suspend`.
+- `runnerOf` reads the address up to its first `:` as a runner name; no registered match means herdr. So a runner other than herdr must give addresses `<name>:<id>`.
+- `local` replaces the old `isAx` branches: a worker that is not local is not restarted in place when it disappears (its session is where it ran), is not relaunched or retyped as a pane's agent would be, has no transcript to read for its context size (no handoff by size), is not held by Claude's trust dialog, and its workspace panes are not reaped as strays.
+
+**Adding a third runner**: write a module that implements `Runner` and register it (`runners.<name> = …`). Then `rig add --runner <name>` accepts it (the error lists the registered names) and nothing in the reconciler changes. The machine and the snapshots do not know runners exist.
 
 ### A station as an AX Task
 
 - **One Task per worker launch**, named `f-<run>-<seq>` (an RFC 1123 label of at most 63 characters, keeping the seq), in atespace `factory` (`FACTORY_AX_ATESPACE`). It has one Workspace of the same name, mounted at `/workspace/w`.
 - **Workspace**: an empty volume. `serve` clones the run's branch into `/workspace/w/repo` itself (`FACTORY_REPO`, `FACTORY_BRANCH`), retrying until the task's egress policy exists. AX's own `git:` workspace clones inside the VM before any policy can exist, fails, and still reports the workspace Ready (seen on gtr). The brief travels in the Task's env as `FACTORY_BRIEF` (v0.3.1's Workspace has no `files`), so it never lands in the repo. Before applying the Task, the laptop pushes the run branch, because the VM clones it from GitHub. A `git@` remote is rewritten to https, because the VM has no ssh key and the egress gateway supplies GitHub's token.
 - **Brief**: the same brief a herdr worker gets, with the laptop's CLI path replaced by `factory` and the worktree path replaced by `/workspace/w/repo`. It adds one line: push to `origin <branch>` before reporting.
-- **Command**: `factory worker serve [--model M]` (`src/worker.ts`). It runs `claude -p --dangerously-skip-permissions --output-format stream-json --verbose` on the brief and takes the session id from the stream. Each queued prompt (`.factory-worker/prompts/`) then runs as another `--resume <session>` turn, one at a time, and the file is deleted only after its turn. **A nudge or a mail reply continues the same session.**
-- **Session survival**: Claude keeps sessions in `~/.claude`, which a resumed task loses, because only `/workspace` is restored. So the Task sets `CLAUDE_CONFIG_DIR=/workspace/w/.factory-worker/claude`, and `serve` reads `state.json` so it never briefs a session twice.
-- **Model**: taken from the station's `agent` string (`--model '…'`). The command is replaced, because `claude-smart` and herdr do not exist in the VM.
+- **Command**: `factory worker serve [--model M]` (`src/worker.ts`). It runs the rig's agent headless on the brief (see Harnesses in the VM) and takes the session id from the first turn. Each queued prompt (`.factory-worker/prompts/`) then runs as another turn of that session, one at a time, and the file is deleted only after its turn. **A nudge or a mail reply continues the same session.**
+- **Session survival**: the agents keep sessions under their config dirs, which a resumed task loses, because only `/workspace` is restored. So the Task sets `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `PI_CODING_AGENT_DIR` under `/workspace/w/.factory-worker/`, and `serve` reads `state.json` so it never briefs a session twice.
+- **Model**: taken from the station's agent string (`--model '…'`, or codex's `-m`). The command is replaced, because `claude-smart` and herdr do not exist in the VM.
 - **Root**: the runner is PID 1 and runs as root, and Claude refuses `--dangerously-skip-permissions` as root unless `IS_SANDBOX=1` is set. The image sets it, because the microVM is the sandbox.
+
+### Harnesses in the VM
+
+The VM runs the agent the rig chose, the one `agentOfNode` gives a pane (the rig's `--agent`, else the station's, else the factory's), told apart by `harnessOf`. The laptop passes it as `FACTORY_HARNESS` (`claude`, `codex` or `pi`); an agent command that is none of them (a script) is refused at launch, and `rig add --runner ax --agent …` refuses it up front. Each turn is headless and has no permission prompts, because the microVM is the sandbox.
+
+| Harness | First turn                                                                                             | Later turns                                       | Session id                                   |
+| ------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------- | -------------------------------------------- |
+| claude  | `claude -p --dangerously-skip-permissions --output-format stream-json --verbose`                       | the same with `--resume <session>`                | `session_id` in the stream's init event      |
+| codex   | `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check [-m M] -- <brief>` | `codex exec resume --json … -- <thread> <prompt>` | `thread_id` of the `thread.started` event    |
+| pi      | `pi -p --session-dir <own>/pi --session-id <uuid> [--provider P] [--model M] <brief>`                  | the same `--session-id`                           | chosen by serve (pi creates it on first use) |
+
+What was checked: `codex exec --help` and `codex exec resume --help` on codex-cli 0.160.1 (flags, `resume [SESSION_ID] [PROMPT]`, which flags resume lacks, so only the model is forwarded), the `thread.started` / `thread_id` event from codex's `exec_events.rs` (Context7, `/openai/codex`), and `pi --help` on pi 0.80.2 (`-p/--print`, `--session-id <id>` "creating it if missing", `--session-dir`). Not run against a live model: no run of either agent against its API was made.
+
+- **claude**: also gets main's worker flags that hold in a VM (`vmClaudeFlags`): `--tools` (the worker tool list), `--setting-sources project,local`, `--system-prompt-file` (the image carries `src/worker-system.md`) and `--settings` with no auto memory, MCP connectors off, skip-permissions accepted and the compaction backstop. Left out because they are the laptop's: the user's hooks and env, its plugin dirs, its global CLAUDE.md (there is none in the VM). `FACTORY_LEAN=0` sends none, as for a pane. The model comes from the `--model` flag as before.
+- **codex**: the key is `OPENAI_API_KEY` (and `CODEX_API_KEY`, which `codex exec` reads), set to `placeholder` when `FACTORY_AX_VAULT` is set. The rig must open `api.openai.com` and name the vault key behind it (Per-rig egress). The image installs `@openai/codex` at a pinned version.
+- **pi**: its provider's key is a different env var per provider, so none is set here: add the right one with `placeholder` to `FACTORY_AX_ENV` and the provider's host and key to `--egress`. `--provider` is read from the agent string. The image installs `@earendil-works/pi-coding-agent` at a pinned version.
+- **MCP**: `--mcp` is refused with the ax runner: the servers' commands would have to exist in the VM.
+
+### Per-rig egress
+
+The default policy is Anthropic and GitHub. A rig adds rules after those:
+
+```
+--egress <host>[,<host>...][=<KEY>[:<Header>:<Prefix>]]     repeatable
+```
+
+Hosts are hostnames. With `=KEY` the gateway puts the agent-vault credential `KEY` (SCREAMING_SNAKE_CASE, as agent-vault names it) in `Header` after `Prefix` (default `Authorization` and `Bearer `; `KEY:x-api-key:` sends the bare key). Without `=KEY` the hosts are reachable and nothing is injected. Without `FACTORY_AX_VAULT` no rule injects. The rules are stored on the rig (`egress` in `rigs.json`: `{hosts, key?, header?, prefix?}[]`), validated by `rig add`, and only for a runner with an egress policy.
+
+```sh
+# a codex rig: OpenAI's API, with OPENAI in the factory vault (agent-vault, next to ANTHROPIC and GITHUB)
+factory rig add api ~/repos/api --runner ax --agent "codex -m gpt-5-codex" --egress api.openai.com=OPENAI
+# more hosts without a key (a package index), and a header that is not Authorization
+factory rig add web ~/repos/web --runner ax --egress pypi.org,files.pythonhosted.org --egress api.example.com=EXAMPLE:x-api-key:
+```
+
+The key itself lives in the agent-vault vault, never on the laptop or in the VM; the policy only names it.
 
 ### Getting `factory report|mail|memory add` back to the laptop
 
@@ -115,8 +176,8 @@ A worker that is idle and has asked the manager (the existing `isAsking`) is sus
 The VM holds no key and no token. Every HTTPS request out goes through Substrate's egress gateway, which decrypts it (sdsmint), checks it against the task's EgressPolicy, and, for a rule with `replaceHeaders`, swaps the placeholder in an auth header for a credential it fetches from its credential provider: agent-vault (`ate-secret://agent-vault/<vault>/<KEY>`). A gateway serves one provider. Substrate's reference provider reads Kubernetes Secrets, which would mean copying keys into them; agent-vault reads them from where they live.
 
 - **Launch** (`src/ax.ts`): reads the gateway's public CA (ClusterTrustBundle `egress-mitm.ate.dev:mitm:primary-bundle`), applies the Task with it in `FACTORY_CA`, then creates the task's policy with `kubectl ate create egress-policy`, retrying until AX has created the actor. A policy that never takes deletes the task.
-- **Placeholders** (only with `FACTORY_AX_VAULT`, because GitHub answers a placeholder Basic header with 400 even for a public clone): `CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` set to `placeholder`, and git's `http.https://github.com/.extraHeader` set to `Authorization: Basic placeholder` through `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0`, so every git in the VM sends it.
-- **Policy**: HTTPS to `api.anthropic.com` (`Authorization: Bearer` ← `ANTHROPIC`), `api.github.com` and `uploads.github.com` (`Authorization: Bearer` ← `GITHUB`), and `github.com` (`Authorization: Basic` ← `GITHUB_BASIC`, base64 of `x-access-token:<token>`, since git sends Basic auth). Nothing else, so the task sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Without `FACTORY_AX_VAULT` the policy has the hosts and no injection.
+- **Placeholders** (only with `FACTORY_AX_VAULT`, because GitHub answers a placeholder Basic header with 400 even for a public clone): `CLAUDE_CODE_OAUTH_TOKEN` (claude) or `OPENAI_API_KEY` and `CODEX_API_KEY` (codex), and `GH_TOKEN`, set to `placeholder`, and git's `http.https://github.com/.extraHeader` set to `Authorization: Basic placeholder` through `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0`, so every git in the VM sends it.
+- **Policy**: HTTPS to `api.anthropic.com` (`Authorization: Bearer` ← `ANTHROPIC`), `api.github.com` and `uploads.github.com` (`Authorization: Bearer` ← `GITHUB`), and `github.com` (`Authorization: Basic` ← `GITHUB_BASIC`, base64 of `x-access-token:<token>`, since git sends Basic auth). Then the rig's own rules, and nothing else, so the task sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Without `FACTORY_AX_VAULT` the policy has the hosts and no injection.
 - **In the VM** (`setup()` in `src/worker.ts`, on every start): writes the CA and points `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` and `SSL_CERT_FILE` at it (the gateway re-signs every host the VM may reach, so it is the only root needed), then clones the run's branch.
 - **Who may fetch**: Substrate makes one actor per task (`spiffe://substrate-actor.local/actor/factory/<task>`). One agent-vault agent, `factory-tasks`, registered as `spiffe://substrate-actor.local/actor/factory/*` with `proxy` on vault `factory`, covers every task in the atespace (agent-vault PR #12), so the runner registers nothing per task.
 - **Where the keys come from** (`hack/agent-vault.yaml`): `ANTHROPIC` is a reference to 1Password `Personal Agents/claude-code-oauth/CLAUDE_CODE_OAUTH_TOKEN` through gtr's 1Password Connect; `GITHUB` and `GITHUB_BASIC` are references to a `github-app` source (agent-vault PR #13) that mints a nixfleet-axel installation token (stigenai org, all repos) with the App's private key read from 1Password, refreshed every 5 minutes and refused once 10 minutes stale. The only Secret is the Connect token (read-only on Personal Agents).
@@ -135,6 +196,7 @@ export FACTORY_AX_CONTEXT=gtr                                # kube context for 
 export FACTORY_AX_VAULT=factory                              # agent-vault vault with ANTHROPIC, GITHUB, GITHUB_BASIC
 export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # optional: more env for the task, never a real key
 factory rig add web ~/repos/web --runner ax                   # rigs.json: "runner": "ax"
+# a codex rig also needs its host and its vault key (OPENAI in the vault): --agent "codex" --egress api.openai.com=OPENAI
 ```
 
 Only that rig's new workers become AX tasks. A worker already running in a pane stays there, and `--runner herdr` switches the rig back. `FACTORY_AX` points at a different `ax` binary.
