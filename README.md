@@ -326,7 +326,9 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
   5-hour) is restarted on the next account: `ccswitch switch-to` moves
   every Claude on the machine to the next account in its sequence whose limit has reset, and
   the worker resumes its session there. With every account at its limit, workers hold (no
-  nudges, no timeout) until the first reset, and the manager hears once.
+  nudges, no timeout) until the first reset, and the manager hears once. `factory manager`
+  does the same for the manager: it checks the manager's transcript each minute and, refused,
+  swaps the account and resumes the manager's session.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
   from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>

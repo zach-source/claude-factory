@@ -587,7 +587,8 @@ export function nextAccount(sequence: string[], active: string, limits: Record<s
  * for the first reset. Returns that wait's end, or 0 to restart now
  */
 function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
-  const file = join(HOME, 'accounts.json')
+  // shared by every factory on the machine, as the account is: one factory's swap is not another's to redo
+  const file = join(homedir(), '.claude-switch-backup', 'factory-limits.json')
   const s = existsSync(file)
     ? readJson<{ at: number; limits: Record<string, number> }>(file)
     : { at: 0, limits: {} }
@@ -692,6 +693,34 @@ export const managerCommand = (extra: string[] = []) => [
   JSON.stringify({ env: { ...withoutFleet().env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } }),
   ...extra,
 ]
+
+/**
+ * runs the manager's Claude until it exits. Its ticks run inside it, so it cannot restart itself: this does.
+ * When its account's usage limit refuses it, the account swaps as for a worker and it resumes its session
+ */
+async function superviseManager(args: string[]) {
+  const i = args.findIndex(a => a === '--resume' || a === '-r')
+  const session = i >= 0 && args[i + 1] ? args[i + 1]! : crypto.randomUUID()
+  const rest = i >= 0 ? args.filter((_, j) => j !== i && j !== i + 1) : args
+  for (let flag = i >= 0 ? '--resume' : '--session-id'; ; flag = '--resume') {
+    const startedAt = Date.now()
+    const child = Bun.spawn(managerCommand([...rest, flag, session]), {
+      stdio: ['inherit', 'inherit', 'inherit'],
+      env: { ...process.env, CLAUDE_CODE_NO_FLICKER: '1' },
+    })
+    let isSwapped = false
+    const watch = setInterval(() => {
+      const hit = limitHit(tailOf(process.cwd(), session))
+      if (hit && hit.at > startedAt && swapAccount(hit, Date.now()) === 0) {
+        isSwapped = true
+        child.kill()
+      }
+    }, 60_000)
+    const code = await child.exited
+    clearInterval(watch)
+    if (!isSwapped) return code
+  }
+}
 
 export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => ({
   env: {
@@ -2180,14 +2209,9 @@ if (import.meta.main)
       case 'beads':
         await beadsPass()
         break
-      case 'manager': {
+      case 'manager':
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
-        const p = Bun.spawnSync(managerCommand(args), {
-          stdio: ['inherit', 'inherit', 'inherit'],
-          env: { ...process.env, CLAUDE_CODE_NO_FLICKER: '1' },
-        })
-        process.exit(p.exitCode ?? 1)
-      }
+        process.exit(await superviseManager(args))
       case 'home':
         console.log(HOME)
         break

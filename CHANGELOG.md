@@ -7,6 +7,7 @@ minor release may change the factory format, the CLI or the run state.
 ## Unreleased
 
 - A worker that hits its account's usage limit restarts on the next account (via `ccswitch switch-to`), resuming its session; with every account limited, workers wait for the first reset instead of timing out.
+- `factory manager` supervises the manager's Claude: refused for a usage limit, it swaps the account and resumes the manager's session. Swaps are recorded for every factory on the machine.
 
 ## 0.4.0 (2026-10-11)
 
