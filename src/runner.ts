@@ -4,7 +4,13 @@ import type { Run } from './cli'
 import type { Ctx, Factory } from './machine'
 
 /** what a runner sees of a worker; `agent` is set while the harness is running in it (herdr: detected in the pane) */
-export type WorkerInfo = { status: string; agent?: string; session?: string }
+export type WorkerInfo = {
+  status: string
+  agent?: string
+  session?: string
+  /** a non-local Claude worker's last transcript entry, where the reconciler reads a usage limit and the context size */
+  tail?: string
+}
 
 /** what a runner needs to start a worker for one station attempt */
 export type Job = {
@@ -24,7 +30,8 @@ export type Job = {
  * A place workers run. To add one (a remote box, another scheduler), write a module that implements this and
  * register it: `runners.<name> = ...`. Then `rig add --runner <name>` accepts it, with no other change. A
  * worker's address is whatever launch returns; herdr's is the bare pane id (runs in flight keep working), every
- * other runner's is `<name>:<id>`, which is how runnerOf finds the runner that owns it.
+ * other runner's is `<name>://<id>`, which is how runnerOf finds the runner that owns it: a herdr id has a `:`
+ * (`wA6:p1`) but never `://`.
  */
 export type Runner = {
   name: string
@@ -49,6 +56,6 @@ export const runners: Record<string, Runner> = {}
 
 /** the runner that owns a worker's address */
 export function runnerOf(address: string): Runner {
-  const name = address.slice(0, Math.max(0, address.indexOf(':')))
-  return runners[name] ?? runners[DEFAULT_RUNNER]!
+  const name = /^(\w+):\/\//.exec(address)?.[1]
+  return (name && runners[name]) || runners[DEFAULT_RUNNER]!
 }

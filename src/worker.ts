@@ -4,13 +4,18 @@
 // the laptop pulls it with `factory worker poll` and replays it there.
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
@@ -174,7 +179,25 @@ export function poll(cursor: number) {
     status: !s || !alive(s.pid) ? 'exited' : s.status,
     session: s?.session,
     lines: lines.slice(cursor),
+    tail: lastTurn(s?.session),
   }
+}
+
+/** a Claude session's last assistant entry: the laptop reads a usage limit and the context size from it */
+export function lastTurn(session?: string) {
+  if (harness() !== 'claude' || !session) return undefined
+  const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  const file = join(dir, 'projects', repo().replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+  if (!existsSync(file)) return undefined
+  const size = statSync(file).size
+  const buf = Buffer.alloc(Math.min(size, 512 * 1024))
+  const fd = openSync(file, 'r')
+  readSync(fd, buf, 0, buf.length, size - buf.length)
+  closeSync(fd)
+  return buf
+    .toString()
+    .split('\n')
+    .findLast(l => l.includes('"type":"assistant"'))
 }
 
 export function prompt(base64: string) {

@@ -123,7 +123,7 @@ test("the reaper closes a finished run's workspace and an idle Claude that is no
   ]
   expect(reapable(runs, panes)).toEqual({ workspaces: ['w1'], panes: ['w3:p3'] })
   // an AX worker has no pane here, so an agent idling in its workspace is the person's, not a stray
-  const remote = [{ ws: 'w3', worktree: '/wt/c', isOver: false, pane: 'ax:f-r1-1' }]
+  const remote = [{ ws: 'w3', worktree: '/wt/c', isOver: false, pane: 'ax://f-r1-1' }]
   expect(reapable(remote, panes)).toEqual({ workspaces: [], panes: [] })
 })
 

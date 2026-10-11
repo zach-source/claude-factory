@@ -47,8 +47,8 @@ test("inside a VM, a worker's report and mail wait in the outbox instead of touc
 })
 
 const def: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'do a', next: { ready: 'done' } } } }
-/** a run as the tick that launched its task left it: working at a, its worker ax:t; returns the worker's seq */
-function launched(id: string) {
+/** a run as the tick that launched its task left it: working at a, its worker ax://t; returns the worker's seq */
+function launched(id: string, policy = true) {
   const runDir = join(home, 'runs', id)
   const worktree = join(dir, 'wt')
   mkdirSync(runDir, { recursive: true })
@@ -68,7 +68,8 @@ function launched(id: string) {
   const actor = createActor(compile(def)).start()
   actor.send({ type: 'TICK', at: Date.now() })
   const seq = actor.getSnapshot().context.seq
-  actor.send({ type: 'SPAWNED', seq, pane: 'ax:t', at: Date.now() })
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: Date.now() })
+  writeFileSync(join(runDir, 't.json'), JSON.stringify({ node: 'a', seq, policy }))
   writeFileSync(
     join(runDir, 'state.json'),
     JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
@@ -101,7 +102,7 @@ test("a tick replays an AX worker's report from its outbox, and the task goes wh
 
   const first = factory(['tick'])
   expect(first.code).toBe(0)
-  expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1', node: 'a', agent: 'idle', pane: 'ax:t' })
+  expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1', node: 'a', agent: 'idle', pane: 'ax://t' })
   expect(readFileSync(join(home, 'runs', 'r1', 't.cursor'), 'utf8')).toBe('1')
   expect(inbox('r1')).toContain('"outcome":"ready"')
   expect(called()).toContain('-a factory ssh t -- factory worker poll 0')
@@ -133,12 +134,70 @@ test('a worker waiting on the manager is suspended, and woken by the answer befo
   factory(['tick'])
   const text = Buffer.from('[factory mail from manager] postgres').toString('base64')
   expect(called()).toContain(`-a factory ssh t -- factory worker prompt ${text}`)
+  rmSync(join(home, 'runs', 'r2'), { recursive: true })
 })
 
-test("a worker's address picks its runner: a bare pane id is herdr's, `<name>:` is that runner's", () => {
+test("an outbox replays only the worker's own report, its run's mail and memory, sent as its station", () => {
+  const seq = launched('r3')
+  const line = (argv: string[], from = 'a') => JSON.stringify({ argv, from, at: 1 })
+  cluster('Running', {
+    status: 'working',
+    lines: [
+      line(['decide', 'r3', 'approve']),
+      line(['report', 'r3', String(seq + 1), 'ready', 'not my attempt']),
+      line(['report', 'other', String(seq), 'ready', 'not my run']),
+      line(['mail', 'r3', 'manager', 'hi'], 'manager'),
+    ],
+  })
+  factory(['tick'])
+  expect(readFileSync(join(home, 'runs', 'r3', 't.cursor'), 'utf8')).toBe('4')
+  expect(inbox('r3')).not.toContain('"outcome"')
+  expect(inbox('r3')).toContain('"from":"a","to":"manager","text":"hi"') // not as the manager it claimed
+  expect(called().match(/worker prompt/g)).toHaveLength(3) // each refusal told to the worker
+  rmSync(join(home, 'runs', 'r3'), { recursive: true })
+})
+
+test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
+  launched('r4', false)
+  const kubectl = join(dir, 'kubectl')
+  writeFileSync(kubectl, `#!/bin/sh\necho "kubectl $*" >> ${calls}\n[ -f ${dir}/actor ]\n`)
+  chmodSync(kubectl, 0o755)
+  cluster('Running', { status: 'working', lines: [] })
+  const first = factory(['tick'], { FACTORY_KUBECTL: kubectl })
+  expect(JSON.parse(first.out).runs[0]).toMatchObject({ agent: 'pending' })
+  expect(called()).not.toContain('worker poll')
+  writeFileSync(join(dir, 'actor'), '')
+  factory(['tick'], { FACTORY_KUBECTL: kubectl })
+  expect(called()).toContain('worker poll')
+  expect(JSON.parse(readFileSync(join(home, 'runs', 'r4', 't.json'), 'utf8')).policy).toBe(true)
+  rmSync(join(home, 'runs', 'r4'), { recursive: true })
+})
+
+test('a VM worker refused for the usage limit is held until the reset, not nudged', () => {
+  launched('r5')
+  const refused = JSON.stringify({
+    type: 'assistant',
+    timestamp: new Date(Date.now() + 1000).toISOString(),
+    error: 'rate_limit',
+    quotaLimits: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: Date.now() / 1000 + 3600 },
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [], tail: refused })
+  factory(['tick']) // learns the session
+  const held = factory(['tick'])
+  expect(JSON.parse(held.out).runs[0]).toMatchObject({ agent: 'usage limit' })
+  expect(readFileSync(join(home, 'runs', 'r5', 'state.json'), 'utf8')).toContain(
+    'at its usage limit (five_hour)',
+  ) // the manager is told
+  expect(called()).not.toContain('worker prompt')
+  rmSync(join(home, 'runs', 'r5'), { recursive: true })
+})
+
+test("a worker's address picks its runner: a bare pane id is herdr's, `<name>://` is that runner's", () => {
   expect(runnerOf('w1-2').name).toBe('herdr')
-  expect(runnerOf('ax:f-r1-1').name).toBe('ax')
-  expect(runnerOf('nope:x').name).toBe('herdr') // not registered: runs in flight keep their herdr behavior
+  expect(runnerOf('wA6:p1').name).toBe('herdr')
+  expect(runnerOf('ax:p1').name).toBe('herdr') // a herdr id, even one that starts like a runner's name
+  expect(runnerOf('ax://f-r1-1').name).toBe('ax')
+  expect(runnerOf('nope://x').name).toBe('herdr') // not registered: runs in flight keep their herdr behavior
   expect(Object.keys(runners).sort()).toEqual(['ax', 'herdr'])
   expect(runners.herdr!.local).toBe(true)
   expect(runners.ax!.local).toBe(false)

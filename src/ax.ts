@@ -13,9 +13,8 @@ export const WS = '/workspace/w'
 export const REPO = `${WS}/repo`
 export const OWN = `${WS}/.factory-worker`
 
-/** a worker's address in the run's context: `ax:<task>` where a herdr worker has its pane id */
-export const isAx = (pane: string | null | undefined): pane is string => !!pane?.startsWith('ax:')
-export const taskOf = (pane: string) => pane.slice(3)
+/** a worker's address in the run's context: `ax://<task>` where a herdr worker has its pane id */
+export const taskOf = (address: string) => address.slice('ax://'.length)
 
 /** an RFC 1123 label of at most 63 characters, unique per worker launch */
 export function taskName(run: string, seq: number) {
@@ -77,8 +76,6 @@ export type Launch = {
   provider?: string
   /** Claude's flags for a worker: tools, settings, system prompt (what workerFlags gives a pane's Claude) */
   claudeFlags?: string[]
-  /** the rig's extra egress rules, after the defaults */
-  egress?: Egress[]
   env: Record<string, string>
 }
 
@@ -130,11 +127,14 @@ export type Poll = {
   status: 'working' | 'idle' | 'exited'
   session?: string
   lines: string[]
+  /** a Claude worker's last transcript entry */
+  tail?: string
 }
 
 function ax(args: string[], stdin?: string) {
   const p = Bun.spawnSync([AX(), ...context(), '-a', ATESPACE(), ...args], {
     stdin: stdin ? Buffer.from(stdin) : undefined,
+    timeout: 30_000, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
   })
   return {
     ok: p.exitCode === 0,
@@ -193,27 +193,24 @@ export function egressPolicy(vault = process.env.FACTORY_AX_VAULT, extra: Egress
   }
 }
 
-/** the task's actor appears a moment after `ax apply`; its policy can only be created once it has */
-function createPolicy(task: string, extra: Egress[], { tries = 30, waitMs = 2000 } = {}) {
-  let err = ''
-  for (let i = 0; i < tries; i++) {
-    // a kubectl plugin takes kubectl's flags only after its name
-    const p = Bun.spawnSync(
-      [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
-      { stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra))) },
-    )
-    if (p.exitCode === 0) return
-    err = p.stderr.toString().trim()
-    Bun.sleepSync(waitMs)
-  }
-  throw new Error(`egress policy for ${task}: ${err}`)
+/**
+ * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
+ * One try: the tick that launched the task does not wait, the next ones try again.
+ */
+export function createPolicy(task: string, extra: Egress[] = []) {
+  // a kubectl plugin takes kubectl's flags only after its name
+  const p = Bun.spawnSync(
+    [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
+    { stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra))), timeout: 30_000 },
+  )
+  return p.exitCode === 0
 }
 
 /**
- * apply the task, then give it its egress policy; until the policy exists the VM can reach nothing, which
- * `serve` waits out. The keys in the VM are placeholders: the gateway puts the real ones in on the way out.
+ * apply the task; its egress policy comes after (createPolicy), and until it exists the VM can reach nothing,
+ * which `serve` waits out. The keys in the VM are placeholders: the gateway puts the real ones in on the way out.
  */
-export const launch = (l: Launch, { tries = 30, waitMs = 2000 } = {}) => {
+export const launch = (l: Launch) => {
   const env = {
     ...l.env,
     FACTORY_CA: egressCA(),
@@ -232,13 +229,7 @@ export const launch = (l: Launch, { tries = 30, waitMs = 2000 } = {}) => {
     }),
   }
   must(['apply', '-f', '-'], manifest({ ...l, env }))
-  try {
-    createPolicy(l.name, l.egress ?? [], { tries, waitMs })
-  } catch (e) {
-    remove(l.name)
-    throw e
-  }
-  return `ax:${l.name}`
+  return `ax://${l.name}`
 }
 export function phase(task: string) {
   const r = ax(['get', 'task', task])

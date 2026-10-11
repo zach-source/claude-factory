@@ -57,26 +57,20 @@ test("a station's model comes from its herdr agent command", () => {
   expect(ax.modelOf('claude-smart --new --dangerously-skip-permissions')).toBeUndefined()
 })
 
-test('a launch applies the task with the run branch, the brief and the CA in its env, then its egress policy', () => {
-  const pane = ax.launch(
-    {
-      name: 'f-r1-1',
-      repo: 'https://github.com/o/app.git',
-      branch: 'factory/r1',
-      image: 'img@sha256:abc',
-      brief: 'do it',
-      model: 'claude-opus-5',
-      env: { FACTORY_FROM: 'implement' },
-    },
-    { waitMs: 0 },
-  )
-  expect(pane).toBe('ax:f-r1-1')
-  const ate = 'kubectl ate create egress-policy f-r1-1 -a factory -f -'
+test('a launch applies the task with the run branch, the brief and the CA in its env, and does not wait for its policy', () => {
+  const pane = ax.launch({
+    name: 'f-r1-1',
+    repo: 'https://github.com/o/app.git',
+    branch: 'factory/r1',
+    image: 'img@sha256:abc',
+    brief: 'do it',
+    model: 'claude-opus-5',
+    env: { FACTORY_FROM: 'implement' },
+  })
+  expect(pane).toBe('ax://f-r1-1')
   expect(logged()).toEqual([
     'kubectl get clustertrustbundle egress-mitm.ate.dev:mitm:primary-bundle -o jsonpath={.spec.trustBundle}',
     '-a factory apply -f -',
-    ate,
-    ate,
   ])
   const [ws, task] = readFileSync(join(dir, 'applied'), 'utf8')
     .split('\n---\n')
@@ -96,6 +90,12 @@ test('a launch applies the task with the run branch, the brief and the CA in its
   expect(env.GIT_CONFIG_COUNT).toBeUndefined()
   expect(task.spec.command).toEqual(['factory', 'worker', 'serve', '--model', 'claude-opus-5'])
   expect(task.spec.workspaces).toEqual([{ name: 'f-r1-1', path: '/workspace/w' }])
+})
+
+test("a task's egress policy is one try: refused until its actor shows, then in", () => {
+  expect(ax.createPolicy('f-r1-1')).toBe(false)
+  expect(ax.createPolicy('f-r1-1')).toBe(true)
+  expect(logged()).toEqual(Array(2).fill('kubectl ate create egress-policy f-r1-1 -a factory -f -'))
   expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy())
 })
 
@@ -103,7 +103,8 @@ test('with a vault named, the task sends placeholder auth headers for the gatewa
   writeFileSync(join(dir, 'actor'), '')
   process.env.FACTORY_AX_VAULT = 'factory'
   try {
-    ax.launch({ name: 't2', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} }, { waitMs: 0 })
+    ax.launch({ name: 't2', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} })
+    ax.createPolicy('t2')
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     const env = Object.fromEntries(
       task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
@@ -118,27 +119,6 @@ test('with a vault named, the task sends placeholder auth headers for the gatewa
     expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy('factory'))
   } finally {
     delete process.env.FACTORY_AX_VAULT
-  }
-})
-
-test('a task whose policy never takes is deleted', () => {
-  const ok = process.env.FACTORY_KUBECTL
-  process.env.FACTORY_KUBECTL = join(dir, 'kubectl-never')
-  writeFileSync(
-    process.env.FACTORY_KUBECTL,
-    `#!/bin/sh\necho "kubectl $*" >> ${calls}\n[ "$1" = get ] && { printf CA; exit 0; }\nexit 1\n`,
-  )
-  chmodSync(process.env.FACTORY_KUBECTL, 0o755)
-  try {
-    expect(() =>
-      ax.launch(
-        { name: 't9', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} },
-        { tries: 2, waitMs: 0 },
-      ),
-    ).toThrow('egress policy for t9')
-    expect(logged().slice(-2)).toEqual(['-a factory delete task t9', '-a factory delete workspace t9'])
-  } finally {
-    process.env.FACTORY_KUBECTL = ok
   }
 })
 
@@ -410,19 +390,16 @@ test("a codex task gets its harness, its extra egress and OpenAI's placeholder k
   writeFileSync(join(dir, 'actor'), '')
   process.env.FACTORY_AX_VAULT = 'factory'
   try {
-    ax.launch(
-      {
-        name: 't3',
-        repo: 'r',
-        branch: 'b',
-        image: 'i',
-        brief: 'x',
-        harness: 'codex',
-        egress: [ax.parseEgress('api.openai.com=OPENAI')],
-        env: {},
-      },
-      { waitMs: 0 },
-    )
+    ax.launch({
+      name: 't3',
+      repo: 'r',
+      branch: 'b',
+      image: 'i',
+      brief: 'x',
+      harness: 'codex',
+      env: {},
+    })
+    ax.createPolicy('t3', [ax.parseEgress('api.openai.com=OPENAI')])
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     const env = Object.fromEntries(
       task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),

@@ -218,6 +218,30 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
   }
 }
 
+/** what the laptop keeps of a task it launched: whose worker it is, and whether its egress policy is in */
+type TaskSide = { node: string; seq: number; egress?: ax.Egress[]; policy: boolean }
+const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
+
+/**
+ * the factory command a VM worker's outbox line may run here, as its station: a report on its own attempt,
+ * mail on its own run, memory add. null for anything else (decide, goto, start...): the VM's agent writes the
+ * outbox, and it may be steered by what it read.
+ */
+export function replayable(
+  argv: string[],
+  side: { node: string; seq: number },
+  run: string,
+): string[] | null {
+  const [cmd, id, seq] = argv
+  if (cmd === 'report' && id === run && seq === String(side.seq)) return argv
+  if (cmd === 'mail' && id === run) return argv
+  if (cmd === 'memory' && id === 'add') {
+    const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
+    return ['memory', 'add', ...rest, '--from', side.node]
+  }
+  return null
+}
+
 /**
  * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
  * or suspended task is not polled, and a failed or deleted one is gone, like a closed pane
@@ -228,20 +252,28 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
   if (phase === 'Pending' || phase === 'Suspended') return { status: phase.toLowerCase(), agent: 'ax' }
   if (phase !== 'Running') return null
+  // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
+  const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
+  if (side && !side.policy) {
+    // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
+    if (!ax.createPolicy(task, side.egress)) return { status: 'pending', agent: 'ax' }
+    writeJson(sideFile(run, task), { ...side, policy: true })
+  }
   const cursorFile = join(runDir(run.id), `${task}.cursor`)
   let cursor = existsSync(cursorFile) ? Number(readFileSync(cursorFile, 'utf8')) : 0
   const polled = ax.poll(task, cursor)
   for (const line of polled.lines) {
-    const { argv, from } = JSON.parse(line) as { argv: string[]; from?: string }
-    // FACTORY_OUTBOX off: here the command must act, not queue itself again
-    const env = {
-      ...process.env,
-      FACTORY_HOME: HOME,
-      FACTORY_OUTBOX: '',
-      ...(from && { FACTORY_FROM: from }),
-    }
-    const p = Bun.spawnSync([CLI, ...argv], { env })
-    if (p.exitCode !== 0)
+    const { argv } = JSON.parse(line) as { argv: string[] }
+    const cmd = side && replayable(argv, side, run.id)
+    // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
+    const env = { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '', FACTORY_FROM: side?.node }
+    const p = cmd ? Bun.spawnSync([CLI, ...cmd], { env }) : null
+    if (!p)
+      ax.prompt(
+        task,
+        `[factory] \`factory ${argv.join(' ')}\` is not yours to run: a worker reports on its own attempt, mails, and adds memory`,
+      )
+    else if (p.exitCode !== 0)
       ax.prompt(task, `[factory] \`factory ${argv.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
     // the worker pushed before reporting, and the local worktree is what the next launch pushes back:
     // best effort, the report stands either way
@@ -249,7 +281,9 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
     writeFileSync(cursorFile, String(++cursor))
   }
-  return polled.status === 'exited' ? null : { status: polled.status, agent: 'ax', session: polled.session }
+  return polled.status === 'exited'
+    ? null
+    : { status: polled.status, agent: 'ax', session: polled.session, tail: polled.tail }
 }
 
 const herdrRunner: Runner = {
@@ -596,8 +630,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
   const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
-  return ax.launch({
-    name: ax.taskName(run.id, c.seq),
+  const name = ax.taskName(run.id, c.seq)
+  const address = ax.launch({
+    name,
     repo: httpsRemote(git(run.worktree, 'remote', 'get-url', 'origin')),
     branch: run.branch,
     image,
@@ -605,7 +640,6 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     harness: harness!,
     provider: ax.providerOf(agent),
     claudeFlags: harness === 'claude' ? vmClaudeFlags(def) : undefined,
-    egress: rig?.egress,
     brief: [
       text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
       `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
@@ -621,6 +655,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
     },
   })
+  const side: TaskSide = { node, seq: c.seq, egress: rig?.egress, policy: ax.createPolicy(name, rig?.egress) }
+  writeJson(sideFile(run, name), side)
+  return address
 }
 
 /**
@@ -1040,24 +1077,31 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
-  // a remote worker's transcript is in its VM, not in ~/.claude here: no limit or context to read
-  const tail = isClaude && runner.local && c.session ? tailOf(run.worktree, c.session) : ''
+  // a remote worker's transcript is in its VM: its runner hands over the end of it
+  const tail =
+    !isClaude || !c.session ? '' : runner.local ? tailOf(run.worktree, c.session) : (info?.tail ?? '')
   const hit = limitHit(tail)
-  if (!hit) clearLimit(servedAt(tail))
+  if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
-    const until = swapAccount(hit, now)
+    // a VM's Claude runs on the vault's token, which ccswitch does not rotate: it waits out the limit, then
+    // the nudge below gives it its next turn
+    const until = runner.local ? swapAccount(hit, now) : hit.resetsAt || hit.at + 3_600_000
     if (until > now) {
-      const paged = join(HOME, 'limit-paged.json')
+      const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
       if (!existsSync(paged) || readJson<number>(paged) < until) {
-        const text = `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+        const text = runner.local
+          ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+          : `The Claude token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
         send({ type: 'MAIL', from: node, to: 'manager', text })
         writeJson(paged, until)
       }
       return 'usage limit'
     }
-    runner.close(c.pane) // its Claude sits at the limit message
-    send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session!) })
-    return 'account swapped'
+    if (runner.local) {
+      runner.close(c.pane) // its Claude sits at the limit message
+      send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session!) })
+      return 'account swapped'
+    }
   }
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   // every turn re-reads the whole context: past the limit the worker hands off to a fresh one

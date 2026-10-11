@@ -336,6 +336,8 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
   nudges, no timeout) until the first reset, and the manager hears once. `factory manager`
   does the same for the manager: it checks the manager's transcript each minute and, refused,
   swaps the account and resumes the manager's session.
+  A worker on the `ax` runner uses the vault's token, which ccswitch does not rotate: it
+  holds until its limit resets.
 - **Manager skills**: the manager gets the factory's own skills, playbooks for the work it
   keeps repeating, from `memory/.manager/.claude/skills/` (an `--add-dir`, so Claude Code picks
   up edits mid-session). `factory manager` records its sessions, and the dream reads what each
