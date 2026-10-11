@@ -570,6 +570,20 @@ export function limitHit(tail: string) {
   return null
 }
 
+/** when a Claude transcript's last turn was answered, not refused for a usage limit; 0 when it was not */
+export function servedAt(tail: string) {
+  for (const line of tail.split('\n').reverse()) {
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type === 'assistant') return e.error ? 0 : Date.parse(e.timestamp)
+    } catch {
+      // the first line of the tail is cut
+    }
+  }
+  return 0
+}
+
 /** the account to move to: the next in ccswitch's sequence after the active one (itself last) whose limit has reset */
 export function nextAccount(sequence: string[], active: string, limits: Record<string, number>, now: number) {
   const i = sequence.indexOf(active)
@@ -586,12 +600,34 @@ export function nextAccount(sequence: string[], active: string, limits: Record<s
  * on it; a hit from before the last move only restarts. With every account at its limit, workers wait
  * for the first reset. Returns that wait's end, or 0 to restart now
  */
+// shared by every factory on the machine, as the account is: one factory's swap is not another's to redo
+const LIMITS = join(homedir(), '.claude-switch-backup', 'factory-limits.json')
+type Limits = { at: number; limits: Record<string, number>; hitAt?: Record<string, number> }
+
+/**
+ * A turn the active account answered after its limit was recorded means the limit is gone (reset early, or
+ * a plan change): forget it, or a stale limit would hold every worker when the other accounts are limited too
+ */
+export function clearLimit(at: number) {
+  if (!at || !existsSync(LIMITS)) return
+  const s = readJson<Limits>(LIMITS)
+  let active: string
+  try {
+    active = readJson<{ activeAccountId: string }>(
+      join(homedir(), '.claude-switch-backup', 'sequence.json'),
+    ).activeAccountId
+  } catch {
+    return
+  }
+  if (!(active in s.limits) || at <= (s.hitAt?.[active] ?? s.at)) return
+  delete s.limits[active]
+  delete s.hitAt?.[active]
+  writeJson(LIMITS, s)
+}
+
 function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
-  // shared by every factory on the machine, as the account is: one factory's swap is not another's to redo
-  const file = join(homedir(), '.claude-switch-backup', 'factory-limits.json')
-  const s = existsSync(file)
-    ? readJson<{ at: number; limits: Record<string, number> }>(file)
-    : { at: 0, limits: {} }
+  const file = LIMITS
+  const s: Limits = existsSync(file) ? readJson<Limits>(file) : { at: 0, limits: {} }
   if (hit.at < s.at) return 0
   let seq: { activeAccountId: string; sequence: string[] }
   try {
@@ -603,6 +639,7 @@ function swapAccount(hit: { at: number; resetsAt: number }, now: number): number
     s.limits[seq.activeAccountId] ?? 0,
     hit.resetsAt || now + 3_600_000,
   )
+  s.hitAt = { ...s.hitAt, [seq.activeAccountId]: hit.at }
   const next = nextAccount(seq.sequence, seq.activeAccountId, s.limits, now)
   const ok =
     next === seq.activeAccountId ||
@@ -720,7 +757,9 @@ async function superviseManager(args: string[]) {
     })
     let isSwapped = false
     const watch = setInterval(() => {
-      const hit = limitHit(tailOf(process.cwd(), session))
+      const tail = tailOf(process.cwd(), session)
+      const hit = limitHit(tail)
+      if (!hit) clearLimit(servedAt(tail))
       if (hit && hit.at > startedAt && swapAccount(hit, Date.now()) === 0) {
         isSwapped = true
         child.kill()
@@ -861,6 +900,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
   const tail = isClaude && c.session ? tailOf(run.worktree, c.session) : ''
   const hit = limitHit(tail)
+  if (!hit) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
     const until = swapAccount(hit, now)
     if (until > now) {

@@ -11,6 +11,7 @@ import {
   lastContext,
   limitHit,
   nextAccount,
+  servedAt,
   prOwner,
   loadFactory,
   missingSweeps,
@@ -301,6 +302,8 @@ test("a usage limit is read from the transcript's last turn, and the next accoun
     resetsAt: 1_800_000_000_000,
   })
   expect(limitHit([refused, turn({})].join('\n'))).toBeNull() // it went on since
+  expect(servedAt([refused, turn({})].join('\n'))).toBeGreaterThan(0)
+  expect(servedAt([turn({}), refused].join('\n'))).toBe(0)
   expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9 }, 5)).toBe('c')
   expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9, c: 9 }, 5)).toBe('a')
   expect(nextAccount(['a', 'b', 'c'], 'b', { a: 9, b: 3, c: 9 }, 5)).toBe('b')
