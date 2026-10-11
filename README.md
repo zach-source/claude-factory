@@ -319,7 +319,7 @@ rows = [
 - **Lean workers**: a Claude worker gets its own settings, not the user's: `--setting-sources
 project,local` plus a `--settings` file that keeps only the user's hooks and environment,
   a short worker system prompt ([src/worker-system.md](src/worker-system.md)) and the tools
-  workers use. The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
+  workers use (MCP tools stay deferred behind ToolSearch; auto memory is off). The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
   cost ~40k tokens on every turn and are left out; the repo's own CLAUDE.md and settings
   still apply. `FACTORY_LEAN=0` launches workers with the user's setup again.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,

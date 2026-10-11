@@ -281,5 +281,7 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   })
   expect(w).toMatchObject({ skipDangerousModePermissionPrompt: true, autoCompactWindow: 400_000 })
   expect('enabledPlugins' in w).toBe(false)
+  expect(w).toMatchObject({ autoMemoryEnabled: false })
+  expect(workerSettings({}, 200, '/h/.claude/CLAUDE.md').claudeMdExcludes).toEqual(['/h/.claude/CLAUDE.md'])
   expect(workerSettings({}, 30).autoCompactWindow).toBe(100_000) // Claude Code's floor
 })

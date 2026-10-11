@@ -555,14 +555,19 @@ function contextOf(worktree: string, session: string) {
 
 /**
  * a worker's own Claude settings, in full: none of the user's (their plugins, agents, skills, global
- * CLAUDE.md and compaction window cost every turn ~40k tokens a worker never uses), so these win. It keeps
- * their hooks (secret guards, herdr's session hook) and environment, never asks before skipping
- * permissions, and compacts well past the handoff limit, as a backstop only
+ * CLAUDE.md, auto memory and compaction window cost every turn tens of thousands of tokens a worker never
+ * uses), so these win. It keeps their hooks (secret guards, herdr's session hook) and environment, never
+ * asks before skipping permissions, and compacts well past the handoff limit, as a backstop only.
+ * The global CLAUDE.md is excluded by path too: worktrees live under the home directory, so Claude Code
+ * would read ~/.claude/CLAUDE.md as an ancestor's project file
  */
 export const workerSettings = (
   user: { env?: Record<string, string>; hooks?: unknown },
   maxContextK: number,
+  globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
 ) => ({
+  claudeMdExcludes: [globalClaudeMd],
+  autoMemoryEnabled: false, // workers share the factory's memory, not the user's per-repo notes
   env: {
     ...user.env,
     ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
@@ -572,8 +577,9 @@ export const workerSettings = (
   skipDangerousModePermissionPrompt: true,
   autoCompactWindow: Math.max(100, 2 * maxContextK) * 1000,
 })
-// what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn
-const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch'
+// what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn.
+// ToolSearch keeps MCP tools deferred: without it every MCP server's tools load into every turn (~60k)
+const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch,ToolSearch'
 
 /** the flags that give a Claude worker its own settings, system prompt and tools; FACTORY_LEAN=0 turns them off */
 function workerFlags(def: Factory) {

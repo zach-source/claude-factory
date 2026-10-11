@@ -7,9 +7,10 @@ minor release may change the factory format, the CLI or the run state.
 ## Unreleased
 
 - Lean workers: a Claude worker runs on its own settings (the user's hooks and environment only),
-  a short worker system prompt and the tools workers use, leaving out the user's plugins, agents,
-  skills, global CLAUDE.md and connectors. A worker's first turn dropped from ~75k tokens of
-  context to ~25k, and every turn carries the difference. `FACTORY_LEAN=0` turns it off.
+  a short worker system prompt and the tools workers use, with MCP tools deferred behind ToolSearch,
+  auto memory off and the global CLAUDE.md excluded. Before any work, an infra-blocks worker's
+  context dropped from ~98k tokens to ~26k, and every turn carries the difference.
+  `FACTORY_LEAN=0` turns it off.
 - Handoff: past `maxContextK` (200k) a Claude worker is asked to commit and report `handoff` with
   notes, and a fresh worker carries on at the same station; at 1.25x it is cut off. Implement
   sessions had reached 567k, re-read on every turn.
