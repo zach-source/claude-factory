@@ -244,6 +244,7 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     FACTORY_CA: 'CA-PEM',
     FACTORY_REPO: origin,
     FACTORY_BRANCH: 'factory/r1',
+    FACTORY_BAZELRC: 'common --remote_cache=grpcs://cache.example',
   })
   try {
     // the branch arrives only after the first try, as egress opens only once the policy exists
@@ -254,6 +255,7 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     expect(process.env.GIT_SSL_CAINFO).toBe(join(own, 'egress-ca.crt'))
     expect(existsSync(join(repo, '.git'))).toBe(true)
     expect(existsSync(join(home, '.gitconfig'))).toBe(false) // git's auth header comes in the task's env
+    expect(readFileSync(join(home, '.bazelrc'), 'utf8')).toBe('common --remote_cache=grpcs://cache.example\n')
     await worker.setup({ tries: 1, waitMs: 0 }) // a resumed task keeps its clone
   } finally {
     process.env = saved

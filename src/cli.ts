@@ -695,6 +695,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     claudeFlags: harness === 'claude' ? vmClaudeFlags(def) : undefined,
     env: {
       ...env,
+      ...rig?.env,
       FACTORY_FROM: node,
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
       FACTORY_HOME: `${ax.OWN}/home`,
@@ -1933,6 +1934,8 @@ export type Rig = {
   mcp?: string
   /** extra HTTPS hosts its workers may reach (the ax runner's egress policy), and the vault keys injected for them */
   egress?: Egress[]
+  /** env for its VM workers (the ax runner), over FACTORY_AX_ENV's: FACTORY_BAZELRC, say, for a remote cache */
+  env?: Record<string, string>
   /** the factory's params, set for this rig (`--param name=value`) */
   params?: Record<string, string>
 }

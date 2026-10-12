@@ -226,6 +226,11 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
     } catch {
       // not root (a test): the agent's tests resolve what they can
     }
+  // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
+  // replaces) go in the home rc, which every workspace reads
+  // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
+  if (process.env.FACTORY_BAZELRC)
+    writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), `${process.env.FACTORY_BAZELRC}\n`)
   // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
   process.env.GOTOOLCHAIN ??= 'local'
   // the VM's only address is link-local, which kube-apiserver will not advertise, so envtest's control plane
