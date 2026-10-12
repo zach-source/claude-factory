@@ -262,7 +262,12 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const phase = ax.phase(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
   if (phase === 'Pending' || phase === 'Suspended') return { status: phase.toLowerCase(), agent: 'ax' }
-  if (phase !== 'Running') return null
+  // gone, and why, kept next to the task's other files: a run's log only says the worker was closed
+  const gone = (why: string) => (
+    writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
+    null
+  )
+  if (phase !== 'Running') return gone(`phase ${phase ?? 'not found'}`)
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
@@ -306,7 +311,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     writeFileSync(cursorFile, String(++cursor))
   }
   return polled.status === 'exited'
-    ? null
+    ? gone(`serve exited (state: ${JSON.stringify(polled.session ?? null)})`)
     : { status: polled.status, agent: 'ax', session: polled.session, tail: polled.tail }
 }
 
