@@ -130,6 +130,8 @@ export type Poll = {
   lines: string[]
   /** a Claude worker's last transcript entry */
   tail?: string
+  /** the end of serve.log: serve's errors and its agent's stderr */
+  log?: string
 }
 
 function ax(args: string[], stdin?: string) {

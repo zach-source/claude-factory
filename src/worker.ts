@@ -23,6 +23,9 @@ const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
 const outbox = () => process.env.FACTORY_OUTBOX ?? join(own(), 'outbox.jsonl')
 const prompts = () => join(own(), 'prompts')
 const stateFile = () => join(own(), 'state.json')
+/** serve's own errors and its agent's stderr: the VM's stdout reaches no log the laptop can read */
+const serveLog = () => join(own(), 'serve.log')
+const logTail = () => (existsSync(serveLog()) ? readFileSync(serveLog(), 'utf8').slice(-2000) : '')
 
 type State = { status: 'working' | 'idle'; session?: string; pid: number }
 const state = (): State | null =>
@@ -173,9 +176,15 @@ async function turn(text: string, model?: string, session?: string) {
     piDir: join(own(), 'pi'),
   })
   // env spelled out: Bun's default is the env at startup, without what setup() added
-  const p = Bun.spawn(argv, { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'inherit' })
+  const p = Bun.spawn(argv, { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'pipe' })
+  const err = new Response(p.stderr).text()
   const out = await new Response(p.stdout).text()
-  await p.exited
+  const code = await p.exited
+  if (code !== 0 || (await err))
+    appendFileSync(
+      serveLog(),
+      `${new Date().toISOString()} ${h} exited ${code}: ${(await err).slice(-4000)}\n`,
+    )
   appendFileSync(join(own(), `${h}.jsonl`), out)
   return h === 'pi' ? id : (sessionIn(h, out) ?? session)
 }
@@ -213,7 +222,16 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
  * the worker: the brief once, then queued prompts in order, one turn at a time. A resumed task restarts
  * it with the workspace as it was, so a session already started is never briefed again.
  */
-export async function serve(model?: string, { idleMs = 1000, once = false } = {}) {
+export async function serve(model?: string, o: { idleMs?: number; once?: boolean } = {}) {
+  try {
+    await serveTurns(model, o)
+  } catch (e) {
+    appendFileSync(serveLog(), `${new Date().toISOString()} serve died: ${(e as Error).stack ?? e}\n`)
+    throw e
+  }
+}
+
+async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) {
   mkdirSync(prompts(), { recursive: true })
   // working from the start: until the first turn there is no state, which poll would read as exited
   save({ status: 'working', session: state()?.session, pid: process.pid })
@@ -251,6 +269,7 @@ export function poll(cursor: number) {
     session: s?.session,
     lines: lines.slice(cursor),
     tail: lastTurn(s?.session),
+    log: logTail(),
   }
 }
 

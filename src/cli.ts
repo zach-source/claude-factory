@@ -311,7 +311,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     writeFileSync(cursorFile, String(++cursor))
   }
   return polled.status === 'exited'
-    ? gone(`serve exited (state: ${JSON.stringify(polled.session ?? null)})`)
+    ? gone(`serve exited; its log: ${polled.log || '(empty)'}`)
     : { status: polled.status, agent: 'ax', session: polled.session, tail: polled.tail }
 }
 
