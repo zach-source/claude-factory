@@ -185,3 +185,75 @@ export function prNeed(pr: Pick<FactoryPrs[number]['prs'][number], 'reviewDecisi
   if (pr.mergeStateStatus === 'BLOCKED') return { word: 'blocked by a rule', color: 'yellow' }
   return { word: 'checking', color: 'gray' }
 }
+
+/** one question the factory puts to the person: a run stuck or parked on something only they can settle */
+export type Interview = {
+  key: string
+  run: string
+  node: string
+  rig?: string
+  kind: 'parked' | 'stuck'
+  question: string
+  options: string[]
+  /** what the worker reported, for the question's context */
+  context: string
+  at: number
+}
+
+/** a worker's `Question:` and `Options: a | b` lines, which the blocked brief asks for */
+function asked(text: string) {
+  const q = text.match(/(?:^|\n)\s*Question:\s*(.+)/i)?.[1]?.trim()
+  const o = text.match(/(?:^|\n)\s*Options:\s*(.+)/i)?.[1]
+  return {
+    question: q,
+    options: o
+      ? o
+          .split('|')
+          .map(s => s.trim())
+          .filter(Boolean)
+      : [],
+  }
+}
+
+/**
+ * the questions open for the person, oldest first: each run parked by its own blocked report or stuck out of
+ * retries. One is answered once the person answered it here, or its station was mailed since, or the run moved.
+ */
+export function interviews(runs: readonly FactoryRun[], answered: Record<string, string> = {}) {
+  const out: Interview[] = []
+  for (const r of runs) {
+    if (!isRunLive(r) || r.gate) continue
+    const last = r.last
+    const parked =
+      r.sub === 'waiting' && last && last.node === r.node && last.outcome === 'blocked' ? last : undefined
+    if (!parked && r.sub !== 'stuck') continue
+    const at = parked ? parked.at : (r.since ?? last?.at ?? 0)
+    const key = `iv:${r.id}@${at}`
+    if (answered[key] || (r.mailedAt ?? 0) > at) continue
+    const context = (parked ? parked.summary : (r.error ?? last?.summary)) ?? ''
+    const a = asked(context)
+    out.push({
+      key,
+      run: r.id,
+      node: r.node!,
+      rig: r.rig,
+      kind: parked ? 'parked' : 'stuck',
+      question:
+        a.question ??
+        (parked
+          ? `${r.node} is parked waiting on something outside the run. What should it do?`
+          : `${r.node} is out of retries. How should it go on?`),
+      options: a.options,
+      context,
+      at,
+    })
+  }
+  return out.sort((a, b) => a.at - b.at)
+}
+
+/** the mail that carries the person's answer to a question: their choice, what they typed, or both */
+export function interviewAnswer(iv: Pick<Interview, 'question'>, choice: string | undefined, note: string) {
+  const said = note.trim()
+  const parts = [choice && `The person chose: ${choice}.`, said && `The person says: ${said}`].filter(Boolean)
+  return parts.length ? `Answering "${line(iv.question, 200)}": ${parts.join(' ')}` : null
+}

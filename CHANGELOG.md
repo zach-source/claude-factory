@@ -4,6 +4,10 @@ Each release is tagged `v<version>` and its version is set in `package.json` and
 `mod/.claude-plugin/plugin.json`. Versions follow [semver](https://semver.org); until 1.0 a
 minor release may change the factory format, the CLI or the run state.
 
+## Unreleased
+
+- The console's Interview tab (8) asks the person each question a run cannot settle on its own: a station parked on their decision or stuck out of retries. A blocked worker ends its summary with `Question:` and, for clear choices, `Options: a | b`, which become buttons; the answer is mailed to the station (waking a parked one, retrying a stuck one), the manager hears of it, and the answered tab keeps the questions and answers.
+
 ## 0.6.0 (2026-10-12)
 
 - The lifecycle factory's approve gate is gone: your merge of the pull request is the gate. Release goes straight to deploy, which parks until a person merges and never merges itself; changes requested on the pull request send the run back to implement, and closing it ends the run with its bead deferred. Across 286 gates the answer was ship 285 times, and a third of shipped runs then waited at deploy for the same person's merge anyway.

@@ -94,7 +94,7 @@ export type FactoryPrs = {
   }[]
 }[]
 
-export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'prs' | 'new' | 'rigs'
+export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'prs' | 'new' | 'rigs' | 'interview'
 /** what the person has typed and not sent */
 export type FactoryDraft = {
   repo: string
@@ -109,6 +109,10 @@ export type FactoryDraft = {
   replies?: Record<string, string>
   /** what the person already answered, per message */
   answered?: Record<string, string>
+  /** the interview view's sub-tab */
+  interviewTab?: 'open' | 'answered'
+  /** the questions answered in the interview view, newest last */
+  interviewed?: { key: string; run: string; node: string; question: string; answer: string; at: number }[]
   /** the mail view's sub-tab */
   mailTab?: 'open' | 'answered'
   /** the board lists finished runs */

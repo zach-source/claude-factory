@@ -43,7 +43,7 @@ test('the rigs tab draws each rig with its live stations, gates and stuck runs, 
       surface,
       component: 'Pane',
       requestId: 'factory',
-      props: { bodyColumns: 100, placement: 'docked' },
+      props: { bodyColumns: 100, placement: 'dock' },
       viewport: { columns: 100, rows: 60 },
     })
     const drawn = JSON.stringify(await ui.drawn())

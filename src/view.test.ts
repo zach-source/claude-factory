@@ -12,6 +12,8 @@ import {
   rigStats,
   sparkline,
   track,
+  interviewAnswer,
+  interviews,
 } from '../mod/hooks/view'
 
 test('track folds loops and marks where the run is', () => {
@@ -185,4 +187,49 @@ test('a pull request names what it waits on, worst first', () => {
   expect(need('REVIEW_REQUIRED', 'BLOCKED')).toBe('needs approval')
   expect(need('APPROVED', 'CLEAN')).toBe('ready to merge')
   expect(need('', 'BLOCKED')).toBe('blocked by a rule')
+})
+
+test("interviews: a run parked on the person or stuck asks a question, with the worker's own options", () => {
+  const runs = [
+    {
+      id: 'p',
+      rig: 'web',
+      node: 'triage',
+      sub: 'waiting',
+      last: {
+        node: 'triage',
+        attempt: 1,
+        outcome: 'blocked',
+        summary: 'Two specs disagree.\nQuestion: Which spec wins?\nOptions: the ADR | the bead',
+        at: 10,
+      },
+    },
+    { id: 's', node: 'verify', sub: 'stuck', error: 'no report within 20 min', since: 5 },
+    // parked on a timer, not on its own blocked report: nothing to ask
+    {
+      id: 't',
+      node: 'soak',
+      sub: 'waiting',
+      last: { node: 'deploy', attempt: 1, outcome: 'deployed', summary: '', at: 3 },
+    },
+    // mailed since it parked: already answered
+    { id: 'm', node: 'plan', sub: 'stuck', since: 4, mailedAt: 9 },
+    { id: 'd', node: 'done' },
+  ]
+  const ivs = interviews(runs)
+  expect(ivs.map(iv => iv.run)).toEqual(['s', 'p'])
+  expect(ivs[1]).toMatchObject({
+    kind: 'parked',
+    question: 'Which spec wins?',
+    options: ['the ADR', 'the bead'],
+  })
+  expect(ivs[0]).toMatchObject({ kind: 'stuck', options: [], context: 'no report within 20 min' })
+  expect(ivs[0]!.question).toContain('out of retries')
+  // answered in the console: gone
+  expect(interviews(runs, { [ivs[1]!.key]: 'the ADR' }).map(iv => iv.run)).toEqual(['s'])
+
+  expect(interviewAnswer(ivs[1]!, 'the ADR', ' and close the bead ')).toBe(
+    'Answering "Which spec wins?": The person chose: the ADR. The person says: and close the bead',
+  )
+  expect(interviewAnswer(ivs[1]!, undefined, '  ')).toBeNull()
 })

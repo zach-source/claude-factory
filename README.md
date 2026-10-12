@@ -33,6 +33,7 @@ In the manager session:
 /factory start lifecycle@improve my-app keep improving it
 /factory                      # the board: runs, stations, workers, gates, manager mail
 /factory status <run>         # one run's full journal
+/factory interview            # questions from runs stuck or parked on your direction; your answer goes to the run
 ```
 
 ## The manager drives
