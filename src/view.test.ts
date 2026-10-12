@@ -39,6 +39,7 @@ test('sparkline, durations, bars and lines', () => {
   ])
   expect(bar(4, 6, 6)).toBe('████░░')
   expect(bar(0, 0, 3)).toBe('░░░')
+  expect(bar(3, 1, 4)).toBe('████') // past its cap: full, never a negative repeat
   expect(line('a  b\nc', 10)).toBe('a b c')
   expect(line('abcdefgh', 5)).toBe('abcd…')
 })

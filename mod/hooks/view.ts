@@ -41,7 +41,8 @@ export function dur(ms: number) {
 
 /** a progress bar `width` cells wide */
 export function bar(done: number, total: number, width: number) {
-  const filled = total ? Math.round((done / total) * width) : 0
+  // a rig can run past its cap (runs it had before the cap, a manager's start): the bar stays full
+  const filled = total ? Math.min(width, Math.max(0, Math.round((done / total) * width))) : 0
   return '█'.repeat(filled) + '░'.repeat(width - filled)
 }
 
