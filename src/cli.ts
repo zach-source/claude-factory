@@ -777,7 +777,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     `- Run tests the way the repo does (its make or devenv targets, not a bare go test): those set up what tests need, such as envtest's KUBEBUILDER_ASSETS.`,
     ...(rig?.env?.FACTORY_NIX_CACHE && existsSync(join(run.worktree, 'devenv.nix'))
       ? [
-          `- The repo's devenv.nix environment is already yours (its tools on PATH, its variables set): use them directly. Do not run devenv shell or devenv test, whose enterShell runs the repo's git hooks for minutes.`,
+          `- The repo's devenv.nix environment is loaded for you when its cache holds it (then DEVENV_ROOT is set): its tools are on PATH and its variables set, so use them directly. Do not run devenv shell or devenv test, whose enterShell runs the repo's git hooks for minutes; without DEVENV_ROOT, use nix shell as below.`,
         ]
       : []),
     `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
