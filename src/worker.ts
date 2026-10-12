@@ -4,7 +4,6 @@
 // the laptop pulls it with `factory worker poll` and replays it there.
 import {
   appendFileSync,
-  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -43,57 +42,6 @@ export function queue(argv: string[]) {
   appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
 }
 
-/** a bd command line that changes the store: the VM's own store takes it, and the laptop's gets it through the outbox */
-export function isBdWrite([cmd, sub]: string[]) {
-  if (['create', 'update', 'close', 'reopen', 'comment'].includes(cmd ?? '')) return true
-  if (cmd === 'comments' || cmd === 'label') return sub === 'add' || sub === 'remove'
-  return cmd === 'dep' && !['list', 'tree', 'cycles'].includes(sub ?? '')
-}
-
-/** the files a bd write reads, as the values they hold: on the laptop the path would name the laptop's file */
-const BD_FILE_FLAGS: Record<string, string> = {
-  '--body-file': '--description',
-  '--design-file': '--design',
-  '--reason-file': '--reason',
-}
-export function inlineBdFiles(args: string[], read = (f: string) => readFileSync(f, 'utf8')) {
-  return args.flatMap((a, i) => {
-    const [flag, value] = a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a]
-    if (BD_FILE_FLAGS[args[i - 1] ?? ''] && !args[i - 1]!.includes('=')) return [] // taken with its flag
-    if (!BD_FILE_FLAGS[flag!]) return [a]
-    const file = value ?? args[i + 1]!
-    return [BD_FILE_FLAGS[flag!]!, file === '-' ? '' : read(file)]
-  })
-}
-
-/** the id bd create printed: `Created issue: <id>`, or the JSON with --json */
-export const createdId = (out: string) =>
-  out.match(/Created issue: (\S+)/)?.[1] ?? out.match(/"id":\s*"([^"]+)"/)?.[1]
-
-/**
- * `bd` in the VM (a shim on the agent's PATH runs this): the VM's own store, loaded from the laptop's open
- * issues, answers, and a write that succeeded is queued for the laptop's store too, a create with the id
- * the VM's store gave it, so later commands naming that id hold on both sides
- */
-export function bd(args: string[]) {
-  const write = isBdWrite(args)
-  const argv = write ? inlineBdFiles(args) : args
-  const p = Bun.spawnSync([process.env.FACTORY_BD ?? '/usr/local/bin/bd', ...argv], {
-    env: { ...process.env },
-    stdin: 'inherit',
-    stdout: 'pipe',
-    stderr: 'inherit',
-  })
-  const out = p.stdout.toString()
-  process.stdout.write(out)
-  if (p.exitCode === 0 && write) {
-    const id =
-      argv[0] === 'create' && !argv.some(a => a === '--id' || a.startsWith('--id=')) && createdId(out)
-    queue(['bd', ...argv, ...(id ? ['--id', id] : [])])
-  }
-  return p.exitCode ?? 1
-}
-
 /**
  * a file the laptop sends in parts (`factory worker put <name> <part> <parts> <base64>`): each part lands on
  * its own, so a part sent again is harmless, and the whole file appears, decoded, once the last is in
@@ -120,34 +68,46 @@ async function sentFile(name: string, { waitMs = 2000, tries = 300 } = {}) {
   return readFileSync(file)
 }
 
+/** bd in the VM: a store of its own, never the laptop's dolt server that the repo's .beads config names */
+const bdEnv = () => ({ ...process.env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' })
+
 /**
- * the VM's beads, when the run has some (FACTORY_BEADS_PREFIX): the laptop sends their copy (gzip of bd export
- * lines) once the task runs, and it loads once into a store of its own (a resumed task keeps it), which the
- * agent's bd finds through BEADS_DIR and the shim
+ * the rig's beads in the VM, when the run has some (FACTORY_BEADS): a clone of the store the laptop syncs to
+ * the repo's GitHub origin (refs/dolt/data), in a directory of its own, since the repo's .beads config names
+ * the laptop's server; the agent's bd finds it through BEADS_DIR. A resumed task keeps it
  */
-async function setupBeads({ waitMs = 2000, tries = 300 } = {}) {
-  if (!process.env.FACTORY_BEADS_PREFIX) return
+export function setupBeads() {
+  if (!process.env.FACTORY_BEADS) return
   const dir = join(own(), 'beads')
-  const bin = join(own(), 'bin')
-  mkdirSync(bin, { recursive: true })
-  writeFileSync(join(bin, 'bd'), '#!/bin/sh\nexec factory worker bd "$@"\n')
-  chmodSync(join(bin, 'bd'), 0o755)
-  Object.assign(process.env, { BEADS_DIR: join(dir, '.beads'), PATH: `${bin}:${process.env.PATH}` })
-  delete process.env.BEADS_DOLT_SHARED_SERVER
-  if (existsSync(join(dir, '.beads'))) return
-  const sent = await sentFile('beads.jsonl.gz', { waitMs, tries })
-  mkdirSync(dir, { recursive: true })
-  const file = join(own(), 'beads.jsonl')
-  writeFileSync(file, Bun.gunzipSync(sent))
-  const real = process.env.FACTORY_BD ?? '/usr/local/bin/bd'
-  for (const cmd of [
-    ['git', 'init', '-q', '.'],
-    [real, 'init', '--prefix', process.env.FACTORY_BEADS_PREFIX ?? 'bd', '-q', '--skip-agents'],
-    [real, 'import', file],
-  ]) {
-    const r = sh(cmd, dir)
-    if (!r.ok) throw new Error(`beads in the VM: ${cmd.join(' ')}: ${r.err}`)
+  if (!existsSync(join(dir, '.beads'))) {
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    for (const cmd of [
+      ['git', 'init', '-q', '.'],
+      ['git', 'remote', 'add', 'origin', process.env.FACTORY_REPO!],
+      [process.env.FACTORY_BD ?? 'bd', 'bootstrap', '-y'],
+    ]) {
+      const p = Bun.spawnSync(cmd, { cwd: dir, env: bdEnv(), stderr: 'pipe' })
+      if (p.exitCode !== 0)
+        throw new Error(`beads in the VM: ${cmd.join(' ')}: ${p.stderr.toString().trim()}`)
+    }
   }
+  Object.assign(process.env, { ...bdEnv(), BEADS_DIR: join(dir, '.beads') })
+}
+
+/**
+ * the VM's bd writes back to GitHub, where the laptop pulls them: pull (merging what the laptop or another
+ * worker pushed since) and push, again when another push won the race. false when it never went through
+ */
+export function syncBeads({ tries = 3 } = {}) {
+  if (!process.env.BEADS_DIR) return true
+  const bd = process.env.FACTORY_BD ?? 'bd'
+  for (let i = 0; i < tries; i++) {
+    const run = (args: string[]) =>
+      Bun.spawnSync([bd, ...args], { env: bdEnv(), stderr: 'pipe' }).exitCode === 0
+    if (run(['dolt', 'pull']) && run(['dolt', 'push'])) return true
+  }
+  return false
 }
 
 type Harness = 'claude' | 'codex' | 'pi'
@@ -236,7 +196,6 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
     // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
     Object.assign(process.env, { NODE_EXTRA_CA_CERTS: ca, GIT_SSL_CAINFO: ca, SSL_CERT_FILE: ca })
   }
-  await setupBeads()
   const remote = process.env.FACTORY_REPO
   if (!remote || existsSync(join(repo(), '.git'))) return
   let err = ''
@@ -259,6 +218,7 @@ export async function serve(model?: string, { idleMs = 1000, once = false } = {}
   // working from the start: until the first turn there is no state, which poll would read as exited
   save({ status: 'working', session: state()?.session, pid: process.pid })
   await setup()
+  setupBeads() // after the clone: both wait on the task's egress policy
   let session = state()?.session
   const set = (status: State['status']) => save({ status, session, pid: process.pid })
   if (!session) {

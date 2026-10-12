@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
-import { beadsSnapshot, httpsRemote, replayable, vmClaudeFlags } from './cli'
+import { httpsRemote, replayable, vmClaudeFlags } from './cli'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
 
@@ -160,7 +160,7 @@ test("an outbox replays only the worker's own report, its run's mail and memory,
   rmSync(join(home, 'runs', 'r3'), { recursive: true })
 })
 
-test('the brief and the beads copy go to the VM over ssh in parts once the task runs, then never again', () => {
+test('files too big for the env (the brief) go to the VM over ssh in parts once the task runs, then never again', () => {
   launched('r6')
   const side = join(home, 'runs', 'r6', 't.json')
   writeFileSync(
@@ -331,98 +331,24 @@ test("Claude's trust dialog does not hold an AX rig's run: the VM runs the agent
   rmSync(runDir, { recursive: true })
 })
 
-test("a VM's bd writes replay on the laptop, but none that reads a laptop file or picks another store", () => {
-  const side = { node: 'implement', seq: 3 }
-  const ok = (argv: string[]) => replayable(argv, side, 'r1')
-  expect(ok(['bd', 'create', 'fix it', '--parent', 'ib-1', '--id', 'ib-1.4'])).not.toBeNull()
-  expect(ok(['bd', 'close', 'ib-1.4', '--reason', 'done in abc123'])).not.toBeNull()
-  expect(ok(['bd', 'dep', 'ib-1.1', '--blocks', 'ib-1.2'])).not.toBeNull()
-  expect(ok(['bd', 'comments', 'add', 'ib-1', 'note'])).not.toBeNull()
-  expect(ok(['bd', 'list'])).toBeNull() // a read: the VM's own store answers it
-  expect(ok(['bd', 'dep', 'tree', 'ib-1'])).toBeNull()
-  expect(ok(['bd', 'create', 'x', '--body-file', '/etc/passwd'])).toBeNull()
-  expect(ok(['bd', 'update', 'ib-1', '--design-file=/etc/hosts'])).toBeNull()
-  expect(ok(['bd', 'create', '-f', 'plan.md'])).toBeNull()
-  expect(ok(['bd', 'update', 'ib-1', '--metadata', '@/etc/hosts'])).toBeNull()
-  expect(ok(['bd', 'close', 'ib-1', '--db', '/tmp/other'])).toBeNull()
-  expect(ok(['bd', 'create', 'x', '--actor', 'manager'])).toBeNull()
-  expect(ok(['bd', 'create', 'x', '--cpu-profile', '/tmp/p'])).toBeNull()
-})
-
-test("a VM's bd inlines the files its writes read, and finds the id a create printed", () => {
-  const read = (f: string) => `contents of ${f}`
-  expect(worker.inlineBdFiles(['create', 't', '--body-file', 'd.md', '-p', '2'], read)).toEqual([
-    'create',
-    't',
-    '--description',
-    'contents of d.md',
-    '-p',
-    '2',
-  ])
-  expect(worker.inlineBdFiles(['close', 'x', '--reason-file=r.txt'], read)).toEqual([
-    'close',
-    'x',
-    '--reason',
-    'contents of r.txt',
-  ])
-  expect(worker.createdId('✓ Created issue: ib-1.4 — fix it\n  Priority: P2')).toBe('ib-1.4')
-  expect(worker.createdId('{"id": "ib-9", "title": "t"}')).toBe('ib-9')
-  expect(worker.isBdWrite(['show', 'ib-1'])).toBe(false)
-  expect(worker.isBdWrite(['label', 'add', 'ib-1', 'factory'])).toBe(true)
-})
-
-test("a VM's snapshot keeps the open issues and the run's own whole, and cuts the rest's long text", () => {
-  const long = 'x'.repeat(2000)
-  const lines = [
-    { id: 'ib-1', status: 'in_progress', description: long },
-    { id: 'ib-1.2', status: 'closed', description: long },
-    { id: 'ib-7', status: 'open', description: long, design: long, comments: [{ text: long }] },
-    { id: 'ib-8', status: 'closed', description: 'gone' },
-  ].map(e => JSON.stringify(e))
-  const snap = beadsSnapshot([...lines, 'not json', ''], 'ib-1').map(l => JSON.parse(l))
-  expect(snap.map(e => e.id)).toEqual(['ib-1', 'ib-1.2', 'ib-7'])
-  expect(snap[0].description).toBe(long)
-  expect(snap[1].description).toBe(long) // the run's own, closed or not
-  expect(snap[2].description).toEndWith("… [cut in the VM's copy]")
-  expect(snap[2].description.length).toBeLessThan(400)
-  expect(snap[2].design).toBeUndefined()
-  expect(snap[2].comments).toBeUndefined()
-})
-
-test.skipIf(!Bun.which('bd'))(
-  "a VM worker's bd answers from its own store and queues its writes for the laptop",
-  async () => {
-    const vm = join(dir, 'vm-beads')
-    mkdirSync(vm, { recursive: true })
-    const saved = { ...process.env }
-    const snapshot = [{ id: 'vb-1', title: 'the run', status: 'open', priority: 2, issue_type: 'epic' }]
-      .map(e => JSON.stringify(e))
-      .join('\n')
-    Object.assign(process.env, {
-      FACTORY_WORKER_DIR: vm,
+test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them first", () => {
+  expect(replayable(['bd', 'close', 'x-1'], { node: 'a', seq: 1 }, 'r1')).toBeNull()
+  const vm = join(dir, 'vm-sync')
+  mkdirSync(vm, { recursive: true })
+  const log = join(vm, 'bd.log')
+  writeFileSync(join(vm, 'bd'), `#!/bin/sh\necho "$* shared=$BEADS_DOLT_SHARED_SERVER" >> ${log}\n`)
+  chmodSync(join(vm, 'bd'), 0o755)
+  const p = Bun.spawnSync([CLI, 'report', 'r1', '1', 'ready', 'done'], {
+    env: {
+      ...process.env,
       FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
-      FACTORY_FROM: 'plan',
-      FACTORY_BEADS_PREFIX: 'vb',
-      FACTORY_BD: Bun.which('bd')!,
-    })
-    delete process.env.FACTORY_REPO
-    try {
-      worker.put('beads.jsonl.gz', 0, 1, Buffer.from(Bun.gzipSync(snapshot)).toString('base64'))
-      await worker.setup()
-      expect(readFileSync(join(vm, 'bin', 'bd'), 'utf8')).toContain('factory worker bd')
-      expect(worker.bd(['create', 'a task', '--parent', 'vb-1', '-t', 'task', '-p', '2'])).toBe(0)
-      expect(worker.bd(['show', 'vb-1'])).toBe(0) // a read: nothing queued
-      const queued = readFileSync(join(vm, 'outbox.jsonl'), 'utf8')
-        .trim()
-        .split('\n')
-        .map(l => JSON.parse(l))
-      expect(queued).toHaveLength(1)
-      expect(queued[0].argv.slice(0, 3)).toEqual(['bd', 'create', 'a task'])
-      expect(queued[0].argv.slice(-2)[0]).toBe('--id')
-      expect(queued[0].argv.at(-1)).toStartWith('vb-1.')
-    } finally {
-      process.env = saved
-    }
-  },
-  60_000,
-)
+      FACTORY_FROM: 'a',
+      FACTORY_BD: join(vm, 'bd'),
+      BEADS_DIR: join(vm, '.beads'),
+      FACTORY_HOME: join(vm, 'nohome'),
+    },
+  })
+  expect(p.exitCode).toBe(0)
+  expect(readFileSync(log, 'utf8')).toBe('dolt pull shared=0\ndolt push shared=0\n')
+  expect(readFileSync(join(vm, 'outbox.jsonl'), 'utf8')).toContain('"report"')
+})

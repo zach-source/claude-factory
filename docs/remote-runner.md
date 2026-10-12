@@ -102,9 +102,13 @@ Pulling means nothing on the cluster ever needs a route back to the laptop.
 
 ### Beads in the VM
 
-The rig's issues live on the laptop, which the VM cannot reach, so a VM worker gets a copy. At launch the laptop runs `bd export` in the run's worktree and keeps the issues that are not closed, plus the run's own (its bead and the bead's children) whole; the others keep their title, status, links and the first 300 characters of their description. Substrate takes no env value past 32 KiB, so the copy (gzipped, 76-138 KB for the rigs measured) does not ride in the task's env: once the task runs, the tick sends it over `ax ssh` in parts (`factory worker put`, under the 128 KiB an argument may be), and `serve` waits for it before the first turn. It loads once into a store of its own under `.factory-worker/beads` (a resumed task keeps it), which the agent's `bd` finds through `BEADS_DIR` and a shim on its `PATH` that runs `factory worker bd`.
+The laptop keeps each rig's issue store in its own dolt server and pushes it to the repo's GitHub origin, where dolt keeps it under `refs/dolt/data`. The VM reaches GitHub through the egress gateway, so it works on that copy:
 
-Reads answer from that copy. A write (`create`, `update`, `close`, `reopen`, `dep`, comments and labels) applies to the copy and, when it succeeds, goes to the outbox; a `create` carries the id the VM's store gave it (`--id`), so later commands naming that id hold on both sides. `--body-file`, `--design-file` and `--reason-file` are inlined in the VM first. The laptop replays a `bd` line only when it is such a write and carries no flag that reads or writes a laptop file or picks another store or actor (`-f`, `--graph`, `--metadata`, `--*-file`, the profiles, `--db`, `--global`, `--actor`...), in the run's worktree as the station's actor, as a pane worker's bd would be. The copy does not refresh during a worker's session.
+- **Launch**: the laptop pushes the rig's store (`bd dolt push` in the run's worktree), so what it wrote since (the run's plan, say) is on GitHub, and sets `FACTORY_BEADS`.
+- **In the VM**: after the repo clone, `serve` runs `bd bootstrap` in `.factory-worker/beads`, a directory of its own with the repo's https origin, since the repo's `.beads` config names the laptop's dolt server; `BEADS_DOLT_SHARED_SERVER=0` keeps bd off it. The agent's `bd` finds the clone through `BEADS_DIR` and is plain bd: reads and writes, ids as bd gives them. A resumed task keeps the clone.
+- **Back**: `factory report` in the VM pulls (merging what was pushed meanwhile) and pushes before it queues the report, retrying when another push won the race. When the laptop replays the report it pulls the rig's store, so the next station sees the worker's writes.
+
+Pushes from a stale copy are refused until it pulls. A pull merges cell by cell, so different fields and new issues from both sides survive; when both sides changed the same field, the later push wins. Measured on a test cluster: a 534-issue store (204 MB) bootstraps in 3 s.
 
 ### Suspend while a worker waits on mail
 
