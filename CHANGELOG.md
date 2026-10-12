@@ -4,7 +4,7 @@ Each release is tagged `v<version>` and its version is set in `package.json` and
 `mod/.claude-plugin/plugin.json`. Versions follow [semver](https://semver.org); until 1.0 a
 minor release may change the factory format, the CLI or the run state.
 
-## Unreleased
+## 0.6.0 (2026-10-12)
 
 - The lifecycle factory's approve gate is gone: your merge of the pull request is the gate. Release goes straight to deploy, which parks until a person merges and never merges itself; changes requested on the pull request send the run back to implement, and closing it ends the run with its bead deferred. Across 286 gates the answer was ship 285 times, and a third of shipped runs then waited at deploy for the same person's merge anyway.
 - AX workers install the tools a repo needs with Nix (single-user, binary cache only, nixpkgs pinned in the image); `serve` adds a localhost entry, `GOTOOLCHAIN=local` and an envtest kube-apiserver wrapper for the VM's link-local address.
