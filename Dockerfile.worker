@@ -29,6 +29,22 @@ RUN curl -fsSL https://github.com/steveyegge/beads/releases/download/v${BD_VERSI
 # the agents a rig can choose (rig add --agent): claude, codex or pi, each run headless by `factory worker serve`
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} \
     @earendil-works/pi-coding-agent@${PI_VERSION} && npm cache clean --force
+# Nix, single-user and owned by root (no daemon and no build users: gVisor refuses setgroups), substituting
+# only from the binary cache: an agent installs a tool it lacks with `nix shell nixpkgs#<pkg>`, nixpkgs pinned
+# here and fetched at build time, so at run time the VM needs only cache.nixos.org
+COPY --from=nixos/nix:2.28.3 /nix /nix
+ARG NIXPKGS_REV=6510408d147d8c5e6d76043e899e9251756f6a75
+RUN mkdir -p /etc/nix && printf '%s\n' \
+    'experimental-features = nix-command flakes' \
+    'build-users-group =' \
+    'sandbox = false' \
+    'max-jobs = 0' \
+    'substituters = https://cache.nixos.org' \
+    'trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=' \
+    > /etc/nix/nix.conf
+ENV PATH=/nix/var/nix/profiles/default/bin:$PATH
+RUN nix registry add --registry /etc/nix/registry.json nixpkgs github:NixOS/nixpkgs/${NIXPKGS_REV} \
+  && nix flake prefetch github:NixOS/nixpkgs/${NIXPKGS_REV}
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=runner /ax-task-runner /usr/local/bin/ax-task-runner
 

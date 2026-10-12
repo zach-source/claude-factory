@@ -671,6 +671,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
     `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
+    `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
     ...(run.bead
       ? [
           `- bd here is the repo's issue store, cloned from GitHub when you started. \`factory report\` pushes your bd changes back before it reports; to share them sooner (or to see others' since), bd dolt pull && bd dolt push.`,

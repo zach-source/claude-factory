@@ -137,6 +137,7 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
       { https: { hostnames: ['api.anthropic.com'] } },
       { https: { hostnames: ['api.github.com', 'uploads.github.com'] } },
       { https: { hostnames: ['github.com'] } },
+      { https: { hostnames: ['cache.nixos.org'] } }, // nix's binary cache: signed, no key
     ],
   })
   const [anthropic, , git] = ax.egressPolicy('factory').rules
@@ -374,13 +375,13 @@ test('--egress parses hosts, a vault key, and its header and prefix', () => {
 
 test("a rig's egress rules follow the defaults, injected only from a named vault", () => {
   const extra = [ax.parseEgress('api.openai.com=OPENAI'), ax.parseEgress('pypi.org,files.pythonhosted.org')]
-  expect(ax.egressPolicy('', extra).rules.slice(3)).toEqual([
+  expect(ax.egressPolicy('', extra).rules.slice(4)).toEqual([
     { https: { hostnames: ['api.openai.com'] } },
     { https: { hostnames: ['pypi.org', 'files.pythonhosted.org'] } },
   ])
   const rules = ax.egressPolicy('factory', extra).rules
-  expect(rules).toHaveLength(5)
-  expect(rules[3]!.https).toEqual({
+  expect(rules).toHaveLength(6)
+  expect(rules[4]!.https).toEqual({
     hostnames: ['api.openai.com'],
     effects: {
       replaceHeaders: [
@@ -392,7 +393,7 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
       ],
     },
   })
-  expect(rules[4]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
+  expect(rules[5]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
 })
 
 test("a codex task gets its harness, its extra egress and OpenAI's placeholder key", () => {

@@ -203,8 +203,22 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
     const ca = join(own(), 'egress-ca.crt')
     writeFileSync(ca, process.env.FACTORY_CA)
     // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
-    Object.assign(process.env, { NODE_EXTRA_CA_CERTS: ca, GIT_SSL_CAINFO: ca, SSL_CERT_FILE: ca })
+    Object.assign(process.env, {
+      NODE_EXTRA_CA_CERTS: ca,
+      GIT_SSL_CAINFO: ca,
+      SSL_CERT_FILE: ca,
+      NIX_SSL_CERT_FILE: ca,
+    })
   }
+  // the VM has no /etc/hosts, so localhost does not resolve (a test's local API server, say)
+  if (!existsSync('/etc/hosts') || !/^127\.0\.0\.1\s+localhost\b/m.test(readFileSync('/etc/hosts', 'utf8')))
+    try {
+      appendFileSync('/etc/hosts', '127.0.0.1 localhost\n::1 localhost\n')
+    } catch {
+      // not root (a test): the agent's tests resolve what they can
+    }
+  // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
+  process.env.GOTOOLCHAIN ??= 'local'
   const remote = process.env.FACTORY_REPO
   if (!remote || existsSync(join(repo(), '.git'))) return
   let err = ''

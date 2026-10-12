@@ -187,6 +187,8 @@ export function egressPolicy(vault = process.env.FACTORY_AX_VAULT, extra: Egress
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
       rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'GITHUB'),
       rule(['github.com'], 'Authorization', 'Basic ', 'GITHUB_BASIC'),
+      // the binary cache the image's Nix installs tools from; its packages are signed
+      { https: { hostnames: ['cache.nixos.org'] } },
       ...extra.map(({ hosts, key, header, prefix }) =>
         key
           ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key)
