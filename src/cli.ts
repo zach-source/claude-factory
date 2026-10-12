@@ -705,6 +705,12 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, and pushing the worktree back would be refused every tick: the next attempt starts from its commits
   Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', '--autostash', 'origin', run.branch])
+  // what of the stash would not go back on (bd's export, which both sides rewrote) takes the worker's version;
+  // the stash stays in git stash list
+  const unmerged = Bun.spawnSync(['git', '-C', run.worktree, 'diff', '--name-only', '--diff-filter=U'])
+    .stdout.toString()
+    .trim()
+  if (unmerged) Bun.spawnSync(['git', '-C', run.worktree, 'checkout', 'HEAD', '--', ...unmerged.split('\n')])
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
   const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
   const name = ax.taskName(run.id, c.seq)

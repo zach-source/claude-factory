@@ -404,7 +404,7 @@ test("a launch starts from a gone worker's pushed commits instead of pushing the
   writeFileSync(join(vm, 'issues.jsonl'), 'a\nb\n')
   sh(vm, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'work')
   sh(vm, 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/r4')
-  writeFileSync(join(worktree, 'issues.jsonl'), 'a\nb\n')
+  writeFileSync(join(worktree, 'issues.jsonl'), 'a\nc\n')
 
   const runDir = join(home, 'runs', 'r4')
   mkdirSync(join(runDir, 'prompts'), { recursive: true })
@@ -430,6 +430,7 @@ test("a launch starts from a gone worker's pushed commits instead of pushing the
   const row = JSON.parse(out).runs.find((r: { id: string }) => r.id === 'r4')
   expect(row.error).toBeNull()
   expect(sh(worktree, 'git', 'log', '-1', '--format=%s')).toBe('work')
+  expect(sh(worktree, 'git', 'status', '--short')).toBe('') // the export the stash could not put back is the worker's
   expect(called()).toContain('apply -f -')
   rmSync(runDir, { recursive: true })
 })
