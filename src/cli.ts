@@ -1064,7 +1064,8 @@ export const managerCommand = (extra: string[] = []) => [
   'claude',
   '--model',
   'opus', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
-  '--allow-dangerously-skip-permissions',
+  // the person's own default mode (auto) refuses the production reads a patrol needs
+  ...['--permission-mode', 'bypassPermissions'],
   '--strict-mcp-config', // and no --mcp-config: no MCP servers
   '--no-chrome',
   '--tools',
@@ -1083,7 +1084,7 @@ export const managerCommand = (extra: string[] = []) => [
 async function superviseManager(args: string[]) {
   const i = args.findIndex(a => a === '--resume' || a === '-r')
   const session = i >= 0 && args[i + 1] ? args[i + 1]! : crypto.randomUUID()
-  // its skills: an --add-dir's .claude/skills, which Claude Code watches, so the dream's edits apply at once
+  // its skills: an --add-dir's .claude/skills, which Claude Code watches, so one it installs applies at once
   mkdirSync(memory.skillsDir(MEMORY), { recursive: true })
   const rest = [
     ...(i >= 0 ? args.filter((_, j) => j !== i && j !== i + 1) : args),
@@ -1645,6 +1646,21 @@ function managerSince(since: number) {
   return { activity: activity.slice(-400), skills } // ponytail: the newest 400 lines; a day's patrols fit
 }
 
+/** the manager hears once of each set of skill proposals waiting on its review: the next patrol takes it */
+function skillMail(now: number) {
+  const file = join(HOME, 'skills.json')
+  const pending = memory.pendingSkills(MEMORY)
+  const key = JSON.stringify(pending.map(p => [p.name, p.change]))
+  if (key === (existsSync(file) ? readFileSync(file, 'utf8') : '[]')) return []
+  writeFileSync(file, key)
+  if (!pending.length) return []
+  const text = [
+    `The dream proposed ${pending.length} manager skill change(s). Read each file, check its commands are right and safe for the factory, then \`${CLI} skills install <name>\` or \`${CLI} skills reject <name> <why>\`:`,
+    ...pending.map(p => `- ${p.name} (${p.change}): ${p.description} (${p.file})`),
+  ].join('\n')
+  return [{ run: 'factory', from: 'dream', text, at: now }]
+}
+
 const commitMemory = (message: string) => {
   git(MEMORY, 'add', '-A')
   if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
@@ -1852,6 +1868,7 @@ async function tick(isPatrol = false) {
         out.runs.push({ id, error: (err as Error).message })
       }
     }
+    out.manager.push(...skillMail(now))
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
     out.runs.push(
       ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
@@ -2644,6 +2661,8 @@ const usage = `factory — herdr software factories on xstate
                                      inbox; one an existing note already says counts as that note helping
   memory helped <note path...>       a note helped: the dream ranks notes by this
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
+  skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
+                                     once reviewed, or reject it, saying why
                                      (each tick starts one a day)
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
@@ -2792,6 +2811,21 @@ if (import.meta.main && !queued)
       case 'dream':
         console.log(await dream())
         break
+      case 'skills': {
+        const [verb, name, ...why] = args
+        if (!verb) console.log(JSON.stringify(memory.pendingSkills(MEMORY), null, 2))
+        else if (verb === 'install') {
+          memory.installSkill(MEMORY, name ?? fail('skills install <name>'))
+          commitMemory(`the manager installed the skill ${name}`)
+          console.log(`installed ${name}: the manager's Claude picks it up now`)
+        } else if (verb === 'reject') {
+          if (!why.length) fail('skills reject <name> <why>: the dream learns from the reason')
+          memory.rejectSkill(MEMORY, name ?? fail('skills reject <name> <why>'), why.join(' '))
+          commitMemory(`the manager rejected the skill ${name}`)
+          console.log(`rejected ${name}; the dream reads why`)
+        } else fail('skills [install <name> | reject <name> <why>]')
+        break
+      }
       case 'loop': {
         const ms = args[0] === '--interval' ? Number(args[1]) : 5000
         if (!(ms >= 1000)) fail('usage: factory loop [--interval ms], at least 1000')

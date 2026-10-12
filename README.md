@@ -344,8 +344,12 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
   keeps repeating, from `memory/.manager/.claude/skills/` (an `--add-dir`, so Claude Code picks
   up edits mid-session). `factory manager` records its sessions, and the dream reads what each
   was asked and ran since the last dream: work done the same way three or more times becomes a
-  skill, and a skill unused for 30 days, or one that no longer fits, is reaped. Skills are in
-  the memory's git history like its notes.
+  proposed skill, and a skill unused for 30 days, or one that no longer fits, is proposed for
+  reaping. The dream writes proposals to `memory/.manager/skills/` (Claude Code refuses an
+  unattended write under `.claude/`), and nothing installs on its own: the next tick mails the
+  manager the new, changed and reaped ones, and it reads each and runs `factory skills install
+<name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
+  are in the memory's git history like its notes.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
   from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
