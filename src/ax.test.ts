@@ -223,6 +223,35 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
 })
 
+test("a rig's shared Dolt remote is what the VM's beads clone from, with only a placeholder password", () => {
+  const own = join(dir, 'own-beads')
+  const bd = join(dir, 'bd-boot')
+  // bootstrap records what it was given, and makes the embedded store a real one would
+  writeFileSync(
+    bd,
+    `#!/bin/sh\n{ echo "$*"; cat .beads/config.yaml; git config --local remote.origin.url; echo "pw=$DOLT_REMOTE_PASSWORD"; } >> ${join(dir, 'bd-boot.log')}\nmkdir -p .beads/embeddeddolt\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  delete process.env.DOLT_REMOTE_PASSWORD
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_BEADS_REMOTE: 'https://dolt.example.com:50051/app_beads',
+    FACTORY_BD: bd,
+  })
+  try {
+    worker.setupBeads()
+    worker.setupBeads() // a resumed task keeps its clone
+    expect(readFileSync(join(dir, 'bd-boot.log'), 'utf8')).toBe(
+      'bootstrap -y\nsync.remote: "https://dolt.example.com:50051/app_beads"\npw=placeholder\n',
+    )
+    expect(process.env.BEADS_DIR).toBe(join(own, 'beads', '.beads'))
+  } finally {
+    process.env = saved
+  }
+})
+
 test('setup trusts the CA and clones the branch once, retrying while egress is closed', async () => {
   const origin = join(dir, 'origin.git')
   const seed = join(dir, 'seed')
@@ -383,6 +412,31 @@ test('--egress parses hosts, a vault key, and its header and prefix', () => {
   expect(() => ax.parseEgress('localhost')).toThrow('not a hostname')
   expect(() => ax.parseEgress('a.example.com=openai')).toThrow('SCREAMING_SNAKE_CASE')
   expect(() => ax.parseEgress('a.example.com=K:bad header:')).toThrow('header name')
+})
+
+test('a rig egress rule on another port names it, as a Dolt remotesapi needs', () => {
+  const dolt = {
+    hosts: ['dolt.example.com'],
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+    port: 50051,
+  }
+  expect(ax.egressPolicy('factory', [dolt]).rules[4]).toEqual({
+    https: {
+      hostnames: ['dolt.example.com'],
+      ports: { numbers: [50051] },
+      effects: {
+        replaceHeaders: [
+          {
+            header: 'Authorization',
+            prefix: 'Basic ',
+            credentialUri: 'ate-secret://agent-vault/factory/DOLT_BASIC',
+          },
+        ],
+      },
+    },
+  })
 })
 
 test("a rig's egress rules follow the defaults, injected only from a named vault", () => {

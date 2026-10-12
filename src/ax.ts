@@ -40,9 +40,9 @@ export type Harness = 'claude' | 'codex' | 'pi'
 
 /**
  * a rig's extra egress rule: HTTPS to `hosts`, and with a vault `key` the gateway puts that agent-vault credential in
- * `header` (after `prefix`) on the way out. No key: reachable as it is.
+ * `header` (after `prefix`) on the way out. No key: reachable as it is. `port` when not 443 (a Dolt remotesapi)
  */
-export type Egress = { hosts: string[]; key?: string; header?: string; prefix?: string }
+export type Egress = { hosts: string[]; key?: string; header?: string; prefix?: string; port?: number }
 
 const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i
 /**
@@ -176,9 +176,10 @@ export function egressCA() {
  */
 export function egressPolicy(vault = process.env.FACTORY_AX_VAULT, extra: Egress[] = []) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
-  const rule = (hostnames: string[], header: string, prefix: string, key: string) => ({
+  const rule = (hostnames: string[], header: string, prefix: string, key: string, port?: number) => ({
     https: {
       hostnames,
+      ...(port && { ports: { numbers: [port] } }),
       ...(vault && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
     },
   })
@@ -189,10 +190,10 @@ export function egressPolicy(vault = process.env.FACTORY_AX_VAULT, extra: Egress
       rule(['github.com'], 'Authorization', 'Basic ', 'GITHUB_BASIC'),
       // the binary cache the image's Nix installs tools from; its packages are signed
       { https: { hostnames: ['cache.nixos.org'] } },
-      ...extra.map(({ hosts, key, header, prefix }) =>
+      ...extra.map(({ hosts, key, header, prefix, port }) =>
         key
-          ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key)
-          : { https: { hostnames: hosts } },
+          ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port)
+          : { https: { hostnames: hosts, ...(port && { ports: { numbers: [port] } }) } },
       ),
     ],
   }

@@ -254,6 +254,18 @@ export function outboxArgv(line: string): string[] | null {
 }
 
 /**
+ * the rig's beads to or from where its VMs share them: its beadsRemote (the laptop's server pushes, as the
+ * remote's user), else the repo's GitHub origin
+ */
+function syncRigBeads(run: Run, way: 'push' | 'pull') {
+  const r = rigOf(run.repo)?.beadsRemote
+  return Bun.spawnSync(['bd', 'dolt', way, ...(r ? ['--remote', r.name] : [])], {
+    cwd: run.worktree,
+    env: { ...process.env, ...(r && { DOLT_REMOTE_USER: r.user }) },
+  })
+}
+
+/**
  * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
  * or suspended task is not polled, and a failed or deleted one is gone, like a closed pane
  */
@@ -303,10 +315,10 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
     // the worker pushed before reporting, and the local worktree is what the next launch pushes back:
     // best effort, the report stands either way
-    // the same for its bd writes, which it pushed to GitHub's copy of the rig's beads
+    // the same for its bd writes, which it pushed where the rig's VMs share its beads
     else if (argv![0] === 'report') {
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
-      if (run.bead) Bun.spawnSync(['bd', 'dolt', 'pull'], { cwd: run.worktree })
+      if (run.bead) syncRigBeads(run, 'pull')
     }
     writeFileSync(cursorFile, String(++cursor))
   }
@@ -674,16 +686,17 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
     ...(run.bead
       ? [
-          `- bd here is the repo's issue store, cloned from GitHub when you started. \`factory report\` pushes your bd changes back before it reports; to share them sooner (or to see others' since), bd dolt pull && bd dolt push.`,
+          `- bd here is the repo's issue store, cloned when you started from where the factory shares it. \`factory report\` pushes your bd changes back before it reports; to share them sooner (or to see others' since), bd dolt pull && bd dolt push.`,
         ]
       : []),
   ].join('\n')
   const hasRunBeads = !!run.bead && hasBeads(run.repo)
   // Substrate takes no env value past 32 KiB, and a brief with its bead's spec can pass that: it goes over
-  // ssh once the task runs (see taskInfo). The VM clones the rig's beads from GitHub itself (FACTORY_BEADS)
+  // ssh once the task runs (see taskInfo). The VM clones the rig's beads itself (FACTORY_BEADS), from its
+  // beadsRemote or else the repo's GitHub origin
   writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
-  // what the laptop wrote since its last push (this run's plan, say) must be on GitHub before the VM clones
-  if (hasRunBeads) Bun.spawnSync(['bd', 'dolt', 'push'], { cwd: run.worktree })
+  // what the laptop wrote since its last push (this run's plan, say) must be shared before the VM clones
+  if (hasRunBeads) syncRigBeads(run, 'push')
   const address = ax.launch({
     name,
     repo: httpsRemote(git(run.worktree, 'remote', 'get-url', 'origin')),
@@ -704,6 +717,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       CODEX_HOME: `${ax.OWN}/codex`,
       PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
       ...(hasRunBeads && { FACTORY_BEADS: '1' }),
+      ...(hasRunBeads &&
+        rig?.beadsRemote && {
+          FACTORY_BEADS_REMOTE: rig.beadsRemote.url,
+          DOLT_REMOTE_USER: rig.beadsRemote.user,
+        }),
     },
   })
   const side: TaskSide = {
@@ -1936,6 +1954,12 @@ export type Rig = {
   egress?: Egress[]
   /** env for its VM workers (the ax runner), over FACTORY_AX_ENV's: FACTORY_BAZELRC, say, for a remote cache */
   env?: Record<string, string>
+  /**
+   * a Dolt server VMs share the rig's beads through, instead of the repo's GitHub origin: `name` is the remote
+   * in the laptop's store, `url` the address a VM reaches it at (through the egress gateway, which injects the
+   * password for `user`)
+   */
+  beadsRemote?: { name: string; url: string; user: string }
   /** the factory's params, set for this rig (`--param name=value`) */
   params?: Record<string, string>
 }
@@ -2554,7 +2578,7 @@ if (queued) {
   // report that went without them would end the VM, and its writes with it
   if (cmd === 'report' && !worker.syncBeads()) {
     console.error(
-      'refused: your bd changes did not reach GitHub (bd dolt pull && bd dolt push failed); fix that, then report again',
+      'refused: your bd changes were not shared (bd dolt pull && bd dolt push failed); fix that, then report again',
     )
     process.exit(1)
   }
