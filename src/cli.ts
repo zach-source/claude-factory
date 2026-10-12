@@ -703,8 +703,19 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const harness = harnessOf(agent)
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
-  // worktree, and pushing the worktree back would be refused every tick: the next attempt starts from its commits
-  Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', '--autostash', 'origin', run.branch])
+  // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
+  // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
+  const pull = Bun.spawnSync([
+    'git',
+    '-C',
+    run.worktree,
+    'pull',
+    '--rebase',
+    '--autostash',
+    'origin',
+    run.branch,
+  ])
+  if (pull.exitCode !== 0) Bun.spawnSync(['git', '-C', run.worktree, 'rebase', '--abort'])
   // what of the stash would not go back on (bd's export, which both sides rewrote) takes the worker's version;
   // the stash stays in git stash list
   const unmerged = Bun.spawnSync(['git', '-C', run.worktree, 'diff', '--name-only', '--diff-filter=U'])

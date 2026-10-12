@@ -399,11 +399,29 @@ test("a launch starts from a gone worker's pushed commits instead of pushing the
   sh(worktree, 'git', 'add', '.')
   sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
   sh(worktree, 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/r4')
-  // the worker's VM pushed its work, then went without reporting; bd rewrote the laptop's export meanwhile
+  writeFileSync(join(worktree, 'plan.md'), 'p\n')
+  sh(worktree, 'git', 'add', '.')
+  sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'plan')
+  sh(worktree, 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/r4')
+  // the worker's VM rewrote the branch (its plan commit anew, as a rebase does) and pushed its work, then went
+  // without reporting; bd rewrote the laptop's export meanwhile
   sh(dir, 'git', 'clone', '-q', '-b', 'factory/r4', origin, vm)
+  sh(
+    vm,
+    'git',
+    '-c',
+    'user.name=v',
+    '-c',
+    'user.email=v@v',
+    'commit',
+    '-q',
+    '--amend',
+    '--no-edit',
+    '--reset-author',
+  )
   writeFileSync(join(vm, 'issues.jsonl'), 'a\nb\n')
   sh(vm, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'work')
-  sh(vm, 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/r4')
+  sh(vm, 'git', 'push', '-q', '--force', 'origin', 'HEAD:refs/heads/factory/r4')
   writeFileSync(join(worktree, 'issues.jsonl'), 'a\nc\n')
 
   const runDir = join(home, 'runs', 'r4')
@@ -429,7 +447,7 @@ test("a launch starts from a gone worker's pushed commits instead of pushing the
   const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img', FACTORY_KUBECTL: join(dir, 'kubectl') }).out
   const row = JSON.parse(out).runs.find((r: { id: string }) => r.id === 'r4')
   expect(row.error).toBeNull()
-  expect(sh(worktree, 'git', 'log', '-1', '--format=%s')).toBe('work')
+  expect(sh(worktree, 'git', 'log', '--format=%s')).toBe('work\nplan\nbase') // its plan once, as the VM wrote it
   expect(sh(worktree, 'git', 'status', '--short')).toBe('') // the export the stash could not put back is the worker's
   expect(called()).toContain('apply -f -')
   rmSync(runDir, { recursive: true })
