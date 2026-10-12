@@ -114,20 +114,22 @@ factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egr
 
 [`factories/lifecycle.ts`](factories/lifecycle.ts) is the whole software lifecycle in one graph:
 
-| Loop                         | Stations                                                                                         |
-| ---------------------------- | ------------------------------------------------------------------------------------------------ |
-| build                        | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → **approve** → deploy → soak |
-| optimize (performance, cost) | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved       |
-| refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                               |
-| operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                  |
-| incident                     | incident → rollback or plan → … → postmortem, which files the action items                       |
-| sweeps                       | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)  |
+| Loop                         | Stations                                                                                           |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| build                        | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
+| optimize (performance, cost) | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
+| refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
+| operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
+| incident                     | incident → rollback or plan → … → postmortem, which files the action items                         |
+| sweeps                       | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)    |
 
 Sweeps never end: each pass files what it finds as runs of its own (`lifecycle@incident`,
 `@plan`, `@baseline`, `@characterize`), skipping duplicates. `factory loop` ticks with no
 console open and keeps one run of each of a rig's sweeps: abort a sweep to stop it, `rm`
-it to let the loop start it again. **approve** is a gate: nothing
-merges or deploys until you decide it, with the board's buttons or `/factory decide`.
+it to let the loop start it again. **Your merge is the gate**: release marks the pull
+request ready, and deploy parks on it until you merge it on GitHub, then deploys and watches
+the rollout. It never merges itself. Request changes on the pull request to send the run back
+to implement; close it to end the run with its bead deferred.
 Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews security.
 `factories/lifecycle.test.ts` walks every loop through the machine.
 
@@ -151,7 +153,7 @@ commit it, and the repo owns its factory like any other code:
   Postmortems file the factory changes an incident exposed.
 - **Those changes ship like any change**: plan, implement, `factory check` in verify, a review
   that reads them as policy (security review when they remove a gate, widen what runs
-  unattended or raise a limit), and your approve gate. Deploy reports them as published.
+  unattended or raise a limit), and your merge. Deploy reports them as published.
 - `factory check <file>` validates a factory: the graph, its outcomes and timed edges, and a
   way to `done` from every station. A factory whose starting commit does not validate is
   refused before any worker starts, and its bead is deferred with the reason.

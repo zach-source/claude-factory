@@ -28,27 +28,39 @@ test('every factory in factories/ compiles', async () => {
   for (const file of files) compile(validate((await import(`./${file}`)).default))
 })
 
-test('build: inner loops, a security review, the approval gate, a soak', () => {
+test("build: inner loops, a security review, a deploy parked on the person's merge, a soak", () => {
   const { visited, snapshot } = walk(lifecycle, [
     ...['build', 'ready', 'ready', 'red', 'ready', 'green', 'security', 'changes', 'ready', 'green'],
-    ...['approve', 'ready', 'ship', 'deployed', 'healthy'],
+    ...['approve', 'ready', 'blocked', 'deployed', 'healthy'],
   ])
   expect(visited).toEqual([
     ...['triage', 'plan', 'implement', 'verify', 'implement', 'verify', 'review', 'security', 'implement'],
     'verify',
-    ...['review', 'release', 'approve', 'deploy', 'soak', 'done'],
+    ...['review', 'release', 'deploy', 'deploy', 'soak', 'done'],
   ])
+  expect(snapshot.context.error).toBeNull()
+})
+
+test('changes asked on the pull request go back to implement; closing it holds the run', () => {
+  const pr = ['build', 'ready', 'ready', 'green', 'approve', 'ready']
+  expect(walk(lifecycle, [...pr, 'changes', 'ready']).visited.slice(6)).toEqual([
+    'deploy',
+    'implement',
+    'verify',
+  ])
+  const { visited, snapshot } = walk(lifecycle, [...pr, 'hold'])
+  expect(visited.at(-1)).toBe('done')
   expect(snapshot.context.error).toBeNull()
 })
 
 test('a soak that regresses rolls back, fixes forward, and ends in a postmortem', () => {
   const { visited } = walk(lifecycle, [
-    ...['build', 'ready', 'ready', 'green', 'approve', 'ready', 'ship', 'deployed', 'regressed'],
-    ...['recovered', 'ready', 'ready', 'green', 'approve', 'ready', 'ship', 'deployed', 'unsure', 'resolved'],
+    ...['build', 'ready', 'ready', 'green', 'approve', 'ready', 'deployed', 'regressed'],
+    ...['recovered', 'ready', 'ready', 'green', 'approve', 'ready', 'deployed', 'unsure', 'resolved'],
     'filed',
   ])
-  expect(visited.slice(9)).toEqual([
-    ...['rollback', 'plan', 'implement', 'verify', 'review', 'release', 'approve', 'deploy', 'soak', 'soak'],
+  expect(visited.slice(8)).toEqual([
+    ...['rollback', 'plan', 'implement', 'verify', 'review', 'release', 'deploy', 'soak', 'soak'],
     ...['postmortem', 'done'],
   ])
 })
