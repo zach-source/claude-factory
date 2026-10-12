@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- AX workers enter a repo's own `devenv.nix` (`devenv shell -- <command>`), so the repo, not the image, declares the toolchain its builds and tests need; the image carries `devenv`, substitutes from `devenv.cachix.org` too and builds what no cache holds. The brief also says to run tests the repo's way (`make test`), which sets envtest up: workers that ran a bare `go test` failed on missing envtest binaries.
 - The console's Interview tab (8) asks the person each question a run cannot settle on its own: a station parked on their decision or stuck out of retries. A blocked worker ends its summary with `Question:` and, for clear choices, `Options: a | b`, which become buttons; the answer is mailed to the station (waking a parked one, retrying a stuck one), the manager hears of it, and the answered tab keeps the questions and answers.
 
 ## 0.6.0 (2026-10-12)

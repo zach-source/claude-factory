@@ -137,7 +137,7 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
       { https: { hostnames: ['api.anthropic.com'] } },
       { https: { hostnames: ['api.github.com', 'uploads.github.com'] } },
       { https: { hostnames: ['github.com'] } },
-      { https: { hostnames: ['cache.nixos.org'] } }, // nix's binary cache: signed, no key
+      { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org'] } }, // nix's binary caches: signed, no key
     ],
   })
   const [anthropic, , git] = ax.egressPolicy('factory').rules
