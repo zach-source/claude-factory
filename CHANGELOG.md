@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Beads for AX workers: the VM gets a copy of the rig's open issues and the run's own in a store of its own; its bd writes go to the laptop through the outbox and replay there, a create keeping the id the VM gave it. Lines with flags that read laptop files or pick another store are refused.
 - A station can name its own `runner`; it wins over the rig's. Lifecycle keeps the stations that read or change production (baseline, deploy, soak, rollback, incident, monitor) on herdr, so a rig with `--runner ax` sends only the code stations to VMs.
 ## 0.5.0 (2026-10-11)
 

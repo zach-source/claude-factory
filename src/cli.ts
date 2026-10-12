@@ -239,7 +239,39 @@ export function replayable(
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
     return ['memory', 'add', ...rest, '--from', side.node]
   }
+  if (cmd === 'bd' && worker.isBdWrite(argv.slice(1)) && !argv.some(a => BD_LAPTOP_ONLY.test(a))) return argv
   return null
+}
+
+/**
+ * bd flags a VM's line may not carry: each reads or writes a file on the laptop (--body-file, -f, --graph,
+ * --metadata @file, the profiles) or points bd at another store or actor. The VM inlines its own files first.
+ */
+const BD_LAPTOP_ONLY =
+  /^(--[\w-]*(file|profile)\b|-f|--graph|--metadata|@|--db\b|--database|--global|--actor|--sandbox|--readonly|--dolt|--proxied)/
+
+/**
+ * what a VM worker's bd reads: the rig's issues that are not closed, and the run's own (its bead and the
+ * bead's children) whole; the others' long text is cut, which keeps a big backlog small enough for the
+ * task's env. Lines are bd export's; the VM imports them into a store of its own
+ */
+export function beadsSnapshot(lines: string[], bead: string, cut = 600) {
+  return lines.flatMap(line => {
+    let e: Record<string, unknown>
+    try {
+      e = JSON.parse(line)
+    } catch {
+      return []
+    }
+    const id = String(e.id ?? '')
+    const own = id === bead || id.startsWith(`${bead}.`)
+    if (!own && e.status === 'closed') return []
+    if (!own)
+      for (const k of ['description', 'design', 'notes', 'acceptance_criteria'])
+        if (typeof e[k] === 'string' && (e[k] as string).length > cut)
+          e[k] = `${(e[k] as string).slice(0, cut)}… [cut in the VM's copy]`
+    return [JSON.stringify(e)]
+  })
 }
 
 /** an outbox line's argv; null for a line that is not `{argv: string[]}`, which the VM may write */
@@ -277,14 +309,22 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     const cmd = side && argv && replayable(argv, side, run.id)
     // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
     const env = { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '', FACTORY_FROM: side?.node }
-    const p = cmd ? Bun.spawnSync([CLI, ...cmd], { env }) : null
+    // a bd write runs in the run's worktree as the station's actor, the same as a pane worker's bd
+    const p = !cmd
+      ? null
+      : cmd[0] === 'bd'
+        ? Bun.spawnSync(cmd, {
+            cwd: run.worktree,
+            env: { ...env, BEADS_ACTOR: `${actorOf(run.id)}/${side!.node}` },
+          })
+        : Bun.spawnSync([CLI, ...cmd], { env })
     if (!p)
       ax.prompt(
         task,
-        `[factory] \`factory ${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, and adds memory`,
+        `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and writes beads (without file, store or actor flags)`,
       )
     else if (p.exitCode !== 0)
-      ax.prompt(task, `[factory] \`factory ${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
+      ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
     // the worker pushed before reporting, and the local worktree is what the next launch pushes back:
     // best effort, the report stands either way
     else if (argv![0] === 'report')
@@ -661,6 +701,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     brief: [
       text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
       `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
+      ...(run.bead
+        ? [
+            `- bd here answers from a copy of the repo's issues taken when you started (others' long text is cut); your bd writes go to the factory's store too. Write descriptions inline or with --body-file; -f, --graph and --metadata do not leave the VM.`,
+          ]
+        : []),
     ].join('\n'),
     env: {
       ...env,
@@ -671,11 +716,24 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
       CODEX_HOME: `${ax.OWN}/codex`,
       PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
+      ...vmBeads(run),
     },
   })
   const side: TaskSide = { node, seq: c.seq, egress: rig?.egress, policy: ax.createPolicy(name, rig?.egress) }
   writeJson(sideFile(run, name), side)
   return address
+}
+
+/** the run's beads for a VM worker: a snapshot its own store loads (see beadsSnapshot), and the ids' prefix */
+function vmBeads(run: Run): Record<string, string> {
+  if (!run.bead || !hasBeads(run.repo)) return {}
+  const p = Bun.spawnSync(['bd', 'export'], { cwd: run.worktree, stderr: 'pipe' })
+  if (p.exitCode !== 0) fail(`bd export for ${run.bead}'s VM worker: ${p.stderr.toString().trim()}`)
+  const lines = beadsSnapshot(p.stdout.toString().split('\n'), run.bead)
+  return {
+    FACTORY_BEADS: Buffer.from(Bun.gzipSync(lines.join('\n'))).toString('base64'),
+    FACTORY_BEADS_PREFIX: run.bead.slice(0, run.bead.lastIndexOf('-')),
+  }
 }
 
 /**
@@ -2521,7 +2579,8 @@ if (import.meta.main && !queued)
         if (sub === 'serve') await worker.serve(arg === '--model' ? args[2] : undefined)
         else if (sub === 'poll') console.log(JSON.stringify(worker.poll(Number(arg ?? 0))))
         else if (sub === 'prompt' && arg) worker.prompt(arg)
-        else fail('usage: factory worker serve [--model m] | poll <cursor> | prompt <base64>')
+        else if (sub === 'bd') process.exit(worker.bd(args.slice(1)))
+        else fail('usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | bd <args>')
         break
       }
       case 'start': {

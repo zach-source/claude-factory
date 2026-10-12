@@ -100,6 +100,12 @@ Pulling means nothing on the cluster ever needs a route back to the laptop.
 
 `memory search` inside the VM is not wired up: it searches an empty memory. `CORE.md` and the topic list still reach the worker in its brief.
 
+### Beads in the VM
+
+The rig's issues live on the laptop, which the VM cannot reach, so a VM worker gets a copy. At launch the laptop runs `bd export` in the run's worktree and keeps the issues that are not closed plus the run's own (its bead and the bead's children) whole; the others' long text fields are cut to 600 characters, so even a big backlog fits the task's env (`FACTORY_BEADS`, gzip and base64, with the ids' prefix in `FACTORY_BEADS_PREFIX`). `serve` loads it once into a store of its own under `.factory-worker/beads` (a resumed task keeps it) and points the agent's `bd` there (`BEADS_DIR`), through a shim on its `PATH` that runs `factory worker bd`.
+
+Reads answer from that copy. A write (`create`, `update`, `close`, `reopen`, `dep`, comments and labels) applies to the copy and, when it succeeds, goes to the outbox; a `create` carries the id the VM's store gave it (`--id`), so later commands naming that id hold on both sides. `--body-file`, `--design-file` and `--reason-file` are inlined in the VM first. The laptop replays a `bd` line only when it is such a write and carries no flag that reads or writes a laptop file or picks another store or actor (`-f`, `--graph`, `--metadata`, `--*-file`, the profiles, `--db`, `--global`, `--actor`...), in the run's worktree as the station's actor, as a pane worker's bd would be. The copy does not refresh during a worker's session.
+
 ### Suspend while a worker waits on mail
 
 A worker that is idle and has asked the manager (the existing `isAsking`) is suspended with `ax suspend task`. Its status shows `suspended` on the board, and it is not polled. When the answer arrives, `deliver` sees the task is not `Running` and runs `ax resume task`, and the mail stays unread. The next tick delivers it to the running task.

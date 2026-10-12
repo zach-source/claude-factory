@@ -4,6 +4,7 @@
 // the laptop pulls it with `factory worker poll` and replays it there.
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -40,6 +41,86 @@ const alive = (pid: number) => {
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
 export function queue(argv: string[]) {
   appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
+}
+
+/** a bd command line that changes the store: the VM's own store takes it, and the laptop's gets it through the outbox */
+export function isBdWrite([cmd, sub]: string[]) {
+  if (['create', 'update', 'close', 'reopen', 'comment'].includes(cmd ?? '')) return true
+  if (cmd === 'comments' || cmd === 'label') return sub === 'add' || sub === 'remove'
+  return cmd === 'dep' && !['list', 'tree', 'cycles'].includes(sub ?? '')
+}
+
+/** the files a bd write reads, as the values they hold: on the laptop the path would name the laptop's file */
+const BD_FILE_FLAGS: Record<string, string> = {
+  '--body-file': '--description',
+  '--design-file': '--design',
+  '--reason-file': '--reason',
+}
+export function inlineBdFiles(args: string[], read = (f: string) => readFileSync(f, 'utf8')) {
+  return args.flatMap((a, i) => {
+    const [flag, value] = a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a]
+    if (BD_FILE_FLAGS[args[i - 1] ?? ''] && !args[i - 1]!.includes('=')) return [] // taken with its flag
+    if (!BD_FILE_FLAGS[flag!]) return [a]
+    const file = value ?? args[i + 1]!
+    return [BD_FILE_FLAGS[flag!]!, file === '-' ? '' : read(file)]
+  })
+}
+
+/** the id bd create printed: `Created issue: <id>`, or the JSON with --json */
+export const createdId = (out: string) =>
+  out.match(/Created issue: (\S+)/)?.[1] ?? out.match(/"id":\s*"([^"]+)"/)?.[1]
+
+/**
+ * `bd` in the VM (a shim on the agent's PATH runs this): the VM's own store, loaded from the laptop's open
+ * issues, answers, and a write that succeeded is queued for the laptop's store too, a create with the id
+ * the VM's store gave it, so later commands naming that id hold on both sides
+ */
+export function bd(args: string[]) {
+  const write = isBdWrite(args)
+  const argv = write ? inlineBdFiles(args) : args
+  const p = Bun.spawnSync([process.env.FACTORY_BD ?? '/usr/local/bin/bd', ...argv], {
+    env: { ...process.env },
+    stdin: 'inherit',
+    stdout: 'pipe',
+    stderr: 'inherit',
+  })
+  const out = p.stdout.toString()
+  process.stdout.write(out)
+  if (p.exitCode === 0 && write) {
+    const id =
+      argv[0] === 'create' && !argv.some(a => a === '--id' || a.startsWith('--id=')) && createdId(out)
+    queue(['bd', ...argv, ...(id ? ['--id', id] : [])])
+  }
+  return p.exitCode ?? 1
+}
+
+/**
+ * the VM's beads, when the laptop sent a snapshot (FACTORY_BEADS: gzip, base64, bd export lines): a store of
+ * its own, loaded once (a resumed task keeps it), which the agent's bd finds through BEADS_DIR and the shim
+ */
+function setupBeads() {
+  const snapshot = process.env.FACTORY_BEADS
+  if (!snapshot) return
+  const dir = join(own(), 'beads')
+  const bin = join(own(), 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'bd'), '#!/bin/sh\nexec factory worker bd "$@"\n')
+  chmodSync(join(bin, 'bd'), 0o755)
+  Object.assign(process.env, { BEADS_DIR: join(dir, '.beads'), PATH: `${bin}:${process.env.PATH}` })
+  delete process.env.BEADS_DOLT_SHARED_SERVER
+  if (existsSync(join(dir, '.beads'))) return
+  mkdirSync(dir, { recursive: true })
+  const file = join(own(), 'beads.jsonl')
+  writeFileSync(file, Bun.gunzipSync(Buffer.from(snapshot, 'base64')))
+  const real = process.env.FACTORY_BD ?? '/usr/local/bin/bd'
+  for (const cmd of [
+    ['git', 'init', '-q', '.'],
+    [real, 'init', '--prefix', process.env.FACTORY_BEADS_PREFIX ?? 'bd', '-q', '--skip-agents'],
+    [real, 'import', file],
+  ]) {
+    const r = sh(cmd, dir)
+    if (!r.ok) throw new Error(`beads in the VM: ${cmd.join(' ')}: ${r.err}`)
+  }
 }
 
 type Harness = 'claude' | 'codex' | 'pi'
@@ -128,6 +209,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
     // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
     Object.assign(process.env, { NODE_EXTRA_CA_CERTS: ca, GIT_SSL_CAINFO: ca, SSL_CERT_FILE: ca })
   }
+  setupBeads()
   const remote = process.env.FACTORY_REPO
   if (!remote || existsSync(join(repo(), '.git'))) return
   let err = ''
