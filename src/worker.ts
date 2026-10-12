@@ -204,6 +204,43 @@ function sh(cmd: string[], cwd?: string) {
 }
 
 /**
+ * the rig's bazel flags, and the gateway's CA for bazel: its gRPC (a remote cache) takes the PEM, but its JVM,
+ * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (from Nix: the image
+ * has no JDK, and its OpenSSL cannot write one Java trusts)
+ */
+function bazelrc() {
+  const lines = [process.env.FACTORY_BAZELRC!]
+  if (process.env.FACTORY_CA) {
+    const ca = join(own(), 'egress-ca.crt')
+    const store = join(own(), 'egress.jks')
+    rmSync(store, { force: true }) // the CA is written anew every start
+    const keytool = process.env.FACTORY_KEYTOOL
+      ? [process.env.FACTORY_KEYTOOL]
+      : ['nix', 'shell', 'nixpkgs#jdk21_headless', '-c', 'keytool']
+    // a trust store holds no secret: its password is Java's well-known default
+    const made = sh([
+      ...keytool,
+      '-importcert',
+      '-noprompt',
+      '-alias',
+      'egress',
+      '-file',
+      ca,
+      '-keystore',
+      store,
+      '-storepass',
+      'changeit',
+    ])
+    if (!made.ok) console.error(`bazel will not trust the egress gateway: keytool: ${made.err}`)
+    lines.push(
+      `common --tls_certificate=${ca}`,
+      `startup --host_jvm_args=-Djavax.net.ssl.trustStore=${store} --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit`,
+    )
+  }
+  return `${lines.join('\n')}\n`
+}
+
+/**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
@@ -229,8 +266,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
   // replaces) go in the home rc, which every workspace reads
   // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
-  if (process.env.FACTORY_BAZELRC)
-    writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), `${process.env.FACTORY_BAZELRC}\n`)
+  if (process.env.FACTORY_BAZELRC) writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
   // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
   process.env.GOTOOLCHAIN ??= 'local'
   // the VM's only address is link-local, which kube-apiserver will not advertise, so envtest's control plane

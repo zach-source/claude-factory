@@ -235,9 +235,12 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
   git(seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'one')
   const home = join(dir, 'home')
   mkdirSync(home, { recursive: true })
+  const keytool = join(dir, 'keytool')
+  writeFileSync(keytool, `#!/bin/sh\necho "$@" > ${join(dir, 'keytool.args')}\n`, { mode: 0o755 })
   const saved = { ...process.env }
   Object.assign(process.env, {
     HOME: home,
+    FACTORY_KEYTOOL: keytool,
     GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
@@ -255,7 +258,14 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     expect(process.env.GIT_SSL_CAINFO).toBe(join(own, 'egress-ca.crt'))
     expect(existsSync(join(repo, '.git'))).toBe(true)
     expect(existsSync(join(home, '.gitconfig'))).toBe(false) // git's auth header comes in the task's env
-    expect(readFileSync(join(home, '.bazelrc'), 'utf8')).toBe('common --remote_cache=grpcs://cache.example\n')
+    // the rig's flags, then the gateway's CA for bazel's gRPC and, in a Java trust store, for its JVM
+    const rc = readFileSync(join(home, '.bazelrc'), 'utf8').split('\n')
+    expect(rc[0]).toBe('common --remote_cache=grpcs://cache.example')
+    expect(rc[1]).toBe(`common --tls_certificate=${join(own, 'egress-ca.crt')}`)
+    expect(rc[2]).toContain(`-Djavax.net.ssl.trustStore=${join(own, 'egress.jks')}`)
+    expect(readFileSync(join(dir, 'keytool.args'), 'utf8')).toContain(
+      `-file ${join(own, 'egress-ca.crt')} -keystore ${join(own, 'egress.jks')}`,
+    )
     await worker.setup({ tries: 1, waitMs: 0 }) // a resumed task keeps its clone
   } finally {
     process.env = saved
