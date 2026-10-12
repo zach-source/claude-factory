@@ -1389,6 +1389,8 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
     else if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
     else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
+    // not the factory's to do: left open for a person, who queues it again or closes it
+    else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
     t.isSettled = true
   } else if (!isOver && t.isSettled) {

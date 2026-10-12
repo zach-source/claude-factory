@@ -72,7 +72,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
         monitor: 'monitor',
         maintain: 'maintain',
         improve: 'improve',
-        reject: 'done',
+        reject: { to: 'done', reject: true },
       },
     },
 

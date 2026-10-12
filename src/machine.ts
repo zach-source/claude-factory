@@ -5,9 +5,11 @@ import { assign, setup } from 'xstate'
 
 /**
  * where an outcome goes: a node id or 'done'; or an object whose `delayMin` parks the run, with no worker,
- * that long first, and whose `defer` (into 'done' only) ends the run but leaves its tracked work open for a person
+ * that long first, and whose `defer` (into 'done' only) ends the run but leaves its tracked work open for a person;
+ * `reject` (into 'done' only) ends it with the work left open and ready, out of the factory's queue until a person
+ * queues it again
  */
-export type Edge = string | { to: string; delayMin?: number; defer?: true }
+export type Edge = string | { to: string; delayMin?: number; defer?: true; reject?: true }
 export const edgeTo = (e: Edge) => (typeof e === 'string' ? e : e.to)
 const delayOf = (e: Edge) => (typeof e === 'string' ? 0 : (e.delayMin ?? 0))
 
@@ -180,6 +182,14 @@ export function validate(def: Factory): Factory {
             edge.defer &&
             edge.to !== 'done' &&
             `${id}: only an edge into done defers`,
+          typeof edge !== 'string' &&
+            edge.reject &&
+            edge.to !== 'done' &&
+            `${id}: only an edge into done rejects`,
+          typeof edge !== 'string' &&
+            edge.defer &&
+            edge.reject &&
+            `${id}: an edge defers or rejects, not both`,
         ]),
       ]
     }),

@@ -216,6 +216,11 @@ test('validate rejects broken graphs', () => {
   ).toThrow(
     /"later" needs delayMin > 0[\s\S]*only an edge into done defers[\s\S]*g: has no outcomes[\s\S]*a gate has no worker/,
   )
+  const rejects = (edge: object) => () =>
+    validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
+  expect(rejects({ to: 'a', reject: true })).toThrow('only an edge into done rejects')
+  expect(rejects({ to: 'done', reject: true, defer: true })).toThrow('defers or rejects, not both')
+  expect(rejects({ to: 'done', reject: true })).not.toThrow()
   expect(validate(def)).toBe(def)
 })
 
