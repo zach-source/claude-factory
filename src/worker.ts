@@ -43,18 +43,6 @@ export function queue(argv: string[]) {
   appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
 }
 
-/** the env values the laptop sent in chunks (ax.chunkEnv), joined back under their names */
-export function joinEnv(env: Record<string, string | undefined> = process.env) {
-  const parts = Object.keys(env)
-    .map(k => /^(.+)__(\d+)$/.exec(k))
-    .filter(m => m !== null)
-    .sort((a, b) => Number(a[2]) - Number(b[2]))
-  for (const [key, name] of parts) {
-    env[name!] = (env[name!] ?? '') + env[key!]
-    delete env[key!]
-  }
-}
-
 /** a bd command line that changes the store: the VM's own store takes it, and the laptop's gets it through the outbox */
 export function isBdWrite([cmd, sub]: string[]) {
   if (['create', 'update', 'close', 'reopen', 'comment'].includes(cmd ?? '')) return true
@@ -107,14 +95,28 @@ export function bd(args: string[]) {
 }
 
 /**
- * the VM's beads, when the laptop sent a snapshot (FACTORY_BEADS: gzip, base64, bd export lines): a store of
- * its own, loaded once (a resumed task keeps it), which the agent's bd finds through BEADS_DIR and the shim
+ * a file the laptop sends in parts (`factory worker put <name> <part> <parts> <base64>`): each part lands on
+ * its own, so a part sent again is harmless, and the whole file appears, decoded, once the last is in
  */
-function setupBeads() {
-  const snapshot = process.env.FACTORY_BEADS
-  if (!snapshot) return
-  // past 128 KB an env string is too long to exec the agent with
-  delete process.env.FACTORY_BEADS
+export function put(name: string, part: number, parts: number, base64: string) {
+  if (!/^[\w.-]+$/.test(name)) throw new Error(`put: a file name, not "${name}"`)
+  const dir = join(own(), 'put', name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, String(part)), base64)
+  const have = readdirSync(dir).length
+  if (have < parts) return
+  const all = Array.from({ length: parts }, (_, i) => readFileSync(join(dir, String(i)), 'utf8')).join('')
+  writeFileSync(join(own(), name), Buffer.from(all, 'base64'))
+  rmSync(dir, { recursive: true, force: true })
+}
+
+/**
+ * the VM's beads, when the run has some (FACTORY_BEADS_PREFIX): the laptop sends their copy (gzip of bd export
+ * lines) once the task runs, and it loads once into a store of its own (a resumed task keeps it), which the
+ * agent's bd finds through BEADS_DIR and the shim
+ */
+async function setupBeads({ waitMs = 2000, tries = 300 } = {}) {
+  if (!process.env.FACTORY_BEADS_PREFIX) return
   const dir = join(own(), 'beads')
   const bin = join(own(), 'bin')
   mkdirSync(bin, { recursive: true })
@@ -123,9 +125,14 @@ function setupBeads() {
   Object.assign(process.env, { BEADS_DIR: join(dir, '.beads'), PATH: `${bin}:${process.env.PATH}` })
   delete process.env.BEADS_DOLT_SHARED_SERVER
   if (existsSync(join(dir, '.beads'))) return
+  const sent = join(own(), 'beads.jsonl.gz')
+  for (let i = 0; !existsSync(sent); i++) {
+    if (i >= tries) throw new Error('beads in the VM: the laptop never sent their copy')
+    await Bun.sleep(waitMs)
+  }
   mkdirSync(dir, { recursive: true })
   const file = join(own(), 'beads.jsonl')
-  writeFileSync(file, Bun.gunzipSync(Buffer.from(snapshot, 'base64')))
+  writeFileSync(file, Bun.gunzipSync(readFileSync(sent)))
   const real = process.env.FACTORY_BD ?? '/usr/local/bin/bd'
   for (const cmd of [
     ['git', 'init', '-q', '.'],
@@ -217,14 +224,13 @@ function sh(cmd: string[], cwd?: string) {
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
 export async function setup({ tries = 60, waitMs = 5000 } = {}) {
-  joinEnv()
   if (process.env.FACTORY_CA) {
     const ca = join(own(), 'egress-ca.crt')
     writeFileSync(ca, process.env.FACTORY_CA)
     // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
     Object.assign(process.env, { NODE_EXTRA_CA_CERTS: ca, GIT_SSL_CAINFO: ca, SSL_CERT_FILE: ca })
   }
-  setupBeads()
+  await setupBeads()
   const remote = process.env.FACTORY_REPO
   if (!remote || existsSync(join(repo(), '.git'))) return
   let err = ''
@@ -244,6 +250,8 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
  */
 export async function serve(model?: string, { idleMs = 1000, once = false } = {}) {
   mkdirSync(prompts(), { recursive: true })
+  // working from the start: until the first turn there is no state, which poll would read as exited
+  save({ status: 'working', session: state()?.session, pid: process.pid })
   await setup()
   let session = state()?.session
   const set = (status: State['status']) => save({ status, session, pid: process.pid })

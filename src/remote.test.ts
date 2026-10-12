@@ -160,6 +160,21 @@ test("an outbox replays only the worker's own report, its run's mail and memory,
   rmSync(join(home, 'runs', 'r3'), { recursive: true })
 })
 
+test("a run's beads copy goes to the VM over ssh in parts once the task runs, then never again", () => {
+  launched('r6')
+  const side = join(home, 'runs', 'r6', 't.json')
+  writeFileSync(side, JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), beads: true }))
+  writeFileSync(join(home, 'runs', 'r6', 't.beads.gz'), Bun.gzipSync('{"id":"x-1"}'))
+  cluster('Running', { status: 'working', lines: [] })
+  factory(['tick'])
+  expect(called()).toContain('ssh t -- factory worker put beads.jsonl.gz 0 1 ')
+  expect(JSON.parse(readFileSync(side, 'utf8')).beads).toBe(false)
+  cluster('Running', { status: 'working', lines: [] })
+  factory(['tick'])
+  expect(called()).not.toContain('worker put')
+  rmSync(join(home, 'runs', 'r6'), { recursive: true })
+})
+
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
   launched('r4', false)
   const kubectl = join(dir, 'kubectl')
@@ -381,12 +396,12 @@ test.skipIf(!Bun.which('bd'))(
       FACTORY_WORKER_DIR: vm,
       FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
       FACTORY_FROM: 'plan',
-      FACTORY_BEADS: Buffer.from(Bun.gzipSync(snapshot)).toString('base64'),
       FACTORY_BEADS_PREFIX: 'vb',
       FACTORY_BD: Bun.which('bd')!,
     })
     delete process.env.FACTORY_REPO
     try {
+      worker.put('beads.jsonl.gz', 0, 1, Buffer.from(Bun.gzipSync(snapshot)).toString('base64'))
       await worker.setup()
       expect(readFileSync(join(vm, 'bin', 'bd'), 'utf8')).toContain('factory worker bd')
       expect(worker.bd(['create', 'a task', '--parent', 'vb-1', '-t', 'task', '-p', '2'])).toBe(0)

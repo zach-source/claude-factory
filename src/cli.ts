@@ -219,7 +219,8 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
 }
 
 /** what the laptop keeps of a task it launched: whose worker it is, and whether its egress policy is in */
-type TaskSide = { node: string; seq: number; egress?: ax.Egress[]; policy: boolean }
+/** `beads`: the run's beads copy (see vmBeads) is still to send, from `<run>/<task>.beads.gz` */
+type TaskSide = { node: string; seq: number; egress?: ax.Egress[]; policy: boolean; beads?: boolean }
 const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
 
 /**
@@ -303,6 +304,15 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
     if (!ax.createPolicy(task, side.egress)) return { status: 'pending', agent: 'ax' }
     writeJson(sideFile(run, task), { ...side, policy: true })
+  }
+  if (side?.beads) {
+    // the copy is too big for the task's env: it goes over ssh, in parts, and serve waits for it
+    const b64 = readFileSync(join(runDir(run.id), `${task}.beads.gz`)).toString('base64')
+    const parts = Math.ceil(b64.length / ax.PUT_PART)
+    for (let i = 0; i < parts; i++)
+      if (!ax.put(task, 'beads.jsonl.gz', i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)))
+        return { status: 'pending', agent: 'ax' }
+    writeJson(sideFile(run, task), { ...side, beads: false })
   }
   const cursorFile = join(runDir(run.id), `${task}.cursor`)
   let cursor = existsSync(cursorFile) ? Number(readFileSync(cursorFile, 'utf8')) : 0
@@ -719,24 +729,28 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
       CODEX_HOME: `${ax.OWN}/codex`,
       PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
-      ...vmBeads(run),
+      ...(run.bead &&
+        hasBeads(run.repo) && { FACTORY_BEADS_PREFIX: run.bead.slice(0, run.bead.lastIndexOf('-')) }),
     },
   })
-  const side: TaskSide = { node, seq: c.seq, egress: rig?.egress, policy: ax.createPolicy(name, rig?.egress) }
+  const beads = run.bead && hasBeads(run.repo) ? vmBeads(run) : null
+  if (beads) writeFileSync(join(runDir(run.id), `${name}.beads.gz`), beads)
+  const side: TaskSide = {
+    node,
+    seq: c.seq,
+    egress: rig?.egress,
+    policy: ax.createPolicy(name, rig?.egress),
+    beads: !!beads,
+  }
   writeJson(sideFile(run, name), side)
   return address
 }
 
-/** the run's beads for a VM worker: a snapshot its own store loads (see beadsSnapshot), and the ids' prefix */
-function vmBeads(run: Run): Record<string, string> {
-  if (!run.bead || !hasBeads(run.repo)) return {}
+/** the run's beads for a VM worker: the copy its own store loads (see beadsSnapshot), gzipped */
+function vmBeads(run: Run) {
   const p = Bun.spawnSync(['bd', 'export'], { cwd: run.worktree, stderr: 'pipe' })
   if (p.exitCode !== 0) fail(`bd export for ${run.bead}'s VM worker: ${p.stderr.toString().trim()}`)
-  const lines = beadsSnapshot(p.stdout.toString().split('\n'), run.bead)
-  return {
-    FACTORY_BEADS: Buffer.from(Bun.gzipSync(lines.join('\n'))).toString('base64'),
-    FACTORY_BEADS_PREFIX: run.bead.slice(0, run.bead.lastIndexOf('-')),
-  }
+  return Bun.gzipSync(beadsSnapshot(p.stdout.toString().split('\n'), run.bead!).join('\n'))
 }
 
 /**
@@ -2583,7 +2597,12 @@ if (import.meta.main && !queued)
         else if (sub === 'poll') console.log(JSON.stringify(worker.poll(Number(arg ?? 0))))
         else if (sub === 'prompt' && arg) worker.prompt(arg)
         else if (sub === 'bd') process.exit(worker.bd(args.slice(1)))
-        else fail('usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | bd <args>')
+        else if (sub === 'put' && args.length === 5)
+          worker.put(arg!, Number(args[2]), Number(args[3]), args[4]!)
+        else
+          fail(
+            'usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | put <name> <part> <parts> <base64> | bd <args>',
+          )
         break
       }
       case 'start': {

@@ -107,30 +107,16 @@ export function manifest(l: Launch) {
         FACTORY_HARNESS: l.harness ?? 'claude',
         ...(l.provider && { FACTORY_PROVIDER: l.provider }),
         ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
-      }).flatMap(([name, value]) => chunkEnv(name, value)),
+      }).map(([name, value]) => ({
+        name,
+        value,
+      })),
       workspaces: [{ name: l.name, path: WS }],
       // ax ssh is how the laptop polls and prompts the worker; the microVM is the boundary
       debug: true,
     },
   }
   return [workspace, task].map(d => JSON.stringify(d, null, 2)).join('\n---\n')
-}
-
-/**
- * Substrate refuses an env value over 32768 bytes (the brief, the gateway's CA bundle, the beads copy pass
- * it): a longer one goes as NAME__0, NAME__1, ..., which the VM joins back (worker.joinEnv). A chunk is
- * 10000 UTF-16 units, at most 30000 bytes, and never splits a surrogate pair
- */
-export function chunkEnv(name: string, value: string, size = 10_000) {
-  if (Buffer.byteLength(value) <= 32_768) return [{ name, value }]
-  const chunks: { name: string; value: string }[] = []
-  for (let at = 0; at < value.length;) {
-    let end = Math.min(at + size, value.length)
-    if (end < value.length && /[\ud800-\udbff]/.test(value[end - 1]!)) end--
-    chunks.push({ name: `${name}__${chunks.length}`, value: value.slice(at, end) })
-    at = end
-  }
-  return chunks
 }
 
 /** a task's phase from `ax get task` (YAML): Pending, Running, Suspended, Failed, Terminating; null when gone */
@@ -256,6 +242,14 @@ export const poll = (task: string, cursor: number): Poll =>
 // base64: ax parses its own flags anywhere on the line, so a prompt starting with -a or -n would be eaten
 export const prompt = (task: string, text: string) =>
   must(['ssh', task, '--', 'factory', 'worker', 'prompt', Buffer.from(text).toString('base64')])
+/**
+ * one part of a file for the VM, over ssh: Substrate takes no env value past 32 KiB, so what is bigger (the
+ * run's beads copy) comes after the task starts. A part stays under the 128 KiB an argument may be. false
+ * while the VM is still waking: the next tick sends it again
+ */
+export const put = (task: string, name: string, part: number, parts: number, base64: string) =>
+  ax(['ssh', task, '--', 'factory', 'worker', 'put', name, String(part), String(parts), base64]).ok
+export const PUT_PART = 96_000
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])
 /** the task (its actor's egress policy goes with it) and its workspace; gone already is fine */

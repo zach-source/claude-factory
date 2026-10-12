@@ -1,5 +1,14 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
@@ -425,15 +434,22 @@ test("a station's model reads codex's -m too, and pi's provider", () => {
   expect(ax.providerOf('pi')).toBeUndefined()
 })
 
-test('an env value past what Substrate takes goes in chunks the VM joins back, never splitting a character', async () => {
-  const { joinEnv } = await import('./worker')
-  const value = `${'é'.repeat(20_000)}😀${'x'.repeat(15_000)}`
-  const chunks = ax.chunkEnv('FACTORY_BEADS', value)
-  expect(chunks.length).toBeGreaterThan(1)
-  for (const c of chunks) expect(Buffer.byteLength(c.value)).toBeLessThanOrEqual(32_768)
-  expect(ax.chunkEnv('SHORT', 'v')).toEqual([{ name: 'SHORT', value: 'v' }])
-  const env: Record<string, string | undefined> = { OTHER: '1' }
-  for (const c of [...chunks].reverse()) env[c.name] = c.value
-  joinEnv(env)
-  expect(env).toEqual({ OTHER: '1', FACTORY_BEADS: value })
+test('a file sent in parts appears whole once its last part is in, in any order, and a part sent again is harmless', async () => {
+  const worker = await import('./worker')
+  const own = mkdtempSync(join(tmpdir(), 'put-'))
+  const saved = process.env.FACTORY_WORKER_DIR
+  process.env.FACTORY_WORKER_DIR = own
+  try {
+    const b64 = Buffer.from('é'.repeat(5000)).toString('base64')
+    const parts = [b64.slice(0, 4000), b64.slice(4000, 8000), b64.slice(8000)]
+    worker.put('f.gz', 2, 3, parts[2]!)
+    worker.put('f.gz', 0, 3, parts[0]!)
+    worker.put('f.gz', 0, 3, parts[0]!)
+    expect(existsSync(join(own, 'f.gz'))).toBe(false)
+    worker.put('f.gz', 1, 3, parts[1]!)
+    expect(readFileSync(join(own, 'f.gz'), 'utf8')).toBe('é'.repeat(5000))
+    expect(() => worker.put('../x', 0, 1, '')).toThrow('a file name')
+  } finally {
+    process.env.FACTORY_WORKER_DIR = saved
+  }
 })
