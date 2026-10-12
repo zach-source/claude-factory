@@ -110,6 +110,12 @@ The laptop keeps each rig's issue store in its own dolt server and pushes it to 
 
 Pushes from a stale copy are refused until it pulls. A pull merges cell by cell, so different fields and new issues from both sides survive; when both sides changed the same field, the later push wins. Measured on a test cluster: a 534-issue store (204 MB) bootstraps in 3 s.
 
+### Tools in the VM
+
+The image carries no language toolchains. It carries Nix instead: single-user and owned by root (gVisor refuses `setgroups`, so there is no daemon and no build users), substituting only from `cache.nixos.org` (`max-jobs = 0`: a package not in the binary cache fails rather than building), with nixpkgs pinned in the image. An agent installs what it lacks with `nix shell nixpkgs#go nixpkgs#gnumake ... -c <command>`, or uses the repo's own `nix develop`. `cache.nixos.org` is in every task's egress; a rig adds its package registries with `--egress` (a Go rig: `proxy.golang.org,sum.golang.org,storage.googleapis.com`, the last because the Go proxy redirects larger modules there; `setup-envtest`: `raw.githubusercontent.com,release-assets.githubusercontent.com,objects.githubusercontent.com`).
+
+`serve`'s setup also makes three things a sandboxed test expects: a `localhost` entry (the VM has no `/etc/hosts`), `GOTOOLCHAIN=local`, and a `kube-apiserver` wrapper for envtest (`TEST_ASSET_KUBE_APISERVER`) that adds `--advertise-address=127.0.0.1`, since the VM's only address is link-local and kube-apiserver will not advertise one. Measured on a test cluster: a Go operator repo's `make vet test` (74 packages, envtest included) passes in a VM.
+
 ### Suspend while a worker waits on mail
 
 A worker that is idle and has asked the manager (the existing `isAsking`) is suspended with `ax suspend task`. Its status shows `suspended` on the board, and it is not polled. When the answer arrives, `deliver` sees the task is not `Running` and runs `ax resume task`, and the mail stays unread. The next tick delivers it to the running task.

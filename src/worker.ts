@@ -61,6 +61,15 @@ export function put(name: string, part: number, parts: number, base64: string) {
   rmSync(dir, { recursive: true, force: true })
 }
 
+/** the real kube-apiserver where envtest's setup put it (KUBEBUILDER_ASSETS) or its default directory */
+export const APISERVER_WRAPPER = `#!/bin/sh
+for d in "$KUBEBUILDER_ASSETS" /usr/local/kubebuilder/bin; do
+  [ -n "$d" ] && [ -x "$d/kube-apiserver" ] && exec "$d/kube-apiserver" --advertise-address=127.0.0.1 "$@"
+done
+echo "kube-apiserver: none in KUBEBUILDER_ASSETS ($KUBEBUILDER_ASSETS) or /usr/local/kubebuilder/bin" >&2
+exit 127
+`
+
 /** a file the laptop sends once the task runs (put), waited for; the laptop resends a part that failed */
 async function sentFile(name: string, { waitMs = 2000, tries = 300 } = {}) {
   const file = join(own(), name)
@@ -219,6 +228,12 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
     }
   // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
   process.env.GOTOOLCHAIN ??= 'local'
+  // the VM's only address is link-local, which kube-apiserver will not advertise, so envtest's control plane
+  // never starts: envtest runs this wrapper (TEST_ASSET_KUBE_APISERVER) instead, advertising 127.0.0.1
+  const bin = join(own(), 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'kube-apiserver'), APISERVER_WRAPPER, { mode: 0o755 })
+  process.env.TEST_ASSET_KUBE_APISERVER ??= join(bin, 'kube-apiserver')
   const remote = process.env.FACTORY_REPO
   if (!remote || existsSync(join(repo(), '.git'))) return
   let err = ''

@@ -454,3 +454,16 @@ test('a file sent in parts appears whole once its last part is in, in any order,
     process.env.FACTORY_WORKER_DIR = saved
   }
 })
+
+test("envtest's kube-apiserver runs through a wrapper that advertises 127.0.0.1, the VM's address being link-local", async () => {
+  const { APISERVER_WRAPPER } = await import('./worker')
+  const d = mkdtempSync(join(tmpdir(), 'kb-'))
+  writeFileSync(join(d, 'kube-apiserver'), '#!/bin/sh\necho "real $*"\n', { mode: 0o755 })
+  writeFileSync(join(d, 'wrap'), APISERVER_WRAPPER, { mode: 0o755 })
+  const run = (env: Record<string, string>) =>
+    Bun.spawnSync([join(d, 'wrap'), '--etcd-servers=x'], { env: { PATH: process.env.PATH!, ...env } })
+  expect(run({ KUBEBUILDER_ASSETS: d }).stdout.toString()).toBe(
+    'real --advertise-address=127.0.0.1 --etcd-servers=x\n',
+  )
+  expect(run({ KUBEBUILDER_ASSETS: join(d, 'none') }).exitCode).toBe(127)
+})
