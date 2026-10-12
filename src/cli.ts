@@ -2547,9 +2547,14 @@ const queued =
   !!process.env.FACTORY_OUTBOX &&
   (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && args[0] === 'add'))
 if (queued) {
-  // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it
-  if (cmd === 'report' && !worker.syncBeads())
-    console.error('warning: your bd changes did not reach GitHub (bd dolt pull && bd dolt push failed)')
+  // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
+  // report that went without them would end the VM, and its writes with it
+  if (cmd === 'report' && !worker.syncBeads()) {
+    console.error(
+      'refused: your bd changes did not reach GitHub (bd dolt pull && bd dolt push failed); fix that, then report again',
+    )
+    process.exit(1)
+  }
   worker.queue([cmd!, ...args])
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }

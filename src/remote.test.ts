@@ -351,4 +351,21 @@ test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them 
   expect(p.exitCode).toBe(0)
   expect(readFileSync(log, 'utf8')).toBe('dolt pull shared=0\ndolt push shared=0\n')
   expect(readFileSync(join(vm, 'outbox.jsonl'), 'utf8')).toContain('"report"')
+
+  // a push that never goes through refuses the report: queued, it would end the VM with the writes in it
+  rmSync(join(vm, 'outbox.jsonl'))
+  writeFileSync(join(vm, 'bd'), `#!/bin/sh\n[ "$2" = push ] && exit 1\nexit 0\n`)
+  const refused = Bun.spawnSync([CLI, 'report', 'r1', '1', 'ready', 'done'], {
+    env: {
+      ...process.env,
+      FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
+      FACTORY_FROM: 'a',
+      FACTORY_BD: join(vm, 'bd'),
+      BEADS_DIR: join(vm, '.beads'),
+      FACTORY_HOME: join(vm, 'nohome'),
+    },
+  })
+  expect(refused.exitCode).toBe(1)
+  expect(refused.stderr.toString()).toContain('report again')
+  expect(existsSync(join(vm, 'outbox.jsonl'))).toBe(false)
 })
