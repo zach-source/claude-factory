@@ -382,3 +382,54 @@ test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them 
   expect(refused.stderr.toString()).toContain('report again')
   expect(existsSync(join(vm, 'outbox.jsonl'))).toBe(false)
 })
+
+test("a launch starts from a gone worker's pushed commits instead of pushing the stale worktree over them", () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+    return p.stdout.toString().trim()
+  }
+  mkdirSync(dir, { recursive: true })
+  const origin = join(dir, 'origin.git')
+  const worktree = join(dir, 'wt4')
+  const vm = join(dir, 'vm4')
+  sh(dir, 'git', 'init', '-q', '--bare', origin)
+  sh(dir, 'git', 'clone', '-q', origin, worktree)
+  writeFileSync(join(worktree, 'issues.jsonl'), 'a\n')
+  sh(worktree, 'git', 'add', '.')
+  sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+  sh(worktree, 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/r4')
+  // the worker's VM pushed its work, then went without reporting; bd rewrote the laptop's export meanwhile
+  sh(dir, 'git', 'clone', '-q', '-b', 'factory/r4', origin, vm)
+  writeFileSync(join(vm, 'issues.jsonl'), 'a\nb\n')
+  sh(vm, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'work')
+  sh(vm, 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/r4')
+  writeFileSync(join(worktree, 'issues.jsonl'), 'a\nb\n')
+
+  const runDir = join(home, 'runs', 'r4')
+  mkdirSync(join(runDir, 'prompts'), { recursive: true })
+  writeFileSync(join(home, 'dream.stamp'), '')
+  writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(def)}`)
+  const run = { id: 'r4', factory: join(runDir, 'factory.ts'), repo: worktree, goal: 'g', ws: 'w1', worktree }
+  writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: 'factory/r4' }))
+  const actor = createActor(compile(def)).start()
+  actor.send({ type: 'TICK', at: Date.now() })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+  )
+  cluster('Running', { status: 'idle', lines: [] })
+  writeFileSync(join(dir, 'kubectl'), '#!/bin/sh\necho CA\n')
+  chmodSync(join(dir, 'kubectl'), 0o755)
+
+  const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img', FACTORY_KUBECTL: join(dir, 'kubectl') }).out
+  const row = JSON.parse(out).runs.find((r: { id: string }) => r.id === 'r4')
+  expect(row.error).toBeNull()
+  expect(sh(worktree, 'git', 'log', '-1', '--format=%s')).toBe('work')
+  expect(called()).toContain('apply -f -')
+  rmSync(runDir, { recursive: true })
+})

@@ -702,6 +702,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
+  // worktree, and pushing the worktree back would be refused every tick: the next attempt starts from its commits
+  Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', '--autostash', 'origin', run.branch])
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
   const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
   const name = ax.taskName(run.id, c.seq)
