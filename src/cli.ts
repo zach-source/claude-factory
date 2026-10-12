@@ -44,6 +44,7 @@ import {
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
 import { claudeCommand, command, harnessOf, readMcp, sq } from './harness'
 import { tokens, waiting } from './sidebar'
+import * as devenv from './devenv'
 import * as memory from './memory'
 import * as ax from './ax'
 import type { Egress } from './ax'
@@ -1751,6 +1752,56 @@ async function dream() {
     release()
   }
 }
+const devenvConfig = () => join(HOME, 'devenv.json')
+const DEVENV_CHECK_MS = 30 * 60_000
+
+/**
+ * builds and caches the devenv of each AX rig with a binary cache (FACTORY_NIX_CACHE) whose devenv files or
+ * worker image changed since it was last built, or of the named rigs; `force` rebuilds them anyway
+ */
+function devenvPass(names: string[], force = false) {
+  const release = hold('devenv.lock')
+  if (!release) return ['a devenv pass is already running']
+  try {
+    writeFileSync(join(HOME, 'devenv.stamp'), '') // the kick's clock: a pass started, whatever it finds
+    if (!existsSync(devenvConfig())) return [`no ${devenvConfig()}: see docs/remote-runner.md`]
+    const cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    const image =
+      process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the image the devenv is built in')
+    const chosen = rigs().filter(r =>
+      names.length ? names.includes(r.name) : r.runner === 'ax' && r.env?.FACTORY_NIX_CACHE,
+    )
+    return chosen.map(rig => {
+      const stampFile = join(HOME, 'devenv', `${rig.name}.json`)
+      const { rev, blobs, hasDevenv } = devenv.remoteDevenv(rig.repo)
+      if (!hasDevenv) return `${rig.name}: no devenv.nix`
+      const key = devenv.cacheKey(blobs, image)
+      if (!devenv.isDue(devenv.readStamp(stampFile), key, force)) return `${rig.name}: up to date (${key})`
+      const log = join(HOME, 'devenv', `${rig.name}.log`)
+      mkdirSync(join(HOME, 'devenv'), { recursive: true })
+      const remote = httpsRemote(git(rig.repo, 'remote', 'get-url', 'origin'))
+      const r = devenv.build(cfg, { image, remote, rev, key, log, force })
+      devenv.writeStamp(stampFile, { key, ok: r.ok, at: Date.now(), rev })
+      return r.ok
+        ? `${rig.name}: built and cached ${rev.slice(0, 7)} (${key})`
+        : `${rig.name}: failed, see ${log}\n${r.why}`
+    })
+  } finally {
+    release()
+  }
+}
+/** a devenv pass at most every half hour, when this factory caches devenvs at all */
+const kickDevenv = () => {
+  const stamp = join(HOME, 'devenv.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (!existsSync(devenvConfig()) || isHeld('devenv.lock') || age < DEVENV_CHECK_MS) return
+  spawnChild(CLI, ['devenv'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 /** once a day, or sooner when the inbox fills; the dream itself skips when nothing is new */
 const kickDream = () => {
   const stamp = join(HOME, 'dream.stamp')
@@ -1890,6 +1941,7 @@ async function tick(isPatrol = false) {
     if (rigs().length || runIds().length) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
+      kickDevenv()
     }
   }
 }
@@ -2816,6 +2868,14 @@ if (import.meta.main && !queued)
       }
       case 'dream':
         console.log(await dream())
+        break
+      case 'devenv':
+        console.log(
+          devenvPass(
+            args.filter(a => a !== '--force'),
+            args.includes('--force'),
+          ).join('\n'),
+        )
         break
       case 'skills': {
         const [verb, name, ...why] = args
