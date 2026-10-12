@@ -254,16 +254,17 @@ export function outboxArgv(line: string): string[] | null {
 }
 
 /**
- * the rig's beads to or from where its VMs share them: its beadsRemote (the laptop's server pushes, as the
- * remote's user), else the repo's GitHub origin
+ * the bd command that moves a rig's beads to or from where its VMs share them: its beadsRemote, else the repo's
+ * GitHub origin. A push or pull runs inside the laptop's Dolt server, which holds the remote's password, and
+ * only SQL can tell it the user (`bd dolt push` pushes as the server's own)
  */
-function syncRigBeads(run: Run, way: 'push' | 'pull') {
-  const r = rigOf(run.repo)?.beadsRemote
-  return Bun.spawnSync(['bd', 'dolt', way, ...(r ? ['--remote', r.name] : [])], {
-    cwd: run.worktree,
-    env: { ...process.env, ...(r && { DOLT_REMOTE_USER: r.user }) },
-  })
+export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull') {
+  if (!r) return ['bd', 'dolt', way]
+  if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
+  return ['bd', 'sql', `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`]
 }
+const syncRigBeads = (run: Run, way: 'push' | 'pull') =>
+  Bun.spawnSync(rigBeadsSync(rigOf(run.repo)?.beadsRemote, way), { cwd: run.worktree })
 
 /**
  * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending

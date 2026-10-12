@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
-import { httpsRemote, replayable, vmClaudeFlags } from './cli'
+import { httpsRemote, replayable, rigBeadsSync, vmClaudeFlags } from './cli'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
 
@@ -23,6 +23,14 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
+
+test("a rig's beads sync through its shared Dolt remote as its user, else through the repo's origin", () => {
+  expect(rigBeadsSync(undefined, 'push')).toEqual(['bd', 'dolt', 'push'])
+  const r = { name: 'fleet', url: 'https://dolt.example.com:50051/app', user: 'beads' }
+  // the laptop's Dolt server pushes, and only SQL tells it the user
+  expect(rigBeadsSync(r, 'pull')).toEqual(['bd', 'sql', "CALL DOLT_PULL('--user', 'beads', 'fleet', 'main')"])
+  expect(rigBeadsSync(r, 'push')[2]).toBe("CALL DOLT_PUSH('--user', 'beads', 'fleet', 'main')")
+})
 
 test('git remotes become https remotes the VM clones', () => {
   expect(httpsRemote('git@github.com:o/app.git')).toBe('https://github.com/o/app.git')
