@@ -220,7 +220,15 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
 
 /** what the laptop keeps of a task it launched: whose worker it is, and whether its egress policy is in */
 /** `put`: the files still to send the VM once its task runs (the brief, the beads copy), from `<run>/<task>.<name>` */
-type TaskSide = { node: string; seq: number; egress?: ax.Egress[]; policy: boolean; put?: string[] }
+type TaskSide = {
+  node: string
+  seq: number
+  egress?: ax.Egress[]
+  policy: boolean
+  put?: string[]
+  /** where the VM shares the rig's beads, as at its launch: absent, the repo's GitHub origin */
+  beadsRemote?: Rig['beadsRemote']
+}
 const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
 
 /**
@@ -263,8 +271,8 @@ export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull') {
   if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
   return ['bd', 'sql', `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`]
 }
-const syncRigBeads = (run: Run, way: 'push' | 'pull') =>
-  Bun.spawnSync(rigBeadsSync(rigOf(run.repo)?.beadsRemote, way), { cwd: run.worktree })
+const syncRigBeads = (run: Run, way: 'push' | 'pull', r = rigOf(run.repo)?.beadsRemote) =>
+  Bun.spawnSync(rigBeadsSync(r, way), { cwd: run.worktree })
 
 /**
  * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
@@ -319,7 +327,8 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     // the same for its bd writes, which it pushed where the rig's VMs share its beads
     else if (argv![0] === 'report') {
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
-      if (run.bead) syncRigBeads(run, 'pull')
+      // from where this VM was told to push, which a rig changed since does not move
+      if (run.bead) syncRigBeads(run, 'pull', side?.beadsRemote)
     }
     writeFileSync(cursorFile, String(++cursor))
   }
@@ -731,6 +740,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     egress: rig?.egress,
     policy: ax.createPolicy(name, rig?.egress),
     put: ['brief.md'],
+    ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
   writeJson(sideFile(run, name), side)
   return address
