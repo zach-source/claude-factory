@@ -27,9 +27,14 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
 test("a rig's beads sync through its shared Dolt remote as its user, else through the repo's origin", () => {
   expect(rigBeadsSync(undefined, 'push')).toEqual(['bd', 'dolt', 'push'])
   const r = { name: 'fleet', url: 'https://dolt.example.com:50051/app', user: 'beads' }
-  // the laptop's Dolt server pushes, and only SQL tells it the user
-  expect(rigBeadsSync(r, 'pull')).toEqual(['bd', 'sql', "CALL DOLT_PULL('--user', 'beads', 'fleet', 'main')"])
-  expect(rigBeadsSync(r, 'push')[2]).toBe("CALL DOLT_PUSH('--user', 'beads', 'fleet', 'main')")
+  const conn = { host: '127.0.0.1', port: 3308, database: 'app', user: 'root', tls: false }
+  // the laptop's Dolt server pushes, and only SQL tells it the user; through the dolt CLI, which waits it out
+  expect(rigBeadsSync(r, 'pull', conn)).toEqual([
+    ...['dolt', '--host', '127.0.0.1', '--port', '3308', '--user', 'root', '--no-tls', '--use-db', 'app'],
+    ...['sql', '-q', "CALL DOLT_PULL('--user', 'beads', 'fleet', 'main')"],
+  ])
+  expect(rigBeadsSync(r, 'push', conn).at(-1)).toBe("CALL DOLT_PUSH('--user', 'beads', 'fleet', 'main')")
+  expect(() => rigBeadsSync(r, 'push')).toThrow('no Dolt server')
 })
 
 test('git remotes become https remotes the VM clones', () => {

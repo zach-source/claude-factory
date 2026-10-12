@@ -261,18 +261,33 @@ export function outboxArgv(line: string): string[] | null {
   }
 }
 
+/** where bd keeps a repo's store: its Dolt server and database (`bd dolt show --json`) */
+type DoltConn = { host: string; port: number; database: string; user: string; tls: boolean }
+
 /**
- * the bd command that moves a rig's beads to or from where its VMs share them: its beadsRemote, else the repo's
+ * the command that moves a rig's beads to or from where its VMs share them: its beadsRemote, else the repo's
  * GitHub origin. A push or pull runs inside the laptop's Dolt server, which holds the remote's password, and
- * only SQL can tell it the user (`bd dolt push` pushes as the server's own)
+ * only SQL can tell it the user (`bd dolt push` pushes as the server's own). Through the dolt CLI, not
+ * `bd sql`: bd drops the connection after 10 s, mid-fetch on a large store, and the merge never happens
  */
-export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull') {
+export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?: DoltConn) {
   if (!r) return ['bd', 'dolt', way]
   if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
-  return ['bd', 'sql', `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`]
+  if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
+  return [
+    ...['dolt', '--host', conn.host, '--port', String(conn.port), '--user', conn.user],
+    ...(conn.tls ? [] : ['--no-tls']),
+    ...['--use-db', conn.database, 'sql', '-q'],
+    `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`,
+  ]
 }
-const syncRigBeads = (run: Run, way: 'push' | 'pull', r = rigOf(run.repo)?.beadsRemote) =>
-  Bun.spawnSync(rigBeadsSync(r, way), { cwd: run.worktree })
+function syncRigBeads(run: Run, way: 'push' | 'pull', r = rigOf(run.repo)?.beadsRemote) {
+  const show = r ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
+  const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
+  // the server's own user; its password, if it has one, as bd takes it
+  const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
+  return Bun.spawnSync(rigBeadsSync(r, way, conn), { cwd: run.worktree, env })
+}
 
 /**
  * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
