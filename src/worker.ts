@@ -110,6 +110,16 @@ export function put(name: string, part: number, parts: number, base64: string) {
   rmSync(dir, { recursive: true, force: true })
 }
 
+/** a file the laptop sends once the task runs (put), waited for; the laptop resends a part that failed */
+async function sentFile(name: string, { waitMs = 2000, tries = 300 } = {}) {
+  const file = join(own(), name)
+  for (let i = 0; !existsSync(file); i++) {
+    if (i >= tries) throw new Error(`the laptop never sent ${name}`)
+    await Bun.sleep(waitMs)
+  }
+  return readFileSync(file)
+}
+
 /**
  * the VM's beads, when the run has some (FACTORY_BEADS_PREFIX): the laptop sends their copy (gzip of bd export
  * lines) once the task runs, and it loads once into a store of its own (a resumed task keeps it), which the
@@ -125,14 +135,10 @@ async function setupBeads({ waitMs = 2000, tries = 300 } = {}) {
   Object.assign(process.env, { BEADS_DIR: join(dir, '.beads'), PATH: `${bin}:${process.env.PATH}` })
   delete process.env.BEADS_DOLT_SHARED_SERVER
   if (existsSync(join(dir, '.beads'))) return
-  const sent = join(own(), 'beads.jsonl.gz')
-  for (let i = 0; !existsSync(sent); i++) {
-    if (i >= tries) throw new Error('beads in the VM: the laptop never sent their copy')
-    await Bun.sleep(waitMs)
-  }
+  const sent = await sentFile('beads.jsonl.gz', { waitMs, tries })
   mkdirSync(dir, { recursive: true })
   const file = join(own(), 'beads.jsonl')
-  writeFileSync(file, Bun.gunzipSync(readFileSync(sent)))
+  writeFileSync(file, Bun.gunzipSync(sent))
   const real = process.env.FACTORY_BD ?? '/usr/local/bin/bd'
   for (const cmd of [
     ['git', 'init', '-q', '.'],
@@ -256,8 +262,8 @@ export async function serve(model?: string, { idleMs = 1000, once = false } = {}
   let session = state()?.session
   const set = (status: State['status']) => save({ status, session, pid: process.pid })
   if (!session) {
-    const brief = process.env.FACTORY_BRIEF
-    if (!brief) throw new Error('FACTORY_BRIEF is not set: the task carries the brief in its env')
+    // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
+    const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
     session = await turn(brief, model)
   }

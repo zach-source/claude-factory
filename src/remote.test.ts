@@ -160,15 +160,21 @@ test("an outbox replays only the worker's own report, its run's mail and memory,
   rmSync(join(home, 'runs', 'r3'), { recursive: true })
 })
 
-test("a run's beads copy goes to the VM over ssh in parts once the task runs, then never again", () => {
+test('the brief and the beads copy go to the VM over ssh in parts once the task runs, then never again', () => {
   launched('r6')
   const side = join(home, 'runs', 'r6', 't.json')
-  writeFileSync(side, JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), beads: true }))
-  writeFileSync(join(home, 'runs', 'r6', 't.beads.gz'), Bun.gzipSync('{"id":"x-1"}'))
+  writeFileSync(
+    side,
+    JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['brief.md', 'beads.jsonl.gz'] }),
+  )
+  writeFileSync(join(home, 'runs', 'r6', 't.brief.md'), 'x'.repeat(150_000)) // two parts
+  writeFileSync(join(home, 'runs', 'r6', 't.beads.jsonl.gz'), Bun.gzipSync('{"id":"x-1"}'))
   cluster('Running', { status: 'working', lines: [] })
   factory(['tick'])
+  expect(called()).toContain('ssh t -- factory worker put brief.md 0 3 ')
+  expect(called()).toContain('ssh t -- factory worker put brief.md 2 3 ')
   expect(called()).toContain('ssh t -- factory worker put beads.jsonl.gz 0 1 ')
-  expect(JSON.parse(readFileSync(side, 'utf8')).beads).toBe(false)
+  expect(JSON.parse(readFileSync(side, 'utf8')).put).toEqual([])
   cluster('Running', { status: 'working', lines: [] })
   factory(['tick'])
   expect(called()).not.toContain('worker put')

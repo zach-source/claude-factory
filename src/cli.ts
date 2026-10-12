@@ -219,8 +219,8 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
 }
 
 /** what the laptop keeps of a task it launched: whose worker it is, and whether its egress policy is in */
-/** `beads`: the run's beads copy (see vmBeads) is still to send, from `<run>/<task>.beads.gz` */
-type TaskSide = { node: string; seq: number; egress?: ax.Egress[]; policy: boolean; beads?: boolean }
+/** `put`: the files still to send the VM once its task runs (the brief, the beads copy), from `<run>/<task>.<name>` */
+type TaskSide = { node: string; seq: number; egress?: ax.Egress[]; policy: boolean; put?: string[] }
 const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
 
 /**
@@ -305,14 +305,15 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     if (!ax.createPolicy(task, side.egress)) return { status: 'pending', agent: 'ax' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
-  if (side?.beads) {
-    // the copy is too big for the task's env: it goes over ssh, in parts, and serve waits for it
-    const b64 = readFileSync(join(runDir(run.id), `${task}.beads.gz`)).toString('base64')
-    const parts = Math.ceil(b64.length / ax.PUT_PART)
+  // what is too big for the task's env goes over ssh, in parts, and serve waits for it
+  for (const name of side?.put ?? []) {
+    const b64 = readFileSync(join(runDir(run.id), `${task}.${name}`)).toString('base64')
+    const parts = Math.max(1, Math.ceil(b64.length / ax.PUT_PART))
     for (let i = 0; i < parts; i++)
-      if (!ax.put(task, 'beads.jsonl.gz', i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)))
+      if (!ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)))
         return { status: 'pending', agent: 'ax' }
-    writeJson(sideFile(run, task), { ...side, beads: false })
+    side!.put = side!.put!.filter(n => n !== name)
+    writeJson(sideFile(run, task), side)
   }
   const cursorFile = join(runDir(run.id), `${task}.cursor`)
   let cursor = existsSync(cursorFile) ? Number(readFileSync(cursorFile, 'utf8')) : 0
@@ -702,6 +703,20 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
   const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
   const name = ax.taskName(run.id, c.seq)
+  const brief = [
+    text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
+    `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
+    ...(run.bead
+      ? [
+          `- bd here answers from a copy of the repo's issues taken when you started (others' long text is cut); your bd writes go to the factory's store too. Write descriptions inline or with --body-file; -f, --graph and --metadata do not leave the VM.`,
+        ]
+      : []),
+  ].join('\n')
+  const hasRunBeads = !!run.bead && hasBeads(run.repo)
+  // Substrate takes no env value past 32 KiB, and a brief with its bead's spec can pass that: the brief and
+  // the beads copy go over ssh once the task runs (see taskInfo), from these files
+  writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
+  if (hasRunBeads) writeFileSync(join(runDir(run.id), `${name}.beads.jsonl.gz`), vmBeads(run))
   const address = ax.launch({
     name,
     repo: httpsRemote(git(run.worktree, 'remote', 'get-url', 'origin')),
@@ -711,15 +726,6 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     harness: harness!,
     provider: ax.providerOf(agent),
     claudeFlags: harness === 'claude' ? vmClaudeFlags(def) : undefined,
-    brief: [
-      text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
-      `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
-      ...(run.bead
-        ? [
-            `- bd here answers from a copy of the repo's issues taken when you started (others' long text is cut); your bd writes go to the factory's store too. Write descriptions inline or with --body-file; -f, --graph and --metadata do not leave the VM.`,
-          ]
-        : []),
-    ].join('\n'),
     env: {
       ...env,
       FACTORY_FROM: node,
@@ -729,18 +735,15 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
       CODEX_HOME: `${ax.OWN}/codex`,
       PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
-      ...(run.bead &&
-        hasBeads(run.repo) && { FACTORY_BEADS_PREFIX: run.bead.slice(0, run.bead.lastIndexOf('-')) }),
+      ...(hasRunBeads && { FACTORY_BEADS_PREFIX: run.bead!.slice(0, run.bead!.lastIndexOf('-')) }),
     },
   })
-  const beads = run.bead && hasBeads(run.repo) ? vmBeads(run) : null
-  if (beads) writeFileSync(join(runDir(run.id), `${name}.beads.gz`), beads)
   const side: TaskSide = {
     node,
     seq: c.seq,
     egress: rig?.egress,
     policy: ax.createPolicy(name, rig?.egress),
-    beads: !!beads,
+    put: ['brief.md', ...(hasRunBeads ? ['beads.jsonl.gz'] : [])],
   }
   writeJson(sideFile(run, name), side)
   return address

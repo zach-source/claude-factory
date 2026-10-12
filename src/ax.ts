@@ -69,7 +69,8 @@ export type Launch = {
   repo: string
   branch: string
   image: string
-  brief: string
+  /** the brief in the task's env; without it, the laptop sends brief.md once the task runs */
+  brief?: string
   model?: string
   /** the agent the VM runs (claude when absent) and, for pi, its provider */
   harness?: Harness
@@ -102,8 +103,8 @@ export function manifest(l: Launch) {
         FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
         FACTORY_REPO: l.repo,
         FACTORY_BRANCH: l.branch,
-        // AX v0.3.1's Workspace has no files, so the brief rides in the env
-        FACTORY_BRIEF: l.brief,
+        // AX v0.3.1's Workspace has no files: a short brief rides in the env
+        ...(l.brief !== undefined && { FACTORY_BRIEF: l.brief }),
         FACTORY_HARNESS: l.harness ?? 'claude',
         ...(l.provider && { FACTORY_PROVIDER: l.provider }),
         ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
