@@ -45,6 +45,10 @@ import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, typ
 import { claudeCommand, command, harnessOf, readMcp, sq } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as memory from './memory'
+import * as ax from './ax'
+import type { Egress } from './ax'
+import * as worker from './worker'
+import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
   createdAt,
   fate,
@@ -119,7 +123,7 @@ const LAUNCH_MS = 90_000
 const TIME_UP = 'minutes are up' // marks the deadline's warning among the factory's mail
 const HANDOFF_ASK = "past the factory's limit" // marks the ask to hand off
 
-type Run = {
+export type Run = {
   id: string
   /** the factory this run follows, pinned into the run dir when it started */
   factory: string
@@ -213,6 +217,113 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
     session: info.agent ? info.agent_session?.value : undefined,
   }
 }
+
+/** what the laptop keeps of a task it launched: whose worker it is, and whether its egress policy is in */
+type TaskSide = { node: string; seq: number; egress?: ax.Egress[]; policy: boolean }
+const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
+
+/**
+ * the factory command a VM worker's outbox line may run here, as its station: a report on its own attempt,
+ * mail on its own run, memory add. null for anything else (decide, goto, start...): the VM's agent writes the
+ * outbox, and it may be steered by what it read.
+ */
+export function replayable(
+  argv: string[],
+  side: { node: string; seq: number },
+  run: string,
+): string[] | null {
+  const [cmd, id, seq] = argv
+  if (cmd === 'report' && id === run && seq === String(side.seq)) return argv
+  if (cmd === 'mail' && id === run) return argv
+  if (cmd === 'memory' && id === 'add') {
+    const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
+    return ['memory', 'add', ...rest, '--from', side.node]
+  }
+  return null
+}
+
+/** an outbox line's argv; null for a line that is not `{argv: string[]}`, which the VM may write */
+export function outboxArgv(line: string): string[] | null {
+  try {
+    const { argv } = JSON.parse(line)
+    return Array.isArray(argv) && argv.every(a => typeof a === 'string') ? argv : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
+ * or suspended task is not polled, and a failed or deleted one is gone, like a closed pane
+ */
+function taskInfo(run: Run, pane: string): WorkerInfo | null {
+  const task = ax.taskOf(pane)
+  const phase = ax.phase(task)
+  // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
+  if (phase === 'Pending' || phase === 'Suspended') return { status: phase.toLowerCase(), agent: 'ax' }
+  if (phase !== 'Running') return null
+  // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
+  const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
+  if (side && !side.policy) {
+    // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
+    if (!ax.createPolicy(task, side.egress)) return { status: 'pending', agent: 'ax' }
+    writeJson(sideFile(run, task), { ...side, policy: true })
+  }
+  const cursorFile = join(runDir(run.id), `${task}.cursor`)
+  let cursor = existsSync(cursorFile) ? Number(readFileSync(cursorFile, 'utf8')) : 0
+  const polled = ax.poll(task, cursor)
+  for (const line of polled.lines) {
+    const argv = outboxArgv(line)
+    const cmd = side && argv && replayable(argv, side, run.id)
+    // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
+    const env = { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '', FACTORY_FROM: side?.node }
+    const p = cmd ? Bun.spawnSync([CLI, ...cmd], { env }) : null
+    if (!p)
+      ax.prompt(
+        task,
+        `[factory] \`factory ${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, and adds memory`,
+      )
+    else if (p.exitCode !== 0)
+      ax.prompt(task, `[factory] \`factory ${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
+    // the worker pushed before reporting, and the local worktree is what the next launch pushes back:
+    // best effort, the report stands either way
+    else if (argv![0] === 'report')
+      Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
+    writeFileSync(cursorFile, String(++cursor))
+  }
+  return polled.status === 'exited'
+    ? null
+    : { status: polled.status, agent: 'ax', session: polled.session, tail: polled.tail }
+}
+
+const herdrRunner: Runner = {
+  name: 'herdr',
+  local: true,
+  launch: launchPane,
+  info: (_run, pane) => paneInfo(pane),
+  deliver: (pane, text) => (herdr('agent', 'prompt', pane, text), true),
+  close: pane => void Bun.spawnSync(['herdr', 'pane', 'close', pane]), // gone already is fine
+  phase: pane => paneInfo(pane)?.status ?? null,
+}
+
+const axRunner: Runner = {
+  name: 'ax',
+  local: false,
+  launch: launchTask,
+  info: taskInfo,
+  /** a suspended task is woken, and the prompt waits for the next tick */
+  deliver(address, text) {
+    const task = ax.taskOf(address)
+    if (ax.phase(task) !== 'Running') return (ax.resume(task), false)
+    ax.prompt(task, text.replaceAll(CLI, 'factory'))
+    return true
+  },
+  close: address => ax.remove(ax.taskOf(address)),
+  // waiting on the manager costs nothing: the VM is snapshotted until the answer wakes it
+  suspend: address => ax.suspend(ax.taskOf(address)),
+  phase: address => ax.phase(ax.taskOf(address))?.toLowerCase() ?? null,
+}
+Object.assign(runners, { herdr: herdrRunner, ax: axRunner })
 
 /**
  * commits on the run's base that name its bead: a quarter of triage's rejects were beads already fixed by a
@@ -468,10 +579,20 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
   `[factory] Your pane closed and this session was resumed. Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
 
-/** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
+/** the rig's runner: where its workers run */
+const runnerOfRig = (repo: string) =>
+  runners[rigOf(repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+
+/** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
-  const prompt = session ? resumeFile(run, node, c) : promptOf(run, node, c)
-  if (!session) writeFileSync(prompt, brief(run, def, node, c, c.mail[node] ?? []))
+  const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
+  const full = () => brief(run, def, node, c, c.mail[node] ?? [])
+  if (!session) writeFileSync(file, full())
+  return runnerOfRig(run.repo).launch({ run, def, node, c, session, file, brief: full })
+}
+
+/** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
+function launchPane({ run, def, node, c, session, file }: Job) {
   const tab = () =>
     herdr(
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
@@ -499,8 +620,74 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  herdr('pane', 'run', pane, launch(run, def, node, prompt, session))
+  herdr('pane', 'run', pane, launch(run, def, node, file, session))
   return pane
+}
+
+/** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
+export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
+
+/**
+ * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
+ * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
+ */
+function launchTask({ run, def, node, c, brief: text }: Job) {
+  const image =
+    process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the worker image for AX tasks')
+  const rig = rigOf(run.repo)
+  const agent = agentOfNode(run, def, node)
+  const harness = harnessOf(agent)
+  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
+  const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
+  const name = ax.taskName(run.id, c.seq)
+  const address = ax.launch({
+    name,
+    repo: httpsRemote(git(run.worktree, 'remote', 'get-url', 'origin')),
+    branch: run.branch,
+    image,
+    model: ax.modelOf(agent),
+    harness: harness!,
+    provider: ax.providerOf(agent),
+    claudeFlags: harness === 'claude' ? vmClaudeFlags(def) : undefined,
+    brief: [
+      text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
+      `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
+    ].join('\n'),
+    env: {
+      ...env,
+      FACTORY_FROM: node,
+      BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
+      FACTORY_HOME: `${ax.OWN}/home`,
+      // each agent's config and sessions on the workspace volume, so a session survives a suspend
+      CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
+      CODEX_HOME: `${ax.OWN}/codex`,
+      PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
+    },
+  })
+  const side: TaskSide = { node, seq: c.seq, egress: rig?.egress, policy: ax.createPolicy(name, rig?.egress) }
+  writeJson(sideFile(run, name), side)
+  return address
+}
+
+/**
+ * the part of workerFlags that holds in a VM: the same tools, no user settings or project-level mods, the
+ * worker system prompt (the image carries it), settings for no auto memory and a compaction backstop. Left
+ * out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global CLAUDE.md to exclude.
+ */
+export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
+  if (process.env.FACTORY_LEAN === '0') return []
+  const settings = {
+    autoMemoryEnabled: false,
+    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
+    skipDangerousModePermissionPrompt: true,
+    autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
+  }
+  return [
+    ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
+    ...['--settings', JSON.stringify(settings)],
+    ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
+  ]
 }
 
 /** the note a resumed worker is sent, written where its launch reads it */
@@ -837,7 +1024,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   if (!c.pane) {
     // a Claude in an untrusted repo sits at its trust dialog until the station times out, every attempt
-    if (isClaude && !isTrusted(run.repo)) {
+    if (isClaude && runnerOfRig(run.repo).local && !isTrusted(run.repo)) {
       const paged = join(HOME, 'untrusted.json')
       const repos = existsSync(paged) ? readJson<string[]>(paged) : []
       if (!repos.includes(run.repo)) {
@@ -853,10 +1040,12 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
   }
-  const info = paneInfo(c.pane)
+  const runner = runnerOf(c.pane)
+  const info = runner.info(run, c.pane)
   if (info?.session && info.session !== c.session)
     send({ type: 'SESSION', seq: c.seq, session: info.session })
-  if (info === null && c.session && c.resumes < 1) {
+  // a remote worker keeps its session where it ran: once gone, there is nothing to resume it from
+  if (info === null && c.session && c.resumes < 1 && runner.local) {
     send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session), isResume: true })
     return 'resuming'
   }
@@ -864,7 +1053,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
   // resume the conversation in the same pane, once, as for a pane that closed
   // a just-resumed Claude takes seconds to show: give it the launch grace before calling it gone again
-  if (info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
+  if (runner.local && info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
     if (c.resumes >= 1) {
       send({ type: 'FAIL', seq: c.seq, reason: `the worker's Claude exited in pane ${c.pane}` })
       return status
@@ -874,7 +1063,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
     return 'resuming'
   }
-  if (info && !info.agent && !c.session && isClaude) {
+  if (runner.local && info && !info.agent && !c.session && isClaude) {
     const step = relaunch(now - Math.max(c.startedAt, c.nudgedAt), c.nudges)
     if (step === 'fail') {
       send({
@@ -898,23 +1087,31 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
-  const tail = isClaude && c.session ? tailOf(run.worktree, c.session) : ''
+  // a remote worker's transcript is in its VM: its runner hands over the end of it
+  const tail =
+    !isClaude || !c.session ? '' : runner.local ? tailOf(run.worktree, c.session) : (info?.tail ?? '')
   const hit = limitHit(tail)
-  if (!hit) clearLimit(servedAt(tail))
+  if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
-    const until = swapAccount(hit, now)
+    // a VM's Claude runs on the vault's token, which ccswitch does not rotate: it waits out the limit, then
+    // the nudge below gives it its next turn
+    const until = runner.local ? swapAccount(hit, now) : hit.resetsAt || hit.at + 3_600_000
     if (until > now) {
-      const paged = join(HOME, 'limit-paged.json')
+      const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
       if (!existsSync(paged) || readJson<number>(paged) < until) {
-        const text = `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+        const text = runner.local
+          ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+          : `The Claude token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
         send({ type: 'MAIL', from: node, to: 'manager', text })
         writeJson(paged, until)
       }
       return 'usage limit'
     }
-    Bun.spawnSync(['herdr', 'pane', 'close', c.pane]) // its Claude sits at the limit message
-    send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session!) })
-    return 'account swapped'
+    if (runner.local) {
+      runner.close(c.pane) // its Claude sits at the limit message
+      send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session!) })
+      return 'account swapped'
+    }
   }
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   // every turn re-reads the whole context: past the limit the worker hands off to a fresh one
@@ -946,8 +1143,10 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const text = `[factory] This station's ${timeoutMin} ${TIME_UP}. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail
   } else if (inbox.length && status !== 'blocked') {
-    herdr('agent', 'prompt', c.pane, inbox.map(m => `[factory mail from ${m.from}] ${m.text}`).join('\n\n'))
-    send({ type: 'READ', box: node, seen: c.mail[node]!.length })
+    if (runner.deliver(c.pane, inbox.map(m => `[factory mail from ${m.from}] ${m.text}`).join('\n\n')))
+      send({ type: 'READ', box: node, seen: c.mail[node]!.length })
+  } else if (isAsking && status === 'idle' && runner.suspend) {
+    runner.suspend(c.pane)
   } else if (
     !isAsking &&
     (status === 'idle' || status === 'done') &&
@@ -957,9 +1156,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (c.nudges >= NUDGES) send({ type: 'FAIL', seq: c.seq, reason: 'worker stopped without reporting' })
     else {
       const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
-      herdr(
-        'agent',
-        'prompt',
+      runner.deliver(
         c.pane,
         `[factory] You have not reported. If you are finished run: ${cmd}. If you are still working or waiting on something, say in one line what, and carry on.`,
       )
@@ -974,7 +1171,7 @@ function agentOf(def: Factory, value: unknown, c: Ctx) {
   const [node, sub] = where(value)
   if (sub === 'waiting') return `waits until ${clock(c.wakeAt)}`
   if (sub === 'working' && def.nodes[node]?.gate) return 'awaiting decision'
-  return c.pane ? (paneInfo(c.pane)?.status ?? null) : undefined
+  return c.pane ? (runnerOf(c.pane).phase?.(c.pane) ?? null) : undefined
 }
 
 function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | null, error?: string): Row {
@@ -1028,15 +1225,15 @@ function haltRun(
   }
   if (!halt) return null
   if (halt.state === 'paused' || halt.closed[run.id] === c.seq) return 'paused'
-  const info = c.pane ? paneInfo(c.pane) : null
+  const info = c.pane ? runnerOf(c.pane).info(run, c.pane) : null
   // a pane with no agent in it (a script worker, a Claude already gone) has nobody to tell
   const isTold = halt.told[run.id] === c.seq || !info?.agent
   const step = haltStep(!!info, isTold, info?.status === 'working', now - halt.at)
   if (step === 'tell') {
-    herdr('agent', 'prompt', c.pane!, STOP_NOTE)
+    runnerOf(c.pane!).deliver(c.pane!, STOP_NOTE)
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
-    if (step === 'close') Bun.spawnSync(['herdr', 'pane', 'close', c.pane!])
+    if (step === 'close') runnerOf(c.pane!).close(c.pane!)
     halt.closed[run.id] = c.seq
   }
   writeJson(haltFile(), halt)
@@ -1059,7 +1256,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   const send = (e: Input, at = now) => {
     const pane = ctx().pane
     actor.send({ ...e, at } as Ev)
-    if (pane && pane !== ctx().pane) Bun.spawnSync(['herdr', 'pane', 'close', pane]) // gone already is fine
+    if (pane && pane !== ctx().pane) runnerOf(pane).close(pane)
   }
 
   for (const line of lines.slice(saved.cursor)) {
@@ -1447,7 +1644,8 @@ export function reapable(
   const workspaces = runs.filter(r => r.isOver && panes.some(p => isIn(p, r))).map(r => r.ws)
   // ponytail: idle and done only; a working duplicate is left to finish, as closing it loses its turn
   const strays = runs
-    .filter(r => !r.isOver)
+    // a remote worker has no pane here: the panes in its workspace are the person's
+    .filter(r => !r.isOver && (!r.pane || runnerOf(r.pane).local))
     .flatMap(r =>
       panes.filter(
         p =>
@@ -1681,10 +1879,14 @@ export type Rig = {
   sweeps?: string[]
   /** what the manager works toward there while the rig has room */
   goal?: string
+  /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
+  runner?: string
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
   /** MCP servers every worker here loads, a file in Claude's --mcp-config shape ({ mcpServers }) */
   mcp?: string
+  /** extra HTTPS hosts its workers may reach (the ax runner's egress policy), and the vault keys injected for them */
+  egress?: Egress[]
   /** the factory's params, set for this rig (`--param name=value`) */
   params?: Record<string, string>
 }
@@ -1979,20 +2181,49 @@ async function defineRig(
     max,
     sweeps,
     goal,
+    runner,
     agent,
     mcp,
     params,
-  }: { max?: string; sweeps?: string; goal?: string; agent?: string; mcp?: string; params?: string[] },
+    egress,
+  }: {
+    max?: string
+    sweeps?: string
+    goal?: string
+    runner?: string
+    agent?: string
+    mcp?: string
+    params?: string[]
+    egress?: string[]
+  },
 ) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
   const repo = toplevel(path)
   if (!hasBeads(repo)) fail(`${repo} has no .beads: run bd init there first`)
-  if (!isTrusted(repo))
+  // a VM runs the agent headless: there is no trust dialog to wait at
+  if ((runners[runner ?? DEFAULT_RUNNER]?.local ?? true) && !isTrusted(repo))
     console.warn(
       `warning: Claude does not trust ${repo} yet, so its runs wait to start: run claude there once and accept its trust dialog`,
     )
   const def = await loadFactory(factorySource(factory, repo))
   const rig: Rig = { name, repo, factory, ...(goal && { goal }), ...(agent && { agent }) }
+  if (runner !== undefined) {
+    if (!(runner in runners)) fail(`--runner is ${Object.keys(runners).join(', ')} (not "${runner}")`)
+    if (runner !== DEFAULT_RUNNER) rig.runner = runner
+  }
+  const remote = runners[rig.runner ?? DEFAULT_RUNNER]!.local === false
+  if (remote && mcp !== undefined)
+    fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
+  if (remote && agent !== undefined && !harnessOf(agent))
+    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
+  if (egress?.length) {
+    if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
+    try {
+      rig.egress = egress.map(ax.parseEgress)
+    } catch (err) {
+      fail((err as Error).message)
+    }
+  }
   if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
   if (mcp !== undefined) {
     rig.mcp = expand(mcp)
@@ -2222,11 +2453,12 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--param name=value]... [--goal text...] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
-                                     own cap, sweeps and a goal the manager works toward; --agent runs every
+                                     own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
-                                     the MCP servers in a Claude-shaped mcpServers file
+                                     the MCP servers in a Claude-shaped mcpServers file; --egress (repeatable, runner ax) lets the VM reach
+                                     those hosts, injecting the agent-vault credential KEY for them
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog | prs         JSON for the manager's views
@@ -2248,6 +2480,8 @@ const usage = `factory — herdr software factories on xstate
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
+  worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
+                                     state and outbox, a prompt queued for it (docs/remote-runner.md)
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
@@ -2261,9 +2495,27 @@ else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This
 or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
-if (import.meta.main)
+// inside an AX task the run lives on the laptop: what a worker reports, mails or learns waits in the outbox
+const queued =
+  import.meta.main &&
+  !!process.env.FACTORY_OUTBOX &&
+  (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && args[0] === 'add'))
+if (queued) {
+  worker.queue([cmd!, ...args])
+  console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
+}
+
+if (import.meta.main && !queued)
   try {
     switch (cmd) {
+      case 'worker': {
+        const [sub, arg] = args
+        if (sub === 'serve') await worker.serve(arg === '--model' ? args[2] : undefined)
+        else if (sub === 'poll') console.log(JSON.stringify(worker.poll(Number(arg ?? 0))))
+        else if (sub === 'prompt' && arg) worker.prompt(arg)
+        else fail('usage: factory worker serve [--model m] | poll <cursor> | prompt <base64>')
+        break
+      }
       case 'start': {
         const words = args.slice(2)
         await start(args[0], args[1], words.filter(w => w !== '--owned').join(' '), words.includes('--owned'))
@@ -2555,16 +2807,33 @@ if (import.meta.main)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
-        const [max, sweeps, agent, mcp] = [opt('--max'), opt('--sweeps'), opt('--agent'), opt('--mcp')]
+        const [max, sweeps, runner, agent, mcp] = [
+          opt('--max'),
+          opt('--sweeps'),
+          opt('--runner'),
+          opt('--agent'),
+          opt('--mcp'),
+        ]
         const params: string[] = []
         while (args.includes('--param')) params.push(opt('--param') ?? '')
+        const egress: string[] = []
+        while (args.includes('--egress')) egress.push(opt('--egress') ?? '')
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              'usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--param name=value]... [--goal text...]',
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...]`,
             )
-          const rig = await defineRig(name!, repo!, factory, { max, sweeps, goal, agent, mcp, params })
+          const rig = await defineRig(name!, repo!, factory, {
+            max,
+            sweeps,
+            goal,
+            runner,
+            agent,
+            mcp,
+            params,
+            egress,
+          })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
@@ -2575,7 +2844,7 @@ if (import.meta.main)
             )
           writeJson(rigsFile(), [...rigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
           console.log(
-            `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}`,
+            `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}${rig.runner ? `, workers run by ${rig.runner}` : ''}`,
           )
         } else if (sub === 'rm') {
           if (!rigs().some(r => r.name === name))

@@ -89,6 +89,12 @@ of a rig with one command, and `--mcp` gives its workers the servers in a Claude
 `{ "mcpServers": { ... } }` file: `--mcp-config` for Claude, `-c mcp_servers.<name>=…` for Codex.
 pi has no MCP client, so its pane says that the file was not loaded.
 
+`--runner` says where a rig's workers run: `herdr` panes on this machine (the default), or `ax`, an
+AX microVM on a cluster ([docs/remote-runner.md](docs/remote-runner.md)). A VM runs the rig's agent
+(claude, codex or pi) headless; `--egress host[,host]...[=KEY[:Header:Prefix]]` (repeatable) lets it
+reach more hosts, with agent-vault's credential `KEY` injected for them. Runners are an interface
+(`src/runner.ts`): a new one is a module and a registry entry.
+
 A factory's `params` are what its worker commands name as `{name}`: lifecycle's are `claude` (the
 Claude Code launcher, default `claude-smart --new --no-channels`), `exec_model`, `judge_model` and
 `security_model`. A rig sets one with `--param name=value`; otherwise the factory's environment
@@ -101,6 +107,7 @@ factory rig add web ~/repos/web --agent "codex --dangerously-bypass-approvals-an
 factory rig add api ~/repos/api --agent "pi --model anthropic/claude-sonnet-5" --sweeps none
 factory rig add infra ~/repos/infra --mcp ~/.config/factory/infra-mcp.json
 factory rig add docs ~/repos/docs --param exec_model=claude-haiku-4-5-20251001 --param claude=claude
+factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egress api.openai.com=OPENAI
 ```
 
 ## The lifecycle factory
@@ -329,6 +336,8 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
   nudges, no timeout) until the first reset, and the manager hears once. `factory manager`
   does the same for the manager: it checks the manager's transcript each minute and, refused,
   swaps the account and resumes the manager's session.
+  A worker on the `ax` runner uses the vault's token, which ccswitch does not rotate: it
+  holds until its limit resets.
 - **Manager skills**: the manager gets the factory's own skills, playbooks for the work it
   keeps repeating, from `memory/.manager/.claude/skills/` (an `--add-dir`, so Claude Code picks
   up edits mid-session). `factory manager` records its sessions, and the dream reads what each
@@ -348,7 +357,7 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
 - Claude trusts a worktree through its main repo. A run on a repo Claude does not trust
   yet starts no worker (it would stop at the folder-trust dialog): the board shows it
   awaiting trust, the manager is paged once, and `rig add` warns. Run `claude` in the
-  repo once and accept.
+  repo once and accept. (Not for a rig whose runner is `ax`: its VM runs the agent headless.)
 - Station prompts are stack-agnostic and defer to the repo's own CLAUDE.md,
   CONTRIBUTING and CI. Deploy, soak, rollback and monitor need the workers to reach
   your deploy tooling and telemetry (kubectl, gh, the Grafana MCP) the way you do.
