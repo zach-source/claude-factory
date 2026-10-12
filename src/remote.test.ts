@@ -355,7 +355,7 @@ test("a VM's snapshot keeps the open issues and the run's own whole, and cuts th
   const lines = [
     { id: 'ib-1', status: 'in_progress', description: long },
     { id: 'ib-1.2', status: 'closed', description: long },
-    { id: 'ib-7', status: 'open', description: long },
+    { id: 'ib-7', status: 'open', description: long, design: long, comments: [{ text: long }] },
     { id: 'ib-8', status: 'closed', description: 'gone' },
   ].map(e => JSON.stringify(e))
   const snap = beadsSnapshot([...lines, 'not json', ''], 'ib-1').map(l => JSON.parse(l))
@@ -363,7 +363,9 @@ test("a VM's snapshot keeps the open issues and the run's own whole, and cuts th
   expect(snap[0].description).toBe(long)
   expect(snap[1].description).toBe(long) // the run's own, closed or not
   expect(snap[2].description).toEndWith("… [cut in the VM's copy]")
-  expect(snap[2].description.length).toBeLessThan(700)
+  expect(snap[2].description.length).toBeLessThan(400)
+  expect(snap[2].design).toBeUndefined()
+  expect(snap[2].comments).toBeUndefined()
 })
 
 test.skipIf(!Bun.which('bd'))(

@@ -43,6 +43,18 @@ export function queue(argv: string[]) {
   appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
 }
 
+/** the env values the laptop sent in chunks (ax.chunkEnv), joined back under their names */
+export function joinEnv(env: Record<string, string | undefined> = process.env) {
+  const parts = Object.keys(env)
+    .map(k => /^(.+)__(\d+)$/.exec(k))
+    .filter(m => m !== null)
+    .sort((a, b) => Number(a[2]) - Number(b[2]))
+  for (const [key, name] of parts) {
+    env[name!] = (env[name!] ?? '') + env[key!]
+    delete env[key!]
+  }
+}
+
 /** a bd command line that changes the store: the VM's own store takes it, and the laptop's gets it through the outbox */
 export function isBdWrite([cmd, sub]: string[]) {
   if (['create', 'update', 'close', 'reopen', 'comment'].includes(cmd ?? '')) return true
@@ -101,6 +113,8 @@ export function bd(args: string[]) {
 function setupBeads() {
   const snapshot = process.env.FACTORY_BEADS
   if (!snapshot) return
+  // past 128 KB an env string is too long to exec the agent with
+  delete process.env.FACTORY_BEADS
   const dir = join(own(), 'beads')
   const bin = join(own(), 'bin')
   mkdirSync(bin, { recursive: true })
@@ -203,6 +217,7 @@ function sh(cmd: string[], cwd?: string) {
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
 export async function setup({ tries = 60, waitMs = 5000 } = {}) {
+  joinEnv()
   if (process.env.FACTORY_CA) {
     const ca = join(own(), 'egress-ca.crt')
     writeFileSync(ca, process.env.FACTORY_CA)

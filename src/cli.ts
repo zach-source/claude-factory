@@ -252,10 +252,11 @@ const BD_LAPTOP_ONLY =
 
 /**
  * what a VM worker's bd reads: the rig's issues that are not closed, and the run's own (its bead and the
- * bead's children) whole; the others' long text is cut, which keeps a big backlog small enough for the
- * task's env. Lines are bd export's; the VM imports them into a store of its own
+ * bead's children) whole; the others keep their title, status, links and the start of their description,
+ * which keeps a big backlog small enough for the task's env. Lines are bd export's; the VM imports them
+ * into a store of its own
  */
-export function beadsSnapshot(lines: string[], bead: string, cut = 600) {
+export function beadsSnapshot(lines: string[], bead: string, cut = 300) {
   return lines.flatMap(line => {
     let e: Record<string, unknown>
     try {
@@ -266,10 +267,12 @@ export function beadsSnapshot(lines: string[], bead: string, cut = 600) {
     const id = String(e.id ?? '')
     const own = id === bead || id.startsWith(`${bead}.`)
     if (!own && e.status === 'closed') return []
-    if (!own)
-      for (const k of ['description', 'design', 'notes', 'acceptance_criteria'])
-        if (typeof e[k] === 'string' && (e[k] as string).length > cut)
-          e[k] = `${(e[k] as string).slice(0, cut)}… [cut in the VM's copy]`
+    if (!own) {
+      // most of a backlog's size (fabriek's design docs, every bead's comments); bd show on the laptop has them
+      for (const k of ['comments', 'design', 'notes', 'acceptance_criteria', 'metadata']) delete e[k]
+      if (typeof e.description === 'string' && e.description.length > cut)
+        e.description = `${e.description.slice(0, cut)}… [cut in the VM's copy]`
+    }
     return [JSON.stringify(e)]
   })
 }

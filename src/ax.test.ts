@@ -424,3 +424,16 @@ test("a station's model reads codex's -m too, and pi's provider", () => {
   expect(ax.providerOf('pi --provider anthropic --model claude-x')).toBe('anthropic')
   expect(ax.providerOf('pi')).toBeUndefined()
 })
+
+test('an env value past what Substrate takes goes in chunks the VM joins back, never splitting a character', async () => {
+  const { joinEnv } = await import('./worker')
+  const value = `${'é'.repeat(20_000)}😀${'x'.repeat(15_000)}`
+  const chunks = ax.chunkEnv('FACTORY_BEADS', value)
+  expect(chunks.length).toBeGreaterThan(1)
+  for (const c of chunks) expect(Buffer.byteLength(c.value)).toBeLessThanOrEqual(32_768)
+  expect(ax.chunkEnv('SHORT', 'v')).toEqual([{ name: 'SHORT', value: 'v' }])
+  const env: Record<string, string | undefined> = { OTHER: '1' }
+  for (const c of [...chunks].reverse()) env[c.name] = c.value
+  joinEnv(env)
+  expect(env).toEqual({ OTHER: '1', FACTORY_BEADS: value })
+})
