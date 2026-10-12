@@ -424,7 +424,15 @@ function freshBase(repo: string) {
   const isBehind = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', head, ref]).exitCode === 0
   return isBehind ? git(repo, 'rev-parse', ref) : head
 }
-export const loadFactory = async (file: string): Promise<Factory> => validate(await readFactory(file))
+export const loadFactory = async (file: string): Promise<Factory> => {
+  const def = validate(await readFactory(file))
+  const unknown = Object.entries(def.nodes).filter(([, n]) => n.runner && !(n.runner in runners))
+  if (unknown.length)
+    throw new Error(
+      `factory ${def.name}:\n  ${unknown.map(([id, n]) => `${id}: runner "${n.runner}" is not ${Object.keys(runners).join(' or ')}`).join('\n  ')}`,
+    )
+  return def
+}
 // a run moved to another factory leaves a link behind, so its workers' reports still reach it:
 // only the factory holding the run's directory ticks and lists it
 const runIds = () =>
@@ -579,16 +587,16 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
   `[factory] Your pane closed and this session was resumed. Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
 
-/** the rig's runner: where its workers run */
-const runnerOfRig = (repo: string) =>
-  runners[rigOf(repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+/** where a station's workers run: the station's own runner, else the rig's */
+const runnerOfStation = (run: Run, def: Factory, node: string) =>
+  runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
 
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   const full = () => brief(run, def, node, c, c.mail[node] ?? [])
   if (!session) writeFileSync(file, full())
-  return runnerOfRig(run.repo).launch({ run, def, node, c, session, file, brief: full })
+  return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
 }
 
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
@@ -1024,7 +1032,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   if (!c.pane) {
     // a Claude in an untrusted repo sits at its trust dialog until the station times out, every attempt
-    if (isClaude && runnerOfRig(run.repo).local && !isTrusted(run.repo)) {
+    if (isClaude && runnerOfStation(run, def, node).local && !isTrusted(run.repo)) {
       const paged = join(HOME, 'untrusted.json')
       const repos = existsSync(paged) ? readJson<string[]>(paged) : []
       if (!repos.includes(run.repo)) {

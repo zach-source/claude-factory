@@ -54,6 +54,9 @@ test("a repo's own copy loads without this project and says how it is changed", 
   const def = validate((await import(join(dir, 'lifecycle.ts'))).default)
   expect(def.name).toBe('lifecycle')
   compile(def)
+  // what reads or changes production needs the laptop, whatever runner the rig sends its workers to
+  const pinned = Object.keys(def.nodes).filter(id => def.nodes[id]!.runner === 'herdr')
+  expect(pinned.sort()).toEqual(['baseline', 'deploy', 'incident', 'monitor', 'rollback', 'soak'])
 })
 
 test('the loop starts only the sweeps a repo has no run for', async () => {
@@ -188,6 +191,11 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
     JSON.stringify({ extends: 'tiny', nodes: { work: { next: { ok: 'gone' } } } }),
   )
   await expect(loadFactory(join(dir, 'more.json'))).rejects.toThrow('unknown node "gone"')
+  writeFileSync(
+    join(dir, 'vm.json'),
+    JSON.stringify({ extends: 'tiny', nodes: { work: { runner: 'mars' } } }),
+  )
+  await expect(loadFactory(join(dir, 'vm.json'))).rejects.toThrow('work: runner "mars" is not herdr or ax')
   writeFileSync(join(dir, 'a.json'), JSON.stringify({ extends: 'b.json' }))
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ extends: 'a.json' }))
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')

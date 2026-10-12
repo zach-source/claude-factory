@@ -26,6 +26,9 @@ const claude = (model: string) => `{claude} --dangerously-skip-permissions --mod
 const SONNET = claude('exec_model')
 const OPUS = claude('judge_model')
 const FABLE = claude('security_model')
+// stations that read or change production need the laptop's kubectl, cluster access and network, which a
+// rig's VM workers (--runner ax) do not have: they stay in herdr panes whatever the rig's runner
+const LAPTOP = 'herdr'
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
@@ -90,6 +93,7 @@ Commit nothing but an architecture decision record, and only where the repo keep
       next: { ready: 'implement' },
     },
     baseline: {
+      runner: LAPTOP,
       timeoutMin: 60,
       prompt: `Measure before anyone optimizes. Build a reproducible measurement and commit it (a benchmark, a load script, a profiling recipe or a cost query):
 - performance: latency percentiles, throughput, CPU and memory; profile to find where the time goes
@@ -153,6 +157,7 @@ Report ready with the pull request link, the CI status and exactly what shipping
       next: { ship: 'deploy', changes: 'implement', hold: { to: 'done', defer: true } },
     },
     deploy: {
+      runner: LAPTOP,
       retries: 1,
       timeoutMin: 90,
       prompt: `Ship the approved pull request the repo's way. First check what is already done (merged? tagged? deployed?) and do only what is not.
@@ -162,6 +167,7 @@ When the pull request cannot land yet because the repo wants something only a pe
       next: { deployed: { to: 'soak', delayMin: 15 }, published: 'done', failed: 'rollback' },
     },
     soak: {
+      runner: LAPTOP,
       timeoutMin: 30,
       prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only.
 Report healthy when it holds, or resolved instead when this run began with an incident or went through a rollback, so it gets a postmortem; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
@@ -173,6 +179,7 @@ Report healthy when it holds, or resolved instead when this run began with an in
       },
     },
     rollback: {
+      runner: LAPTOP,
       retries: 3,
       timeoutMin: 45,
       prompt: `Restore service. Check what is already rolled back, then roll back the release your inbox names the repo's way (redeploy the previous version, revert the merge, or turn the flag off) and confirm recovery against the baseline.
@@ -182,6 +189,7 @@ Report recovered with what you did, the evidence of recovery and everything lear
 
     // ── incidents ────────────────────────────────────────────────────────────
     incident: {
+      runner: LAPTOP,
       agent: OPUS,
       timeoutMin: 30,
       prompt: `Production is degraded. Diagnose, read-only: the impact and blast radius, when it started, what changed then (deploys, config, dependencies, traffic), and the evidence in metrics, logs and traces.
@@ -197,6 +205,7 @@ Report rollback when a recent release caused it (name it and the version to retu
 
     // ── standing sweeps: each loops on a timer and files work as runs ────────
     monitor: {
+      runner: LAPTOP,
       timeoutMin: 20,
       prompt: `One pass of production watch, read-only: SLOs and error budgets, alert states, error rates and new error types, latency, saturation, failing jobs, certificate and quota expiry, and the health of recent deploys. Compare with the previous passes in the journal.
 File what hurts users now as separate work that starts on its own at the incident station, at priority 0. File defects that can wait as separate work for a person to prioritize. Never file what is already tracked or running.

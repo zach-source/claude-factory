@@ -31,6 +31,11 @@ export type Node = {
   rounds?: number
   /** worker command for this node, overrides the factory's */
   agent?: string
+  /**
+   * where this station's workers run whatever the rig's runner (`herdr`, `ax`): a station that needs the
+   * laptop (its kubectl, its network, production) stays on herdr when the rig sends its workers to VMs
+   */
+  runner?: string
 }
 
 export type Factory = {
@@ -160,6 +165,7 @@ export function validate(def: Factory): Factory {
         typeof node.prompt !== 'string' && `${id}: has no prompt`,
         !Object.keys(node.next ?? {}).length && `${id}: has no outcomes`,
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
+        node.gate && node.runner && `${id}: a gate has no worker, so no runner`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
