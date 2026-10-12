@@ -250,6 +250,76 @@ function bazelrc() {
 }
 
 /**
+ * the rig's binary cache of its repo's devenv (FACTORY_NIX_CACHE: its URL and public key), which Nix asks with a
+ * placeholder password the gateway replaces with the cache's token: every local Nix build fails under gVisor, so
+ * a devenv loads only when a cache holds what the repo builds itself
+ */
+function nixCache() {
+  const [url, key] = (process.env.FACTORY_NIX_CACHE ?? '').trim().split(/\s+/)
+  if (!url || !key) return
+  const netrc = join(own(), 'nix.netrc')
+  writeFileSync(netrc, `machine ${new URL(url).hostname}\nlogin factory\npassword placeholder\n`)
+  process.env.NIX_CONFIG = [
+    process.env.NIX_CONFIG,
+    `extra-substituters = ${url}`,
+    `extra-trusted-public-keys = ${key}`,
+    `netrc-file = ${netrc}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/** what of a devenv's environment stays the worker's: the VM's own places and CA, and the image's libraries */
+const NOT_DEVENV = new Set([
+  'HOME',
+  'PWD',
+  'OLDPWD',
+  'SHLVL',
+  'SHELL',
+  'TERM',
+  'TMP',
+  'TEMP',
+  'TEMPDIR',
+  'TMPDIR',
+  'NIX_BUILD_TOP',
+  'NIX_LOG_FD',
+  // ponytail: the agent's own node and bun would load the devenv's libraries; a tool that needs them sets it itself
+  'LD_LIBRARY_PATH',
+  'NODE_EXTRA_CA_CERTS',
+  'GIT_SSL_CAINFO',
+  'SSL_CERT_FILE',
+  'NIX_SSL_CERT_FILE',
+])
+
+/**
+ * the repo's devenv.nix, when its rig caches it, as the worker's own environment, so the agent and all it runs
+ * have the repo's toolchain without devenv shell, whose enterShell runs the repo's git hooks (minutes of bazel).
+ * Every start: the environment lives only in this process. A devenv that will not load leaves the VM as it was
+ */
+export function loadDevenv() {
+  if (!process.env.FACTORY_NIX_CACHE || !existsSync(join(repo(), 'devenv.nix'))) return
+  const script = join(own(), 'devenv.sh')
+  const env = { ...process.env } as Record<string, string>
+  const made = Bun.spawnSync(['devenv', 'print-dev-env'], { cwd: repo(), env, stderr: 'pipe' })
+  if (made.exitCode !== 0)
+    return void console.error(`devenv print-dev-env: ${made.stderr.toString().trim().slice(-2000)}`)
+  writeFileSync(script, made.stdout)
+  const dumped = Bun.spawnSync(
+    ['bash', '-c', `e=$(command -v env); . '${script}' >/dev/null 2>&1; "$e" -0`],
+    { cwd: repo(), env },
+  )
+  const basePath = process.env.PATH
+  for (const pair of dumped.stdout.toString().split('\0')) {
+    const eq = pair.indexOf('=')
+    const k = pair.slice(0, eq)
+    // the shell's own variables only: stdenv's lowercase attributes (name, out, phases) are not for tools
+    if (eq > 0 && /^[A-Z_][A-Z0-9_]*$/.test(k) && k !== '_' && !NOT_DEVENV.has(k))
+      process.env[k] = pair.slice(eq + 1)
+  }
+  if (process.env.PATH !== basePath) process.env.PATH = `${process.env.PATH}:${basePath}`
+}
+
+/**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
@@ -276,6 +346,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   // replaces) go in the home rc, which every workspace reads
   // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
   if (process.env.FACTORY_BAZELRC) writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
+  nixCache()
   // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
   process.env.GOTOOLCHAIN ??= 'local'
   // the VM's only address is link-local, which kube-apiserver will not advertise, so envtest's control plane
@@ -316,6 +387,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   save({ status: 'working', session: state()?.session, pid: process.pid })
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
+  loadDevenv()
   let session = state()?.session
   const set = (status: State['status']) => save({ status, session, pid: process.pid })
   if (!session) {

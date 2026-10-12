@@ -252,6 +252,41 @@ test("a rig's shared Dolt remote is what the VM's beads clone from, with only a 
   }
 })
 
+test("a cached devenv becomes the worker's environment, keeping the VM's places and CA", () => {
+  const own = join(dir, 'own-devenv')
+  const repo = join(dir, 'repo-devenv')
+  const bin = join(dir, 'devenv-bin')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(repo, 'devenv.nix'), '{ }\n')
+  // print-dev-env's script: exports, stdenv's lowercase attributes, and what must stay the worker's
+  writeFileSync(
+    join(bin, 'devenv'),
+    `#!/bin/sh\necho 'export GOROOT=/nix/go; export PATH=/nix/go/bin; export HOME=/homeless-shelter; export SSL_CERT_FILE=/no-ca; name=devenv-shell-env; export name'\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_NIX_CACHE: 'https://cache.example.com:8443/devenv devenv:key=',
+    PATH: `${bin}:${process.env.PATH}`,
+    SSL_CERT_FILE: '/egress-ca',
+  })
+  const home = process.env.HOME
+  try {
+    worker.loadDevenv()
+    expect(process.env.GOROOT).toBe('/nix/go')
+    expect(process.env.PATH).toBe(`/nix/go/bin:${bin}:${saved.PATH}`)
+    expect(process.env.HOME).toBe(home)
+    expect(process.env.SSL_CERT_FILE).toBe('/egress-ca')
+    expect(process.env.name).toBe(saved.name)
+  } finally {
+    process.env = saved
+  }
+})
+
 test('setup trusts the CA and clones the branch once, retrying while egress is closed', async () => {
   const origin = join(dir, 'origin.git')
   const seed = join(dir, 'seed')

@@ -775,6 +775,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
     `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
     `- Run tests the way the repo does (its make or devenv targets, not a bare go test): those set up what tests need, such as envtest's KUBEBUILDER_ASSETS.`,
+    ...(rig?.env?.FACTORY_NIX_CACHE && existsSync(join(run.worktree, 'devenv.nix'))
+      ? [
+          `- The repo's devenv.nix environment is already yours (its tools on PATH, its variables set): use them directly. Do not run devenv shell or devenv test, whose enterShell runs the repo's git hooks for minutes.`,
+        ]
+      : []),
     `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
     ...(run.bead
       ? [
