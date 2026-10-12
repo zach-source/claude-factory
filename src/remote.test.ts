@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
-import { httpsRemote, replayable, rigBeadsSync, vmClaudeFlags } from './cli'
+import { httpsRemote, overwritten, replayable, rigBeadsSync, vmClaudeFlags } from './cli'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
 
@@ -29,11 +29,16 @@ test("a rig's beads sync through its shared Dolt remote as its user, else throug
   const r = { name: 'fleet', url: 'https://dolt.example.com:50051/app', user: 'beads' }
   const conn = { host: '127.0.0.1', port: 3308, database: 'app', user: 'root', tls: false }
   // the laptop's Dolt server pushes, and only SQL tells it the user; through the dolt CLI, which waits it out
-  expect(rigBeadsSync(r, 'pull', conn)).toEqual([
+  expect(rigBeadsSync(r, 'push', conn)).toEqual([
     ...['dolt', '--host', '127.0.0.1', '--port', '3308', '--user', 'root', '--no-tls', '--use-db', 'app'],
-    ...['sql', '-q', "CALL DOLT_PULL('--user', 'beads', 'fleet', 'main')"],
+    ...['sql', '-r', 'json', '-q', "CALL DOLT_PUSH('--user', 'beads', 'fleet', 'main')"],
   ])
-  expect(rigBeadsSync(r, 'push', conn).at(-1)).toBe("CALL DOLT_PUSH('--user', 'beads', 'fleet', 'main')")
+  // a pull commits the laptop's writes, merges, and keeps the VM's row where both changed one, in one transaction
+  const pull = rigBeadsSync(r, 'pull', conn).at(-1)!
+  expect(pull).toStartWith('SET @@autocommit = 0; ')
+  expect(pull).toContain("CALL DOLT_PULL('--user', 'beads', 'fleet', 'main')")
+  expect(pull).toContain("CALL DOLT_CONFLICTS_RESOLVE('--theirs', '.')")
+  expect(pull).toEndWith('COMMIT')
   expect(() => rigBeadsSync(r, 'push')).toThrow('no Dolt server')
 })
 
@@ -451,4 +456,26 @@ test("a launch starts from a gone worker's pushed commits instead of pushing the
   expect(sh(worktree, 'git', 'status', '--short')).toBe('') // the export the stash could not put back is the worker's
   expect(called()).toContain('apply -f -')
   rmSync(runDir, { recursive: true })
+}, 30_000) // git clones and a whole tick
+
+test("a pull that kept the VM's version of an issue says on it what the laptop had", () => {
+  // what dolt sql -r json printed for the pull's statements, one line each
+  const out = [
+    '{}',
+    '{"rows": [{"conflicts":"1","fast_forward":"0","message":"merge has unresolved conflicts"}]}',
+    '{"rows": [{"base_id":"x-1","base_status":"open","our_diff_type":"modified","our_id":"x-1","our_notes":"laptop","our_status":"blocked","their_diff_type":"modified","their_id":"x-1","their_notes":"laptop","their_status":"closed"},' +
+      '{"our_diff_type":"removed","our_id":null,"their_diff_type":"modified","their_id":"x-2","their_status":"open"}]}',
+    '{"rows": [{"status":"0"}]}',
+  ].join('\n')
+  expect(overwritten(out)).toEqual([
+    {
+      id: 'x-1',
+      text: "[factory] The laptop and a VM both changed this issue; the VM's version was kept. The laptop had status=blocked.",
+    },
+    {
+      id: 'x-2',
+      text: "[factory] The laptop and a VM both changed this issue; the VM's version was kept. The laptop had deleted it.",
+    },
+  ])
+  expect(overwritten('{}\n{"rows": [{"status":"0"}]}')).toEqual([])
 })

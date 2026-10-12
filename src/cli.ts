@@ -274,19 +274,65 @@ export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?:
   if (!r) return ['bd', 'dolt', way]
   if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
   if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
+  const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
   return [
     ...['dolt', '--host', conn.host, '--port', String(conn.port), '--user', conn.user],
     ...(conn.tls ? [] : ['--no-tls']),
-    ...['--use-db', conn.database, 'sql', '-q'],
-    `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`,
+    ...['--use-db', conn.database, 'sql', '-r', 'json', '-q'],
+    way === 'push' ? call : pullResolving(call),
   ]
 }
+/**
+ * a pull that cannot stall the rig on a conflict: in one transaction the laptop's pending writes are committed,
+ * the pull merges, and where the laptop and a VM changed the same row the VM's stands (it did the work it
+ * reports on). The issues' conflicts are read first, so each overwritten issue can say what the laptop had
+ */
+const pullResolving = (call: string) =>
+  [
+    'SET @@autocommit = 0',
+    "CALL DOLT_COMMIT('-Am', 'laptop beads before the pull', '--skip-empty')",
+    call,
+    'SELECT * FROM dolt_conflicts_issues',
+    "CALL DOLT_CONFLICTS_RESOLVE('--theirs', '.')",
+    "CALL DOLT_COMMIT('-Am', 'merge the beads VMs pushed, keeping theirs on a conflict', '--skip-empty')",
+    'COMMIT',
+  ].join('; ')
+
+/** the comment for each issue whose laptop version a pull overwrote, from its conflict rows (`dolt sql -r json`) */
+export function overwritten(out: string) {
+  const rows = out
+    .split('\n')
+    .flatMap(l => (l.startsWith('{"rows"') ? (JSON.parse(l).rows as Record<string, unknown>[]) : []))
+    .filter(row => 'our_diff_type' in row)
+  return rows.map(row => {
+    const id = String(row.our_id ?? row.their_id)
+    const had = Object.keys(row)
+      .filter(k => k.startsWith('our_') && k !== 'our_diff_type' && k !== 'our_id')
+      .map(k => k.slice('our_'.length))
+      .filter(k => String(row[`our_${k}`]) !== String(row[`their_${k}`]))
+      .map(k => `${k}=${String(row[`our_${k}`]).slice(0, 200)}`)
+    const what =
+      row.our_diff_type === 'removed' ? 'had deleted it' : `had ${had.join(', ') || 'the same values'}`
+    return {
+      id,
+      text: `[factory] The laptop and a VM both changed this issue; the VM's version was kept. The laptop ${what}.`,
+    }
+  })
+}
+
 function syncRigBeads(run: Run, way: 'push' | 'pull', r = rigOf(run.repo)?.beadsRemote) {
   const show = r ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
   // the server's own user; its password, if it has one, as bd takes it
   const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
-  return Bun.spawnSync(rigBeadsSync(r, way, conn), { cwd: run.worktree, env })
+  const p = Bun.spawnSync(rigBeadsSync(r, way, conn), { cwd: run.worktree, env })
+  // ponytail: only the issues table's conflicts are said on the issue; labels and the rest just take the VM's
+  if (r && way === 'pull' && p.exitCode === 0)
+    for (const { id, text } of overwritten(p.stdout.toString()))
+      try {
+        beads(run.repo, 'factory').comment(id, text)
+      } catch {} // the issue the VM deleted: nothing to comment on
+  return p
 }
 
 /**
@@ -741,7 +787,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   // beadsRemote or else the repo's GitHub origin
   writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
   // what the laptop wrote since its last push (this run's plan, say) must be shared before the VM clones
-  if (hasRunBeads) syncRigBeads(run, 'push')
+  // the fleet may hold other VMs' writes since: take them first, or the push is refused
+  if (hasRunBeads) (syncRigBeads(run, 'pull'), syncRigBeads(run, 'push'))
   const address = ax.launch({
     name,
     repo: httpsRemote(git(run.worktree, 'remote', 'get-url', 'origin')),
