@@ -1,10 +1,18 @@
 #!/usr/bin/env sh
-# Refuses a commit whose added lines, message or author name private infrastructure: this repo is public.
+# Refuses a commit whose added lines carry a secret (gitleaks), or whose added lines, message or author name
+# private infrastructure: this repo is public.
 # The patterns (one extended regex a line, matched without case) live outside the repo, in
 # <git common dir>/info/private-patterns, since listing them here would publish them.
 #   guard-private.sh staged        the staged diff's added lines and the author (pre-commit)
 #   guard-private.sh msg <file>    a commit message (commit-msg)
 set -eu
+if [ "$1" = staged ]; then
+  if command -v gitleaks >/dev/null 2>&1; then
+    gitleaks git --staged --redact --no-banner --log-level warn || { echo "guard-private: gitleaks found a secret in the staged changes" >&2; exit 1; }
+  else
+    echo "guard-private: gitleaks is not installed, secrets not checked" >&2
+  fi
+fi
 patterns="$(git rev-parse --git-common-dir)/info/private-patterns"
 [ -s "$patterns" ] || { echo "guard-private: no $patterns, nothing checked" >&2; exit 0; }
 case "$1" in
