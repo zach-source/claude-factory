@@ -330,13 +330,14 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
     text: `answered ${iv.node}'s question in the console: ${text}`,
     at,
   })
-  const answer = [choice, typed.trim()].filter(Boolean).join(': ')
+  // not named answer: the mod loader takes any second `answer` in the file for a redeclared hook function
+  const given = [choice, typed.trim()].filter(Boolean).join(': ')
   await update($, draft, d => ({
     ...d,
     replies: { ...d.replies, [iv.key]: '' },
     interviewed: [
       ...(d.interviewed ?? []),
-      { key: iv.key, run: iv.run, node: iv.node, question: iv.question, answer, at },
+      { key: iv.key, run: iv.run, node: iv.node, question: iv.question, answer: given, at },
     ].slice(-100),
   }))
 }
