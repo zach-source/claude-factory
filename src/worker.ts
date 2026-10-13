@@ -213,6 +213,26 @@ function sh(cmd: string[], cwd?: string) {
 }
 
 /**
+ * kubectl takes no server or token from the env: a rig with cluster access (FACTORY_KUBE_SERVER, the API server's
+ * URL) gets a kubeconfig whose bearer token is a placeholder the gateway replaces, trusting the gateway's CA
+ */
+function kubeconfig() {
+  const dir = join(process.env.HOME ?? homedir(), '.kube')
+  mkdirSync(dir, { recursive: true })
+  const ca = process.env.FACTORY_CA ? { 'certificate-authority': join(own(), 'egress-ca.crt') } : {}
+  // JSON is YAML, so kubectl reads it as written
+  const config = {
+    apiVersion: 'v1',
+    kind: 'Config',
+    clusters: [{ name: 'factory', cluster: { server: process.env.FACTORY_KUBE_SERVER, ...ca } }],
+    users: [{ name: 'factory', user: { token: 'placeholder' } }],
+    contexts: [{ name: 'factory', context: { cluster: 'factory', user: 'factory' } }],
+    'current-context': 'factory',
+  }
+  writeFileSync(join(dir, 'config'), JSON.stringify(config, null, 2))
+}
+
+/**
  * the rig's bazel flags, and the gateway's CA for bazel: its gRPC (a remote cache) takes the PEM, but its JVM,
  * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (from Nix: the image
  * has no JDK, and its OpenSSL cannot write one Java trusts)
@@ -346,6 +366,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   // replaces) go in the home rc, which every workspace reads
   // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
   if (process.env.FACTORY_BAZELRC) writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
+  if (process.env.FACTORY_KUBE_SERVER) kubeconfig()
   nixCache()
   // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
   process.env.GOTOOLCHAIN ??= 'local'

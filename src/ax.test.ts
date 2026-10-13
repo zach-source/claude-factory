@@ -312,6 +312,7 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     FACTORY_REPO: origin,
     FACTORY_BRANCH: 'factory/r1',
     FACTORY_BAZELRC: 'common --remote_cache=grpcs://cache.example',
+    FACTORY_KUBE_SERVER: 'https://kube.example',
   })
   try {
     // the branch arrives only after the first try, as egress opens only once the policy exists
@@ -330,6 +331,14 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     expect(readFileSync(join(dir, 'keytool.args'), 'utf8')).toContain(
       `-file ${join(own, 'egress-ca.crt')} -keystore ${join(own, 'egress.jks')}`,
     )
+    // kubectl's server, trusting the gateway, with a token the gateway replaces
+    const kube = JSON.parse(readFileSync(join(home, '.kube', 'config'), 'utf8'))
+    expect(kube.clusters[0].cluster).toEqual({
+      server: 'https://kube.example',
+      'certificate-authority': join(own, 'egress-ca.crt'),
+    })
+    expect(kube.users[0].user).toEqual({ token: 'placeholder' })
+    expect(kube['current-context']).toBe('factory')
     await worker.setup({ tries: 1, waitMs: 0 }) // a resumed task keeps its clone
   } finally {
     process.env = saved
