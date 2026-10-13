@@ -48,9 +48,9 @@ RUN nix registry add --registry /etc/nix/registry.json nixpkgs github:NixOS/nixp
   && nix flake prefetch github:NixOS/nixpkgs/${NIXPKGS_REV} \
   && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv \
   && devenv version
-# serve runs as this user, not root (asWorker in src/worker.ts): Nix's store and database are its, so nix shell and
-# a rig's cached devenv substitute into the store as it
-RUN useradd --create-home --shell /bin/bash worker && chown worker /nix/store && chown -R worker /nix/var
+# serve runs as this user, not root (asWorker in src/worker.ts), which gives it Nix's store and database when the
+# task starts, since Substrate shows image files as root's, so nix shell and a rig's devenv substitute as it
+RUN useradd --create-home --shell /bin/bash worker
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=runner /ax-task-runner /usr/local/bin/ax-task-runner
 

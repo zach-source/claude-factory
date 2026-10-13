@@ -332,6 +332,7 @@ function localhost() {
 
 /** the image's user that serve runs as: Substrate starts every task as root, which tools such as initdb refuse */
 export const WORKER_USER = 'worker'
+const home = () => `/home/${WORKER_USER}`
 
 /**
  * as root with the task's capabilities (SETUID, SETGID, CHOWN; see ax.ts): do what only root can, then run serve
@@ -347,10 +348,17 @@ function asWorker() {
   if (Bun.spawnSync([...as, 'true']).exitCode !== 0)
     return void console.error(`serve: cannot become ${WORKER_USER} (no SETUID/SETGID), staying root`)
   mkdirSync(ws, { recursive: true })
-  if (statSync(ws).uid === 0 && Bun.spawnSync(['chown', '-R', `${WORKER_USER}:`, ws]).exitCode !== 0)
-    return void console.error(`serve: cannot give ${ws} to ${WORKER_USER} (no CHOWN), staying root`)
+  // Substrate shows the image's files as root's whatever their owner (substrate#2036), so the user's home and
+  // Nix's store and database are given to it here; the workspace only once, being all of a resumed task's work
+  const chown = (...a: string[]) => Bun.spawnSync(['chown', ...a]).exitCode === 0
+  const given =
+    chown('-R', `${WORKER_USER}:`, home(), '/nix/var') &&
+    chown(`${WORKER_USER}:`, '/nix/store') &&
+    (statSync(ws).uid !== 0 || chown('-R', `${WORKER_USER}:`, ws))
+  if (!given)
+    return void console.error(`serve: cannot give its files to ${WORKER_USER} (no CHOWN), staying root`)
   const p = Bun.spawnSync([...as, ...process.argv], {
-    env: { ...process.env, HOME: `/home/${WORKER_USER}`, USER: WORKER_USER },
+    env: { ...process.env, HOME: home(), USER: WORKER_USER },
     stdio: ['inherit', 'inherit', 'inherit'],
   })
   process.exit(p.exitCode ?? 1)
