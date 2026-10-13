@@ -198,8 +198,10 @@ export function egressPolicy(vault = process.env.FACTORY_AX_VAULT, extra: Egress
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
       rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'GITHUB'),
       rule(['github.com'], 'Authorization', 'Basic ', 'GITHUB_BASIC'),
-      // the binary caches the image's Nix installs tools and a repo's devenv from; their packages are signed
-      { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org'] } },
+      // the binary caches the image's Nix installs tools and a repo's devenv from; their packages are signed. And
+      // Nix's global flake registry, which the worker user has no cached copy of: turning it off in nix.conf would
+      // change every devenv's derivation, and so miss the rig's cached devenv
+      { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } },
       ...extra.map(({ hosts, key, header, prefix, port }) =>
         key
           ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port)
