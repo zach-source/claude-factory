@@ -8,6 +8,10 @@ import { compile } from './machine'
 // Exercise the real CLI and persisted machine against a controllable herdr boundary.
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'factory-worker-'))
+  const shell = Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 30000)'], {
+    stdout: 'ignore',
+    stderr: 'ignore',
+  })
   const dir = join(home, 'runs', 'one')
   mkdirSync(join(dir, 'prompts'), { recursive: true })
   mkdirSync(join(home, 'beads.lock'))
@@ -61,6 +65,8 @@ if (a[0] === 'pane' && a[1] === 'get') {
   const p = w.panes[a[2]]
   if (!p) error = { code: 'pane_not_found' }
   else result = { pane: { agent_status: 'working', agent: p.detected ? 'claude' : null, agent_session: { value: 'session-one' } } }
+} else if (a[0] === 'pane' && a[1] === 'process-info') {
+  result = { process_info: { shell_pid: Number(process.env.FAKE_SHELL) } }
 } else if (a[0] === 'pane' && a[1] === 'close') {
   if (w.closeFails) error = { code: 'close_failed' }
   else if (!w.closeLies) delete w.panes[a[2]]
@@ -86,6 +92,7 @@ process.exit(error ? 1 : 0)
     FACTORY_OUTBOX: '',
     FACTORY_FROM: '',
     FAKE_HERDR: worldFile,
+    FAKE_SHELL: String(shell.pid),
     CLAUDE_CONFIG_DIR: home,
     PATH: `${home}:${process.env.PATH}`,
   }
@@ -93,6 +100,10 @@ process.exit(error ? 1 : 0)
   const cli = (...args: string[]) => Bun.spawnSync(cmd(...args), { env })
   return {
     home,
+    dispose: () => {
+      shell.kill()
+      rmSync(home, { recursive: true, force: true })
+    },
     cli,
     env,
     cmd,
@@ -154,7 +165,7 @@ test('station replacement fails closed, then resume and retry keep one worker', 
     f.cli('tick')
     expect(workers()).toBe(0)
   } finally {
-    rmSync(f.home, { recursive: true, force: true })
+    f.dispose()
   }
 })
 
@@ -174,7 +185,7 @@ test('an undetected launch is replaced and an uncertain launch stays tracked', (
     f.cli('tick') // no second launch while the first is still within its startup grace
     expect(f.world().calls.filter((a: string[]) => a[0] === 'pane' && a[1] === 'run')).toHaveLength(1)
   } finally {
-    rmSync(f.home, { recursive: true, force: true })
+    f.dispose()
   }
 })
 
@@ -192,7 +203,7 @@ test('only one report for a station attempt is accepted before the tick', async 
     expect(codes.filter(code => code === 0)).toHaveLength(1)
     expect(f.cli('report', 'one', '1', 'blocked', 'another report').exitCode).not.toBe(0)
   } finally {
-    rmSync(f.home, { recursive: true, force: true })
+    f.dispose()
   }
 })
 
@@ -212,6 +223,6 @@ test('retry refuses a working worker and a timed out worker is held without losi
     expect(readFileSync(source, 'utf8')).toBe('keep this edit')
     expect(f.state().snapshot.context.log.at(-1).summary).toContain('no report within')
   } finally {
-    rmSync(f.home, { recursive: true, force: true })
+    f.dispose()
   }
 })

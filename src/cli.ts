@@ -18,6 +18,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { spawn as spawnChild } from 'node:child_process'
+import { stopChildren } from './process-tree'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { createActor, transition, type Snapshot } from 'xstate'
@@ -431,6 +432,8 @@ Object.assign(runners, { herdr: herdrRunner, ax: axRunner })
 /** A failed or unconfirmed close must hold replacement, not leave two workers running. */
 function closePane(pane: string) {
   if (paneInfo(pane) === null) return
+  const info = herdr('pane', 'process-info', '--pane', pane).process_info
+  stopChildren(info?.shell_pid)
   herdr('pane', 'close', pane)
   if (paneInfo(pane) !== null) fail(`worker pane ${pane} is still present after close`)
 }
