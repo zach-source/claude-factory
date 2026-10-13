@@ -335,3 +335,26 @@ test('a handoff starts a fresh worker at the same station without spending an at
     validate({ ...def, nodes: { ...def.nodes, review: { prompt: 'x', next: { handoff: 'done' } } } }),
   ).toThrow('outcome "handoff" is reserved')
 })
+
+test('manager interruption records the launched worker, not an unstarted station', () => {
+  const { send, now } = run()
+  send({ type: 'GOTO', node: 'review', at: 1 })
+  expect(now().context.log).toEqual([])
+  send({ type: 'SPAWNED', seq: 2, pane: 'p1', at: 2 })
+  send({ type: 'GOTO', node: 'review', at: 3 })
+  expect(now().context.log).toEqual([
+    {
+      node: 'review',
+      attempt: 1,
+      outcome: 'interrupted',
+      summary: 'Manager goto review interrupted worker sequence 2',
+      at: 3,
+    },
+  ])
+  send({ type: 'SPAWNED', seq: 3, pane: 'p2', at: 4 })
+  send({ type: 'ABORT', reason: 'stop this run', at: 5 })
+  expect(now().context.log.at(-1)).toMatchObject({
+    outcome: 'interrupted',
+    summary: 'Manager abort interrupted worker sequence 3: stop this run',
+  })
+})

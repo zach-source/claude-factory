@@ -643,6 +643,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the one question they must answer>\` and, when there are a few clear choices, a line \`Options: <first> | <second> | <third>\`, the one you recommend first: the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
+    'Use the process exit status or the tool task handle to detect completion: successful commands can produce empty output. Bound waits to the station deadline, reuse the same live task handle, and do not start a duplicate when an observation times out. Stop only subprocesses you started before reporting a timed out command.',
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
     '',
     ...tracking(run, node),
@@ -2763,7 +2764,8 @@ const usage = `factory — herdr software factories on xstate
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
-  retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
+  retry <run>                       retry a stuck worker; other states are refused
+  goto <run> <node|done> | abort <run>   interrupt the current worker and record why it ended
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
 
@@ -3079,9 +3081,17 @@ if (import.meta.main && !queued)
         console.log(`poked ${node} of ${run.id}`)
         break
       }
-      case 'retry':
-        post(loadRun(args[0]).id, { type: 'RETRY' })
+      case 'retry': {
+        const { run, value } = current(args[0])
+        const [node, sub] = where(value)
+        if (sub !== 'stuck')
+          fail(
+            `${run.id} is at ${node}/${sub || 'terminal'}; retry applies only to stuck workers. Inspect factory show ${run.id}; poke a working worker to request its status.`,
+          )
+        post(run.id, { type: 'RETRY' })
+        console.log(`queued retry for ${node} of ${run.id}`)
         break
+      }
       case 'goto': {
         const run = loadRun(args[0])
         const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')

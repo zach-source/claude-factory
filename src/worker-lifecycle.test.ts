@@ -195,3 +195,23 @@ test('only one report for a station attempt is accepted before the tick', async 
     rmSync(f.home, { recursive: true, force: true })
   }
 })
+
+test('retry refuses a working worker and a timed out worker is held without losing its source', () => {
+  const f = fixture()
+  try {
+    const source = join(f.home, 'uncommitted.txt')
+    writeFileSync(source, 'keep this edit')
+    const retry = f.cli('retry', 'one')
+    expect(retry.exitCode).not.toBe(0)
+    expect(retry.stderr.toString()).toContain('implement/working')
+    expect(retry.stderr.toString()).toContain('stuck')
+    expect(f.state().snapshot.context.session).toBe('session-one')
+    f.cli('tick') // startedAt=1 is beyond the real station deadline
+    expect(f.state().snapshot.value).toEqual({ implement: 'stuck' })
+    expect(f.world().panes).toEqual({})
+    expect(readFileSync(source, 'utf8')).toBe('keep this edit')
+    expect(f.state().snapshot.context.log.at(-1).summary).toContain('no report within')
+  } finally {
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})

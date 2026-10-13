@@ -92,3 +92,20 @@ test("a session's tokens count each turn once, and its station comes from the br
   expect(table).toContain('2 worker sessions in 2 runs')
   expect(table).toMatch(/implement\s+2/)
 })
+
+test('an interrupted deploy is a failed visit, never a shipment', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'aborted',
+      createdAt: 0,
+      log: [e('deploy', 'interrupted', 1, 'Manager abort interrupted worker sequence 4')],
+    },
+  ])
+  expect(m.fates).toEqual({ aborted: 1 })
+  expect(m.shipRate).toBe(0)
+  expect(m.hoursToShip.median).toBeNull()
+  expect(m.stations.deploy?.visits).toBe(1)
+  expect(m.stations.deploy?.failed).toBe(1)
+  expect(m.fails).toEqual({ interrupted: 1 })
+})

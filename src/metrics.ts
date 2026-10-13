@@ -3,7 +3,7 @@ import type { Entry } from './machine'
 /** one run as metrics see it: live from its state, or kept in metrics.jsonl after factory rm */
 export type RunRecord = { id: string; rig?: string; node: string; createdAt: number; log: Entry[] }
 
-const FAILED = new Set(['fail', 'failed', 'abandon', 'red'])
+const FAILED = new Set(['fail', 'failed', 'abandon', 'red', 'interrupted'])
 const HOUR = 3_600_000
 
 /** the id carries the run's creation time: `${name}-${Date.now().toString(36)}xx` */
@@ -56,7 +56,7 @@ export function metrics(records: RunRecord[]) {
       s.hours.push((e.at - prev) / HOUR)
       if (FAILED.has(e.outcome)) {
         s.failed++
-        const k = failKind(e.summary)
+        const k = e.outcome === 'interrupted' ? 'interrupted' : failKind(e.summary)
         fails[k] = (fails[k] ?? 0) + 1
       }
       // ponytail: a gate's wait is its station's time; gates are named approve in every factory so far
