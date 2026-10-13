@@ -9,6 +9,9 @@ import {
   isTrusted,
   labelAction,
   lastContext,
+  limitHit,
+  nextAccount,
+  servedAt,
   prOwner,
   loadFactory,
   missingSweeps,
@@ -51,6 +54,9 @@ test("a repo's own copy loads without this project and says how it is changed", 
   const def = validate((await import(join(dir, 'lifecycle.ts'))).default)
   expect(def.name).toBe('lifecycle')
   compile(def)
+  // what reads or changes production needs the laptop, whatever runner the rig sends its workers to
+  const pinned = Object.keys(def.nodes).filter(id => def.nodes[id]!.runner === 'herdr')
+  expect(pinned.sort()).toEqual(['baseline', 'deploy', 'incident', 'monitor', 'rollback', 'soak'])
 })
 
 test('the loop starts only the sweeps a repo has no run for', async () => {
@@ -119,6 +125,9 @@ test("the reaper closes a finished run's workspace and an idle Claude that is no
     p('w3:p5', 'w3', '/wt/cc', 'idle', 'claude'), // another worktree
   ]
   expect(reapable(runs, panes)).toEqual({ workspaces: ['w1'], panes: ['w3:p3'] })
+  // an AX worker has no pane here, so an agent idling in its workspace is the person's, not a stray
+  const remote = [{ ws: 'w3', worktree: '/wt/c', isOver: false, pane: 'ax://f-r1-1' }]
+  expect(reapable(remote, panes)).toEqual({ workspaces: [], panes: [] })
 })
 
 test("a worker command's {params} come from the rig, then FACTORY_<NAME>, then the factory", () => {
@@ -182,6 +191,11 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
     JSON.stringify({ extends: 'tiny', nodes: { work: { next: { ok: 'gone' } } } }),
   )
   await expect(loadFactory(join(dir, 'more.json'))).rejects.toThrow('unknown node "gone"')
+  writeFileSync(
+    join(dir, 'vm.json'),
+    JSON.stringify({ extends: 'tiny', nodes: { work: { runner: 'mars' } } }),
+  )
+  await expect(loadFactory(join(dir, 'vm.json'))).rejects.toThrow('work: runner "mars" is not herdr or ax')
   writeFileSync(join(dir, 'a.json'), JSON.stringify({ extends: 'b.json' }))
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ extends: 'a.json' }))
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
@@ -284,4 +298,25 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   expect(w).toMatchObject({ autoMemoryEnabled: false })
   expect(workerSettings({}, 200, '/h/.claude/CLAUDE.md').claudeMdExcludes).toEqual(['/h/.claude/CLAUDE.md'])
   expect(workerSettings({}, 30).autoCompactWindow).toBe(100_000) // Claude Code's floor
+})
+
+test("a usage limit is read from the transcript's last turn, and the next account is one whose limit has reset", () => {
+  const turn = (extra: object) =>
+    JSON.stringify({ type: 'assistant', timestamp: '2026-10-11T12:00:00.000Z', message: {}, ...extra })
+  const refused = turn({
+    error: 'rate_limit',
+    quotaLimits: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: 1_800_000_000 },
+  })
+  expect(limitHit(['cut {', turn({}), refused, JSON.stringify({ type: 'user' }), ''].join('\n'))).toEqual({
+    at: Date.parse('2026-10-11T12:00:00.000Z'),
+    kind: 'seven_day',
+    resetsAt: 1_800_000_000_000,
+  })
+  expect(limitHit([refused, turn({})].join('\n'))).toBeNull() // it went on since
+  expect(servedAt([refused, turn({})].join('\n'))).toBeGreaterThan(0)
+  expect(servedAt([turn({}), refused].join('\n'))).toBe(0)
+  expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9 }, 5)).toBe('c')
+  expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9, c: 9 }, 5)).toBe('a')
+  expect(nextAccount(['a', 'b', 'c'], 'b', { a: 9, b: 3, c: 9 }, 5)).toBe('b')
+  expect(nextAccount(['a', 'b', 'c'], 'b', { a: 9, b: 9, c: 9 }, 5)).toBeNull()
 })

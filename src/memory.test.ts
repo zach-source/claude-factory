@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -10,10 +10,16 @@ import {
   coreFor,
   format,
   inboxCount,
+  installSkill,
+  managerActivity,
   outline,
   parse,
+  pendingSkills,
   rank,
+  rejectSkill,
   same,
+  skillsDir,
+  skillSources,
   search,
   usage,
   usageLines,
@@ -160,4 +166,69 @@ test('each part of CORE.md is cut at its budget, so it cannot grow every brief',
   expect(brief).not.toContain('top lesson 39')
   expect(brief.match(/cut: over the budget/g)).toHaveLength(2)
   expect(brief.length).toBeLessThan(2 * CORE_BUDGET + 200)
+})
+
+test("the manager's activity: what it was asked and ran since, and every skill's uses", () => {
+  const at = (m: number) => `2026-10-11T12:${String(m).padStart(2, '0')}:00.000Z`
+  const ran = (m: number, name: string, input: object) =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: at(m),
+      message: { content: [{ type: 'tool_use', name, input }] },
+    })
+  const lines = [
+    JSON.stringify({ type: 'user', timestamp: at(1), message: { content: 'old ask' } }),
+    ran(2, 'Skill', { skill: 'triage-stuck' }),
+    JSON.stringify({ type: 'user', timestamp: at(5), message: { content: '[factory] patrol\nmail: 2' } }),
+    JSON.stringify({ type: 'user', timestamp: at(5), isMeta: true, message: { content: 'meta' } }),
+    JSON.stringify({
+      type: 'user',
+      timestamp: at(6),
+      message: { content: [{ type: 'tool_result', content: 'x' }] },
+    }),
+    ran(7, 'Bash', { command: 'factory status r-1' }),
+    ran(8, 'Skill', { skill: 'triage-stuck' }),
+    'not json',
+  ]
+  const { activity, used } = managerActivity(lines, Date.parse(at(3)))
+  expect(activity).toEqual([
+    '- 2026-10-11 12:05 asked: [factory] patrol mail: 2',
+    '- 2026-10-11 12:07 Bash: factory status r-1',
+    '- 2026-10-11 12:08 Skill: triage-stuck',
+  ])
+  expect(used.get('triage-stuck')).toEqual({ n: 2, last: Date.parse(at(8)) })
+})
+
+test('a skill the dream proposes waits for the manager, who installs or rejects it', () => {
+  const dir = join(tmpdir(), `skills-${process.pid}`)
+  const write = (root: string, name: string, text: string) => {
+    mkdirSync(join(root, name), { recursive: true })
+    writeFileSync(join(root, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${text}\n---\nsteps`)
+  }
+  write(skillSources(dir), 'triage-stuck', 'when a station is stuck')
+  write(skillSources(dir), 'check-rig', 'when a rig looks idle')
+  expect(pendingSkills(dir).map(p => [p.name, p.change])).toEqual([
+    ['check-rig', 'new'],
+    ['triage-stuck', 'new'],
+  ])
+
+  installSkill(dir, 'triage-stuck')
+  expect(pendingSkills(dir).map(p => p.name)).toEqual(['check-rig'])
+  expect(existsSync(join(skillsDir(dir), 'triage-stuck', 'SKILL.md'))).toBe(true)
+
+  // rejected: nothing installs, the proposal goes, and the dream reads why
+  rejectSkill(dir, 'check-rig', 'it restarts the shared Dolt server')
+  expect(pendingSkills(dir)).toEqual([])
+  expect(existsSync(join(skillsDir(dir), 'check-rig'))).toBe(false)
+  expect(inboxCount(dir)).toBe(1)
+
+  // a change to an installed skill waits again, and the installed one stands until it is accepted
+  write(skillSources(dir), 'triage-stuck', 'when a station is stuck or failed')
+  expect(pendingSkills(dir).map(p => [p.name, p.change])).toEqual([['triage-stuck', 'changed']])
+  rejectSkill(dir, 'triage-stuck', 'too broad')
+  expect(readFileSync(join(skillSources(dir), 'triage-stuck', 'SKILL.md'), 'utf8')).toContain(
+    'description: when a station is stuck\n',
+  )
+  expect(() => installSkill(dir, '../x')).toThrow('no proposed skill')
+  rmSync(dir, { recursive: true })
 })

@@ -42,7 +42,11 @@ function fixture() {
   json(stateFile, { cursor: 0, snapshot: actor.getPersistedSnapshot() })
   actor.stop()
   const worldFile = join(home, 'herdr.json')
-  json(worldFile, { next: 1, panes: { p1: { workers: 1, detected: true } }, calls: [] })
+  json(worldFile, {
+    next: 1,
+    panes: { p1: { workers: 1, detected: true } },
+    calls: [],
+  })
   const fake = join(home, 'herdr')
   writeFileSync(
     fake,
@@ -79,6 +83,8 @@ process.exit(error ? 1 : 0)
   const env = {
     ...process.env,
     FACTORY_HOME: home,
+    FACTORY_OUTBOX: '',
+    FACTORY_FROM: '',
     FAKE_HERDR: worldFile,
     CLAUDE_CONFIG_DIR: home,
     PATH: `${home}:${process.env.PATH}`,
@@ -124,7 +130,12 @@ test('station replacement fails closed, then resume and retry keep one worker', 
     expect(workers()).toBe(1)
     writeFileSync(
       join(f.home, 'halt.json'),
-      JSON.stringify({ state: 'stopping', at: 1, told: { one: 2 }, closed: {} }),
+      JSON.stringify({
+        state: 'stopping',
+        at: 1,
+        told: { one: 2 },
+        closed: {},
+      }),
     )
     f.cli('tick')
     expect(workers()).toBe(0)
@@ -150,7 +161,10 @@ test('station replacement fails closed, then resume and retry keep one worker', 
 test('an undetected launch is replaced and an uncertain launch stays tracked', () => {
   const f = fixture()
   try {
-    f.setWorld({ panes: { p1: { workers: 1, detected: false } }, runFails: true })
+    f.setWorld({
+      panes: { p1: { workers: 1, detected: false } },
+      runFails: true,
+    })
     f.context({ session: null, nudges: 1, startedAt: 1 })
     f.cli('tick')
     const pane = f.state().snapshot.context.pane

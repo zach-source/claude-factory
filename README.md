@@ -33,6 +33,7 @@ In the manager session:
 /factory start lifecycle@improve my-app keep improving it
 /factory                      # the board: runs, stations, workers, gates, manager mail
 /factory status <run>         # one run's full journal
+/factory interview            # questions from runs stuck or parked on your direction; your answer goes to the run
 ```
 
 ## The manager drives
@@ -89,6 +90,12 @@ of a rig with one command, and `--mcp` gives its workers the servers in a Claude
 `{ "mcpServers": { ... } }` file: `--mcp-config` for Claude, `-c mcp_servers.<name>=…` for Codex.
 pi has no MCP client, so its pane says that the file was not loaded.
 
+`--runner` says where a rig's workers run: `herdr` panes on this machine (the default), or `ax`, an
+AX microVM on a cluster ([docs/remote-runner.md](docs/remote-runner.md)). A VM runs the rig's agent
+(claude, codex or pi) headless; `--egress host[,host]...[=KEY[:Header:Prefix]]` (repeatable) lets it
+reach more hosts, with agent-vault's credential `KEY` injected for them. Runners are an interface
+(`src/runner.ts`): a new one is a module and a registry entry.
+
 A factory's `params` are what its worker commands name as `{name}`: lifecycle's are `claude` (the
 Claude Code launcher, default `claude-smart --new --no-channels`), `exec_model`, `judge_model` and
 `security_model`. A rig sets one with `--param name=value`; otherwise the factory's environment
@@ -101,26 +108,29 @@ factory rig add web ~/repos/web --agent "codex --dangerously-bypass-approvals-an
 factory rig add api ~/repos/api --agent "pi --model anthropic/claude-sonnet-5" --sweeps none
 factory rig add infra ~/repos/infra --mcp ~/.config/factory/infra-mcp.json
 factory rig add docs ~/repos/docs --param exec_model=claude-haiku-4-5-20251001 --param claude=claude
+factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egress api.openai.com=OPENAI
 ```
 
 ## The lifecycle factory
 
 [`factories/lifecycle.ts`](factories/lifecycle.ts) is the whole software lifecycle in one graph:
 
-| Loop                         | Stations                                                                                         |
-| ---------------------------- | ------------------------------------------------------------------------------------------------ |
-| build                        | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → **approve** → deploy → soak |
-| optimize (performance, cost) | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved       |
-| refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                               |
-| operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                  |
-| incident                     | incident → rollback or plan → … → postmortem, which files the action items                       |
-| sweeps                       | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)  |
+| Loop                         | Stations                                                                                           |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| build                        | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
+| optimize (performance, cost) | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
+| refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
+| operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
+| incident                     | incident → rollback or plan → … → postmortem, which files the action items                         |
+| sweeps                       | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)    |
 
 Sweeps never end: each pass files what it finds as runs of its own (`lifecycle@incident`,
 `@plan`, `@baseline`, `@characterize`), skipping duplicates. `factory loop` ticks with no
 console open and keeps one run of each of a rig's sweeps: abort a sweep to stop it, `rm`
-it to let the loop start it again. **approve** is a gate: nothing
-merges or deploys until you decide it, with the board's buttons or `/factory decide`.
+it to let the loop start it again. **Your merge is the gate**: release marks the pull
+request ready, and deploy parks on it until you merge it on GitHub, then deploys and watches
+the rollout. It never merges itself. Request changes on the pull request to send the run back
+to implement; close it to end the run with its bead deferred.
 Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews security.
 `factories/lifecycle.test.ts` walks every loop through the machine.
 
@@ -144,7 +154,7 @@ commit it, and the repo owns its factory like any other code:
   Postmortems file the factory changes an incident exposed.
 - **Those changes ship like any change**: plan, implement, `factory check` in verify, a review
   that reads them as policy (security review when they remove a gate, widen what runs
-  unattended or raise a limit), and your approve gate. Deploy reports them as published.
+  unattended or raise a limit), and your merge. Deploy reports them as published.
 - `factory check <file>` validates a factory: the graph, its outcomes and timed edges, and a
   way to `done` from every station. A factory whose starting commit does not validate is
   refused before any worker starts, and its bead is deferred with the reason.
@@ -212,8 +222,10 @@ In a repo with `.beads/`, beads is the factory's task tracker:
 - **The journal mirrors into the bead**: every station's report becomes a comment (a
   sweep's routine passes excepted), and workers' bd writes carry `factory/<run>/<station>`.
 - **The end of a run settles its bead**: shipped or otherwise finished closes it; a hold or an
-  abort defers it, unassigned (undefer it to hand it back); with open child beads, however the run
-  ended, it stays open and unassigned for them.
+  abort defers it, unassigned (undefer it to hand it back); a reject leaves it open and ready but
+  out of the queue, swapping the `factory` label for `rejected` and recording `rejected_by`,
+  `rejected_at` and `reject_reason` in its metadata (queue it again, or close it yourself); with
+  open child beads, however the run ended, it stays open and unassigned for them.
 - **The backlog dispatches itself**: every rig's ready, unassigned, top-level beads labeled
   `factory` become runs, every 30 s while the rig and the town have room. A
   `station:<name>` label starts one at that station.
@@ -322,6 +334,25 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
   workers use (MCP tools stay deferred behind ToolSearch; auto memory is off). The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
   cost ~40k tokens on every turn and are left out; the repo's own CLAUDE.md and settings
   still apply. `FACTORY_LEAN=0` launches workers with the user's setup again.
+- **Usage limits**: a worker whose turn is refused for the account's usage limit (weekly or
+  5-hour) is restarted on the next account: `ccswitch switch-to` moves
+  every Claude on the machine to the next account in its sequence whose limit has reset, and
+  the worker resumes its session there. With every account at its limit, workers hold (no
+  nudges, no timeout) until the first reset, and the manager hears once. `factory manager`
+  does the same for the manager: it checks the manager's transcript each minute and, refused,
+  swaps the account and resumes the manager's session.
+  A worker on the `ax` runner uses the vault's token, which ccswitch does not rotate: it
+  holds until its limit resets.
+- **Manager skills**: the manager gets the factory's own skills, playbooks for the work it
+  keeps repeating, from `memory/.manager/.claude/skills/` (an `--add-dir`, so Claude Code picks
+  up edits mid-session). `factory manager` records its sessions, and the dream reads what each
+  was asked and ran since the last dream: work done the same way three or more times becomes a
+  proposed skill, and a skill unused for 30 days, or one that no longer fits, is proposed for
+  reaping. The dream writes proposals to `memory/.manager/skills/` (Claude Code refuses an
+  unattended write under `.claude/`), and nothing installs on its own: the next tick mails the
+  manager the new, changed and reaped ones, and it reads each and runs `factory skills install
+<name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
+  are in the memory's git history like its notes.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
   from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
@@ -335,7 +366,7 @@ project,local` plus a `--settings` file that keeps only the user's hooks and env
 - Claude trusts a worktree through its main repo. A run on a repo Claude does not trust
   yet starts no worker (it would stop at the folder-trust dialog): the board shows it
   awaiting trust, the manager is paged once, and `rig add` warns. Run `claude` in the
-  repo once and accept.
+  repo once and accept. (Not for a rig whose runner is `ax`: its VM runs the agent headless.)
 - Station prompts are stack-agnostic and defer to the repo's own CLAUDE.md,
   CONTRIBUTING and CI. Deploy, soak, rollback and monitor need the workers to reach
   your deploy tooling and telemetry (kubectl, gh, the Grafana MCP) the way you do.

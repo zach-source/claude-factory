@@ -21,6 +21,8 @@ export type Bead = {
 }
 
 export const LABEL = 'factory'
+/** a bead a station rejected: open, out of the queue until a person queues it again */
+export const REJECTED = 'rejected'
 export const hasBeads = (repo: string) => existsSync(join(repo, '.beads'))
 /** the run owns its bead under this name; its workers write as `<actor>/<station>` */
 export const actorOf = (runId: string) => `factory/${runId}`
@@ -69,7 +71,7 @@ export const beads = (repo: string, actor: string) => ({
     (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '100'), 'ready')) as Bead[]).filter(
       b => !b.parent && !b.assignee && !b.labels?.includes(LABEL),
     ),
-  /** hands a bead to the factory: a rig starts it at the next dispatch */
+  /** hands a bead to the factory: a rig starts it at the next dispatch, a rejected one too */
   queue: (id: string, station?: string) =>
     must(
       bd(
@@ -79,6 +81,8 @@ export const beads = (repo: string, actor: string) => ({
         id,
         '--add-label',
         LABEL,
+        '--remove-label',
+        REJECTED,
         ...(station ? ['--add-label', `station:${station}`] : []),
       ),
       'update',
@@ -105,6 +109,32 @@ export const beads = (repo: string, actor: string) => ({
   defer: (id: string, reason: string) => {
     bd(repo, actor, 'unclaim', id)
     return must(bd(repo, actor, 'defer', id, '--reason', reason), 'defer')
+  },
+  /**
+   * a station judged it not the factory's to do: still open and ready for a person, but out of the factory's
+   * queue (`queue` puts it back), labeled and with who said so, when and why
+   */
+  reject: (id: string, by: string, reason: string) => {
+    bd(repo, actor, 'unclaim', id)
+    return must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        '--remove-label',
+        LABEL,
+        '--add-label',
+        REJECTED,
+        '--set-metadata',
+        `rejected_by=${by}`,
+        '--set-metadata',
+        `rejected_at=${new Date().toISOString()}`,
+        '--set-metadata',
+        `reject_reason=${reason}`,
+      ),
+      'update',
+    )
   },
   /** a revived run takes its bead back from closed or deferred */
   reopen: (id: string) => {

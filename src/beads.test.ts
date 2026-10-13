@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beads, dispatchable, goalOf, isOwned, stationOf, type Bead } from './beads'
@@ -55,5 +55,33 @@ test('a heartbeat bd cannot make keeps the claim: lost only to a named other ass
   } finally {
     process.env.PATH = path
     delete process.env.SHOW
+  }
+})
+
+test('a rejected bead stays open, out of the queue, saying who rejected it, when and why; queuing takes it back', () => {
+  const bin = join(tmpdir(), `fake-bd-reject-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho "$*" >> ${log}\n`)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    b.reject('fx-1', 'run-1/triage', 'already tracked by fx-2')
+    b.queue('fx-1')
+    const [unclaim, update, queue] = readFileSync(log, 'utf8').trim().split('\n')
+    expect(unclaim).toBe('unclaim fx-1 --actor factory/run-1')
+    expect(update).toStartWith(
+      'update fx-1 --remove-label factory --add-label rejected --set-metadata rejected_by=run-1/triage',
+    )
+    expect(update).toMatch(
+      /--set-metadata rejected_at=\d{4}-\d\d-\d\dT[^ ]+ --set-metadata reject_reason=already tracked by fx-2 /,
+    )
+    // nothing closes it: still open and ready for a person
+    expect(readFileSync(log, 'utf8')).not.toContain('close')
+    expect(queue).toBe('update fx-1 --add-label factory --remove-label rejected --actor factory/run-1')
+  } finally {
+    process.env.PATH = path
   }
 })

@@ -3,7 +3,7 @@ import type { Factory } from '../src/machine'
 // The whole software lifecycle as one graph. A run enters at triage (or at a
 // station, `lifecycle@incident`) and walks one of these loops:
 //
-//   build      plan → implement ⇄ verify ⇄ review (→ security) → release → approve → deploy → soak
+//   build      plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (you merge) → soak
 //   optimize   baseline → plan → implement ⇄ verify (against the target) → … → soak     (abandon when disproved)
 //   refactor   characterize → plan → implement ⇄ verify (pinned behavior holds) → … → soak
 //   operate    soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem
@@ -11,14 +11,15 @@ import type { Factory } from '../src/machine'
 //   sweeps     monitor (30 min) · maintain (daily) · improve (daily, rotating refactor/performance/cost)
 //              loop forever and file what they find as separate work
 //
-// approve is the one place a person must act: nothing merges or deploys without them.
+// The pull request is the one place a person must act: deploy waits for a person to merge it and never
+// merges itself, so nothing reaches the default branch or production without them.
 // In a repo with beads, a run's bead is its epic: plan records the tasks as its children,
 // implement works them, verify and review file findings as more, release needs them all
 // closed, and sweeps file to the backlog, where `factory` labels what starts on its own.
 //
 // `factory adopt <repo>` copies this file into the repo as .factory/lifecycle.ts. From then on the
 // factory is the repo's code: improve's factory lens and postmortems file changes to it, and they ship
-// like any change, through review and approve. Each run follows the version its starting commit holds.
+// like any change, through review and your merge. Each run follows the version its starting commit holds.
 
 // The worker commands name params (below); the runner fills them in from a rig's --param, the
 // environment's FACTORY_<NAME> (FACTORY_CLAUDE, FACTORY_EXEC_MODEL, ...) or these defaults.
@@ -26,15 +27,18 @@ const claude = (model: string) => `{claude} --dangerously-skip-permissions --mod
 const SONNET = claude('exec_model')
 const OPUS = claude('judge_model')
 const FABLE = claude('security_model')
+// stations that read or change production need the laptop's kubectl, cluster access and network, which a
+// rig's VM workers (--runner ax) do not have: they stay in herdr panes whatever the rig's runner
+const LAPTOP = 'herdr'
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
-- Never commit secrets. Only deploy and rollback touch the default branch or production; nobody force-pushes.
+- Never commit secrets. Only a person merges a pull request; only deploy and rollback touch production, and rollback alone may revert on the default branch; nobody force-pushes.
 - Production is read-only for every station but deploy and rollback.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
 - On a retry or a resumed worker, first find out what earlier attempts already did (journal, git log, pull request, deploy state) and never repeat an external action that already happened.
 - Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.
-- .factory/ is this factory's own definition: change it only in a run whose goal is to change it, check every edited file with \`factory check\` (see your brief) before committing, and keep the approve gate before anything merges or deploys.`
+- .factory/ is this factory's own definition: change it only in a run whose goal is to change it, check every edited file with \`factory check\` (see your brief) before committing, and keep a person's merge of the pull request as the gate before anything deploys.`
 
 export default {
   name: 'lifecycle',
@@ -69,7 +73,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
         monitor: 'monitor',
         maintain: 'maintain',
         improve: 'improve',
-        reject: 'done',
+        reject: { to: 'done', reject: true },
       },
     },
 
@@ -90,6 +94,7 @@ Commit nothing but an architecture decision record, and only where the repo keep
       next: { ready: 'implement' },
     },
     baseline: {
+      runner: LAPTOP,
       timeoutMin: 60,
       prompt: `Measure before anyone optimizes. Build a reproducible measurement and commit it (a benchmark, a load script, a profiling recipe or a cost query):
 - performance: latency percentiles, throughput, CPU and memory; profile to find where the time goes
@@ -144,24 +149,26 @@ Report approve, or changes with each finding, its severity and its fix, each als
       timeoutMin: 75,
       prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and update the pull request review opened (open one if there is none) and mark it ready for review. Its description carries the plan's summary, the verification evidence and the rollback plan. Wait for CI and read every failing check.
 Report ready with the pull request link, the CI status and exactly what shipping will do; or red with the failures.`,
-      next: { ready: 'approve', red: 'implement' },
-    },
-    approve: {
-      gate: true,
-      prompt:
-        'Ship it? Read the pull request and the evidence. ship merges and deploys it; changes sends it back to implement with your note; hold ends the run, leaves the pull request open and defers its bead until you undefer it.',
-      next: { ship: 'deploy', changes: 'implement', hold: { to: 'done', defer: true } },
+      next: { ready: 'deploy', red: 'implement' },
     },
     deploy: {
+      runner: LAPTOP,
       retries: 1,
       timeoutMin: 90,
-      prompt: `Ship the approved pull request the repo's way. First check what is already done (merged? tagged? deployed?) and do only what is not.
-Before the change lands, record the production baseline it will be compared against: error rate, latency, saturation and cost signals. Then merge, tag or publish, run or watch the deploy pipeline to the end, verify the rollout (for example kubectl rollout status) and run a smoke check.
-Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a change to .factory/ only, which runs started from now on follow); failed when the rollout did not complete.
-When the pull request cannot land yet because the repo wants something only a person can give (an approving review, an admin merge, a required check a human runs), or a queue or another release holds it, do not report failed: nothing has reached production. Report blocked with the pull request link and exactly what it waits for, so the person is asked; you are woken to check again.`,
-      next: { deployed: { to: 'soak', delayMin: 15 }, published: 'done', failed: 'rollback' },
+      prompt: `Ship the pull request once a person has merged it: their merge is the approval, and you never merge it yourself. First check what is already done (merged? tagged? deployed?) and do only what is not.
+Not merged yet: if a person requested changes or left comments asking for them since release, report changes with every point they raised, each also recorded as a task of this run (see Tracking); if a person closed it unmerged, report hold with their reason, if any; otherwise report blocked with the pull request link and what it waits for (the merge, or a required check or queue), so the person is asked; you are woken when it changes.
+Merged: record the production baseline it will be compared against (error rate, latency, saturation and cost signals) from the window just before the merge, since a GitOps repo may already be rolling it out, tag or publish when the repo's conventions call for it, run or watch the deploy pipeline to the end, verify the rollout (for example kubectl rollout status) and run a smoke check.
+Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a change to .factory/ only, which runs started from now on follow); failed when the rollout did not complete.`,
+      next: {
+        deployed: { to: 'soak', delayMin: 15 },
+        published: 'done',
+        failed: 'rollback',
+        changes: 'implement',
+        hold: { to: 'done', defer: true },
+      },
     },
     soak: {
+      runner: LAPTOP,
       timeoutMin: 30,
       prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only.
 Report healthy when it holds, or resolved instead when this run began with an incident or went through a rollback, so it gets a postmortem; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
@@ -173,6 +180,7 @@ Report healthy when it holds, or resolved instead when this run began with an in
       },
     },
     rollback: {
+      runner: LAPTOP,
       retries: 3,
       timeoutMin: 45,
       prompt: `Restore service. Check what is already rolled back, then roll back the release your inbox names the repo's way (redeploy the previous version, revert the merge, or turn the flag off) and confirm recovery against the baseline.
@@ -182,6 +190,7 @@ Report recovered with what you did, the evidence of recovery and everything lear
 
     // ── incidents ────────────────────────────────────────────────────────────
     incident: {
+      runner: LAPTOP,
       agent: OPUS,
       timeoutMin: 30,
       prompt: `Production is degraded. Diagnose, read-only: the impact and blast radius, when it started, what changed then (deploys, config, dependencies, traffic), and the evidence in metrics, logs and traces.
@@ -197,6 +206,7 @@ Report rollback when a recent release caused it (name it and the version to retu
 
     // ── standing sweeps: each loops on a timer and files work as runs ────────
     monitor: {
+      runner: LAPTOP,
       timeoutMin: 20,
       prompt: `One pass of production watch, read-only: SLOs and error budgets, alert states, error rates and new error types, latency, saturation, failing jobs, certificate and quota expiry, and the health of recent deploys. Compare with the previous passes in the journal.
 File what hurts users now as separate work that starts on its own at the incident station, at priority 0. File defects that can wait as separate work for a person to prioritize. Never file what is already tracked or running.

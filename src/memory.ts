@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
 import {
   appendFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -271,11 +273,119 @@ export const usageLines = (dir: string) => {
     )
 }
 
+/** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */
+export const managerDir = (dir: string) => join(dir, '.manager')
+/** the dream proposes them here (Claude Code refuses an unattended write under any .claude/) */
+export const skillSources = (dir: string) => join(managerDir(dir), 'skills')
+/** and the manager installs the ones it accepts here, an --add-dir's .claude/skills, which its Claude watches */
+export const skillsDir = (dir: string) => join(managerDir(dir), '.claude', 'skills')
+
+const skillText = (root: string, name: string) => {
+  const file = join(root, name, 'SKILL.md')
+  return existsSync(file) ? readFileSync(file, 'utf8') : null
+}
+const skillNames = (root: string) =>
+  existsSync(root)
+    ? readdirSync(root, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name)
+    : []
+const isSkillName = (name: string) => /^[a-z0-9][a-z0-9-]*$/.test(name)
+
+/** what the dream proposed and the manager has not reviewed: a skill new, changed or reaped since it was installed */
+export function pendingSkills(dir: string) {
+  const names = [...new Set([...skillNames(skillSources(dir)), ...skillNames(skillsDir(dir))])].sort()
+  return names.flatMap(name => {
+    const proposed = skillText(skillSources(dir), name)
+    const installed = skillText(skillsDir(dir), name)
+    if (proposed === installed) return []
+    const change = installed === null ? 'new' : proposed === null ? 'reaped' : 'changed'
+    const description = /^description:\s*(.*)$/m.exec(proposed ?? installed ?? '')?.[1] ?? ''
+    return [{ name, change, description, file: join(skillSources(dir), name, 'SKILL.md') }]
+  })
+}
+
+/** the manager accepts a proposal: installed as the dream wrote it, or gone when the dream reaped it */
+export function installSkill(dir: string, name: string) {
+  if (!isSkillName(name) || !pendingSkills(dir).some(p => p.name === name))
+    throw new Error(`no proposed skill ${name}: factory skills lists them`)
+  rmSync(join(skillsDir(dir), name), { recursive: true, force: true })
+  if (existsSync(join(skillSources(dir), name)))
+    cpSync(join(skillSources(dir), name), join(skillsDir(dir), name), { recursive: true })
+}
+
+/** the manager refuses a proposal: what is installed stands, and the dream reads why in its inbox */
+export function rejectSkill(dir: string, name: string, why: string) {
+  if (!isSkillName(name) || !pendingSkills(dir).some(p => p.name === name))
+    throw new Error(`no proposed skill ${name}: factory skills lists them`)
+  rmSync(join(skillSources(dir), name), { recursive: true, force: true })
+  if (existsSync(join(skillsDir(dir), name)))
+    cpSync(join(skillsDir(dir), name), join(skillSources(dir), name), { recursive: true })
+  return add(dir, {
+    summary: `The manager rejected the proposed skill ${name}: ${why}`,
+    from: 'manager',
+    body: `Do not propose it again as it was. ${why}`,
+  })
+}
+
+/** each skill's name and description, for the dream */
+export function skills(dir: string) {
+  const root = skillSources(dir)
+  if (!existsSync(root)) return []
+  return readdirSync(root, { withFileTypes: true })
+    .filter(d => d.isDirectory() && existsSync(join(root, d.name, 'SKILL.md')))
+    .map(d => {
+      const text = readFileSync(join(root, d.name, 'SKILL.md'), 'utf8')
+      return { name: d.name, description: /^description:\s*(.*)$/m.exec(text)?.[1] ?? '' }
+    })
+}
+
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s).replace(/\s+/g, ' ')
+/**
+ * what the manager did, from its session transcripts: what it was asked (the person, or a patrol) and the
+ * commands and skills it ran, one line each, after \`since\`. Also every skill's uses, all time: what the dream reaps by
+ */
+export function managerActivity(lines: string[], since: number) {
+  const activity: { at: number; line: string }[] = []
+  const used = new Map<string, { n: number; last: number }>()
+  for (const raw of lines) {
+    if (!raw.includes('"type":"user"') && !raw.includes('"tool_use"')) continue
+    let e: { type?: string; timestamp?: string; isMeta?: boolean; message?: { content?: unknown } }
+    try {
+      e = JSON.parse(raw)
+    } catch {
+      continue
+    }
+    const at = Date.parse(e.timestamp ?? '')
+    const content = e.message?.content
+    const hm = new Date(at).toISOString().slice(0, 16).replace('T', ' ')
+    if (e.type === 'user' && !e.isMeta && typeof content === 'string') {
+      if (at > since) activity.push({ at, line: `- ${hm} asked: ${clip(content, 300)}` })
+      continue
+    }
+    if (e.type !== 'assistant' || !Array.isArray(content)) continue
+    for (const c of content as { type: string; name?: string; input?: Record<string, string> }[]) {
+      if (c.type !== 'tool_use') continue
+      if (c.name === 'Skill') {
+        const name = c.input?.skill ?? '?'
+        const u = used.get(name) ?? { n: 0, last: 0 }
+        used.set(name, { n: u.n + 1, last: Math.max(u.last, at) })
+      }
+      if (at <= since) continue
+      const what =
+        c.name === 'Bash' ? c.input?.command : c.name === 'Skill' ? c.input?.skill : c.input?.file_path
+      activity.push({ at, line: `- ${hm} ${c.name}: ${clip(what ?? '', 200)}` })
+    }
+  }
+  return { activity: activity.sort((a, b) => a.at - b.at).map(a => a.line), used }
+}
+
 export const dreamPrompt = (
   dir: string,
   journal: string[],
   uses: string[],
   closed: string[],
+  manager: { activity: string[]; skills: string[] } = { activity: [], skills: [] },
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
 The structure, three levels:
@@ -291,7 +401,14 @@ This pass:
 2. Merge duplicates anywhere; when two notes disagree, keep what the newer evidence shows and say so. Remove what is wrong, stale, or so specific to one run that no other would use it. Retire or rewrite whatever waits on a bead in "Closed beads" below. A note never shown in a search for 30 days and never helping is a candidate to drop, unless it is newer than that.
 3. Read the run journal below for lessons no note holds yet: a station that failed for a reason the next worker could have avoided, a fix that worked, a review finding that recurs, a person's decision later runs should follow. Write each as a note. Skip the routine.
 4. Rewrite each touched topic's README and CORE.md so their order is by importance: what helped workers most (Usage below) first, then what holds most broadly. A note that keeps helping belongs higher, its lesson in CORE.md when it holds for every rig.
-Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm); the factory commits what you leave. Finish with one paragraph saying what you changed.
+5. Manager skills, proposed in ${skillSources(dir)} (the manager reviews each new, changed or reaped one and installs it or not; a rejection comes back to you as an inbox note): the manager is the Claude session that runs the factory for the person; Manager activity below is what it was asked and what it ran. Where it did the same multi-step work three or more times (the same sequence of commands to triage a stuck station, answer one kind of worker question, check a rig, start work), write it a skill so it need not work it out again: <name>/SKILL.md, a kebab-case name, frontmatter \`name:\` and \`description:\` (one line saying when to use it: the manager picks skills by it), then the steps with the exact commands, what to look for and what to decide. Fold what the activity shows into an existing skill rather than writing a near copy. Reap (git rm -r) a skill that no longer fits how the factory works, or that the manager has not used in 30 days and is older than that (Skill uses below). Write no skill for one-off work.
+Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
+
+## Manager skills (name: uses, last used: description)
+${manager.skills.join('\n') || '(none yet)'}
+
+## Manager activity since the last dream
+${manager.activity.join('\n') || '(nothing new)'}
 
 ## Usage (helped: a worker said the note helped; shown: a search returned it)
 ${uses.join('\n') || '(no notes yet)'}

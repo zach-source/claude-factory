@@ -14,7 +14,20 @@ import type {
   FactoryRun,
   FactoryView,
 } from '../types'
-import { bar, clockOf, dur, line, mailKey, mailTabs, prNeed, rigStats, sparkline, track } from './view'
+import {
+  bar,
+  clockOf,
+  dur,
+  interviews,
+  line,
+  mailKey,
+  mailTabs,
+  prNeed,
+  rigStats,
+  sparkline,
+  track,
+  type Interview,
+} from './view'
 
 /** what every surface the console draws on has; mobile has no Input or Select */
 export type UI = Pick<Elements['mobile'], 'Box' | 'Text' | 'Button' | 'Code'> &
@@ -28,6 +41,8 @@ export type Actions = {
   decide: (run: string, outcome: string) => void
   /** the person's quick answer to a worker's mail: approve, reject, or what they typed */
   answer: (m: FactoryMail, kind: 'approve' | 'reject' | 'reply') => void
+  /** the person's answer to an interview question: one of its options, what they typed, or both */
+  interview: (iv: Interview, choice?: string) => void
   start: () => void
   jump: (pane: string) => void
 }
@@ -70,6 +85,7 @@ const TABS: [FactoryView, string, string][] = [
   ['new', 'New run', '5'],
   ['rigs', 'Rigs', '6'],
   ['prs', 'PRs', '7'],
+  ['interview', 'Interview', '8'],
 ]
 
 function rule({ ui, width }: Base, title: string, note = '') {
@@ -687,6 +703,110 @@ export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   )
 }
 
+/** questions for the person from runs that hit a problem only they can settle, and the answers they gave */
+export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
+  const { Box, Text, Button, Input } = p.ui
+  const answered = Object.fromEntries((draft.interviewed ?? []).map(d => [d.key, d.answer]))
+  const open = interviews(board.runs, answered)
+  const done = [...(draft.interviewed ?? [])].reverse()
+  const tab = draft.interviewTab ?? 'open'
+  return (
+    <Box key="interview" flexDirection="column">
+      <Box gap={1} marginBottom={1}>
+        {(['open', 'answered'] as const).map(t => (
+          <Button
+            key={`iv-tab-${t}`}
+            label={`${t === 'open' ? 'questions' : 'answered'} (${t === 'open' ? open.length : done.length})`}
+            plain
+            variant={tab === t ? 'primary' : undefined}
+            dimColor={tab !== t}
+            onPress={() => p.act.draft({ interviewTab: t })}
+          />
+        ))}
+      </Box>
+      {tab === 'open' && open.length === 0 && (
+        <Text dimColor>No run is stuck or waiting on your direction.</Text>
+      )}
+      {tab === 'open' &&
+        open.map((iv, i) => {
+          const typed = draft.replies?.[iv.key] ?? ''
+          return (
+            <Box key={iv.key} flexDirection="column" marginBottom={1}>
+              <Box gap={1}>
+                <Text dimColor>{String(i + 1)}.</Text>
+                <Text color="magenta">{iv.rig ?? ''}</Text>
+                <Text bold>{iv.run}</Text>
+                <Text color={iv.kind === 'stuck' ? 'red' : 'blue'}>
+                  {iv.node} · {iv.kind} {dur(p.now - iv.at)}
+                </Text>
+                <Button
+                  key={`iv-open-${iv.key}`}
+                  label="open run"
+                  dimColor
+                  onPress={() => p.act.show('run', iv.run)}
+                />
+              </Box>
+              <Text color="yellow" bold wrap="wrap">
+                ? {iv.question}
+              </Text>
+              <Text dimColor wrap="wrap">
+                {line(iv.context, 600)}
+              </Text>
+              {Input && (
+                <Input
+                  key={`iv-reply-${iv.key}`}
+                  placeholder={
+                    iv.options.length ? 'pick an option, add a note, or answer in your words' : 'your answer'
+                  }
+                  value={typed}
+                  onInput={v => p.act.draft({ replies: { ...draft.replies, [iv.key]: v } })}
+                  onSubmit={v => {
+                    p.act.draft({ replies: { ...draft.replies, [iv.key]: v } })
+                    if (v.trim()) p.act.interview(iv)
+                  }}
+                />
+              )}
+              <Box gap={1}>
+                {iv.options.map((o, j) => (
+                  <Button
+                    key={`iv-opt-${iv.key}-${j}`}
+                    label={o}
+                    variant={j === 0 ? 'primary' : undefined}
+                    onPress={() => p.act.interview(iv, o)}
+                  />
+                ))}
+                {typed.trim() && (
+                  <Button key={`iv-send-${iv.key}`} label="send answer" onPress={() => p.act.interview(iv)} />
+                )}
+                <Button
+                  key={`iv-abort-${iv.key}`}
+                  label="abort run"
+                  dimColor
+                  onPress={() => p.act.cli('abort', iv.run)}
+                />
+              </Box>
+            </Box>
+          )
+        })}
+      {tab === 'answered' && done.length === 0 && <Text dimColor>Nothing answered yet.</Text>}
+      {tab === 'answered' &&
+        done.map(d => (
+          <Box key={`iv-done-${d.key}`} flexDirection="column" marginBottom={1}>
+            <Box gap={1}>
+              <Text dimColor>{clockOf(d.at)}</Text>
+              <Text bold>{d.run}</Text>
+              <Text color="cyan">{d.node}</Text>
+            </Box>
+            <Text wrap="wrap">? {d.question}</Text>
+            <Text color="green" wrap="wrap">
+              ✓ {d.answer}
+            </Text>
+          </Box>
+        ))}
+    </Box>
+  )
+}
+
 /** the factory's open pull requests by rig, each with what it waits on and where its run stands */
 export function prsView(p: Base, rigs: FactoryPrs, board: FactoryBoard) {
   const { Box, Text, Button } = p.ui
@@ -783,7 +903,7 @@ export function newView(p: Base, draft: FactoryDraft, cwd: string) {
 
 export function footer(p: Base) {
   const { Text } = p.ui
-  return <Text dimColor>1-7 views · tab between controls · enter presses · esc back to the prompt</Text>
+  return <Text dimColor>1-8 views · tab between controls · enter presses · esc back to the prompt</Text>
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */

@@ -44,7 +44,12 @@ import {
 import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
 import { claudeCommand, command, harnessOf, readMcp, sq } from './harness'
 import { tokens, waiting } from './sidebar'
+import * as devenv from './devenv'
 import * as memory from './memory'
+import * as ax from './ax'
+import type { Egress } from './ax'
+import * as worker from './worker'
+import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
   createdAt,
   fate,
@@ -119,7 +124,7 @@ const LAUNCH_MS = 90_000
 const TIME_UP = 'minutes are up' // marks the deadline's warning among the factory's mail
 const HANDOFF_ASK = "past the factory's limit" // marks the ask to hand off
 
-type Run = {
+export type Run = {
   id: string
   /** the factory this run follows, pinned into the run dir when it started */
   factory: string
@@ -214,8 +219,217 @@ function paneInfo(pane: string): { status: string; agent?: string; session?: str
   }
 }
 
+/** what the laptop keeps of a task it launched: whose worker it is, and whether its egress policy is in */
+/** `put`: the files still to send the VM once its task runs (the brief, the beads copy), from `<run>/<task>.<name>` */
+type TaskSide = {
+  node: string
+  seq: number
+  egress?: ax.Egress[]
+  policy: boolean
+  put?: string[]
+  /** where the VM shares the rig's beads, as at its launch: absent, the repo's GitHub origin */
+  beadsRemote?: Rig['beadsRemote']
+}
+const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
+
+/**
+ * the factory command a VM worker's outbox line may run here, as its station: a report on its own attempt,
+ * mail on its own run, memory add. null for anything else (decide, goto, start...): the VM's agent writes the
+ * outbox, and it may be steered by what it read.
+ */
+export function replayable(
+  argv: string[],
+  side: { node: string; seq: number },
+  run: string,
+): string[] | null {
+  const [cmd, id, seq] = argv
+  if (cmd === 'report' && id === run && seq === String(side.seq)) return argv
+  if (cmd === 'mail' && id === run) return argv
+  if (cmd === 'memory' && id === 'add') {
+    const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
+    return ['memory', 'add', ...rest, '--from', side.node]
+  }
+  return null
+}
+
+/** an outbox line's argv; null for a line that is not `{argv: string[]}`, which the VM may write */
+export function outboxArgv(line: string): string[] | null {
+  try {
+    const { argv } = JSON.parse(line)
+    return Array.isArray(argv) && argv.every(a => typeof a === 'string') ? argv : null
+  } catch {
+    return null
+  }
+}
+
+/** where bd keeps a repo's store: its Dolt server and database (`bd dolt show --json`) */
+type DoltConn = { host: string; port: number; database: string; user: string; tls: boolean }
+
+/**
+ * the command that moves a rig's beads to or from where its VMs share them: its beadsRemote, else the repo's
+ * GitHub origin. A push or pull runs inside the laptop's Dolt server, which holds the remote's password, and
+ * only SQL can tell it the user (`bd dolt push` pushes as the server's own). Through the dolt CLI, not
+ * `bd sql`: bd drops the connection after 10 s, mid-fetch on a large store, and the merge never happens
+ */
+export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?: DoltConn) {
+  if (!r) return ['bd', 'dolt', way]
+  if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
+  if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
+  const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
+  return [
+    ...['dolt', '--host', conn.host, '--port', String(conn.port), '--user', conn.user],
+    ...(conn.tls ? [] : ['--no-tls']),
+    ...['--use-db', conn.database, 'sql', '-r', 'json', '-q'],
+    way === 'push' ? call : pullResolving(call),
+  ]
+}
+/**
+ * a pull that cannot stall the rig on a conflict: in one transaction the laptop's pending writes are committed,
+ * the pull merges, and where the laptop and a VM changed the same row the VM's stands (it did the work it
+ * reports on). The issues' conflicts are read first, so each overwritten issue can say what the laptop had
+ */
+const pullResolving = (call: string) =>
+  [
+    'SET @@autocommit = 0',
+    "CALL DOLT_COMMIT('-Am', 'laptop beads before the pull', '--skip-empty')",
+    call,
+    'SELECT * FROM dolt_conflicts_issues',
+    "CALL DOLT_CONFLICTS_RESOLVE('--theirs', '.')",
+    "CALL DOLT_COMMIT('-Am', 'merge the beads VMs pushed, keeping theirs on a conflict', '--skip-empty')",
+    'COMMIT',
+  ].join('; ')
+
+/** the comment for each issue whose laptop version a pull overwrote, from its conflict rows (`dolt sql -r json`) */
+export function overwritten(out: string) {
+  const rows = out
+    .split('\n')
+    .flatMap(l => (l.startsWith('{"rows"') ? (JSON.parse(l).rows as Record<string, unknown>[]) : []))
+    .filter(row => 'our_diff_type' in row)
+  return rows.map(row => {
+    const id = String(row.our_id ?? row.their_id)
+    const had = Object.keys(row)
+      .filter(k => k.startsWith('our_') && k !== 'our_diff_type' && k !== 'our_id')
+      .map(k => k.slice('our_'.length))
+      .filter(k => String(row[`our_${k}`]) !== String(row[`their_${k}`]))
+      .map(k => `${k}=${String(row[`our_${k}`]).slice(0, 200)}`)
+    const what =
+      row.our_diff_type === 'removed' ? 'had deleted it' : `had ${had.join(', ') || 'the same values'}`
+    return {
+      id,
+      text: `[factory] The laptop and a VM both changed this issue; the VM's version was kept. The laptop ${what}.`,
+    }
+  })
+}
+
+function syncRigBeads(run: Run, way: 'push' | 'pull', r = rigOf(run.repo)?.beadsRemote) {
+  const show = r ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
+  const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
+  // the server's own user; its password, if it has one, as bd takes it
+  const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
+  const p = Bun.spawnSync(rigBeadsSync(r, way, conn), { cwd: run.worktree, env })
+  // ponytail: only the issues table's conflicts are said on the issue; labels and the rest just take the VM's
+  if (r && way === 'pull' && p.exitCode === 0)
+    for (const { id, text } of overwritten(p.stdout.toString()))
+      try {
+        beads(run.repo, 'factory').comment(id, text)
+      } catch {} // the issue the VM deleted: nothing to comment on
+  return p
+}
+
+/**
+ * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
+ * or suspended task is not polled, and a failed or deleted one is gone, like a closed pane
+ */
+function taskInfo(run: Run, pane: string): WorkerInfo | null {
+  const task = ax.taskOf(pane)
+  const phase = ax.phase(task)
+  // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
+  if (phase === 'Pending' || phase === 'Suspended') return { status: phase.toLowerCase(), agent: 'ax' }
+  // gone, and why, kept next to the task's other files: a run's log only says the worker was closed
+  const gone = (why: string) => (
+    writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
+    null
+  )
+  if (phase !== 'Running') return gone(`phase ${phase ?? 'not found'}`)
+  // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
+  const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
+  if (side && !side.policy) {
+    // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
+    if (!ax.createPolicy(task, side.egress)) return { status: 'pending', agent: 'ax' }
+    writeJson(sideFile(run, task), { ...side, policy: true })
+  }
+  // what is too big for the task's env goes over ssh, in parts, and serve waits for it
+  for (const name of side?.put ?? []) {
+    const b64 = readFileSync(join(runDir(run.id), `${task}.${name}`)).toString('base64')
+    const parts = Math.max(1, Math.ceil(b64.length / ax.PUT_PART))
+    for (let i = 0; i < parts; i++)
+      if (!ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)))
+        return { status: 'pending', agent: 'ax' }
+    side!.put = side!.put!.filter(n => n !== name)
+    writeJson(sideFile(run, task), side)
+  }
+  const cursorFile = join(runDir(run.id), `${task}.cursor`)
+  let cursor = existsSync(cursorFile) ? Number(readFileSync(cursorFile, 'utf8')) : 0
+  const polled = ax.poll(task, cursor)
+  for (const line of polled.lines) {
+    const argv = outboxArgv(line)
+    const cmd = side && argv && replayable(argv, side, run.id)
+    // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
+    const env = { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '', FACTORY_FROM: side?.node }
+    const p = cmd ? Bun.spawnSync([CLI, ...cmd], { env }) : null
+    if (!p)
+      ax.prompt(
+        task,
+        `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails and adds memory`,
+      )
+    else if (p.exitCode !== 0)
+      ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
+    // the worker pushed before reporting, and the local worktree is what the next launch pushes back:
+    // best effort, the report stands either way
+    // the same for its bd writes, which it pushed where the rig's VMs share its beads
+    else if (argv![0] === 'report') {
+      Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
+      // from where this VM was told to push, which a rig changed since does not move
+      if (run.bead) syncRigBeads(run, 'pull', side?.beadsRemote)
+    }
+    writeFileSync(cursorFile, String(++cursor))
+  }
+  return polled.status === 'exited'
+    ? gone(`serve exited; its log: ${polled.log || '(empty)'}`)
+    : { status: polled.status, agent: 'ax', session: polled.session, tail: polled.tail }
+}
+
+const herdrRunner: Runner = {
+  name: 'herdr',
+  local: true,
+  launch: launchPane,
+  info: (_run, pane) => paneInfo(pane),
+  deliver: (pane, text) => (herdr('agent', 'prompt', pane, text), true),
+  close: closePane,
+  phase: pane => paneInfo(pane)?.status ?? null,
+}
+
+const axRunner: Runner = {
+  name: 'ax',
+  local: false,
+  launch: launchTask,
+  info: taskInfo,
+  /** a suspended task is woken, and the prompt waits for the next tick */
+  deliver(address, text) {
+    const task = ax.taskOf(address)
+    if (ax.phase(task) !== 'Running') return (ax.resume(task), false)
+    ax.prompt(task, text.replaceAll(CLI, 'factory'))
+    return true
+  },
+  close: address => ax.remove(ax.taskOf(address)),
+  // waiting on the manager costs nothing: the VM is snapshotted until the answer wakes it
+  suspend: address => ax.suspend(ax.taskOf(address)),
+  phase: address => ax.phase(ax.taskOf(address))?.toLowerCase() ?? null,
+}
+Object.assign(runners, { herdr: herdrRunner, ax: axRunner })
+
 /** A failed or unconfirmed close must hold replacement, not leave two workers running. */
-function closeWorker(pane: string) {
+function closePane(pane: string) {
   if (paneInfo(pane) === null) return
   herdr('pane', 'close', pane)
   if (paneInfo(pane) !== null) fail(`worker pane ${pane} is still present after close`)
@@ -320,7 +534,15 @@ function freshBase(repo: string) {
   const isBehind = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', head, ref]).exitCode === 0
   return isBehind ? git(repo, 'rev-parse', ref) : head
 }
-export const loadFactory = async (file: string): Promise<Factory> => validate(await readFactory(file))
+export const loadFactory = async (file: string): Promise<Factory> => {
+  const def = validate(await readFactory(file))
+  const unknown = Object.entries(def.nodes).filter(([, n]) => n.runner && !(n.runner in runners))
+  if (unknown.length)
+    throw new Error(
+      `factory ${def.name}:\n  ${unknown.map(([id, n]) => `${id}: runner "${n.runner}" is not ${Object.keys(runners).join(' or ')}`).join('\n  ')}`,
+    )
+  return def
+}
 // a run moved to another factory leaves a link behind, so its workers' reports still reach it:
 // only the factory holding the run's directory ticks and lists it
 const runIds = () =>
@@ -418,7 +640,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
-    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it.`,
+    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the one question they must answer>\` and, when there are a few clear choices, a line \`Options: <first> | <second> | <third>\`, the one you recommend first: the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
@@ -475,7 +697,11 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
   `[factory] Your pane closed and this session was resumed. Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
 
-/** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
+/** where a station's workers run: the station's own runner, else the rig's */
+const runnerOfStation = (run: Run, def: Factory, node: string) =>
+  runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+
+/** a worker for a station; close its predecessor before allocating a replacement */
 function spawn(
   run: Run,
   def: Factory,
@@ -484,9 +710,30 @@ function spawn(
   started: (pane: string) => void,
   session?: string,
 ) {
-  if (c.pane) closeWorker(c.pane)
-  const prompt = session ? resumeFile(run, node, c) : promptOf(run, node, c)
-  if (!session) writeFileSync(prompt, brief(run, def, node, c, c.mail[node] ?? []))
+  if (c.pane) runnerOf(c.pane).close(c.pane)
+  const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
+  const full = () => brief(run, def, node, c, c.mail[node] ?? [])
+  if (!session) writeFileSync(file, full())
+  let registered = false
+  const address = runnerOfStation(run, def, node).launch({
+    run,
+    def,
+    node,
+    c,
+    session,
+    file,
+    brief: full,
+    created: pane => {
+      started(pane)
+      registered = true
+    },
+  })
+  if (!registered) started(address)
+  return address
+}
+
+/** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
+function launchPane({ run, def, node, c, session, file, created: onCreated }: Job) {
   const tab = () =>
     herdr(
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
@@ -514,10 +761,130 @@ function spawn(
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  // Retain ownership before launch: a lost launch response must not create an untracked worker.
-  started(pane)
-  herdr('pane', 'run', pane, launch(run, def, node, prompt, session))
+  // Retain ownership before launch: a lost response must not create an untracked worker.
+  onCreated?.(pane)
+  herdr('pane', 'run', pane, launch(run, def, node, file, session))
   return pane
+}
+
+/** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
+export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
+
+/**
+ * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
+ * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
+ */
+function launchTask({ run, def, node, c, brief: text }: Job) {
+  const image =
+    process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the worker image for AX tasks')
+  const rig = rigOf(run.repo)
+  const agent = agentOfNode(run, def, node)
+  const harness = harnessOf(agent)
+  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
+  // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
+  // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
+  const pull = Bun.spawnSync([
+    'git',
+    '-C',
+    run.worktree,
+    'pull',
+    '--rebase',
+    '--autostash',
+    'origin',
+    run.branch,
+  ])
+  if (pull.exitCode !== 0) Bun.spawnSync(['git', '-C', run.worktree, 'rebase', '--abort'])
+  // what of the stash would not go back on (bd's export, which both sides rewrote) takes the worker's version;
+  // the stash stays in git stash list
+  const unmerged = Bun.spawnSync(['git', '-C', run.worktree, 'diff', '--name-only', '--diff-filter=U'])
+    .stdout.toString()
+    .trim()
+  if (unmerged) Bun.spawnSync(['git', '-C', run.worktree, 'checkout', 'HEAD', '--', ...unmerged.split('\n')])
+  git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
+  const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
+  const name = ax.taskName(run.id, c.seq)
+  const brief = [
+    text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
+    `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
+    `- Run tests the way the repo does (its make or devenv targets, not a bare go test): those set up what tests need, such as envtest's KUBEBUILDER_ASSETS.`,
+    ...(rig?.env?.FACTORY_NIX_CACHE && existsSync(join(run.worktree, 'devenv.nix'))
+      ? [
+          `- The repo's devenv.nix environment is loaded for you when its cache holds it (then DEVENV_ROOT is set): its tools are on PATH and its variables set, so use them directly. Do not run devenv shell or devenv test, whose enterShell runs the repo's git hooks for minutes; without DEVENV_ROOT, use nix shell as below.`,
+        ]
+      : []),
+    `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
+    ...(run.bead
+      ? [
+          `- bd here is the repo's issue store, cloned when you started from where the factory shares it. \`factory report\` pushes your bd changes back before it reports; to share them sooner (or to see others' since), bd dolt pull && bd dolt push.`,
+        ]
+      : []),
+  ].join('\n')
+  const hasRunBeads = !!run.bead && hasBeads(run.repo)
+  // Substrate takes no env value past 32 KiB, and a brief with its bead's spec can pass that: it goes over
+  // ssh once the task runs (see taskInfo). The VM clones the rig's beads itself (FACTORY_BEADS), from its
+  // beadsRemote or else the repo's GitHub origin
+  writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
+  // what the laptop wrote since its last push (this run's plan, say) must be shared before the VM clones
+  // the fleet may hold other VMs' writes since: take them first, or the push is refused
+  if (hasRunBeads) (syncRigBeads(run, 'pull'), syncRigBeads(run, 'push'))
+  const address = ax.launch({
+    name,
+    repo: httpsRemote(git(run.worktree, 'remote', 'get-url', 'origin')),
+    branch: run.branch,
+    image,
+    model: ax.modelOf(agent),
+    harness: harness!,
+    provider: ax.providerOf(agent),
+    claudeFlags: harness === 'claude' ? vmClaudeFlags(def) : undefined,
+    env: {
+      ...env,
+      ...rig?.env,
+      FACTORY_FROM: node,
+      BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
+      FACTORY_HOME: `${ax.OWN}/home`,
+      // each agent's config and sessions on the workspace volume, so a session survives a suspend
+      CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
+      CODEX_HOME: `${ax.OWN}/codex`,
+      PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
+      ...(hasRunBeads && { FACTORY_BEADS: '1' }),
+      ...(hasRunBeads &&
+        rig?.beadsRemote && {
+          FACTORY_BEADS_REMOTE: rig.beadsRemote.url,
+          DOLT_REMOTE_USER: rig.beadsRemote.user,
+        }),
+    },
+  })
+  const side: TaskSide = {
+    node,
+    seq: c.seq,
+    egress: rig?.egress,
+    policy: ax.createPolicy(name, rig?.egress),
+    put: ['brief.md'],
+    ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
+  }
+  writeJson(sideFile(run, name), side)
+  return address
+}
+
+/**
+ * the part of workerFlags that holds in a VM: the same tools, no user settings or project-level mods, the
+ * worker system prompt (the image carries it), settings for no auto memory and a compaction backstop. Left
+ * out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global CLAUDE.md to exclude.
+ */
+export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
+  if (process.env.FACTORY_LEAN === '0') return []
+  const settings = {
+    autoMemoryEnabled: false,
+    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
+    skipDangerousModePermissionPrompt: true,
+    autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
+  }
+  return [
+    ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
+    ...['--settings', JSON.stringify(settings)],
+    ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
+  ]
 }
 
 /** the note a resumed worker is sent, written where its launch reads it */
@@ -554,8 +921,8 @@ export function lastContext(tail: string) {
   }
   return 0
 }
-/** a Claude worker's context now: the last turn of its session's transcript */
-function contextOf(worktree: string, session: string) {
+/** the end of a Claude worker's session transcript; empty when there is none */
+function tailOf(worktree: string, session: string) {
   const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
   const file = join(dir, 'projects', worktree.replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
   try {
@@ -564,10 +931,107 @@ function contextOf(worktree: string, session: string) {
     const fd = openSync(file, 'r')
     readSync(fd, buf, 0, buf.length, size - buf.length)
     closeSync(fd)
-    return lastContext(buf.toString())
+    return buf.toString()
   } catch {
-    return 0
+    return ''
   }
+}
+
+/** the usage limit that refused a Claude transcript's last turn: when, which (seven_day, five_hour) and when it resets, in ms */
+export function limitHit(tail: string) {
+  for (const line of tail.split('\n').reverse()) {
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'assistant') continue
+      if (e.error !== 'rate_limit' || e.quotaLimits?.status !== 'rejected') return null
+      const kind: string = e.quotaLimits.rateLimitType ?? 'usage'
+      return { at: Date.parse(e.timestamp), kind, resetsAt: (e.quotaLimits.resetsAt ?? 0) * 1000 }
+    } catch {
+      // the first line of the tail is cut
+    }
+  }
+  return null
+}
+
+/** when a Claude transcript's last turn was answered, not refused for a usage limit; 0 when it was not */
+export function servedAt(tail: string) {
+  for (const line of tail.split('\n').reverse()) {
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type === 'assistant') return e.error ? 0 : Date.parse(e.timestamp)
+    } catch {
+      // the first line of the tail is cut
+    }
+  }
+  return 0
+}
+
+/** the account to move to: the next in ccswitch's sequence after the active one (itself last) whose limit has reset */
+export function nextAccount(sequence: string[], active: string, limits: Record<string, number>, now: number) {
+  const i = sequence.indexOf(active)
+  return (
+    [...sequence.slice(i + 1), ...sequence.slice(0, Math.max(0, i)), active].find(
+      a => (limits[a] ?? 0) <= now,
+    ) ?? null
+  )
+}
+
+/**
+ * Workers run on the user's active Claude account. When one hits that account's usage limit, ccswitch
+ * moves every Claude on this machine to the next account whose limit has reset, and the worker restarts
+ * on it; a hit from before the last move only restarts. With every account at its limit, workers wait
+ * for the first reset. Returns that wait's end, or 0 to restart now
+ */
+// shared by every factory on the machine, as the account is: one factory's swap is not another's to redo
+const LIMITS = join(homedir(), '.claude-switch-backup', 'factory-limits.json')
+type Limits = { at: number; limits: Record<string, number>; hitAt?: Record<string, number> }
+
+/**
+ * A turn the active account answered after its limit was recorded means the limit is gone (reset early, or
+ * a plan change): forget it, or a stale limit would hold every worker when the other accounts are limited too
+ */
+export function clearLimit(at: number) {
+  if (!at || !existsSync(LIMITS)) return
+  const s = readJson<Limits>(LIMITS)
+  let active: string
+  try {
+    active = readJson<{ activeAccountId: string }>(
+      join(homedir(), '.claude-switch-backup', 'sequence.json'),
+    ).activeAccountId
+  } catch {
+    return
+  }
+  if (!(active in s.limits) || at <= (s.hitAt?.[active] ?? s.at)) return
+  delete s.limits[active]
+  delete s.hitAt?.[active]
+  writeJson(LIMITS, s)
+}
+
+function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
+  const file = LIMITS
+  const s: Limits = existsSync(file) ? readJson<Limits>(file) : { at: 0, limits: {} }
+  if (hit.at < s.at) return 0
+  let seq: { activeAccountId: string; sequence: string[] }
+  try {
+    seq = readJson(join(homedir(), '.claude-switch-backup', 'sequence.json'))
+  } catch {
+    return hit.resetsAt // no ccswitch: wait out the limit
+  }
+  s.limits[seq.activeAccountId] = Math.max(
+    s.limits[seq.activeAccountId] ?? 0,
+    hit.resetsAt || now + 3_600_000,
+  )
+  s.hitAt = { ...s.hitAt, [seq.activeAccountId]: hit.at }
+  const next = nextAccount(seq.sequence, seq.activeAccountId, s.limits, now)
+  const ok =
+    next === seq.activeAccountId ||
+    (next !== null && Bun.spawnSync(['ccswitch', 'switch-to', next], { timeout: 30_000 }).exitCode === 0)
+  if (next && !ok) s.limits[next] = now + 3_600_000 // it would not switch (a lapsed login): try the others
+  if (ok) s.at = now
+  writeJson(file, s)
+  return ok ? 0 : Math.min(...seq.sequence.map(a => s.limits[a] ?? now))
 }
 
 /**
@@ -634,12 +1098,13 @@ function launch(run: Run, def: Factory, node: string, prompt: string, session?: 
  * whole tool list: a session with the user's MCP servers, connectors, Chrome and every built-in carried
  * ~130k tokens of tool definitions into each patrol. So it starts with only what it uses.
  */
-const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion'
+const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill'
 export const managerCommand = (extra: string[] = []) => [
   'claude',
   '--model',
   'opus', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
-  '--allow-dangerously-skip-permissions',
+  // the person's own default mode (auto) refuses the production reads a patrol needs
+  ...['--permission-mode', 'bypassPermissions'],
   '--strict-mcp-config', // and no --mcp-config: no MCP servers
   '--no-chrome',
   '--tools',
@@ -650,6 +1115,46 @@ export const managerCommand = (extra: string[] = []) => [
   JSON.stringify({ env: { ...withoutFleet().env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } }),
   ...extra,
 ]
+
+/**
+ * runs the manager's Claude until it exits. Its ticks run inside it, so it cannot restart itself: this does.
+ * When its account's usage limit refuses it, the account swaps as for a worker and it resumes its session
+ */
+async function superviseManager(args: string[]) {
+  const i = args.findIndex(a => a === '--resume' || a === '-r')
+  const session = i >= 0 && args[i + 1] ? args[i + 1]! : crypto.randomUUID()
+  // its skills: an --add-dir's .claude/skills, which Claude Code watches, so one it installs applies at once
+  mkdirSync(memory.skillsDir(MEMORY), { recursive: true })
+  const rest = [
+    ...(i >= 0 ? args.filter((_, j) => j !== i && j !== i + 1) : args),
+    '--add-dir',
+    memory.managerDir(MEMORY),
+  ]
+  // the dream learns from the manager's sessions
+  const file = join(HOME, 'manager-sessions.json')
+  const known = existsSync(file) ? readJson<{ session: string; cwd: string }[]>(file) : []
+  if (!known.some(k => k.session === session)) writeJson(file, [...known, { session, cwd: process.cwd() }])
+  for (let flag = i >= 0 ? '--resume' : '--session-id'; ; flag = '--resume') {
+    const startedAt = Date.now()
+    const child = Bun.spawn(managerCommand([...rest, flag, session]), {
+      stdio: ['inherit', 'inherit', 'inherit'],
+      env: { ...process.env, CLAUDE_CODE_NO_FLICKER: '1' },
+    })
+    let isSwapped = false
+    const watch = setInterval(() => {
+      const tail = tailOf(process.cwd(), session)
+      const hit = limitHit(tail)
+      if (!hit) clearLimit(servedAt(tail))
+      if (hit && hit.at > startedAt && swapAccount(hit, Date.now()) === 0) {
+        isSwapped = true
+        child.kill()
+      }
+    }, 60_000)
+    const code = await child.exited
+    clearInterval(watch)
+    if (!isSwapped) return code
+  }
+}
 
 export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => ({
   env: {
@@ -717,7 +1222,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   if (!c.pane) {
     // a Claude in an untrusted repo sits at its trust dialog until the station times out, every attempt
-    if (isClaude && !isTrusted(run.repo)) {
+    if (isClaude && runnerOfStation(run, def, node).local && !isTrusted(run.repo)) {
       const paged = join(HOME, 'untrusted.json')
       const repos = existsSync(paged) ? readJson<string[]>(paged) : []
       if (!repos.includes(run.repo)) {
@@ -732,10 +1237,12 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
   }
-  const info = paneInfo(c.pane)
+  const runner = runnerOf(c.pane)
+  const info = runner.info(run, c.pane)
   if (info?.session && info.session !== c.session)
     send({ type: 'SESSION', seq: c.seq, session: info.session })
-  if (info === null && c.session && c.resumes < 1) {
+  // A remote session stays where it ran; local conversations can resume in a new pane.
+  if (info === null && c.session && c.resumes < 1 && runner.local) {
     spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane, isResume: true }), c.session)
     return 'resuming'
   }
@@ -743,7 +1250,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
   // replace the pane before resuming: missing agent detection does not prove the process exited
   // a just-resumed Claude takes seconds to show: give it the launch grace before calling it gone again
-  if (info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
+  if (runner.local && info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
     if (c.resumes >= 1) {
       send({ type: 'FAIL', seq: c.seq, reason: `the worker's Claude exited in pane ${c.pane}` })
       return status
@@ -751,7 +1258,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane, isResume: true }), c.session)
     return 'resuming'
   }
-  if (info && !info.agent && !c.session && isClaude) {
+  if (runner.local && info && !info.agent && !c.session && isClaude) {
     const step = relaunch(now - Math.max(c.startedAt, c.nudgedAt), c.nudges)
     if (step === 'fail') {
       send({
@@ -774,10 +1281,35 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
+  // a remote worker's transcript is in its VM: its runner hands over the end of it
+  const tail =
+    !isClaude || !c.session ? '' : runner.local ? tailOf(run.worktree, c.session) : (info?.tail ?? '')
+  const hit = limitHit(tail)
+  if (!hit && runner.local) clearLimit(servedAt(tail))
+  if (hit && hit.at > c.startedAt) {
+    // a VM's Claude runs on the vault's token, which ccswitch does not rotate: it waits out the limit, then
+    // the nudge below gives it its next turn
+    const until = runner.local ? swapAccount(hit, now) : hit.resetsAt || hit.at + 3_600_000
+    if (until > now) {
+      const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
+      if (!existsSync(paged) || readJson<number>(paged) < until) {
+        const text = runner.local
+          ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+          : `The Claude token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
+        send({ type: 'MAIL', from: node, to: 'manager', text })
+        writeJson(paged, until)
+      }
+      return 'usage limit'
+    }
+    if (runner.local) {
+      spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane }), c.session!)
+      return 'account swapped'
+    }
+  }
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   // every turn re-reads the whole context: past the limit the worker hands off to a fresh one
   const maxK = def.maxContextK ?? 200
-  const k = isClaude && c.session ? Math.round(contextOf(run.worktree, c.session) / 1000) : 0
+  const k = Math.round(lastContext(tail) / 1000)
   const isHandoffAsked = (c.mail[node] ?? []).some(
     m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(HANDOFF_ASK),
   )
@@ -804,8 +1336,10 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const text = `[factory] This station's ${timeoutMin} ${TIME_UP}. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail
   } else if (inbox.length && status !== 'blocked') {
-    herdr('agent', 'prompt', c.pane, inbox.map(m => `[factory mail from ${m.from}] ${m.text}`).join('\n\n'))
-    send({ type: 'READ', box: node, seen: c.mail[node]!.length })
+    if (runner.deliver(c.pane, inbox.map(m => `[factory mail from ${m.from}] ${m.text}`).join('\n\n')))
+      send({ type: 'READ', box: node, seen: c.mail[node]!.length })
+  } else if (isAsking && status === 'idle' && runner.suspend) {
+    runner.suspend(c.pane)
   } else if (
     !isAsking &&
     (status === 'idle' || status === 'done') &&
@@ -815,9 +1349,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (c.nudges >= NUDGES) send({ type: 'FAIL', seq: c.seq, reason: 'worker stopped without reporting' })
     else {
       const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
-      herdr(
-        'agent',
-        'prompt',
+      runner.deliver(
         c.pane,
         `[factory] You have not reported. If you are finished run: ${cmd}. If you are still working or waiting on something, say in one line what, and carry on.`,
       )
@@ -832,7 +1364,7 @@ function agentOf(def: Factory, value: unknown, c: Ctx) {
   const [node, sub] = where(value)
   if (sub === 'waiting') return `waits until ${clock(c.wakeAt)}`
   if (sub === 'working' && def.nodes[node]?.gate) return 'awaiting decision'
-  return c.pane ? (paneInfo(c.pane)?.status ?? null) : undefined
+  return c.pane ? (runnerOf(c.pane).phase?.(c.pane) ?? null) : undefined
 }
 
 function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | null, error?: string): Row {
@@ -885,15 +1417,15 @@ function haltRun(
   }
   if (!halt) return null
   if (halt.state === 'paused' || halt.closed[run.id] === c.seq) return 'paused'
-  const info = c.pane ? paneInfo(c.pane) : null
+  const info = c.pane ? runnerOf(c.pane).info(run, c.pane) : null
   // a pane with no agent in it (a script worker, a Claude already gone) has nobody to tell
   const isTold = halt.told[run.id] === c.seq || !info?.agent
   const step = haltStep(!!info, isTold, info?.status === 'working', now - halt.at)
   if (step === 'tell') {
-    herdr('agent', 'prompt', c.pane!, STOP_NOTE)
+    runnerOf(c.pane!).deliver(c.pane!, STOP_NOTE)
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
-    if (step === 'close') closeWorker(c.pane!)
+    if (step === 'close') runnerOf(c.pane!).close(c.pane!)
     halt.closed[run.id] = c.seq
   }
   writeJson(haltFile(), halt)
@@ -921,7 +1453,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     const launched = e.type === 'SPAWNED' || e.type === 'RESUMED'
     // Close before advancing state, so a failure retains the old pane and retries its cleanup.
     // spawn already closed its predecessor before creating the new pane (IDs can be reused).
-    if (!launched && pane && pane !== next.context.pane) closeWorker(pane)
+    if (!launched && pane && pane !== next.context.pane) runnerOf(pane).close(pane)
     actor.send(event)
     if (launched) save()
   }
@@ -980,6 +1512,8 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
     else if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
     else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
+    // not the factory's to do: left open for a person, who queues it again or closes it
+    else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
@@ -1135,6 +1669,38 @@ const journalSince = (since: number) =>
     .slice(-300)
     .map(e => e.line)
 
+/** what the manager did since, from its sessions' transcripts, and its skills with their uses */
+function managerSince(since: number) {
+  const file = join(HOME, 'manager-sessions.json')
+  const sessions = existsSync(file) ? readJson<{ session: string; cwd: string }[]>(file) : []
+  const dir = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
+  const lines = sessions.flatMap(({ session, cwd }) => {
+    const path = join(dir, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+    return existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []
+  })
+  const { activity, used } = memory.managerActivity(lines, since)
+  const skills = memory.skills(MEMORY).map(s => {
+    const u = used.get(s.name)
+    return `- ${s.name}: ${u ? `${u.n}, last ${new Date(u.last).toISOString().slice(0, 10)}` : 'never used'}: ${s.description}`
+  })
+  return { activity: activity.slice(-400), skills } // ponytail: the newest 400 lines; a day's patrols fit
+}
+
+/** the manager hears once of each set of skill proposals waiting on its review: the next patrol takes it */
+function skillMail(now: number) {
+  const file = join(HOME, 'skills.json')
+  const pending = memory.pendingSkills(MEMORY)
+  const key = JSON.stringify(pending.map(p => [p.name, p.change]))
+  if (key === (existsSync(file) ? readFileSync(file, 'utf8') : '[]')) return []
+  writeFileSync(file, key)
+  if (!pending.length) return []
+  const text = [
+    `The dream proposed ${pending.length} manager skill change(s). Read each file, check its commands are right and safe for the factory, then \`${CLI} skills install <name>\` or \`${CLI} skills reject <name> <why>\`:`,
+    ...pending.map(p => `- ${p.name} (${p.change}): ${p.description} (${p.file})`),
+  ].join('\n')
+  return [{ run: 'factory', from: 'dream', text, at: now }]
+}
+
 const commitMemory = (message: string) => {
   git(MEMORY, 'add', '-A')
   if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
@@ -1176,10 +1742,12 @@ async function dream() {
     // the journal since the last dream that finished: a failed one leaves its entries to the next
     const since = Number(git(MEMORY, 'log', '-1', '--grep=^dream:', '--format=%at')) * 1000
     const journal = journalSince(since)
-    if (!journal.length && !memory.inboxCount(MEMORY)) return 'nothing new since the last dream'
+    const manager = managerSince(since)
+    if (!journal.length && !memory.inboxCount(MEMORY) && !manager.activity.length)
+      return 'nothing new since the last dream'
     const start = Date.now()
     const before = git(MEMORY, 'rev-parse', 'HEAD')
-    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads())
+    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads(), manager)
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
       [
@@ -1217,6 +1785,56 @@ async function dream() {
     release()
   }
 }
+const devenvConfig = () => join(HOME, 'devenv.json')
+const DEVENV_CHECK_MS = 30 * 60_000
+
+/**
+ * builds and caches the devenv of each AX rig with a binary cache (FACTORY_NIX_CACHE) whose devenv files or
+ * worker image changed since it was last built, or of the named rigs; `force` rebuilds them anyway
+ */
+function devenvPass(names: string[], force = false) {
+  const release = hold('devenv.lock')
+  if (!release) return ['a devenv pass is already running']
+  try {
+    writeFileSync(join(HOME, 'devenv.stamp'), '') // the kick's clock: a pass started, whatever it finds
+    if (!existsSync(devenvConfig())) return [`no ${devenvConfig()}: see docs/remote-runner.md`]
+    const cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    const image =
+      process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the image the devenv is built in')
+    const chosen = rigs().filter(r =>
+      names.length ? names.includes(r.name) : r.runner === 'ax' && r.env?.FACTORY_NIX_CACHE,
+    )
+    return chosen.map(rig => {
+      const stampFile = join(HOME, 'devenv', `${rig.name}.json`)
+      const { rev, blobs, hasDevenv } = devenv.remoteDevenv(rig.repo)
+      if (!hasDevenv) return `${rig.name}: no devenv.nix`
+      const key = devenv.cacheKey(blobs, image)
+      if (!devenv.isDue(devenv.readStamp(stampFile), key, force)) return `${rig.name}: up to date (${key})`
+      const log = join(HOME, 'devenv', `${rig.name}.log`)
+      mkdirSync(join(HOME, 'devenv'), { recursive: true })
+      const remote = httpsRemote(git(rig.repo, 'remote', 'get-url', 'origin'))
+      const r = devenv.build(cfg, { image, remote, rev, key, log, force })
+      devenv.writeStamp(stampFile, { key, ok: r.ok, at: Date.now(), rev })
+      return r.ok
+        ? `${rig.name}: built and cached ${rev.slice(0, 7)} (${key})`
+        : `${rig.name}: failed, see ${log}\n${r.why}`
+    })
+  } finally {
+    release()
+  }
+}
+/** a devenv pass at most every half hour, when this factory caches devenvs at all */
+const kickDevenv = () => {
+  const stamp = join(HOME, 'devenv.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (!existsSync(devenvConfig()) || isHeld('devenv.lock') || age < DEVENV_CHECK_MS) return
+  spawnChild(CLI, ['devenv'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 /** once a day, or sooner when the inbox fills; the dream itself skips when nothing is new */
 const kickDream = () => {
   const stamp = join(HOME, 'dream.stamp')
@@ -1292,7 +1910,8 @@ export function reapable(
   const workspaces = runs.filter(r => r.isOver && panes.some(p => isIn(p, r))).map(r => r.ws)
   // ponytail: idle and done only; a working duplicate is left to finish, as closing it loses its turn
   const strays = runs
-    .filter(r => !r.isOver)
+    // a remote worker has no pane here: the panes in its workspace are the person's
+    .filter(r => !r.isOver && (!r.pane || runnerOf(r.pane).local))
     .flatMap(r =>
       panes.filter(
         p =>
@@ -1339,6 +1958,7 @@ async function tick(isPatrol = false) {
         out.runs.push({ id, error: (err as Error).message })
       }
     }
+    out.manager.push(...skillMail(now))
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
     out.runs.push(
       ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
@@ -1354,6 +1974,7 @@ async function tick(isPatrol = false) {
     if (rigs().length || runIds().length) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
+      kickDevenv()
     }
   }
 }
@@ -1526,10 +2147,22 @@ export type Rig = {
   sweeps?: string[]
   /** what the manager works toward there while the rig has room */
   goal?: string
+  /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
+  runner?: string
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
   /** MCP servers every worker here loads, a file in Claude's --mcp-config shape ({ mcpServers }) */
   mcp?: string
+  /** extra HTTPS hosts its workers may reach (the ax runner's egress policy), and the vault keys injected for them */
+  egress?: Egress[]
+  /** env for its VM workers (the ax runner), over FACTORY_AX_ENV's: FACTORY_BAZELRC, say, for a remote cache */
+  env?: Record<string, string>
+  /**
+   * a Dolt server VMs share the rig's beads through, instead of the repo's GitHub origin: `name` is the remote
+   * in the laptop's store, `url` the address a VM reaches it at (through the egress gateway, which injects the
+   * password for `user`)
+   */
+  beadsRemote?: { name: string; url: string; user: string }
   /** the factory's params, set for this rig (`--param name=value`) */
   params?: Record<string, string>
 }
@@ -1824,20 +2457,49 @@ async function defineRig(
     max,
     sweeps,
     goal,
+    runner,
     agent,
     mcp,
     params,
-  }: { max?: string; sweeps?: string; goal?: string; agent?: string; mcp?: string; params?: string[] },
+    egress,
+  }: {
+    max?: string
+    sweeps?: string
+    goal?: string
+    runner?: string
+    agent?: string
+    mcp?: string
+    params?: string[]
+    egress?: string[]
+  },
 ) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
   const repo = toplevel(path)
   if (!hasBeads(repo)) fail(`${repo} has no .beads: run bd init there first`)
-  if (!isTrusted(repo))
+  // a VM runs the agent headless: there is no trust dialog to wait at
+  if ((runners[runner ?? DEFAULT_RUNNER]?.local ?? true) && !isTrusted(repo))
     console.warn(
       `warning: Claude does not trust ${repo} yet, so its runs wait to start: run claude there once and accept its trust dialog`,
     )
   const def = await loadFactory(factorySource(factory, repo))
   const rig: Rig = { name, repo, factory, ...(goal && { goal }), ...(agent && { agent }) }
+  if (runner !== undefined) {
+    if (!(runner in runners)) fail(`--runner is ${Object.keys(runners).join(', ')} (not "${runner}")`)
+    if (runner !== DEFAULT_RUNNER) rig.runner = runner
+  }
+  const remote = runners[rig.runner ?? DEFAULT_RUNNER]!.local === false
+  if (remote && mcp !== undefined)
+    fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
+  if (remote && agent !== undefined && !harnessOf(agent))
+    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
+  if (egress?.length) {
+    if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
+    try {
+      rig.egress = egress.map(ax.parseEgress)
+    } catch (err) {
+      fail((err as Error).message)
+    }
+  }
   if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
   if (mcp !== undefined) {
     rig.mcp = expand(mcp)
@@ -2067,11 +2729,12 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--param name=value]... [--goal text...] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
-                                     own cap, sweeps and a goal the manager works toward; --agent runs every
+                                     own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
-                                     the MCP servers in a Claude-shaped mcpServers file
+                                     the MCP servers in a Claude-shaped mcpServers file; --egress (repeatable, runner ax) lets the VM reach
+                                     those hosts, injecting the agent-vault credential KEY for them
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog | prs         JSON for the manager's views
@@ -2089,10 +2752,14 @@ const usage = `factory — herdr software factories on xstate
                                      inbox; one an existing note already says counts as that note helping
   memory helped <note path...>       a note helped: the dream ranks notes by this
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
+  skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
+                                     once reviewed, or reject it, saying why
                                      (each tick starts one a day)
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
+  worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
+                                     state and outbox, a prompt queued for it (docs/remote-runner.md)
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
@@ -2106,9 +2773,40 @@ else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This
 or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
-if (import.meta.main)
+// inside an AX task the run lives on the laptop: what a worker reports, mails or learns waits in the outbox
+const queued =
+  import.meta.main &&
+  !!process.env.FACTORY_OUTBOX &&
+  (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && args[0] === 'add'))
+if (queued) {
+  // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
+  // report that went without them would end the VM, and its writes with it
+  if (cmd === 'report' && !worker.syncBeads()) {
+    console.error(
+      'refused: your bd changes were not shared (bd dolt pull && bd dolt push failed); fix that, then report again',
+    )
+    process.exit(1)
+  }
+  worker.queue([cmd!, ...args])
+  console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
+}
+
+if (import.meta.main && !queued)
   try {
     switch (cmd) {
+      case 'worker': {
+        const [sub, arg] = args
+        if (sub === 'serve') await worker.serve(arg === '--model' ? args[2] : undefined)
+        else if (sub === 'poll') console.log(JSON.stringify(worker.poll(Number(arg ?? 0))))
+        else if (sub === 'prompt' && arg) worker.prompt(arg)
+        else if (sub === 'put' && args.length === 5)
+          worker.put(arg!, Number(args[2]), Number(args[3]), args[4]!)
+        else
+          fail(
+            'usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | put <name> <part> <parts> <base64>',
+          )
+        break
+      }
       case 'start': {
         const words = args.slice(2)
         await start(args[0], args[1], words.filter(w => w !== '--owned').join(' '), words.includes('--owned'))
@@ -2123,14 +2821,9 @@ if (import.meta.main)
       case 'beads':
         await beadsPass()
         break
-      case 'manager': {
+      case 'manager':
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
-        const p = Bun.spawnSync(managerCommand(args), {
-          stdio: ['inherit', 'inherit', 'inherit'],
-          env: { ...process.env, CLAUDE_CODE_NO_FLICKER: '1' },
-        })
-        process.exit(p.exitCode ?? 1)
-      }
+        process.exit(await superviseManager(args))
       case 'home':
         console.log(HOME)
         break
@@ -2209,6 +2902,29 @@ if (import.meta.main)
       case 'dream':
         console.log(await dream())
         break
+      case 'devenv':
+        console.log(
+          devenvPass(
+            args.filter(a => a !== '--force'),
+            args.includes('--force'),
+          ).join('\n'),
+        )
+        break
+      case 'skills': {
+        const [verb, name, ...why] = args
+        if (!verb) console.log(JSON.stringify(memory.pendingSkills(MEMORY), null, 2))
+        else if (verb === 'install') {
+          memory.installSkill(MEMORY, name ?? fail('skills install <name>'))
+          commitMemory(`the manager installed the skill ${name}`)
+          console.log(`installed ${name}: the manager's Claude picks it up now`)
+        } else if (verb === 'reject') {
+          if (!why.length) fail('skills reject <name> <why>: the dream learns from the reason')
+          memory.rejectSkill(MEMORY, name ?? fail('skills reject <name> <why>'), why.join(' '))
+          commitMemory(`the manager rejected the skill ${name}`)
+          console.log(`rejected ${name}; the dream reads why`)
+        } else fail('skills [install <name> | reject <name> <why>]')
+        break
+      }
       case 'loop': {
         const ms = args[0] === '--interval' ? Number(args[1]) : 5000
         if (!(ms >= 1000)) fail('usage: factory loop [--interval ms], at least 1000')
@@ -2309,7 +3025,12 @@ if (import.meta.main)
                 ? { type: 'BLOCKED', seq: c.seq, reason: text }
                 : outcome === 'handoff'
                   ? { type: 'HANDOFF', seq: c.seq, summary: text }
-                  : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
+                  : {
+                      type: 'DONE',
+                      seq: c.seq,
+                      outcome: outcome!,
+                      summary: text,
+                    },
           )
           console.log(`reported ${outcome} for ${node}; you are done, stop now`)
         } finally {
@@ -2419,16 +3140,33 @@ if (import.meta.main)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
-        const [max, sweeps, agent, mcp] = [opt('--max'), opt('--sweeps'), opt('--agent'), opt('--mcp')]
+        const [max, sweeps, runner, agent, mcp] = [
+          opt('--max'),
+          opt('--sweeps'),
+          opt('--runner'),
+          opt('--agent'),
+          opt('--mcp'),
+        ]
         const params: string[] = []
         while (args.includes('--param')) params.push(opt('--param') ?? '')
+        const egress: string[] = []
+        while (args.includes('--egress')) egress.push(opt('--egress') ?? '')
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              'usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--agent cmd] [--mcp file] [--param name=value]... [--goal text...]',
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...]`,
             )
-          const rig = await defineRig(name!, repo!, factory, { max, sweeps, goal, agent, mcp, params })
+          const rig = await defineRig(name!, repo!, factory, {
+            max,
+            sweeps,
+            goal,
+            runner,
+            agent,
+            mcp,
+            params,
+            egress,
+          })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
@@ -2439,7 +3177,7 @@ if (import.meta.main)
             )
           writeJson(rigsFile(), [...rigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
           console.log(
-            `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}`,
+            `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}${rig.runner ? `, workers run by ${rig.runner}` : ''}`,
           )
         } else if (sub === 'rm') {
           if (!rigs().some(r => r.name === name))
