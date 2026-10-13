@@ -781,6 +781,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
           `- The repo's devenv.nix environment is loaded for you when its cache holds it (then DEVENV_ROOT is set): its tools are on PATH and its variables set, so use them directly. Do not run devenv shell or devenv test, whose enterShell runs the repo's git hooks for minutes; without DEVENV_ROOT, use nix shell as below.`,
         ]
       : []),
+    ...(rig?.env?.FACTORY_KUBE_SERVER
+      ? [
+          `- kubectl reaches the live cluster read-only (its kubeconfig is set up, its token added on the way out): get, describe and logs work; secrets, exec and any change are refused, so a cluster change goes through the repo.`,
+        ]
+      : []),
     `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
     ...(run.bead
       ? [
