@@ -99,6 +99,19 @@ test('a launch applies the task with the run branch, the brief and the CA in its
   expect(env.GIT_CONFIG_COUNT).toBeUndefined()
   expect(task.spec.command).toEqual(['factory', 'worker', 'serve', '--model', 'claude-opus-5'])
   expect(task.spec.workspaces).toEqual([{ name: 'f-r1-1', path: '/workspace/w' }])
+  // so serve can run as the worker user, not root
+  expect(task.spec.capabilities).toEqual(['SETUID', 'SETGID', 'CHOWN'])
+})
+
+test('FACTORY_AX_CAPABILITIES empty leaves spec.capabilities out, for an AX without the field', () => {
+  process.env.FACTORY_AX_CAPABILITIES = ''
+  try {
+    ax.launch({ name: 'f-r1-2', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1])
+    expect(task.spec.capabilities).toBeUndefined()
+  } finally {
+    delete process.env.FACTORY_AX_CAPABILITIES
+  }
 })
 
 test("a task's egress policy is one try: refused until its actor shows, then in", () => {

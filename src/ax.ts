@@ -13,6 +13,14 @@ export const WS = '/workspace/w'
 export const REPO = `${WS}/repo`
 export const OWN = `${WS}/.factory-worker`
 
+/**
+ * what a task adds to its container's default capabilities (spec.capabilities): enough for serve to make the
+ * workspace the worker user's and become it. An AX without spec.capabilities refuses the field, and
+ * FACTORY_AX_CAPABILITIES= (empty) leaves it out, so the worker stays root
+ */
+export const CAPABILITIES = () =>
+  (process.env.FACTORY_AX_CAPABILITIES ?? 'SETUID,SETGID,CHOWN').split(',').filter(Boolean)
+
 /** a worker's address in the run's context: `ax://<task>` where a herdr worker has its pane id */
 export const taskOf = (address: string) => address.slice('ax://'.length)
 
@@ -115,6 +123,8 @@ export function manifest(l: Launch) {
       workspaces: [{ name: l.name, path: WS }],
       // ax ssh is how the laptop polls and prompts the worker; the microVM is the boundary
       debug: true,
+      // so serve can run as the image's worker user instead of root (worker.ts asWorker)
+      ...(CAPABILITIES().length && { capabilities: CAPABILITIES() }),
     },
   }
   return [workspace, task].map(d => JSON.stringify(d, null, 2)).join('\n---\n')

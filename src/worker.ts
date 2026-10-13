@@ -4,6 +4,7 @@
 // the laptop pulls it with `factory worker poll` and replays it there.
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -16,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -319,6 +320,42 @@ export function loadDevenv() {
   if (process.env.PATH !== basePath) process.env.PATH = `${process.env.PATH}:${basePath}`
 }
 
+/** the VM has no /etc/hosts, so localhost does not resolve (a test's local API server, say) */
+function localhost() {
+  if (!existsSync('/etc/hosts') || !/^127\.0\.0\.1\s+localhost\b/m.test(readFileSync('/etc/hosts', 'utf8')))
+    try {
+      appendFileSync('/etc/hosts', '127.0.0.1 localhost\n::1 localhost\n')
+    } catch {
+      // not root (a test, or serve as the worker user after asWorker wrote it): tests resolve what they can
+    }
+}
+
+/** the image's user that serve runs as: Substrate starts every task as root, which tools such as initdb refuse */
+export const WORKER_USER = 'worker'
+
+/**
+ * as root with the task's capabilities (SETUID, SETGID, CHOWN; see ax.ts): do what only root can, then run serve
+ * again as WORKER_USER and exit with it. The actor's / and /workspace are 0700, so a user could exec nothing, and
+ * the workspace is root's. Without the capabilities (a task from an AX without spec.capabilities) serve stays root
+ */
+function asWorker() {
+  if (process.getuid?.() !== 0) return
+  localhost()
+  const ws = dirname(own())
+  for (const d of ['/', dirname(ws)]) chmodSync(d, 0o755)
+  const as = ['setpriv', `--reuid=${WORKER_USER}`, `--regid=${WORKER_USER}`, '--init-groups']
+  if (Bun.spawnSync([...as, 'true']).exitCode !== 0)
+    return void console.error(`serve: cannot become ${WORKER_USER} (no SETUID/SETGID), staying root`)
+  mkdirSync(ws, { recursive: true })
+  if (statSync(ws).uid === 0 && Bun.spawnSync(['chown', '-R', `${WORKER_USER}:`, ws]).exitCode !== 0)
+    return void console.error(`serve: cannot give ${ws} to ${WORKER_USER} (no CHOWN), staying root`)
+  const p = Bun.spawnSync([...as, ...process.argv], {
+    env: { ...process.env, HOME: `/home/${WORKER_USER}`, USER: WORKER_USER },
+    stdio: ['inherit', 'inherit', 'inherit'],
+  })
+  process.exit(p.exitCode ?? 1)
+}
+
 /**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
@@ -335,13 +372,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
       NIX_SSL_CERT_FILE: ca,
     })
   }
-  // the VM has no /etc/hosts, so localhost does not resolve (a test's local API server, say)
-  if (!existsSync('/etc/hosts') || !/^127\.0\.0\.1\s+localhost\b/m.test(readFileSync('/etc/hosts', 'utf8')))
-    try {
-      appendFileSync('/etc/hosts', '127.0.0.1 localhost\n::1 localhost\n')
-    } catch {
-      // not root (a test): the agent's tests resolve what they can
-    }
+  localhost()
   // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
   // replaces) go in the home rc, which every workspace reads
   // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
@@ -373,6 +404,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
  * it with the workspace as it was, so a session already started is never briefed again.
  */
 export async function serve(model?: string, o: { idleMs?: number; once?: boolean } = {}) {
+  asWorker()
   try {
     await serveTurns(model, o)
   } catch (e) {
