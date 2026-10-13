@@ -99,6 +99,19 @@ test('a launch applies the task with the run branch, the brief and the CA in its
   expect(env.GIT_CONFIG_COUNT).toBeUndefined()
   expect(task.spec.command).toEqual(['factory', 'worker', 'serve', '--model', 'claude-opus-5'])
   expect(task.spec.workspaces).toEqual([{ name: 'f-r1-1', path: '/workspace/w' }])
+  // so serve can run as the worker user, not root
+  expect(task.spec.capabilities).toEqual(['SETUID', 'SETGID', 'CHOWN'])
+})
+
+test('FACTORY_AX_CAPABILITIES empty leaves spec.capabilities out, for an AX without the field', () => {
+  process.env.FACTORY_AX_CAPABILITIES = ''
+  try {
+    ax.launch({ name: 'f-r1-2', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1])
+    expect(task.spec.capabilities).toBeUndefined()
+  } finally {
+    delete process.env.FACTORY_AX_CAPABILITIES
+  }
 })
 
 test("a task's egress policy is one try: refused until its actor shows, then in", () => {
@@ -137,7 +150,7 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
       { https: { hostnames: ['api.anthropic.com'] } },
       { https: { hostnames: ['api.github.com', 'uploads.github.com'] } },
       { https: { hostnames: ['github.com'] } },
-      { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org'] } }, // nix's binary caches: signed, no key
+      { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } }, // nix's caches and registry: no key
     ],
   })
   const [anthropic, , git] = ax.egressPolicy('factory').rules
@@ -252,6 +265,41 @@ test("a rig's shared Dolt remote is what the VM's beads clone from, with only a 
   }
 })
 
+test("a cached devenv becomes the worker's environment, keeping the VM's places and CA", () => {
+  const own = join(dir, 'own-devenv')
+  const repo = join(dir, 'repo-devenv')
+  const bin = join(dir, 'devenv-bin')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(repo, 'devenv.nix'), '{ }\n')
+  // print-dev-env's script: exports, stdenv's lowercase attributes, and what must stay the worker's
+  writeFileSync(
+    join(bin, 'devenv'),
+    `#!/bin/sh\necho 'export GOROOT=/nix/go; export PATH=/nix/go/bin; export HOME=/homeless-shelter; export SSL_CERT_FILE=/no-ca; name=devenv-shell-env; export name'\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_NIX_CACHE: 'https://cache.example.com:8443/devenv devenv:key=',
+    PATH: `${bin}:${process.env.PATH}`,
+    SSL_CERT_FILE: '/egress-ca',
+  })
+  const home = process.env.HOME
+  try {
+    worker.loadDevenv()
+    expect(process.env.GOROOT).toBe('/nix/go')
+    expect(process.env.PATH).toBe(`/nix/go/bin:${bin}:${saved.PATH}`)
+    expect(process.env.HOME).toBe(home)
+    expect(process.env.SSL_CERT_FILE).toBe('/egress-ca')
+    expect(process.env.name).toBe(saved.name)
+  } finally {
+    process.env = saved
+  }
+})
+
 test('setup trusts the CA and clones the branch once, retrying while egress is closed', async () => {
   const origin = join(dir, 'origin.git')
   const seed = join(dir, 'seed')
@@ -277,6 +325,7 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     FACTORY_REPO: origin,
     FACTORY_BRANCH: 'factory/r1',
     FACTORY_BAZELRC: 'common --remote_cache=grpcs://cache.example',
+    FACTORY_KUBE_SERVER: 'https://kube.example',
   })
   try {
     // the branch arrives only after the first try, as egress opens only once the policy exists
@@ -295,6 +344,14 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     expect(readFileSync(join(dir, 'keytool.args'), 'utf8')).toContain(
       `-file ${join(own, 'egress-ca.crt')} -keystore ${join(own, 'egress.jks')}`,
     )
+    // kubectl's server, trusting the gateway, with a token the gateway replaces
+    const kube = JSON.parse(readFileSync(join(home, '.kube', 'config'), 'utf8'))
+    expect(kube.clusters[0].cluster).toEqual({
+      server: 'https://kube.example',
+      'certificate-authority': join(own, 'egress-ca.crt'),
+    })
+    expect(kube.users[0].user).toEqual({ token: 'placeholder' })
+    expect(kube['current-context']).toBe('factory')
     await worker.setup({ tries: 1, waitMs: 0 }) // a resumed task keeps its clone
   } finally {
     process.env = saved

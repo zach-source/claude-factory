@@ -4,6 +4,7 @@
 // the laptop pulls it with `factory worker poll` and replays it there.
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -16,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -213,6 +214,26 @@ function sh(cmd: string[], cwd?: string) {
 }
 
 /**
+ * kubectl takes no server or token from the env: a rig with cluster access (FACTORY_KUBE_SERVER, the API server's
+ * URL) gets a kubeconfig whose bearer token is a placeholder the gateway replaces, trusting the gateway's CA
+ */
+function kubeconfig() {
+  const dir = join(process.env.HOME ?? homedir(), '.kube')
+  mkdirSync(dir, { recursive: true })
+  const ca = process.env.FACTORY_CA ? { 'certificate-authority': join(own(), 'egress-ca.crt') } : {}
+  // JSON is YAML, so kubectl reads it as written
+  const config = {
+    apiVersion: 'v1',
+    kind: 'Config',
+    clusters: [{ name: 'factory', cluster: { server: process.env.FACTORY_KUBE_SERVER, ...ca } }],
+    users: [{ name: 'factory', user: { token: 'placeholder' } }],
+    contexts: [{ name: 'factory', context: { cluster: 'factory', user: 'factory' } }],
+    'current-context': 'factory',
+  }
+  writeFileSync(join(dir, 'config'), JSON.stringify(config, null, 2))
+}
+
+/**
  * the rig's bazel flags, and the gateway's CA for bazel: its gRPC (a remote cache) takes the PEM, but its JVM,
  * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (from Nix: the image
  * has no JDK, and its OpenSSL cannot write one Java trusts)
@@ -250,6 +271,120 @@ function bazelrc() {
 }
 
 /**
+ * the rig's binary cache of its repo's devenv (FACTORY_NIX_CACHE: its URL and public key), which Nix asks with a
+ * placeholder password the gateway replaces with the cache's token: every local Nix build fails under gVisor, so
+ * a devenv loads only when a cache holds what the repo builds itself
+ */
+function nixCache() {
+  const [url, key] = (process.env.FACTORY_NIX_CACHE ?? '').trim().split(/\s+/)
+  if (!url || !key) return
+  const netrc = join(own(), 'nix.netrc')
+  writeFileSync(netrc, `machine ${new URL(url).hostname}\nlogin factory\npassword placeholder\n`)
+  process.env.NIX_CONFIG = [
+    process.env.NIX_CONFIG,
+    `extra-substituters = ${url}`,
+    `extra-trusted-public-keys = ${key}`,
+    `netrc-file = ${netrc}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/** what of a devenv's environment stays the worker's: the VM's own places and CA, and the image's libraries */
+const NOT_DEVENV = new Set([
+  'HOME',
+  'PWD',
+  'OLDPWD',
+  'SHLVL',
+  'SHELL',
+  'TERM',
+  'TMP',
+  'TEMP',
+  'TEMPDIR',
+  'TMPDIR',
+  'NIX_BUILD_TOP',
+  'NIX_LOG_FD',
+  // ponytail: the agent's own node and bun would load the devenv's libraries; a tool that needs them sets it itself
+  'LD_LIBRARY_PATH',
+  'NODE_EXTRA_CA_CERTS',
+  'GIT_SSL_CAINFO',
+  'SSL_CERT_FILE',
+  'NIX_SSL_CERT_FILE',
+])
+
+/**
+ * the repo's devenv.nix, when its rig caches it, as the worker's own environment, so the agent and all it runs
+ * have the repo's toolchain without devenv shell, whose enterShell runs the repo's git hooks (minutes of bazel).
+ * Every start: the environment lives only in this process. A devenv that will not load leaves the VM as it was
+ */
+export function loadDevenv() {
+  if (!process.env.FACTORY_NIX_CACHE || !existsSync(join(repo(), 'devenv.nix'))) return
+  const script = join(own(), 'devenv.sh')
+  const env = { ...process.env } as Record<string, string>
+  const made = Bun.spawnSync(['devenv', 'print-dev-env'], { cwd: repo(), env, stderr: 'pipe' })
+  if (made.exitCode !== 0)
+    return void console.error(`devenv print-dev-env: ${made.stderr.toString().trim().slice(-2000)}`)
+  writeFileSync(script, made.stdout)
+  const dumped = Bun.spawnSync(
+    ['bash', '-c', `e=$(command -v env); . '${script}' >/dev/null 2>&1; "$e" -0`],
+    { cwd: repo(), env },
+  )
+  const basePath = process.env.PATH
+  for (const pair of dumped.stdout.toString().split('\0')) {
+    const eq = pair.indexOf('=')
+    const k = pair.slice(0, eq)
+    // the shell's own variables only: stdenv's lowercase attributes (name, out, phases) are not for tools
+    if (eq > 0 && /^[A-Z_][A-Z0-9_]*$/.test(k) && k !== '_' && !NOT_DEVENV.has(k))
+      process.env[k] = pair.slice(eq + 1)
+  }
+  if (process.env.PATH !== basePath) process.env.PATH = `${process.env.PATH}:${basePath}`
+}
+
+/** the VM has no /etc/hosts, so localhost does not resolve (a test's local API server, say) */
+function localhost() {
+  if (!existsSync('/etc/hosts') || !/^127\.0\.0\.1\s+localhost\b/m.test(readFileSync('/etc/hosts', 'utf8')))
+    try {
+      appendFileSync('/etc/hosts', '127.0.0.1 localhost\n::1 localhost\n')
+    } catch {
+      // not root (a test, or serve as the worker user after asWorker wrote it): tests resolve what they can
+    }
+}
+
+/** the image's user that serve runs as: Substrate starts every task as root, which tools such as initdb refuse */
+export const WORKER_USER = 'worker'
+const home = () => `/home/${WORKER_USER}`
+
+/**
+ * as root with the task's capabilities (SETUID, SETGID, CHOWN; see ax.ts): do what only root can, then run serve
+ * again as WORKER_USER and exit with it. The actor's / and /workspace are 0700, so a user could exec nothing, and
+ * the workspace is root's. Without the capabilities (a task from an AX without spec.capabilities) serve stays root
+ */
+function asWorker() {
+  if (process.getuid?.() !== 0) return
+  localhost()
+  const ws = dirname(own())
+  for (const d of ['/', dirname(ws)]) chmodSync(d, 0o755)
+  const as = ['setpriv', `--reuid=${WORKER_USER}`, `--regid=${WORKER_USER}`, '--init-groups']
+  if (Bun.spawnSync([...as, 'true']).exitCode !== 0)
+    return void console.error(`serve: cannot become ${WORKER_USER} (no SETUID/SETGID), staying root`)
+  mkdirSync(ws, { recursive: true })
+  // Substrate shows the image's files as root's whatever their owner (substrate#2036), so the user's home and
+  // Nix's store and database are given to it here; the workspace only once, being all of a resumed task's work
+  const chown = (...a: string[]) => Bun.spawnSync(['chown', ...a]).exitCode === 0
+  const given =
+    chown('-R', `${WORKER_USER}:`, home(), '/nix/var') &&
+    chown(`${WORKER_USER}:`, '/nix/store') &&
+    (statSync(ws).uid !== 0 || chown('-R', `${WORKER_USER}:`, ws))
+  if (!given)
+    return void console.error(`serve: cannot give its files to ${WORKER_USER} (no CHOWN), staying root`)
+  const p = Bun.spawnSync([...as, ...process.argv], {
+    env: { ...process.env, HOME: home(), USER: WORKER_USER },
+    stdio: ['inherit', 'inherit', 'inherit'],
+  })
+  process.exit(p.exitCode ?? 1)
+}
+
+/**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
@@ -265,17 +400,13 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
       NIX_SSL_CERT_FILE: ca,
     })
   }
-  // the VM has no /etc/hosts, so localhost does not resolve (a test's local API server, say)
-  if (!existsSync('/etc/hosts') || !/^127\.0\.0\.1\s+localhost\b/m.test(readFileSync('/etc/hosts', 'utf8')))
-    try {
-      appendFileSync('/etc/hosts', '127.0.0.1 localhost\n::1 localhost\n')
-    } catch {
-      // not root (a test): the agent's tests resolve what they can
-    }
+  localhost()
   // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
   // replaces) go in the home rc, which every workspace reads
   // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
   if (process.env.FACTORY_BAZELRC) writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
+  if (process.env.FACTORY_KUBE_SERVER) kubeconfig()
+  nixCache()
   // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
   process.env.GOTOOLCHAIN ??= 'local'
   // the VM's only address is link-local, which kube-apiserver will not advertise, so envtest's control plane
@@ -302,6 +433,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
  * it with the workspace as it was, so a session already started is never briefed again.
  */
 export async function serve(model?: string, o: { idleMs?: number; once?: boolean } = {}) {
+  asWorker()
   try {
     await serveTurns(model, o)
   } catch (e) {
@@ -316,6 +448,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   save({ status: 'working', session: state()?.session, pid: process.pid })
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
+  loadDevenv()
   let session = state()?.session
   const set = (status: State['status']) => save({ status, session, pid: process.pid })
   if (!session) {

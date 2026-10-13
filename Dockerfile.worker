@@ -48,6 +48,9 @@ RUN nix registry add --registry /etc/nix/registry.json nixpkgs github:NixOS/nixp
   && nix flake prefetch github:NixOS/nixpkgs/${NIXPKGS_REV} \
   && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv \
   && devenv version
+# serve runs as this user, not root (asWorker in src/worker.ts), which gives it Nix's store and database when the
+# task starts, since Substrate shows image files as root's, so nix shell and a rig's devenv substitute as it
+RUN useradd --create-home --shell /bin/bash worker
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=runner /ax-task-runner /usr/local/bin/ax-task-runner
 
@@ -63,7 +66,7 @@ RUN ln -s /opt/factory/bin/factory /usr/local/bin/factory
 # workers commit as the factory; Substrate's egress gateway puts the real keys in on the way out
 RUN git config --system user.name 'claude-factory worker' \
   && git config --system user.email 'factory-worker@users.noreply.github.com'
-# the runner is PID 1 and root, and Claude refuses to skip permissions as root outside a declared sandbox:
-# the microVM is that sandbox
+# the runner is PID 1 and root, and serve stays root when its task lacks the capabilities to become the worker
+# user; Claude refuses to skip permissions as root outside a declared sandbox: the microVM is that sandbox
 ENV IS_SANDBOX=1
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]
