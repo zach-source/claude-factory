@@ -250,3 +250,384 @@ test('due leaves a run without a bead out of searches entirely', () => {
   const runs = [{ run: 'x', ended: false, bead: undefined, at: 1 }]
   expect(due(runs, new Map(), new Map(), 0, DEFAULT_BUDGET).searches).toEqual([])
 })
+
+// ---- IO ----
+
+import {
+  applyView,
+  applyViewError,
+  branchFound,
+  buildPrs,
+  parseBranchList,
+  parseSearch,
+  parseView,
+  type Gh,
+  type GhResult,
+  type RunMeta,
+} from './prs'
+
+test('parseSearch keeps a hit at or after the run start minus 10 min, drops an earlier one, and ignores unparseable output', () => {
+  const runStart = 1791791066107
+  const now = 2_000_000_000
+  const hits = parseSearch(
+    JSON.stringify([
+      { url: 'https://github.com/acme/widget/pull/551', createdAt: '2026-10-12T08:49:00Z' },
+      { url: 'https://github.com/acme/widget/pull/549', createdAt: '2026-10-11T00:00:00Z' },
+    ]),
+    runStart,
+    now,
+  )
+  expect(hits).toEqual([{ url: 'https://github.com/acme/widget/pull/551', at: now, source: 'search' }])
+  expect(parseSearch('not json', runStart, now)).toEqual([])
+})
+
+test('parseBranchList and branchFound: only the listed PR whose head is this run\'s own branch counts, bad JSON yields nothing', () => {
+  const list = parseBranchList(
+    JSON.stringify([
+      { url: 'https://github.com/acme/widget/pull/551', headRefName: 'factory/lifecycle-abc123' },
+      { url: 'https://github.com/acme/widget/pull/550', headRefName: 'factory/lifecycle-def456' },
+    ]),
+  )
+  expect(branchFound(list, 'lifecycle-abc123', 5)).toEqual([
+    { url: 'https://github.com/acme/widget/pull/551', at: 5, source: 'branch' },
+  ])
+  expect(branchFound(parseBranchList('{'), 'lifecycle-abc123', 5)).toEqual([])
+})
+
+test('parseView normalises state to upper case, tallies checks, keeps isDraft, and returns null on bad JSON', () => {
+  const v = parseView(
+    JSON.stringify({
+      title: 'ex-12.3 build',
+      state: 'open',
+      isDraft: true,
+      reviewDecision: 'REVIEW_REQUIRED',
+      mergeStateStatus: 'CLEAN',
+      statusCheckRollup: [{ conclusion: 'SUCCESS' }, { conclusion: 'FAILURE' }],
+      updatedAt: '2026-10-12T09:00:00Z',
+      headRefName: 'factory/lifecycle-abc123',
+      body: 'ex-12.3 carries the fix',
+    }),
+  )
+  expect(v).toEqual({
+    title: 'ex-12.3 build',
+    state: 'OPEN',
+    isDraft: true,
+    reviewDecision: 'REVIEW_REQUIRED',
+    mergeStateStatus: 'CLEAN',
+    checks: { pass: 1, fail: 1, pending: 0 },
+    updatedAt: '2026-10-12T09:00:00Z',
+    headRefName: 'factory/lifecycle-abc123',
+    body: 'ex-12.3 carries the fix',
+  })
+  expect(parseView('not json')).toBeNull()
+})
+
+test('applyView refreshes gh-sourced fields, recomputes role from the fresh headRefName/body, clears a prior error, and bumps checkedAt', () => {
+  const pr = {
+    url: 'https://github.com/acme/widget-deploy/pull/65',
+    repo: 'acme/widget-deploy',
+    number: 65,
+    title: '',
+    role: 'mentioned' as const,
+    station: 'deploy',
+    firstSeenAt: 1,
+    source: 'mail' as const,
+    corroborated: false,
+    state: 'UNKNOWN' as const,
+    isDraft: false,
+    reviewDecision: '',
+    mergeStateStatus: '',
+    checks: { pass: 0, fail: 0, pending: 0 },
+    updatedAt: '',
+    checkedAt: 0,
+    error: 'stale: gh timed out',
+  }
+  const viewed = parseView(
+    JSON.stringify({
+      title: 'migrate-stage tester-trusted-root',
+      state: 'merged',
+      isDraft: false,
+      reviewDecision: '',
+      mergeStateStatus: 'MERGED',
+      statusCheckRollup: [],
+      updatedAt: '2026-10-12T09:10:00Z',
+      headRefName: 'release/widget-release-2026-10-12',
+      body: "carries ex-12.3's re-pin",
+    }),
+  )!
+  const next = applyView(pr, viewed, { runId: 'lifecycle-abc123', runRepo: 'acme/widget', bead: 'ex-12.3' }, 999)
+  expect(next.state).toBe('MERGED')
+  expect(next.title).toBe('migrate-stage tester-trusted-root')
+  expect(next.role).toBe('companion') // names the bead, cross-repo
+  expect(next.error).toBeUndefined()
+  expect(next.checkedAt).toBe(999)
+})
+
+test('applyViewError keeps every prior field and only sets a short, scrubbed error', () => {
+  const pr = {
+    url: 'u',
+    repo: 'acme/widget',
+    number: 1,
+    title: 't',
+    role: 'code' as const,
+    station: 'review',
+    firstSeenAt: 1,
+    source: 'report' as const,
+    corroborated: true,
+    state: 'OPEN' as const,
+    isDraft: false,
+    reviewDecision: '',
+    mergeStateStatus: '',
+    checks: { pass: 0, fail: 0, pending: 0 },
+    updatedAt: '',
+    checkedAt: 123,
+  }
+  const next = applyViewError(pr, 'HTTP 502: Bad Gateway\nfull stack trace, line after line'.repeat(10))
+  expect(next.state).toBe('OPEN') // unchanged
+  expect(next.checkedAt).toBe(123) // unchanged: due again right away, not after the TTL
+  expect(next.error).toBe('HTTP 502: Bad Gateway') // one line, cut short
+  expect(next.error!.length).toBeLessThanOrEqual(201)
+})
+
+const run = (over: Partial<RunMeta>): RunMeta => ({
+  id: RUN_ID,
+  bead: 'ex-12.3',
+  startAt: 1791791066107,
+  ended: false,
+  repoDir: '/repo/widget',
+  runRepo: 'acme/widget',
+  owner: 'acme',
+  log: [],
+  mail: [],
+  file: { version: 1, prs: [] },
+  ...over,
+})
+
+/** a fake `gh` that answers by matching the joined argv against a prefix table; every call is recorded */
+function fakeGh(table: { when: string; reply: GhResult }[], calls: string[][] = []): Gh {
+  return async (argv, _opts) => {
+    calls.push(argv)
+    const joined = argv.join(' ')
+    const hit = table.find(t => joined.startsWith(t.when))
+    return hit ? hit.reply : { code: 1, out: '', err: `unmocked: ${joined}` }
+  }
+}
+
+test('buildPrs: a search finds a companion PR in another repo and drops one created before the run started; the run\'s own branch PR is corroborated by the branch listing', async () => {
+  const now = 2_000_000_000
+  const calls: string[][] = []
+  const gh = fakeGh(
+    [
+      {
+        when: 'pr list --state all',
+        reply: {
+          code: 0,
+          out: JSON.stringify([{ url: 'https://github.com/acme/widget/pull/551', headRefName: `factory/${RUN_ID}` }]),
+          err: '',
+        },
+      },
+      {
+        when: 'search prs --owner acme',
+        reply: {
+          code: 0,
+          out: JSON.stringify([
+            { url: 'https://github.com/acme/widget-deploy/pull/65', createdAt: '2026-10-12T08:49:00Z' },
+            { url: 'https://github.com/acme/widget/pull/549', createdAt: '2026-10-11T00:00:00Z' }, // pre-existing: dropped
+          ]),
+          err: '',
+        },
+      },
+      {
+        when: 'pr view https://github.com/acme/widget/pull/551',
+        reply: {
+          code: 0,
+          out: JSON.stringify({
+            title: 'ex-12.3 build',
+            state: 'merged',
+            isDraft: false,
+            reviewDecision: '',
+            mergeStateStatus: 'MERGED',
+            statusCheckRollup: [],
+            updatedAt: '2026-10-12T09:00:00Z',
+            headRefName: `factory/${RUN_ID}`,
+            body: '',
+          }),
+          err: '',
+        },
+      },
+      {
+        when: 'pr view https://github.com/acme/widget-deploy/pull/65',
+        reply: {
+          code: 0,
+          out: JSON.stringify({
+            title: 'migrate-stage',
+            state: 'open',
+            isDraft: true,
+            reviewDecision: '',
+            mergeStateStatus: 'CLEAN',
+            statusCheckRollup: [],
+            updatedAt: '2026-10-12T09:05:00Z',
+            headRefName: 'release/widget-release-2026-10-12',
+            body: "carries ex-12.3's re-pin",
+          }),
+          err: '',
+        },
+      },
+    ],
+    calls,
+  )
+  const r = run({})
+  const { files, rows } = await buildPrs([r], IS_STATION, gh, now)
+  expect(rows).toHaveLength(1)
+  const prs = rows[0]!.prs
+  expect(prs.find(p => p.number === 551)).toMatchObject({ role: 'code', state: 'MERGED' })
+  // #65 is found by this same call's search, but a budget's views are decided before the search runs, so
+  // it is only corroborated (and already classed companion from that alone) here; it is viewed next call
+  expect(prs.find(p => p.number === 65)).toMatchObject({ role: 'companion', state: 'UNKNOWN', corroborated: true })
+  expect(prs.find(p => p.number === 549)).toBeUndefined() // dropped by keepSearchHit before it ever became a record
+  expect(files.get(RUN_ID)!.searchedAt).toBe(now)
+  // the view call for #549 never happens: it was never added, so never due
+  expect(calls.some(c => c.join(' ').includes('/pull/549'))).toBe(false)
+
+  // next call (the search's TTL not yet up): #65 is now stale (UNKNOWN), so it gets viewed
+  const calls2: string[][] = []
+  const gh2 = fakeGh(
+    [
+      { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
+      {
+        when: 'pr view https://github.com/acme/widget-deploy/pull/65',
+        reply: {
+          code: 0,
+          out: JSON.stringify({
+            title: 'migrate-stage',
+            state: 'open',
+            isDraft: true,
+            reviewDecision: '',
+            mergeStateStatus: 'CLEAN',
+            statusCheckRollup: [],
+            updatedAt: '2026-10-12T09:05:00Z',
+            headRefName: 'release/widget-release-2026-10-12',
+            body: "carries ex-12.3's re-pin",
+          }),
+          err: '',
+        },
+      },
+    ],
+    calls2,
+  )
+  const r2 = run({ file: files.get(RUN_ID)! })
+  const second = await buildPrs([r2], IS_STATION, gh2, now + 1000)
+  expect(second.rows[0]!.prs.find(p => p.number === 65)).toMatchObject({ role: 'companion', state: 'OPEN', isDraft: true })
+})
+
+test('buildPrs: a MERGED PR is never viewed again; a failed view on a second call keeps the record and sets its error', async () => {
+  const now1 = 1_000_000_000
+  const calls1: string[][] = []
+  const openPr = {
+    url: 'https://github.com/acme/widget/pull/551',
+    repo: 'acme/widget',
+    number: 551,
+    title: 'old title',
+    role: 'code' as const,
+    station: 'review',
+    firstSeenAt: 1,
+    source: 'report' as const,
+    corroborated: true,
+    state: 'OPEN' as const,
+    isDraft: false,
+    reviewDecision: '',
+    mergeStateStatus: '',
+    checks: { pass: 0, fail: 0, pending: 0 },
+    updatedAt: '',
+    checkedAt: 0,
+  }
+  const mergedPr = { ...openPr, url: 'https://github.com/acme/widget/pull/552', number: 552, state: 'MERGED' as const, checkedAt: now1 }
+  const noList: GhResult = { code: 0, out: '[]', err: '' }
+  const gh1 = fakeGh(
+    [
+      { when: 'pr list --state all', reply: noList },
+      {
+        when: 'pr view https://github.com/acme/widget/pull/551',
+        reply: {
+          code: 0,
+          out: JSON.stringify({
+            title: 'ex-12.3',
+            state: 'open',
+            isDraft: false,
+            reviewDecision: '',
+            mergeStateStatus: 'CLEAN',
+            statusCheckRollup: [],
+            updatedAt: '2026-10-12T09:00:00Z',
+            headRefName: `factory/${RUN_ID}`,
+            body: '',
+          }),
+          err: '',
+        },
+      },
+    ],
+    calls1,
+  )
+  const r1 = run({ bead: undefined, file: { version: 1, prs: [openPr, mergedPr] } })
+  const first = await buildPrs([r1], IS_STATION, gh1, now1)
+  const calledUrls1 = calls1.filter(c => c[0] === 'pr' && c[1] === 'view').map(c => c[2])
+  expect(calledUrls1).toEqual(['https://github.com/acme/widget/pull/551']) // not the merged one
+
+  const now2 = now1 + 3 * 60_000 // past the OPEN TTL
+  const calls2: string[][] = []
+  const gh2 = fakeGh(
+    [
+      { when: 'pr list --state all', reply: noList },
+      { when: 'pr view https://github.com/acme/widget/pull/551', reply: { code: 1, out: '', err: 'HTTP 502' } },
+    ],
+    calls2,
+  )
+  const r2 = run({ bead: undefined, file: first.files.get(RUN_ID)! })
+  const second = await buildPrs([r2], IS_STATION, gh2, now2)
+  const pr551 = second.rows[0]!.prs.find(p => p.number === 551)!
+  expect(pr551.state).toBe('OPEN') // kept from the first call
+  expect(pr551.title).toBe('ex-12.3') // kept
+  expect(pr551.error).toBe('HTTP 502')
+  const pr552 = second.rows[0]!.prs.find(p => p.number === 552)!
+  expect(pr552.error).toBeUndefined() // the merged one was never touched this call either
+})
+
+test('buildPrs spends at most the view budget in one call, 6 at a time, deferring the rest', async () => {
+  const now = 1_000_000_000
+  const prs = Array.from({ length: 45 }, (_, i) => ({
+    url: `https://github.com/acme/widget/pull/${i}`,
+    repo: 'acme/widget',
+    number: i,
+    title: '',
+    role: 'code' as const,
+    station: 'review',
+    firstSeenAt: 1,
+    source: 'report' as const,
+    corroborated: true,
+    state: 'OPEN' as const,
+    isDraft: false,
+    reviewDecision: '',
+    mergeStateStatus: '',
+    checks: { pass: 0, fail: 0, pending: 0 },
+    updatedAt: '',
+    checkedAt: 0,
+  }))
+  let inFlight = 0
+  let maxInFlight = 0
+  const calls: string[][] = []
+  const gh: Gh = async argv => {
+    calls.push(argv)
+    if (argv[0] === 'pr' && argv[1] === 'list') return { code: 0, out: '[]', err: '' }
+    inFlight++
+    maxInFlight = Math.max(maxInFlight, inFlight)
+    await new Promise(res => setTimeout(res, 1))
+    inFlight--
+    return { code: 0, out: JSON.stringify({ title: '', state: 'open', isDraft: false, reviewDecision: '', mergeStateStatus: '', statusCheckRollup: [], updatedAt: '', headRefName: '', body: '' }), err: '' }
+  }
+  const r = run({ bead: undefined, file: { version: 1, prs } })
+  const { rows } = await buildPrs([r], IS_STATION, gh, now)
+  const viewed = calls.filter(c => c[0] === 'pr' && c[1] === 'view')
+  expect(viewed).toHaveLength(30) // DEFAULT_BUDGET.views
+  expect(maxInFlight).toBeLessThanOrEqual(6)
+  const stillStale = rows[0]!.prs.filter(p => p.checkedAt === 0)
+  expect(stillStale).toHaveLength(15) // deferred to a later call
+})

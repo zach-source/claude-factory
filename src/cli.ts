@@ -70,6 +70,7 @@ import {
   type RunRecord,
   type Session,
 } from './metrics'
+import { buildPrs, DEFAULT_BUDGET, spawnGh, type PrsFile, type RunMeta } from './prs'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -2756,21 +2757,70 @@ async function backlog() {
   })
 }
 
-/** each rig's open pull requests from run branches, drafts left out: what waits on a review or a merge */
-function prs() {
-  const fields = 'number,title,url,headRefName,isDraft,reviewDecision,mergeStateStatus,updatedAt'
-  return rigs().map(rig => {
-    const p = Bun.spawnSync(['gh', 'pr', 'list', '--state', 'open', '--limit', '100', '--json', fields], {
-      cwd: rig.repo,
-    })
-    if (p.exitCode) return { rig: rig.name, prs: [], error: p.stderr.toString().trim() }
-    const all: { headRefName: string; isDraft: boolean }[] = JSON.parse(p.stdout.toString())
-    return {
-      rig: rig.name,
-      prs: all
-        .filter(x => !x.isDraft && x.headRefName.startsWith('factory/'))
-        .map(({ headRefName, isDraft: _, ...x }) => ({ ...x, run: headRefName.slice('factory/'.length) })),
+/** a repo's origin remote, split into the GitHub owner and owner/name: `gh search prs --owner` and the
+ * run's own repo for role()'s `sameRepo`. undefined when there is no origin (not a GitHub remote, or none) */
+function originRef(repoPath: string): { owner: string; repo: string } | undefined {
+  const p = Bun.spawnSync(['git', '-C', repoPath, 'remote', 'get-url', 'origin'])
+  if (p.exitCode !== 0) return undefined
+  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(p.stdout.toString().trim())
+  return m ? { owner: m[1]!, repo: m[2]! } : undefined
+}
+
+const prsFile = (id: string) => join(runDir(id), 'prs.json')
+
+/**
+ * every run's own pull requests (AC1): mentions out of its reports and mail, corroborated by its rig's
+ * branch listing or a search for its bead, kept and refreshed in runs/<id>/prs.json so a restart loses
+ * nothing (AC6). Draft, merged and closed PRs stay listed; the budget (src/prs.ts DEFAULT_BUDGET) spends
+ * at most 10 searches and 30 `gh pr view` calls a call, live runs first.
+ */
+async function prs() {
+  const stations = new Set<string>()
+  const metas: { id: string; rig?: string; bead?: string; node: string; ended: boolean; at: number }[] = []
+  const runMetas: RunMeta[] = []
+  for (const id of runIds()) {
+    let run: Run
+    try {
+      run = loadRun(id)
+    } catch {
+      continue // removed mid-pass
     }
+    const { value, c } = current(id)
+    const [node] = where(value)
+    const ended = ['done', 'aborted'].includes(node)
+    const def = await loadFactory(run.factory).catch(() => undefined)
+    if (def) for (const k of Object.keys(def.nodes)) stations.add(k)
+    metas.push({ id, rig: rigOf(run.repo)?.name, bead: run.bead, node, ended, at: createdAt(id) })
+    const ref = originRef(run.repo)
+    const mail = inboxLines(id)
+      .map(l => JSON.parse(l) as { type: string; from: string; to: string; text: string; at: number })
+      .filter((e): e is { type: 'MAIL'; from: string; to: string; text: string; at: number } => e.type === 'MAIL')
+    const file: PrsFile = existsSync(prsFile(id)) ? readJson(prsFile(id)) : { version: 1, prs: [] }
+    runMetas.push({
+      id,
+      bead: run.bead,
+      startAt: createdAt(id),
+      ended,
+      repoDir: run.repo,
+      runRepo: ref ? `${ref.owner}/${ref.repo}` : run.repo,
+      owner: ref?.owner ?? '',
+      log: c.log,
+      mail,
+      file,
+    })
+  }
+  const { files, rows } = await buildPrs(runMetas, s => stations.has(s), spawnGh, Date.now(), DEFAULT_BUDGET)
+  for (const [id, file] of files) {
+    try {
+      writeJson(prsFile(id), file)
+    } catch {
+      // the run was removed mid-pass: nothing to write back to
+    }
+  }
+  const metaById = new Map(metas.map(m => [m.id, m]))
+  return rows.flatMap(({ run: id, prs: all, error }) => {
+    const m = metaById.get(id)
+    return m ? [{ run: id, rig: m.rig, bead: m.bead, node: m.node, ended: m.ended, at: m.at, error, prs: all }] : []
   })
 }
 
@@ -3094,7 +3144,7 @@ if (import.meta.main && !queued)
         console.log(JSON.stringify(await backlog()))
         break
       case 'prs':
-        console.log(JSON.stringify(prs()))
+        console.log(JSON.stringify(await prs()))
         break
       case 'queue': {
         const [repo, id, station] = args
