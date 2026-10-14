@@ -1408,7 +1408,10 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // fail with the cause instead of spending nudges on a worker that was never going to report
   const egress = info?.egress
   if (egress) {
-    const paged = join(HOME, `egress-paged-${runner.name}.json`)
+    // keyed per run+node, not per runner: the gateway is shared, so a single outage hits every concurrent
+    // AX worker at once, and a file keyed only by the runner's name would have them overwrite each other's
+    // `since` and each mail the manager on every tick
+    const paged = join(runDir(run.id), `egress-paged-${node}.json`)
     if (!existsSync(paged) || readJson<number>(paged) !== egress.since) {
       const since = new Date(egress.since).toLocaleString()
       // from 'factory', not node: a notice, not a question, so it never reads as the station asking the

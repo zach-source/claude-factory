@@ -66,8 +66,8 @@ test("inside a VM, a worker's report and mail wait in the outbox instead of touc
 })
 
 const def: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'do a', next: { ready: 'done' } } } }
-/** a run as the tick that launched its task left it: working at a, its worker ax://t; returns the worker's seq */
-function launched(id: string, policy = true) {
+/** a run as the tick that launched its task left it: working at a, its worker ax://<task>; returns the worker's seq */
+function launched(id: string, policy = true, task = 't') {
   const runDir = join(home, 'runs', id)
   const worktree = join(dir, 'wt')
   mkdirSync(runDir, { recursive: true })
@@ -87,8 +87,8 @@ function launched(id: string, policy = true) {
   const actor = createActor(compile(def)).start()
   actor.send({ type: 'TICK', at: Date.now() })
   const seq = actor.getSnapshot().context.seq
-  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: Date.now() })
-  writeFileSync(join(runDir, 't.json'), JSON.stringify({ node: 'a', seq, policy }))
+  actor.send({ type: 'SPAWNED', seq, pane: `ax://${task}`, at: Date.now() })
+  writeFileSync(join(runDir, `${task}.json`), JSON.stringify({ node: 'a', seq, policy }))
   writeFileSync(
     join(runDir, 'state.json'),
     JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
@@ -113,6 +113,29 @@ esac
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
 const inbox = (id: string) => readFileSync(join(home, 'runs', id, 'inbox.jsonl'), 'utf8')
+/** the fake cluster, but a distinct poll per task (ax://<task>): lets two runs' workers disagree at once */
+function clusterByTask(phase: string, pollByTask: Record<string, object>) {
+  rmSync(calls, { force: true })
+  for (const [task, poll] of Object.entries(pollByTask)) writeFileSync(join(dir, `ssh-${task}`), JSON.stringify(poll))
+  const cases = Object.keys(pollByTask)
+    .map(task => `    ${task}) cat ${dir}/ssh-${task} ;;`)
+    .join('\n')
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3" in
+  get) printf 'status:\\n  phase: ${phase}\\n' ;;
+  ssh)
+    case "$4" in
+${cases}
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+}
 
 test("a tick replays an AX worker's report from its outbox, and the task goes when the station ends", () => {
   const seq = launched('r1')
@@ -261,6 +284,31 @@ test('an egress outage mails the manager once, spends no idle nudge while serve 
   expect(state).toContain('egress gateway: model API unreachable since')
   expect(state).toContain('(5 retries)')
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
+})
+
+test('two runs in the same egress outage each get their own mail, not a shared dedup file', () => {
+  launched('r8', true, 't1')
+  launched('r9', true, 't2')
+  const egress = (since: number) => ({
+    since,
+    tries: 1,
+    last: 'upstream connect error or disconnect/reset before headers: remote connection failure',
+  })
+  const pollByTask = {
+    t1: { status: 'working', session: 's1', lines: [], egress: egress(Date.now() - 60_000) },
+    t2: { status: 'working', session: 's2', lines: [], egress: egress(Date.now() - 30_000) },
+  }
+  clusterByTask('Running', pollByTask)
+  factory(['tick']) // both outages are new: one mail each
+  clusterByTask('Running', pollByTask) // unchanged: the same two outages, a second tick
+  factory(['tick'])
+  const mailsIn = (id: string) =>
+    (readFileSync(join(home, 'runs', id, 'state.json'), 'utf8').match(/egress gateway is refusing/g) ?? [])
+      .length
+  expect(mailsIn('r8')).toBe(1) // not a second mail for the same outage
+  expect(mailsIn('r9')).toBe(1) // r9's own outage, not blocked or duplicated by r8's
+  rmSync(join(home, 'runs', 'r8'), { recursive: true })
+  rmSync(join(home, 'runs', 'r9'), { recursive: true })
 })
 
 test("a worker's address picks its runner: a bare pane id is herdr's, `<name>://` is that runner's", () => {
