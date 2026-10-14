@@ -1403,6 +1403,28 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return 'account swapped'
     }
   }
+  // the egress gateway refusing api.anthropic.com (see docs/remote-runner.md): serve is retrying the turn
+  // itself, so tell the manager once per outage and, once serve gives up (idle with the outage still set),
+  // fail with the cause instead of spending nudges on a worker that was never going to report
+  const egress = info?.egress
+  if (egress) {
+    const paged = join(HOME, `egress-paged-${runner.name}.json`)
+    if (!existsSync(paged) || readJson<number>(paged) !== egress.since) {
+      const since = new Date(egress.since).toLocaleString()
+      // from 'factory', not node: a notice, not a question, so it never reads as the station asking the
+      // manager something and awaiting a reply (isAsking keys off mail with from === node)
+      send({
+        type: 'MAIL',
+        from: 'factory',
+        to: 'manager',
+        text: `${node} of ${run.id}: the egress gateway is refusing new connections to the model API (since ${since}, ${egress.tries} ${egress.tries === 1 ? 'retry' : 'retries'} so far). The worker is retrying itself; see docs/remote-runner.md if it does not clear on its own.`,
+      })
+      writeJson(paged, egress.since)
+    }
+  }
+  const egressReason =
+    egress &&
+    `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${egress.tries} retries): ${clip(egress.last, 200)}`
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   // every turn re-reads the whole context: past the limit the worker hands off to a fresh one
   const maxK = def.maxContextK ?? 200
@@ -1426,7 +1448,9 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     ? Bun.spawnSync(['git', '-C', run.worktree, 'rev-parse', 'HEAD']).stdout.toString()
     : ''
   const seen = progressNow(prev, c.seq, tail ? `${tail.length}${tail.slice(-300)}${head}` : '', now)
-  const stall = status === 'working' && !isAsking && seen.sig ? stalled(now - seen.at, seen.nudged) : null
+  // a retry in progress looks like no output for a while on purpose: never call that a stall
+  const stall =
+    status === 'working' && !isAsking && seen.sig && !egress ? stalled(now - seen.at, seen.nudged) : null
   if (stall === 'nudge') seen.nudged = true
   if (seen !== prev || stall === 'nudge') writeJson(progressFile(run), seen)
   const due = deadline(
@@ -1436,7 +1460,10 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(TIME_UP)),
   )
   if (status === null) send({ type: 'FAIL', seq: c.seq, reason: `worker pane ${c.pane} was closed` })
-  else if (due === 'fail') send({ type: 'FAIL', seq: c.seq, reason: `no report within ${timeoutMin} min` })
+  // serve already spent its own budget retrying: fail now, named, instead of nudging a known cause
+  else if (egressReason && !isAsking && (status === 'idle' || status === 'done'))
+    send({ type: 'FAIL', seq: c.seq, reason: egressReason })
+  else if (due === 'fail') send({ type: 'FAIL', seq: c.seq, reason: egressReason ?? `no report within ${timeoutMin} min` })
   else if (stall === 'fail') {
     const min = Math.round((now - seen.at) / 60_000)
     const last = tail.trimEnd().split('\n').at(-1) ?? ''
@@ -1465,7 +1492,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     // a worker waiting on its own build answers a nudge and goes idle again: give it longer each time
     now - Math.max(c.startedAt, c.nudgedAt) > GRACE_MS * 2 ** c.nudges
   ) {
-    if (c.nudges >= NUDGES) send({ type: 'FAIL', seq: c.seq, reason: 'worker stopped without reporting' })
+    if (c.nudges >= NUDGES)
+      send({ type: 'FAIL', seq: c.seq, reason: egressReason ?? 'worker stopped without reporting' })
     else {
       const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
       runner.deliver(

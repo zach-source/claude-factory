@@ -234,6 +234,35 @@ test('a VM worker refused for the usage limit is held until the reset, not nudge
   rmSync(join(home, 'runs', 'r5'), { recursive: true })
 })
 
+test('an egress outage mails the manager once, spends no idle nudge while serve retries, and fails named once it gives up', () => {
+  launched('r7')
+  const since = Date.now() - 120_000
+  const egress = (tries: number) => ({
+    since,
+    tries,
+    last: 'upstream connect error or disconnect/reset before headers: remote connection failure',
+  })
+  cluster('Running', { status: 'working', session: 's1', lines: [], egress: egress(1) })
+  factory(['tick']) // learns the session, sees the outage: mails the manager once
+  expect(called()).not.toContain('worker prompt')
+
+  cluster('Running', { status: 'working', session: 's1', lines: [], egress: egress(2) }) // same outage (same since)
+  factory(['tick'])
+  expect(called()).not.toContain('worker prompt')
+  const afterTwo = readFileSync(join(home, 'runs', 'r7', 'state.json'), 'utf8')
+  const mails = afterTwo.match(/egress gateway is refusing/g) ?? []
+  expect(mails).toHaveLength(1) // not a second mail for the same outage
+
+  cluster('Running', { status: 'idle', session: 's1', lines: [], egress: egress(5) }) // serve gave up
+  const failed = factory(['tick'])
+  expect(JSON.parse(failed.out).runs[0]).toMatchObject({ id: 'r7' })
+  expect(called()).not.toContain('worker prompt') // no nudge spent on a known cause
+  const state = readFileSync(join(home, 'runs', 'r7', 'state.json'), 'utf8')
+  expect(state).toContain('egress gateway: model API unreachable since')
+  expect(state).toContain('(5 retries)')
+  rmSync(join(home, 'runs', 'r7'), { recursive: true })
+})
+
 test("a worker's address picks its runner: a bare pane id is herdr's, `<name>://` is that runner's", () => {
   expect(runnerOf('w1-2').name).toBe('herdr')
   expect(runnerOf('wA6:p1').name).toBe('herdr')
