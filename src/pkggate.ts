@@ -412,12 +412,17 @@ async function handlePypi(cfg: Resolved, path: string, origin: string): Promise<
 
 /**
  * the gate's handler: a Go module proxy under `/go`, an npm registry under `/npm`, a PyPI simple index and
- * file host under `/pypi/simple` and `/pypi/files`. Serve it with Bun.serve or `factory pkg-gate serve`.
+ * file host under `/pypi/simple` and `/pypi/files`, and a health check at `/healthz`. Serve it with
+ * Bun.serve or `factory pkg-gate serve`.
  */
 export function makeGate(cfg: GateConfig): Gate {
   const resolved = resolve(cfg)
   const handler = (async (req: Request) => {
     const url = new URL(req.url)
+    if (url.pathname === '/healthz')
+      return new Response(JSON.stringify({ ok: true, minDays: resolved.minDays, ...resolved.stats }), {
+        headers: { 'content-type': 'application/json' },
+      })
     const path = url.pathname.replace(/^\/+/, '')
     if (path.startsWith('go/')) return handleGo(resolved, path.slice('go/'.length))
     if (path.startsWith('npm/')) return handleNpm(resolved, path.slice('npm/'.length), url.origin)
@@ -427,4 +432,18 @@ export function makeGate(cfg: GateConfig): Gate {
   handler.stats = () => ({ ...resolved.stats })
   handler.minDays = resolved.minDays
   return handler
+}
+
+/** the default, real registries a production gate fronts; `factory pkg-gate serve` overrides these by env */
+export const DEFAULT_UPSTREAM: Upstream = {
+  go: 'https://proxy.golang.org',
+  npm: 'https://registry.npmjs.org',
+  pypi: 'https://pypi.org',
+  files: 'https://files.pythonhosted.org',
+}
+
+/** serves `makeGate`'s handler with Bun.serve; the CLI's `factory pkg-gate serve` is a thin wrapper on this */
+export function serve(cfg: GateConfig & { port?: number }) {
+  const gate = makeGate(cfg)
+  return Bun.serve({ port: cfg.port ?? 8080, fetch: gate })
 }

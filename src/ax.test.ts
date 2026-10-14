@@ -153,7 +153,11 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
       { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } }, // nix's caches and registry: no key
     ],
   })
-  const [anthropic, , git] = ax.egressPolicy('factory').rules
+  // no gate here, so every rule is the https shape -- a type-only cast, past `rules`' now-wider type
+  // (a gated rule can be `{ http: ... }` instead), not a behavior change
+  const [anthropic, , git] = ax.egressPolicy('factory').rules as {
+    https: { effects?: { replaceHeaders: { header: string; prefix: string; credentialUri: string }[] } }
+  }[]
   expect(anthropic!.https.effects!.replaceHeaders).toEqual([
     {
       header: 'Authorization',

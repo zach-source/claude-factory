@@ -341,6 +341,20 @@ test('an old PyPI file is served byte-identical; a young or unlisted one is refu
   expect(unlisted.status).toBe(404)
 })
 
+test('/healthz reports minDays and the allow/refuse/error counters since start', async () => {
+  const g = gate()
+  const before = await g(new Request('http://gate/healthz'))
+  expect(before.status).toBe(200)
+  expect(await before.json()).toEqual({ ok: true, minDays: 4, allow: 0, refuse: 0, error: 0 })
+
+  await g(new Request('http://gate/go/golang.org/x/text/@v/v0.26.0.info')) // allow
+  await g(new Request('http://gate/go/golang.org/x/text/@v/v0.43.0.info')) // refuse
+  await g(new Request('http://gate/go/example.com/bad500/@v/v1.0.0.info')) // error
+
+  const after = await g(new Request('http://gate/healthz'))
+  expect(await after.json()).toEqual({ ok: true, minDays: 4, allow: 1, refuse: 1, error: 1 })
+})
+
 test('PyPI upstream errors refuse rather than pass through', async () => {
   const g = gate()
   const notFound = await g(new Request('http://gate/pypi/simple/missingproj/'))
