@@ -2,6 +2,7 @@
 import { expect, test } from 'bun:test'
 import {
   bar,
+  beadInterviews,
   dur,
   line,
   mailKey,
@@ -233,6 +234,75 @@ test("interviews: a run parked on the person or stuck asks a question, with the 
     'Answering "Which spec wins?": The person chose: the ADR. The person says: and close the bead',
   )
   expect(interviewAnswer(ivs[1]!, undefined, '  ')).toBeNull()
+})
+
+test('interviews: a run at a gate asks its question with the outcomes as options; decided, it is gone', () => {
+  const runs = [
+    { id: 'g1', rig: 'web', node: 'release', since: 20, gate: { question: 'Ship it?', outcomes: ['ship', 'hold'] } },
+  ]
+  const ivs = interviews(runs)
+  expect(ivs).toHaveLength(1)
+  expect(ivs[0]).toMatchObject({
+    key: 'gate:g1@20',
+    kind: 'gate',
+    run: 'g1',
+    node: 'release',
+    rig: 'web',
+    question: 'Ship it?',
+    options: ['ship', 'hold'],
+  })
+  expect(interviews(runs, { 'gate:g1@20': 'ship' })).toEqual([])
+})
+
+test('interviews: a worker blocked on a prompt asks to be looked at, with no options of its own', () => {
+  const runs = [
+    { id: 'b1', rig: 'web', node: 'implement', sub: 'working', since: 30, agent: 'blocked', pane: 'ax://1' },
+  ]
+  const ivs = interviews(runs)
+  expect(ivs).toHaveLength(1)
+  expect(ivs[0]).toMatchObject({ key: 'prompt:b1@30', kind: 'prompt', run: 'b1', node: 'implement', options: [] })
+  expect(ivs[0]!.question).toContain('ax://1')
+})
+
+test('interviews: a gate is never read as parked or stuck, even while sub is working', () => {
+  const runs = [{ id: 'g2', node: 'deploy', sub: 'working', gate: { question: 'Merge?', outcomes: ['merge'] } }]
+  expect(interviews(runs).map(iv => iv.kind)).toEqual(['gate'])
+})
+
+test("beadInterviews: a rig's human beads keep their Options: shape, owner-only beads get start/not-now, answered keys drop out", () => {
+  const decisions = [
+    {
+      rig: 'api',
+      factory: 'lifecycle',
+      beads: [
+        {
+          id: 'api-7',
+          title: 'Which DB?',
+          description: 'Question: Which DB?\nOptions: postgres | mysql',
+          kind: 'bead' as const,
+        },
+        { id: 'api-9', title: 'A pilot bead', description: 'no shape here', kind: 'owned' as const },
+      ],
+    },
+  ]
+  const ivs = beadInterviews(decisions)
+  expect(ivs).toHaveLength(2)
+  expect(ivs[0]).toMatchObject({
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    rig: 'api',
+    bead: 'api-7',
+    question: 'Which DB?',
+    options: ['postgres', 'mysql'],
+  })
+  expect(ivs[1]).toMatchObject({
+    key: 'own:api:api-9',
+    kind: 'owned',
+    rig: 'api',
+    bead: 'api-9',
+    options: ['start now', 'not now'],
+  })
+  expect(beadInterviews(decisions, { 'bd:api:api-7': 'postgres' }).map(iv => iv.key)).toEqual(['own:api:api-9'])
 })
 
 test('patrol lines carry the attempt, time in station, quiet time and a paused runner', () => {

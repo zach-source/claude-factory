@@ -241,18 +241,29 @@ export function prNeed(pr: Pick<FactoryPrs[number]['prs'][number], 'reviewDecisi
   return { word: 'checking', color: 'gray' }
 }
 
-/** one question the factory puts to the person: a run stuck or parked on something only they can settle */
+/** one question the factory puts to the person: a run stuck or parked, a gate, a blocked worker, or a bd decision */
 export type Interview = {
   key: string
-  run: string
-  node: string
+  kind: 'parked' | 'stuck' | 'gate' | 'prompt' | 'bead' | 'owned'
+  /** the run this question is about: every kind but bead/owned */
+  run?: string
+  node?: string
   rig?: string
-  kind: 'parked' | 'stuck'
+  /** the bd bead this question is about: only bead/owned */
+  bead?: string
   question: string
   options: string[]
-  /** what the worker reported, for the question's context */
+  /** what the worker reported, or the bead's description, for the question's context */
   context: string
   at: number
+}
+
+/** `factory decisions`' shape: a rig's open bd decisions, or what stopped it reading them */
+export type Decision = {
+  rig: string
+  factory?: string
+  beads: { id: string; title: string; description?: string; kind: 'bead' | 'owned' }[]
+  error?: string
 }
 
 /** a worker's `Question:` and `Options: a | b` lines, which the blocked brief asks for */
@@ -271,13 +282,48 @@ function asked(text: string) {
 }
 
 /**
- * the questions open for the person, oldest first: each run parked by its own blocked report or stuck out of
- * retries. One is answered once the person answered it here, or its station was mailed since, or the run moved.
+ * the questions open for the person, oldest first: a run at a gate, a worker blocked on a prompt, or a run
+ * parked by its own blocked report or stuck out of retries. One is answered once the person answered it here
+ * (or, for a gate, once it is decided), or its station was mailed since, or the run moved.
  */
 export function interviews(runs: readonly FactoryRun[], answered: Record<string, string> = {}) {
   const out: Interview[] = []
   for (const r of runs) {
-    if (!isRunLive(r) || r.gate) continue
+    if (!isRunLive(r)) continue
+    if (r.gate) {
+      const at = r.since ?? 0
+      const key = `gate:${r.id}@${at}`
+      if (!answered[key])
+        out.push({
+          key,
+          run: r.id,
+          node: r.node!,
+          rig: r.rig,
+          kind: 'gate',
+          question: r.gate.question,
+          options: r.gate.outcomes,
+          context: '',
+          at,
+        })
+      continue
+    }
+    if (r.agent === 'blocked') {
+      const at = r.since ?? 0
+      const key = `prompt:${r.id}@${at}`
+      if (!answered[key])
+        out.push({
+          key,
+          run: r.id,
+          node: r.node!,
+          rig: r.rig,
+          kind: 'prompt',
+          question: `${r.node} worker is waiting on a prompt in pane ${r.pane}`,
+          options: [],
+          context: '',
+          at,
+        })
+      continue
+    }
     const last = r.last
     const parked =
       r.sub === 'waiting' && last && last.node === r.node && last.outcome === 'blocked' ? last : undefined
@@ -304,6 +350,30 @@ export function interviews(runs: readonly FactoryRun[], answered: Record<string,
     })
   }
   return out.sort((a, b) => a.at - b.at)
+}
+
+/** a rig's open bd decisions as interview questions: a human bead keeps its own Options: shape, an owner-only
+ * bead's only choice is whether the factory may start it now. Skips keys already answered. */
+export function beadInterviews(decisions: readonly Decision[], answered: Record<string, string> = {}): Interview[] {
+  const out: Interview[] = []
+  for (const d of decisions) {
+    for (const b of d.beads) {
+      const key = `${b.kind === 'bead' ? 'bd' : 'own'}:${d.rig}:${b.id}`
+      if (answered[key]) continue
+      const a = b.kind === 'bead' ? asked(b.description ?? '') : { question: undefined, options: [] }
+      out.push({
+        key,
+        rig: d.rig,
+        bead: b.id,
+        kind: b.kind,
+        question: a.question ?? `${b.id}: ${line(b.title, 200)}`,
+        options: b.kind === 'owned' ? ['start now', 'not now'] : a.options,
+        context: line(b.description ?? '', 600),
+        at: 0,
+      })
+    }
+  }
+  return out
 }
 
 /** the mail that carries the person's answer to a question: their choice, what they typed, or both */
