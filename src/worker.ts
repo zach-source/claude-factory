@@ -238,7 +238,7 @@ function kubeconfig() {
  * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (from Nix: the image
  * has no JDK, and its OpenSSL cannot write one Java trusts)
  */
-function bazelrc() {
+export function bazelrc() {
   const lines = [process.env.FACTORY_BAZELRC!]
   if (process.env.FACTORY_CA) {
     const ca = join(own(), 'egress-ca.crt')
