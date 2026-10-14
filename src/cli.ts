@@ -249,10 +249,15 @@ type TaskSide = {
   egress?: ax.Egress[]
   policy: boolean
   put?: string[]
+  /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
+  putFailedAt?: number
+  putError?: string
   /** where the VM shares the rig's beads, as at its launch: absent, the repo's GitHub origin */
   beadsRemote?: Rig['beadsRemote']
 }
 const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
+/** how long a failing put is retried before the attempt fails: a VM still waking fails ssh for a tick or two */
+const PUT_GRACE_MS = 5 * 60_000
 
 /**
  * the factory command a VM worker's outbox line may run here, as its station: a report on its own attempt,
@@ -367,10 +372,11 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const phase = ax.phase(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
   if (phase === 'Pending' || phase === 'Suspended') return { status: phase.toLowerCase(), agent: 'ax' }
-  // gone, and why, kept next to the task's other files: a run's log only says the worker was closed
-  const gone = (why: string) => (
+  // gone, and why, kept next to the task's other files; `failed` carries it into the attempt's FAIL reason
+  // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
+  const gone = (why: string): WorkerInfo => (
     writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
-    null
+    { status: 'gone', failed: clip(why, 500) }
   )
   if (phase !== 'Running') return gone(`phase ${phase ?? 'not found'}`)
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
@@ -384,10 +390,23 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   for (const name of side?.put ?? []) {
     const b64 = readFileSync(join(runDir(run.id), `${task}.${name}`)).toString('base64')
     const parts = Math.max(1, Math.ceil(b64.length / ax.PUT_PART))
-    for (let i = 0; i < parts; i++)
-      if (!ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)))
-        return { status: 'pending', agent: 'ax' }
+    for (let i = 0; i < parts; i++) {
+      const r = ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART))
+      if (r.ok) continue
+      // a VM still waking fails ssh too: this stays pending until the failure is PUT_GRACE_MS old
+      const failedAt = side!.putFailedAt ?? Date.now()
+      const err = clip(r.err.replace(/\s+/g, ' ').trim(), 300)
+      writeJson(sideFile(run, task), { ...side, putFailedAt: failedAt, putError: err })
+      if (Date.now() - failedAt < PUT_GRACE_MS) return { status: 'pending', agent: 'ax' }
+      return {
+        status: 'failed',
+        agent: 'ax',
+        failed: `factory worker put ${name} failed for 5 min over ax ssh: ${err}`,
+      }
+    }
     side!.put = side!.put!.filter(n => n !== name)
+    side!.putFailedAt = undefined
+    side!.putError = undefined
     writeJson(sideFile(run, task), side)
   }
   const cursorFile = join(runDir(run.id), `${task}.cursor`)
@@ -1331,6 +1350,12 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   }
   const runner = runnerOf(c.pane)
   const info = runner.info(run, c.pane)
+  // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
+  // of the generic "was closed" or a silent retry forever
+  if (info?.failed) {
+    send({ type: 'FAIL', seq: c.seq, reason: info.failed })
+    return info.status
+  }
   if (info?.session && info.session !== c.session)
     send({ type: 'SESSION', seq: c.seq, session: info.session })
   // a remote worker keeps its session where it ran: once gone, there is nothing to resume it from

@@ -112,6 +112,8 @@ esac
   chmodSync(join(dir, 'ax'), 0o755)
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
+// the default FACTORY_AX_CAPABILITIES (SETUID,SETGID,CHOWN): every `ax ssh` command runs as the worker user
+const AS_WORKER = 'setpriv --reuid=worker --regid=worker --init-groups env HOME=/home/worker USER=worker'
 const inbox = (id: string) => readFileSync(join(home, 'runs', id, 'inbox.jsonl'), 'utf8')
 
 test("a tick replays an AX worker's report from its outbox, and the task goes when the station ends", () => {
@@ -124,7 +126,7 @@ test("a tick replays an AX worker's report from its outbox, and the task goes wh
   expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1', node: 'a', agent: 'idle', pane: 'ax://t' })
   expect(readFileSync(join(home, 'runs', 'r1', 't.cursor'), 'utf8')).toBe('1')
   expect(inbox('r1')).toContain('"outcome":"ready"')
-  expect(called()).toContain('-a factory ssh t -- factory worker poll 0')
+  expect(called()).toContain(`-a factory ssh t -- ${AS_WORKER} factory worker poll 0`)
 
   const second = factory(['tick'])
   expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1', node: 'done' })
@@ -152,7 +154,7 @@ test('a worker waiting on the manager is suspended, and woken by the answer befo
   cluster('Running', { status: 'idle', lines: [] })
   factory(['tick'])
   const text = Buffer.from('[factory mail from manager] postgres').toString('base64')
-  expect(called()).toContain(`-a factory ssh t -- factory worker prompt ${text}`)
+  expect(called()).toContain(`-a factory ssh t -- ${AS_WORKER} factory worker prompt ${text}`)
   rmSync(join(home, 'runs', 'r2'), { recursive: true })
 })
 
@@ -189,14 +191,69 @@ test('files too big for the env (the brief) go to the VM over ssh in parts once 
   writeFileSync(join(home, 'runs', 'r6', 't.beads.jsonl.gz'), Bun.gzipSync('{"id":"x-1"}'))
   cluster('Running', { status: 'working', lines: [] })
   factory(['tick'])
-  expect(called()).toContain('ssh t -- factory worker put brief.md 0 3 ')
-  expect(called()).toContain('ssh t -- factory worker put brief.md 2 3 ')
-  expect(called()).toContain('ssh t -- factory worker put beads.jsonl.gz 0 1 ')
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put brief.md 0 3 `)
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put brief.md 2 3 `)
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put beads.jsonl.gz 0 1 `)
   expect(JSON.parse(readFileSync(side, 'utf8')).put).toEqual([])
   cluster('Running', { status: 'working', lines: [] })
   factory(['tick'])
   expect(called()).not.toContain('worker put')
   rmSync(join(home, 'runs', 'r6'), { recursive: true })
+})
+
+test('a put that fails over ax ssh leaves the station pending inside its 5 min grace, then fails the attempt with the ax error', () => {
+  launched('r7')
+  const side = join(home, 'runs', 'r7', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['brief.md'] }),
+  )
+  writeFileSync(join(home, 'runs', 'r7', 't.brief.md'), 'hello')
+  rmSync(calls, { force: true })
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put"*) echo 'EACCES: permission denied, mkdir /workspace/w/.factory-worker/put' >&2; exit 1 ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+
+  const first = factory(['tick'])
+  const row1 = JSON.parse(first.out).runs.find((r: { id: string }) => r.id === 'r7')
+  expect(row1).toMatchObject({ agent: 'pending' }) // inside the grace: the station is still working
+  const afterFirst = JSON.parse(readFileSync(side, 'utf8'))
+  expect(afterFirst.putError).toContain('EACCES')
+  expect(afterFirst.put).toEqual(['brief.md']) // not cleared: the put never landed
+  expect(typeof afterFirst.putFailedAt).toBe('number')
+
+  // backdate the first failure past the 5 min grace, as if this had been failing a while
+  writeFileSync(side, JSON.stringify({ ...afterFirst, putFailedAt: Date.now() - 6 * 60_000 }))
+  const second = factory(['tick'])
+  const row2 = JSON.parse(second.out).runs.find((r: { id: string }) => r.id === 'r7')
+  expect(row2.agent).toBe('failed')
+  expect(row2.error).toContain('EACCES')
+  rmSync(join(home, 'runs', 'r7'), { recursive: true })
+})
+
+test("a task gone because serve exited fails the attempt with serve's log, not just \"was closed\"", () => {
+  launched('r8')
+  cluster('Running', { status: 'exited', log: 'serve died: Error: the laptop never sent brief.md', lines: [] })
+  const out = factory(['tick'])
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toContain('serve died: Error: the laptop never sent brief.md')
+  expect(existsSync(join(home, 'runs', 'r8', 't.gone'))).toBe(true)
+  rmSync(join(home, 'runs', 'r8'), { recursive: true })
 })
 
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
