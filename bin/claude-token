@@ -18,6 +18,8 @@
 # For op auth, the script uses OP_SERVICE_ACCOUNT_TOKEN when you set it.
 # The token must be for a writer service account with access to only the vault above.
 # If you do not set OP_SERVICE_ACCOUNT_TOKEN, the script uses your own op sign-in.
+# If your shell exports a read-only service account token, "use" and "best" fail with
+# "couldn't update the item": unset OP_SERVICE_ACCOUNT_TOKEN for this script.
 #
 # This script does not print a token.
 set -euo pipefail
