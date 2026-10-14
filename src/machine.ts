@@ -209,6 +209,27 @@ export const isParked = (c: Ctx, node: string) => {
   return last?.node === node && last.outcome === 'blocked'
 }
 
+/** the kind of failure a reason names when retrying it unchanged is unlikely to help: the worker went silent */
+export const failClass = (reason: string) =>
+  /^no report within/.test(reason) ? 'timeout' : /^stalled/.test(reason) ? 'stalled' : null
+
+/** whether a failure repeats the station's previous attempt's: the same silent kind, so another attempt would spend itself the same way */
+export const isRepeatFail = (c: Ctx, node: string, reason: string) => {
+  const last = c.log.at(-1)
+  const kind = failClass(reason)
+  return (
+    c.attempt > 1 &&
+    !!kind &&
+    last?.node === node &&
+    last.outcome === 'fail' &&
+    failClass(last.summary) === kind
+  )
+}
+
+/** the question a repeated failure puts to the person in the console's Interview tab */
+export const repeatQuestion = (node: string, reason: string) =>
+  `${reason}\nQuestion: ${node} failed twice the same way (${reason}). What should it do?\nOptions: retry | abort`
+
 /** the pull requests a blocked report names: the runner watches them and mails the station when one changes */
 export const prsIn = (text: string) => [
   ...new Set(text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g) ?? []),
@@ -413,7 +434,9 @@ export function compile(def: Factory) {
             FAIL: [
               {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
-                  isCurrent({ context, event }) && context.attempt < attempts,
+                  isCurrent({ context, event }) &&
+                  context.attempt < attempts &&
+                  !isRepeatFail(context, id, (event as Extract<Ev, { type: 'FAIL' }>).reason),
                 target: 'backoff',
                 actions: [
                   recordFail,
@@ -431,8 +454,14 @@ export function compile(def: Factory) {
                   assign(({ context, event }) => {
                     const reason = (event as Extract<Ev, { type: 'FAIL' }>).reason
                     const text = `${id} is stuck after ${context.attempt} attempt(s): ${reason}`
+                    // a repeat of the last attempt's silent failure: ask the person instead of a third try
+                    const isRepeat = isRepeatFail(
+                      { ...(context as Ctx), log: context.log.slice(0, -1) },
+                      id,
+                      reason,
+                    )
                     return {
-                      error: reason,
+                      error: isRepeat ? repeatQuestion(id, reason) : reason,
                       mail: post(context.mail, 'manager', { from: id, text, at: event.at }),
                     }
                   }),

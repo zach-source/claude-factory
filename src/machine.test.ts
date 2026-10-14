@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
 import {
   compile,
+  failClass,
   parkDelayMin,
   prsIn,
   reach,
@@ -334,4 +335,31 @@ test('a handoff starts a fresh worker at the same station without spending an at
   expect(() =>
     validate({ ...def, nodes: { ...def.nodes, review: { prompt: 'x', next: { handoff: 'done' } } } }),
   ).toThrow('outcome "handoff" is reserved')
+})
+
+test('a repeated silent failure parks the run with a question instead of spending the next attempt', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { ...def.nodes.implement!, retries: 2 } },
+  })
+  send({ type: 'FAIL', seq: 1, reason: 'stalled: no output for 40 min', at: 1000 })
+  send({ type: 'TICK', at: 11_000 })
+  const s = send({ type: 'FAIL', seq: 2, reason: 'stalled: no output for 41 min', at: 12_000 })
+  expect(where(s.value)).toEqual(['implement', 'stuck']) // attempt 2 of 3: not retried
+  expect(s.context.error).toContain('Question: implement failed twice the same way')
+  expect(s.context.error).toContain('Options: retry | abort')
+  expect(s.context.mail.manager?.[0]?.text).toContain('stuck after 2 attempt(s)')
+})
+
+test('failures of different kinds still retry', () => {
+  expect(failClass('no report within 60 min')).toBe('timeout')
+  expect(failClass('worker pane w1:p1 was closed')).toBeNull()
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { ...def.nodes.implement!, retries: 2 } },
+  })
+  send({ type: 'FAIL', seq: 1, reason: 'no report within 60 min', at: 1000 })
+  send({ type: 'TICK', at: 11_000 })
+  const s = send({ type: 'FAIL', seq: 2, reason: 'stalled: no output for 40 min', at: 12_000 })
+  expect(where(s.value)).toEqual(['implement', 'backoff'])
 })

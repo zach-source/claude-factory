@@ -325,7 +325,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
   const text = interviewAnswer(iv, choice, typed)
   if (!text) return $.ui.toast('factory: pick an option or type an answer')
   if (!(await act($, ['mail', iv.run, iv.node, text]))) return
-  if (iv.kind === 'stuck') await act($, ['retry', iv.run])
+  if (iv.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', iv.run])
   const at = await $.clock.now()
   rt.unsent.push({
     run: iv.run,
