@@ -311,6 +311,34 @@ test('two runs in the same egress outage each get their own mail, not a shared d
   rmSync(join(home, 'runs', 'r9'), { recursive: true })
 })
 
+test('an egress outage suppresses the stall guard: standing still that long alone is not nudged or failed', () => {
+  const seq = launched('r11')
+  const tail = 'same output, never changes while serve retries the turn itself'
+  const since = Date.now() - 60_000
+  const poll = {
+    status: 'working',
+    session: 's1',
+    lines: [],
+    tail,
+    egress: { since, tries: 1, last: 'upstream connect error or disconnect/reset before headers' },
+  }
+  cluster('Running', poll)
+  factory(['tick']) // learns the session; tail is not read until the session is known
+  // the stall guard's own fingerprint: tail unchanged since long before STALL_MS (20 min), and already
+  // nudged once, so with no egress this would fail on this very tick (see `stalled` in src/cli.ts)
+  const sig = `${tail.length}${tail.slice(-300)}`
+  writeFileSync(
+    join(home, 'runs', 'r11', 'progress.json'),
+    JSON.stringify({ seq, sig, at: Date.now() - 41 * 60_000, nudged: true }),
+  )
+  cluster('Running', poll) // the same outage, still working, tail still unchanged
+  factory(['tick'])
+  expect(called()).not.toContain('worker prompt') // no nudge, no fail delivered to the worker
+  const state = readFileSync(join(home, 'runs', 'r11', 'state.json'), 'utf8')
+  expect(state).not.toContain('stalled: no output for')
+  rmSync(join(home, 'runs', 'r11'), { recursive: true })
+})
+
 test("a worker's address picks its runner: a bare pane id is herdr's, `<name>://` is that runner's", () => {
   expect(runnerOf('w1-2').name).toBe('herdr')
   expect(runnerOf('wA6:p1').name).toBe('herdr')
