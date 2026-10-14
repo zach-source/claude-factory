@@ -37,14 +37,66 @@ const routes: Record<string, Route> = {
   '/allowed.example.com/mod/@v/v9.9.9.info': { status: 200, body: GO_ALLOWLISTED_INFO },
   '/sumdb/sum.golang.org/supported': { status: 200, body: '' },
   '/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0': { status: 200, body: 'fakehash\n' },
+  '/nope': { status: 404, body: '{"error":"Not found"}' },
+  '/boom500': { status: 500, body: 'internal error' },
 }
+
+// trimmed from a real `curl -H 'Accept: application/json' https://registry.npmjs.org/@types%2fms`
+// (2026-10-14), with a synthetic young 2.2.0 added to exercise the age gate. `tarball` points back at
+// this fake upstream itself (`origin`), the way the real registry's own host would appear there.
+const npmVersion = (origin: string, version: string, shasum: string, integrity: string) => ({
+  name: '@types/ms',
+  version,
+  description: 'TypeScript definitions for ms',
+  dist: { shasum, tarball: `${origin}/@types/ms/-/ms-${version}.tgz`, integrity },
+})
+const npmPackument = (origin: string) =>
+  JSON.stringify({
+    name: '@types/ms',
+    'dist-tags': { latest: '2.2.0' },
+    versions: {
+      '0.7.34': npmVersion(
+        origin,
+        '0.7.34',
+        '10964ba0dee6ac4cd462e2795b6bebd407303433',
+        'sha512-nG96G3Wp6acyAgJqGasjODb+acrI7KltPiRxzHPXnP3NgI28bpQDRv53olbqGXbfcgF5aiiHmO3xpwEpS5Ld9g==',
+      ),
+      '2.1.0': npmVersion(
+        origin,
+        '2.1.0',
+        '052aa67a48eccc4309d7f0191b7e41434b90bb78',
+        'sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==',
+      ),
+      '2.2.0': npmVersion(origin, '2.2.0', 'synthetic', 'sha512-synthetic=='),
+    },
+    time: {
+      created: '2016-05-17T18:23:02.430Z',
+      modified: '2026-10-10T12:00:00.000Z',
+      '0.7.34': '2023-11-07T11:26:21.925Z',
+      '2.1.0': '2025-01-16T21:02:46.181Z',
+      '2.2.0': '2026-10-10T12:00:00.000Z', // ~12h before the test clock: too young
+    },
+  })
+const NPM_ABBREVIATED = JSON.stringify({ name: '@types/ms', 'dist-tags': { latest: '2.2.0' }, versions: {} })
+const NPM_TARBALLS: Record<string, string> = {
+  'ms-0.7.34.tgz': 'TARBALL-BYTES-0.7.34',
+  'ms-2.1.0.tgz': 'TARBALL-BYTES-2.1.0',
+  'ms-2.2.0.tgz': 'TARBALL-BYTES-2.2.0',
+}
+
 let upstream: ReturnType<typeof Bun.serve>
 beforeAll(() => {
   upstream = Bun.serve({
     port: 0,
     fetch(req) {
-      const path = new URL(req.url).pathname
-      const r = routes[path]
+      const url = new URL(req.url)
+      if (url.pathname === '/@types%2fms' || url.pathname === '/@types/ms')
+        return req.headers.get('accept') === 'application/json'
+          ? new Response(npmPackument(url.origin), { headers: { 'content-type': 'application/json' } })
+          : new Response(NPM_ABBREVIATED, { headers: { 'content-type': 'application/json' } }) // no `time`: proves the gate always asks for the full doc
+      const tarballFile = url.pathname.match(/^\/@types\/ms\/-\/(.+)$/)?.[1]
+      if (tarballFile && NPM_TARBALLS[tarballFile]) return new Response(NPM_TARBALLS[tarballFile])
+      const r = routes[url.pathname]
       if (!r) return new Response('not found', { status: 404 })
       return new Response(r.body, { status: r.status, headers: r.type ? { 'content-type': r.type } : {} })
     },
@@ -146,4 +198,44 @@ test('sumdb is proxied verbatim, including /supported', async () => {
   const lookup = await g(new Request('http://gate/go/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0'))
   expect(lookup.status).toBe(200)
   expect(await lookup.text()).toBe('fakehash\n')
+})
+
+test('an npm packument drops the young version, re-points latest, and rewrites tarball URLs to the gate', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/npm/@types%2fms'))
+  expect(r.status).toBe(200)
+  const p = (await r.json()) as { versions: Record<string, { dist: { tarball: string; shasum: string } }>; 'dist-tags': { latest: string }; time: Record<string, string> }
+  expect(Object.keys(p.versions).sort()).toEqual(['0.7.34', '2.1.0']) // 2.2.0 (young) is gone
+  expect(p['dist-tags'].latest).toBe('2.1.0') // re-pointed off the removed young version
+  expect(p.time['2.2.0']).toBeUndefined()
+  expect(p.time.created).toBe('2016-05-17T18:23:02.430Z') // non-version time entries pass through
+  expect(p.versions['2.1.0']!.dist.tarball).toBe('http://gate/npm/@types/ms/-/ms-2.1.0.tgz')
+  expect(p.versions['0.7.34']!.dist.shasum).toBe('10964ba0dee6ac4cd462e2795b6bebd407303433') // untouched fields pass through
+})
+
+test('an npm packument works for the unencoded scoped form too (@scope/name, two segments)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/npm/@types/ms'))
+  expect(r.status).toBe(200)
+  expect(Object.keys((await r.json() as { versions: Record<string, unknown> }).versions).sort()).toEqual(['0.7.34', '2.1.0'])
+})
+
+test('an old npm tarball is served byte-identical; a young one is refused', async () => {
+  const g = gate()
+  const old = await g(new Request('http://gate/npm/@types/ms/-/ms-2.1.0.tgz'))
+  expect(old.status).toBe(200)
+  expect(await old.text()).toBe('TARBALL-BYTES-2.1.0')
+
+  const young = await g(new Request('http://gate/npm/@types/ms/-/ms-2.2.0.tgz'))
+  expect(young.status).toBe(404)
+  expect(await young.text()).toContain('pkg-gate')
+})
+
+test('npm upstream errors refuse rather than pass through', async () => {
+  const g = gate()
+  const notFound = await g(new Request('http://gate/npm/nope'))
+  expect(notFound.status).toBe(404)
+  const broken = await g(new Request('http://gate/npm/boom500'))
+  expect(broken.status).toBe(502)
+  expect(await broken.text()).toContain('pkg-gate')
 })

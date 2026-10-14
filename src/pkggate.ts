@@ -27,7 +27,11 @@ type Resolved = {
   now: () => number
   fetch: typeof fetch
   stats: Stats
+  /** the packument cache a tarball request reads its version's time from, short TTL, per gate instance */
+  npmCache: Map<string, { parsed: NpmPackument; expiresAt: number }>
 }
+
+const NPM_CACHE_MS = 60_000
 
 function resolve(cfg: GateConfig): Resolved {
   return {
@@ -37,6 +41,7 @@ function resolve(cfg: GateConfig): Resolved {
     now: cfg.now ?? (() => Date.now()),
     fetch: cfg.fetch ?? fetch,
     stats: { allow: 0, refuse: 0, error: 0 },
+    npmCache: new Map(),
   }
 }
 
@@ -202,6 +207,122 @@ async function handleGo(cfg: Resolved, path: string): Promise<Response> {
   return goVersion(cfg, mod, m[1]!, m[2] as 'info' | 'mod' | 'zip')
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// npm: the full packument (never the abbreviated install-v1 doc, which has no publish time), with every
+// young version stripped from `versions` and `time`, `dist-tags` re-pointed off removed versions, and each
+// `dist.tarball` rewritten to the gate's own host so a later tarball request has somewhere to be checked.
+
+type NpmVersion = { dist?: { tarball?: string; [k: string]: unknown }; [k: string]: unknown }
+type NpmPackument = {
+  name?: string
+  'dist-tags'?: Record<string, string>
+  versions: Record<string, NpmVersion>
+  time: Record<string, string>
+  [k: string]: unknown
+}
+
+/** registry.npmjs.org's own convention: `@` stays literal, only the scope's `/` is percent-encoded */
+const npmUpstreamName = (pkg: string) => pkg.replace('/', '%2f')
+const decodeScopedName = (raw: string) => (/%2f/i.test(raw) ? decodeURIComponent(raw) : raw)
+
+function parseNpmPath(
+  path: string,
+): { kind: 'packument'; pkg: string } | { kind: 'tarball'; pkg: string; file: string } | null {
+  const segments = path.split('/').filter(Boolean)
+  if (!segments.length) return null
+  const dashIdx = segments.indexOf('-')
+  if (dashIdx < 0) return { kind: 'packument', pkg: decodeScopedName(segments.join('/')) }
+  const file = segments.slice(dashIdx + 1).join('/')
+  const pkg = decodeScopedName(segments.slice(0, dashIdx).join('/'))
+  return pkg && file ? { kind: 'tarball', pkg, file } : null
+}
+
+function parsePackument(text: string): NpmPackument | null {
+  try {
+    const j = JSON.parse(text)
+    return j && typeof j === 'object' && typeof j.versions === 'object' && typeof j.time === 'object' ? j : null
+  } catch {
+    return null
+  }
+}
+
+/** the upstream packument, cached a short while so a tarball request need not refetch it per file */
+async function fetchPackument(cfg: Resolved, pkg: string) {
+  const cached = cfg.npmCache.get(pkg)
+  if (cached && cached.expiresAt > Date.now()) return { ok: true as const, parsed: cached.parsed }
+  try {
+    const r = await cfg.fetch(`${cfg.upstream.npm}/${npmUpstreamName(pkg)}`, { headers: { accept: 'application/json' } })
+    if (!r.ok) return { ok: false as const, status: r.status }
+    const parsed = parsePackument(await r.text())
+    if (!parsed) return { ok: false as const, status: 0 }
+    cfg.npmCache.set(pkg, { parsed, expiresAt: Date.now() + NPM_CACHE_MS })
+    return { ok: true as const, parsed }
+  } catch {
+    return { ok: false as const, status: 0 }
+  }
+}
+
+function npmTarballFile(tarball: string) {
+  return tarball.slice(tarball.lastIndexOf('/') + 1)
+}
+
+function filterPackument(cfg: Resolved, pkg: string, p: NpmPackument, origin: string): NpmPackument {
+  const kept = new Set<string>()
+  for (const v of Object.keys(p.versions)) {
+    const timeStr = p.time[v]
+    const publishedMs = timeStr ? Date.parse(timeStr) : NaN
+    const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+    logDecision('npm', pkg, v, timeStr ?? null, d, cfg)
+    if (d.decision === 'allow') kept.add(v)
+  }
+  const versions: Record<string, NpmVersion> = {}
+  const time: Record<string, string> = {}
+  for (const [k, v] of Object.entries(p.time)) if (k === 'created' || k === 'modified' || kept.has(k)) time[k] = v
+  for (const v of kept) {
+    const vd = p.versions[v]!
+    versions[v] = vd.dist?.tarball
+      ? { ...vd, dist: { ...vd.dist, tarball: `${origin}/npm/${pkg}/-/${npmTarballFile(vd.dist.tarball)}` } }
+      : vd
+  }
+  const distTags: Record<string, string> = {}
+  for (const [tag, v] of Object.entries(p['dist-tags'] ?? {})) if (kept.has(v)) distTags[tag] = v
+  const newest = [...kept].sort((a, b) => Date.parse(time[b]!) - Date.parse(time[a]!))[0]
+  if (newest) distTags.latest = newest
+  return { ...p, versions, time, 'dist-tags': distTags }
+}
+
+async function npmPackument(cfg: Resolved, pkg: string, origin: string) {
+  const pack = await fetchPackument(cfg, pkg)
+  if (!pack.ok) return refuse(pack.status === 404 ? 404 : 502, `pkg-gate: ${pkg}: upstream error`)
+  return new Response(JSON.stringify(filterPackument(cfg, pkg, pack.parsed, origin)), {
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+async function npmTarball(cfg: Resolved, pkg: string, file: string) {
+  const pack = await fetchPackument(cfg, pkg)
+  if (!pack.ok) return refuse(pack.status === 404 ? 404 : 502, `pkg-gate: ${pkg}: upstream error`)
+  const version = Object.keys(pack.parsed.versions).find(
+    v => pack.parsed.versions[v]!.dist?.tarball && npmTarballFile(pack.parsed.versions[v]!.dist!.tarball!) === file,
+  )
+  if (!version) return refuse(404, `pkg-gate: ${pkg}/-/${file} not found`)
+  const timeStr = pack.parsed.time[version]
+  const publishedMs = timeStr ? Date.parse(timeStr) : NaN
+  const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+  logDecision('npm', pkg, version, timeStr ?? null, d, cfg)
+  if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${pkg}@${version} ${ageText(d)}, minimum ${cfg.minDays}d`)
+  const upstreamUrl = pack.parsed.versions[version]!.dist!.tarball!
+  const b = await fetchBytes(cfg, upstreamUrl)
+  if (!b.ok) return refuse(502, `pkg-gate: ${pkg}/-/${file}: upstream error`)
+  return new Response(b.buf, { headers: { 'content-type': 'application/octet-stream' } })
+}
+
+async function handleNpm(cfg: Resolved, path: string, origin: string): Promise<Response> {
+  const parsed = parseNpmPath(path)
+  if (!parsed) return refuse(404, 'pkg-gate: not found')
+  return parsed.kind === 'tarball' ? npmTarball(cfg, parsed.pkg, parsed.file) : npmPackument(cfg, parsed.pkg, origin)
+}
+
 /**
  * the gate's handler: a Go module proxy under `/go`, an npm registry under `/npm`, a PyPI simple index and
  * file host under `/pypi/simple` and `/pypi/files`. Serve it with Bun.serve or `factory pkg-gate serve`.
@@ -209,8 +330,10 @@ async function handleGo(cfg: Resolved, path: string): Promise<Response> {
 export function makeGate(cfg: GateConfig): Gate {
   const resolved = resolve(cfg)
   const handler = (async (req: Request) => {
-    const path = new URL(req.url).pathname.replace(/^\/+/, '')
+    const url = new URL(req.url)
+    const path = url.pathname.replace(/^\/+/, '')
     if (path.startsWith('go/')) return handleGo(resolved, path.slice('go/'.length))
+    if (path.startsWith('npm/')) return handleNpm(resolved, path.slice('npm/'.length), url.origin)
     return refuse(404, 'pkg-gate: not found')
   }) as Gate
   handler.stats = () => ({ ...resolved.stats })
