@@ -93,20 +93,35 @@ export type FactoryBacklog = (FactoryRig & {
   error?: string
 })[]
 
-/** each rig's open pull requests from run branches, not drafts (`factory prs`) */
+/** every pull request each run touches, by run, kept (merged and closed too) until the run is removed
+ * (`factory prs`): `error` here is a run-wide gh failure (its branch listing or search), not one PR's own */
 export type FactoryPrs = {
-  rig: string
+  run: string
+  rig?: string
+  bead?: string
+  node: string
+  ended: boolean
+  at: number
   error?: string
   prs: {
+    url: string
+    repo: string
     number: number
     title: string
-    url: string
-    run: string
+    role: 'code' | 'companion' | 'deploy' | 'mentioned'
+    /** the station that first named it, or '' when it was only found by search or branch */
+    station: string
+    /** OPEN, MERGED, CLOSED or UNKNOWN before its first `gh pr view` */
+    state: 'OPEN' | 'MERGED' | 'CLOSED' | 'UNKNOWN'
+    isDraft: boolean
     /** APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or '' */
     reviewDecision: string
     /** CLEAN, BLOCKED, DIRTY, UNSTABLE, BEHIND, UNKNOWN */
     mergeStateStatus: string
+    checks: { pass: number; fail: number; pending: number }
     updatedAt: string
+    /** this one PR's own last `gh` failure, kept until it is viewed again successfully */
+    error?: string
   }[]
 }[]
 
