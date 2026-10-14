@@ -70,7 +70,7 @@ import {
   type RunRecord,
   type Session,
 } from './metrics'
-import { buildPrs, DEFAULT_BUDGET, spawnGh, type PrsFile, type RunMeta } from './prs'
+import { buildPrs, DEFAULT_BUDGET, sameFile, spawnGh, type PrsFile, type RunMeta } from './prs'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -2778,6 +2778,13 @@ async function prs() {
   const stations = new Set<string>()
   const metas: { id: string; rig?: string; bead?: string; node: string; ended: boolean; at: number }[] = []
   const runMetas: RunMeta[] = []
+  const before = new Map<string, PrsFile>() // wyc.7: only a changed prs.json is written back
+  // wyc.7: memoized per repo path, so N runs sharing a rig's repo spawn `git remote get-url` once
+  const originCache = new Map<string, ReturnType<typeof originRef>>()
+  const cachedOriginRef = (repoPath: string) => {
+    if (!originCache.has(repoPath)) originCache.set(repoPath, originRef(repoPath))
+    return originCache.get(repoPath)
+  }
   for (const id of runIds()) {
     let run: Run
     try {
@@ -2785,32 +2792,54 @@ async function prs() {
     } catch {
       continue // removed mid-pass
     }
-    const { value, c } = current(id)
-    const [node] = where(value)
-    const ended = ['done', 'aborted'].includes(node)
-    const def = await loadFactory(run.factory).catch(() => undefined)
-    if (def) for (const k of Object.keys(def.nodes)) stations.add(k)
-    metas.push({ id, rig: rigOf(run.repo)?.name, bead: run.bead, node, ended, at: createdAt(id) })
-    const ref = originRef(run.repo)
-    const mail = inboxLines(id)
-      .map(l => JSON.parse(l) as { type: string; from: string; to: string; text: string; at: number })
-      .filter((e): e is { type: 'MAIL'; from: string; to: string; text: string; at: number } => e.type === 'MAIL')
-    const file: PrsFile = existsSync(prsFile(id)) ? readJson(prsFile(id)) : { version: 1, prs: [] }
-    runMetas.push({
-      id,
-      bead: run.bead,
-      startAt: createdAt(id),
-      ended,
-      repoDir: run.repo,
-      runRepo: ref ? `${ref.owner}/${ref.repo}` : run.repo,
-      owner: ref?.owner ?? '',
-      log: c.log,
-      mail,
-      file,
-    })
+    // wyc.6: a run whose state.json is missing or unreadable, a corrupt inbox line, or anything else
+    // unexpected must not fail every other run's PRs along with it
+    try {
+      const { value, c } = current(id)
+      const [node] = where(value)
+      const ended = ['done', 'aborted'].includes(node)
+      const def = await loadFactory(run.factory).catch(() => undefined)
+      if (def) for (const k of Object.keys(def.nodes)) stations.add(k)
+      metas.push({ id, rig: rigOf(run.repo)?.name, bead: run.bead, node, ended, at: createdAt(id) })
+      const ref = cachedOriginRef(run.repo)
+      const mail = inboxLines(id)
+        .flatMap(l => {
+          try {
+            return [JSON.parse(l) as { type: string; from: string; to: string; text: string; at: number }]
+          } catch {
+            return [] // one corrupt inbox line must not drop the rest
+          }
+        })
+        .filter((e): e is { type: 'MAIL'; from: string; to: string; text: string; at: number } => e.type === 'MAIL')
+      let file: PrsFile = { version: 1, prs: [] }
+      if (existsSync(prsFile(id))) {
+        try {
+          file = readJson(prsFile(id))
+        } catch {
+          // wyc.6: a corrupt prs.json is treated as empty rather than failing this run
+        }
+      }
+      before.set(id, file)
+      runMetas.push({
+        id,
+        bead: run.bead,
+        startAt: createdAt(id),
+        ended,
+        endAt: ended ? (c.log.at(-1)?.at ?? createdAt(id)) : Infinity,
+        repoDir: run.repo,
+        runRepo: ref ? `${ref.owner}/${ref.repo}` : run.repo,
+        owner: ref?.owner ?? '',
+        log: c.log,
+        mail,
+        file,
+      })
+    } catch {
+      continue // this run's own state is unreadable; the rest still get processed
+    }
   }
   const { files, rows } = await buildPrs(runMetas, s => stations.has(s), spawnGh, Date.now(), DEFAULT_BUDGET)
   for (const [id, file] of files) {
+    if (sameFile(before.get(id) ?? { version: 1, prs: [] }, file)) continue // wyc.7: unchanged, skip the write
     try {
       writeJson(prsFile(id), file)
     } catch {
