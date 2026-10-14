@@ -65,6 +65,16 @@ export function sameFile(a: PrsFile, b: PrsFile): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+/** `runs/<id>/prs.json` parsed as JSON may still not be a `PrsFile` (an old shape, `{"version":1}` with no
+ * `prs` array, or any other garbage that happens to parse): `foldMentions` and friends assume `prs` is an
+ * array and throw a bare TypeError otherwise, which (unlike a JSON.parse failure) is not caught by cli.ts's
+ * own per-run try/catch, so it would fail every run's PRs, not just this one's (wyc.12). Normalize here,
+ * at the one place a file is read, to an empty file instead. */
+export function asPrsFile(parsed: unknown): PrsFile {
+  const p = parsed as Partial<PrsFile> | null | undefined
+  return p && typeof p === 'object' && Array.isArray(p.prs) ? (p as PrsFile) : { version: 1, prs: [] }
+}
+
 /** owner/name and number out of a github.com pull request URL, or null for anything else */
 export function prRef(url: string): { repo: string; number: number } | null {
   const m = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/.exec(url)

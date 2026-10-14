@@ -70,7 +70,7 @@ import {
   type RunRecord,
   type Session,
 } from './metrics'
-import { buildPrs, DEFAULT_BUDGET, sameFile, spawnGh, type PrsFile, type RunMeta } from './prs'
+import { asPrsFile, buildPrs, DEFAULT_BUDGET, sameFile, spawnGh, type PrsFile, type RunMeta } from './prs'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -2814,7 +2814,10 @@ async function prs() {
       let file: PrsFile = { version: 1, prs: [] }
       if (existsSync(prsFile(id))) {
         try {
-          file = readJson(prsFile(id))
+          // wyc.12: a prs.json that parses but isn't shaped like a PrsFile (e.g. {"version":1} with no
+          // `prs` array) is normalized to empty here too, before it can reach buildPrs's foldMentions,
+          // which throws a bare TypeError that (unlike a JSON.parse failure) this try/catch alone misses
+          file = asPrsFile(readJson(prsFile(id)))
         } catch {
           // wyc.6: a corrupt prs.json is treated as empty rather than failing this run
         }

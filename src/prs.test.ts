@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { prsIn } from './machine'
 import {
+  asPrsFile,
   checksOf,
   collectMentions,
   DEFAULT_BUDGET,
@@ -73,6 +74,16 @@ test('sameFile tells cli.ts whether a prs.json actually changed, order of the pr
   })
   expect(sameFile(withPr(1), withPr(1))).toBe(true) // equal content, different object identity
   expect(sameFile(withPr(1), withPr(2))).toBe(false)
+})
+
+test('asPrsFile treats a parsed prs.json whose `prs` is missing or not an array as empty, instead of letting it reach foldMentions (wyc.12)', () => {
+  expect(asPrsFile({ version: 1 })).toEqual({ version: 1, prs: [] })
+  expect(asPrsFile({ version: 1, prs: 'not an array' })).toEqual({ version: 1, prs: [] })
+  expect(asPrsFile(null)).toEqual({ version: 1, prs: [] })
+  expect(asPrsFile(undefined)).toEqual({ version: 1, prs: [] })
+  expect(asPrsFile([])).toEqual({ version: 1, prs: [] })
+  const good: PrsFile = { version: 1, searchedAt: 5, prs: [] }
+  expect(asPrsFile(good)).toEqual(good) // a real file passes through unchanged
 })
 
 // shapes modeled on a real run: a dependency named only in prose (never linked), a PR linked once in a
