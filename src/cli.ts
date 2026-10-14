@@ -1407,6 +1407,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // itself, so tell the manager once per outage and, once serve gives up (idle with the outage still set),
   // fail with the cause instead of spending nudges on a worker that was never going to report
   const egress = info?.egress
+  const retries = (n: number) => `${n} ${n === 1 ? 'retry' : 'retries'}`
   if (egress) {
     // keyed per run+node, not per runner: the gateway is shared, so a single outage hits every concurrent
     // AX worker at once, and a file keyed only by the runner's name would have them overwrite each other's
@@ -1420,14 +1421,14 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         type: 'MAIL',
         from: 'factory',
         to: 'manager',
-        text: `${node} of ${run.id}: the egress gateway is refusing new connections to the model API (since ${since}, ${egress.tries} ${egress.tries === 1 ? 'retry' : 'retries'} so far). The worker is retrying itself; see docs/remote-runner.md if it does not clear on its own.`,
+        text: `${node} of ${run.id}: the egress gateway is refusing new connections to the model API (since ${since}, ${retries(egress.tries)} so far). The worker is retrying itself; see docs/remote-runner.md if it does not clear on its own.`,
       })
       writeJson(paged, egress.since)
     }
   }
   const egressReason =
     egress &&
-    `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${egress.tries} retries): ${clip(egress.last, 200)}`
+    `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${clip(egress.last, 200)}`
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   // every turn re-reads the whole context: past the limit the worker hands off to a fresh one
   const maxK = def.maxContextK ?? 200

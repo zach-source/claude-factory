@@ -286,6 +286,21 @@ test('an egress outage mails the manager once, spends no idle nudge while serve 
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
 })
 
+test('a single retry is pluralized in the egress FAIL reason, like the mail already is', () => {
+  launched('r12')
+  cluster('Running', {
+    status: 'idle',
+    session: 's1',
+    lines: [],
+    egress: { since: Date.now() - 1_000, tries: 1, last: 'upstream connect error or disconnect/reset before headers' },
+  })
+  factory(['tick'])
+  const state = readFileSync(join(home, 'runs', 'r12', 'state.json'), 'utf8')
+  expect(state).toContain('(1 retry)')
+  expect(state).not.toContain('(1 retries)')
+  rmSync(join(home, 'runs', 'r12'), { recursive: true })
+})
+
 test('two runs in the same egress outage each get their own mail, not a shared dedup file', () => {
   launched('r8', true, 't1')
   launched('r9', true, 't2')
