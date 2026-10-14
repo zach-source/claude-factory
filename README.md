@@ -149,6 +149,10 @@ A factory is a directory (Gas Town's town): `factory init <dir>` makes one, its
 neither the factory is `.factory-state/` here. Run several factories side by side, each with its
 own manager.
 
+To keep a factory's config in a repo, make its home one: `git init`, a `.gitignore` that lets in only
+the config (`/*`, `!/.gitignore`, `!/rigs.json`), and an `origin`. Every 10 minutes the tick commits
+and pushes it, and pushes the memory to the `memory` branch, so the factory can be rebuilt from the repo.
+
 A rig is a repo the factory works, by name. Its ready beads labeled `factory` start as runs,
 it keeps its sweeps running, and it has its own cap on busy runs under the factory's
 `FACTORY_MAX_RUNS`. A goal is the person's standing direction for the rig: while the rig has

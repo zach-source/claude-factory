@@ -2235,6 +2235,25 @@ const kickDream = () => {
   }).unref()
 }
 
+const CONFIG_SYNC_MS = 10 * 60_000
+// what a home's .gitignore lets in (its config: rigs.json) to its branch, and the memory to the memory branch
+export const CONFIG_SYNC = `git remote get-url origin >/dev/null 2>&1 || exit 0
+git add -A && { git diff --cached --quiet || git commit -qm 'factory: sync config'; }
+timeout 120 git push -q origin HEAD
+[ -d memory/.git ] && timeout 120 git -C memory push -q "$(git remote get-url origin)" HEAD:refs/heads/memory`
+
+/**
+ * every 10 minutes, a factory home that is a git repo with an origin pushes its config, so the factory can
+ * be rebuilt from its repo: `git init` the home, a .gitignore that lets in only the config, and an origin
+ */
+const kickConfigSync = () => {
+  const stamp = join(HOME, 'config.stamp')
+  if (!existsSync(join(HOME, '.git'))) return
+  if (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < CONFIG_SYNC_MS) return
+  writeFileSync(stamp, '') // a failed push waits for the next window, rather than retrying every tick
+  spawnChild('sh', ['-c', CONFIG_SYNC], { cwd: HOME, detached: true, stdio: 'ignore' }).unref()
+}
+
 const SIDEBAR_TTL_MS = 5 * 60_000
 /** the workspace of the pane this runs in, when that pane sits in this factory's directory */
 function managerWorkspace(): string | undefined {
@@ -2361,6 +2380,7 @@ async function tick(isPatrol = false) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
       kickDevenv()
+      kickConfigSync()
     }
   }
 }
