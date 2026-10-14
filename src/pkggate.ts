@@ -79,6 +79,27 @@ function logDecision(eco: string, name: string, version: string | undefined, pub
   )
 }
 
+// a minimal semver reader, just enough to tell a release from a prerelease/pseudo-version and to rank
+// releases against each other -- used so a nightly, prerelease, or pseudo-version never outranks a real
+// release merely for being newer by publish time (ei0.11)
+type SemVer = { major: number; minor: number; patch: number; pre: string | null }
+
+function parseSemver(v: string): SemVer | null {
+  const m = v.match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/)
+  if (!m) return null
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), pre: m[4] ?? null }
+}
+
+/** the highest non-prerelease version among `versions`, by semver order; `undefined` if every one is a prerelease or unparseable */
+function highestRelease(versions: string[]): string | undefined {
+  const releases = versions.flatMap(v => {
+    const s = parseSemver(v)
+    return s && s.pre == null ? [{ v, s }] : []
+  })
+  releases.sort((a, b) => b.s.major - a.s.major || b.s.minor - a.s.minor || b.s.patch - a.s.patch)
+  return releases[0]?.v
+}
+
 function refuse(status: number, text: string) {
   return new Response(text, { status, headers: { 'content-type': 'text/plain' } })
 }
@@ -190,8 +211,12 @@ async function goLatest(cfg: Resolved, mod: string) {
     const d = await goDecideVersion(cfg, mod, v)
     if (d.ok && d.decision.decision === 'allow' && d.time) candidates.push({ version: v, time: d.time })
   }
+  // prefer the highest release semver over the newest by time, so a pseudo-version or prerelease commit
+  // never wins over a real release just for being more recently published (ei0.11); only fall back to
+  // newest-by-time when every old-enough candidate is itself a prerelease/pseudo-version
   candidates.sort((a, b) => Date.parse(b.time) - Date.parse(a.time))
-  const top = candidates[0]
+  const releaseVersion = highestRelease(candidates.map(c => c.version))
+  const top = releaseVersion ? candidates.find(c => c.version === releaseVersion) : candidates[0]
   if (!top) return refuse(404, `pkg-gate: ${mod}: no version old enough (minimum ${cfg.minDays}d)`)
   return new Response(JSON.stringify({ Version: top.version, Time: top.time }), { headers: { 'content-type': 'application/json' } })
 }
@@ -305,8 +330,13 @@ function filterPackument(cfg: Resolved, pkg: string, p: NpmPackument, origin: st
   }
   const distTags: Record<string, string> = {}
   for (const [tag, v] of Object.entries(p['dist-tags'] ?? {})) if (kept.has(v)) distTags[tag] = v
-  const newest = [...kept].sort((a, b) => Date.parse(time[b]!) - Date.parse(time[a]!))[0]
-  if (newest) distTags.latest = newest
+  // upstream's own `latest` survives the loop above when its version is kept; only re-point it when it was
+  // dropped (too young/refused), and prefer the highest release semver over newest-by-time, so a nightly,
+  // prerelease or old major published more recently never wins over a real release (ei0.11)
+  if (!distTags.latest) {
+    const fallback = highestRelease([...kept]) ?? [...kept].sort((a, b) => Date.parse(time[b]!) - Date.parse(time[a]!))[0]
+    if (fallback) distTags.latest = fallback
+  }
   return { ...p, versions, time, 'dist-tags': distTags }
 }
 

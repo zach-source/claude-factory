@@ -39,6 +39,16 @@ const routes: Record<string, Route> = {
   '/example.com/bad500/@v/v1.0.0.info': { status: 500, body: 'internal error' },
   '/example.com/notime/@v/v1.0.0.info': { status: 200, body: '{"Version":"v1.0.0"}' },
   '/allowed.example.com/mod/@v/v9.9.9.info': { status: 200, body: GO_ALLOWLISTED_INFO },
+  // a module whose real @latest (v1.2.0) is too young, with an old-enough pseudo-version published more
+  // recently than the old-enough release -- proves the fallback picks the release, not the newest by time (ei0.11)
+  '/example.com/preview/@latest': { status: 200, body: '{"Version":"v1.2.0","Time":"2026-10-10T12:00:00Z"}' },
+  '/example.com/preview/@v/list': { status: 200, body: 'v1.0.0\nv1.1.0-0.20261001120000-abcdef123456\nv1.2.0\n' },
+  '/example.com/preview/@v/v1.0.0.info': { status: 200, body: '{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}' },
+  '/example.com/preview/@v/v1.1.0-0.20261001120000-abcdef123456.info': {
+    status: 200,
+    body: '{"Version":"v1.1.0-0.20261001120000-abcdef123456","Time":"2026-10-05T00:00:00Z"}',
+  },
+  '/example.com/preview/@v/v1.2.0.info': { status: 200, body: '{"Version":"v1.2.0","Time":"2026-10-10T12:00:00Z"}' },
   '/sumdb/sum.golang.org/supported': { status: 200, body: '' },
   '/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0': { status: 200, body: 'fakehash\n' },
   '/nope': { status: 404, body: '{"error":"Not found"}' },
@@ -82,6 +92,31 @@ const npmPackument = (origin: string) =>
     },
   })
 const NPM_ABBREVIATED = JSON.stringify({ name: '@types/ms', 'dist-tags': { latest: '2.2.0' }, versions: {} })
+
+// a package whose upstream `latest` points at a too-young nightly, with an old-enough prerelease published
+// more recently than the old-enough release -- proves the re-point picks the release, not the newest by time (ei0.11)
+const previewVersion = (origin: string, version: string) => ({
+  name: 'preview-pkg',
+  version,
+  dist: { tarball: `${origin}/preview-pkg/-/preview-pkg-${version}.tgz`, shasum: 'x' },
+})
+const PREVIEW_PACKUMENT = (origin: string) =>
+  JSON.stringify({
+    name: 'preview-pkg',
+    'dist-tags': { latest: '3.0.0-nightly.20261010' }, // too young: dropped
+    versions: {
+      '1.0.0': previewVersion(origin, '1.0.0'),
+      '2.0.0-beta.1': previewVersion(origin, '2.0.0-beta.1'),
+      '3.0.0-nightly.20261010': previewVersion(origin, '3.0.0-nightly.20261010'),
+    },
+    time: {
+      created: '2020-01-01T00:00:00.000Z',
+      modified: '2026-10-10T12:00:00.000Z',
+      '1.0.0': '2024-01-01T00:00:00.000Z', // old release
+      '2.0.0-beta.1': '2026-09-01T00:00:00.000Z', // old enough, newer than 1.0.0, but a prerelease
+      '3.0.0-nightly.20261010': '2026-10-10T12:00:00.000Z', // ~12h before the test clock: too young
+    },
+  })
 const NPM_TARBALLS: Record<string, string> = {
   'ms-0.7.34.tgz': 'TARBALL-BYTES-0.7.34',
   'ms-2.1.0.tgz': 'TARBALL-BYTES-2.1.0',
@@ -163,6 +198,8 @@ beforeAll(() => {
           : new Response(NPM_ABBREVIATED, { headers: { 'content-type': 'application/json' } }) // no `time`: proves the gate always asks for the full doc
       const tarballFile = url.pathname.match(/^\/@types\/ms\/-\/(.+)$/)?.[1]
       if (tarballFile && NPM_TARBALLS[tarballFile]) return new Response(NPM_TARBALLS[tarballFile])
+      if (url.pathname === '/preview-pkg')
+        return new Response(PREVIEW_PACKUMENT(url.origin), { headers: { 'content-type': 'application/json' } })
       if (url.pathname === '/simple/requests/')
         return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
           ? new Response(pypiIndex(url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
@@ -229,6 +266,14 @@ test('@latest falls back to the newest old-enough version when the real latest i
   const r = await g(new Request('http://gate/go/golang.org/x/text/@latest'))
   expect(r.status).toBe(200)
   expect(await r.json()).toMatchObject({ Version: 'v0.26.0' })
+})
+
+test('@latest fallback picks the highest release, not a pseudo-version that is merely newer by time (ei0.11)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/go/example.com/preview/@latest'))
+  expect(r.status).toBe(200)
+  // v1.1.0-0.20261001120000-abcdef123456 is a newer, old-enough pseudo-version; v1.0.0 is the only release
+  expect(await r.json()).toMatchObject({ Version: 'v1.0.0' })
 })
 
 test('@latest passes through when the real latest is already old enough', async () => {
@@ -312,6 +357,15 @@ test('an old npm tarball is served byte-identical; a young one is refused', asyn
   const young = await g(new Request('http://gate/npm/@types/ms/-/ms-2.2.0.tgz'))
   expect(young.status).toBe(404)
   expect(await young.text()).toContain('pkg-gate')
+})
+
+test('a re-pointed npm `latest` picks the highest release, not a prerelease that is merely newer by time (ei0.11)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/npm/preview-pkg'))
+  expect(r.status).toBe(200)
+  const p = (await r.json()) as { versions: Record<string, unknown>; 'dist-tags': { latest: string } }
+  expect(Object.keys(p.versions).sort()).toEqual(['1.0.0', '2.0.0-beta.1']) // the nightly (young) is gone
+  expect(p['dist-tags'].latest).toBe('1.0.0') // not '2.0.0-beta.1', even though it was published more recently
 })
 
 test('npm upstream errors refuse rather than pass through', async () => {
