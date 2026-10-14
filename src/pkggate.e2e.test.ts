@@ -151,7 +151,15 @@ beforeAll(async () => {
         const body = JSON.stringify({
           name: PY_PROJECT,
           files: [
-            { filename: `${PY_DIST}-1.0.0-py3-none-any.whl`, url: `${url.origin}/files/${PY_DIST}-1.0.0-py3-none-any.whl`, 'upload-time': OLD_TIME, hashes: {} },
+            // core-metadata: true (PEP 658/714, no pinned hash) makes a real pip 25.3 GET <url>.metadata
+            // with no fallback (ei0.9) before downloading the wheel itself
+            {
+              filename: `${PY_DIST}-1.0.0-py3-none-any.whl`,
+              url: `${url.origin}/files/${PY_DIST}-1.0.0-py3-none-any.whl`,
+              'upload-time': OLD_TIME,
+              hashes: {},
+              'core-metadata': true,
+            },
             { filename: `${PY_DIST}-1.0.1-py3-none-any.whl`, url: `${url.origin}/files/${PY_DIST}-1.0.1-py3-none-any.whl`, 'upload-time': YOUNG_TIME, hashes: {} },
           ],
         })
@@ -159,6 +167,9 @@ beforeAll(async () => {
       }
       if (url.pathname === `/files/${PY_DIST}-1.0.0-py3-none-any.whl` && fixtures.wheelOld) return new Response(fixtures.wheelOld)
       if (url.pathname === `/files/${PY_DIST}-1.0.1-py3-none-any.whl` && fixtures.wheelYoung) return new Response(fixtures.wheelYoung)
+      // the same METADATA content buildWheel() packed into the wheel's own .dist-info, served separately
+      if (url.pathname === `/files/${PY_DIST}-1.0.0-py3-none-any.whl.metadata`)
+        return new Response(`Metadata-Version: 2.1\nName: ${PY_PROJECT}\nVersion: 1.0.0\n`)
 
       return new Response('not found', { status: 404 })
     },
