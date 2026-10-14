@@ -342,9 +342,23 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 - **Sync**: every 5 minutes each rig with a Dolt remote runs `bd sync` (pull, repair, push), so
   beads and claims from other machines reach dispatch and the factory's reach them. A remote
   nobody has pushed to yet, or a conflict sync won't settle, shows as the rig's error in the
-  console; seed a new remote once with `bd dolt push`.
+  console; seed a new remote once with `bd dolt push`. The `beads-remote` plugin (below) sets a
+  rig's remote up on any git host.
 - **Leases**: the run heartbeats its claim every 2 minutes, so a `bd reclaim` reaper never
   takes live work. Without `.beads/`, runs keep task lists in their reports instead.
+
+## Plugins
+
+`plugins/` holds Claude Code plugins that come with the factory, listed in this repo's marketplace:
+
+```sh
+/plugin marketplace add <path or git URL of this repo>
+/plugin install beads-remote@claude-factory
+```
+
+- **beads-remote**: a skill and script that make a repo's beads sync through its git remote on
+  any host (GitLab, GitHub, any git), or bring a remote's beads into a fresh clone. What a repo
+  needs before `factory rig add` on a new machine.
 
 ## Define a factory
 

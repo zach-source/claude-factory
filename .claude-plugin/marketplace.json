@@ -1,0 +1,16 @@
+{
+  "name": "claude-factory",
+  "owner": {
+    "name": "ztaylor"
+  },
+  "metadata": {
+    "description": "Plugins that come with claude-factory."
+  },
+  "plugins": [
+    {
+      "name": "beads-remote",
+      "source": "./plugins/beads-remote",
+      "description": "Sync a repo's beads (bd) through its git remote on any host: GitLab, GitHub or any git."
+    }
+  ]
+}
