@@ -245,6 +245,17 @@ esac
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
 })
 
+test("a task gone because serve exited fails the attempt with serve's log, not just \"was closed\"", () => {
+  launched('r8')
+  cluster('Running', { status: 'exited', log: 'serve died: Error: the laptop never sent brief.md', lines: [] })
+  const out = factory(['tick'])
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toContain('serve died: Error: the laptop never sent brief.md')
+  expect(existsSync(join(home, 'runs', 'r8', 't.gone'))).toBe(true)
+  rmSync(join(home, 'runs', 'r8'), { recursive: true })
+})
+
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
   launched('r4', false)
   const kubectl = join(dir, 'kubectl')

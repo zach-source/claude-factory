@@ -372,10 +372,11 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const phase = ax.phase(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
   if (phase === 'Pending' || phase === 'Suspended') return { status: phase.toLowerCase(), agent: 'ax' }
-  // gone, and why, kept next to the task's other files: a run's log only says the worker was closed
-  const gone = (why: string) => (
+  // gone, and why, kept next to the task's other files; `failed` carries it into the attempt's FAIL reason
+  // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
+  const gone = (why: string): WorkerInfo => (
     writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
-    null
+    { status: 'gone', failed: clip(why, 500) }
   )
   if (phase !== 'Running') return gone(`phase ${phase ?? 'not found'}`)
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
