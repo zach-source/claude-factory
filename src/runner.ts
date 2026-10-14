@@ -24,6 +24,8 @@ export type Job = {
   file: string
   /** the whole brief, for a runner whose workers start with no conversation (a resume gets the note in `file`) */
   brief(): string
+  /** checkpoint a local pane before its launch command, whose response can be lost */
+  created?(address: string): void
 }
 
 /**

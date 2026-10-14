@@ -34,16 +34,27 @@ test('the rigs tab draws each rig with its live stations, gates and stuck runs, 
   on('process.run', ($, e) => ({
     value: { exitCode: 0, stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '', stderr: '' } as never,
   }))
-  await $.command.run({ command: 'factory', args: 'status' }) // any command ticks after it
+  const commandContext = {
+    origin: { kind: 'composer' as const },
+    presentation: { isFullscreen: true, columns: 100 },
+  }
+  await $.command.run({ command: 'factory', args: 'status', ...commandContext }) // any command ticks after it
   await clock.settle()
-  await $.command.run({ command: 'factory', args: 'rigs' })
+  await $.command.run({ command: 'factory', args: 'rigs', ...commandContext })
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
       plugin: 'factory',
       surface,
       component: 'Pane',
       requestId: 'factory',
-      props: { bodyColumns: 100, placement: 'dock' },
+      props: {
+        title: 'Factory',
+        isFocused: true,
+        bodyColumns: 100,
+        placement: 'dock',
+        scroll: { offset: 0, bodyRows: 60 },
+        view: {},
+      },
       viewport: { columns: 100, rows: 60 },
     })
     const drawn = JSON.stringify(await ui.drawn())

@@ -18,9 +18,10 @@ import {
   writeSync,
 } from 'node:fs'
 import { spawn as spawnChild } from 'node:child_process'
+import { stopChildren } from './process-tree'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
-import { createActor, type Snapshot } from 'xstate'
+import { createActor, transition, type Snapshot } from 'xstate'
 import {
   compile,
   extend,
@@ -405,7 +406,7 @@ const herdrRunner: Runner = {
   launch: launchPane,
   info: (_run, pane) => paneInfo(pane),
   deliver: (pane, text) => (herdr('agent', 'prompt', pane, text), true),
-  close: pane => void Bun.spawnSync(['herdr', 'pane', 'close', pane]), // gone already is fine
+  close: closePane,
   phase: pane => paneInfo(pane)?.status ?? null,
 }
 
@@ -427,6 +428,15 @@ const axRunner: Runner = {
   phase: address => ax.phase(ax.taskOf(address))?.toLowerCase() ?? null,
 }
 Object.assign(runners, { herdr: herdrRunner, ax: axRunner })
+
+/** A failed or unconfirmed close must hold replacement, not leave two workers running. */
+function closePane(pane: string) {
+  if (paneInfo(pane) === null) return
+  const info = herdr('pane', 'process-info', '--pane', pane).process_info
+  stopChildren(info?.shell_pid)
+  herdr('pane', 'close', pane)
+  if (paneInfo(pane) !== null) fail(`worker pane ${pane} is still present after close`)
+}
 
 /**
  * commits on the run's base that name its bead: a quarter of triage's rejects were beads already fixed by a
@@ -636,6 +646,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the one question they must answer>\` and, when there are a few clear choices, a line \`Options: <first> | <second> | <third>\`, the one you recommend first: the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
+    'Use the process exit status or the tool task handle to detect completion: successful commands can produce empty output. Bound waits to the station deadline, reuse the same live task handle, and do not start a duplicate when an observation times out. Stop only subprocesses you started before reporting a timed out command.',
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
     '',
     ...tracking(run, node),
@@ -694,16 +705,39 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
   runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
 
-/** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
-function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
+/** a worker for a station; close its predecessor before allocating a replacement */
+function spawn(
+  run: Run,
+  def: Factory,
+  node: string,
+  c: Ctx,
+  started: (pane: string) => void,
+  session?: string,
+) {
+  if (c.pane) runnerOf(c.pane).close(c.pane)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   const full = () => brief(run, def, node, c, c.mail[node] ?? [])
   if (!session) writeFileSync(file, full())
-  return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
+  let registered = false
+  const address = runnerOfStation(run, def, node).launch({
+    run,
+    def,
+    node,
+    c,
+    session,
+    file,
+    brief: full,
+    created: pane => {
+      started(pane)
+      registered = true
+    },
+  })
+  if (!registered) started(address)
+  return address
 }
 
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
-function launchPane({ run, def, node, c, session, file }: Job) {
+function launchPane({ run, def, node, c, session, file, created: onCreated }: Job) {
   const tab = () =>
     herdr(
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
@@ -731,6 +765,8 @@ function launchPane({ run, def, node, c, session, file }: Job) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
+  // Retain ownership before launch: a lost response must not create an untracked worker.
+  onCreated?.(pane)
   herdr('pane', 'run', pane, launch(run, def, node, file, session))
   return pane
 }
@@ -1140,7 +1176,7 @@ export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? ''
 
 /**
  * what to do about a launch that has not shown its Claude yet: wait, press Enter (the command sat
- * unsent on the line), type it again, then give up. Each step counts as a nudge.
+ * unsent on the line), replace its pane and launch again, then give up. Each step counts as a nudge.
  */
 export function relaunch(sinceMs: number, nudges: number) {
   if (sinceMs <= LAUNCH_MS) return null
@@ -1205,8 +1241,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       }
       return 'awaiting trust'
     }
-    const pane = spawn(run, def, node, c)
-    send({ type: 'SPAWNED', seq: c.seq, pane })
+    spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane }))
     const box = c.mail[node] ?? [] // the brief carried the whole box
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
@@ -1215,23 +1250,21 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const info = runner.info(run, c.pane)
   if (info?.session && info.session !== c.session)
     send({ type: 'SESSION', seq: c.seq, session: info.session })
-  // a remote worker keeps its session where it ran: once gone, there is nothing to resume it from
+  // A remote session stays where it ran; local conversations can resume in a new pane.
   if (info === null && c.session && c.resumes < 1 && runner.local) {
-    send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session), isResume: true })
+    spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane, isResume: true }), c.session)
     return 'resuming'
   }
   const status = info?.status ?? null
   // its Claude exited and left the shell (a herdr restart keeps the panes, not their processes):
-  // resume the conversation in the same pane, once, as for a pane that closed
+  // replace the pane before resuming: missing agent detection does not prove the process exited
   // a just-resumed Claude takes seconds to show: give it the launch grace before calling it gone again
   if (runner.local && info && !info.agent && c.session && isClaude && now - c.startedAt > LAUNCH_MS) {
     if (c.resumes >= 1) {
       send({ type: 'FAIL', seq: c.seq, reason: `the worker's Claude exited in pane ${c.pane}` })
       return status
     }
-    herdr('pane', 'send-keys', c.pane, 'ctrl+u')
-    herdr('pane', 'run', c.pane, launch(run, def, node, resumeFile(run, node, c), c.session))
-    send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
+    spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane, isResume: true }), c.session)
     return 'resuming'
   }
   if (runner.local && info && !info.agent && !c.session && isClaude) {
@@ -1244,12 +1277,11 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       })
       return status
     }
+    if (step) send({ type: 'NUDGED', seq: c.seq })
     if (step === 'enter') herdr('pane', 'send-keys', c.pane, 'Enter')
     if (step === 'retype') {
-      herdr('pane', 'send-keys', c.pane, 'ctrl+u') // whatever is left on the line
-      herdr('pane', 'run', c.pane, launch(run, def, node, promptOf(run, node, c)))
+      spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane }))
     }
-    if (step) send({ type: 'NUDGED', seq: c.seq })
     return step ? 'relaunching' : 'starting'
   }
   const timeoutMin = n.timeoutMin ?? 60
@@ -1279,8 +1311,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return 'usage limit'
     }
     if (runner.local) {
-      runner.close(c.pane) // its Claude sits at the limit message
-      send({ type: 'SPAWNED', seq: c.seq, pane: spawn(run, def, node, c, c.session!) })
+      spawn(run, def, node, c, pane => send({ type: 'SPAWNED', seq: c.seq, pane }), c.session!)
       return 'account swapped'
     }
   }
@@ -1388,8 +1419,7 @@ function haltRun(
   if (def.nodes[node]!.gate) return null // a gate holds no worker: it still asks and can be decided
   const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
   if (!halt && back[run.id] === c.seq) {
-    const pane = spawn(run, def, node, c, c.session ?? undefined)
-    send({ type: 'RESUMED', seq: c.seq, pane })
+    spawn(run, def, node, c, pane => send({ type: 'RESUMED', seq: c.seq, pane }), c.session ?? undefined)
     const { [run.id]: _, ...rest } = back
     writeJson(resumeFile_(), rest)
     return 'resumed'
@@ -1415,7 +1445,8 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   const def = await loadFactory(run.factory)
   const file = join(runDir(run.id), 'state.json')
   const saved = readJson<Saved>(file)
-  const actor = createActor(compile(def), { snapshot: saved.snapshot }).start()
+  const machine = compile(def)
+  const actor = createActor(machine, { snapshot: saved.snapshot }).start()
   const lines = inboxLines(run.id)
   const ctx = () => actor.getSnapshot().context
   const save = () =>
@@ -1426,8 +1457,14 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     })
   const send = (e: Input, at = now) => {
     const pane = ctx().pane
-    actor.send({ ...e, at } as Ev)
-    if (pane && pane !== ctx().pane) runnerOf(pane).close(pane)
+    const event = { ...e, at } as Ev
+    const [next] = transition(machine, actor.getSnapshot(), event)
+    const launched = e.type === 'SPAWNED' || e.type === 'RESUMED'
+    // Close before advancing state, so a failure retains the old pane and retries its cleanup.
+    // spawn already closed its predecessor before creating the new pane (IDs can be reused).
+    if (!launched && pane && pane !== next.context.pane) runnerOf(pane).close(pane)
+    actor.send(event)
+    if (launched) save()
   }
 
   for (const line of lines.slice(saved.cursor)) {
@@ -2735,7 +2772,8 @@ const usage = `factory — herdr software factories on xstate
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
-  retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
+  retry <run>                       retry a stuck worker; other states are refused
+  goto <run> <node|done> | abort <run>   interrupt the current worker and record why it ended
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
 
@@ -2969,26 +3007,45 @@ if (import.meta.main && !queued)
       }
       case 'report': {
         const [id, seq, outcome, ...summary] = args
-        const { run, value, c } = current(id)
-        const [node] = where(value)
-        const n = (await loadFactory(run.factory)).nodes[node]
-        if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
-        const outcomes = Object.keys(n?.next ?? {}).concat(WORKER_OUTCOMES)
-        if (Number(seq) !== c.seq)
-          fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
-        if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
-        const text = summary.join(' ')
-        post(
-          run.id,
-          outcome === 'fail'
-            ? { type: 'FAIL', seq: c.seq, reason: text }
-            : outcome === 'blocked'
-              ? { type: 'BLOCKED', seq: c.seq, reason: text }
-              : outcome === 'handoff'
-                ? { type: 'HANDOFF', seq: c.seq, summary: text }
-                : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
-        )
-        console.log(`reported ${outcome} for ${node}; you are done, stop now`)
+        const release =
+          hold(`${loadRun(id).id}.report.lock`) ??
+          fail('another report is being submitted; retry after it finishes')
+        try {
+          const { run, value, c } = current(id)
+          const [node, sub] = where(value)
+          const n = (await loadFactory(run.factory)).nodes[node]
+          if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
+          const outcomes = Object.keys(n?.next ?? {}).concat(WORKER_OUTCOMES)
+          if (Number(seq) !== c.seq || sub !== 'working')
+            fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
+          if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
+          if (
+            inboxLines(run.id).some(line => {
+              const e = JSON.parse(line) as Ev
+              return 'seq' in e && e.seq === c.seq && ['DONE', 'FAIL', 'BLOCKED', 'HANDOFF'].includes(e.type)
+            })
+          )
+            fail(`station attempt ${seq} already reported; stop here`)
+          const text = summary.join(' ')
+          post(
+            run.id,
+            outcome === 'fail'
+              ? { type: 'FAIL', seq: c.seq, reason: text }
+              : outcome === 'blocked'
+                ? { type: 'BLOCKED', seq: c.seq, reason: text }
+                : outcome === 'handoff'
+                  ? { type: 'HANDOFF', seq: c.seq, summary: text }
+                  : {
+                      type: 'DONE',
+                      seq: c.seq,
+                      outcome: outcome!,
+                      summary: text,
+                    },
+          )
+          console.log(`reported ${outcome} for ${node}; you are done, stop now`)
+        } finally {
+          release()
+        }
         break
       }
       case 'decide': {
@@ -3032,9 +3089,17 @@ if (import.meta.main && !queued)
         console.log(`poked ${node} of ${run.id}`)
         break
       }
-      case 'retry':
-        post(loadRun(args[0]).id, { type: 'RETRY' })
+      case 'retry': {
+        const { run, value } = current(args[0])
+        const [node, sub] = where(value)
+        if (sub !== 'stuck')
+          fail(
+            `${run.id} is at ${node}/${sub || 'terminal'}; retry applies only to stuck workers. Inspect factory show ${run.id}; poke a working worker to request its status.`,
+          )
+        post(run.id, { type: 'RETRY' })
+        console.log(`queued retry for ${node} of ${run.id}`)
         break
+      }
       case 'goto': {
         const run = loadRun(args[0])
         const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')

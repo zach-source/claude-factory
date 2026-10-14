@@ -267,6 +267,23 @@ export function compile(def: Factory) {
           },
         },
         working: {
+          // No previous worker remains active during backoff, at a gate, or after completion.
+          exit: assign(({ context, event }) => ({
+            pane: null,
+            log:
+              context.pane && (event.type === 'GOTO' || event.type === 'ABORT')
+                ? [
+                    ...context.log,
+                    {
+                      node: id,
+                      attempt: context.attempt,
+                      outcome: 'interrupted',
+                      at: event.at,
+                      summary: `Manager ${event.type === 'GOTO' ? `goto ${event.node}` : 'abort'} interrupted worker sequence ${context.seq}${event.type === 'ABORT' && event.reason ? `: ${event.reason}` : ''}`,
+                    },
+                  ]
+                : context.log,
+          })),
           // a loop that keeps cycling is held for the manager instead of burning tokens
           always: {
             guard: ({ context }: { context: Ctx }) => context.seq > context.budget,
@@ -450,7 +467,7 @@ export function compile(def: Factory) {
             },
           },
         },
-        // the worker pane stays up here so the manager can inspect it
+        // The journal and prompt remain available for inspection; the failed worker is stopped.
         stuck: {
           on: {
             RETRY: {
