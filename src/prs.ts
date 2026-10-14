@@ -47,8 +47,14 @@ export type PrsFile = {
   version: 1
   /** when this run's bead was last searched for, so a live run is re-searched every 10 min */
   searchedAt?: number
-  /** an ended run gets one search after it ends, then never again */
+  /** an ended run gets one search after it ends, then never again; only a *successful* search (or the
+   * no-GitHub-owner case) may set this (wyc.11) — a failed search must not spend the run's one shot */
   searchedFinal?: boolean
+  /** consecutive failed `gh search prs` calls, backing off `needsSearch` the same way `errorStreak` backs
+   * off `needsView` (wyc.11), so a rate limit or blip doesn't retry every call ahead of the budget */
+  searchErrorStreak?: number
+  /** when the current search error streak started, 0/unset while searchErrorStreak is 0 */
+  searchErroredAt?: number
   prs: PrRecord[]
 }
 
@@ -243,14 +249,20 @@ export function needsView(
 }
 
 export type RunInfo = { run: string; ended: boolean; bead?: string; at: number }
-export type SearchState = { searchedAt?: number; searchedFinal?: boolean }
+export type SearchState = { searchedAt?: number; searchedFinal?: boolean; searchErrorStreak?: number; searchErroredAt?: number }
 const LIVE_SEARCH_MS = 10 * 60_000
 
-/** whether a run's bead is due another `gh search prs`: never without a bead; once more after a run ends,
- * then never; a live run, every 10 min */
+/** whether a run's bead is due another `gh search prs`: never without a bead; once more after a run ends
+ * (unless that search is still backing off a prior failure, wyc.11), then never; a live run, every 10 min
+ * (a live run's own 10-min gate already paces retries after a failure, so it gets no separate backoff) */
 export function needsSearch(run: Pick<RunInfo, 'ended' | 'bead'>, file: SearchState, now: number): boolean {
   if (!run.bead) return false
-  if (run.ended) return !file.searchedFinal
+  if (run.ended) {
+    if (file.searchedFinal) return false
+    const streak = file.searchErrorStreak ?? 0
+    if (streak > 0) return now - (file.searchErroredAt ?? 0) >= viewBackoff(streak)
+    return true
+  }
   return file.searchedAt === undefined || now - file.searchedAt >= LIVE_SEARCH_MS
 }
 
@@ -503,7 +515,17 @@ export async function buildPrs(
   // AC7's budget: which runs get another search, which (run, url) pairs get another view
   const runInfos: RunInfo[] = runs.map(r => ({ run: r.id, ended: r.ended, bead: r.bead, at: r.startAt }))
   const prsByRun = new Map(runs.map(r => [r.id, files.get(r.id)!.prs]))
-  const searchState = new Map(runs.map(r => [r.id, { searchedAt: r.file.searchedAt, searchedFinal: r.file.searchedFinal }]))
+  const searchState = new Map(
+    runs.map(r => [
+      r.id,
+      {
+        searchedAt: r.file.searchedAt,
+        searchedFinal: r.file.searchedFinal,
+        searchErrorStreak: r.file.searchErrorStreak,
+        searchErroredAt: r.file.searchErroredAt,
+      },
+    ]),
+  )
   const { searches, views } = due(runInfos, prsByRun, searchState, now, budget)
 
   for (const runId of searches) {
@@ -513,7 +535,7 @@ export async function buildPrs(
     if (!r.owner) {
       // wyc.8: no GitHub origin to search against; mark it searched (nothing found) rather than retry
       // `gh search prs --owner ''` every call
-      files.set(runId, { ...cur, searchedAt: now, searchedFinal: r.ended || cur.searchedFinal })
+      files.set(runId, { ...cur, searchedAt: now, searchedFinal: r.ended || cur.searchedFinal, searchErrorStreak: 0, searchErroredAt: 0 })
       continue
     }
     const res = await gh(['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`], {
@@ -521,8 +543,10 @@ export async function buildPrs(
       timeout: VIEW_TIMEOUT_MS,
     })
     if (res.code !== 0) {
+      // wyc.11: a failed search must not spend the run's one final-search shot (searchedFinal stays as
+      // it was); it only bumps an error streak so `needsSearch` backs off instead of retrying every call
       runErrors.set(runId, ghError(res.err))
-      files.set(runId, { ...cur, searchedAt: now, searchedFinal: r.ended || cur.searchedFinal })
+      files.set(runId, { ...cur, searchedAt: now, searchErrorStreak: (cur.searchErrorStreak ?? 0) + 1, searchErroredAt: now })
       continue
     }
     const found = parseSearch(res.out, r.startAt, r.endAt, now)
@@ -532,6 +556,8 @@ export async function buildPrs(
       prs: folded.map(p => ({ ...p, role: role(p, ctxOf(r)) })),
       searchedAt: now,
       searchedFinal: r.ended || cur.searchedFinal,
+      searchErrorStreak: 0,
+      searchErroredAt: 0,
     })
   }
 

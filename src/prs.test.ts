@@ -294,6 +294,16 @@ test('needsSearch: no bead never searches, a live run searches every 10 min, an 
   expect(needsSearch({ ended: true, bead: 'x' }, { searchedFinal: true }, now)).toBe(false)
 })
 
+test('needsSearch: an ended run whose final search errored backs off like a view error, but is never marked final by an error alone (wyc.11)', () => {
+  const now = 1_000_000_000
+  // one failed search: not final, but within the first backoff window (1 min)
+  expect(needsSearch({ ended: true, bead: 'x' }, { searchErrorStreak: 1, searchErroredAt: now - 30_000 }, now)).toBe(false)
+  // past the backoff window: due again
+  expect(needsSearch({ ended: true, bead: 'x' }, { searchErrorStreak: 1, searchErroredAt: now - 61_000 }, now)).toBe(true)
+  // searchedFinal is never set by an error, so the run keeps retrying instead of giving up for good
+  expect(needsSearch({ ended: true, bead: 'x' }, { searchErrorStreak: 1, searchErroredAt: now - 61_000, searchedFinal: false }, now)).toBe(true)
+})
+
 test('due orders live runs before ended runs (newest first) and stops at the search and view budgets, leaving the rest for later', () => {
   const now = 1_000_000_000
   const runs = [
@@ -782,6 +792,40 @@ test("buildPrs: an ended run's search drops a hit created after it ended, like a
   const prs = rows[0]!.prs
   expect(prs.find(p => p.number === 700)).toBeDefined()
   expect(prs.find(p => p.number === 701)).toBeUndefined()
+})
+
+test('buildPrs: a failed final search is retried (not given up on) once its backoff elapses, and finds the PR search alone could ever surface (wyc.11)', async () => {
+  const now1 = 3_000_000_000
+  const gh1 = fakeGh([
+    { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
+    { when: 'search prs --owner acme', reply: { code: 1, out: '', err: 'rate limit' } },
+  ])
+  const r1 = run({ ended: true, endAt: 1791819735929 })
+  const first = await buildPrs([r1], IS_STATION, gh1, now1)
+  const file1 = first.files.get(RUN_ID)!
+  expect(file1.searchedFinal).not.toBe(true) // a failed search must not spend the run's one shot
+  expect(first.rows[0]!.error).toBeDefined()
+
+  // immediately again: still backing off, gh must not be re-called
+  const calls2: string[][] = []
+  const gh2 = fakeGh([{ when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } }], calls2)
+  const r2 = run({ ended: true, endAt: 1791819735929, file: file1 })
+  await buildPrs([r2], IS_STATION, gh2, now1 + 1_000)
+  expect(calls2.some(c => c[0] === 'search')).toBe(false)
+
+  // past the backoff window, with a healthy gh: the PR search alone could find is finally found
+  const now2 = now1 + 2 * 60_000
+  const gh3 = fakeGh([
+    { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
+    {
+      when: 'search prs --owner acme',
+      reply: { code: 0, out: JSON.stringify([{ url: 'https://github.com/acme/widget/pull/700', createdAt: '2026-10-12T15:45:00Z' }]), err: '' },
+    },
+  ])
+  const r3 = run({ ended: true, endAt: 1791819735929, file: file1 })
+  const second = await buildPrs([r3], IS_STATION, gh3, now2)
+  expect(second.rows[0]!.prs.find(p => p.number === 700)).toBeDefined()
+  expect(second.files.get(RUN_ID)!.searchedFinal).toBe(true) // only a success spends the one shot
 })
 
 test('buildPrs spends at most the view budget in one call, 6 at a time, deferring the rest', async () => {
