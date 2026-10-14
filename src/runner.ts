@@ -12,6 +12,8 @@ export type WorkerInfo = {
   tail?: string
   /** an ongoing egress-gateway outage the worker is retrying a turn through: see worker.ts egressFailure */
   egress?: { since: number; tries: number; last: string }
+  /** set once a runner gives up retrying something itself (a put stuck over ax ssh): the reconciler fails the attempt with this reason instead of retrying silently */
+  failed?: string
 }
 
 /** what a runner needs to start a worker for one station attempt */

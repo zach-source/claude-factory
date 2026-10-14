@@ -170,7 +170,9 @@ test("a task's phase is read from ax get, and a deleted task has none", () => {
   expect(ax.phase('t')).toBe('Suspended')
 })
 
-test('poll and prompt go through ax ssh, the prompt base64 so ax cannot take it for its flags', () => {
+const AS_WORKER = ['setpriv', '--reuid=worker', '--regid=worker', '--init-groups', 'env', 'HOME=/home/worker', 'USER=worker']
+
+test('poll, prompt and put run as the worker user over ax ssh, the prompt base64 so ax cannot take it for its flags', () => {
   writeFileSync(
     join(dir, 'ssh'),
     JSON.stringify({
@@ -185,10 +187,52 @@ test('poll and prompt go through ax ssh, the prompt base64 so ax cannot take it 
     lines: ['{"argv":["mail"]}'],
   })
   ax.prompt('t', '-a sneaky')
+  expect(ax.put('t', 'brief.md', 0, 1, 'aGVsbG8=')).toEqual({ ok: true })
   expect(logged()).toEqual([
-    '-a factory ssh t -- factory worker poll 4',
-    `-a factory ssh t -- factory worker prompt ${Buffer.from('-a sneaky').toString('base64')}`,
+    `-a factory ssh t -- ${AS_WORKER.join(' ')} factory worker poll 4`,
+    `-a factory ssh t -- ${AS_WORKER.join(' ')} factory worker prompt ${Buffer.from('-a sneaky').toString('base64')}`,
+    `-a factory ssh t -- ${AS_WORKER.join(' ')} factory worker put brief.md 0 1 aGVsbG8=`,
   ])
+})
+
+test('FACTORY_AX_CAPABILITIES empty keeps poll, prompt and put as the bare root command, for a VM where serve stayed root', () => {
+  process.env.FACTORY_AX_CAPABILITIES = ''
+  try {
+    writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'idle', lines: [] }))
+    ax.poll('t', 0)
+    ax.prompt('t', 'hi')
+    ax.put('t', 'brief.md', 0, 1, 'aGVsbG8=')
+    expect(logged()).toEqual([
+      '-a factory ssh t -- factory worker poll 0',
+      `-a factory ssh t -- factory worker prompt ${Buffer.from('hi').toString('base64')}`,
+      '-a factory ssh t -- factory worker put brief.md 0 1 aGVsbG8=',
+    ])
+  } finally {
+    delete process.env.FACTORY_AX_CAPABILITIES
+  }
+})
+
+test('a put that fails over ax ssh returns {ok: false} with ax\'s stderr, instead of a bare boolean', () => {
+  const failer = join(dir, 'ax-failput')
+  writeFileSync(
+    failer,
+    `#!/bin/sh
+echo "$*" >> ${calls}
+echo 'EACCES: permission denied, mkdir /workspace/w/.factory-worker/put' >&2
+exit 1
+`,
+  )
+  chmodSync(failer, 0o755)
+  const saved = process.env.FACTORY_AX
+  process.env.FACTORY_AX = failer
+  try {
+    expect(ax.put('t', 'brief.md', 0, 1, 'aGVsbG8=')).toEqual({
+      ok: false,
+      err: 'EACCES: permission denied, mkdir /workspace/w/.factory-worker/put',
+    })
+  } finally {
+    process.env.FACTORY_AX = saved
+  }
 })
 
 test('the worker briefs once, runs queued prompts in the same session, and queues its reports', async () => {

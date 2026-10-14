@@ -142,12 +142,34 @@ export type FactoryDraft = {
   answered?: Record<string, string>
   /** the interview view's sub-tab */
   interviewTab?: 'open' | 'answered'
-  /** the questions answered in the interview view, newest last */
-  interviewed?: { key: string; run: string; node: string; question: string; answer: string; at: number }[]
+  /** the questions answered in the interview view, newest last; a run-based one keeps run/node, a bd
+   * decision keeps rig/bead instead */
+  interviewed?: {
+    key: string
+    run?: string
+    node?: string
+    rig?: string
+    bead?: string
+    question: string
+    answer: string
+    at: number
+  }[]
   /** the mail view's sub-tab */
   mailTab?: 'open' | 'answered'
   /** the board lists finished runs */
   isFinishedShown?: boolean
+}
+
+/** `factory decisions`' shape (src/cli.ts decisionsList): each rig's open bd decisions, or what stopped
+ * it reading them, plus any options the manager proposed for an item that had none */
+export type FactoryDecisions = {
+  rigs: {
+    rig: string
+    factory: string
+    beads: { id: string; title: string; description?: string; kind: 'bead' | 'owned' }[]
+    error?: string
+  }[]
+  proposals: Record<string, { question: string; options: string[]; at: number }>
 }
 
 declare module 'claude-code' {
@@ -164,6 +186,7 @@ declare module 'claude-code' {
       prs: FactoryPrs
       history: number[]
       draft: FactoryDraft
+      decisions: FactoryDecisions
     }
   }
 }

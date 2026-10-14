@@ -249,10 +249,15 @@ type TaskSide = {
   egress?: ax.Egress[]
   policy: boolean
   put?: string[]
+  /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
+  putFailedAt?: number
+  putError?: string
   /** where the VM shares the rig's beads, as at its launch: absent, the repo's GitHub origin */
   beadsRemote?: Rig['beadsRemote']
 }
 const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
+/** how long a failing put is retried before the attempt fails: a VM still waking fails ssh for a tick or two */
+const PUT_GRACE_MS = 5 * 60_000
 
 /**
  * the factory command a VM worker's outbox line may run here, as its station: a report on its own attempt,
@@ -367,10 +372,11 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const phase = ax.phase(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
   if (phase === 'Pending' || phase === 'Suspended') return { status: phase.toLowerCase(), agent: 'ax' }
-  // gone, and why, kept next to the task's other files: a run's log only says the worker was closed
-  const gone = (why: string) => (
+  // gone, and why, kept next to the task's other files; `failed` carries it into the attempt's FAIL reason
+  // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
+  const gone = (why: string): WorkerInfo => (
     writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
-    null
+    { status: 'gone', failed: clip(why, 500) }
   )
   if (phase !== 'Running') return gone(`phase ${phase ?? 'not found'}`)
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
@@ -384,10 +390,23 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   for (const name of side?.put ?? []) {
     const b64 = readFileSync(join(runDir(run.id), `${task}.${name}`)).toString('base64')
     const parts = Math.max(1, Math.ceil(b64.length / ax.PUT_PART))
-    for (let i = 0; i < parts; i++)
-      if (!ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)))
-        return { status: 'pending', agent: 'ax' }
+    for (let i = 0; i < parts; i++) {
+      const r = ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART))
+      if (r.ok) continue
+      // a VM still waking fails ssh too: this stays pending until the failure is PUT_GRACE_MS old
+      const failedAt = side!.putFailedAt ?? Date.now()
+      const err = clip(r.err.replace(/\s+/g, ' ').trim(), 300)
+      writeJson(sideFile(run, task), { ...side, putFailedAt: failedAt, putError: err })
+      if (Date.now() - failedAt < PUT_GRACE_MS) return { status: 'pending', agent: 'ax' }
+      return {
+        status: 'failed',
+        agent: 'ax',
+        failed: `factory worker put ${name} failed for 5 min over ax ssh: ${err}`,
+      }
+    }
     side!.put = side!.put!.filter(n => n !== name)
+    side!.putFailedAt = undefined
+    side!.putError = undefined
     writeJson(sideFile(run, task), side)
   }
   const cursorFile = join(runDir(run.id), `${task}.cursor`)
@@ -1331,6 +1350,12 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   }
   const runner = runnerOf(c.pane)
   const info = runner.info(run, c.pane)
+  // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
+  // of the generic "was closed" or a silent retry forever
+  if (info?.failed) {
+    send({ type: 'FAIL', seq: c.seq, reason: info.failed })
+    return info.status
+  }
   if (info?.session && info.session !== c.session)
     send({ type: 'SESSION', seq: c.seq, session: info.session })
   // a remote worker keeps its session where it ran: once gone, there is nothing to resume it from
@@ -2888,6 +2913,68 @@ async function prs() {
   })
 }
 
+type DecisionBead = { id: string; title: string; description?: string; kind: 'bead' | 'owned' }
+export type DecisionsRow = { rig: string; factory: string; beads: DecisionBead[]; error?: string }
+export type Proposal = { question: string; options: string[]; at: number }
+
+const decisionsFile = () => join(HOME, 'decisions.json')
+const proposals = (): Record<string, Proposal> => (existsSync(decisionsFile()) ? readJson(decisionsFile()) : {})
+
+/** each rig's open bd decisions: beads flagged for a person and ready, unassigned beads that are their call,
+ * never the factory's; a rig's own bd failure is its error, the rest still listed. Plus any proposed options
+ * the manager stored for an item that had none. */
+function decisionsList() {
+  const rows: DecisionsRow[] = rigs().map(rig => {
+    try {
+      const b = beads(rig.repo, 'factory')
+      const slim = (kind: 'bead' | 'owned') => (x: Bead) => ({
+        id: x.id,
+        title: x.title,
+        description: x.description,
+        kind,
+      })
+      return {
+        rig: rig.name,
+        factory: rig.factory,
+        beads: [...b.human().map(slim('bead')), ...b.owned().map(slim('owned'))],
+      }
+    } catch (err) {
+      return { rig: rig.name, factory: rig.factory, beads: [], error: (err as Error).message }
+    }
+  })
+  return { rigs: rows, proposals: proposals() }
+}
+
+/** the person's answer to a bd decision: a human-flagged bead is answered and closed, an owner-only one just
+ * gets a comment (queuing or starting it is a separate choice, made in the console or with start --owned) */
+function decisionsAnswer(rigName: string, id: string, text: string) {
+  if (process.env.FACTORY_FROM) fail("a worker cannot answer the person's decisions: mail the manager instead")
+  const b = beads(repoOf(rigName), 'factory/person')
+  if (b.human().some(x => x.id === id)) b.respond(id, text)
+  else b.comment(id, text)
+  console.log(`answered ${id}`)
+}
+
+/** the manager proposes 2+ options for an item the person would otherwise have to answer in their own words;
+ * never for a gate, which only the person decides, and never for a blocked-on-prompt item, which waits on the
+ * person looking at the worker's pane rather than on a choice */
+function decisionsPropose(key: string, question: string, optionsLine: string) {
+  if (process.env.FACTORY_FROM) fail("a worker cannot propose the person's decisions: mail the manager instead")
+  if (/^gate:/.test(key)) fail('a gate is decided by the person, never proposed options')
+  if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
+  if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
+  const options = optionsLine
+    .split('|')
+    .map(s => s.trim())
+    .filter(Boolean)
+  if (options.length < 2) fail('give at least two options, separated by |')
+  const all = proposals()
+  all[key] = { question, options, at: Date.now() }
+  mkdirSync(HOME, { recursive: true })
+  writeJson(decisionsFile(), all)
+  console.log(`proposed options for ${key}`)
+}
+
 /** the runs metrics count: every live run, and the ones factory rm kept in metrics.jsonl */
 /** what each Claude worker session of a run spent, from the transcripts in its worktree's project dir */
 function sessionsOf(run: Run): Session[] {
@@ -2977,6 +3064,9 @@ const usage = `factory — herdr software factories on xstate
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog | prs         JSON for the manager's views
+  decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
+                                     bd decisions (human-flagged and owner-only beads); answer one, as the
+                                     person, or let the manager propose options for an item that has none
   metrics [--rig r] [--since 7d] [--json]   how the factory performs: fates, ship rate, time to ship and on
                                      the approve gate, review loops, failures by kind, each station's outcomes
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
@@ -3210,6 +3300,28 @@ if (import.meta.main && !queued)
       case 'prs':
         console.log(JSON.stringify(await prs()))
         break
+      case 'decisions': {
+        const [sub, ...rest] = args
+        if (!sub || sub === 'list') {
+          console.log(JSON.stringify(decisionsList()))
+          break
+        }
+        if (sub === 'answer') {
+          const [rigName, id, ...text] = rest
+          if (!rigName || !id || !text.length) fail('usage: factory decisions answer <rig> <bead> <text...>')
+          decisionsAnswer(rigName!, id!, text.join(' '))
+          break
+        }
+        if (sub === 'propose') {
+          const [key, question, optionsLine] = rest
+          if (!key || !question || !optionsLine)
+            fail('usage: factory decisions propose <key> "<question>" "<a | b>"')
+          decisionsPropose(key!, question!, optionsLine!)
+          break
+        }
+        fail(`unknown decisions command "${sub}": list, answer or propose`)
+        break
+      }
       case 'queue': {
         const [repo, id, station] = args
         if (!repo || !id) fail('usage: factory queue <rig|repo> <bead> [station]')

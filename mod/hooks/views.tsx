@@ -7,6 +7,7 @@ import type {
   FactoryPrs,
   FactoryBead,
   FactoryBoard,
+  FactoryDecisions,
   FactoryDetail,
   FactoryDraft,
   FactoryEdge,
@@ -17,6 +18,7 @@ import type {
 import {
   BEAD_TYPES,
   bar,
+  beadInterviews,
   clockOf,
   dur,
   interviews,
@@ -28,6 +30,7 @@ import {
   rigStats,
   sparkline,
   track,
+  withProposals,
   type Interview,
 } from './view'
 
@@ -49,6 +52,8 @@ export type Actions = {
   jump: (pane: string) => void
   /** picks the backlog's type filter */
   backlogType: (type: string) => void
+  /** sweeps every rig's bd for open decisions, into the interview tab's open list */
+  sweep: () => void
 }
 
 type Base = { ui: UI; act: Actions; width: number; now: number }
@@ -750,14 +755,21 @@ export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
 }
 
 /** questions for the person from runs that hit a problem only they can settle, and the answers they gave */
-export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
+export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft, decisions: FactoryDecisions) {
   const { Box, Text, Button, Input } = p.ui
   const answered = Object.fromEntries((draft.interviewed ?? []).map(d => [d.key, d.answer]))
-  const open = interviews(board.runs, answered)
+  const open = withProposals(
+    [...interviews(board.runs, answered), ...beadInterviews(decisions.rigs, answered)],
+    decisions.proposals,
+  )
   const done = [...(draft.interviewed ?? [])].reverse()
   const tab = draft.interviewTab ?? 'open'
   return (
     <Box key="interview" flexDirection="column">
+      <Box gap={1} marginBottom={1}>
+        <Button key="iv-sweep" label="Interview me" variant="primary" onPress={() => p.act.sweep()} />
+        <Text dimColor>sweeps every rig's gates, parked or stuck runs, blocked workers and bd decisions</Text>
+      </Box>
       <Box gap={1} marginBottom={1}>
         {(['open', 'answered'] as const).map(t => (
           <Button
@@ -770,67 +782,96 @@ export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft)
           />
         ))}
       </Box>
+      {tab === 'open' &&
+        decisions.rigs
+          .filter(r => r.error)
+          .map(r => (
+            <Text key={`iv-err-${r.rig}`} color="red">
+              ! {r.rig}: {line(r.error!, 200)}
+            </Text>
+          ))}
       {tab === 'open' && open.length === 0 && (
         <Text dimColor>No run is stuck or waiting on your direction.</Text>
       )}
       {tab === 'open' &&
         open.map((iv, i) => {
           const typed = draft.replies?.[iv.key] ?? ''
+          const run = iv.run ? board.runs.find(r => r.id === iv.run) : undefined
           return (
             <Box key={iv.key} flexDirection="column" marginBottom={1}>
               <Box gap={1}>
                 <Text dimColor>{String(i + 1)}.</Text>
                 <Text color="magenta">{iv.rig ?? ''}</Text>
-                <Text bold>{iv.run}</Text>
+                {iv.run && <Text bold>{iv.run}</Text>}
+                {iv.bead && <Text bold>{iv.bead}</Text>}
                 <Text color={iv.kind === 'stuck' ? 'red' : 'blue'}>
-                  {iv.node} · {iv.kind} {dur(p.now - iv.at)}
+                  {iv.node ?? iv.kind} · {iv.kind}
+                  {iv.run ? ` ${dur(p.now - iv.at)}` : ''}
                 </Text>
-                <Button
-                  key={`iv-open-${iv.key}`}
-                  label="open run"
-                  dimColor
-                  onPress={() => p.act.show('run', iv.run)}
-                />
-              </Box>
-              <Text color="yellow" bold wrap="wrap">
-                ? {iv.question}
-              </Text>
-              <Text dimColor wrap="wrap">
-                {line(iv.context, 600)}
-              </Text>
-              {Input && (
-                <Input
-                  key={`iv-reply-${iv.key}`}
-                  placeholder={
-                    iv.options.length ? 'pick an option, add a note, or answer in your words' : 'your answer'
-                  }
-                  value={typed}
-                  onInput={v => p.act.draft({ replies: { ...draft.replies, [iv.key]: v } })}
-                  onSubmit={v => {
-                    p.act.draft({ replies: { ...draft.replies, [iv.key]: v } })
-                    if (v.trim()) p.act.interview(iv)
-                  }}
-                />
-              )}
-              <Box gap={1}>
-                {iv.options.map((o, j) => (
+                {iv.run && (
                   <Button
-                    key={`iv-opt-${iv.key}-${j}`}
-                    label={o}
-                    variant={j === 0 ? 'primary' : undefined}
-                    onPress={() => p.act.interview(iv, o)}
+                    key={`iv-open-${iv.key}`}
+                    label="open run"
+                    dimColor
+                    onPress={() => p.act.show('run', iv.run!)}
                   />
-                ))}
-                {typed.trim() && (
-                  <Button key={`iv-send-${iv.key}`} label="send answer" onPress={() => p.act.interview(iv)} />
                 )}
-                <Button
-                  key={`iv-abort-${iv.key}`}
-                  label="abort run"
-                  dimColor
-                  onPress={() => p.act.cli('abort', iv.run)}
-                />
               </Box>
+              {iv.kind === 'gate' ? (
+                run && gate(p, run, draft)
+              ) : (
+                <Box flexDirection="column">
+                  <Text color="yellow" bold wrap="wrap">
+                    ? {iv.question}
+                  </Text>
+                  <Text dimColor wrap="wrap">
+                    {line(iv.context, 600)}
+                  </Text>
+                </Box>
+              )}
+              {iv.kind === 'prompt' &&
+                (run?.pane ? (
+                  <Button key={`iv-jump-${iv.key}`} label="open pane" onPress={() => p.act.jump(run.pane!)} />
+                ) : null)}
+              {(iv.kind === 'parked' || iv.kind === 'stuck' || iv.kind === 'bead' || iv.kind === 'owned') && (
+                <Box flexDirection="column">
+                  {Input && (
+                    <Input
+                      key={`iv-reply-${iv.key}`}
+                      placeholder={
+                        iv.options.length ? 'pick an option, add a note, or answer in your words' : 'your answer'
+                      }
+                      value={typed}
+                      onInput={v => p.act.draft({ replies: { ...draft.replies, [iv.key]: v } })}
+                      onSubmit={v => {
+                        p.act.draft({ replies: { ...draft.replies, [iv.key]: v } })
+                        if (v.trim()) p.act.interview(iv)
+                      }}
+                    />
+                  )}
+                  <Box gap={1}>
+                    {iv.options.map((o, j) => (
+                      <Button
+                        key={`iv-opt-${iv.key}-${j}`}
+                        label={o}
+                        variant={j === 0 ? 'primary' : undefined}
+                        onPress={() => p.act.interview(iv, o)}
+                      />
+                    ))}
+                    {typed.trim() && (
+                      <Button key={`iv-send-${iv.key}`} label="send answer" onPress={() => p.act.interview(iv)} />
+                    )}
+                    {iv.run && (
+                      <Button
+                        key={`iv-abort-${iv.key}`}
+                        label="abort run"
+                        dimColor
+                        onPress={() => p.act.cli('abort', iv.run!)}
+                      />
+                    )}
+                  </Box>
+                </Box>
+              )}
             </Box>
           )
         })}
@@ -840,8 +881,10 @@ export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft)
           <Box key={`iv-done-${d.key}`} flexDirection="column" marginBottom={1}>
             <Box gap={1}>
               <Text dimColor>{clockOf(d.at)}</Text>
-              <Text bold>{d.run}</Text>
-              <Text color="cyan">{d.node}</Text>
+              <Text color="magenta">{d.rig ?? ''}</Text>
+              {d.run && <Text bold>{d.run}</Text>}
+              {d.bead && <Text bold>{d.bead}</Text>}
+              {d.node && <Text color="cyan">{d.node}</Text>}
             </Box>
             <Text wrap="wrap">? {d.question}</Text>
             <Text color="green" wrap="wrap">

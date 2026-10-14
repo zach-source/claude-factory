@@ -8,6 +8,7 @@ import type {
   FactoryBacklog,
   FactoryPrs,
   FactoryBoard,
+  FactoryDecisions,
   FactoryDetail,
   FactoryDraft,
   FactoryMail,
@@ -31,7 +32,17 @@ import {
   type Actions,
   type UI,
 } from './views'
-import { interviewAnswer, mailKey, patrol, quickAnswer, type Interview } from './view'
+import {
+  beadInterviews,
+  interviewAnswer,
+  interviewPrompt,
+  interviews,
+  mailKey,
+  patrol,
+  quickAnswer,
+  withProposals,
+  type Interview,
+} from './view'
 
 const PANE = 'factory'
 const TICK_MS = 5000
@@ -45,6 +56,10 @@ const peek = atom({ plugin: 'factory', key: 'peek' } as const, '')
 const backlog = atom({ plugin: 'factory', key: 'backlog' } as const, [] as FactoryBacklog)
 const backlogType = atom({ plugin: 'factory', key: 'backlogType' } as const, 'all')
 const prs = atom({ plugin: 'factory', key: 'prs' } as const, [] as FactoryPrs)
+const decisions = atom(
+  { plugin: 'factory', key: 'decisions' } as const,
+  { rigs: [], proposals: {} } as FactoryDecisions,
+)
 /** runs holding a worker, one sample a tick: the header's sparkline */
 const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
 const draft = atom(
@@ -66,11 +81,12 @@ const manual = (cli: string) => `## Software factory manager
 You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
 A message starting "[factory] patrol" is your loop. It lists what is new and the board; work through it in this order:
 1. Mail: answer a worker's question yourself (\`mail\`) when the goal, the journal or the factory's memory (\`${cli} memory search <query>\`) settles it; otherwise ask the person and name the run that waits. What the person decides that later runs should follow too, save: \`${cli} memory add "<summary>" "<the decision and why>"\`.
-2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog).
+2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog; \`${cli} decisions answer\` opens that same confirm dialog, for the same reason).
 3. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), ask them and name the pull request (they can also answer a parked or stuck station's question in the console's Interview tab, \`/factory interview\`): deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them; when it is resolved, mail that station and it wakes at once. \`${cli} waiting\` lists everything that waits on the person, with how to answer each: show it when they ask what they owe the factory.
+A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, human-flagged and owner-only bd beads) that have no options yet. Propose 2 or more short, concrete choices for each with \`${cli} decisions propose <key> "<question>" "<a | b>"\`, using the item's own key exactly as given; never for a \`gate:\` key, which only the person decides, and never for a \`prompt:\` key (a blocked worker waiting on a prompt in its pane): look at it instead.
 4. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
-5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: pass --owned only when the person names that bead; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
+5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: pass --owned only when the person names that bead (that start also opens the same confirm dialog as a gate); a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
 6. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped for you. Read each SKILL.md: install it (\`${cli} skills install <name>\`) only when its commands are right and safe for this factory and it saves you real work; otherwise \`${cli} skills reject <name> "<why>"\`. Tell the person what you installed.
 7. Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
 The factory CLI, through Bash:
@@ -104,6 +120,8 @@ const rt = {
   patrolAt: 0,
   /** when the PRs tab last asked GitHub */
   prsAt: 0,
+  /** when the interview tab last swept bd for decisions */
+  decisionsAt: 0,
   /** the board and rig goals the manager was last sent, and when */
   board: undefined as string | undefined,
   boardAt: 0,
@@ -252,7 +270,50 @@ async function refresh($: EngineInterface) {
     rt.prsAt = now
     const { isOk, out } = await factory($, ['prs'])
     if (isOk) await update($, prs, () => JSON.parse(out) as FactoryPrs)
+  } else if (shown === 'interview') {
+    // ponytail: a bd call per rig, at most once a minute while the tab is open; the button forces one now
+    const now = await $.clock.now()
+    if (now - rt.decisionsAt < 60_000) return
+    await sweepDecisions($)
   }
+}
+
+/** every rig's open bd decisions, into the interview tab's open list. A rig's own bd error is carried in its
+ * row (drawn by interviewView); a failed call itself (the CLI never ran, or its JSON did not parse) is told
+ * with a status line instead of dropped silently, so the person knows the open list may be stale. */
+async function sweepDecisions($: EngineInterface) {
+  rt.decisionsAt = await $.clock.now()
+  const { isOk, out } = await factory($, ['decisions'])
+  if (isOk) await update($, decisions, () => JSON.parse(out) as FactoryDecisions)
+  else $.ui.status(`factory decisions failed: ${out.split('\n')[0]?.slice(0, 80)}`)
+}
+
+/**
+ * the 'Interview me' button: refresh bd decisions now (sweepDecisions, also used by the throttled auto-refresh),
+ * then once ask the manager to propose options for whatever is still bare after merging any stored proposals
+ * (interviewPrompt excludes gates and anything that already has options). Skipped like a patrol: never from a
+ * background fork of the manager, and never while one patrol or interview round is already in its turn.
+ */
+async function interviewMe($: EngineInterface) {
+  await sweepDecisions($)
+  if (rt.isPatrolling) return
+  if (!(await isPaneSession($))) return
+  const [b, dec, d] = await Promise.all([read($, board), read($, decisions), read($, draft)])
+  const answered = Object.fromEntries((d.interviewed ?? []).map(x => [x.key, x.answer]))
+  const items = withProposals(
+    [...interviews(b.runs, answered), ...beadInterviews(dec.rigs, answered)],
+    dec.proposals,
+  )
+  const text = interviewPrompt(items)
+  if (!text) return
+  rt.isPatrolling = true
+  // not awaited: it resolves only once the session is idle and this round's turn starts, like a patrol
+  void $.prompt
+    .submit({ text })
+    .catch(() => {})
+    .finally(() => {
+      rt.isPatrolling = false
+    })
 }
 
 async function act($: EngineInterface, args: string[]) {
@@ -317,20 +378,32 @@ async function answer($: EngineInterface, m: FactoryMail, kind: 'approve' | 'rej
 }
 
 /**
- * the person's answer to an interview question, mailed to the run's station, which wakes a parked one; a stuck
- * one is retried with it in its inbox. The manager hears of it at its next patrol.
+ * the person's answer to an interview question. A parked or stuck run's answer mails its station, which wakes
+ * it; a stuck one is retried with it in its inbox. A bd decision's answer runs `factory decisions answer`,
+ * which comments on the bead (and closes it, for a human-flagged one); an owner-only bead's 'start now' also
+ * starts it, and a failed start returns before recording the answer, so the item stays open and the person
+ * can try again rather than it quietly vanishing while the bead never ran. Gate and prompt items never reach
+ * here: their buttons act directly (decide, jump). The manager hears of it at its next patrol.
  */
 async function interview($: EngineInterface, iv: Interview, choice?: string) {
   const typed = (await read($, draft)).replies?.[iv.key] ?? ''
   const text = interviewAnswer(iv, choice, typed)
   if (!text) return $.ui.toast('factory: pick an option or type an answer')
-  if (!(await act($, ['mail', iv.run, iv.node, text]))) return
-  if (iv.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', iv.run])
+  if (iv.kind === 'bead' || iv.kind === 'owned') {
+    if (!(await act($, ['decisions', 'answer', iv.rig!, iv.bead!, text]))) return
+    if (iv.kind === 'owned' && choice === 'start now') {
+      const row = (await read($, decisions)).rigs.find(r => r.rig === iv.rig)
+      if (!(await act($, ['start', row?.factory ?? 'lifecycle', iv.rig!, iv.bead!, '--owned']))) return
+    }
+  } else {
+    if (!(await act($, ['mail', iv.run!, iv.node!, text]))) return
+    if (iv.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', iv.run!])
+  }
   const at = await $.clock.now()
   rt.unsent.push({
-    run: iv.run,
+    run: iv.run ?? iv.bead ?? iv.key,
     from: 'person',
-    text: `answered ${iv.node}'s question in the console: ${text}`,
+    text: `answered ${iv.node ?? iv.rig ?? iv.kind}'s question in the console: ${text}`,
     at,
   })
   // not named answer: the mod loader takes any second `answer` in the file for a redeclared hook function
@@ -340,7 +413,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
     replies: { ...d.replies, [iv.key]: '' },
     interviewed: [
       ...(d.interviewed ?? []),
-      { key: iv.key, run: iv.run, node: iv.node, question: iv.question, answer: given, at },
+      { key: iv.key, run: iv.run, node: iv.node, rig: iv.rig, bead: iv.bead, question: iv.question, answer: given, at },
     ].slice(-100),
   }))
 }
@@ -359,6 +432,33 @@ async function jump($: EngineInterface, pane: string) {
   if (r?.exitCode !== 0) $.ui.toast(`factory: could not focus ${pane}`)
 }
 
+/** which Bash commands the manager model may not run without the person's explicit Allow: a gate decision,
+ * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
+ * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here.
+ * The shell still runs a backslash-newline line continuation and a quoted newline as one command, so this
+ * normalizes the first away (bash joins a `\`-newline pair with NO character, even mid-word, so this drops
+ * it rather than replacing it with a space) and matches across the second ([\s\S] instead of [^\n]) rather
+ * than testing the raw text verbatim. */
+function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
+  const command = rawCommand.replace(/\\\n/g, '')
+  if (/\bfactory\s+decide\b/.test(command))
+    return {
+      question: `The manager model wants to decide a factory gate: ${command.slice(0, 300)}. Allow it?`,
+      deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
+    }
+  if (/\bfactory\s+decisions\s+answer\b/.test(command))
+    return {
+      question: `The manager model wants to answer a person's bd decision: ${command.slice(0, 300)}. Allow it?`,
+      deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
+    }
+  if (/\bfactory\s+start\b[\s\S]*--owned\b/.test(command))
+    return {
+      question: `The manager model wants to start a bead carrying its owner's decisions: ${command.slice(0, 300)}. Allow it?`,
+      deny: 'The person did not confirm starting this owner-only bead.',
+    }
+  return null
+}
+
 function actions($: EngineInterface): Actions {
   return {
     cli: (...args) => void act($, args),
@@ -370,6 +470,7 @@ function actions($: EngineInterface): Actions {
     interview: (iv, choice) => void interview($, iv, choice),
     start: () => void startRun($),
     jump: pane => void jump($, pane),
+    sweep: () => void interviewMe($),
   }
 }
 
@@ -404,13 +505,13 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     // the model's shell cd's into rigs to read them: its factory commands still work this factory
     const pinned = rt.home ? { ...e, command: `export FACTORY_HOME='${rt.home}'\n${e.command}` } : e
-    // a gate is the person's call: the model may run decide only after they confirm it here
-    if (!/\bfactory\s+decide\b/.test(e.command)) return next(pinned)
-    const question = `The manager model wants to decide a factory gate: ${e.command.slice(0, 300)}. Allow it?`
-    const choice = await $.ui.ask(question, ['Allow', 'Deny']).catch(() => 'Deny')
-    return choice === 'Allow'
-      ? next(pinned)
-      : { deny: 'The person did not confirm this gate decision. Ask them which outcome they want.' }
+    // a gate, a bd decision answer and an owner-only start are the person's call: the model may run
+    // any of them only after they confirm it here, since it has no other way to intercept the manager's
+    // own shell (FACTORY_FROM, which refuses these for workers, is unset in the manager session)
+    const gated = gatedCommand(e.command)
+    if (!gated) return next(pinned)
+    const choice = await $.ui.ask(gated.question, ['Allow', 'Deny']).catch(() => 'Deny')
+    return choice === 'Allow' ? next(pinned) : { deny: gated.deny }
   })
 
   on('prompt.compose', async ($, e, next) => {
@@ -425,7 +526,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, shown, d, tail, bl, bt, pr, samples, dr, now] = await Promise.all([
+    const [b, shown, d, tail, bl, bt, pr, samples, dr, dec, now] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
@@ -435,6 +536,7 @@ export const register: Register = (on, options) => {
       read($, prs),
       read($, history),
       read($, draft),
+      read($, decisions),
       $.clock.now(),
     ])
     const p = { ui, act: actions($), width: e.props.bodyColumns, now }
@@ -459,7 +561,7 @@ export const register: Register = (on, options) => {
                 : shown === 'rigs'
                   ? rigsView(p, b)
                   : shown === 'interview'
-                    ? interviewView(p, b, dr)
+                    ? interviewView(p, b, dr, dec)
                     : boardView(p, b, dr)
     return (
       <Box flexDirection="column">
