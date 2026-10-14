@@ -114,6 +114,14 @@ beforeAll(async () => {
     port: 0,
     fetch(req) {
       const url = new URL(req.url)
+      // a transparency-log tile is raw hash bytes (binary, not text): proves the gate's /go/sumdb/ passthrough
+      // survives a real Bun.serve HTTP socket round-trip byte-identical, not just the in-process handler call
+      // pkggate.test.ts already covers (ei0.8; go's real GOSUMDB default needs a signed tree this fake sumdb
+      // can't produce, so the `go mod download` test below still runs with GOSUMDB=off)
+      if (url.pathname === '/sumdb/sum.golang.org/tile/8/0/000')
+        return new Response(new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]), {
+          headers: { 'content-type': 'application/octet-stream' },
+        })
       if (url.pathname === `/${GO_MODULE}/@v/list`) return new Response('v1.0.0\nv1.0.1\n')
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.info`)
         return new Response(JSON.stringify({ Version: 'v1.0.0', Time: OLD_TIME }), { headers: { 'content-type': 'application/json' } })
@@ -166,6 +174,12 @@ beforeAll(async () => {
 afterAll(() => {
   upstream.stop(true)
   gate.stop(true)
+})
+
+test('a binary sumdb tile passes through serve()\'s real HTTP socket byte-identical (ei0.8)', async () => {
+  const r = await fetch(`${gateBase}/go/sumdb/sum.golang.org/tile/8/0/000`)
+  expect(r.status).toBe(200)
+  expect(new Uint8Array(await r.arrayBuffer())).toEqual(new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]))
 })
 
 test.if(!!GO && !!ZIP)('go mod download: a young module version fails with pkg-gate in stderr; an old one succeeds', async () => {

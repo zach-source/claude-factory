@@ -198,9 +198,21 @@ async function goLatest(cfg: Resolved, mod: string) {
 
 async function handleGo(cfg: Resolved, path: string): Promise<Response> {
   if (path.startsWith('sumdb/')) {
-    const r = await fetchText(cfg, `${cfg.upstream.go}/${path}`)
-    if (!r.ok) return refuse(502, 'pkg-gate: sumdb upstream error')
-    return new Response(r.text)
+    // bytes, never text: /tile/ bodies are raw transparency-log hash data, and go's default GOSUMDB (via
+    // the proxy's /sumdb/ passthrough) fetches them -- decoding as UTF-8 and re-encoding (the old fetchText
+    // + `new Response(text)`) corrupts any byte above 0x7f, which fails checksum verification (ei0.8)
+    let upstream: Response
+    try {
+      upstream = await cfg.fetch(`${cfg.upstream.go}/${path}`)
+    } catch {
+      return refuse(502, 'pkg-gate: sumdb upstream error')
+    }
+    if (!upstream.ok) return refuse(502, 'pkg-gate: sumdb upstream error')
+    const buf = await upstream.arrayBuffer()
+    return new Response(buf, {
+      status: upstream.status,
+      headers: { 'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream' },
+    })
   }
   if (path.endsWith('/@latest')) return goLatest(cfg, path.slice(0, -'/@latest'.length))
   const marker = '/@v/'

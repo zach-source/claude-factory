@@ -23,6 +23,10 @@ require (
 const GO_ZIP_OLD = 'ZIPBYTES-v0.26.0'
 const GO_ALLOWLISTED_INFO = '{"Version":"v9.9.9","Time":"2026-10-10T23:00:00Z"}'
 
+// a transparency-log tile is raw hash bytes, not text: this probe (00 ff 80 c3, repeated) is exactly what
+// review found UTF-8 decoding turns into 00 ef bf bd ef bf bd... when passed through fetchText (ei0.8)
+const SUMDB_TILE_BYTES = new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3])
+
 // a fake upstream: proxy.golang.org (and a fake sumdb) answering only the exact paths the tests use
 type Route = { status: number; body: string; type?: string }
 const routes: Record<string, Route> = {
@@ -159,6 +163,8 @@ beforeAll(() => {
       if (url.pathname === '/simple/missingproj/') return new Response('not found', { status: 404 })
       if (url.pathname === '/simple/brokenproj/') return new Response('internal error', { status: 500 })
       if (PYPI_FILES[url.pathname]) return new Response(PYPI_FILES[url.pathname])
+      if (url.pathname === '/sumdb/sum.golang.org/tile/8/0/000')
+        return new Response(SUMDB_TILE_BYTES, { headers: { 'content-type': 'application/octet-stream' } })
       const r = routes[url.pathname]
       if (!r) return new Response('not found', { status: 404 })
       return new Response(r.body, { status: r.status, headers: r.type ? { 'content-type': r.type } : {} })
@@ -261,6 +267,13 @@ test('sumdb is proxied verbatim, including /supported', async () => {
   const lookup = await g(new Request('http://gate/go/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0'))
   expect(lookup.status).toBe(200)
   expect(await lookup.text()).toBe('fakehash\n')
+})
+
+test('sumdb passes a binary tile through byte-identical, not UTF-8-mangled (ei0.8)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/go/sumdb/sum.golang.org/tile/8/0/000'))
+  expect(r.status).toBe(200)
+  expect(new Uint8Array(await r.arrayBuffer())).toEqual(SUMDB_TILE_BYTES)
 })
 
 test('an npm packument drops the young version, re-points latest, and rewrites tarball URLs to the gate', async () => {
