@@ -106,6 +106,8 @@ Pulling means nothing on the cluster ever needs a route back to the laptop.
 
 ### Beads in the VM
 
+How the factory uses beads in general is in [beads.md](beads.md).
+
 The laptop keeps each rig's issue store in its own dolt server and pushes it to the repo's GitHub origin, where dolt keeps it under `refs/dolt/data`. The VM reaches GitHub through the egress gateway, so it works on that copy:
 
 - **Launch**: the laptop pushes the rig's store (`bd dolt push` in the run's worktree), so what it wrote since (the run's plan, say) is on GitHub, and sets `FACTORY_BEADS`.

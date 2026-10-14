@@ -211,7 +211,7 @@ rejected in review) gets a comment and the `close` label, and the next pass clos
 
 ## Beads: planning and execution
 
-In a repo with `.beads/`, beads is the factory's task tracker:
+In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](docs/beads.md) is the guide: making a rig, queueing work, epics, claims, sharing across machines and common problems.
 
 - **Every run works a bead**, its epic. `start` claims the bead its goal names
   (`/factory start lifecycle ~/repos/my-app fx-12`) or creates one from the goal.
