@@ -23,6 +23,8 @@ export type FactoryRun = {
   wakeAt?: number
   /** when its current station's box last got mail: a reply to what it asked */
   mailedAt?: number
+  /** set on a rig's row (not a run's) while the rig has room, no goal and no ready beads */
+  idle?: string
   /** minutes its current worker has run */
   inMin?: number
   /** minutes since its worker's tail or branch head last changed */

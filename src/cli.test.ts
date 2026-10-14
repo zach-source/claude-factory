@@ -6,6 +6,7 @@ import { compile, fill, validate } from './machine'
 import {
   deadline,
   haltStep,
+  idle,
   isTrusted,
   labelAction,
   lastContext,
@@ -349,4 +350,10 @@ test('progress restarts when the fingerprint or the worker changes', () => {
   expect(progressNow(p, 1, 'a', 500)).toBe(p)
   expect(progressNow(p, 1, 'b', 500).at).toBe(500)
   expect(progressNow({ ...p, nudged: true }, 2, 'a', 500).nudged).toBe(false)
+})
+
+test('a rig with no goal and no ready beads is idle', () => {
+  expect(idle({}, 0)).toBe(true)
+  expect(idle({ goal: 'v2' }, 0)).toBe(false) // the manager steers it
+  expect(idle({}, 2)).toBe(false)
 })

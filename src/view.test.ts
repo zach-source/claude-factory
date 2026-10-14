@@ -246,3 +246,11 @@ test('patrol lines carry the attempt, time in station, quiet time and a paused r
   )
   expect(text).toContain('Add /health')
 })
+
+test('patrol lists a rig with nothing to start once, without waking the manager every heartbeat', () => {
+  const rig = { id: 'rig:web', rig: 'web', idle: 'no goal, no ready beads' }
+  const first = patrol([rig], [], new Set(), false)!
+  expect(first.text).toContain('- rig web: idle, no goal, no ready beads')
+  expect(first.keys).toEqual(['idle:web'])
+  expect(patrol([rig], [], new Set(first.keys), true)).toBeNull()
+})

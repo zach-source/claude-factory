@@ -57,7 +57,7 @@ export const isLive = (r: FactoryRun) => !!r.node && r.node !== 'done' && r.node
 
 /** one phrase and one color for where a run stands */
 export function standing(r: FactoryRun, now: number) {
-  if (!r.node) return { word: 'error', color: 'red' }
+  if (!r.node) return r.idle ? { word: 'idle', color: 'gray' } : { word: 'error', color: 'red' }
   if (r.node === 'done') return { word: 'done', color: 'gray' }
   if (r.node === 'aborted') return { word: 'aborted', color: 'gray' }
   if (r.gate) return { word: 'awaiting you', color: 'yellow' }

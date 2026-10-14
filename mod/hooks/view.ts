@@ -90,6 +90,7 @@ export const line = (text: string, max: number) => {
 export const clockOf = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
+const idleKey = (r: FactoryRun) => `idle:${r.rig}`
 const blockKey = (r: FactoryRun) => `${r.id}:${r.node}:${r.since}`
 
 /** one manager message, across ticks: a run's mail is told apart by when it was sent */
@@ -195,11 +196,14 @@ export function patrol(
   const busy = (g: FactoryRig) => rigStats(g, runs).busy
   const goals = rigs.filter(g => g.goal)
   const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
-  if (!mail.length && !blocked.length && !(isDue && (isWorking || hasRoom))) return null
+  // ponytail: told once per rig for the session; a rig that idles again later waits for a restart or other news
+  const idle = runs.filter(r => r.idle && !seen.has(idleKey(r)))
+  if (!mail.length && !blocked.length && !idle.length && !(isDue && (isWorking || hasRoom))) return null
   const news = [
     // the whole report is a `factory show` away; a parked station's can run to pages
     ...mail.map(m => `- ${m.run} / ${m.from}: ${line(m.text, 300)}`),
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
+    ...idle.map(r => `- rig ${r.rig}: idle, ${r.idle}. Set it a goal or queue beads for it.`),
   ]
   const board = live.map(
     r =>
@@ -222,7 +226,7 @@ export function patrol(
       : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
     state === lastBoard ? 'Board and rig goals: unchanged since the last patrol.' : state,
   ].join('\n')
-  return { text, keys: blocked.map(blockKey), board: state }
+  return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state }
 }
 
 /** what an open pull request waits on, worst first: conflicts, failing checks, a review, then the merge */

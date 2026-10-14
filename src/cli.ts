@@ -186,6 +186,8 @@ export type Row = {
   wakeAt?: number
   /** when its current station's box last got mail: a reply to what it asked */
   mailedAt?: number
+  /** a rig row, not a run: the rig has room and nothing to start */
+  idle?: string
   /** minutes its current worker has run */
   inMin?: number
   /** minutes since its worker's tail or branch head last changed */
@@ -2313,6 +2315,9 @@ export const room = (
 const dispatchFile = () => join(HOME, 'dispatch.json')
 const syncFile = () => join(HOME, 'sync.json')
 
+/** a rig with room that dispatch has nothing to start for and no goal to steer the manager by sits unnoticed unless the board says so */
+export const idle = (rig: Pick<Rig, 'goal'>, ready: number) => !rig.goal && ready === 0
+
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
   if (halted() || !rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS))
@@ -2352,6 +2357,8 @@ async function dispatch() {
       const candidates = dispatchable(b.ready(), linked, Infinity).filter(
         x => !isOwned(x) && !openChildren(b, x.id).length,
       )
+      if (idle(rig, candidates.length))
+        errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
         if (room(rig, busy) <= 0) break
         let run, def
