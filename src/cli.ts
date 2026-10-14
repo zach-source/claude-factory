@@ -385,7 +385,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     const b64 = readFileSync(join(runDir(run.id), `${task}.${name}`)).toString('base64')
     const parts = Math.max(1, Math.ceil(b64.length / ax.PUT_PART))
     for (let i = 0; i < parts; i++)
-      if (!ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)))
+      if (!ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)).ok)
         return { status: 'pending', agent: 'ax' }
     side!.put = side!.put!.filter(n => n !== name)
     writeJson(sideFile(run, task), side)

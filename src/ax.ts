@@ -3,6 +3,8 @@
 // queues what the worker's `factory report|mail|memory add` would have done in an outbox, which the
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
+import { WORKER_USER } from './worker'
+
 const AX = () => process.env.FACTORY_AX ?? 'ax'
 const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
 /** the cluster's kube context for both ax and kubectl; unset, their current context */
@@ -255,18 +257,52 @@ export function phase(task: string) {
   if (/not ?found/i.test(r.err)) return null
   throw new Error(`ax get task: ${r.err}`)
 }
+/**
+ * a VM command as the worker user, not root: root over `ax ssh` has no DAC_OVERRIDE or CAP_FOWNER (see
+ * docs/remote-runner.md), so it cannot write `.factory-worker`, which `serve` gave to WORKER_USER. setpriv
+ * keeps root's HOME, which the worker cannot read, so `env` resets it (mirrors the env asWorker's re-exec
+ * gives serve, worker.ts:381). Without SETUID and SETGID (no spec.capabilities, serve stays root) the
+ * command goes over as given, since there is then nobody else to become.
+ */
+function asWorker(argv: string[]) {
+  const caps = CAPABILITIES()
+  if (!caps.includes('SETUID') || !caps.includes('SETGID')) return argv
+  return [
+    'setpriv',
+    `--reuid=${WORKER_USER}`,
+    `--regid=${WORKER_USER}`,
+    '--init-groups',
+    'env',
+    `HOME=/home/${WORKER_USER}`,
+    `USER=${WORKER_USER}`,
+    ...argv,
+  ]
+}
 export const poll = (task: string, cursor: number): Poll =>
-  JSON.parse(must(['ssh', task, '--', 'factory', 'worker', 'poll', String(cursor)]))
+  JSON.parse(must(['ssh', task, '--', ...asWorker(['factory', 'worker', 'poll', String(cursor)])]))
 // base64: ax parses its own flags anywhere on the line, so a prompt starting with -a or -n would be eaten
 export const prompt = (task: string, text: string) =>
-  must(['ssh', task, '--', 'factory', 'worker', 'prompt', Buffer.from(text).toString('base64')])
+  must([
+    'ssh',
+    task,
+    '--',
+    ...asWorker(['factory', 'worker', 'prompt', Buffer.from(text).toString('base64')]),
+  ])
 /**
  * one part of a file for the VM, over ssh: Substrate takes no env value past 32 KiB, so what is bigger (the
- * run's beads copy) comes after the task starts. A part stays under the 128 KiB an argument may be. false
- * while the VM is still waking: the next tick sends it again
+ * run's beads copy) comes after the task starts. A part stays under the 128 KiB an argument may be.
+ * `ok: false` while the VM is still waking, or when the worker user cannot be reached: the caller decides,
+ * from `err`, whether to try again or give up
  */
-export const put = (task: string, name: string, part: number, parts: number, base64: string) =>
-  ax(['ssh', task, '--', 'factory', 'worker', 'put', name, String(part), String(parts), base64]).ok
+export function put(task: string, name: string, part: number, parts: number, base64: string) {
+  const r = ax([
+    'ssh',
+    task,
+    '--',
+    ...asWorker(['factory', 'worker', 'put', name, String(part), String(parts), base64]),
+  ])
+  return r.ok ? { ok: true as const } : { ok: false as const, err: r.err }
+}
 export const PUT_PART = 96_000
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])

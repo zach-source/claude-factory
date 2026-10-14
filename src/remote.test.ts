@@ -112,6 +112,8 @@ esac
   chmodSync(join(dir, 'ax'), 0o755)
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
+// the default FACTORY_AX_CAPABILITIES (SETUID,SETGID,CHOWN): every `ax ssh` command runs as the worker user
+const AS_WORKER = 'setpriv --reuid=worker --regid=worker --init-groups env HOME=/home/worker USER=worker'
 const inbox = (id: string) => readFileSync(join(home, 'runs', id, 'inbox.jsonl'), 'utf8')
 
 test("a tick replays an AX worker's report from its outbox, and the task goes when the station ends", () => {
@@ -124,7 +126,7 @@ test("a tick replays an AX worker's report from its outbox, and the task goes wh
   expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1', node: 'a', agent: 'idle', pane: 'ax://t' })
   expect(readFileSync(join(home, 'runs', 'r1', 't.cursor'), 'utf8')).toBe('1')
   expect(inbox('r1')).toContain('"outcome":"ready"')
-  expect(called()).toContain('-a factory ssh t -- factory worker poll 0')
+  expect(called()).toContain(`-a factory ssh t -- ${AS_WORKER} factory worker poll 0`)
 
   const second = factory(['tick'])
   expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1', node: 'done' })
@@ -152,7 +154,7 @@ test('a worker waiting on the manager is suspended, and woken by the answer befo
   cluster('Running', { status: 'idle', lines: [] })
   factory(['tick'])
   const text = Buffer.from('[factory mail from manager] postgres').toString('base64')
-  expect(called()).toContain(`-a factory ssh t -- factory worker prompt ${text}`)
+  expect(called()).toContain(`-a factory ssh t -- ${AS_WORKER} factory worker prompt ${text}`)
   rmSync(join(home, 'runs', 'r2'), { recursive: true })
 })
 
@@ -189,9 +191,9 @@ test('files too big for the env (the brief) go to the VM over ssh in parts once 
   writeFileSync(join(home, 'runs', 'r6', 't.beads.jsonl.gz'), Bun.gzipSync('{"id":"x-1"}'))
   cluster('Running', { status: 'working', lines: [] })
   factory(['tick'])
-  expect(called()).toContain('ssh t -- factory worker put brief.md 0 3 ')
-  expect(called()).toContain('ssh t -- factory worker put brief.md 2 3 ')
-  expect(called()).toContain('ssh t -- factory worker put beads.jsonl.gz 0 1 ')
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put brief.md 0 3 `)
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put brief.md 2 3 `)
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put beads.jsonl.gz 0 1 `)
   expect(JSON.parse(readFileSync(side, 'utf8')).put).toEqual([])
   cluster('Running', { status: 'working', lines: [] })
   factory(['tick'])
