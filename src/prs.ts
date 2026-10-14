@@ -30,6 +30,16 @@ export type PrRecord = {
   updatedAt: string
   /** when gh last answered for this PR, 0 until the first refresh */
   checkedAt: number
+  /** whether the last `gh pr view` saw this PR's head as the run's own branch (wyc.4: a fact `role`
+   * needs on every recompute, not only the call that just viewed it) */
+  ownHead: boolean
+  /** whether the last `gh pr view`'s title or body named the run's bead; stored for the same reason */
+  namesIt: boolean
+  /** consecutive failed `gh pr view` calls, backing off `needsView` (wyc.10) so one broken PR cannot
+   * keep starving the view budget every call ahead of PRs that would otherwise be due */
+  errorStreak: number
+  /** when the current error streak started, 0 while errorStreak is 0 */
+  erroredAt: number
   error?: string
 }
 
@@ -40,6 +50,13 @@ export type PrsFile = {
   /** an ended run gets one search after it ends, then never again */
   searchedFinal?: boolean
   prs: PrRecord[]
+}
+
+/** whether two runs/<id>/prs.json contents are the same, so cli.ts only writes (and fsyncs) a file that
+ * actually changed (wyc.7): `buildPrs` always builds a fresh object/array for every run on every call,
+ * even when nothing about it changed, so a reference check would never skip a write */
+export function sameFile(a: PrsFile, b: PrsFile): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 /** owner/name and number out of a github.com pull request URL, or null for anything else */
@@ -95,6 +112,10 @@ const blank = (url: string, number: number, repo: string, station: string, at: n
   checks: { pass: 0, fail: 0, pending: 0 },
   updatedAt: '',
   checkedAt: 0,
+  ownHead: false,
+  namesIt: false,
+  errorStreak: 0,
+  erroredAt: 0,
 })
 
 /** folds mentions into an existing record list: a new URL gets a blank row at its first sighting; an
@@ -114,10 +135,14 @@ export function foldMentions(existing: PrRecord[], hits: Mention[]): PrRecord[] 
  * is really the run's, kept even when the record already exists from a mention alone */
 export type Found = { url: string; at: number; source: 'search' | 'branch' }
 
-/** AC2c: a search hit counts only when created at or after the run's start minus 10 min, so a pre-existing
- * PR the text search merely resembles (an earlier sibling's release PR) is dropped before it is ever added */
-export function keepSearchHit(createdAt: string, runStartAt: number): boolean {
-  return Date.parse(createdAt) >= runStartAt - 10 * 60_000
+/** AC2c, both bounds: a search hit counts only when created at or after the run's start minus 10 min and
+ * at or before it ended (a live run's `runEndAt` is Infinity) plus 10 min. The lower bound drops a
+ * pre-existing PR the text search merely resembles (an earlier sibling's release PR); the upper bound
+ * drops a later run's own PR for the same bead (wyc.5: without it, an ended run's final search claims
+ * every later run's PR as its own, since that search never runs again to notice the run has moved on) */
+export function keepSearchHit(createdAt: string, runStartAt: number, runEndAt: number): boolean {
+  const t = Date.parse(createdAt)
+  return t >= runStartAt - 10 * 60_000 && t <= runEndAt + 10 * 60_000
 }
 
 /** folds search/branch findings into an existing record list, marking every one (new or already known)
@@ -153,11 +178,17 @@ export function checksOf(rollup: { conclusion?: string | null; status?: string }
   return { pass, fail, pending }
 }
 
-/** what role() needs about a PR beyond what the stored record gives: headRefName and body are never
- * stored (a body is only ever used transiently, to test namesBead, never persisted or printed) */
+/** what role() needs about a PR beyond what the stored record gives: when `headRefName`/`body` are given
+ * (only right after a fresh `gh pr view`), ownHead/namesIt are computed from them; otherwise (every other
+ * recompute: AC2a's mention fold, AC2d's branch fold, AC2c's search fold, all of which run on every call
+ * whether or not they found anything new) the stored `ownHead`/`namesIt` facts are used instead, so a PR
+ * whose bead-naming body or own-branch head was only ever seen on one `gh pr view` keeps its role on every
+ * later call (wyc.4) rather than losing it the moment nothing fresh is in hand */
 export type RoleInput = Pick<PrRecord, 'repo' | 'title' | 'station' | 'corroborated'> & {
   headRefName?: string
   body?: string
+  ownHead?: boolean
+  namesIt?: boolean
 }
 export type RoleCtx = {
   runId: string
@@ -175,9 +206,10 @@ export type RoleCtx = {
  * rollback station (a routine release artifact that never names the bead); else 'companion'.
  */
 export function role(pr: RoleInput, ctx: RoleCtx): PrRole {
-  const ownHead = (pr.headRefName ?? '') === `factory/${ctx.runId}`
+  const ownHead = pr.headRefName !== undefined ? pr.headRefName === `factory/${ctx.runId}` : !!pr.ownHead
   const sameRepo = pr.repo === ctx.runRepo
-  const namesIt = ctx.bead ? namesBead(ctx.bead, `${pr.title}\n${pr.body ?? ''}`) : false
+  const namesIt =
+    pr.body !== undefined ? (ctx.bead ? namesBead(ctx.bead, `${pr.title}\n${pr.body}`) : false) : !!pr.namesIt
   const isOurs = ownHead || namesIt || pr.corroborated
   if (!isOurs) return 'mentioned'
   if (sameRepo) return 'code'
@@ -188,10 +220,26 @@ export function role(pr: RoleInput, ctx: RoleCtx): PrRole {
 
 const TTL_MS: Record<PrState, number> = { OPEN: 2 * 60_000, CLOSED: 30 * 60_000, MERGED: Infinity, UNKNOWN: 0 }
 
-/** whether a record is stale enough to spend a `gh pr view` on: a MERGED PR never needs one again */
-export function needsView(pr: Pick<PrRecord, 'state' | 'checkedAt'>, now: number): boolean {
+const MAX_BACKOFF_MS = 30 * 60_000
+
+/** how long a PR with `streak` consecutive failed views must wait past its last error before another is
+ * due: 1 min, 2, 4, 8... capped at 30 min, so one broken PR cannot keep retrying ahead of others every
+ * single call and starve the view budget (wyc.10) */
+export function viewBackoff(streak: number): number {
+  return streak <= 0 ? 0 : Math.min(2 ** (streak - 1) * 60_000, MAX_BACKOFF_MS)
+}
+
+/** whether a record is stale enough to spend a `gh pr view` on: a MERGED PR never needs one again; a PR
+ * on an error streak additionally waits out its backoff, on top of its state's own TTL */
+export function needsView(
+  pr: Pick<PrRecord, 'state' | 'checkedAt'> & Partial<Pick<PrRecord, 'errorStreak' | 'erroredAt'>>,
+  now: number,
+): boolean {
   if (pr.state === 'MERGED') return false
-  return now - pr.checkedAt >= TTL_MS[pr.state]
+  if (now - pr.checkedAt < TTL_MS[pr.state]) return false
+  const streak = pr.errorStreak ?? 0
+  if (streak > 0) return now - (pr.erroredAt ?? 0) >= viewBackoff(streak)
+  return true
 }
 
 export type RunInfo = { run: string; ended: boolean; bead?: string; at: number }
@@ -268,14 +316,14 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 
 /** AC2c parsed: `gh search prs ... --json url,createdAt` filtered by `keepSearchHit`, so a resembling PR
  * created before the run started is dropped before it ever becomes a Found */
-export function parseSearch(out: string, runStartAt: number, now: number): Found[] {
+export function parseSearch(out: string, runStartAt: number, runEndAt: number, now: number): Found[] {
   let hits: { url: string; createdAt: string }[]
   try {
     hits = JSON.parse(out)
   } catch {
     return []
   }
-  return hits.filter(h => keepSearchHit(h.createdAt, runStartAt)).map(h => ({ url: h.url, at: now, source: 'search' as const }))
+  return hits.filter(h => keepSearchHit(h.createdAt, runStartAt, runEndAt)).map(h => ({ url: h.url, at: now, source: 'search' as const }))
 }
 
 /** AC2d parsed: one `gh pr list --state all` per rig repo, independent of any run's budget */
@@ -318,8 +366,11 @@ export function parseView(out: string): Viewed | null {
 }
 
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh
- * headRefName/body this one call has (AC2/AC3), checkedAt bumped so its TTL restarts */
+ * headRefName/body this one call has (AC2/AC3) and its ownHead/namesIt facts stored for every later
+ * recompute (wyc.4), checkedAt bumped so its TTL restarts, and the error streak cleared on success */
 export function applyView(pr: PrRecord, viewed: Viewed, ctx: RoleCtx, now: number): PrRecord {
+  const ownHead = viewed.headRefName === `factory/${ctx.runId}`
+  const namesIt = ctx.bead ? namesBead(ctx.bead, `${viewed.title}\n${viewed.body}`) : false
   const next: PrRecord = {
     ...pr,
     title: viewed.title,
@@ -330,28 +381,40 @@ export function applyView(pr: PrRecord, viewed: Viewed, ctx: RoleCtx, now: numbe
     checks: viewed.checks,
     updatedAt: viewed.updatedAt,
     checkedAt: now,
+    ownHead,
+    namesIt,
+    errorStreak: 0,
+    erroredAt: 0,
     error: undefined,
   }
-  return { ...next, role: role({ ...next, headRefName: viewed.headRefName, body: viewed.body }, ctx) }
+  return { ...next, role: role(next, ctx) }
 }
 
-/** a failed `gh pr view`: the record keeps its last-known fields (AC6), only `error` changes; `checkedAt`
- * is left alone so the next call's budget finds it due again right away rather than waiting out its TTL */
-export const applyViewError = (pr: PrRecord, err: string): PrRecord => ({ ...pr, error: ghError(err) })
+/** a failed `gh pr view`: the record keeps its last-known fields (AC6), only `error` and the backoff
+ * streak change; `checkedAt` is left alone (the state's own TTL does not apply to a failed view), but a
+ * repeat failure now waits out `viewBackoff` before it is due again, so it stops starving the budget
+ * (wyc.10) */
+export const applyViewError = (pr: PrRecord, err: string, now: number): PrRecord => ({
+  ...pr,
+  error: ghError(err),
+  errorStreak: pr.errorStreak + 1,
+  erroredAt: now,
+})
 
-/** up to `limit` of `items` run through `fn` at once; order of starts is `items`' own */
-async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length)
+/** up to `limit` of `items` run through `fn` at once, in `items`' own start order; `stop()` is checked
+ * before every new start so a caller can cut the pool short (wyc.7's overall deadline) without aborting
+ * whatever is already in flight */
+async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>, stop: () => boolean = () => false): Promise<void> {
   let next = 0
   async function worker() {
     for (;;) {
+      if (stop()) return
       const i = next++
       if (i >= items.length) return
-      out[i] = await fn(items[i]!)
+      await fn(items[i]!)
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return out
 }
 
 export type RunMeta = {
@@ -360,11 +423,13 @@ export type RunMeta = {
   /** when the run started (the id's own base36 timestamp) */
   startAt: number
   ended: boolean
+  /** when the run ended (its last log entry), Infinity for a live run (wyc.5's upper search bound) */
+  endAt: number
   /** cwd for every `gh` call about this run's own rig */
   repoDir: string
   /** owner/name of the run's own rig repo */
   runRepo: string
-  /** the rig repo's GitHub owner, for `gh search prs --owner` */
+  /** the rig repo's GitHub owner, for `gh search prs --owner`; '' when the repo has no GitHub origin */
   owner: string
   log: Entry[]
   mail: { from: string; to: string; text: string; at: number }[]
@@ -381,11 +446,15 @@ export type BuildResult = {
 
 const VIEW_TIMEOUT_MS = 30_000
 
+const DEADLINE_MS = 60_000
+
 /**
  * one `factory prs` invocation's worth of work: folds every run's mentions and its rig's branch listing in
  * (no budget, both are cheap and already-fetched-once-per-rig), then spends the call's search and view
  * budget (AC7) on what `due()` says is most stale, live runs first. `gh` is `spawnGh` in production, a
- * fake in tests.
+ * fake in tests. `clock` (real time, separate from `now`'s recorded timestamps so tests stay deterministic)
+ * is checked against an overall deadline (wyc.7, default 60s, well under the mod's 120s kill) before every
+ * new `gh` call starts; whatever is left over is deferred to a later call, same as the search/view budget.
  */
 export async function buildPrs(
   runs: RunMeta[],
@@ -393,7 +462,11 @@ export async function buildPrs(
   gh: Gh,
   now: number,
   budget: Budget = DEFAULT_BUDGET,
+  clock: () => number = Date.now,
+  deadlineMs: number = DEADLINE_MS,
 ): Promise<BuildResult> {
+  const deadlineAt = clock() + deadlineMs
+  const overDeadline = () => clock() >= deadlineAt
   const files = new Map(runs.map(r => [r.id, r.file]))
   const ctxOf = (r: RunMeta): RoleCtx => ({ runId: r.id, runRepo: r.runRepo, bead: r.bead })
 
@@ -408,6 +481,7 @@ export async function buildPrs(
   const repos = [...new Map(runs.map(r => [r.repoDir, r])).values()]
   const runErrors = new Map<string, string>()
   for (const rep of repos) {
+    if (overDeadline()) break
     const res = await gh(['pr', 'list', '--state', 'all', '--limit', '100', '--json', 'url,headRefName'], {
       cwd: rep.repoDir,
       timeout: VIEW_TIMEOUT_MS,
@@ -433,18 +507,25 @@ export async function buildPrs(
   const { searches, views } = due(runInfos, prsByRun, searchState, now, budget)
 
   for (const runId of searches) {
+    if (overDeadline()) break
     const r = runs.find(x => x.id === runId)!
+    const cur = files.get(runId)!
+    if (!r.owner) {
+      // wyc.8: no GitHub origin to search against; mark it searched (nothing found) rather than retry
+      // `gh search prs --owner ''` every call
+      files.set(runId, { ...cur, searchedAt: now, searchedFinal: r.ended || cur.searchedFinal })
+      continue
+    }
     const res = await gh(['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`], {
       cwd: r.repoDir,
       timeout: VIEW_TIMEOUT_MS,
     })
-    const cur = files.get(runId)!
     if (res.code !== 0) {
       runErrors.set(runId, ghError(res.err))
       files.set(runId, { ...cur, searchedAt: now, searchedFinal: r.ended || cur.searchedFinal })
       continue
     }
-    const found = parseSearch(res.out, r.startAt, now)
+    const found = parseSearch(res.out, r.startAt, r.endAt, now)
     const folded = foldFound(cur.prs, found)
     files.set(runId, {
       ...cur,
@@ -454,21 +535,26 @@ export async function buildPrs(
     })
   }
 
-  await pool(views, 6, async ({ run: runId, url }) => {
-    const r = runs.find(x => x.id === runId)!
-    const res = await gh(['pr', 'view', url, '--json', 'title,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,updatedAt,headRefName,body'], {
-      cwd: r.repoDir,
-      timeout: VIEW_TIMEOUT_MS,
-    })
-    const cur = files.get(runId)!
-    const viewed = res.code === 0 ? parseView(res.out) : null
-    const prs = cur.prs.map(p => {
-      if (p.url !== url) return p
-      if (viewed) return applyView(p, viewed, ctxOf(r), now)
-      return applyViewError(p, res.code === 0 ? 'gh pr view: unparseable JSON' : res.err)
-    })
-    files.set(runId, { ...cur, prs })
-  })
+  await pool(
+    views,
+    6,
+    async ({ run: runId, url }) => {
+      const r = runs.find(x => x.id === runId)!
+      const res = await gh(['pr', 'view', url, '--json', 'title,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,updatedAt,headRefName,body'], {
+        cwd: r.repoDir,
+        timeout: VIEW_TIMEOUT_MS,
+      })
+      const cur = files.get(runId)!
+      const viewed = res.code === 0 ? parseView(res.out) : null
+      const prs = cur.prs.map(p => {
+        if (p.url !== url) return p
+        if (viewed) return applyView(p, viewed, ctxOf(r), now)
+        return applyViewError(p, res.code === 0 ? 'gh pr view: unparseable JSON' : res.err, now)
+      })
+      files.set(runId, { ...cur, prs })
+    },
+    overDeadline,
+  )
 
   const rows = runs.map(r => ({ run: r.id, prs: files.get(r.id)!.prs, error: runErrors.get(r.id) }))
   return { files, rows }

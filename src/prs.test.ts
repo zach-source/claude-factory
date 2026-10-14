@@ -13,7 +13,10 @@ import {
   needsView,
   prRef,
   role,
+  sameFile,
+  viewBackoff,
   type PrRecord,
+  type PrsFile,
 } from './prs'
 
 test('namesBead matches the bead itself and a dotted descendant, not a longer sibling or a shorter ancestor', () => {
@@ -35,6 +38,41 @@ test('checksOf tallies a statusCheckRollup by conclusion, unresolved checks coun
     checksOf([{ conclusion: 'SUCCESS' }, { conclusion: 'failure' }, { conclusion: null }, { conclusion: 'NEUTRAL' }]),
   ).toEqual({ pass: 2, fail: 1, pending: 1 })
   expect(checksOf()).toEqual({ pass: 0, fail: 0, pending: 0 })
+})
+
+test('sameFile tells cli.ts whether a prs.json actually changed, order of the prs array included (wyc.7)', () => {
+  const a: PrsFile = { version: 1, searchedAt: 1, prs: [] }
+  expect(sameFile(a, { ...a })).toBe(true)
+  expect(sameFile(a, { ...a, searchedAt: 2 })).toBe(false)
+  const withPr = (checkedAt: number): PrsFile => ({
+    version: 1,
+    prs: [
+      {
+        url: 'https://github.com/acme/widget/pull/1',
+        repo: 'acme/widget',
+        number: 1,
+        title: 't',
+        role: 'code',
+        station: 's',
+        firstSeenAt: 1,
+        source: 'report',
+        corroborated: true,
+        state: 'OPEN',
+        isDraft: false,
+        reviewDecision: '',
+        mergeStateStatus: '',
+        checks: { pass: 0, fail: 0, pending: 0 },
+        updatedAt: '',
+        checkedAt,
+        ownHead: true,
+        namesIt: false,
+        errorStreak: 0,
+        erroredAt: 0,
+      },
+    ],
+  })
+  expect(sameFile(withPr(1), withPr(1))).toBe(true) // equal content, different object identity
+  expect(sameFile(withPr(1), withPr(2))).toBe(false)
 })
 
 // shapes modeled on a real run: a dependency named only in prose (never linked), a PR linked once in a
@@ -129,11 +167,15 @@ test('foldFound marks a URL corroborated whether it already exists or is new, an
   expect(found.find(r => r.number === 551)!.source).toBe('branch') // new: credited to the finder
 })
 
-test('keepSearchHit drops a PR created before the run started minus the 10 min grace', () => {
+test('keepSearchHit drops a PR created before the run started minus the 10 min grace, or after it ended plus the grace (wyc.5)', () => {
   const runStart = 1791791066107 // the run's own start
-  expect(keepSearchHit('2026-10-12T07:40:00Z', runStart)).toBe(true) // inside the 10 min grace
-  expect(keepSearchHit('2026-10-11T00:00:00Z', runStart)).toBe(false) // a day earlier: a pre-existing PR
-  expect(keepSearchHit('2026-10-12T08:49:00Z', runStart)).toBe(true) // after the run started
+  const runEnd = 1791819735929 // the run's own last log entry
+  expect(keepSearchHit('2026-10-12T07:40:00Z', runStart, runEnd)).toBe(true) // inside the start's 10 min grace
+  expect(keepSearchHit('2026-10-11T00:00:00Z', runStart, runEnd)).toBe(false) // a day earlier: a pre-existing PR
+  expect(keepSearchHit('2026-10-12T08:49:00Z', runStart, runEnd)).toBe(true) // after the run started, before it ended
+  expect(keepSearchHit('2026-10-12T15:50:00Z', runStart, runEnd)).toBe(true) // inside the end's 10 min grace
+  expect(keepSearchHit('2026-10-13T00:00:00Z', runStart, runEnd)).toBe(false) // a later run of the same bead
+  expect(keepSearchHit('2026-10-13T00:00:00Z', runStart, Infinity)).toBe(true) // a live run has no upper bound yet
 })
 
 const CTX = { runId: RUN_ID, runRepo: 'acme/widget' }
@@ -219,6 +261,29 @@ test('needsView refreshes OPEN every 2 min and CLOSED every 30 min, never a MERG
   expect(needsView(at('UNKNOWN', 0), now)).toBe(true)
 })
 
+test('viewBackoff grows 1, 2, 4... minutes per consecutive failure, capped at 30 min', () => {
+  expect(viewBackoff(0)).toBe(0)
+  expect(viewBackoff(1)).toBe(60_000)
+  expect(viewBackoff(2)).toBe(2 * 60_000)
+  expect(viewBackoff(3)).toBe(4 * 60_000)
+  expect(viewBackoff(10)).toBe(30 * 60_000) // capped
+})
+
+test("needsView backs off a PR on an error streak past its state's own TTL, even though checkedAt never advances (wyc.10)", () => {
+  const now = 1_000_000_000
+  const openPastTtl = { state: 'OPEN' as const, checkedAt: now - 2 * 60_000 }
+  // no streak yet: due the moment the state's own TTL has passed, same as before
+  expect(needsView({ ...openPastTtl, errorStreak: 0, erroredAt: 0 }, now)).toBe(true)
+  // one failure a moment ago: still backing off
+  expect(needsView({ ...openPastTtl, errorStreak: 1, erroredAt: now - 1000 }, now)).toBe(false)
+  // one failure a full minute ago: due again
+  expect(needsView({ ...openPastTtl, errorStreak: 1, erroredAt: now - 60_000 }, now)).toBe(true)
+  // three failures, only a minute since the last: still backing off (needs 4 min)
+  expect(needsView({ ...openPastTtl, errorStreak: 3, erroredAt: now - 60_000 }, now)).toBe(false)
+  // an object with no error fields at all behaves like a 0 streak (back-compat with `due`'s Pick type)
+  expect(needsView(openPastTtl, now)).toBe(true)
+})
+
 test('needsSearch: no bead never searches, a live run searches every 10 min, an ended run searches once more then never', () => {
   const now = 1_000_000_000
   expect(needsSearch({ ended: false, bead: undefined }, {}, now)).toBe(false)
@@ -266,19 +331,26 @@ import {
   type RunMeta,
 } from './prs'
 
-test('parseSearch keeps a hit at or after the run start minus 10 min, drops an earlier one, and ignores unparseable output', () => {
+test('parseSearch keeps a hit at or after the run start minus 10 min and at or before it ended plus 10 min, drops anything outside that window, and ignores unparseable output', () => {
   const runStart = 1791791066107
+  const runEnd = 1791819735929
   const now = 2_000_000_000
   const hits = parseSearch(
     JSON.stringify([
-      { url: 'https://github.com/acme/widget/pull/551', createdAt: '2026-10-12T08:49:00Z' },
-      { url: 'https://github.com/acme/widget/pull/549', createdAt: '2026-10-11T00:00:00Z' },
+      { url: 'https://github.com/acme/widget/pull/551', createdAt: '2026-10-12T08:49:00Z' }, // kept
+      { url: 'https://github.com/acme/widget/pull/549', createdAt: '2026-10-11T00:00:00Z' }, // before start: dropped
+      { url: 'https://github.com/acme/widget/pull/552', createdAt: '2026-10-13T00:00:00Z' }, // after end: a later run's own PR, dropped
     ]),
     runStart,
+    runEnd,
     now,
   )
   expect(hits).toEqual([{ url: 'https://github.com/acme/widget/pull/551', at: now, source: 'search' }])
-  expect(parseSearch('not json', runStart, now)).toEqual([])
+  expect(parseSearch('not json', runStart, runEnd, now)).toEqual([])
+  // a live run (Infinity) keeps a hit no matter how recent
+  expect(
+    parseSearch(JSON.stringify([{ url: 'https://github.com/acme/widget/pull/552', createdAt: '2026-10-13T00:00:00Z' }]), runStart, Infinity, now),
+  ).toEqual([{ url: 'https://github.com/acme/widget/pull/552', at: now, source: 'search' }])
 })
 
 test('parseBranchList and branchFound: only the listed PR whose head is this run\'s own branch counts, bad JSON yields nothing', () => {
@@ -340,6 +412,10 @@ test('applyView refreshes gh-sourced fields, recomputes role from the fresh head
     checks: { pass: 0, fail: 0, pending: 0 },
     updatedAt: '',
     checkedAt: 0,
+    ownHead: false,
+    namesIt: false,
+    errorStreak: 1,
+    erroredAt: 500,
     error: 'stale: gh timed out',
   }
   const viewed = parseView(
@@ -361,9 +437,15 @@ test('applyView refreshes gh-sourced fields, recomputes role from the fresh head
   expect(next.role).toBe('companion') // names the bead, cross-repo
   expect(next.error).toBeUndefined()
   expect(next.checkedAt).toBe(999)
+  // wyc.4: the facts behind this role are stored, not just the role itself
+  expect(next.ownHead).toBe(false)
+  expect(next.namesIt).toBe(true)
+  // wyc.10: a success clears any prior error streak
+  expect(next.errorStreak).toBe(0)
+  expect(next.erroredAt).toBe(0)
 })
 
-test('applyViewError keeps every prior field and only sets a short, scrubbed error', () => {
+test('applyViewError keeps every prior field, sets a short scrubbed error, and bumps the backoff streak (wyc.10)', () => {
   const pr = {
     url: 'u',
     repo: 'acme/widget',
@@ -381,10 +463,16 @@ test('applyViewError keeps every prior field and only sets a short, scrubbed err
     checks: { pass: 0, fail: 0, pending: 0 },
     updatedAt: '',
     checkedAt: 123,
+    ownHead: false,
+    namesIt: false,
+    errorStreak: 0,
+    erroredAt: 0,
   }
-  const next = applyViewError(pr, 'HTTP 502: Bad Gateway\nfull stack trace, line after line'.repeat(10))
+  const next = applyViewError(pr, 'HTTP 502: Bad Gateway\nfull stack trace, line after line'.repeat(10), 999)
   expect(next.state).toBe('OPEN') // unchanged
-  expect(next.checkedAt).toBe(123) // unchanged: due again right away, not after the TTL
+  expect(next.checkedAt).toBe(123) // unchanged: the state's own TTL does not apply to a failed view
+  expect(next.errorStreak).toBe(1) // one failure so far
+  expect(next.erroredAt).toBe(999)
   expect(next.error).toBe('HTTP 502: Bad Gateway') // one line, cut short
   expect(next.error!.length).toBeLessThanOrEqual(201)
 })
@@ -394,6 +482,7 @@ const run = (over: Partial<RunMeta>): RunMeta => ({
   bead: 'ex-12.3',
   startAt: 1791791066107,
   ended: false,
+  endAt: Infinity,
   repoDir: '/repo/widget',
   runRepo: 'acme/widget',
   owner: 'acme',
@@ -540,6 +629,10 @@ test('buildPrs: a MERGED PR is never viewed again; a failed view on a second cal
     checks: { pass: 0, fail: 0, pending: 0 },
     updatedAt: '',
     checkedAt: 0,
+    ownHead: true,
+    namesIt: false,
+    errorStreak: 0,
+    erroredAt: 0,
   }
   const mergedPr = { ...openPr, url: 'https://github.com/acme/widget/pull/552', number: 552, state: 'MERGED' as const, checkedAt: now1 }
   const noList: GhResult = { code: 0, out: '[]', err: '' }
@@ -591,6 +684,106 @@ test('buildPrs: a MERGED PR is never viewed again; a failed view on a second cal
   expect(pr552.error).toBeUndefined() // the merged one was never touched this call either
 })
 
+test('buildPrs: a MERGED companion PR named only in its gh-viewed body keeps its role on a later call, even though that call never re-views it (wyc.4)', async () => {
+  const now1 = 1_000_000_000
+  const seed = {
+    url: 'https://github.com/acme/widget-deploy/pull/65',
+    repo: 'acme/widget-deploy',
+    number: 65,
+    title: '',
+    role: 'mentioned' as const,
+    station: 'deploy',
+    firstSeenAt: 1,
+    source: 'mail' as const,
+    corroborated: false,
+    state: 'UNKNOWN' as const,
+    isDraft: false,
+    reviewDecision: '',
+    mergeStateStatus: '',
+    checks: { pass: 0, fail: 0, pending: 0 },
+    updatedAt: '',
+    checkedAt: 0,
+    ownHead: false,
+    namesIt: false,
+    errorStreak: 0,
+    erroredAt: 0,
+  }
+  const noList: GhResult = { code: 0, out: '[]', err: '' }
+  const noSearch: GhResult = { code: 0, out: '[]', err: '' }
+  const gh1 = fakeGh([
+    { when: 'pr list --state all', reply: noList },
+    { when: 'search prs --owner', reply: noSearch },
+    {
+      when: 'pr view https://github.com/acme/widget-deploy/pull/65',
+      reply: {
+        code: 0,
+        out: JSON.stringify({
+          title: 'migrate-stage tester-trusted-root',
+          state: 'merged',
+          isDraft: false,
+          reviewDecision: '',
+          mergeStateStatus: 'MERGED',
+          statusCheckRollup: [],
+          updatedAt: '2026-10-12T09:10:00Z',
+          headRefName: 'release/widget-release-2026-10-12', // not the run's own branch
+          body: "carries ex-12.3's re-pin", // names the bead only here, in the body
+        }),
+        err: '',
+      },
+    },
+  ])
+  const r1 = run({ file: { version: 1, prs: [seed] } })
+  const first = await buildPrs([r1], IS_STATION, gh1, now1)
+  const pr65after1 = first.rows[0]!.prs.find(p => p.number === 65)!
+  expect(pr65after1).toMatchObject({ role: 'companion', state: 'MERGED' })
+
+  // a second call: MERGED is never re-viewed (needsView says so), so nothing refreshes headRefName/body
+  // this call; only the always-run mention fold recomputes role from the stored record
+  const now2 = now1 + 24 * 60 * 60_000
+  const gh2 = fakeGh([
+    { when: 'pr list --state all', reply: noList },
+    { when: 'search prs --owner', reply: noSearch },
+  ])
+  const r2 = run({ file: first.files.get(RUN_ID)! })
+  const second = await buildPrs([r2], IS_STATION, gh2, now2)
+  const pr65after2 = second.rows[0]!.prs.find(p => p.number === 65)!
+  expect(pr65after2.role).toBe('companion') // not demoted to 'mentioned' for lack of a fresh view
+  expect(pr65after2.state).toBe('MERGED')
+})
+
+test('buildPrs: a run whose rig has no GitHub owner never calls `gh search prs --owner \'\'`, and still marks itself searched so it is not retried every call (wyc.8)', async () => {
+  const now = 1_000_000_000
+  const calls: string[][] = []
+  const gh = fakeGh([{ when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } }], calls)
+  const r = run({ owner: '' })
+  const { files } = await buildPrs([r], IS_STATION, gh, now)
+  expect(calls.some(c => c[0] === 'search')).toBe(false)
+  expect(files.get(RUN_ID)!.searchedAt).toBe(now) // marked done, not left perpetually due
+})
+
+test("buildPrs: an ended run's search drops a hit created after it ended, like a later run of the same bead (wyc.5)", async () => {
+  const now = 3_000_000_000
+  const gh = fakeGh([
+    { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
+    {
+      when: 'search prs --owner acme',
+      reply: {
+        code: 0,
+        out: JSON.stringify([
+          { url: 'https://github.com/acme/widget/pull/700', createdAt: '2026-10-12T15:45:00Z' }, // while this run was active
+          { url: 'https://github.com/acme/widget/pull/701', createdAt: '2026-10-13T00:00:00Z' }, // a later run of the same bead
+        ]),
+        err: '',
+      },
+    },
+  ])
+  const r = run({ ended: true, endAt: 1791819735929 }) // the run's own last log entry
+  const { rows } = await buildPrs([r], IS_STATION, gh, now)
+  const prs = rows[0]!.prs
+  expect(prs.find(p => p.number === 700)).toBeDefined()
+  expect(prs.find(p => p.number === 701)).toBeUndefined()
+})
+
 test('buildPrs spends at most the view budget in one call, 6 at a time, deferring the rest', async () => {
   const now = 1_000_000_000
   const prs = Array.from({ length: 45 }, (_, i) => ({
@@ -610,6 +803,10 @@ test('buildPrs spends at most the view budget in one call, 6 at a time, deferrin
     checks: { pass: 0, fail: 0, pending: 0 },
     updatedAt: '',
     checkedAt: 0,
+    ownHead: false,
+    namesIt: false,
+    errorStreak: 0,
+    erroredAt: 0,
   }))
   let inFlight = 0
   let maxInFlight = 0
@@ -630,4 +827,30 @@ test('buildPrs spends at most the view budget in one call, 6 at a time, deferrin
   expect(maxInFlight).toBeLessThanOrEqual(6)
   const stillStale = rows[0]!.prs.filter(p => p.checkedAt === 0)
   expect(stillStale).toHaveLength(15) // deferred to a later call
+})
+
+test('buildPrs: an exhausted overall deadline stops spending new gh calls past it, leaving the rest for a later call (wyc.7)', async () => {
+  const now = 1_000_000_000
+  let clockCalls = 0
+  // the deadline check (`deadlineAt = clock() + deadlineMs`) uses its own clock, separate from `now`'s
+  // recorded timestamps: the first call sets up the 10ms deadline, the one right after still reports
+  // being inside it (so the first repo's branch list is fetched), everything after is reported as long
+  // past it
+  const clock = () => (++clockCalls <= 2 ? 0 : 1_000_000)
+  const calls: string[][] = []
+  const gh: Gh = async argv => {
+    calls.push(argv)
+    if (argv[0] === 'pr' && argv[1] === 'list') return { code: 0, out: '[]', err: '' }
+    return {
+      code: 0,
+      out: JSON.stringify({ title: '', state: 'open', isDraft: false, reviewDecision: '', mergeStateStatus: '', statusCheckRollup: [], updatedAt: '', headRefName: '', body: '' }),
+      err: '',
+    }
+  }
+  const r1 = run({ id: 'lifecycle-one', repoDir: '/repo/one' })
+  const r2 = run({ id: 'lifecycle-two', repoDir: '/repo/two' })
+  await buildPrs([r1, r2], IS_STATION, gh, now, DEFAULT_BUDGET, clock, 10)
+  const listCalls = calls.filter(c => c[0] === 'pr' && c[1] === 'list')
+  expect(listCalls).toHaveLength(1) // repo "two"'s branch list never ran: the deadline hit first
+  expect(calls.some(c => c[0] === 'search')).toBe(false) // the search loop never got a turn either
 })
