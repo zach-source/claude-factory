@@ -14,6 +14,7 @@ import {
   needsSwap,
   nextAccount,
   servedAt,
+  parsePkgGateMinDays,
   prOwner,
   loadFactory,
   missingSweeps,
@@ -356,4 +357,14 @@ test('a rig with no goal and no ready beads is idle', () => {
   expect(idle({}, 0)).toBe(true)
   expect(idle({ goal: 'v2' }, 0)).toBe(false) // the manager steers it
   expect(idle({}, 2)).toBe(false)
+})
+
+test('PKG_GATE_MIN_DAYS unset is undefined (the gate default), but a non-finite or negative value fails closed (ei0.10)', () => {
+  expect(parsePkgGateMinDays(undefined)).toBeUndefined()
+  expect(parsePkgGateMinDays('')).toBeUndefined()
+  expect(parsePkgGateMinDays('7')).toBe(7)
+  expect(() => parsePkgGateMinDays('four')).toThrow(/finite, non-negative/)
+  expect(() => parsePkgGateMinDays('NaN')).toThrow(/finite, non-negative/)
+  expect(() => parsePkgGateMinDays('Infinity')).toThrow(/finite, non-negative/)
+  expect(() => parsePkgGateMinDays('-1')).toThrow(/finite, non-negative/)
 })

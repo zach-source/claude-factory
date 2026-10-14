@@ -35,9 +35,14 @@ type Resolved = {
 const REGISTRY_CACHE_MS = 60_000
 
 function resolve(cfg: GateConfig): Resolved {
+  const minDays = cfg.minDays ?? 4
+  // a non-finite or negative minDays (e.g. Number('four') === NaN) makes every `ageH < minDays * 24` comparison
+  // false, which allows every version through -- fail closed instead of silently disarming the gate (ei0.10)
+  if (!Number.isFinite(minDays) || minDays < 0)
+    throw new Error(`pkg-gate: minDays must be a finite, non-negative number, got ${cfg.minDays}`)
   return {
     upstream: cfg.upstream,
-    minDays: cfg.minDays ?? 4,
+    minDays,
     allowlist: cfg.allowlist ?? [],
     now: cfg.now ?? (() => Date.now()),
     fetch: cfg.fetch ?? fetch,

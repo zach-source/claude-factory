@@ -355,6 +355,15 @@ test('/healthz reports minDays and the allow/refuse/error counters since start',
   expect(await after.json()).toEqual({ ok: true, minDays: 4, allow: 1, refuse: 1, error: 1 })
 })
 
+test('makeGate throws on a non-finite or negative minDays instead of silently allowing everything (ei0.10)', () => {
+  const cfg = { upstream: { go: base(), npm: base(), pypi: base(), files: base() } }
+  expect(() => makeGate({ ...cfg, minDays: Number('four') })).toThrow(/finite, non-negative/)
+  expect(() => makeGate({ ...cfg, minDays: NaN })).toThrow(/finite, non-negative/)
+  expect(() => makeGate({ ...cfg, minDays: Infinity })).toThrow(/finite, non-negative/)
+  expect(() => makeGate({ ...cfg, minDays: -1 })).toThrow(/finite, non-negative/)
+  expect(() => makeGate({ ...cfg, minDays: 0 })).not.toThrow() // 0 is a legitimate (if permissive) minimum
+})
+
 test('PyPI upstream errors refuse rather than pass through', async () => {
   const g = gate()
   const notFound = await g(new Request('http://gate/pypi/simple/missingproj/'))

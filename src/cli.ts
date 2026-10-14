@@ -218,6 +218,17 @@ const fail = (msg: string): never => {
   throw new Error(msg)
 }
 
+/**
+ * PKG_GATE_MIN_DAYS, parsed and validated: `Number('four')` is NaN, and NaN makes every age comparison in
+ * pkggate's `decide()` false, which allows every version through -- fail closed here instead (claude-factory-ei0.10)
+ */
+export function parsePkgGateMinDays(raw: string | undefined): number | undefined {
+  if (!raw) return undefined
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) fail(`PKG_GATE_MIN_DAYS "${raw}" is not a finite, non-negative number`)
+  return n
+}
+
 function herdr(...args: string[]) {
   // a leading space keeps the typed launch out of the person's shell history (zsh HIST_IGNORE_SPACE, atuin)
   if (args[0] === 'pane' && args[1] === 'run') args = [...args.slice(0, 3), ` ${args[3]}`, ...args.slice(4)]
@@ -3036,7 +3047,7 @@ if (import.meta.main && !queued)
           pypi: process.env.PKG_GATE_UPSTREAM_PYPI ?? pkggate.DEFAULT_UPSTREAM.pypi,
           files: process.env.PKG_GATE_UPSTREAM_FILES ?? pkggate.DEFAULT_UPSTREAM.files,
         }
-        const minDays = process.env.PKG_GATE_MIN_DAYS ? Number(process.env.PKG_GATE_MIN_DAYS) : undefined
+        const minDays = parsePkgGateMinDays(process.env.PKG_GATE_MIN_DAYS)
         const allowlist = process.env.PKG_GATE_ALLOWLIST
           ? process.env.PKG_GATE_ALLOWLIST.split(':').filter(Boolean)
           : undefined
