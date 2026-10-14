@@ -1,6 +1,7 @@
 node_modules/
 .factory-state*
-.claude/
+.claude/*
+!.claude/skills/
 mod/.claude-plugin/types/
 mod/tsconfig.json
 .claude-uuid-session
