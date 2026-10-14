@@ -113,7 +113,9 @@ const rt = {
 
 async function factory($: EngineInterface, args: string[]) {
   const r = await $.process.run([rt.cli, ...args], { timeoutMs: 120_000 })
-  return { isOk: r.exitCode === 0, out: `${r.stdout}${r.stderr}`.trim() }
+  const isOk = r.exitCode === 0
+  // stderr carries logs (a tick's reaped panes, its children's warnings): mixed into the JSON, it broke the parse
+  return { isOk, out: (isOk ? r.stdout : `${r.stdout}${r.stderr}`).trim() }
 }
 
 async function tick($: EngineInterface) {
