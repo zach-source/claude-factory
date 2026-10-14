@@ -23,6 +23,12 @@ export type FactoryRun = {
   wakeAt?: number
   /** when its current station's box last got mail: a reply to what it asked */
   mailedAt?: number
+  /** minutes its current worker has run */
+  inMin?: number
+  /** minutes since its worker's tail or branch head last changed */
+  quietMin?: number
+  /** when its runner's usage limit lifts, while the runner waits on it */
+  limitUntil?: number
 }
 export type FactoryEntry = { node: string; attempt: number; outcome: string; summary: string; at: number }
 export type FactoryMail = { run: string; from: string; text: string; at: number }

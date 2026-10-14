@@ -186,6 +186,12 @@ export type Row = {
   wakeAt?: number
   /** when its current station's box last got mail: a reply to what it asked */
   mailedAt?: number
+  /** minutes its current worker has run */
+  inMin?: number
+  /** minutes since its worker's tail or branch head last changed */
+  quietMin?: number
+  /** when its runner's usage limit lifts, while the runner waits on it */
+  limitUntil?: number
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
@@ -1249,6 +1255,20 @@ export function stalled(unchangedMs: number, isNudged: boolean) {
   return unchangedMs >= 2 * STALL_MS ? 'fail' : null
 }
 
+/** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
+function facts(run: Run, c: Ctx, now: number): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
+  if (!c.pane || !c.startedAt) return {}
+  const p = progressOf(run)
+  const runner = runnerOf(c.pane)
+  const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
+  const until = existsSync(paged) ? readJson<number>(paged) : 0
+  return {
+    inMin: Math.floor((now - c.startedAt) / 60_000),
+    ...(p?.seq === c.seq && { quietMin: Math.floor((now - p.at) / 60_000) }),
+    ...(until > now && { limitUntil: until }),
+  }
+}
+
 const progressFile = (run: Run) => join(runDir(run.id), 'progress.json')
 const progressOf = (run: Run) =>
   existsSync(progressFile(run)) ? readJson<Progress>(progressFile(run)) : undefined
@@ -1571,7 +1591,10 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   if (manager.length) send({ type: 'READ', box: 'manager', seen: ctx().mail.manager!.length })
   save()
   return {
-    row: row(run, def, actor.getSnapshot().value, ctx(), agent, error),
+    row: {
+      ...row(run, def, actor.getSnapshot().value, ctx(), agent, error),
+      ...(sub === 'working' && !def.nodes[node]?.gate && facts(run, ctx(), now)),
+    },
     manager: manager.map(m => ({ run: run.id, ...m })),
   }
 }

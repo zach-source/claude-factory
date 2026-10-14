@@ -14,6 +14,7 @@ import {
   track,
   interviewAnswer,
   interviews,
+  runFacts,
 } from '../mod/hooks/view'
 
 test('track folds loops and marks where the run is', () => {
@@ -232,4 +233,16 @@ test("interviews: a run parked on the person or stuck asks a question, with the 
     'Answering "Which spec wins?": The person chose: the ADR. The person says: and close the bead',
   )
   expect(interviewAnswer(ivs[1]!, undefined, '  ')).toBeNull()
+})
+
+test('patrol lines carry the attempt, time in station, quiet time and a paused runner', () => {
+  const run = { id: 'r1', node: 'implement', sub: 'working', goal: 'Add /health', attempt: 2, attempts: 3 }
+  expect(runFacts({})).toBe('')
+  expect(runFacts({ attempt: 1, attempts: 3, inMin: 4, quietMin: 9 })).toBe(', attempt 1/3')
+  expect(runFacts({ inMin: 37, quietMin: 25 })).toBe(', 30+ min in station, quiet 20+ min')
+  const text = patrol([{ ...run, inMin: 61, quietMin: 12, limitUntil: 1_000_000 }], [], new Set(), true)!.text
+  expect(text).toContain(
+    '- r1 at implement/working, attempt 2/3, 60+ min in station, quiet 10+ min, runner paused',
+  )
+  expect(text).toContain('Add /health')
 })

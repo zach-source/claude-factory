@@ -158,6 +158,22 @@ export function rigStats(rig: Pick<FactoryRig, 'name' | 'maxRuns'>, runs: readon
   }
 }
 
+/** minutes as a floor to 10, so the board repeats until a run's facts really move */
+const tens = (min: number) => `${Math.floor(min / 10) * 10}+ min`
+
+/** what a patrol says of a working run beside its station: the attempt, how long, how quiet, a paused runner */
+export function runFacts(r: Pick<FactoryRun, 'attempt' | 'attempts' | 'inMin' | 'quietMin' | 'limitUntil'>) {
+  return [
+    r.attempt && r.attempts && `attempt ${r.attempt}/${r.attempts}`,
+    r.inMin !== undefined && r.inMin >= 10 && `${tens(r.inMin)} in station`,
+    r.quietMin !== undefined && r.quietMin >= 10 && `quiet ${tens(r.quietMin)}`,
+    r.limitUntil && `runner paused by its usage limit until ${clockOf(r.limitUntil)}`,
+  ]
+    .filter(Boolean)
+    .map(f => `, ${f}`)
+    .join('')
+}
+
 /**
  * The manager's loop: what to wake this session's model with, or null when nothing calls for it.
  * New mail and newly blocked workers wake it at once; `isDue` adds a heartbeat while any worker runs
@@ -187,7 +203,7 @@ export function patrol(
   ]
   const board = live.map(
     r =>
-      `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : ''}: ${line(r.goal ?? '', 100)}`,
+      `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : runFacts(r)}: ${line(r.goal ?? '', 100)}`,
   )
   const state = [
     board.length ? `Board:\n${board.join('\n')}` : 'Board: no runs.',
