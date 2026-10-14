@@ -436,10 +436,11 @@ async function jump($: EngineInterface, pane: string) {
  * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
  * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here.
  * The shell still runs a backslash-newline line continuation and a quoted newline as one command, so this
- * normalizes the first away (a `\`-joined line reads as the space the shell leaves between its halves) and
- * matches across the second ([\s\S] instead of [^\n]) rather than testing the raw text verbatim. */
+ * normalizes the first away (bash joins a `\`-newline pair with NO character, even mid-word, so this drops
+ * it rather than replacing it with a space) and matches across the second ([\s\S] instead of [^\n]) rather
+ * than testing the raw text verbatim. */
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
-  const command = rawCommand.replace(/\\\n/g, ' ')
+  const command = rawCommand.replace(/\\\n/g, '')
   if (/\bfactory\s+decide\b/.test(command))
     return {
       question: `The manager model wants to decide a factory gate: ${command.slice(0, 300)}. Allow it?`,

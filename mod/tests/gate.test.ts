@@ -95,5 +95,15 @@ test('a line continuation or a quoted newline still gates the command', async ($
   const denied2 = await $.tool.call({ tool: 'Bash', command: quotedNewlineStart, description: 'start owned bead' })
   expect(denied2.deny).toContain('did not confirm')
 
-  expect(asked).toBe(2)
+  // the shell drops the backslash-newline with NO character, even mid-word: "fac<\\\n>tory" runs as "factory",
+  // not "fac tory". Joining with a space instead would leave a gap the keyword regexes don't match.
+  const midWordSplitDecide = '/repo/bin/fac\\\ntory decide lifecycle-abc ship "looks good"'
+  const denied3 = await $.tool.call({ tool: 'Bash', command: midWordSplitDecide, description: 'decide a gate' })
+  expect(denied3.deny).toContain('did not confirm')
+
+  const midWordSplitStart = '/repo/bin/factory start lifecycle api api-9 --own\\\ned'
+  const denied4 = await $.tool.call({ tool: 'Bash', command: midWordSplitStart, description: 'start owned bead' })
+  expect(denied4.deny).toContain('did not confirm')
+
+  expect(asked).toBe(4)
 })
