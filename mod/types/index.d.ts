@@ -68,7 +68,15 @@ export type FactoryRig = {
 }
 
 // what `factory backlog` prints
-export type FactoryBead = { id: string; title: string; priority?: number; type?: string; labels?: string[] }
+export type FactoryBead = {
+  id: string
+  title: string
+  priority?: number
+  type?: string
+  labels?: string[]
+  /** the bead it is a child of */
+  parent?: string
+}
 export type FactoryBacklog = (FactoryRig & {
   /** its runs holding a worker now */
   busy: number
@@ -128,6 +136,8 @@ declare module 'claude-code' {
       detail: FactoryDetail | null
       peek: string
       backlog: FactoryBacklog
+      /** the backlog's type filter: 'all' or a bead type */
+      backlogType: string
       prs: FactoryPrs
       history: number[]
       draft: FactoryDraft

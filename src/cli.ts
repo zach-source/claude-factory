@@ -41,7 +41,17 @@ import {
   type Factory,
   type Mail,
 } from './machine'
-import { actorOf, beads, dispatchable, goalOf, hasBeads, isOwned, stationOf, type Bead } from './beads'
+import {
+  actorOf,
+  beads,
+  dispatchable,
+  goalOf,
+  hasBeads,
+  isOwned,
+  parentOf,
+  stationOf,
+  type Bead,
+} from './beads'
 import { claudeCommand, command, harnessOf, readMcp, sq } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
@@ -2655,10 +2665,15 @@ async function backlog() {
         priority: x.priority,
         type: x.issue_type,
         labels: x.labels,
+        parent: parentOf(x),
       })
+      const ready = b.ready()
+      const queued = dispatchable(ready, new Set(), 50)
+      const heads = new Set(queued.map(x => x.id))
       return {
         ...w,
-        queued: dispatchable(b.ready(), new Set(), 50).map(slim),
+        // a queued bead's ready children ride in its run: listed under it, never started on their own
+        queued: [...queued, ...ready.filter(x => !x.assignee && heads.has(parentOf(x) ?? ''))].map(slim),
         unqueued: b.unqueued().map(slim),
       }
     } catch (err) {

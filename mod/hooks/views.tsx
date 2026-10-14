@@ -15,6 +15,7 @@ import type {
   FactoryView,
 } from '../types'
 import {
+  BEAD_TYPES,
   bar,
   clockOf,
   dur,
@@ -23,6 +24,7 @@ import {
   mailKey,
   mailTabs,
   prNeed,
+  tiers,
   rigStats,
   sparkline,
   track,
@@ -45,6 +47,8 @@ export type Actions = {
   interview: (iv: Interview, choice?: string) => void
   start: () => void
   jump: (pane: string) => void
+  /** picks the backlog's type filter */
+  backlogType: (type: string) => void
 }
 
 type Base = { ui: UI; act: Actions; width: number; now: number }
@@ -461,10 +465,16 @@ export function runView(p: Base, d: FactoryDetail | null, peek: string, draft: F
   )
 }
 
-function beadRow(p: Base, repo: { repo: string; factory: string }, b: FactoryBead, isQueued: boolean) {
+function beadRow(
+  p: Base,
+  repo: { repo: string; factory: string },
+  b: FactoryBead,
+  isQueued: boolean,
+  depth = 0,
+) {
   const { Box, Text, Button } = p.ui
   return (
-    <Box key={`bead-${b.id}`} gap={1}>
+    <Box key={`bead-${b.id}`} gap={1} paddingLeft={depth * 2}>
       <Text
         color={b.priority !== undefined && b.priority <= 1 ? 'red' : undefined}
         dimColor={(b.priority ?? 2) > 1}
@@ -478,7 +488,7 @@ function beadRow(p: Base, repo: { repo: string; factory: string }, b: FactoryBea
           <Text dimColor>{b.type ? `  ${b.type}` : ''}</Text>
         </Text>
       </Box>
-      {!isQueued && (
+      {!isQueued && !b.parent && (
         <Button key={`queue-${b.id}`} label="queue" onPress={() => p.act.cli('queue', repo.repo, b.id)} />
       )}
       <Button
@@ -491,8 +501,32 @@ function beadRow(p: Base, repo: { repo: string; factory: string }, b: FactoryBea
   )
 }
 
-export function backlogView(p: Base, backlog: FactoryBacklog) {
+/** one rig's list under a heading: priority tiers, each parent with its children, cut after `limit` rows */
+function beadList(
+  p: Base,
+  r: FactoryBacklog[number],
+  list: FactoryBead[],
+  type: string,
+  isQueued: boolean,
+  limit?: number,
+) {
   const { Box, Text } = p.ui
+  const t = tiers(list, type, limit)
+  return (
+    <Box key={`list-${r.name}-${isQueued}`} flexDirection="column">
+      {t.tiers.map(g => (
+        <Box key={`tier-${r.name}-${isQueued}-${g.tier}`} flexDirection="column">
+          <Text dimColor> {g.tier}</Text>
+          {g.rows.map(x => beadRow(p, r, x.bead, isQueued, x.depth))}
+        </Box>
+      ))}
+      {t.drawn < t.total && <Text dimColor> + {String(t.total - t.drawn)} more</Text>}
+    </Box>
+  )
+}
+
+export function backlogView(p: Base, backlog: FactoryBacklog, type = 'all') {
+  const { Box, Text, Button } = p.ui
   if (!backlog.length)
     return (
       <Box key="backlog" flexDirection="column">
@@ -503,6 +537,18 @@ export function backlogView(p: Base, backlog: FactoryBacklog) {
     )
   return (
     <Box key="backlog" flexDirection="column">
+      <Box gap={1} marginBottom={1}>
+        {['all', ...BEAD_TYPES].map(t => (
+          <Button
+            key={`backlog-type-${t}`}
+            label={t}
+            plain
+            variant={type === t ? 'primary' : undefined}
+            dimColor={type !== t}
+            onPress={() => p.act.backlogType(t)}
+          />
+        ))}
+      </Box>
       {backlog.map(r => (
         <Box key={`rig-${r.name}`} flexDirection="column" marginBottom={1}>
           {rule(
@@ -512,11 +558,11 @@ export function backlogView(p: Base, backlog: FactoryBacklog) {
           )}
           {r.goal && <Text wrap="wrap">◎ {r.goal}</Text>}
           {r.error && <Text color="red">! {r.error}</Text>}
-          <Text color="green">will start ({String(r.queued.length)})</Text>
+          <Text color="green">will start ({String(tiers(r.queued, type).total)})</Text>
           {r.queued.length === 0 && <Text dimColor> nothing queued</Text>}
-          {r.queued.map(b => beadRow(p, r, b, true))}
-          <Text color="yellow">waiting for you to queue ({String(r.unqueued.length)})</Text>
-          {r.unqueued.slice(0, 15).map(b => beadRow(p, r, b, false))}
+          {beadList(p, r, r.queued, type, true)}
+          <Text color="yellow">waiting for you to queue ({String(tiers(r.unqueued, type).total)})</Text>
+          {beadList(p, r, r.unqueued, type, false, 15)}
         </Box>
       ))}
     </Box>

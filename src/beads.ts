@@ -40,6 +40,10 @@ export const isOwned = (b: Bead) => !!b.metadata?.owner_decisions
 export const stationOf = (b: Bead) =>
   b.labels?.find(l => l.startsWith('station:'))?.slice('station:'.length) || undefined
 
+/** a bead's parent: bd's parent-child edge, else the id's own `<parent>.<n>` */
+export const parentOf = (b: Bead) =>
+  b.parent ?? (/\.\d+$/.test(b.id) ? b.id.replace(/\.\d+$/, '') : undefined)
+
 /** unowned top-level work only: a child is a task of some run's plan (children inherit the label) */
 export const dispatchable = (ready: Bead[], linked: Set<string>, room: number) =>
   ready.filter(b => !b.parent && !b.assignee && !linked.has(b.id)).slice(0, Math.max(0, room))
@@ -66,10 +70,10 @@ export const beads = (repo: string, actor: string) => ({
   },
   ready: (): Bead[] =>
     JSON.parse(must(bd(repo, actor, 'ready', '--label', LABEL, '--json', '-n', '50'), 'ready')),
-  /** ready work nobody has handed to the factory yet: what a person prioritizes */
+  /** ready work nobody has handed to the factory yet: what a person prioritizes, children with their parents */
   unqueued: (): Bead[] =>
     (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '100'), 'ready')) as Bead[]).filter(
-      b => !b.parent && !b.assignee && !b.labels?.includes(LABEL),
+      b => !b.assignee && !b.labels?.includes(LABEL),
     ),
   /** hands a bead to the factory: a rig starts it at the next dispatch, a rejected one too */
   queue: (id: string, station?: string) =>

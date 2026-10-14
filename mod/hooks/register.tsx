@@ -43,6 +43,7 @@ const selected = atom({ plugin: 'factory', key: 'selected' } as const, null as s
 const detail = atom({ plugin: 'factory', key: 'detail' } as const, null as FactoryDetail | null)
 const peek = atom({ plugin: 'factory', key: 'peek' } as const, '')
 const backlog = atom({ plugin: 'factory', key: 'backlog' } as const, [] as FactoryBacklog)
+const backlogType = atom({ plugin: 'factory', key: 'backlogType' } as const, 'all')
 const prs = atom({ plugin: 'factory', key: 'prs' } as const, [] as FactoryPrs)
 /** runs holding a worker, one sample a tick: the header's sparkline */
 const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
@@ -362,6 +363,7 @@ function actions($: EngineInterface): Actions {
   return {
     cli: (...args) => void act($, args),
     show: (next, run) => void show($, next, run),
+    backlogType: t => void update($, backlogType, () => t),
     draft: patch => void update($, draft, d => ({ ...d, ...patch })),
     decide: (run, outcome) => void decide($, run, outcome),
     answer: (m, kind) => void answer($, m, kind),
@@ -423,12 +425,13 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, shown, d, tail, bl, pr, samples, dr, now] = await Promise.all([
+    const [b, shown, d, tail, bl, bt, pr, samples, dr, now] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
       read($, peek),
       read($, backlog),
+      read($, backlogType),
       read($, prs),
       read($, history),
       read($, draft),
@@ -446,7 +449,7 @@ export const register: Register = (on, options) => {
       shown === 'run'
         ? runView(p, d, tail, dr)
         : shown === 'backlog'
-          ? backlogView(p, bl)
+          ? backlogView(p, bl, bt)
           : shown === 'mail'
             ? mailView(p, b, dr)
             : shown === 'prs'

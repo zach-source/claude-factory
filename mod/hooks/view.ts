@@ -1,5 +1,5 @@
 // Pure layout helpers for the factory console: no `$`, no elements.
-import type { FactoryMail, FactoryPrs, FactoryRig, FactoryRun } from '../types'
+import type { FactoryBead, FactoryMail, FactoryPrs, FactoryRig, FactoryRun } from '../types'
 
 /** one station on a run's path: how often it ran, and whether the run is there now */
 export type Stop = { id: string; runs: number; isCurrent: boolean }
@@ -14,6 +14,41 @@ export function track(trail: readonly string[], current: string): Stop[] {
   if (current && current !== 'done' && current !== 'aborted')
     stops.set(current, { ...(stops.get(current) ?? { id: current, runs: 0 }), isCurrent: true })
   return [...stops.values()]
+}
+
+/** the bead types the backlog filters by, after `all` */
+export const BEAD_TYPES = ['bug', 'feature', 'task', 'epic', 'chore']
+
+/**
+ * A backlog list as priority tiers, highest first (no priority last), each bead followed by its
+ * children. A type keeps the beads of that type and their children; a child whose parent is not in
+ * the list stands at its own tier. `limit` stops adding whole families once that many rows are drawn.
+ */
+export function tiers(beads: readonly FactoryBead[], type = 'all', limit = Infinity) {
+  const shown = type === 'all' ? new Set(beads.map(b => b.id)) : new Set<string>()
+  if (type !== 'all') {
+    const hit = new Set(beads.filter(b => b.type === type).map(b => b.id))
+    for (const b of beads) if (hit.has(b.id) || hit.has(b.parent ?? '')) shown.add(b.id)
+  }
+  const list = beads.filter(b => shown.has(b.id))
+  const ids = new Set(list.map(b => b.id))
+  const kidsOf = (id: string) => list.filter(b => b.parent === id)
+  const family = (b: FactoryBead, depth: number): { bead: FactoryBead; depth: number }[] => [
+    { bead: b, depth },
+    ...kidsOf(b.id).flatMap(k => family(k, depth + 1)),
+  ]
+  const out: { tier: string; rows: { bead: FactoryBead; depth: number }[] }[] = []
+  let drawn = 0
+  const roots = list.filter(b => !b.parent || !ids.has(b.parent))
+  for (const p of [0, 1, 2, 3, 4, undefined]) {
+    const rows: { bead: FactoryBead; depth: number }[] = []
+    // ponytail: a priority outside 0-4 is not drawn; bd allows only those
+    for (const b of roots.filter(r => r.priority === p))
+      if (drawn + rows.length < limit) rows.push(...family(b, 0))
+    drawn += rows.length
+    if (rows.length) out.push({ tier: p === undefined ? 'no priority' : `P${p}`, rows })
+  }
+  return { tiers: out, total: list.length, drawn }
 }
 
 const BLOCKS = '▁▂▃▄▅▆▇█'
