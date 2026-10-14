@@ -236,6 +236,101 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
 })
 
+test('serve retries a turn that ended on the egress failure, same session, backed off, until one gets through', async () => {
+  const own = join(dir, 'own-egress-ok')
+  const repo = join(dir, 'repo-egress-ok')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const log = join(dir, 'claude-egress-ok.log')
+  const counter = join(dir, 'claude-egress-ok.count')
+  const claude = join(dir, 'claude-egress-ok')
+  // fails its first 2 calls (an init event, then the egress signature), then an init plus a success
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+n=$(( $(cat ${counter} 2>/dev/null || echo 0) + 1 ))
+echo "$n" > ${counter}
+echo "$*" >> ${log}
+echo '{"type":"system","subtype":"init","session_id":"s1"}'
+if [ "$n" -le 2 ]; then
+  echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect error or disconnect/reset before headers: remote connection failure"}'
+else
+  echo '{"type":"result","is_error":false,"result":"done"}'
+fi
+`,
+  )
+  chmodSync(claude, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    FACTORY_EGRESS_WAIT_MS: '1',
+    FACTORY_EGRESS_BUDGET_MS: '5000',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    await worker.serve('m1', { once: true })
+    const turns = readFileSync(log, 'utf8').trim().split('\n')
+    expect(turns).toHaveLength(3)
+    expect(turns[0]).toEndWith('--model m1 the brief')
+    expect(turns[1]).toEndWith(`--model m1 --resume s1 ${worker.EGRESS_RETRY_PROMPT}`)
+    expect(turns[2]).toEndWith(`--model m1 --resume s1 ${worker.EGRESS_RETRY_PROMPT}`)
+    expect(worker.poll(0)).toMatchObject({ status: 'idle', session: 's1' })
+    expect(worker.poll(0).egress).toBeUndefined() // the turn that got through cleared it
+    const retries = readFileSync(join(own, 'serve.log'), 'utf8').match(/egress failure, retry/g) ?? []
+    expect(retries).toHaveLength(2)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('serve gives up retrying at its budget, leaving the outage visible to poll, and goes idle', async () => {
+  const own = join(dir, 'own-egress-stuck')
+  const repo = join(dir, 'repo-egress-stuck')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const log = join(dir, 'claude-egress-stuck.log')
+  const claude = join(dir, 'claude-egress-stuck')
+  // never gets a session: the egress gateway refuses before Claude even starts a conversation
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+echo "$*" >> ${log}
+echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect error or disconnect/reset before headers: remote connection failure"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    FACTORY_EGRESS_WAIT_MS: '1',
+    FACTORY_EGRESS_BUDGET_MS: '50',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    await worker.serve('m1', { once: true })
+    const turns = readFileSync(log, 'utf8').trim().split('\n')
+    expect(turns.length).toBeGreaterThan(1) // it tried more than once before giving up
+    for (const t of turns) expect(t).toEndWith('--model m1 the brief') // no session: reruns the brief every time
+    const polled = worker.poll(0)
+    expect(polled.status).toBe('idle')
+    expect(polled.session).toBeUndefined()
+    expect(polled.egress?.tries).toBeGreaterThanOrEqual(1)
+    expect(polled.egress?.last).toContain('upstream connect error')
+  } finally {
+    process.env = saved
+  }
+})
+
 test("a rig's shared Dolt remote is what the VM's beads clone from, with only a placeholder password", () => {
   const own = join(dir, 'own-beads')
   const bd = join(dir, 'bd-boot')

@@ -28,7 +28,9 @@ const stateFile = () => join(own(), 'state.json')
 const serveLog = () => join(own(), 'serve.log')
 const logTail = () => (existsSync(serveLog()) ? readFileSync(serveLog(), 'utf8').slice(-2000) : '')
 
-type State = { status: 'working' | 'idle'; session?: string; pid: number }
+/** an egress-gateway outage serve is retrying a turn through (egressFailure): see docs/remote-runner.md */
+export type Egress = { since: number; tries: number; last: string }
+type State = { status: 'working' | 'idle'; session?: string; pid: number; egress?: Egress }
 const state = (): State | null =>
   existsSync(stateFile()) ? JSON.parse(readFileSync(stateFile(), 'utf8')) : null
 const save = (s: State) => writeFileSync(stateFile(), JSON.stringify(s))
@@ -217,7 +219,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
   return EGRESS_SIGNATURE.test(text) ? text.slice(-300) : null
 }
 
-/** one turn of the station's agent; returns its session id, given the one before */
+/** one turn of the station's agent: its session id, given the one before, and the egress gateway's failure, if it was that */
 async function turn(text: string, model?: string, session?: string) {
   const h = harness()
   // pi has no output to read an id from: it takes one on first use
@@ -231,16 +233,59 @@ async function turn(text: string, model?: string, session?: string) {
   })
   // env spelled out: Bun's default is the env at startup, without what setup() added
   const p = Bun.spawn(argv, { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'pipe' })
-  const err = new Response(p.stderr).text()
+  const errP = new Response(p.stderr).text()
   const out = await new Response(p.stdout).text()
+  const err = await errP
   const code = await p.exited
-  if (code !== 0 || (await err))
+  if (code !== 0 || err) appendFileSync(serveLog(), `${new Date().toISOString()} ${h} exited ${code}: ${err.slice(-4000)}\n`)
+  appendFileSync(join(own(), `${h}.jsonl`), out)
+  return { session: h === 'pi' ? id : (sessionIn(h, out) ?? session), egress: egressFailure(h, out, err) }
+}
+
+/** sent instead of the queued prompt (or the brief again, with no session yet) on a retry: see turnWithRetry */
+export const EGRESS_RETRY_PROMPT =
+  'The last turn failed on the egress gateway refusing a new connection to the model API (see above). Try again.'
+
+const egressWaitMs = () => Number(process.env.FACTORY_EGRESS_WAIT_MS ?? 30_000)
+const egressBudgetMs = () => Number(process.env.FACTORY_EGRESS_BUDGET_MS ?? 30 * 60_000)
+
+/**
+ * one turn, retried in place while it ends on the egress gateway's known failure: the same session (once
+ * there is one) and the continuation prompt, else the brief again; backoff doubles from FACTORY_EGRESS_WAIT_MS
+ * (default 30s), capped at 10x that (5 min at the default), for up to FACTORY_EGRESS_BUDGET_MS (default 30
+ * min). `onEgress` records the outage for poll as it goes, and clears it once a turn gets through
+ */
+async function turnWithRetry(
+  text: string,
+  model: string | undefined,
+  session: string | undefined,
+  onEgress: (e: Egress | undefined) => void,
+) {
+  const waitMs = egressWaitMs()
+  const budgetMs = egressBudgetMs()
+  const capMs = waitMs * 10
+  let cur = session
+  let prompt = text
+  let tries = 0
+  let since = 0
+  for (;;) {
+    const r = await turn(prompt, model, cur)
+    cur = r.session
+    if (!r.egress) {
+      onEgress(undefined)
+      return cur
+    }
+    tries++
+    since ||= Date.now()
+    onEgress({ since, tries, last: r.egress })
     appendFileSync(
       serveLog(),
-      `${new Date().toISOString()} ${h} exited ${code}: ${(await err).slice(-4000)}\n`,
+      `${new Date().toISOString()} egress failure, retry ${tries}: ${r.egress.slice(0, 200)}\n`,
     )
-  appendFileSync(join(own(), `${h}.jsonl`), out)
-  return h === 'pi' ? id : (sessionIn(h, out) ?? session)
+    if (Date.now() - since >= budgetMs) return cur
+    await Bun.sleep(Math.min(waitMs * 2 ** (tries - 1), capMs))
+    prompt = cur ? EGRESS_RETRY_PROMPT : text
+  }
 }
 
 function sh(cmd: string[], cwd?: string) {
@@ -485,12 +530,17 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
   let session = state()?.session
-  const set = (status: State['status']) => save({ status, session, pid: process.pid })
+  let egress: Egress | undefined = state()?.egress
+  const set = (status: State['status']) => save({ status, session, pid: process.pid, egress })
+  const onEgress = (e: Egress | undefined) => {
+    egress = e
+    set('working')
+  }
   if (!session) {
     // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
-    session = await turn(brief, model)
+    session = await turnWithRetry(brief, model, undefined, onEgress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
@@ -502,8 +552,8 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     }
     set('working')
     const file = join(prompts(), next)
-    session = await turn(readFileSync(file, 'utf8'), model, session)
-    rmSync(file) // after the turn: a prompt cut off by a crash runs again
+    session = await turnWithRetry(readFileSync(file, 'utf8'), model, session, onEgress)
+    rmSync(file) // after the turn (retried in place through an egress outage): a prompt cut off by a crash runs again
   }
 }
 
@@ -517,6 +567,7 @@ export function poll(cursor: number) {
     lines: lines.slice(cursor),
     tail: lastTurn(s?.session),
     log: logTail(),
+    ...(s?.egress && { egress: s.egress }),
   }
 }
 

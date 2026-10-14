@@ -10,6 +10,8 @@ export type WorkerInfo = {
   session?: string
   /** a non-local Claude worker's last transcript entry, where the reconciler reads a usage limit and the context size */
   tail?: string
+  /** an ongoing egress-gateway outage the worker is retrying a turn through: see worker.ts egressFailure */
+  egress?: { since: number; tries: number; last: string }
 }
 
 /** what a runner needs to start a worker for one station attempt */
