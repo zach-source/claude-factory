@@ -107,7 +107,7 @@ test('FACTORY_AX_CAPABILITIES empty leaves spec.capabilities out, for an AX with
   process.env.FACTORY_AX_CAPABILITIES = ''
   try {
     ax.launch({ name: 'f-r1-2', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} })
-    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1])
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     expect(task.spec.capabilities).toBeUndefined()
   } finally {
     delete process.env.FACTORY_AX_CAPABILITIES
