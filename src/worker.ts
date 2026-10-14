@@ -216,7 +216,11 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
     return null
   }
   const text = `${out}${err}`.slice(-4000)
-  return EGRESS_SIGNATURE.test(text) ? text.slice(-300) : null
+  if (!EGRESS_SIGNATURE.test(text)) return null
+  // the matching line, not whatever the 4000-char window happens to end on: the signature can sit
+  // well before the window's tail, with unrelated agent output after it
+  const line = text.split('\n').findLast(l => EGRESS_SIGNATURE.test(l))
+  return (line ?? text).slice(0, 300)
 }
 
 /** one turn of the station's agent: its session id, given the one before, and the egress gateway's failure, if it was that */
@@ -253,31 +257,38 @@ const egressBudgetMs = () => Number(process.env.FACTORY_EGRESS_BUDGET_MS ?? 30 *
  * one turn, retried in place while it ends on the egress gateway's known failure: the same session (once
  * there is one) and the continuation prompt, else the brief again; backoff doubles from FACTORY_EGRESS_WAIT_MS
  * (default 30s), capped at 10x that (5 min at the default), for up to FACTORY_EGRESS_BUDGET_MS (default 30
- * min). `onEgress` records the outage for poll as it goes, and clears it once a turn gets through
+ * min) counted from the outage's own start (`initial`, serveTurns' own `egress`), not this call's: a turn
+ * that gives up still has its queued prompt replaced by the manager's reply (see reconcile's TIME_UP warn),
+ * and the outage is almost always still open when that reply's turn starts, so the budget has to span every
+ * call it takes, not restart counting from zero each time. `onEgress` is given the session each call learns,
+ * too (not just the egress state), so a crash or restart mid-retry resumes the session already opened, rather
+ * than silently losing it and re-briefing. It records the outage for poll as it goes, and clears it once a
+ * turn gets through
  */
 async function turnWithRetry(
   text: string,
   model: string | undefined,
   session: string | undefined,
-  onEgress: (e: Egress | undefined) => void,
+  onEgress: (e: Egress | undefined, session?: string) => void,
+  initial?: Egress,
 ) {
   const waitMs = egressWaitMs()
   const budgetMs = egressBudgetMs()
   const capMs = waitMs * 10
   let cur = session
   let prompt = text
-  let tries = 0
-  let since = 0
+  let tries = initial?.tries ?? 0
+  let since = initial?.since ?? 0
   for (;;) {
     const r = await turn(prompt, model, cur)
     cur = r.session
     if (!r.egress) {
-      onEgress(undefined)
+      onEgress(undefined, cur)
       return cur
     }
     tries++
     since ||= Date.now()
-    onEgress({ since, tries, last: r.egress })
+    onEgress({ since, tries, last: r.egress }, cur)
     appendFileSync(
       serveLog(),
       `${new Date().toISOString()} egress failure, retry ${tries}: ${r.egress.slice(0, 200)}\n`,
@@ -524,23 +535,29 @@ export async function serve(model?: string, o: { idleMs?: number; once?: boolean
 
 async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) {
   mkdirSync(prompts(), { recursive: true })
+  // read once: a save below with no egress field would otherwise wipe out an outage a crash or
+  // suspend left in progress, resetting its budget on every restart instead of carrying it through
+  const prior = state()
   // working from the start: until the first turn there is no state, which poll would read as exited
-  save({ status: 'working', session: state()?.session, pid: process.pid })
+  save({ status: 'working', session: prior?.session, pid: process.pid, egress: prior?.egress })
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
-  let session = state()?.session
-  let egress: Egress | undefined = state()?.egress
+  let session = prior?.session
+  let egress: Egress | undefined = prior?.egress
   const set = (status: State['status']) => save({ status, session, pid: process.pid, egress })
-  const onEgress = (e: Egress | undefined) => {
+  // cur: the session the retried turn itself just learned, which may be ahead of the outer `session`
+  // (not yet assigned, since turnWithRetry hasn't returned) while an outage is still being retried
+  const onEgress = (e: Egress | undefined, cur?: string) => {
     egress = e
+    if (cur) session = cur
     set('working')
   }
   if (!session) {
     // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
-    session = await turnWithRetry(brief, model, undefined, onEgress)
+    session = await turnWithRetry(brief, model, undefined, onEgress, egress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
@@ -552,7 +569,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     }
     set('working')
     const file = join(prompts(), next)
-    session = await turnWithRetry(readFileSync(file, 'utf8'), model, session, onEgress)
+    session = await turnWithRetry(readFileSync(file, 'utf8'), model, session, onEgress, egress)
     rmSync(file) // after the turn (retried in place through an egress outage): a prompt cut off by a crash runs again
   }
 }
