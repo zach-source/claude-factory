@@ -241,6 +241,24 @@ export function prNeed(pr: Pick<FactoryPrs[number]['prs'][number], 'reviewDecisi
   return { word: 'checking', color: 'gray' }
 }
 
+/** a short check tally to append to a PR's state word, blank when nothing has run yet */
+const checksOf = (checks: Pick<FactoryPrs[number]['prs'][number], 'checks'>['checks']) =>
+  checks.pass || checks.fail || checks.pending
+    ? ` (${checks.pass}✓${checks.fail ? ` ${checks.fail}✗` : ''}${checks.pending ? ` ${checks.pending}…` : ''})`
+    : ''
+
+/** a PR row's state word for the PRs tab: draft overrides everything, merged and closed are terminal,
+ * an open PR gets whatever `prNeed` says it is waiting on; every case carries its own checks tally */
+export function prState(
+  pr: Pick<FactoryPrs[number]['prs'][number], 'isDraft' | 'state' | 'reviewDecision' | 'mergeStateStatus' | 'checks'>,
+) {
+  const checks = checksOf(pr.checks)
+  if (pr.isDraft) return { word: 'draft', color: 'gray', checks }
+  if (pr.state === 'MERGED') return { word: 'merged', color: 'magenta', checks }
+  if (pr.state === 'CLOSED') return { word: 'closed', color: 'red', checks }
+  return { ...prNeed(pr), checks }
+}
+
 /** one question the factory puts to the person: a run stuck or parked on something only they can settle */
 export type Interview = {
   key: string
