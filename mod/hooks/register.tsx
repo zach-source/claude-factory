@@ -8,6 +8,7 @@ import type {
   FactoryBacklog,
   FactoryPrs,
   FactoryBoard,
+  FactoryDecisions,
   FactoryDetail,
   FactoryDraft,
   FactoryMail,
@@ -45,6 +46,10 @@ const peek = atom({ plugin: 'factory', key: 'peek' } as const, '')
 const backlog = atom({ plugin: 'factory', key: 'backlog' } as const, [] as FactoryBacklog)
 const backlogType = atom({ plugin: 'factory', key: 'backlogType' } as const, 'all')
 const prs = atom({ plugin: 'factory', key: 'prs' } as const, [] as FactoryPrs)
+const decisions = atom(
+  { plugin: 'factory', key: 'decisions' } as const,
+  { rigs: [], proposals: {} } as FactoryDecisions,
+)
 /** runs holding a worker, one sample a tick: the header's sparkline */
 const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
 const draft = atom(
@@ -104,6 +109,8 @@ const rt = {
   patrolAt: 0,
   /** when the PRs tab last asked GitHub */
   prsAt: 0,
+  /** when the interview tab last swept bd for decisions */
+  decisionsAt: 0,
   /** the board and rig goals the manager was last sent, and when */
   board: undefined as string | undefined,
   boardAt: 0,
@@ -252,7 +259,19 @@ async function refresh($: EngineInterface) {
     rt.prsAt = now
     const { isOk, out } = await factory($, ['prs'])
     if (isOk) await update($, prs, () => JSON.parse(out) as FactoryPrs)
+  } else if (shown === 'interview') {
+    // ponytail: a bd call per rig, at most once a minute while the tab is open; the button forces one now
+    const now = await $.clock.now()
+    if (now - rt.decisionsAt < 60_000) return
+    await sweepDecisions($)
   }
+}
+
+/** every rig's open bd decisions, into the interview tab's open list */
+async function sweepDecisions($: EngineInterface) {
+  rt.decisionsAt = await $.clock.now()
+  const { isOk, out } = await factory($, ['decisions'])
+  if (isOk) await update($, decisions, () => JSON.parse(out) as FactoryDecisions)
 }
 
 async function act($: EngineInterface, args: string[]) {
@@ -317,20 +336,31 @@ async function answer($: EngineInterface, m: FactoryMail, kind: 'approve' | 'rej
 }
 
 /**
- * the person's answer to an interview question, mailed to the run's station, which wakes a parked one; a stuck
- * one is retried with it in its inbox. The manager hears of it at its next patrol.
+ * the person's answer to an interview question. A parked or stuck run's answer mails its station, which wakes
+ * it; a stuck one is retried with it in its inbox. A bd decision's answer runs `factory decisions answer`,
+ * which comments on the bead (and closes it, for a human-flagged one); an owner-only bead's 'start now' also
+ * starts it. Gate and prompt items never reach here: their buttons act directly (decide, jump). The manager
+ * hears of it at its next patrol.
  */
 async function interview($: EngineInterface, iv: Interview, choice?: string) {
   const typed = (await read($, draft)).replies?.[iv.key] ?? ''
   const text = interviewAnswer(iv, choice, typed)
   if (!text) return $.ui.toast('factory: pick an option or type an answer')
-  if (!(await act($, ['mail', iv.run, iv.node, text]))) return
-  if (iv.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', iv.run])
+  if (iv.kind === 'bead' || iv.kind === 'owned') {
+    if (!(await act($, ['decisions', 'answer', iv.rig!, iv.bead!, text]))) return
+    if (iv.kind === 'owned' && choice === 'start now') {
+      const row = (await read($, decisions)).rigs.find(r => r.rig === iv.rig)
+      await act($, ['start', row?.factory ?? 'lifecycle', iv.rig!, iv.bead!, '--owned'])
+    }
+  } else {
+    if (!(await act($, ['mail', iv.run!, iv.node!, text]))) return
+    if (iv.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', iv.run!])
+  }
   const at = await $.clock.now()
   rt.unsent.push({
-    run: iv.run,
+    run: iv.run ?? iv.bead ?? iv.key,
     from: 'person',
-    text: `answered ${iv.node}'s question in the console: ${text}`,
+    text: `answered ${iv.node ?? iv.rig ?? iv.kind}'s question in the console: ${text}`,
     at,
   })
   // not named answer: the mod loader takes any second `answer` in the file for a redeclared hook function
@@ -340,7 +370,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
     replies: { ...d.replies, [iv.key]: '' },
     interviewed: [
       ...(d.interviewed ?? []),
-      { key: iv.key, run: iv.run, node: iv.node, question: iv.question, answer: given, at },
+      { key: iv.key, run: iv.run, node: iv.node, rig: iv.rig, bead: iv.bead, question: iv.question, answer: given, at },
     ].slice(-100),
   }))
 }
@@ -370,6 +400,7 @@ function actions($: EngineInterface): Actions {
     interview: (iv, choice) => void interview($, iv, choice),
     start: () => void startRun($),
     jump: pane => void jump($, pane),
+    sweep: () => void sweepDecisions($),
   }
 }
 
@@ -425,7 +456,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, shown, d, tail, bl, bt, pr, samples, dr, now] = await Promise.all([
+    const [b, shown, d, tail, bl, bt, pr, samples, dr, dec, now] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
@@ -435,6 +466,7 @@ export const register: Register = (on, options) => {
       read($, prs),
       read($, history),
       read($, draft),
+      read($, decisions),
       $.clock.now(),
     ])
     const p = { ui, act: actions($), width: e.props.bodyColumns, now }
@@ -459,7 +491,7 @@ export const register: Register = (on, options) => {
                 : shown === 'rigs'
                   ? rigsView(p, b)
                   : shown === 'interview'
-                    ? interviewView(p, b, dr)
+                    ? interviewView(p, b, dr, dec)
                     : boardView(p, b, dr)
     return (
       <Box flexDirection="column">

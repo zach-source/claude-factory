@@ -3175,7 +3175,7 @@ if (import.meta.main && !queued)
           const [key, question, optionsLine] = rest
           if (!key || !question || !optionsLine)
             fail('usage: factory decisions propose <key> "<question>" "<a | b>"')
-          decisionsPropose(key, question, optionsLine)
+          decisionsPropose(key!, question!, optionsLine!)
           break
         }
         fail(`unknown decisions command "${sub}": list, answer or propose`)
