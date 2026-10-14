@@ -164,18 +164,67 @@ test("'Interview me' sweeps bd into the open list; answering a bead calls decisi
   await ui.unmount()
 })
 
+test("the interview tab shows a rig's own bd error, and a failed sweep itself as a status line", async ($, on) => {
+  const clock = mock.clock(on)
+  const status: unknown[] = []
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
+  for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
+  let decisionsOk = true
+  on('process.run', ($, e) => {
+    if (e.argv.includes('tick'))
+      return { value: { exitCode: 0, stdout: JSON.stringify({ manager: [], rigs: [], runs: [] }), stderr: '' } as never }
+    if (e.argv.includes('decisions'))
+      return decisionsOk
+        ? {
+            value: {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                rigs: [{ rig: 'api', factory: 'lifecycle', beads: [], error: 'boom: bd ready failed' }],
+                proposals: {},
+              }),
+              stderr: '',
+            } as never,
+          }
+        : { value: { exitCode: 1, stdout: '', stderr: 'bd: connection refused' } as never }
+    return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+  })
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'interview' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+  await ui.press({ key: 'iv-sweep' })
+  await clock.settle()
+  expect(JSON.stringify(await ui.drawn())).toContain('boom: bd ready failed')
+
+  decisionsOk = false
+  await ui.press({ key: 'iv-sweep' })
+  await clock.settle()
+  expect(JSON.stringify(status)).toContain('factory decisions failed')
+  await ui.unmount()
+})
+
+// factory 'custom', not 'lifecycle' (the fallback `row?.factory ?? 'lifecycle'` in register.tsx falls back to):
+// a test that expected 'lifecycle' here would pass even if the row's own factory were silently ignored
 const OWNED_DECISIONS = {
   rigs: [
     {
       rig: 'api',
-      factory: 'lifecycle',
+      factory: 'custom',
       beads: [{ id: 'api-9', title: 'A pilot bead', description: 'no shape here', kind: 'owned' }],
     },
   ],
   proposals: {},
 }
 
-test("an owner-only bead's 'start now' starts it with the rig's own factory; 'not now' only comments", async ($, on) => {
+test("an owner-only bead's 'not now' only comments through decisions answer, never starts it", async ($, on) => {
   const clock = mock.clock(on)
   const ran: string[][] = []
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -258,7 +307,50 @@ test("an owner-only bead's 'start now' also runs factory start with the rig's fa
     'Answering "api-9: A pilot bead": The person chose: start now.',
   ])
   const start = ran.filter(a => a.includes('start')).at(-1)
-  expect(start?.slice(-5)).toEqual(['start', 'lifecycle', 'api', 'api-9', '--owned'])
+  expect(start?.slice(-5)).toEqual(['start', 'custom', 'api', 'api-9', '--owned'])
+  await ui.unmount()
+})
+
+test("an owner-only bead's 'start now' stays open when the start fails, instead of vanishing unstarted", async ($, on) => {
+  const clock = mock.clock(on)
+  const ran: string[][] = []
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+    on(event, () => ({ value: undefined }) as never)
+  on('process.run', ($, e) => {
+    ran.push([...e.argv])
+    if (e.argv.includes('start')) return { value: { exitCode: 1, stdout: '', stderr: 'no room on the rig' } as never }
+    const out = e.argv.includes('tick')
+      ? JSON.stringify({ manager: [], rigs: [], runs: [] })
+      : e.argv.includes('decisions') && e.argv.includes('answer')
+        ? 'answered api-9'
+        : e.argv.includes('decisions')
+          ? JSON.stringify(OWNED_DECISIONS)
+          : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+  })
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'interview' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+  await ui.press({ key: 'iv-sweep' })
+  await clock.settle()
+  await ui.press({ key: 'iv-opt-own:api:api-9-0' }) // 'start now'
+  await clock.settle()
+  // the comment was sent (the bead now knows the person's answer) but the failed start means the item is not
+  // recorded as answered: it stays in the open list rather than silently vanishing while the bead never ran
+  expect(ran.some(a => a.includes('decisions') && a.includes('answer'))).toBe(true)
+  expect(ran.some(a => a.includes('start'))).toBe(true)
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('questions (1)')
+  expect(drawn).not.toContain('answered (1)')
   await ui.unmount()
 })
 

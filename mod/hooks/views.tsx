@@ -782,6 +782,14 @@ export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft,
           />
         ))}
       </Box>
+      {tab === 'open' &&
+        decisions.rigs
+          .filter(r => r.error)
+          .map(r => (
+            <Text key={`iv-err-${r.rig}`} color="red">
+              ! {r.rig}: {line(r.error!, 200)}
+            </Text>
+          ))}
       {tab === 'open' && open.length === 0 && (
         <Text dimColor>No run is stuck or waiting on your direction.</Text>
       )}

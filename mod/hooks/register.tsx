@@ -278,11 +278,14 @@ async function refresh($: EngineInterface) {
   }
 }
 
-/** every rig's open bd decisions, into the interview tab's open list */
+/** every rig's open bd decisions, into the interview tab's open list. A rig's own bd error is carried in its
+ * row (drawn by interviewView); a failed call itself (the CLI never ran, or its JSON did not parse) is told
+ * with a status line instead of dropped silently, so the person knows the open list may be stale. */
 async function sweepDecisions($: EngineInterface) {
   rt.decisionsAt = await $.clock.now()
   const { isOk, out } = await factory($, ['decisions'])
   if (isOk) await update($, decisions, () => JSON.parse(out) as FactoryDecisions)
+  else $.ui.status(`factory decisions failed: ${out.split('\n')[0]?.slice(0, 80)}`)
 }
 
 /**
@@ -378,8 +381,9 @@ async function answer($: EngineInterface, m: FactoryMail, kind: 'approve' | 'rej
  * the person's answer to an interview question. A parked or stuck run's answer mails its station, which wakes
  * it; a stuck one is retried with it in its inbox. A bd decision's answer runs `factory decisions answer`,
  * which comments on the bead (and closes it, for a human-flagged one); an owner-only bead's 'start now' also
- * starts it. Gate and prompt items never reach here: their buttons act directly (decide, jump). The manager
- * hears of it at its next patrol.
+ * starts it, and a failed start returns before recording the answer, so the item stays open and the person
+ * can try again rather than it quietly vanishing while the bead never ran. Gate and prompt items never reach
+ * here: their buttons act directly (decide, jump). The manager hears of it at its next patrol.
  */
 async function interview($: EngineInterface, iv: Interview, choice?: string) {
   const typed = (await read($, draft)).replies?.[iv.key] ?? ''
@@ -389,7 +393,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
     if (!(await act($, ['decisions', 'answer', iv.rig!, iv.bead!, text]))) return
     if (iv.kind === 'owned' && choice === 'start now') {
       const row = (await read($, decisions)).rigs.find(r => r.rig === iv.rig)
-      await act($, ['start', row?.factory ?? 'lifecycle', iv.rig!, iv.bead!, '--owned'])
+      if (!(await act($, ['start', row?.factory ?? 'lifecycle', iv.rig!, iv.bead!, '--owned']))) return
     }
   } else {
     if (!(await act($, ['mail', iv.run!, iv.node!, text]))) return
