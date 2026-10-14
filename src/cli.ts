@@ -127,6 +127,7 @@ const DREAM_SOON_MS = 2 * 3600_000
 const INBOX_FULL = 12
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
+const STALL_MS = 20 * 60_000 // a working worker whose tail and branch head stand still this long is nudged, then failed
 const NUDGES = 4 // ...this many times, each wait twice the last (90s to 24 min), then fails
 // a worker whose Claude has not appeared this long after launch never started: the shell was still
 // starting (direnv, under load) when herdr typed the command, and swallowed the Enter
@@ -1231,6 +1232,27 @@ export function deadline(elapsedMs: number, timeoutMin: number, isWorking: boole
   return isWarned ? null : 'warn'
 }
 
+/** what a working worker's progress was when last seen: the fingerprint of its tail and branch head, since when, and whether it was nudged for standing still */
+export type Progress = { seq: number; sig: string; at: number; nudged: boolean }
+
+/** the worker's progress now: the last one while nothing changed, else a fresh one (a new worker or any output) */
+export const progressNow = (prev: Progress | undefined, seq: number, sig: string, now: number): Progress =>
+  prev && prev.seq === seq && prev.sig === sig ? prev : { seq, sig, at: now, nudged: false }
+
+/**
+ * what a worker that shows no progress calls for. `deadline` alone leaves a hung turn "working" for 1.5x the
+ * station's limit: nudge once after STALL_MS, fail after as long again
+ */
+export function stalled(unchangedMs: number, isNudged: boolean) {
+  if (unchangedMs < STALL_MS) return null
+  if (!isNudged) return 'nudge'
+  return unchangedMs >= 2 * STALL_MS ? 'fail' : null
+}
+
+const progressFile = (run: Run) => join(runDir(run.id), 'progress.json')
+const progressOf = (run: Run) =>
+  existsSync(progressFile(run)) ? readJson<Progress>(progressFile(run)) : undefined
+
 /**
  * whether Claude trusts a repo: its trust dialog was accepted for it or a folder above it. A worktree's
  * trust is its main repo's. Unreadable config counts as trusted, so the check never stops a factory itself.
@@ -1375,6 +1397,15 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const text = `[factory] This session's context is ${k}k tokens, ${HANDOFF_ASK} of ${maxK}k: every turn re-reads all of it. At the next safe point, commit your work in progress (a WIP commit is fine) and hand off to a fresh worker, then stop: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text })
   }
+  // ponytail: a fingerprint of the tail's end and the local branch head; a worker that only thinks is nudged, not failed
+  const prev = progressOf(run)
+  const head = runner.local
+    ? Bun.spawnSync(['git', '-C', run.worktree, 'rev-parse', 'HEAD']).stdout.toString()
+    : ''
+  const seen = progressNow(prev, c.seq, tail ? `${tail.length}${tail.slice(-300)}${head}` : '', now)
+  const stall = status === 'working' && !isAsking && seen.sig ? stalled(now - seen.at, seen.nudged) : null
+  if (stall === 'nudge') seen.nudged = true
+  if (seen !== prev || stall === 'nudge') writeJson(progressFile(run), seen)
   const due = deadline(
     now - c.startedAt,
     timeoutMin,
@@ -1383,7 +1414,20 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   )
   if (status === null) send({ type: 'FAIL', seq: c.seq, reason: `worker pane ${c.pane} was closed` })
   else if (due === 'fail') send({ type: 'FAIL', seq: c.seq, reason: `no report within ${timeoutMin} min` })
-  else if (due === 'warn') {
+  else if (stall === 'fail') {
+    const min = Math.round((now - seen.at) / 60_000)
+    const last = tail.trimEnd().split('\n').at(-1) ?? ''
+    send({ type: 'FAIL', seq: c.seq, reason: `stalled: no output for ${min} min` })
+    const text = `${node} of ${run.id} stalled: no output for ${min} min, attempt failed. Last line: ${clip(last, 200)}`
+    send({ type: 'MAIL', from: node, to: 'manager', text })
+  } else if (stall === 'nudge') {
+    const min = Math.round((now - seen.at) / 60_000)
+    const cmd = `${CLI} report ${run.id} ${c.seq} blocked "<why>"`
+    runner.deliver(
+      c.pane,
+      `[factory] Nothing in your session or branch has changed for ${min} min. If you are stuck, report what blocks you: ${cmd}. Otherwise carry on.`,
+    )
+  } else if (due === 'warn') {
     const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
     const text = `[factory] This station's ${timeoutMin} ${TIME_UP}. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail

@@ -19,8 +19,10 @@ import {
   ownCopy,
   paramsOf,
   reapable,
+  progressNow,
   relaunch,
   reworkGoal,
+  stalled,
   swapUntil,
   watchWake,
   workerSettings,
@@ -332,4 +334,19 @@ test('a token swap runs once per usage-limit hit, then waits for the vault refre
   expect(swapUntil(hit, 5_000, true, 300_000)).toBe(305_000)
   expect(swapUntil(hit, 5_000, false, 300_000)).toBe(2_000_000) // resetsAt wins when set
   expect(swapUntil({ at: 1_000, resetsAt: 0 }, 5_000, false, 300_000)).toBe(1_000 + 3_600_000) // the 1h fallback
+})
+
+test('a working worker with no new output is nudged once, then failed as stalled', () => {
+  const min = 60_000
+  expect(stalled(19 * min, false)).toBeNull()
+  expect(stalled(20 * min, false)).toBe('nudge')
+  expect(stalled(30 * min, true)).toBeNull() // nudged: gets as long again
+  expect(stalled(40 * min, true)).toBe('fail')
+})
+
+test('progress restarts when the fingerprint or the worker changes', () => {
+  const p = progressNow(undefined, 1, 'a', 100)
+  expect(progressNow(p, 1, 'a', 500)).toBe(p)
+  expect(progressNow(p, 1, 'b', 500).at).toBe(500)
+  expect(progressNow({ ...p, nudged: true }, 2, 'a', 500).nudged).toBe(false)
 })
