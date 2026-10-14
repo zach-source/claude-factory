@@ -75,6 +75,18 @@ export const beads = (repo: string, actor: string) => ({
     (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '100'), 'ready')) as Bead[]).filter(
       b => !b.assignee && !b.labels?.includes(LABEL),
     ),
+  /** beads flagged for a human decision (`bd human`): bd prints null, not [], when none are */
+  human: (): Bead[] => {
+    const out = must(bd(repo, actor, 'human', 'list', '--json'), 'human list')
+    return out === 'null' ? [] : JSON.parse(out)
+  },
+  /** ready, unassigned beads that are the owner's call to start, not the factory's */
+  owned: (): Bead[] =>
+    (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '100'), 'ready')) as Bead[]).filter(
+      b => isOwned(b) && !b.assignee,
+    ),
+  /** answers a human-flagged bead: a comment, and bd closes it */
+  respond: (id: string, text: string) => must(bd(repo, actor, 'human', 'respond', id, '-r', text), 'human respond'),
   /** hands a bead to the factory: a rig starts it at the next dispatch, a rejected one too */
   queue: (id: string, station?: string) =>
     must(
