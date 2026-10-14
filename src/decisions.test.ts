@@ -98,6 +98,10 @@ test('decisions propose refuses a gate key and a malformed one, a worker, and ot
   expect(gate.code).not.toBe(0)
   expect(gate.err).toContain('never proposed')
 
+  const prompt = factory(['decisions', 'propose', 'prompt:b1@30', 'q', 'a | b'])
+  expect(prompt.code).not.toBe(0)
+  expect(prompt.err).toContain('looked at')
+
   const malformed = factory(['decisions', 'propose', 'nonsense', 'q', 'a | b'])
   expect(malformed.code).not.toBe(0)
   expect(malformed.err).toContain('malformed')

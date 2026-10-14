@@ -2817,11 +2817,13 @@ function decisionsAnswer(rigName: string, id: string, text: string) {
 }
 
 /** the manager proposes 2+ options for an item the person would otherwise have to answer in their own words;
- * never for a gate, which only the person decides */
+ * never for a gate, which only the person decides, and never for a blocked-on-prompt item, which waits on the
+ * person looking at the worker's pane rather than on a choice */
 function decisionsPropose(key: string, question: string, optionsLine: string) {
   if (process.env.FACTORY_FROM) fail("a worker cannot propose the person's decisions: mail the manager instead")
   if (/^gate:/.test(key)) fail('a gate is decided by the person, never proposed options')
-  if (!/^(iv|prompt|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
+  if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
+  if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
   const options = optionsLine
     .split('|')
     .map(s => s.trim())

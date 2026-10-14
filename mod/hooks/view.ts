@@ -377,15 +377,16 @@ export function beadInterviews(decisions: readonly Decision[], answered: Record<
 }
 
 /** copies a stored proposal's options onto an open item that has none yet, matched by key: a gate (whose
- * outcomes are never proposed, only decided) or an item that already has its own options is left untouched.
- * `factory decisions` round-trips proposals as plain JSON; only here are they merged into what the panel and
- * the manager's own interview round see. */
+ * outcomes are never proposed, only decided), a blocked-on-prompt item (never proposed either: it waits on
+ * the person looking at the pane, not on a choice), or an item that already has its own options is left
+ * untouched. `factory decisions` round-trips proposals as plain JSON; only here are they merged into what the
+ * panel and the manager's own interview round see. */
 export function withProposals(
   items: readonly Interview[],
   proposals: Record<string, { question: string; options: string[]; at: number }> = {},
 ): Interview[] {
   return items.map(iv => {
-    if (iv.kind === 'gate' || iv.options.length) return iv
+    if (iv.kind === 'gate' || iv.kind === 'prompt' || iv.options.length) return iv
     const p = proposals[iv.key]
     return p ? { ...iv, options: p.options } : iv
   })
@@ -395,10 +396,12 @@ export function withProposals(
  * the manager's own interview round, once the person pressed 'Interview me': every open item that still has
  * no options (after `withProposals`), asking the manager to propose 2+ short, concrete choices for each so
  * the person can pick one instead of typing an answer. Gates are never included: only the person decides
- * those, with no proposal. Null once nothing is bare.
+ * those, with no proposal. Blocked-on-prompt items are never included either: they wait on the person
+ * looking at the worker's pane, not on a choice, and proposing an answer to a permission prompt would go
+ * behind the worker's back. Null once nothing is bare.
  */
 export function interviewPrompt(items: readonly Interview[]): string | null {
-  const bare = items.filter(iv => iv.kind !== 'gate' && !iv.options.length)
+  const bare = items.filter(iv => iv.kind !== 'gate' && iv.kind !== 'prompt' && !iv.options.length)
   if (!bare.length) return null
   return [
     '[factory] interview',

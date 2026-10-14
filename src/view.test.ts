@@ -341,6 +341,29 @@ test('interviewPrompt asks the manager to propose options only for items that ha
   expect(interviewPrompt([gate, bead])).toBeNull() // nothing left bare
 })
 
+test('interviewPrompt never asks the manager to propose options for a blocked-on-prompt item', () => {
+  const prompt: Interview = {
+    key: 'prompt:b1@30',
+    kind: 'prompt',
+    question: 'implement worker is waiting on a prompt in pane ax://1',
+    options: [],
+    context: '',
+    at: 30,
+  }
+  expect(interviewPrompt([prompt])).toBeNull()
+  const stuck: Interview = {
+    key: 'iv:r1@1',
+    kind: 'stuck',
+    question: 'How should it go on?',
+    options: [],
+    context: '',
+    at: 1,
+  }
+  const text = interviewPrompt([prompt, stuck])!
+  expect(text).toContain('iv:r1@1')
+  expect(text).not.toContain('prompt:b1@30')
+})
+
 test("withProposals merges a stored proposal's options into a bare item, never a gate or one with its own options", () => {
   const gate: Interview = { key: 'gate:g1@1', kind: 'gate', question: 'Ship it?', options: [], context: '', at: 1 }
   const owned: Interview = {
@@ -368,6 +391,19 @@ test("withProposals merges a stored proposal's options into a bare item, never a
   expect(merged.find(i => i.key === 'gate:g1@1')!.options).toEqual([]) // never merged into a gate
   expect(merged.find(i => i.key === 'bd:api:api-7')!.options).toEqual(['postgres', 'mysql']) // kept its own
   expect(withProposals([owned])).toEqual([owned]) // no proposals: unchanged
+})
+
+test('withProposals never merges a proposal into a blocked-on-prompt item', () => {
+  const prompt: Interview = {
+    key: 'prompt:b1@30',
+    kind: 'prompt',
+    question: 'implement worker is waiting on a prompt in pane ax://1',
+    options: [],
+    context: '',
+    at: 30,
+  }
+  const proposals = { 'prompt:b1@30': { question: 'x', options: ['y', 'z'], at: 1 } }
+  expect(withProposals([prompt], proposals)[0]!.options).toEqual([])
 })
 
 test('patrol lines carry the attempt, time in station, quiet time and a paused runner', () => {
