@@ -23,7 +23,7 @@ import {
   line,
   mailKey,
   mailTabs,
-  prNeed,
+  prState,
   tiers,
   rigStats,
   sparkline,
@@ -853,51 +853,82 @@ export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft)
   )
 }
 
-/** the factory's open pull requests by rig, each with what it waits on and where its run stands */
-export function prsView(p: Base, rigs: FactoryPrs, board: FactoryBoard) {
+/** the factory's pull requests, grouped by rig then by run: live runs first, then at most 25 ended
+ * runs newest first, with "+N earlier runs" past that; merged and closed PRs stay until the run is
+ * removed, drafts say so, and a PR only ever mentioned in a report or mail sits on its own dim line */
+export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
   const { Box, Text, Button } = p.ui
-  if (!rigs.length)
+  if (!runs.length)
     return (
       <Text key="prs" dimColor>
         Asking GitHub…
       </Text>
     )
+  const byRig = new Map<string, FactoryPrs>()
+  for (const r of runs) {
+    const key = r.rig ?? '(no rig)'
+    byRig.set(key, [...(byRig.get(key) ?? []), r])
+  }
   return (
     <Box key="prs" flexDirection="column">
-      {rigs.map(rig => (
-        <Box key={`prs-${rig.rig}`} flexDirection="column" marginBottom={1}>
-          {rule(p, rig.rig, String(rig.prs.length))}
-          {rig.error && <Text color="red">! {line(rig.error, 200)}</Text>}
-          {!rig.error && rig.prs.length === 0 && <Text dimColor>no open pull requests from runs</Text>}
-          {rig.prs.map(pr => {
-            const need = prNeed(pr)
-            const r = board.runs.find(x => x.id === pr.run)
-            return (
-              <Box key={`pr-${rig.rig}-${pr.number}`} flexDirection="column">
-                <Box gap={1}>
-                  <Text bold>#{String(pr.number)}</Text>
-                  <Text color={need.color}>{need.word}</Text>
-                  <Text wrap="truncate-end">{pr.title}</Text>
-                </Box>
-                <Box gap={1}>
-                  <Text dimColor>{pr.url}</Text>
-                  {r && isLive(r) ? (
-                    <Button
-                      key={`pr-open-${pr.run}`}
-                      label={`${r.gate ? 'decide' : r.node} ›`}
-                      dimColor={!r.gate}
-                      variant={r.gate ? 'primary' : undefined}
-                      onPress={() => p.act.show('run', r.id)}
-                    />
-                  ) : (
-                    <Text dimColor>run {r ? 'ended' : 'removed'}</Text>
+      {[...byRig.entries()].map(([rig, rigRuns]) => {
+        const live = [...rigRuns.filter(r => !r.ended)].sort((a, b) => b.at - a.at)
+        const ended = [...rigRuns.filter(r => r.ended)].sort((a, b) => b.at - a.at)
+        const hidden = Math.max(0, ended.length - 25)
+        return (
+          <Box key={`prs-${rig}`} flexDirection="column" marginBottom={1}>
+            {rule(p, rig, String(rigRuns.reduce((n, r) => n + r.prs.length, 0)))}
+            {[...live, ...ended.slice(0, 25)].map(r => {
+              const own = r.prs.filter(pr => pr.role !== 'mentioned')
+              const mentioned = r.prs.filter(pr => pr.role === 'mentioned')
+              const live_ = board.runs.find(x => x.id === r.run)
+              return (
+                <Box key={`prs-run-${r.run}`} flexDirection="column" marginBottom={1}>
+                  <Box gap={1}>
+                    <Text bold>{r.run}</Text>
+                    {r.bead && <Text color="cyan">{r.bead}</Text>}
+                    {live_ && isLive(live_) ? (
+                      <Button
+                        key={`prs-open-${r.run}`}
+                        label={`${live_.gate ? 'decide' : live_.node} ›`}
+                        dimColor={!live_.gate}
+                        variant={live_.gate ? 'primary' : undefined}
+                        onPress={() => p.act.show('run', r.run)}
+                      />
+                    ) : (
+                      <Text dimColor>run ended</Text>
+                    )}
+                    {r.error && <Text color="red">! {line(r.error, 120)}</Text>}
+                  </Box>
+                  {own.length === 0 && <Text dimColor>no pull requests seen</Text>}
+                  {own.map(pr => {
+                    const state = prState(pr)
+                    return (
+                      <Box key={`pr-${r.run}-${pr.repo}-${pr.number}`} gap={1}>
+                        <Text bold>
+                          {pr.repo}#{String(pr.number)}
+                        </Text>
+                        <Text color={state.color}>
+                          {state.word}
+                          {state.checks}
+                        </Text>
+                        <Text dimColor>{pr.role}</Text>
+                        <Text wrap="truncate-end">{pr.title}</Text>
+                      </Box>
+                    )
+                  })}
+                  {mentioned.length > 0 && (
+                    <Text dimColor wrap="truncate-end">
+                      also named: {mentioned.map(pr => `${pr.repo}#${pr.number}`).join(', ')}
+                    </Text>
                   )}
                 </Box>
-              </Box>
-            )
-          })}
-        </Box>
-      ))}
+              )
+            })}
+            {hidden > 0 && <Text dimColor>+{hidden} earlier runs</Text>}
+          </Box>
+        )
+      })}
     </Box>
   )
 }

@@ -7,6 +7,7 @@ import {
   mailKey,
   mailTabs,
   prNeed,
+  prState,
   patrol,
   quickAnswer,
   rigStats,
@@ -188,6 +189,32 @@ test('a pull request names what it waits on, worst first', () => {
   expect(need('REVIEW_REQUIRED', 'BLOCKED')).toBe('needs approval')
   expect(need('APPROVED', 'CLEAN')).toBe('ready to merge')
   expect(need('', 'BLOCKED')).toBe('blocked by a rule')
+})
+
+test('a PR row state word: draft and terminal states override prNeed, each with its own checks tally', () => {
+  const base = {
+    isDraft: false,
+    state: 'OPEN' as 'OPEN' | 'MERGED' | 'CLOSED' | 'UNKNOWN',
+    reviewDecision: 'APPROVED',
+    mergeStateStatus: 'CLEAN',
+    checks: { pass: 0, fail: 0, pending: 0 },
+  }
+  // draft wins over every other state, even MERGED
+  expect(prState({ ...base, isDraft: true, state: 'MERGED' })).toEqual({
+    word: 'draft',
+    color: 'gray',
+    checks: '',
+  })
+  expect(prState({ ...base, state: 'MERGED' })).toEqual({ word: 'merged', color: 'magenta', checks: '' })
+  expect(prState({ ...base, state: 'CLOSED' })).toEqual({ word: 'closed', color: 'red', checks: '' })
+  // OPEN falls through to prNeed
+  expect(prState({ ...base, state: 'OPEN' })).toEqual({ word: 'ready to merge', color: 'green', checks: '' })
+  // checks tally: zero everything is blank, otherwise pass/fail/pending in order, each only when non-zero
+  expect(prState({ ...base, checks: { pass: 0, fail: 0, pending: 0 } }).checks).toBe('')
+  expect(prState({ ...base, checks: { pass: 3, fail: 0, pending: 0 } }).checks).toBe(' (3✓)')
+  expect(prState({ ...base, checks: { pass: 3, fail: 1, pending: 0 } }).checks).toBe(' (3✓ 1✗)')
+  expect(prState({ ...base, checks: { pass: 3, fail: 1, pending: 2 } }).checks).toBe(' (3✓ 1✗ 2…)')
+  expect(prState({ ...base, state: 'MERGED', checks: { pass: 0, fail: 0, pending: 1 } }).checks).toBe(' (0✓ 1…)')
 })
 
 test("interviews: a run parked on the person or stuck asks a question, with the worker's own options", () => {
