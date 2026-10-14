@@ -74,3 +74,26 @@ test('the model answers a bd decision or starts an owner-only bead only after th
   expect(asked).toBe(4)
   expect(ran).toBe(3)
 })
+
+test('a line continuation or a quoted newline still gates the command', async ($, on) => {
+  let asked = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    asked += 1
+    const question = e.questions[0]!.question
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+
+  // a shell line continuation (backslash then newline) between "factory" and "decide": the shell drops
+  // both characters before running it, so this is one `factory decide ...` command
+  const continuationDecide = '/repo/bin/factory \\\ndecide lifecycle-abc ship "looks good"'
+  const denied1 = await $.tool.call({ tool: 'Bash', command: continuationDecide, description: 'decide a gate' })
+  expect(denied1.deny).toContain('did not confirm')
+
+  // an earlier argument carrying a real (not escaped) newline inside its quotes, before --owned
+  const quotedNewlineStart = '/repo/bin/factory start lifecycle api "a\nmulti-line title" --owned'
+  const denied2 = await $.tool.call({ tool: 'Bash', command: quotedNewlineStart, description: 'start owned bead' })
+  expect(denied2.deny).toContain('did not confirm')
+
+  expect(asked).toBe(2)
+})

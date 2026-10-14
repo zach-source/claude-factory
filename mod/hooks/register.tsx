@@ -81,12 +81,12 @@ const manual = (cli: string) => `## Software factory manager
 You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
 A message starting "[factory] patrol" is your loop. It lists what is new and the board; work through it in this order:
 1. Mail: answer a worker's question yourself (\`mail\`) when the goal, the journal or the factory's memory (\`${cli} memory search <query>\`) settles it; otherwise ask the person and name the run that waits. What the person decides that later runs should follow too, save: \`${cli} memory add "<summary>" "<the decision and why>"\`.
-2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog).
+2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog; \`${cli} decisions answer\` opens that same confirm dialog, for the same reason).
 3. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), ask them and name the pull request (they can also answer a parked or stuck station's question in the console's Interview tab, \`/factory interview\`): deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them; when it is resolved, mail that station and it wakes at once. \`${cli} waiting\` lists everything that waits on the person, with how to answer each: show it when they ask what they owe the factory.
 A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, human-flagged and owner-only bd beads) that have no options yet. Propose 2 or more short, concrete choices for each with \`${cli} decisions propose <key> "<question>" "<a | b>"\`, using the item's own key exactly as given; never for a \`gate:\` key, which only the person decides, and never for a \`prompt:\` key (a blocked worker waiting on a prompt in its pane): look at it instead.
 4. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
-5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: pass --owned only when the person names that bead; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
+5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: pass --owned only when the person names that bead (that start also opens the same confirm dialog as a gate); a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
 6. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped for you. Read each SKILL.md: install it (\`${cli} skills install <name>\`) only when its commands are right and safe for this factory and it saves you real work; otherwise \`${cli} skills reject <name> "<why>"\`. Tell the person what you installed.
 7. Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
 The factory CLI, through Bash:
@@ -434,8 +434,12 @@ async function jump($: EngineInterface, pane: string) {
 
 /** which Bash commands the manager model may not run without the person's explicit Allow: a gate decision,
  * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
- * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here. */
-function gatedCommand(command: string): { question: string; deny: string } | null {
+ * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here.
+ * The shell still runs a backslash-newline line continuation and a quoted newline as one command, so this
+ * normalizes the first away (a `\`-joined line reads as the space the shell leaves between its halves) and
+ * matches across the second ([\s\S] instead of [^\n]) rather than testing the raw text verbatim. */
+function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
+  const command = rawCommand.replace(/\\\n/g, ' ')
   if (/\bfactory\s+decide\b/.test(command))
     return {
       question: `The manager model wants to decide a factory gate: ${command.slice(0, 300)}. Allow it?`,
@@ -446,7 +450,7 @@ function gatedCommand(command: string): { question: string; deny: string } | nul
       question: `The manager model wants to answer a person's bd decision: ${command.slice(0, 300)}. Allow it?`,
       deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
     }
-  if (/\bfactory\s+start\b[^\n]*--owned\b/.test(command))
+  if (/\bfactory\s+start\b[\s\S]*--owned\b/.test(command))
     return {
       question: `The manager model wants to start a bead carrying its owner's decisions: ${command.slice(0, 300)}. Allow it?`,
       deny: 'The person did not confirm starting this owner-only bead.',
