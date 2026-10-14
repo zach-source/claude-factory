@@ -144,6 +144,8 @@ export type Poll = {
   tail?: string
   /** the end of serve.log: serve's errors and its agent's stderr */
   log?: string
+  /** an egress-gateway outage serve is retrying a turn through: see worker.ts egressFailure */
+  egress?: { since: number; tries: number; last: string }
 }
 
 function ax(args: string[], stdin?: string) {
