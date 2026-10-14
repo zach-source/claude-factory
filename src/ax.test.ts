@@ -578,6 +578,52 @@ test('a file sent in parts appears whole once its last part is in, in any order,
   }
 })
 
+test("egressFailure finds the egress gateway's known signature in a Claude result and ignores other refusals", () => {
+  const resultLine = (is_error: boolean, result: string) =>
+    JSON.stringify({ type: 'result', is_error, result })
+  const egressText =
+    'API Error: 503 upstream connect error or disconnect/reset before headers. reset reason: remote connection failure, transport failure reason: TLS_error: ' +
+    'X'.repeat(400) +
+    ' CERTIFICATE_VERIFY_FAILED'
+  const out = [
+    '{"type":"system","subtype":"init","session_id":"s1"}',
+    resultLine(true, egressText),
+  ].join('\n')
+  const hit = worker.egressFailure('claude', out, '')
+  expect(hit).not.toBeNull()
+  expect(hit!.length).toBeLessThanOrEqual(300)
+  expect(hit).toStartWith('API Error: 503 upstream connect error')
+
+  const success = [
+    '{"type":"system","subtype":"init","session_id":"s1"}',
+    resultLine(false, 'all done'),
+  ].join('\n')
+  expect(worker.egressFailure('claude', success, '')).toBeNull()
+
+  const rateLimited = resultLine(true, 'rate_limit_error: Number of request tokens has exceeded your limit')
+  expect(worker.egressFailure('claude', rateLimited, '')).toBeNull()
+
+  const overloaded = resultLine(
+    true,
+    'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+  )
+  expect(worker.egressFailure('claude', overloaded, '')).toBeNull()
+
+  const otherError = resultLine(true, 'API Error: 400 invalid_request_error: bad input')
+  expect(worker.egressFailure('claude', otherError, '')).toBeNull()
+})
+
+test('egressFailure for codex and pi scans the last 4000 chars of stdout+stderr', () => {
+  const tail = `connecting...\n${'x'.repeat(4100)}upstream connect error or disconnect/reset before headers: remote connection failure`
+  const hit = worker.egressFailure('codex', tail, '')
+  expect(hit).not.toBeNull()
+  expect(hit!.length).toBeLessThanOrEqual(300)
+  expect(worker.egressFailure('pi', 'a clean run', 'no trouble here')).toBeNull()
+  // the signature outside the last 4000 chars of out+err never matches
+  const farAway = `upstream connect error or disconnect/reset before headers\n${'y'.repeat(5000)}`
+  expect(worker.egressFailure('codex', farAway, '')).toBeNull()
+})
+
 test("envtest's kube-apiserver runs through a wrapper that advertises 127.0.0.1, the VM's address being link-local", async () => {
   const { APISERVER_WRAPPER } = await import('./worker')
   const d = mkdtempSync(join(tmpdir(), 'kb-'))

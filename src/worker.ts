@@ -182,6 +182,41 @@ export function sessionIn(h: Harness, out: string) {
   if (h === 'codex') return out.match(/"type":"thread\.started"[^\n]*?"thread_id":"([^"]+)"/)?.[1]
 }
 
+/**
+ * Envoy's local reply for a failed upstream connect on the dynamic forward proxy to api.anthropic.com (see
+ * docs/remote-runner.md): ate-system/atenet-egress denies every new connection while agent-vault's credential
+ * is stale, then keeps failing some of them (its auto_san_validation) until a rollout restart, sometimes not
+ * even then. Only this exact Envoy text counts: a generic 5xx or a rate-limit refusal is Claude's own, which it
+ * already retries, so matching it here would mask a real API failure instead of the gateway's
+ */
+const EGRESS_SIGNATURE = /upstream connect error or disconnect\/reset before headers/i
+
+/**
+ * the egress gateway's signature in a finished turn's output, clipped to 300 chars; null for a success, a
+ * usage-limit or overload refusal, or any other error. Claude's headless stream ends in one `result` line,
+ * `is_error` true or false; codex and pi have no fixed shape, so their last 4000 chars of stdout+stderr are
+ * searched instead
+ */
+export function egressFailure(h: Harness, out: string, err: string): string | null {
+  if (h === 'claude') {
+    for (const line of out.split('\n').reverse()) {
+      if (!line.includes('"type":"result"')) continue
+      try {
+        const e = JSON.parse(line)
+        if (e.type !== 'result') continue
+        if (!e.is_error) return null
+        const text = String(e.result ?? '')
+        return EGRESS_SIGNATURE.test(text) ? text.slice(0, 300) : null
+      } catch {
+        // the first line of a cut stream
+      }
+    }
+    return null
+  }
+  const text = `${out}${err}`.slice(-4000)
+  return EGRESS_SIGNATURE.test(text) ? text.slice(-300) : null
+}
+
 /** one turn of the station's agent; returns its session id, given the one before */
 async function turn(text: string, model?: string, session?: string) {
   const h = harness()
