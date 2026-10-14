@@ -201,6 +201,50 @@ test('files too big for the env (the brief) go to the VM over ssh in parts once 
   rmSync(join(home, 'runs', 'r6'), { recursive: true })
 })
 
+test('a put that fails over ax ssh leaves the station pending inside its 5 min grace, then fails the attempt with the ax error', () => {
+  launched('r7')
+  const side = join(home, 'runs', 'r7', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['brief.md'] }),
+  )
+  writeFileSync(join(home, 'runs', 'r7', 't.brief.md'), 'hello')
+  rmSync(calls, { force: true })
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put"*) echo 'EACCES: permission denied, mkdir /workspace/w/.factory-worker/put' >&2; exit 1 ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+
+  const first = factory(['tick'])
+  const row1 = JSON.parse(first.out).runs.find((r: { id: string }) => r.id === 'r7')
+  expect(row1).toMatchObject({ agent: 'pending' }) // inside the grace: the station is still working
+  const afterFirst = JSON.parse(readFileSync(side, 'utf8'))
+  expect(afterFirst.putError).toContain('EACCES')
+  expect(afterFirst.put).toEqual(['brief.md']) // not cleared: the put never landed
+  expect(typeof afterFirst.putFailedAt).toBe('number')
+
+  // backdate the first failure past the 5 min grace, as if this had been failing a while
+  writeFileSync(side, JSON.stringify({ ...afterFirst, putFailedAt: Date.now() - 6 * 60_000 }))
+  const second = factory(['tick'])
+  const row2 = JSON.parse(second.out).runs.find((r: { id: string }) => r.id === 'r7')
+  expect(row2.agent).toBe('failed')
+  expect(row2.error).toContain('EACCES')
+  rmSync(join(home, 'runs', 'r7'), { recursive: true })
+})
+
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
   launched('r4', false)
   const kubectl = join(dir, 'kubectl')
