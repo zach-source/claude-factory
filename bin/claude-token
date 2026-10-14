@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# This script reads Anthropic's rate-limit headers for each Claude token slot in the op item.
+# It shows how much of the 7-day and 5-hour limit each slot has used. It can also put a slot
+# into the field that agent-vault reads for the active token.
+#
+#   claude-token          Show the 7-day and 5-hour limit that each slot has used. Show which slot is active.
+#   claude-token use N    Make slot N active.
+#   claude-token best     If the slot with the minimum 7-day use is not at its limit, make it active.
+#
+# You must set these variables. This public script has no private default for them.
+#
+#   CLAUDE_TOKEN_ITEM          The op item that contains the slots.
+#   CLAUDE_TOKEN_VAULT         The vault of that item.
+#   CLAUDE_TOKEN_LIVE_FIELD    The field that agent-vault reads for the active token.
+#   CLAUDE_TOKEN_SLOT_FIELD    The name of the slot fields. Use %s for the slot number, for example account_%s_token.
+#   CLAUDE_TOKEN_ACTIVE_FIELD  The field that shows which slot is active.
+#
+# For op auth, the script uses OP_SERVICE_ACCOUNT_TOKEN when you set it.
+# The token must be for a writer service account with access to only the vault above.
+# If you do not set OP_SERVICE_ACCOUNT_TOKEN, the script uses your own op sign-in.
+#
+# This script does not print a token.
+set -euo pipefail
+
+for v in CLAUDE_TOKEN_ITEM CLAUDE_TOKEN_VAULT CLAUDE_TOKEN_LIVE_FIELD CLAUDE_TOKEN_SLOT_FIELD CLAUDE_TOKEN_ACTIVE_FIELD; do
+  [ -n "${!v:-}" ] || { echo "claude-token: $v is not set" >&2; exit 1; }
+done
+I=$CLAUDE_TOKEN_ITEM
+V=$CLAUDE_TOKEN_VAULT
+
+field() { echo "${CLAUDE_TOKEN_SLOT_FIELD//%s/$1}"; } # the slot $1 field's name
+slot_regex() { # CLAUDE_TOKEN_SLOT_FIELD as a jq capture regex, its literal parts escaped
+  local esc
+  esc=$(printf '%s' "$CLAUDE_TOKEN_SLOT_FIELD" | sed 's/[.[\*^$()+?{|\\]/\\&/g')
+  printf '%s' "${esc//%s/(?<n>[0-9]+)}"
+}
+J=$(op item get "$I" --vault "$V" --format json)
+f() { jq -r --arg l "$1" '.fields[]|select(.label==$l)|.value//""' <<<"$J"; }
+slots() { jq -r --arg re "^$(slot_regex)\$" '.fields[].label|capture($re).n' <<<"$J"; }
+probe() { # prints: 7d-utilization 5h-utilization status, for slot $1
+  curl -s -o /dev/null -D - https://api.anthropic.com/v1/messages \
+    -H "authorization: Bearer $(f "$(field "$1")")" -H 'anthropic-version: 2023-06-01' \
+    -H 'anthropic-beta: oauth-2025-04-20' -H 'content-type: application/json' \
+    -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"."}]}' |
+    tr -d '\r' | awk -F': ' 'tolower($1)~/unified-7d-utilization/{d=$2} tolower($1)~/unified-5h-utilization/{h=$2}
+      tolower($1)=="anthropic-ratelimit-unified-status"{s=$2} END{print (d==""?"?":d), (h==""?"?":h), (s==""?"error":s)}'
+}
+use() {
+  local token
+  token=$(f "$(field "$1")")
+  [ -n "$token" ] || { echo "no token in slot $1" >&2; exit 1; }
+  op item edit "$I" --vault "$V" \
+    "$CLAUDE_TOKEN_LIVE_FIELD[concealed]=$token" "$CLAUDE_TOKEN_ACTIVE_FIELD[concealed]=$1" >/dev/null
+  echo "slot $1 is live; agent-vault picks it up within 5 minutes"
+}
+case "${1:-}" in
+  use) use "$2" ;;
+  best) use "$(for n in $(slots); do echo "$(probe "$n") $n"; done | awk '$3=="allowed"' | sort -n | head -1 | awk '{print $4}')" ;;
+  *) echo "live: slot $(f "$CLAUDE_TOKEN_ACTIVE_FIELD")"; printf '%-5s %-8s %-8s %s\n' slot 7d 5h status
+     for n in $(slots); do printf '%-5s %-8s %-8s %s\n' "$n" $(probe "$n"); done ;;
+esac
