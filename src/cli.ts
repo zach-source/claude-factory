@@ -198,6 +198,8 @@ const fail = (msg: string): never => {
 }
 
 function herdr(...args: string[]) {
+  // a leading space keeps the typed launch out of the person's shell history (zsh HIST_IGNORE_SPACE, atuin)
+  if (args[0] === 'pane' && args[1] === 'run') args = [...args.slice(0, 3), ` ${args[3]}`, ...args.slice(4)]
   const p = Bun.spawnSync(['herdr', ...args])
   const out = p.stdout.toString().trim()
   if (p.exitCode !== 0) fail(`herdr ${args.slice(0, 2).join(' ')}: ${p.stderr.toString().trim() || out}`)
@@ -1019,7 +1021,12 @@ export function needsSwap(hit: { at: number }, state: { at: number } | undefined
  * This function gives the wait after a swap try. On success, it gives the vault's refresh
  * window. On failure, it gives the reset wait.
  */
-export function swapUntil(hit: { at: number; resetsAt: number }, now: number, ok: boolean, refreshMs: number) {
+export function swapUntil(
+  hit: { at: number; resetsAt: number },
+  now: number,
+  ok: boolean,
+  refreshMs: number,
+) {
   return ok ? now + refreshMs : hit.resetsAt || hit.at + 3_600_000
 }
 
