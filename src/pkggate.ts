@@ -399,15 +399,24 @@ async function pypiSimple(cfg: Resolved, project: string, origin: string) {
   })
 }
 
+const METADATA_SUFFIX = '.metadata'
+
+/**
+ * a wheel's `<url>.metadata` (PEP 658/714 core-metadata/data-dist-info-metadata): pip 25.3 GETs it with no
+ * fallback whenever the index entry advertises it, so refusing it 404s a real `pip install` even though the
+ * wheel itself was allowed. Gate it on the parent file's own decision, same as the file itself (ei0.9)
+ */
 async function pypiFile(cfg: Resolved, project: string, path: string) {
+  const isMetadata = path.endsWith(METADATA_SUFFIX)
+  const filePath = isMetadata ? path.slice(0, -METADATA_SUFFIX.length) : path
   const idx = await fetchPypiIndex(cfg, project)
   if (!idx.ok) return refuse(idx.status === 404 ? 404 : 502, `pkg-gate: ${project}: upstream error`)
-  const file = idx.parsed.files.find(f => new URL(f.url).pathname === path)
+  const file = idx.parsed.files.find(f => new URL(f.url).pathname === filePath)
   if (!file) return refuse(404, `pkg-gate: ${project}${path} not found`)
   const d = fileDecision(cfg, project, file)
-  if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${project}/${file.filename} ${ageText(d)}, minimum ${cfg.minDays}d`)
+  if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''} ${ageText(d)}, minimum ${cfg.minDays}d`)
   const b = await fetchBytes(cfg, `${cfg.upstream.files}${path}`)
-  if (!b.ok) return refuse(502, `pkg-gate: ${project}/${file.filename}: upstream error`)
+  if (!b.ok) return refuse(b.status === 404 ? 404 : 502, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''}: upstream error`)
   return new Response(b.buf)
 }
 

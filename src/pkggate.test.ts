@@ -109,6 +109,9 @@ const pypiIndex = (origin: string) =>
         'requires-python': '>=3.7',
         'upload-time': '2023-05-22T15:12:42.313790Z',
         yanked: false,
+        // PEP 658/714: pip 25.3 GETs `<url>.metadata` with no fallback whenever these are present (ei0.9)
+        'core-metadata': { sha256: '7823e890e9db6f415138badf9744791290ef76e7ec6fd09a3789e8247fffe782' },
+        'data-dist-info-metadata': { sha256: '7823e890e9db6f415138badf9744791290ef76e7ec6fd09a3789e8247fffe782' },
       },
       {
         filename: 'requests-2.31.0.tar.gz',
@@ -126,6 +129,7 @@ const pypiIndex = (origin: string) =>
         size: 1,
         'upload-time': '2026-10-10T12:00:00.000Z',
         yanked: false,
+        'core-metadata': { sha256: 'synthetic-young-metadata' },
       },
       {
         filename: 'requests-2.37.0.tar.gz', // synthetic: no upload-time at all
@@ -142,6 +146,9 @@ const PYPI_FILES: Record<string, string> = {
   [PYPI_OLD_SDIST_PATH]: 'FILEBYTES-sdist-2.31.0',
   [PYPI_YOUNG_PATH]: 'FILEBYTES-young-2.36.0',
   [PYPI_NOTIME_PATH]: 'FILEBYTES-notime-2.37.0',
+  // curl -m5 -o /dev/null -w '%{http_code} %{content_type}\n' '<the real wheel url>.metadata' -> 200 application/octet-stream
+  [`${PYPI_OLD_WHEEL_PATH}.metadata`]: 'METADATA-wheel-2.31.0',
+  [`${PYPI_YOUNG_PATH}.metadata`]: 'METADATA-young-2.36.0',
 }
 
 let upstream: ReturnType<typeof Bun.serve>
@@ -326,6 +333,22 @@ test('the PyPI simple index drops a young file and one with no upload-time, and 
   expect(names).toEqual(['requests-2.31.0-py3-none-any.whl', 'requests-2.31.0.tar.gz']) // young and no-upload-time files are gone
   const sdist = idx.files.find(f => f.filename === 'requests-2.31.0.tar.gz')!
   expect(sdist.url).toBe(`http://gate/pypi/files/requests${PYPI_OLD_SDIST_PATH}`)
+  const wheel = idx.files.find((f: { filename: string }) => f.filename === 'requests-2.31.0-py3-none-any.whl') as unknown as {
+    'core-metadata': { sha256: string }
+  }
+  // PEP 658/714: the advertisement a kept file carries passes through unchanged, so pip still GETs <url>.metadata
+  expect(wheel['core-metadata']).toEqual({ sha256: '7823e890e9db6f415138badf9744791290ef76e7ec6fd09a3789e8247fffe782' })
+})
+
+test('a wheel\'s PEP 658/714 <url>.metadata is served byte-identical when the wheel is allowed, refused when it is not (ei0.9)', async () => {
+  const g = gate()
+  const old = await g(new Request(`http://gate/pypi/files/requests${PYPI_OLD_WHEEL_PATH}.metadata`))
+  expect(old.status).toBe(200)
+  expect(await old.text()).toBe('METADATA-wheel-2.31.0')
+
+  const young = await g(new Request(`http://gate/pypi/files/requests${PYPI_YOUNG_PATH}.metadata`))
+  expect(young.status).toBe(404)
+  expect(await young.text()).toContain('pkg-gate')
 })
 
 test('PyPI project names are normalized per PEP 503 (dots, underscores, case)', async () => {
