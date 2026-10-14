@@ -523,6 +523,83 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
   expect(rules[5]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
 })
 
+test('unset, FACTORY_AX_PKG_GATE leaves egressPolicy byte-identical to today, registry hosts and all', () => {
+  const extra = [ax.parseEgress('proxy.golang.org,sum.golang.org'), ax.parseEgress('pypi.org,api.openai.com')]
+  expect(ax.egressPolicy('factory', extra, undefined)).toEqual(ax.egressPolicy('factory', extra))
+  expect(ax.egressPolicy('factory', extra).rules.slice(4)).toEqual([
+    { https: { hostnames: ['proxy.golang.org', 'sum.golang.org'] } },
+    { https: { hostnames: ['pypi.org', 'api.openai.com'] } },
+  ])
+})
+
+test('a set pkg-gate adds its own rule and strips every registry host, dropping an all-registry rule and thinning a mixed one', () => {
+  const extra = [ax.parseEgress('proxy.golang.org,sum.golang.org'), ax.parseEgress('pypi.org,api.openai.com')]
+  const rules = ax.egressPolicy('factory', extra, 'http://pkg-gate.pkg-gate.svc:8080').rules as {
+    https?: { hostnames: string[]; ports?: { numbers: number[] } }
+    http?: { hostnames: string[]; ports?: { numbers: number[] } }
+  }[]
+  for (const r of rules) for (const h of r.https?.hostnames ?? r.http?.hostnames ?? [])
+    expect(ax.REGISTRY_HOSTS).not.toContain(h)
+  expect(rules).toContainEqual({ http: { hostnames: ['pkg-gate.pkg-gate.svc'], ports: { numbers: [8080] } } })
+  // the all-registry rule is gone entirely; the mixed one keeps only its non-registry host
+  expect(rules.some(r => r.https?.hostnames.includes('api.openai.com'))).toBe(true)
+  expect(rules.some(r => r.https?.hostnames.includes('proxy.golang.org'))).toBe(false)
+})
+
+test("the gate's own rule is https at its default port when the gate URL is https, and omits a default port either way", () => {
+  expect(ax.egressPolicy('', [], 'https://pkg-gate.example.com').rules).toContainEqual({
+    https: { hostnames: ['pkg-gate.example.com'] },
+  })
+  expect(ax.egressPolicy('', [], 'https://pkg-gate.example.com:8443').rules).toContainEqual({
+    https: { hostnames: ['pkg-gate.example.com'], ports: { numbers: [8443] } },
+  })
+  expect(ax.egressPolicy('', [], 'http://pkg-gate.pkg-gate.svc').rules).toContainEqual({
+    http: { hostnames: ['pkg-gate.pkg-gate.svc'] },
+  })
+})
+
+test('a launched task carries the registry env only when FACTORY_AX_PKG_GATE is set, http or https', () => {
+  const base = { name: 't-gate', repo: 'r', branch: 'b', image: 'i', env: {} }
+  ax.launch(base)
+  const envOf = () =>
+    Object.fromEntries(
+      JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!).spec.env.map(
+        (e: { name: string; value: string }) => [e.name, e.value],
+      ),
+    )
+  expect(envOf().GOPROXY).toBeUndefined()
+  expect(envOf().PIP_INDEX_URL).toBeUndefined()
+
+  process.env.FACTORY_AX_PKG_GATE = 'http://pkg-gate.pkg-gate.svc:8080'
+  try {
+    ax.launch(base)
+    const env = envOf()
+    expect(env).toMatchObject({
+      GOPROXY: 'http://pkg-gate.pkg-gate.svc:8080/go',
+      NPM_CONFIG_REGISTRY: 'http://pkg-gate.pkg-gate.svc:8080/npm/',
+      BUN_CONFIG_REGISTRY: 'http://pkg-gate.pkg-gate.svc:8080/npm/',
+      YARN_NPM_REGISTRY_SERVER: 'http://pkg-gate.pkg-gate.svc:8080/npm/',
+      PIP_INDEX_URL: 'http://pkg-gate.pkg-gate.svc:8080/pypi/simple',
+      UV_DEFAULT_INDEX: 'http://pkg-gate.pkg-gate.svc:8080/pypi/simple',
+      UV_INDEX_URL: 'http://pkg-gate.pkg-gate.svc:8080/pypi/simple',
+      PIP_TRUSTED_HOST: 'pkg-gate.pkg-gate.svc',
+      UV_INSECURE_HOST: 'pkg-gate.pkg-gate.svc',
+    })
+  } finally {
+    delete process.env.FACTORY_AX_PKG_GATE
+  }
+
+  process.env.FACTORY_AX_PKG_GATE = 'https://pkg-gate.example.com'
+  try {
+    ax.launch(base)
+    const env = envOf()
+    expect(env.GOPROXY).toBe('https://pkg-gate.example.com/go')
+    expect(env.PIP_TRUSTED_HOST).toBeUndefined() // https needs no trusted-host override
+  } finally {
+    delete process.env.FACTORY_AX_PKG_GATE
+  }
+})
+
 test("a codex task gets its harness, its extra egress and OpenAI's placeholder key", () => {
   writeFileSync(join(dir, 'actor'), '')
   process.env.FACTORY_AX_VAULT = 'factory'

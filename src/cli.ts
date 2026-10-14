@@ -2616,11 +2616,18 @@ async function defineRig(
     fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
   if (egress?.length) {
     if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
+    let parsed: Egress[] | undefined
     try {
-      rig.egress = egress.map(ax.parseEgress)
+      parsed = egress.map(ax.parseEgress)
     } catch (err) {
       fail((err as Error).message)
     }
+    rig.egress = parsed!
+    for (const host of parsed!.flatMap(e => e.hosts).filter(h => ax.REGISTRY_HOSTS.includes(h)))
+      console.warn(
+        `warning: --egress ${host} is a package registry host; once a pkg-gate is on (FACTORY_AX_PKG_GATE), ` +
+          `it is stripped from this rig's policy and never reaches the VM directly`,
+      )
   }
   if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
   if (mcp !== undefined) {
