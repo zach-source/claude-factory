@@ -84,6 +84,62 @@ const NPM_TARBALLS: Record<string, string> = {
   'ms-2.2.0.tgz': 'TARBALL-BYTES-2.2.0',
 }
 
+// trimmed from a real `curl -H 'Accept: application/vnd.pypi.simple.v1+json' https://pypi.org/simple/requests/`
+// (2026-10-14): two real files (PEP 700 upload-time included), plus a synthetic young one and a synthetic
+// one with no upload-time at all, to exercise the age gate
+const PYPI_OLD_WHEEL_PATH = '/packages/70/8e/0e2d847013cb52cd35b38c009bb167a1a26b2ce6cd6965bf26b47bc0bf44/requests-2.31.0-py3-none-any.whl'
+const PYPI_OLD_SDIST_PATH = '/packages/9d/be/10918a2eac4ae9f02f6cfe6414b7a155ccd8f7f9d4380d62fd5b955065c3/requests-2.31.0.tar.gz'
+const PYPI_YOUNG_PATH = '/packages/zz/zz/synthetic/requests-2.36.0.tar.gz'
+const PYPI_NOTIME_PATH = '/packages/yy/yy/synthetic/requests-2.37.0.tar.gz'
+const pypiIndex = (origin: string) =>
+  JSON.stringify({
+    name: 'requests',
+    meta: { '_last-serial': 37059094, 'api-version': '1.4' },
+    versions: ['2.31.0', '2.36.0', '2.37.0'],
+    files: [
+      {
+        filename: 'requests-2.31.0-py3-none-any.whl',
+        url: `${origin}${PYPI_OLD_WHEEL_PATH}`,
+        hashes: { sha256: '58cd2187c01e70e6e26505bca751777aa9f2ee0b7f4300988b709f44e013003f' },
+        size: 62574,
+        'requires-python': '>=3.7',
+        'upload-time': '2023-05-22T15:12:42.313790Z',
+        yanked: false,
+      },
+      {
+        filename: 'requests-2.31.0.tar.gz',
+        url: `${origin}${PYPI_OLD_SDIST_PATH}`,
+        hashes: { sha256: '942c5a758f98d790eaed1a29cb6eefc7ffb0d1cf7af05c3d2791656dbd6ad1e1' },
+        size: 110794,
+        'requires-python': '>=3.7',
+        'upload-time': '2023-05-22T15:12:44.175995Z',
+        yanked: false,
+      },
+      {
+        filename: 'requests-2.36.0.tar.gz', // synthetic: too young
+        url: `${origin}${PYPI_YOUNG_PATH}`,
+        hashes: { sha256: 'synthetic-young' },
+        size: 1,
+        'upload-time': '2026-10-10T12:00:00.000Z',
+        yanked: false,
+      },
+      {
+        filename: 'requests-2.37.0.tar.gz', // synthetic: no upload-time at all
+        url: `${origin}${PYPI_NOTIME_PATH}`,
+        hashes: { sha256: 'synthetic-notime' },
+        size: 1,
+        yanked: false,
+      },
+    ],
+  })
+const PYPI_LEGACY_HTML = '<!DOCTYPE html><html><body><a href="#">requests-2.31.0.tar.gz</a></body></html>'
+const PYPI_FILES: Record<string, string> = {
+  [PYPI_OLD_WHEEL_PATH]: 'FILEBYTES-wheel-2.31.0',
+  [PYPI_OLD_SDIST_PATH]: 'FILEBYTES-sdist-2.31.0',
+  [PYPI_YOUNG_PATH]: 'FILEBYTES-young-2.36.0',
+  [PYPI_NOTIME_PATH]: 'FILEBYTES-notime-2.37.0',
+}
+
 let upstream: ReturnType<typeof Bun.serve>
 beforeAll(() => {
   upstream = Bun.serve({
@@ -96,6 +152,13 @@ beforeAll(() => {
           : new Response(NPM_ABBREVIATED, { headers: { 'content-type': 'application/json' } }) // no `time`: proves the gate always asks for the full doc
       const tarballFile = url.pathname.match(/^\/@types\/ms\/-\/(.+)$/)?.[1]
       if (tarballFile && NPM_TARBALLS[tarballFile]) return new Response(NPM_TARBALLS[tarballFile])
+      if (url.pathname === '/simple/requests/')
+        return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
+          ? new Response(pypiIndex(url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+          : new Response(PYPI_LEGACY_HTML, { headers: { 'content-type': 'text/html' } }) // proves the gate always asks for PEP 691 JSON
+      if (url.pathname === '/simple/missingproj/') return new Response('not found', { status: 404 })
+      if (url.pathname === '/simple/brokenproj/') return new Response('internal error', { status: 500 })
+      if (PYPI_FILES[url.pathname]) return new Response(PYPI_FILES[url.pathname])
       const r = routes[url.pathname]
       if (!r) return new Response('not found', { status: 404 })
       return new Response(r.body, { status: r.status, headers: r.type ? { 'content-type': r.type } : {} })
@@ -236,6 +299,53 @@ test('npm upstream errors refuse rather than pass through', async () => {
   const notFound = await g(new Request('http://gate/npm/nope'))
   expect(notFound.status).toBe(404)
   const broken = await g(new Request('http://gate/npm/boom500'))
+  expect(broken.status).toBe(502)
+  expect(await broken.text()).toContain('pkg-gate')
+})
+
+test('the PyPI simple index drops a young file and one with no upload-time, and rewrites file urls to the gate', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/pypi/simple/requests/'))
+  expect(r.status).toBe(200)
+  expect(r.headers.get('content-type')).toBe('application/vnd.pypi.simple.v1+json')
+  const idx = (await r.json()) as { files: { filename: string; url: string }[] }
+  const names = idx.files.map(f => f.filename).sort()
+  expect(names).toEqual(['requests-2.31.0-py3-none-any.whl', 'requests-2.31.0.tar.gz']) // young and no-upload-time files are gone
+  const sdist = idx.files.find(f => f.filename === 'requests-2.31.0.tar.gz')!
+  expect(sdist.url).toBe(`http://gate/pypi/files/requests${PYPI_OLD_SDIST_PATH}`)
+})
+
+test('PyPI project names are normalized per PEP 503 (dots, underscores, case)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/pypi/simple/Requests/'))
+  expect(r.status).toBe(200)
+  const idx = (await r.json()) as { files: { filename: string }[] }
+  expect(idx.files.length).toBe(2)
+})
+
+test('an old PyPI file is served byte-identical; a young or unlisted one is refused', async () => {
+  const g = gate()
+  const old = await g(new Request(`http://gate/pypi/files/requests${PYPI_OLD_SDIST_PATH}`))
+  expect(old.status).toBe(200)
+  expect(await old.text()).toBe('FILEBYTES-sdist-2.31.0')
+
+  const young = await g(new Request(`http://gate/pypi/files/requests${PYPI_YOUNG_PATH}`))
+  expect(young.status).toBe(404)
+  expect(await young.text()).toContain('pkg-gate')
+
+  const notime = await g(new Request(`http://gate/pypi/files/requests${PYPI_NOTIME_PATH}`))
+  expect(notime.status).toBe(404)
+  expect(await notime.text()).toContain('pkg-gate')
+
+  const unlisted = await g(new Request('http://gate/pypi/files/requests/packages/no/such/file.tar.gz'))
+  expect(unlisted.status).toBe(404)
+})
+
+test('PyPI upstream errors refuse rather than pass through', async () => {
+  const g = gate()
+  const notFound = await g(new Request('http://gate/pypi/simple/missingproj/'))
+  expect(notFound.status).toBe(404)
+  const broken = await g(new Request('http://gate/pypi/simple/brokenproj/'))
   expect(broken.status).toBe(502)
   expect(await broken.text()).toContain('pkg-gate')
 })

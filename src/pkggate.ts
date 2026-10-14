@@ -27,11 +27,12 @@ type Resolved = {
   now: () => number
   fetch: typeof fetch
   stats: Stats
-  /** the packument cache a tarball request reads its version's time from, short TTL, per gate instance */
+  /** the npm packument / PyPI index a tarball or file request reads its entry's time from, short TTL */
   npmCache: Map<string, { parsed: NpmPackument; expiresAt: number }>
+  pypiCache: Map<string, { parsed: PypiIndex; expiresAt: number }>
 }
 
-const NPM_CACHE_MS = 60_000
+const REGISTRY_CACHE_MS = 60_000
 
 function resolve(cfg: GateConfig): Resolved {
   return {
@@ -42,6 +43,7 @@ function resolve(cfg: GateConfig): Resolved {
     fetch: cfg.fetch ?? fetch,
     stats: { allow: 0, refuse: 0, error: 0 },
     npmCache: new Map(),
+    pypiCache: new Map(),
   }
 }
 
@@ -255,7 +257,7 @@ async function fetchPackument(cfg: Resolved, pkg: string) {
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePackument(await r.text())
     if (!parsed) return { ok: false as const, status: 0 }
-    cfg.npmCache.set(pkg, { parsed, expiresAt: Date.now() + NPM_CACHE_MS })
+    cfg.npmCache.set(pkg, { parsed, expiresAt: Date.now() + REGISTRY_CACHE_MS })
     return { ok: true as const, parsed }
   } catch {
     return { ok: false as const, status: 0 }
@@ -323,6 +325,91 @@ async function handleNpm(cfg: Resolved, path: string, origin: string): Promise<R
   return parsed.kind === 'tarball' ? npmTarball(cfg, parsed.pkg, parsed.file) : npmPackument(cfg, parsed.pkg, origin)
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// PyPI: the PEP 691 simple index (JSON), with every file whose PEP 700 upload-time is younger than the
+// minimum, or missing entirely, dropped; project names normalized per PEP 503. Files are served from a
+// separate `/pypi/files` host (files.pythonhosted.org in reality), named by the index's own rewritten URLs.
+
+type PypiFile = { filename: string; url: string; 'upload-time'?: string | null; [k: string]: unknown }
+type PypiIndex = { files: PypiFile[]; [k: string]: unknown }
+
+/** PEP 503: lowercase, runs of -_. collapsed to a single - */
+const pepNormalize = (name: string) => name.toLowerCase().replace(/[-_.]+/g, '-')
+
+function parsePypiIndex(text: string): PypiIndex | null {
+  try {
+    const j = JSON.parse(text)
+    return j && typeof j === 'object' && Array.isArray(j.files) ? j : null
+  } catch {
+    return null
+  }
+}
+
+/** the upstream simple index for a (PEP 503 normalized) project, cached a short while */
+async function fetchPypiIndex(cfg: Resolved, project: string) {
+  const cached = cfg.pypiCache.get(project)
+  if (cached && cached.expiresAt > Date.now()) return { ok: true as const, parsed: cached.parsed }
+  try {
+    const r = await cfg.fetch(`${cfg.upstream.pypi}/simple/${project}/`, {
+      headers: { accept: 'application/vnd.pypi.simple.v1+json' },
+    })
+    if (!r.ok) return { ok: false as const, status: r.status }
+    const parsed = parsePypiIndex(await r.text())
+    if (!parsed) return { ok: false as const, status: 0 }
+    cfg.pypiCache.set(project, { parsed, expiresAt: Date.now() + REGISTRY_CACHE_MS })
+    return { ok: true as const, parsed }
+  } catch {
+    return { ok: false as const, status: 0 }
+  }
+}
+
+function fileDecision(cfg: Resolved, project: string, f: PypiFile) {
+  const t = f['upload-time']
+  const publishedMs = t ? Date.parse(t) : NaN
+  const d = decide(project, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+  logDecision('pypi', project, f.filename, t ?? null, d, cfg)
+  return d
+}
+
+async function pypiSimple(cfg: Resolved, project: string, origin: string) {
+  const idx = await fetchPypiIndex(cfg, project)
+  if (!idx.ok) return refuse(idx.status === 404 ? 404 : 502, `pkg-gate: ${project}: upstream error`)
+  const files = idx.parsed.files
+    .filter(f => fileDecision(cfg, project, f).decision === 'allow')
+    .map(f => ({ ...f, url: `${origin}/pypi/files/${project}${new URL(f.url).pathname}` }))
+  return new Response(JSON.stringify({ ...idx.parsed, files }), {
+    headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
+  })
+}
+
+async function pypiFile(cfg: Resolved, project: string, path: string) {
+  const idx = await fetchPypiIndex(cfg, project)
+  if (!idx.ok) return refuse(idx.status === 404 ? 404 : 502, `pkg-gate: ${project}: upstream error`)
+  const file = idx.parsed.files.find(f => new URL(f.url).pathname === path)
+  if (!file) return refuse(404, `pkg-gate: ${project}${path} not found`)
+  const d = fileDecision(cfg, project, file)
+  if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${project}/${file.filename} ${ageText(d)}, minimum ${cfg.minDays}d`)
+  const b = await fetchBytes(cfg, `${cfg.upstream.files}${path}`)
+  if (!b.ok) return refuse(502, `pkg-gate: ${project}/${file.filename}: upstream error`)
+  return new Response(b.buf)
+}
+
+async function handlePypi(cfg: Resolved, path: string, origin: string): Promise<Response> {
+  if (path.startsWith('simple/')) {
+    const project = pepNormalize(decodeURIComponent(path.slice('simple/'.length).replace(/\/$/, '')))
+    if (!project) return refuse(404, 'pkg-gate: not found')
+    return pypiSimple(cfg, project, origin)
+  }
+  if (path.startsWith('files/')) {
+    const rest = path.slice('files/'.length)
+    const slash = rest.indexOf('/')
+    if (slash < 0) return refuse(404, 'pkg-gate: not found')
+    const project = pepNormalize(decodeURIComponent(rest.slice(0, slash)))
+    return pypiFile(cfg, project, `/${rest.slice(slash + 1)}`)
+  }
+  return refuse(404, 'pkg-gate: not found')
+}
+
 /**
  * the gate's handler: a Go module proxy under `/go`, an npm registry under `/npm`, a PyPI simple index and
  * file host under `/pypi/simple` and `/pypi/files`. Serve it with Bun.serve or `factory pkg-gate serve`.
@@ -334,6 +421,7 @@ export function makeGate(cfg: GateConfig): Gate {
     const path = url.pathname.replace(/^\/+/, '')
     if (path.startsWith('go/')) return handleGo(resolved, path.slice('go/'.length))
     if (path.startsWith('npm/')) return handleNpm(resolved, path.slice('npm/'.length), url.origin)
+    if (path.startsWith('pypi/')) return handlePypi(resolved, path.slice('pypi/'.length), url.origin)
     return refuse(404, 'pkg-gate: not found')
   }) as Gate
   handler.stats = () => ({ ...resolved.stats })
