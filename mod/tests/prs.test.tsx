@@ -35,6 +35,17 @@ const PRS = [
         state: 'OPEN',
         isDraft: true,
       }),
+      // an own-role (not 'mentioned') draft: state 'CLOSED' so that without prState's draft override
+      // this would render as "closed" in red instead (wyc.9: the acceptance item "drafts are marked as
+      // drafts" must be proven on an own row, since a mentioned PR never renders a state word at all)
+      PR({
+        url: 'https://github.com/acme/widget/pull/552',
+        number: 552,
+        title: 'Draft safety net',
+        role: 'code',
+        state: 'CLOSED',
+        isDraft: true,
+      }),
     ],
   },
   {
@@ -119,6 +130,9 @@ test('the PRs tab groups by rig then run, shows each PR with its state, role and
   expect(drawn).toContain('Add the thing')
   expect(drawn).toContain('2923')
   expect(drawn).toContain('needs approval')
+  // #552 is own-role (code) and a draft: the tab marks it 'draft', not 'closed' (wyc.9)
+  expect(drawn).toContain('552')
+  expect(drawn).toContain('draft')
   // the mentioned PR (#550, draft) is on its own dim line, not among the "own" rows
   expect(drawn).toContain('also named:')
   expect(drawn).toContain('550')
