@@ -1008,6 +1008,62 @@ function swapAccount(hit: { at: number; resetsAt: number }, now: number): number
 }
 
 /**
+ * This function checks if a hit is new. A hit is new when no state exists yet. A hit is
+ * also new when the hit time is after the state time.
+ */
+export function needsSwap(hit: { at: number }, state: { at: number } | undefined) {
+  return !state || hit.at > state.at
+}
+
+/**
+ * This function gives the wait after a swap try. On success, it gives the vault's refresh
+ * window. On failure, it gives the reset wait.
+ */
+export function swapUntil(hit: { at: number; resetsAt: number }, now: number, ok: boolean, refreshMs: number) {
+  return ok ? now + refreshMs : hit.resetsAt || hit.at + 3_600_000
+}
+
+const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at most this often
+type TokenSwapState = { at: number; until: number }
+
+/**
+ * This function runs a command. A rig sets the command in FACTORY_AX_TOKEN_SWAP. The function
+ * runs the command one time for each refusal. It then sends mail to the manager. The mail
+ * names the live slot.
+ *
+ * Workers of one runner use the same vault token. One file per runner stops a second run for
+ * the same refusal. If there is no command, the function waits for the reset. The function
+ * also waits for the reset if the command fails.
+ */
+function runTokenSwap(
+  hit: { at: number; resetsAt: number },
+  now: number,
+  runnerName: string,
+  send: (e: Input) => void,
+  node: string,
+): number {
+  const cmd = process.env.FACTORY_AX_TOKEN_SWAP
+  if (!cmd) return hit.resetsAt || hit.at + 3_600_000
+  const file = join(HOME, `token-swap-${runnerName}.json`)
+  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  if (!needsSwap(hit, state)) return state!.until
+  const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
+  const ok = p.exitCode === 0
+  if (ok) {
+    const slot = /slot (\S+) is live/.exec(p.stdout.toString())?.[1] ?? '?'
+    send({
+      type: 'MAIL',
+      from: node,
+      to: 'manager',
+      text: `Swapped the Claude token for ${runnerName} workers: slot ${slot} is live; they go on once the vault refreshes.`,
+    })
+  }
+  const until = swapUntil(hit, now, ok, TOKEN_SWAP_WAIT_MS)
+  writeJson(file, { at: hit.at, until } satisfies TokenSwapState)
+  return until
+}
+
+/**
  * a worker's own Claude settings, in full: none of the user's (their plugins, agents, skills, global
  * CLAUDE.md, auto memory and compaction window cost every turn tens of thousands of tokens a worker never
  * uses), so these win. It keeps their hooks (secret guards, herdr's session hook) and environment, never
@@ -1264,9 +1320,10 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const hit = limitHit(tail)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
-    // a VM's Claude runs on the vault's token, which ccswitch does not rotate: it waits out the limit, then
-    // the nudge below gives it its next turn
-    const until = runner.local ? swapAccount(hit, now) : hit.resetsAt || hit.at + 3_600_000
+    // A VM's Claude uses the vault's token. ccswitch does not rotate this token. With a swap command,
+    // runTokenSwap moves to a new slot, and the worker goes on when the vault refreshes. With no swap
+    // command, the worker waits for the reset, and the nudge below then gives it its next turn.
+    const until = runner.local ? swapAccount(hit, now) : runTokenSwap(hit, now, runner.name, send, node)
     if (until > now) {
       const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
       if (!existsSync(paged) || readJson<number>(paged) < until) {

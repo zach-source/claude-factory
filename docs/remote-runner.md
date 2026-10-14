@@ -96,6 +96,10 @@ The Task sets `FACTORY_OUTBOX`. Inside the VM, `factory report`, `mail` and `mem
 
 `poll` also prints `tail`: a Claude worker's last transcript entry. The reconciler reads the usage limit and the context size from it, as it does from a pane's transcript. A VM's Claude runs on the vault's token, which ccswitch does not rotate, so a worker refused for the limit is held until `resetsAt` (the manager is told once), and the nudge after that gives it its next turn. After a report, the laptop runs a best-effort `git pull --ff-only` into the run's worktree.
 
+If `FACTORY_AX_TOKEN_SWAP` is set, the reconciler starts that command. The reconciler does not only wait. The command moves the vault to a new slot. Then the reconciler sends the manager a mail that shows which slot is live. The worker continues when agent-vault reads the vault again, in 5 minutes or less, not at `resetsAt`.
+
+A file named for the runner stops one more run for the same limit. Each worker of that runner uses this file. If there is no command, or if the command does not complete, the reconciler waits as shown above. For example, the command does not complete when all slots are also at their limit. `bin/claude-token` (`best` or `use <N>`) is one such command. See the comment on how to use that command for the adjustments that it must have.
+
 Pulling means nothing on the cluster ever needs a route back to the laptop.
 
 `memory search` inside the VM is not wired up: it searches an empty memory. `CORE.md` and the topic list still reach the worker in its brief.
@@ -160,6 +164,7 @@ export FACTORY_AX_IMAGE=<registry>/<org>/factory-worker@sha256:…   # from push
 export FACTORY_AX_CONTEXT=<cluster>                               # kube context for ax and kubectl (kubectl-ate on PATH)
 export FACTORY_AX_VAULT=factory                              # agent-vault vault with ANTHROPIC, GITHUB, GITHUB_BASIC
 export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # optional: more env for the task, never a real key
+export FACTORY_AX_TOKEN_SWAP="bin/claude-token best"          # optional: swaps the vault's token on a usage limit
 factory rig add web ~/repos/web --runner ax                   # rigs.json: "runner": "ax"
 # a codex rig also needs its host and its vault key (OPENAI in the vault): --agent "codex" --egress api.openai.com=OPENAI
 ```

@@ -10,6 +10,7 @@ import {
   labelAction,
   lastContext,
   limitHit,
+  needsSwap,
   nextAccount,
   servedAt,
   prOwner,
@@ -20,6 +21,7 @@ import {
   reapable,
   relaunch,
   reworkGoal,
+  swapUntil,
   watchWake,
   workerSettings,
   room,
@@ -319,4 +321,15 @@ test("a usage limit is read from the transcript's last turn, and the next accoun
   expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9, c: 9 }, 5)).toBe('a')
   expect(nextAccount(['a', 'b', 'c'], 'b', { a: 9, b: 3, c: 9 }, 5)).toBe('b')
   expect(nextAccount(['a', 'b', 'c'], 'b', { a: 9, b: 9, c: 9 }, 5)).toBeNull()
+})
+
+test('a token swap runs once per usage-limit hit, then waits for the vault refresh on success or the reset on failure', () => {
+  const hit = { at: 1_000, resetsAt: 2_000_000 }
+  expect(needsSwap(hit, undefined)).toBe(true)
+  expect(needsSwap(hit, { at: 999 })).toBe(true)
+  expect(needsSwap(hit, { at: 1_000 })).toBe(false)
+  expect(needsSwap(hit, { at: 1_001 })).toBe(false)
+  expect(swapUntil(hit, 5_000, true, 300_000)).toBe(305_000)
+  expect(swapUntil(hit, 5_000, false, 300_000)).toBe(2_000_000) // resetsAt wins when set
+  expect(swapUntil({ at: 1_000, resetsAt: 0 }, 5_000, false, 300_000)).toBe(1_000 + 3_600_000) // the 1h fallback
 })
