@@ -51,6 +51,14 @@ RUN nix registry add --registry /etc/nix/registry.json nixpkgs github:NixOS/nixp
 # serve runs as this user, not root (asWorker in src/worker.ts), which gives it Nix's store and database when the
 # task starts, since Substrate shows image files as root's, so nix shell and a rig's devenv substitute as it
 RUN useradd --create-home --shell /bin/bash worker
+# root (an `ax ssh` shell) cannot open Nix's database once the worker owns it, since root has no DAC_OVERRIDE, so
+# nix runs as the worker for root then; before that (an image build, a task without the capabilities) it runs as is
+RUN mkdir -p /opt/as-worker && printf '%s\n' '#!/bin/sh' \
+    'nix=/nix/var/nix/profiles/default/bin/nix' \
+    '[ "$(id -u)" = 0 ] && [ "$(stat -c %U /nix/var/nix/db)" = worker ] || exec "$nix" "$@"' \
+    'exec env HOME=/home/worker USER=worker setpriv --reuid=worker --regid=worker --init-groups "$nix" "$@"' \
+    > /opt/as-worker/nix && chmod 755 /opt/as-worker/nix
+ENV PATH=/opt/as-worker:$PATH
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=runner /ax-task-runner /usr/local/bin/ax-task-runner
 
@@ -63,9 +71,11 @@ COPY src src
 COPY factories factories
 RUN ln -s /opt/factory/bin/factory /usr/local/bin/factory
 
-# workers commit as the factory; Substrate's egress gateway puts the real keys in on the way out
+# workers commit as the factory; Substrate's egress gateway puts the real keys in on the way out. Root (an `ax ssh`
+# shell) may read the worker's repos without git's dubious-ownership refusal
 RUN git config --system user.name 'claude-factory worker' \
-  && git config --system user.email 'factory-worker@users.noreply.github.com'
+  && git config --system user.email 'factory-worker@users.noreply.github.com' \
+  && git config --system safe.directory '*'
 # the runner is PID 1 and root, and serve stays root when its task lacks the capabilities to become the worker
 # user; Claude refuses to skip permissions as root outside a declared sandbox: the microVM is that sandbox
 ENV IS_SANDBOX=1
