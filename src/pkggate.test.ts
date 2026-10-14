@@ -209,6 +209,8 @@ beforeAll(() => {
       if (PYPI_FILES[url.pathname]) return new Response(PYPI_FILES[url.pathname])
       if (url.pathname === '/sumdb/sum.golang.org/tile/8/0/000')
         return new Response(SUMDB_TILE_BYTES, { headers: { 'content-type': 'application/octet-stream' } })
+      // never responds: proves a hanging upstream is refused by the gate's own timeout, not left to hang (ei0.12)
+      if (url.pathname === '/example.com/hangs/@v/v1.0.0.info') return new Promise<Response>(() => {})
       const r = routes[url.pathname]
       if (!r) return new Response('not found', { status: 404 })
       return new Response(r.body, { status: r.status, headers: r.type ? { 'content-type': r.type } : {} })
@@ -299,6 +301,44 @@ test('a missing publish time is refused, never allowed through', async () => {
   const r = await g(new Request('http://gate/go/example.com/notime/@v/v1.0.0.info'))
   expect(r.status).toBe(404)
   expect(await r.text()).toContain('pkg-gate')
+})
+
+test('a hanging upstream is refused (502) after fetchTimeoutMs, not left waiting for the server\'s own idle timeout (ei0.12)', async () => {
+  const g = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    now: () => NOW,
+    fetchTimeoutMs: 50,
+  })
+  const start = Date.now()
+  const r = await g(new Request('http://gate/go/example.com/hangs/@v/v1.0.0.info'))
+  // well under Bun.serve's own 10s idle timeout, which would otherwise mask a missing AbortSignal
+  expect(Date.now() - start).toBeLessThan(2_000)
+  expect(r.status).toBe(502)
+  expect(await r.text()).toContain('pkg-gate')
+})
+
+test('a module version is decided once, then cached: a second request for the same version makes no second upstream fetch (ei0.12)', async () => {
+  let hits = 0
+  const counting = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/counted.example.com/mod/@v/v1.0.0.info') {
+        hits++
+        return new Response(GO_INFO_OLD)
+      }
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({ upstream: { go: counting.url.origin, npm: base(), pypi: base(), files: base() }, now: () => NOW })
+    await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
+    await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
+    await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
+    expect(hits).toBe(1)
+  } finally {
+    counting.stop(true)
+  }
 })
 
 test('an allowlisted module is let through even when young', async () => {

@@ -15,6 +15,8 @@ export type GateConfig = {
   allowlist?: string[]
   now?: () => number
   fetch?: typeof fetch
+  /** every upstream fetch aborts after this long, a timeout counted as an error, never a pass-through (default 10s) */
+  fetchTimeoutMs?: number
 }
 
 export type Stats = { allow: number; refuse: number; error: number }
@@ -26,13 +28,19 @@ type Resolved = {
   allowlist: string[]
   now: () => number
   fetch: typeof fetch
+  fetchTimeoutMs: number
   stats: Stats
   /** the npm packument / PyPI index a tarball or file request reads its entry's time from, short TTL */
   npmCache: Map<string, { parsed: NpmPackument; expiresAt: number }>
   pypiCache: Map<string, { parsed: PypiIndex; expiresAt: number }>
+  /** a module version's `.info` is immutable once published, so a successful fetch is cached forever (ei0.12) */
+  goInfoCache: Map<string, { info: string; version?: string; time?: string }>
 }
 
 const REGISTRY_CACHE_MS = 60_000
+const DEFAULT_FETCH_TIMEOUT_MS = 10_000
+/** how many versions' .info the Go list/@latest fallback paths fetch in parallel (ei0.12) */
+const GO_LIST_CONCURRENCY = 8
 
 function resolve(cfg: GateConfig): Resolved {
   const minDays = cfg.minDays ?? 4
@@ -46,10 +54,23 @@ function resolve(cfg: GateConfig): Resolved {
     allowlist: cfg.allowlist ?? [],
     now: cfg.now ?? (() => Date.now()),
     fetch: cfg.fetch ?? fetch,
+    fetchTimeoutMs: cfg.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
     stats: { allow: 0, refuse: 0, error: 0 },
     npmCache: new Map(),
     pypiCache: new Map(),
+    goInfoCache: new Map(),
   }
+}
+
+/** runs `fn` over `items` with at most `limit` in flight at once, preserving `items`' order in the result */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  async function worker() {
+    for (let i = next++; i < items.length; i = next++) results[i] = await fn(items[i]!)
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
 }
 
 type Decision = { decision: 'allow' | 'refuse' | 'error'; reason: string; ageH: number | null }
@@ -106,18 +127,19 @@ function refuse(status: number, text: string) {
 
 async function fetchText(cfg: Resolved, url: string): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
   try {
-    const r = await cfg.fetch(url)
+    const r = await cfg.fetch(url, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
     const text = await r.text()
     if (!r.ok) return { ok: false, status: r.status }
     return { ok: true, text }
   } catch {
+    // a timeout (AbortSignal) lands here too, same as a network error: no status, refused the same as a 5xx
     return { ok: false, status: 0 }
   }
 }
 
 async function fetchBytes(cfg: Resolved, url: string): Promise<{ ok: true; buf: ArrayBuffer } | { ok: false; status: number }> {
   try {
-    const r = await cfg.fetch(url)
+    const r = await cfg.fetch(url, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
     if (!r.ok) return { ok: false, status: r.status }
     return { ok: true, buf: await r.arrayBuffer() }
   } catch {
@@ -145,16 +167,24 @@ function parseGoInfo(text: string): { version: string; time: string } | null {
  * (`decide` with no publish time), refused the same as a version that is simply too young
  */
 async function goDecideVersion(cfg: Resolved, mod: string, version: string) {
-  const r = await fetchText(cfg, `${cfg.upstream.go}/${mod}/@v/${version}.info`)
-  if (!r.ok) {
-    logDecision('go', mod, version, null, { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null }, cfg)
-    return { ok: false as const }
+  // `.info` never changes once a version is published, so a successful fetch is cached forever: goList and
+  // goLatest's fallback no longer refetch the same mod@version on every request (ei0.12)
+  const key = `${mod}@${version}`
+  let cached = cfg.goInfoCache.get(key)
+  if (!cached) {
+    const r = await fetchText(cfg, `${cfg.upstream.go}/${mod}/@v/${version}.info`)
+    if (!r.ok) {
+      logDecision('go', mod, version, null, { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null }, cfg)
+      return { ok: false as const }
+    }
+    const parsed = parseGoInfo(r.text)
+    cached = { info: r.text, version: parsed?.version, time: parsed?.time }
+    cfg.goInfoCache.set(key, cached)
   }
-  const parsed = parseGoInfo(r.text)
-  const publishedMs = parsed ? Date.parse(parsed.time) : NaN
+  const publishedMs = cached.time ? Date.parse(cached.time) : NaN
   const d = decide(mod, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
-  logDecision('go', mod, parsed?.version ?? version, parsed?.time ?? null, d, cfg)
-  return { ok: true as const, info: r.text, time: parsed?.time, decision: d }
+  logDecision('go', mod, cached.version ?? version, cached.time ?? null, d, cfg)
+  return { ok: true as const, info: cached.info, time: cached.time, decision: d }
 }
 
 function ageText(d: Decision) {
@@ -178,11 +208,10 @@ async function goList(cfg: Resolved, mod: string) {
     .split('\n')
     .map(s => s.trim())
     .filter(Boolean)
-  const kept: string[] = []
-  for (const v of versions) {
-    const d = await goDecideVersion(cfg, mod, v)
-    if (d.ok && d.decision.decision === 'allow') kept.push(v)
-  }
+  // one `.info` per version, up to GO_LIST_CONCURRENCY in flight at once, instead of serially: a module with
+  // hundreds of versions no longer takes minutes to list (ei0.12)
+  const decisions = await mapLimit(versions, GO_LIST_CONCURRENCY, v => goDecideVersion(cfg, mod, v))
+  const kept = versions.filter((_, i) => decisions[i]!.ok && decisions[i]!.decision.decision === 'allow')
   return new Response(kept.length ? kept.join('\n') + '\n' : '', { headers: { 'content-type': 'text/plain' } })
 }
 
@@ -206,11 +235,12 @@ async function goLatest(cfg: Resolved, mod: string) {
     .split('\n')
     .map(s => s.trim())
     .filter(Boolean)
+  const decisions = await mapLimit(versions, GO_LIST_CONCURRENCY, v => goDecideVersion(cfg, mod, v))
   const candidates: { version: string; time: string }[] = []
-  for (const v of versions) {
-    const d = await goDecideVersion(cfg, mod, v)
+  versions.forEach((v, i) => {
+    const d = decisions[i]!
     if (d.ok && d.decision.decision === 'allow' && d.time) candidates.push({ version: v, time: d.time })
-  }
+  })
   // prefer the highest release semver over the newest by time, so a pseudo-version or prerelease commit
   // never wins over a real release just for being more recently published (ei0.11); only fall back to
   // newest-by-time when every old-enough candidate is itself a prerelease/pseudo-version
@@ -228,7 +258,7 @@ async function handleGo(cfg: Resolved, path: string): Promise<Response> {
     // + `new Response(text)`) corrupts any byte above 0x7f, which fails checksum verification (ei0.8)
     let upstream: Response
     try {
-      upstream = await cfg.fetch(`${cfg.upstream.go}/${path}`)
+      upstream = await cfg.fetch(`${cfg.upstream.go}/${path}`, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
     } catch {
       return refuse(502, 'pkg-gate: sumdb upstream error')
     }
@@ -295,7 +325,10 @@ async function fetchPackument(cfg: Resolved, pkg: string) {
   const cached = cfg.npmCache.get(pkg)
   if (cached && cached.expiresAt > Date.now()) return { ok: true as const, parsed: cached.parsed }
   try {
-    const r = await cfg.fetch(`${cfg.upstream.npm}/${npmUpstreamName(pkg)}`, { headers: { accept: 'application/json' } })
+    const r = await cfg.fetch(`${cfg.upstream.npm}/${npmUpstreamName(pkg)}`, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
+    })
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePackument(await r.text())
     if (!parsed) return { ok: false as const, status: 0 }
@@ -399,6 +432,7 @@ async function fetchPypiIndex(cfg: Resolved, project: string) {
   try {
     const r = await cfg.fetch(`${cfg.upstream.pypi}/simple/${project}/`, {
       headers: { accept: 'application/vnd.pypi.simple.v1+json' },
+      signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
     })
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePypiIndex(await r.text())
