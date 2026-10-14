@@ -432,6 +432,28 @@ async function jump($: EngineInterface, pane: string) {
   if (r?.exitCode !== 0) $.ui.toast(`factory: could not focus ${pane}`)
 }
 
+/** which Bash commands the manager model may not run without the person's explicit Allow: a gate decision,
+ * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
+ * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here. */
+function gatedCommand(command: string): { question: string; deny: string } | null {
+  if (/\bfactory\s+decide\b/.test(command))
+    return {
+      question: `The manager model wants to decide a factory gate: ${command.slice(0, 300)}. Allow it?`,
+      deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
+    }
+  if (/\bfactory\s+decisions\s+answer\b/.test(command))
+    return {
+      question: `The manager model wants to answer a person's bd decision: ${command.slice(0, 300)}. Allow it?`,
+      deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
+    }
+  if (/\bfactory\s+start\b[^\n]*--owned\b/.test(command))
+    return {
+      question: `The manager model wants to start a bead carrying its owner's decisions: ${command.slice(0, 300)}. Allow it?`,
+      deny: 'The person did not confirm starting this owner-only bead.',
+    }
+  return null
+}
+
 function actions($: EngineInterface): Actions {
   return {
     cli: (...args) => void act($, args),
@@ -478,13 +500,13 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     // the model's shell cd's into rigs to read them: its factory commands still work this factory
     const pinned = rt.home ? { ...e, command: `export FACTORY_HOME='${rt.home}'\n${e.command}` } : e
-    // a gate is the person's call: the model may run decide only after they confirm it here
-    if (!/\bfactory\s+decide\b/.test(e.command)) return next(pinned)
-    const question = `The manager model wants to decide a factory gate: ${e.command.slice(0, 300)}. Allow it?`
-    const choice = await $.ui.ask(question, ['Allow', 'Deny']).catch(() => 'Deny')
-    return choice === 'Allow'
-      ? next(pinned)
-      : { deny: 'The person did not confirm this gate decision. Ask them which outcome they want.' }
+    // a gate, a bd decision answer and an owner-only start are the person's call: the model may run
+    // any of them only after they confirm it here, since it has no other way to intercept the manager's
+    // own shell (FACTORY_FROM, which refuses these for workers, is unset in the manager session)
+    const gated = gatedCommand(e.command)
+    if (!gated) return next(pinned)
+    const choice = await $.ui.ask(gated.question, ['Allow', 'Deny']).catch(() => 'Deny')
+    return choice === 'Allow' ? next(pinned) : { deny: gated.deny }
   })
 
   on('prompt.compose', async ($, e, next) => {
