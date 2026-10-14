@@ -30,6 +30,7 @@ import {
   rigStats,
   sparkline,
   track,
+  withProposals,
   type Interview,
 } from './view'
 
@@ -757,7 +758,10 @@ export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
 export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft, decisions: FactoryDecisions) {
   const { Box, Text, Button, Input } = p.ui
   const answered = Object.fromEntries((draft.interviewed ?? []).map(d => [d.key, d.answer]))
-  const open = [...interviews(board.runs, answered), ...beadInterviews(decisions.rigs, answered)]
+  const open = withProposals(
+    [...interviews(board.runs, answered), ...beadInterviews(decisions.rigs, answered)],
+    decisions.proposals,
+  )
   const done = [...(draft.interviewed ?? [])].reverse()
   const tab = draft.interviewTab ?? 'open'
   return (

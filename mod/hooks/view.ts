@@ -376,6 +376,38 @@ export function beadInterviews(decisions: readonly Decision[], answered: Record<
   return out
 }
 
+/** copies a stored proposal's options onto an open item that has none yet, matched by key: a gate (whose
+ * outcomes are never proposed, only decided) or an item that already has its own options is left untouched.
+ * `factory decisions` round-trips proposals as plain JSON; only here are they merged into what the panel and
+ * the manager's own interview round see. */
+export function withProposals(
+  items: readonly Interview[],
+  proposals: Record<string, { question: string; options: string[]; at: number }> = {},
+): Interview[] {
+  return items.map(iv => {
+    if (iv.kind === 'gate' || iv.options.length) return iv
+    const p = proposals[iv.key]
+    return p ? { ...iv, options: p.options } : iv
+  })
+}
+
+/**
+ * the manager's own interview round, once the person pressed 'Interview me': every open item that still has
+ * no options (after `withProposals`), asking the manager to propose 2+ short, concrete choices for each so
+ * the person can pick one instead of typing an answer. Gates are never included: only the person decides
+ * those, with no proposal. Null once nothing is bare.
+ */
+export function interviewPrompt(items: readonly Interview[]): string | null {
+  const bare = items.filter(iv => iv.kind !== 'gate' && !iv.options.length)
+  if (!bare.length) return null
+  return [
+    '[factory] interview',
+    "The person pressed 'Interview me'. These open questions have no options yet: propose 2 or more short, concrete choices for each, so the person can pick one instead of typing an answer.",
+    ...bare.map(iv => `- ${iv.key}: ${line(iv.question, 200)}`),
+    "For each, run `factory decisions propose <key> \"<question>\" \"<a | b>\"` with that item's own key exactly as given above. Never propose for a gate: key; the person alone decides those.",
+  ].join('\n')
+}
+
 /** the mail that carries the person's answer to a question: their choice, what they typed, or both */
 export function interviewAnswer(iv: Pick<Interview, 'question'>, choice: string | undefined, note: string) {
   const said = note.trim()

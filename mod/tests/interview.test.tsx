@@ -261,3 +261,55 @@ test("an owner-only bead's 'start now' also runs factory start with the rig's fa
   expect(start?.slice(-5)).toEqual(['start', 'lifecycle', 'api', 'api-9', '--owned'])
   await ui.unmount()
 })
+
+// a stuck run with no Question:/Options: shape of its own: bare until the manager proposes options
+const STUCK_TICK = {
+  manager: [],
+  rigs: [{ name: 'api', repo: '/w/api', factory: 'lifecycle' }],
+  runs: [{ id: 's1', rig: 'api', node: 'verify', sub: 'stuck', error: 'timed out, no shape to the error', since: 5 }],
+}
+const DECISIONS_WITH_PROPOSAL = {
+  rigs: [],
+  proposals: { 'iv:s1@5': { question: 'How should it go on?', options: ['retry it', 'escalate to the person'], at: 9 } },
+}
+
+test("the sweep merges the manager's proposed options into a bare item already open from the tick", async ($, on) => {
+  const clock = mock.clock(on)
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+    on(event, () => ({ value: undefined }) as never)
+  on('process.run', ($, e) => {
+    const out = e.argv.includes('tick')
+      ? JSON.stringify(STUCK_TICK)
+      : e.argv.includes('decisions')
+        ? JSON.stringify(DECISIONS_WITH_PROPOSAL)
+        : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+  })
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'interview' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+  // the stuck run is open from the tick alone, with no options of its own yet
+  const before = JSON.stringify(await ui.drawn())
+  expect(before).toContain('questions (1)')
+  expect(before).not.toContain('retry it')
+
+  await ui.press({ key: 'iv-sweep' })
+  await clock.settle()
+  const swept = JSON.stringify(await ui.drawn())
+  expect(swept).toContain('retry it')
+  expect(swept).toContain('escalate to the person')
+
+  await ui.press({ key: 'iv-opt-iv:s1@5-0' }) // 'retry it'
+  await clock.settle()
+  expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
+  await ui.unmount()
+})

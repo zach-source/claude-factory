@@ -32,7 +32,17 @@ import {
   type Actions,
   type UI,
 } from './views'
-import { interviewAnswer, mailKey, patrol, quickAnswer, type Interview } from './view'
+import {
+  beadInterviews,
+  interviewAnswer,
+  interviewPrompt,
+  interviews,
+  mailKey,
+  patrol,
+  quickAnswer,
+  withProposals,
+  type Interview,
+} from './view'
 
 const PANE = 'factory'
 const TICK_MS = 5000
@@ -74,6 +84,7 @@ A message starting "[factory] patrol" is your loop. It lists what is new and the
 2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog).
 3. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), ask them and name the pull request (they can also answer a parked or stuck station's question in the console's Interview tab, \`/factory interview\`): deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them; when it is resolved, mail that station and it wakes at once. \`${cli} waiting\` lists everything that waits on the person, with how to answer each: show it when they ask what they owe the factory.
+A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, blocked workers, human-flagged and owner-only bd beads) that have no options yet. Propose 2 or more short, concrete choices for each with \`${cli} decisions propose <key> "<question>" "<a | b>"\`, using the item's own key exactly as given; never for a \`gate:\` key, which only the person decides.
 4. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
 5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: pass --owned only when the person names that bead; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
 6. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped for you. Read each SKILL.md: install it (\`${cli} skills install <name>\`) only when its commands are right and safe for this factory and it saves you real work; otherwise \`${cli} skills reject <name> "<why>"\`. Tell the person what you installed.
@@ -274,6 +285,34 @@ async function sweepDecisions($: EngineInterface) {
   if (isOk) await update($, decisions, () => JSON.parse(out) as FactoryDecisions)
 }
 
+/**
+ * the 'Interview me' button: refresh bd decisions now (sweepDecisions, also used by the throttled auto-refresh),
+ * then once ask the manager to propose options for whatever is still bare after merging any stored proposals
+ * (interviewPrompt excludes gates and anything that already has options). Skipped like a patrol: never from a
+ * background fork of the manager, and never while one patrol or interview round is already in its turn.
+ */
+async function interviewMe($: EngineInterface) {
+  await sweepDecisions($)
+  if (rt.isPatrolling) return
+  if (!(await isPaneSession($))) return
+  const [b, dec, d] = await Promise.all([read($, board), read($, decisions), read($, draft)])
+  const answered = Object.fromEntries((d.interviewed ?? []).map(x => [x.key, x.answer]))
+  const items = withProposals(
+    [...interviews(b.runs, answered), ...beadInterviews(dec.rigs, answered)],
+    dec.proposals,
+  )
+  const text = interviewPrompt(items)
+  if (!text) return
+  rt.isPatrolling = true
+  // not awaited: it resolves only once the session is idle and this round's turn starts, like a patrol
+  void $.prompt
+    .submit({ text })
+    .catch(() => {})
+    .finally(() => {
+      rt.isPatrolling = false
+    })
+}
+
 async function act($: EngineInterface, args: string[]) {
   const { isOk, out } = await factory($, args)
   $.ui.toast(out.split('\n').at(-1) || `${args.join(' ')}: queued`)
@@ -400,7 +439,7 @@ function actions($: EngineInterface): Actions {
     interview: (iv, choice) => void interview($, iv, choice),
     start: () => void startRun($),
     jump: pane => void jump($, pane),
-    sweep: () => void sweepDecisions($),
+    sweep: () => void interviewMe($),
   }
 }
 

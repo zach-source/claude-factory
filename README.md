@@ -34,6 +34,8 @@ In the manager session:
 /factory                      # the board: runs, stations, workers, gates, manager mail
 /factory status <run>         # one run's full journal
 /factory interview            # questions from runs stuck or parked on your direction; your answer goes to the run
+                               # 'Interview me' in the panel also sweeps every rig's gates, bd decisions and blocked
+                               # workers in; the manager proposes options for anything that still has none
 ```
 
 ## The manager drives

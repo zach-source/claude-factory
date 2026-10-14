@@ -14,8 +14,11 @@ import {
   sparkline,
   track,
   interviewAnswer,
+  interviewPrompt,
   interviews,
   runFacts,
+  withProposals,
+  type Interview,
 } from '../mod/hooks/view'
 
 test('track folds loops and marks where the run is', () => {
@@ -303,6 +306,68 @@ test("beadInterviews: a rig's human beads keep their Options: shape, owner-only 
     options: ['start now', 'not now'],
   })
   expect(beadInterviews(decisions, { 'bd:api:api-7': 'postgres' }).map(iv => iv.key)).toEqual(['own:api:api-9'])
+})
+
+test('interviewPrompt asks the manager to propose options only for items that have none, never a gate', () => {
+  const gate: Interview = {
+    key: 'gate:g1@1',
+    kind: 'gate',
+    question: 'Ship it?',
+    options: ['ship', 'hold'],
+    context: '',
+    at: 1,
+  }
+  const stuck: Interview = {
+    key: 'iv:r1@1',
+    kind: 'stuck',
+    question: 'How should it go on?',
+    options: [],
+    context: '',
+    at: 1,
+  }
+  const bead: Interview = {
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    question: 'Which DB?',
+    options: ['postgres', 'mysql'],
+    context: '',
+    at: 0,
+  }
+  const text = interviewPrompt([gate, stuck, bead])!
+  expect(text).toContain('[factory] interview')
+  expect(text).toContain('iv:r1@1: How should it go on?')
+  expect(text).not.toContain('gate:g1@1')
+  expect(text).not.toContain('Which DB?')
+  expect(interviewPrompt([gate, bead])).toBeNull() // nothing left bare
+})
+
+test("withProposals merges a stored proposal's options into a bare item, never a gate or one with its own options", () => {
+  const gate: Interview = { key: 'gate:g1@1', kind: 'gate', question: 'Ship it?', options: [], context: '', at: 1 }
+  const owned: Interview = {
+    key: 'own:api:api-9',
+    kind: 'owned',
+    question: 'api-9: A pilot bead',
+    options: [],
+    context: '',
+    at: 0,
+  }
+  const bead: Interview = {
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    question: 'Which DB?',
+    options: ['postgres', 'mysql'],
+    context: '',
+    at: 0,
+  }
+  const proposals = {
+    'own:api:api-9': { question: 'A pilot bead', options: ['start now', 'not now'], at: 1 },
+    'gate:g1@1': { question: 'x', options: ['y', 'z'], at: 1 },
+  }
+  const merged = withProposals([gate, owned, bead], proposals)
+  expect(merged.find(i => i.key === 'own:api:api-9')!.options).toEqual(['start now', 'not now'])
+  expect(merged.find(i => i.key === 'gate:g1@1')!.options).toEqual([]) // never merged into a gate
+  expect(merged.find(i => i.key === 'bd:api:api-7')!.options).toEqual(['postgres', 'mysql']) // kept its own
+  expect(withProposals([owned])).toEqual([owned]) // no proposals: unchanged
 })
 
 test('patrol lines carry the attempt, time in station, quiet time and a paused runner', () => {
