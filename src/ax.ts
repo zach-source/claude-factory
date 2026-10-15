@@ -88,6 +88,8 @@ export type Launch = {
   /** Claude's flags for a worker: tools, settings, system prompt (what workerFlags gives a pane's Claude) */
   claudeFlags?: string[]
   env: Record<string, string>
+  /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
+  gitlabHost?: string
 }
 
 /** the Task and its Workspace as a multi-document manifest; JSON is YAML, so no YAML library */
@@ -228,11 +230,28 @@ function gateRule(gateUrl: string) {
     : { http: { hostnames: [u.hostname], ...ports } }
 }
 
+/** a GitLab host's one rule: glab sends an access token as `PRIVATE-TOKEN` (checked against glab 1.99) and git
+ * sends Basic auth; the vault's `GITLAB` and `GITLAB_BASIC` keys are what the gateway puts in their place */
+const gitlabRule = (host: string, uri?: (key: string) => string) => ({
+  https: {
+    hostnames: [host],
+    ...(uri && {
+      effects: {
+        replaceHeaders: [
+          { header: 'PRIVATE-TOKEN', prefix: '', credentialUri: uri('GITLAB') },
+          { header: 'Authorization', prefix: 'Basic ', credentialUri: uri('GITLAB_BASIC') },
+        ],
+      },
+    }),
+  },
+})
+
 /**
  * a worker's EgressPolicy: HTTPS to Anthropic and GitHub, plus the rig's own rules, and nothing else. With FACTORY_AX_VAULT=<vault> the gateway
  * swaps the placeholder in each auth header for that agent-vault vault's credential: `ANTHROPIC` (a Claude OAuth token),
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
- * Basic auth). agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
+ * Basic auth). A rig on GitLab host H gets H the same way, with `GITLAB` (an access token) and `GITLAB_BASIC`
+ * (base64 of `<user>:<token>`, git's Basic auth). agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  *
  * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
  * before), the gate's own host is added and every REGISTRY_HOSTS host is stripped from the rig's extra rules
@@ -243,6 +262,7 @@ export function egressPolicy(
   vault = process.env.FACTORY_AX_VAULT,
   extra: Egress[] = [],
   gate = process.env.FACTORY_AX_PKG_GATE,
+  gitlabHost?: string,
 ) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
   const rule = (hostnames: string[], header: string, prefix: string, key: string, port?: number) => ({
@@ -257,6 +277,7 @@ export function egressPolicy(
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
       rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'GITHUB'),
       rule(['github.com'], 'Authorization', 'Basic ', 'GITHUB_BASIC'),
+      ...(gitlabHost ? [gitlabRule(gitlabHost, vault ? uri : undefined)] : []),
       // the binary caches the image's Nix installs tools and a repo's devenv from; their packages are signed. And
       // Nix's global flake registry, which the worker user has no cached copy of: turning it off in nix.conf would
       // change every devenv's derivation, and so miss the rig's cached devenv
@@ -275,11 +296,14 @@ export function egressPolicy(
  * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
  * One try: the tick that launched the task does not wait, the next ones try again.
  */
-export function createPolicy(task: string, extra: Egress[] = []) {
+export function createPolicy(task: string, extra: Egress[] = [], gitlabHost?: string) {
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(
     [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
-    { stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra))), timeout: 30_000 },
+    {
+      stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost))),
+      timeout: 30_000,
+    },
   )
   return p.exitCode === 0
 }
@@ -301,9 +325,15 @@ export const launch = (l: Launch) => {
       ...(l.harness === 'codex' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
       GH_TOKEN: 'placeholder',
       // git's config from the env, so every git in the VM sends the header
-      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_COUNT: l.gitlabHost ? '2' : '1',
       GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
       GIT_CONFIG_VALUE_0: 'Authorization: Basic placeholder',
+      ...(l.gitlabHost && {
+        GITLAB_TOKEN: 'placeholder',
+        GITLAB_HOST: l.gitlabHost,
+        GIT_CONFIG_KEY_1: `http.https://${l.gitlabHost}/.extraHeader`,
+        GIT_CONFIG_VALUE_1: 'Authorization: Basic placeholder',
+      }),
     }),
     // convenience only: what actually enforces the gate is egressPolicy's REGISTRY_HOSTS strip above, so a
     // worker that unsets these (or reaches for `nix shell nixpkgs#go` directly) still hits a refused host
