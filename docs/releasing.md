@@ -3,6 +3,28 @@
 This repo is public. Every release comes from a GitHub Actions workflow. Nobody edits
 a version file or a tag by hand (claude-factory-5h9).
 
+## One-time repo setting
+
+`release.yml`'s "open the release PR" step runs `gh pr create`. It uses the job's own
+`GITHUB_TOKEN`. GitHub refuses this call under one repo setting: "Allow GitHub Actions
+to create and approve pull requests" set to off.
+
+Check the setting:
+
+```sh
+gh api repos/zach-source/claude-factory/actions/permissions/workflow
+```
+
+Turn it on. Keep `default_workflow_permissions` at `read`:
+
+```sh
+gh api -X PUT repos/zach-source/claude-factory/actions/permissions/workflow \
+  -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true
+```
+
+Do this once. Do it before the first real dispatch of `release.yml`
+(`dry_run: false`) (claude-factory-5h9.16).
+
 ## The recipe
 
 1. Open the repo's Actions tab. Select the **release** workflow
@@ -32,15 +54,29 @@ a version file or a tag by hand (claude-factory-5h9).
    its second commit landed. A later fix, #20, had to catch up by hand. A commit that you push to
    `release/vX.Y.Z` after this merge does not ship with it. It needs a new PR.
 
-6. After the merge, [.github/workflows/release-tag.yml](../.github/workflows/release-tag.yml)
-   runs on its own, and it does these actions:
-   - Read the merged version.
-   - Stop if the tag already exists.
-   - Tag the merge commit `vX.Y.Z`.
+6. The merge lands as a push to `main`. The push runs
+   [.github/workflows/release-tag.yml](../.github/workflows/release-tag.yml) on its own.
+   It does these actions:
+   - Read `main`'s current version.
+   - Stop here if a tag for that version exists. A push that is not a release merge
+     leaves the version unchanged. Its tag is already there, so the workflow stops and
+     does nothing else.
+   - Sign the tag `vX.Y.Z` with gitsign.
+   - Verify the signature.
    - Push the tag.
-   - Run `gh release create vX.Y.Z --verify-tag --notes-file <file>` with the notes read back from the same CHANGELOG section (`bun src/release.ts notes X.Y.Z`).
+   - Run `gh release create vX.Y.Z --verify-tag --notes-file <file>`. The notes come
+     from the same CHANGELOG section (`bun src/release.ts notes X.Y.Z`).
 
    No step needs a hand edit.
+
+   This workflow runs on `push`. It does not run on `pull_request: types: [closed]`.
+   Here is why. gitsign's Fulcio certificate carries a SAN. The SAN comes from the
+   job's own OIDC `job_workflow_ref`. A `pull_request`-triggered run has a ref that
+   ends `@refs/pull/N/merge`. It never ends `@refs/heads/main`. The verify command
+   below pins the branch ref. On every release, this verify failed right after the
+   tag push. A rerun had no clean path: it refused with "tag exists"
+   (claude-factory-5h9.14). A `push`-triggered run has the real ref,
+   `refs/heads/main`. The same verify command succeeds on it.
 
 ## Tag signing: gitsign, not a stored key
 

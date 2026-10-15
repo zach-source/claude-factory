@@ -90,8 +90,21 @@ export function notes(changelog: string, version: string): string {
   return body
 }
 
-function tagExists(version: string): boolean {
-  const p = Bun.spawnSync(['git', 'rev-parse', '-q', '--verify', `refs/tags/v${version}`])
+// Checks the remote, not the local clone: release.yml's checkout step takes GitHub's default
+// `fetch-tags: false`, so a local `git rev-parse --verify refs/tags/vX` always says "not found" in
+// CI even when the tag is already on GitHub (claude-factory-5h9.15). `git ls-remote` asks origin
+// directly, so it works in any clone shape.
+export function tagExists(version: string, cwd = '.'): boolean {
+  const p = Bun.spawnSync([
+    'git',
+    '-C',
+    cwd,
+    'ls-remote',
+    '--exit-code',
+    '--tags',
+    'origin',
+    `refs/tags/v${version}`,
+  ])
   return p.exitCode === 0
 }
 

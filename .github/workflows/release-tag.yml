@@ -1,18 +1,36 @@
 name: release-tag
 
-# A person merges a release/vX.Y.Z pull request opened by release.yml (claude-factory-5h9.7).
-# This workflow runs after that merge. This workflow tags the merge commit. This workflow
-# publishes a GitHub release. This workflow needs no hand edits from the person.
+# A person merges a pull request for a release that release.yml opens (branch release/vX.Y.Z,
+# claude-factory-5h9.7). The merge makes a push to main. This workflow starts on that push.
 #
-# This workflow signs the tag with gitsign, Sigstore's keyless signer. The job has the
-# id-token: write permission. This permission lets gitsign fetch a short-lived OIDC token from
-# GitHub's own token service. The step below sets GITSIGN_TOKEN_PROVIDER=github-actions for
-# this. gitsign trades that token at Fulcio for a one-time signing certificate. This public
-# repo's secrets hold no long-lived signing key. docs/releasing.md records this decision and
-# the verify command.
+# This workflow adds a tag to the HEAD of main and makes a GitHub release.
+# It adds the tag only when the version in package.json has no "v<version>" tag at this time.
+# A release always changes the version. So each other push to main, one that does not change the
+# version, does nothing here. No hand edits are necessary.
+#
+# This workflow starts on `push`, not on `pull_request: types: [closed]`.
+#
+# The keyless signing certificate from gitsign has a Fulcio SAN. The SAN comes from the OIDC
+# job_workflow_ref of the job.
+# For a pull_request workflow run, this ref ends with "@refs/pull/N/merge". It never ends with
+# "@refs/heads/main".
+#
+# A verify pinned to the branch did not pass on all releases. It did not pass right after the tag
+# push. A retry was not possible. A rerun refused "tag exists" (claude-factory-5h9.14).
+#
+# A push workflow run has the real "refs/heads/main" as its ref. So the same verify succeeds.
+#
+# This workflow signs the tag with gitsign. gitsign is the keyless signer from Sigstore.
+# The job has the id-token: write permission. This permission lets gitsign get a short-lived
+# OIDC token from the GitHub token service.
+#
+# The step below sets GITSIGN_TOKEN_PROVIDER=github-actions. gitsign sends that token to Fulcio.
+# Fulcio gives gitsign a one-time signing certificate.
+#
+# The secrets of this public repo hold no long-lived signing key. docs/releasing.md shows this
+# decision and the verify command.
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
 
 permissions:
@@ -21,15 +39,12 @@ permissions:
 jobs:
   tag:
     name: tag
-    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: '1.3.13'
@@ -46,19 +61,23 @@ jobs:
           fi
           echo "version=$pkg_version" >> "$GITHUB_OUTPUT"
 
-      - name: refuse an existing tag
+      - name: skip when this push did not bump to a new, untagged version
+        id: check
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -e
           if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null 2>&1; then
-            echo "tag v$VERSION already exists; refusing" >&2
-            exit 1
+            echo "tag v$VERSION already exists; this push is not a release merge, nothing to do"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
           fi
 
       - name: install gitsign 0.17.1
         # Pinned release binary, checked by its published sha256 (checksums.txt on the v0.17.1
         # GitHub release). gitsign has no GitHub Action of its own.
+        if: steps.check.outputs.skip == '0'
         run: |
           set -e
           curl -sSL -o gitsign https://github.com/sigstore/gitsign/releases/download/v0.17.1/gitsign_0.17.1_linux_amd64
@@ -66,7 +85,8 @@ jobs:
           chmod +x gitsign
           sudo mv gitsign /usr/local/bin/gitsign
 
-      - name: sign and push the tag
+      - name: sign the tag
+        if: steps.check.outputs.skip == '0'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           GITSIGN_TOKEN_PROVIDER: github-actions
@@ -77,9 +97,9 @@ jobs:
           git config gpg.format x509
           git config gpg.x509.program gitsign
           git tag -s -m "release v$VERSION" "v$VERSION"
-          git push origin "v$VERSION"
 
-      - name: verify the signature before publishing
+      - name: verify the signature, then push the tag
+        if: steps.check.outputs.skip == '0'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -87,8 +107,10 @@ jobs:
           gitsign verify-tag "v$VERSION" \
             --certificate-identity="https://github.com/${{ github.repository }}/.github/workflows/release-tag.yml@refs/heads/main" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+          git push origin "v$VERSION"
 
       - name: publish the GitHub release from the moved CHANGELOG section
+        if: steps.check.outputs.skip == '0'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}

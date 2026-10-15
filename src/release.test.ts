@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   bumpVersion,
   checkVersions,
@@ -7,6 +10,7 @@ import {
   parseVersion,
   readVersion,
   setVersion,
+  tagExists,
   unreleasedBody,
 } from './release'
 
@@ -86,6 +90,42 @@ test('readVersion/setVersion refuse a JSON file with no version field', () => {
   expect(() => readVersion('{"name": "x"}')).toThrow(/no "version" field/)
   expect(() => setVersion('{"name": "x"}', '1.0.0')).toThrow(/no "version" field/)
 })
+
+function git(cwd: string, ...args: string[]): string {
+  const p = Bun.spawnSync(['git', '-C', cwd, ...args], { stdout: 'pipe', stderr: 'pipe' })
+  if (p.exitCode !== 0) throw new Error(`git ${args.join(' ')} failed: ${p.stderr.toString()}`)
+  return p.stdout.toString()
+}
+
+test('tagExists finds a tag on origin even when the local clone fetched no tags, the shape actions/checkout leaves by default (claude-factory-5h9.15)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'release-tagexists-'))
+  try {
+    const remote = join(root, 'remote.git')
+    const seed = join(root, 'seed')
+    const local = join(root, 'local')
+    git(root, 'init', '--bare', '-q', remote)
+    git(root, 'init', '-q', '-b', 'main', seed)
+    git(seed, 'config', 'user.email', 'test@example.com')
+    git(seed, 'config', 'user.name', 'test')
+    writeFileSync(join(seed, 'f'), 'x')
+    git(seed, 'add', 'f')
+    git(seed, 'commit', '-q', '-m', 'seed')
+    git(seed, 'tag', '-m', 'test tag', 'v1.0.0')
+    git(seed, 'remote', 'add', 'origin', remote)
+    git(seed, 'push', '-q', 'origin', 'HEAD:main', 'v1.0.0')
+    // a shallow, tagless clone: actions/checkout's default (fetch-tags: false)
+    git(root, 'clone', '-q', '--no-tags', '--depth', '1', '--branch', 'main', remote, local)
+
+    // the clone really has no local tag: the old rev-parse-based check would say "not found" here
+    const rp = Bun.spawnSync(['git', '-C', local, 'rev-parse', '-q', '--verify', 'refs/tags/v1.0.0'])
+    expect(rp.exitCode).not.toBe(0)
+
+    expect(tagExists('1.0.0', local)).toBe(true)
+    expect(tagExists('9.9.9', local)).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 30_000)
 
 test('checkVersions returns the shared version, or refuses a drift between the two files', () => {
   const pkg = '{"version": "0.12.0"}'
