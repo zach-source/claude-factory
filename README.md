@@ -52,6 +52,9 @@ peek, so a look at one run is never a tab switch and back:
 
 ![The console's board tab](docs/images/console-board.png)
 
+See [docs/console.md](docs/console.md) for a breakdown of every tab: what it shows, its keys
+and buttons, and when to use it.
+
 ## The manager drives
 
 You talk to the manager session; it runs the factory. With `autopilot` on (the default)
