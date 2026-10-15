@@ -2,7 +2,16 @@ import { describe, expect, test, afterEach } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bazelrc, databaseUrl, devenvProcesses, lastTurn, servicesNote, startServices } from './worker'
+import {
+  bazelrc,
+  databaseUrl,
+  devenvProcesses,
+  lastTurn,
+  orderByAfter,
+  servicesNote,
+  servicesWaitMs,
+  startServices,
+} from './worker'
 
 // bazelrc()'s pkg-gate propagation (ei0.5, commit 3a6d54d): when launch() set registry env vars in the VM,
 // rules_go/rules_python/rules_js must fetch through the gate too, via `common --repo_env=<VAR>=<value>` lines.
@@ -184,6 +193,38 @@ describe('devenvProcesses', () => {
     expect(procs[0]!.readyExec).toContain('pg_isready')
   })
 
+  // devenv 2.2.2's real shape (claude-factory-5sn.5 review): ready.http.get is an object, not a URL string.
+  // after and env sit on the task itself (claude-factory-5sn.6, .7), not inside process.*.
+  test('carries the ready.http.get object, the after list, and the env map, from a real devenv shape', () => {
+    const procs = devenvProcesses(
+      fixture([
+        {
+          name: 'devenv:processes:web',
+          type: 'process',
+          command: '/nix/store/x-devenv-processes-web',
+          cwd: null,
+          after: ['devenv:processes:postgres'],
+          env: { FOO: 'bar', BAZ: 'qux' },
+          process: {
+            start: { enable: true },
+            ready: { exec: null, http: { get: { host: '127.0.0.1', path: '/', port: 18080, scheme: 'http' } } },
+          },
+        },
+      ]),
+    )
+    expect(procs).toHaveLength(1)
+    expect(procs[0]!.readyHttp).toEqual({ host: '127.0.0.1', path: '/', port: 18080, scheme: 'http' })
+    expect(procs[0]!.readyExec).toBeUndefined()
+    expect(procs[0]!.after).toEqual(['devenv:processes:postgres'])
+    expect(procs[0]!.env).toEqual({ FOO: 'bar', BAZ: 'qux' })
+  })
+
+  test('defaults after and env to empty when the task has neither', () => {
+    const procs = devenvProcesses(fixture(TASKS_FIXTURE))
+    expect(procs[0]!.after).toEqual([])
+    expect(procs[0]!.env).toEqual({})
+  })
+
   test('skips a process whose start.enable is false', () => {
     const procs = devenvProcesses(fixture(TASKS_FIXTURE))
     expect(procs.find(p => p.name === 'disabled-worker')).toBeUndefined()
@@ -203,6 +244,77 @@ describe('devenvProcesses', () => {
     const file = join(dir, 'tasks.json')
     writeFileSync(file, 'not json')
     expect(devenvProcesses(file)).toEqual([])
+  })
+})
+
+// orderByAfter (claude-factory-5sn.6 review): tasks.json lists processes by name, not by dependency. A
+// dependent process names its dependency in its own 'after' list; this function must put the dependency first.
+describe('orderByAfter', () => {
+  const proc = (name: string, after: string[] = []) => ({
+    name,
+    command: `echo ${name}`,
+    after,
+    env: {},
+  })
+
+  test('puts a dependency before the process that names it in after, even in reverse input order', () => {
+    const ordered = orderByAfter([proc('after-web', ['devenv:processes:web']), proc('web')])
+    expect(ordered.map(p => p.name)).toEqual(['web', 'after-web'])
+  })
+
+  test('strips the devenv:processes: prefix and an @suffix to match a dependency', () => {
+    const ordered = orderByAfter([proc('after-web', ['devenv:processes:web@ready']), proc('web')])
+    expect(ordered.map(p => p.name)).toEqual(['web', 'after-web'])
+  })
+
+  test('leaves independent processes in their input order', () => {
+    const ordered = orderByAfter([proc('b'), proc('a')])
+    expect(ordered.map(p => p.name)).toEqual(['b', 'a'])
+  })
+
+  test('ignores an after entry naming a task outside the list (a oneshot, say)', () => {
+    const ordered = orderByAfter([proc('web', ['devenv:enterShell'])])
+    expect(ordered.map(p => p.name)).toEqual(['web'])
+  })
+
+  test('does not loop forever on a cycle', () => {
+    const ordered = orderByAfter([
+      proc('a', ['devenv:processes:b']),
+      proc('b', ['devenv:processes:a']),
+    ])
+    expect(ordered.map(p => p.name).sort()).toEqual(['a', 'b'])
+  })
+})
+
+// servicesWaitMs (claude-factory-5sn.8 review): Number('abc') is NaN, and `elapsed >= NaN` is never true, so a
+// bad FACTORY_SERVICES_WAIT_MS must fall back to the 120000ms default, not block the first turn forever.
+describe('servicesWaitMs', () => {
+  const saved = { v: process.env.FACTORY_SERVICES_WAIT_MS }
+  afterEach(() => {
+    if (saved.v === undefined) delete process.env.FACTORY_SERVICES_WAIT_MS
+    else process.env.FACTORY_SERVICES_WAIT_MS = saved.v
+  })
+
+  test('defaults to 120000 when unset', () => {
+    delete process.env.FACTORY_SERVICES_WAIT_MS
+    expect(servicesWaitMs()).toBe(120_000)
+  })
+
+  test('uses a given positive, finite value', () => {
+    process.env.FACTORY_SERVICES_WAIT_MS = '5000'
+    expect(servicesWaitMs()).toBe(5000)
+  })
+
+  test('falls back to 120000 for a non-numeric value', () => {
+    process.env.FACTORY_SERVICES_WAIT_MS = 'abc'
+    expect(servicesWaitMs()).toBe(120_000)
+  })
+
+  test('falls back to 120000 for a zero or negative value', () => {
+    process.env.FACTORY_SERVICES_WAIT_MS = '0'
+    expect(servicesWaitMs()).toBe(120_000)
+    process.env.FACTORY_SERVICES_WAIT_MS = '-5'
+    expect(servicesWaitMs()).toBe(120_000)
   })
 })
 
@@ -379,6 +491,78 @@ describe('startServices', () => {
     ])
     const results = await startServices()
     expect(results).toEqual([])
+  })
+
+  // claude-factory-5sn.5 review: devenv's ready.http.get is an object ({host,port,path,scheme}), not a URL
+  // string. A real Bun.serve server stands in for the probed process; fetch() must build its URL, not throw.
+  test('an http ready probe builds the URL from the devenv {host,port,path,scheme} object', async () => {
+    set()
+    const server = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    try {
+      process.env.DEVENV_TASK_FILE = tasksFile([
+        {
+          name: 'devenv:processes:web',
+          type: 'process',
+          command: `echo ${TAG}; exec sleep 5`,
+          cwd: null,
+          process: {
+            start: { enable: true },
+            ready: { exec: null, http: { get: { host: '127.0.0.1', path: '/', port: server.port, scheme: 'http' } } },
+          },
+        },
+      ])
+      const results = await startServices()
+      expect(results[0]).toMatchObject({ name: 'web', ok: true })
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  // claude-factory-5sn.7 review: processes.<name>.env lands in the task's own 'env' field, which the command
+  // script never holds. Both the spawn and the ready probe must see it merged over the serve process's env.
+  test("merges the task's own env over the serve env, for both the spawn and the ready probe", async () => {
+    set()
+    const marker = join(dir, 'env-marker')
+    process.env.DEVENV_TASK_FILE = tasksFile([
+      {
+        name: 'devenv:processes:web',
+        type: 'process',
+        command: `echo ${TAG}; echo "$FOO" > ${marker}; exec sleep 5`,
+        cwd: null,
+        env: { FOO: 'bar' },
+        process: { start: { enable: true }, ready: { exec: 'test "$FOO" = bar' } },
+      },
+    ])
+    const results = await startServices()
+    expect(results[0]).toMatchObject({ name: 'web', ok: true })
+    expect(readFileSync(marker, 'utf8').trim()).toBe('bar')
+  })
+
+  // claude-factory-5sn.6 review: tasks.json lists devenv:processes:after-web before devenv:processes:web
+  // (alphabetical), but after-web's own 'after' names web. startServices must start web first.
+  test('starts a dependency before the process that names it in after, even in reverse tasks.json order', async () => {
+    set()
+    const orderLog = join(dir, 'order.log')
+    process.env.DEVENV_TASK_FILE = tasksFile([
+      {
+        name: 'devenv:processes:after-web',
+        type: 'process',
+        command: `echo ${TAG}; echo after-web >> ${orderLog}; exec sleep 5`,
+        cwd: null,
+        after: ['devenv:processes:web'],
+        process: { start: { enable: true }, ready: { exec: 'exit 0' } },
+      },
+      {
+        name: 'devenv:processes:web',
+        type: 'process',
+        command: `echo ${TAG}; echo web >> ${orderLog}; exec sleep 5`,
+        cwd: null,
+        process: { start: { enable: true }, ready: { exec: 'exit 0' } },
+      },
+    ])
+    const results = await startServices()
+    expect(results.map(r => r.name)).toEqual(['web', 'after-web'])
+    expect(readFileSync(orderLog, 'utf8').trim().split('\n')).toEqual(['web', 'after-web'])
   })
 })
 

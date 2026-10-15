@@ -960,7 +960,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     ...(rig?.env?.FACTORY_NIX_CACHE && existsSync(join(run.worktree, 'devenv.nix'))
       ? [
           `- The repo's devenv.nix environment is loaded for you when its cache holds it (then DEVENV_ROOT is set): its tools are on PATH and its variables set, so use them directly. Do not run devenv shell or devenv test, whose enterShell runs the repo's git hooks for minutes; without DEVENV_ROOT, use nix shell as below.`,
-          `- The devenv's processes and services (such as services.postgres) are already started for you before your first turn; DATABASE_URL is set when one applies. Do not run devenv up, initdb or pg_ctl yourself. Logs are at .factory-worker/services/<name>.log. Set FACTORY_SERVICES=0 in the rig env to turn this off.`,
+          `- If the devenv declares a process or a service (such as services.postgres), it already started before your first turn; DATABASE_URL is set when one applies. See this brief's own [factory] services: line for what ran. Do not run devenv up, initdb or pg_ctl yourself. Logs are at .factory-worker/services/<name>.log.`,
         ]
       : []),
     ...(rig?.env?.FACTORY_KUBE_SERVER
