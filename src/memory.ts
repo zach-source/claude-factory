@@ -133,7 +133,9 @@ export const formatLong = (entries: LongEntry[]) => [LONG_HEADER, ...entries.map
  * That line alone must never start a new entry (claude-factory-59r.9).
  */
 export function parseLong(text: string): LongEntry[] {
-  const body = text.startsWith(LONG_HEADER) ? text.slice(LONG_HEADER.length) : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+  const body = text.startsWith(LONG_HEADER)
+    ? text.slice(LONG_HEADER.length)
+    : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
   const lines = body.split('\n')
   const starts: number[] = []
   for (let i = 0; i < lines.length; i++)
@@ -144,7 +146,15 @@ export function parseLong(text: string): LongEntry[] {
     const summary = entryLines[0]!.slice(3).trim()
     const meta = decodeId(entryLines[1]!)!
     const rest = entryLines.slice(2).join('\n').replace(/^\n/, '')
-    return { id: meta.id, summary, rig: meta.rig, from: meta.from, at: meta.at, aliases: meta.aliases, body: rest.trim() }
+    return {
+      id: meta.id,
+      summary,
+      rig: meta.rig,
+      from: meta.from,
+      at: meta.at,
+      aliases: meta.aliases,
+      body: rest.trim(),
+    }
   })
 }
 
@@ -304,14 +314,20 @@ export function evalScore(cases: EvalCase[], results: string[][]): EvalResult {
     hits++
     rrSum += 1 / (rank + 1)
   })
-  return { recall: cases.length ? hits / cases.length : 1, mrr: cases.length ? rrSum / cases.length : 1, misses }
+  return {
+    recall: cases.length ? hits / cases.length : 1,
+    mrr: cases.length ? rrSum / cases.length : 1,
+    misses,
+  }
 }
 
 /** runs the fixed query set against the real store and scores it: what `factory memory eval` reports */
 export async function evaluate(dir: string, cases: EvalCase[], limit = 5): Promise<EvalResult> {
   const results: string[][] = []
   for (const c of cases)
-    results.push((await search(dir, c.query, { rig: c.rig, limit })).map(f => `${f.note.path} ${f.note.summary}`))
+    results.push(
+      (await search(dir, c.query, { rig: c.rig, limit })).map(f => `${f.note.path} ${f.note.summary}`),
+    )
   return evalScore(cases, results)
 }
 
@@ -467,20 +483,21 @@ const runKey = (by: string | undefined, at: number) => (by ? by.split('/')[0]! :
 export type Use = { path: string; shown: number; helped: number; at: number; runs: number }
 const usageFile = (dir: string) => join(dir, '.usage.jsonl')
 /** appended only while workers search, one short line each, so concurrent writers do not interleave */
-export const use = (
-  dir: string,
-  paths: string[],
-  kind: 'shown' | 'helped',
-  at = Date.now(),
-  by?: string,
-) => {
+export const use = (dir: string, paths: string[], kind: 'shown' | 'helped', at = Date.now(), by?: string) => {
   if (paths.length)
     appendFileSync(
       usageFile(dir),
       paths.map(path => JSON.stringify({ path, [kind]: 1, at, ...(by ? { by } : {}) })).join('\n') + '\n',
     )
 }
-type RawTally = { path: string; shown: number; helped: number; at: number; runsBase: number; keys: Set<string> }
+type RawTally = {
+  path: string
+  shown: number
+  helped: number
+  at: number
+  runsBase: number
+  keys: Set<string>
+}
 /**
  * each note's raw totals, keys kept apart from their count. compact() must persist the keys themselves,
  * not only how many there were (claude-factory-59r.17): a folded line that kept only `runs: 2` cannot
@@ -496,7 +513,8 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
     t.helped += u.helped ?? 0
     t.at = Math.max(t.at, u.at)
     if (Array.isArray(u.keys)) for (const k of u.keys) t.keys.add(k)
-    else if (typeof u.runs === 'number') t.runsBase += u.runs // a pre-claude-factory-59r.17 folded line: no keys to recover
+    else if (typeof u.runs === 'number')
+      t.runsBase += u.runs // a pre-claude-factory-59r.17 folded line: no keys to recover
     else t.keys.add(runKey(u.by, u.at))
     out.set(path, t)
   }
@@ -540,7 +558,7 @@ function renameLog(dir: string): Record<string, string> {
 export function resolvePath(dir: string, path: string, extra: Record<string, string> = {}): string {
   const map = { ...renameLog(dir), ...extra }
   let p = path
-  for (const seen = new Set<string>(); map[p] && map[p] !== p && !seen.has(p); ) {
+  for (const seen = new Set<string>(); map[p] && map[p] !== p && !seen.has(p);) {
     seen.add(p)
     p = map[p]!
   }
@@ -627,11 +645,7 @@ export type Decision =
   | { kind: 'dedupe'; a: string; b: string; reason: string }
 
 /** the tiering pass's plan. No fs, no clock. Every boundary (7, 30 days; 3 helps or runs) is a table test. */
-export function decide(
-  short: ShortCandidate[],
-  long: LongCandidate[],
-  sims: SimPair[] = [],
-): Decision[] {
+export function decide(short: ShortCandidate[], long: LongCandidate[], sims: SimPair[] = []): Decision[] {
   const decisions: Decision[] = []
   for (const n of short) {
     if (n.topic === 'inbox') continue // the dream files these; decide() never touches them
@@ -662,7 +676,8 @@ export function decide(
         reason: `helped ${e.helped} times across ${e.runs} runs`,
       })
   for (const s of sims)
-    if (s.score >= SAME) decisions.push({ kind: 'dedupe', a: s.a, b: s.b, reason: `similarity ${s.score.toFixed(2)}` })
+    if (s.score >= SAME)
+      decisions.push({ kind: 'dedupe', a: s.a, b: s.b, reason: `similarity ${s.score.toFixed(2)}` })
   return decisions
 }
 
@@ -682,7 +697,8 @@ export function longAliasRenames(dir: string): Record<string, string> {
     const file = join(dir, topic.name, 'LONG.md')
     if (!existsSync(file)) continue
     for (const e of parseLong(readFileSync(file, 'utf8')))
-      for (const alias of e.aliases ?? []) renamed[`${topic.name}/LONG.md#${alias}`] = `${topic.name}/LONG.md#${e.id}`
+      for (const alias of e.aliases ?? [])
+        renamed[`${topic.name}/LONG.md#${alias}`] = `${topic.name}/LONG.md#${e.id}`
   }
   return renamed
 }
@@ -795,7 +811,7 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
     .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
     .map(n => {
       const atMs = n.at ? Date.parse(n.at) : NaN
-      const createdMs = Number.isFinite(atMs) ? atMs : gitAddedMs(dir, n.path) ?? now
+      const createdMs = Number.isFinite(atMs) ? atMs : (gitAddedMs(dir, n.path) ?? now)
       const u = uses.get(n.path)
       const lastMs = u?.at || createdMs
       return {
@@ -851,7 +867,14 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
       const base = slug(note.summary)
       let id = base
       for (let i = 2; taken.has(id); i++) id = `${base}-${i}`
-      existing.push({ id, summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body })
+      existing.push({
+        id,
+        summary: note.summary,
+        rig: note.rig,
+        from: note.from,
+        at: note.at,
+        body: note.body,
+      })
       writeFileSync(longFile, formatLong(existing))
       rmSync(join(dir, note.path))
       renamed[note.path] = `${topic}/LONG.md#${id}`
@@ -865,7 +888,8 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
       const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
       writeFileSync(
         archiveFile,
-        prefix + format({ summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body }),
+        prefix +
+          format({ summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body }),
       )
       rmSync(join(dir, note.path))
       rewriteReadmeLink(dir, topic, note.path, `../.archive/${topic}.md`)

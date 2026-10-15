@@ -69,7 +69,12 @@ test('inside a VM, `report`/`mail`/`memory add --help`|`-h` print usage and exit
   mkdirSync(dir, { recursive: true })
   const outbox = join(dir, 'outbox-help.jsonl')
   const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
-  for (const args of [['report', '--help'], ['report', '-h'], ['mail', '--help'], ['memory', 'add', '--help']]) {
+  for (const args of [
+    ['report', '--help'],
+    ['report', '-h'],
+    ['mail', '--help'],
+    ['memory', 'add', '--help'],
+  ]) {
     const r = factory(args, env)
     expect(r.code).toBe(0)
     expect(r.out).toContain('usage: factory')
@@ -177,7 +182,8 @@ const inbox = (id: string) => readFileSync(join(home, 'runs', id, 'inbox.jsonl')
 /** the fake cluster, but a distinct poll per task (ax://<task>): lets two runs' workers disagree at once */
 function clusterByTask(phase: string, pollByTask: Record<string, object>) {
   rmSync(calls, { force: true })
-  for (const [task, poll] of Object.entries(pollByTask)) writeFileSync(join(dir, `ssh-${task}`), JSON.stringify(poll))
+  for (const [task, poll] of Object.entries(pollByTask))
+    writeFileSync(join(dir, `ssh-${task}`), JSON.stringify(poll))
   const cases = Object.keys(pollByTask)
     .map(task => `    ${task}) cat ${dir}/ssh-${task} ;;`)
     .join('\n')
@@ -406,10 +412,7 @@ test('files too big for the env (the brief) go to the VM over ssh in parts once 
 test('a put that fails over ax ssh leaves the station pending inside its 5 min grace, then fails the attempt with the ax error', () => {
   launched('r7')
   const side = join(home, 'runs', 'r7', 't.json')
-  writeFileSync(
-    side,
-    JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['brief.md'] }),
-  )
+  writeFileSync(side, JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['brief.md'] }))
   writeFileSync(join(home, 'runs', 'r7', 't.brief.md'), 'hello')
   rmSync(calls, { force: true })
   writeFileSync(
@@ -447,9 +450,13 @@ esac
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
 })
 
-test("a task gone because serve exited fails the attempt with serve's log, not just \"was closed\"", () => {
+test('a task gone because serve exited fails the attempt with serve\'s log, not just "was closed"', () => {
   launched('r8')
-  cluster('Running', { status: 'exited', log: 'serve died: Error: the laptop never sent brief.md', lines: [] })
+  cluster('Running', {
+    status: 'exited',
+    log: 'serve died: Error: the laptop never sent brief.md',
+    lines: [],
+  })
   const out = factory(['tick'])
   const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8')
   expect(row.agent).toBe('gone')
@@ -528,7 +535,11 @@ test('a single retry is pluralized in the egress FAIL reason, like the mail alre
     status: 'idle',
     session: 's1',
     lines: [],
-    egress: { since: Date.now() - 1_000, tries: 1, last: 'upstream connect error or disconnect/reset before headers' },
+    egress: {
+      since: Date.now() - 1_000,
+      tries: 1,
+      last: 'upstream connect error or disconnect/reset before headers',
+    },
   })
   factory(['tick'])
   const state = readFileSync(join(home, 'runs', 'r12', 'state.json'), 'utf8')
@@ -714,7 +725,16 @@ test('rig add --egress warns, but still adds, when a host is a package registry 
 
 test('rig add --egress warns on a mixed-case registry host too, since parseEgress accepts any case (ei0.16)', () => {
   const r = repo()
-  const warned = factory(['rig', 'add', 'x', r, '--runner', 'ax', '--egress', 'PyPI.org,api.openai.com=OPENAI'])
+  const warned = factory([
+    'rig',
+    'add',
+    'x',
+    r,
+    '--runner',
+    'ax',
+    '--egress',
+    'PyPI.org,api.openai.com=OPENAI',
+  ])
   expect(warned.code).toBe(0)
   expect(warned.err).toContain('PyPI.org is a package registry host')
 })

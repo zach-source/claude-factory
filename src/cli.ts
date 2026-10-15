@@ -252,7 +252,9 @@ export function parsePkgGateMinDays(raw: string | undefined): number | undefined
  * (claude-factory-ei0.22). The old PKG_GATE_ALLOWLIST is refused outright rather than reinterpreted, so a
  * deploy still carrying it fails loudly instead of its meaning silently changing underneath it.
  */
-export function parsePkgGateAllowlist(env: Record<string, string | undefined>): pkggate.Allowlist | undefined {
+export function parsePkgGateAllowlist(
+  env: Record<string, string | undefined>,
+): pkggate.Allowlist | undefined {
   if (env.PKG_GATE_ALLOWLIST)
     fail(
       'PKG_GATE_ALLOWLIST no longer exists (one list covered go, npm and pypi alike, so an entry for one ' +
@@ -326,7 +328,11 @@ const seenFile = (run: Run, task: string) => join(runDir(run.id), `${task}.seen`
  * on the old line-count `<task>.cursor` (absent `.seen`) by treating its first `min(cursor, len)` lines, as
  * polled right now, as already replayed -- the only cursor value that file ever held -- then stops touching
  * it; leaving it on disk is harmless (claude-factory-4x1) */
-function loadSeen(run: Run, task: string, lines: string[]): { seen: Record<string, number>; missing: number } {
+function loadSeen(
+  run: Run,
+  task: string,
+  lines: string[],
+): { seen: Record<string, number>; missing: number } {
   const file = seenFile(run, task)
   if (existsSync(file)) return readJson(file)
   const legacy = join(runDir(run.id), `${task}.cursor`)
@@ -1570,7 +1576,13 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // it has one (own()/claude.jsonl's fallback -- see worker.ts lastTurn), not gated on this tick having already
   // learned c.session, which lags the runner's own info.session by at least one tick (the SESSION send above)
   // -- gating it left an AX worker's tail empty for its whole first turn too (claude-factory-xq3)
-  const tail = !isClaude ? '' : runner.local ? (c.session ? tailOf(run.worktree, c.session) : '') : (info?.tail ?? '')
+  const tail = !isClaude
+    ? ''
+    : runner.local
+      ? c.session
+        ? tailOf(run.worktree, c.session)
+        : ''
+      : (info?.tail ?? '')
   const hit = limitHit(tail)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
@@ -1661,7 +1673,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // serve already spent its own budget retrying: fail now, named, instead of nudging a known cause
   else if (egressReason && !isAsking && (status === 'idle' || status === 'done'))
     send({ type: 'FAIL', seq: c.seq, reason: egressReason })
-  else if (due === 'fail') send({ type: 'FAIL', seq: c.seq, reason: egressReason ?? `no report within ${timeoutMin} min` })
+  else if (due === 'fail')
+    send({ type: 'FAIL', seq: c.seq, reason: egressReason ?? `no report within ${timeoutMin} min` })
   else if (stall === 'fail') {
     const min = Math.round((now - seen.at) / 60_000)
     const last = tail.trimEnd().split('\n').at(-1) ?? ''
@@ -3139,7 +3152,9 @@ async function prs() {
             return [] // one corrupt inbox line must not drop the rest
           }
         })
-        .filter((e): e is { type: 'MAIL'; from: string; to: string; text: string; at: number } => e.type === 'MAIL')
+        .filter(
+          (e): e is { type: 'MAIL'; from: string; to: string; text: string; at: number } => e.type === 'MAIL',
+        )
       let file: PrsFile = { version: 1, prs: [] }
       if (existsSync(prsFile(id))) {
         try {
@@ -3183,7 +3198,9 @@ async function prs() {
   const metaById = new Map(metas.map(m => [m.id, m]))
   return rows.flatMap(({ run: id, prs: all, error }) => {
     const m = metaById.get(id)
-    return m ? [{ run: id, rig: m.rig, bead: m.bead, node: m.node, ended: m.ended, at: m.at, error, prs: all }] : []
+    return m
+      ? [{ run: id, rig: m.rig, bead: m.bead, node: m.node, ended: m.ended, at: m.at, error, prs: all }]
+      : []
   })
 }
 
@@ -3192,7 +3209,8 @@ export type DecisionsRow = { rig: string; factory: string; beads: DecisionBead[]
 export type Proposal = { question: string; options: string[]; at: number }
 
 const decisionsFile = () => join(HOME, 'decisions.json')
-const proposals = (): Record<string, Proposal> => (existsSync(decisionsFile()) ? readJson(decisionsFile()) : {})
+const proposals = (): Record<string, Proposal> =>
+  existsSync(decisionsFile()) ? readJson(decisionsFile()) : {}
 
 /** each rig's open bd decisions: beads flagged for a person and ready, unassigned beads that are their call,
  * never the factory's; a rig's own bd failure is its error, the rest still listed. Plus any proposed options
@@ -3222,7 +3240,8 @@ function decisionsList() {
 /** the person's answer to a bd decision: a human-flagged bead is answered and closed, an owner-only one just
  * gets a comment (queuing or starting it is a separate choice, made in the console or with start --owned) */
 function decisionsAnswer(rigName: string, id: string, text: string) {
-  if (process.env.FACTORY_FROM) fail("a worker cannot answer the person's decisions: mail the manager instead")
+  if (process.env.FACTORY_FROM)
+    fail("a worker cannot answer the person's decisions: mail the manager instead")
   const b = beads(repoOf(rigName), 'factory/person')
   if (b.human().some(x => x.id === id)) b.respond(id, text)
   else b.comment(id, text)
@@ -3233,7 +3252,8 @@ function decisionsAnswer(rigName: string, id: string, text: string) {
  * never for a gate, which only the person decides, and never for a blocked-on-prompt item, which waits on the
  * person looking at the worker's pane rather than on a choice */
 function decisionsPropose(key: string, question: string, optionsLine: string) {
-  if (process.env.FACTORY_FROM) fail("a worker cannot propose the person's decisions: mail the manager instead")
+  if (process.env.FACTORY_FROM)
+    fail("a worker cannot propose the person's decisions: mail the manager instead")
   if (/^gate:/.test(key)) fail('a gate is decided by the person, never proposed options')
   if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
   if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)

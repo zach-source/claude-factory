@@ -90,13 +90,33 @@ function repo() {
   const r = join(dir, 'repo')
   mkdirSync(join(r, '.beads'), { recursive: true })
   Bun.spawnSync(['git', '-C', r, 'init', '-q'])
-  Bun.spawnSync(['git', '-C', r, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-q', '-m', 'init'])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    r,
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=t',
+    'commit',
+    '--allow-empty',
+    '-q',
+    '-m',
+    'init',
+  ])
   return r
 }
 
 const factoryFixture = () => {
   const f = join(dir, 'tiny.json')
-  writeFileSync(f, JSON.stringify({ name: 'tiny', start: 'work', nodes: { work: { prompt: 'Do it.', next: { ok: 'done' } } } }))
+  writeFileSync(
+    f,
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: { work: { prompt: 'Do it.', next: { ok: 'done' } } },
+    }),
+  )
   return f
 }
 
@@ -123,7 +143,7 @@ test('a bead-ID-shaped goal whose lookup fails (a timeout) fails the start and c
   expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
 })
 
-test('a bead-ID-shaped goal whose lookup fails (a timeout) fails the start even under a different rig\'s prefix: bd being down means create would fail too', () => {
+test("a bead-ID-shaped goal whose lookup fails (a timeout) fails the start even under a different rig's prefix: bd being down means create would fail too", () => {
   reset()
   const r = repo()
   fakeBd('zzz') // this rig's own prefix is not "acme": the goal does not carry it
@@ -138,7 +158,7 @@ test('a bead-ID-shaped goal whose lookup fails (a timeout) fails the start even 
   expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
 })
 
-test('a bead-ID-shaped goal whose bd show times out mid-query (the same not-found JSON on stdout as a real 404) fails the start and creates nothing, even under another rig\'s prefix: this is the original incident', () => {
+test("a bead-ID-shaped goal whose bd show times out mid-query (the same not-found JSON on stdout as a real 404) fails the start and creates nothing, even under another rig's prefix: this is the original incident", () => {
   reset()
   const r = repo()
   fakeBd('zzz') // this rig's own prefix is not "acme": the goal does not carry it
@@ -187,7 +207,7 @@ test('a bead-ID-shaped goal bd genuinely answers "not found" against this rig\'s
   expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
 })
 
-test('a goal shaped like a bead id but not found under this rig\'s own prefix still creates a bead, as before', () => {
+test("a goal shaped like a bead id but not found under this rig's own prefix still creates a bead, as before", () => {
   reset()
   const r = repo()
   fakeBd('acme')

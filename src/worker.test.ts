@@ -25,7 +25,13 @@ function sh(cmd: string[], cwd: string) {
 // Mutation-verified gap (ei0.7, verify#1): deleting that block left `bun test` all green, since nothing else
 // exercised it -- this test is the regression guard.
 describe('bazelrc', () => {
-  const ENV_VARS = ['FACTORY_BAZELRC', 'FACTORY_CA', 'GOPROXY', 'PIP_INDEX_URL', 'NPM_CONFIG_REGISTRY'] as const
+  const ENV_VARS = [
+    'FACTORY_BAZELRC',
+    'FACTORY_CA',
+    'GOPROXY',
+    'PIP_INDEX_URL',
+    'NPM_CONFIG_REGISTRY',
+  ] as const
   const saved: Record<string, string | undefined> = {}
 
   afterEach(() => {
@@ -44,7 +50,11 @@ describe('bazelrc', () => {
   }
 
   test('adds a --repo_env line for each registry var the gate propagation set', () => {
-    set({ GOPROXY: 'http://pkg-gate:8080/go', PIP_INDEX_URL: 'http://pkg-gate:8080/pypi/simple', NPM_CONFIG_REGISTRY: 'http://pkg-gate:8080/npm' })
+    set({
+      GOPROXY: 'http://pkg-gate:8080/go',
+      PIP_INDEX_URL: 'http://pkg-gate:8080/pypi/simple',
+      NPM_CONFIG_REGISTRY: 'http://pkg-gate:8080/npm',
+    })
     const rc = bazelrc()
     expect(rc).toContain('common --repo_env=GOPROXY=http://pkg-gate:8080/go')
     expect(rc).toContain('common --repo_env=PIP_INDEX_URL=http://pkg-gate:8080/pypi/simple')
@@ -71,7 +81,12 @@ describe('bazelrc', () => {
 // learned only at the end (see ax.test.ts's mid-turn test) -- own()/claude.jsonl, which turn() streams to as
 // the turn runs, is what poll must fall back to so it has something to read meanwhile.
 describe('lastTurn', () => {
-  const ENV_VARS = ['FACTORY_WORKER_DIR', 'FACTORY_WORKER_REPO', 'CLAUDE_CONFIG_DIR', 'FACTORY_HARNESS'] as const
+  const ENV_VARS = [
+    'FACTORY_WORKER_DIR',
+    'FACTORY_WORKER_REPO',
+    'CLAUDE_CONFIG_DIR',
+    'FACTORY_HARNESS',
+  ] as const
   const saved: Record<string, string | undefined> = {}
   let dir: string
 
@@ -117,7 +132,10 @@ describe('lastTurn', () => {
 
   test('the project transcript wins over the live stream copy once it exists', () => {
     const { own, repo } = set()
-    writeFileSync(join(own, 'claude.jsonl'), '{"type":"assistant","message":{"content":[{"text":"stream"}]}}\n')
+    writeFileSync(
+      join(own, 'claude.jsonl'),
+      '{"type":"assistant","message":{"content":[{"text":"stream"}]}}\n',
+    )
     const projectDir = join(process.env.CLAUDE_CONFIG_DIR!, 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'))
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(
@@ -214,7 +232,10 @@ describe('devenvProcesses', () => {
           env: { FOO: 'bar', BAZ: 'qux' },
           process: {
             start: { enable: true },
-            ready: { exec: null, http: { get: { host: '127.0.0.1', path: '/', port: 18080, scheme: 'http' } } },
+            ready: {
+              exec: null,
+              http: { get: { host: '127.0.0.1', path: '/', port: 18080, scheme: 'http' } },
+            },
           },
         },
       ]),
@@ -285,10 +306,7 @@ describe('orderByAfter', () => {
   })
 
   test('does not loop forever on a cycle', () => {
-    const ordered = orderByAfter([
-      proc('a', ['devenv:processes:b']),
-      proc('b', ['devenv:processes:a']),
-    ])
+    const ordered = orderByAfter([proc('a', ['devenv:processes:b']), proc('b', ['devenv:processes:a'])])
     expect(ordered.map(p => p.name).sort()).toEqual(['a', 'b'])
   })
 })
@@ -417,7 +435,11 @@ describe('startServices', () => {
     ])
     const results = await startServices()
     expect(results).toHaveLength(1)
-    expect(results[0]).toMatchObject({ name: 'postgres', ok: true, log: join(own, 'services', 'postgres.log') })
+    expect(results[0]).toMatchObject({
+      name: 'postgres',
+      ok: true,
+      log: join(own, 'services', 'postgres.log'),
+    })
     expect(results[0]!.detail).toMatch(/^ready in \ds$/)
     expect(existsSync(join(own, 'services', 'postgres.log'))).toBe(true)
     // the oneshot never ran: only the process's own command does (A4)
@@ -514,7 +536,10 @@ describe('startServices', () => {
           cwd: null,
           process: {
             start: { enable: true },
-            ready: { exec: null, http: { get: { host: '127.0.0.1', path: '/', port: server.port, scheme: 'http' } } },
+            ready: {
+              exec: null,
+              http: { get: { host: '127.0.0.1', path: '/', port: server.port, scheme: 'http' } },
+            },
           },
         },
       ])

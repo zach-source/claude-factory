@@ -52,7 +52,10 @@ const GO_FLOOR_SAMPLE_PATHS = [
 // ids 100..108: makeGate's goFloor takes the minimum of these (the safe side, claude-factory-8ub.6), 100
 const GO_FLOOR_RECORD = 100
 const GO_FLOOR_RECORDS: Record<string, number> = Object.fromEntries(
-  GO_FLOOR_SAMPLE_PATHS.map((p, i) => [`${escapeGoPath(p)}@${escapeGoPath(GO_FLOOR_SAMPLE_VERSION)}`, 100 + i]),
+  GO_FLOOR_SAMPLE_PATHS.map((p, i) => [
+    `${escapeGoPath(p)}@${escapeGoPath(GO_FLOOR_SAMPLE_VERSION)}`,
+    100 + i,
+  ]),
 )
 // versions this file needs to look too-new (first logged after the floor); everything else defaults to
 // GO_FLOOR_RECORD - 1, always at or below it
@@ -69,13 +72,18 @@ const goLookupHits: Record<string, number> = {}
 function goIndexBody(sinceIso: string): string {
   const sinceMs = Date.parse(sinceIso)
   const ts = new Date(sinceMs + 15 * 60_000).toISOString() // inside [since, since + 30min]
-  return GO_FLOOR_SAMPLE_PATHS.map(p => JSON.stringify({ Path: p, Version: GO_FLOOR_SAMPLE_VERSION, Timestamp: ts })).join('\n') + '\n'
+  return (
+    GO_FLOOR_SAMPLE_PATHS.map(p =>
+      JSON.stringify({ Path: p, Version: GO_FLOOR_SAMPLE_VERSION, Timestamp: ts }),
+    ).join('\n') + '\n'
+  )
 }
 
 // sum.golang.org's `GET /latest` signed note (claude-factory-8ub.6): a floor refresh reads its tree size
 // before looking up any sample, and drops a sample whose own record sits at or past it. `size` far above
 // every record id a given fixture server hands out keeps that filter a no-op there.
-const sumdbLatestBody = (size: number) => `go.sum database tree\n${size}\nfakehash\n\n— sum.golang.org fakesignature\n`
+const sumdbLatestBody = (size: number) =>
+  `go.sum database tree\n${size}\nfakehash\n\n— sum.golang.org fakesignature\n`
 
 // claude-factory-8ub.7: a decision with a present floor does not wait for the refresh it triggers. It
 // decides at once, with the old, still-safe floor. A test that needs the refresh's own result (its
@@ -85,7 +93,13 @@ async function waitForFloorRefresh(lines: string[], from: number, tries = 500): 
   for (let i = 0; i < tries; i++) {
     const landed = lines.slice(from).some(l => {
       const j = JSON.parse(l)
-      return j.eco === 'go' && (typeof j.floor === 'number' || (j.decision === 'error' && typeof j.reason === 'string' && j.reason.startsWith('sumdb floor refresh')))
+      return (
+        j.eco === 'go' &&
+        (typeof j.floor === 'number' ||
+          (j.decision === 'error' &&
+            typeof j.reason === 'string' &&
+            j.reason.startsWith('sumdb floor refresh')))
+      )
     })
     if (landed) return
     await new Promise(resolve => setTimeout(resolve, 2))
@@ -112,36 +126,72 @@ const routes: Record<string, Route> = {
   // a module whose real casing has an uppercase letter: Go's proxy protocol case-encodes it (`!azure`) and
   // never decodes it (handleGo's comment), so an allowlist entry written in the module's real casing has to
   // be unescaped to match it (ei0.18)
-  '/github.com/!azure/azure-sdk-for-go/@v/v1.0.0.info': { status: 200, body: '{"Version":"v1.0.0","Time":"2026-10-10T23:00:00Z"}' },
+  '/github.com/!azure/azure-sdk-for-go/@v/v1.0.0.info': {
+    status: 200,
+    body: '{"Version":"v1.0.0","Time":"2026-10-10T23:00:00Z"}',
+  },
   // a module whose real @latest (v1.2.0) is too young, with an old-enough pseudo-version published more
   // recently than the old-enough release -- proves the fallback picks the release, not the newest by time (ei0.11)
   '/example.com/preview/@latest': { status: 200, body: '{"Version":"v1.2.0","Time":"2026-10-10T12:00:00Z"}' },
-  '/example.com/preview/@v/list': { status: 200, body: 'v1.0.0\nv1.1.0-0.20261001120000-abcdef123456\nv1.2.0\n' },
-  '/example.com/preview/@v/v1.0.0.info': { status: 200, body: '{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}' },
+  '/example.com/preview/@v/list': {
+    status: 200,
+    body: 'v1.0.0\nv1.1.0-0.20261001120000-abcdef123456\nv1.2.0\n',
+  },
+  '/example.com/preview/@v/v1.0.0.info': {
+    status: 200,
+    body: '{"Version":"v1.0.0","Time":"2025-01-01T00:00:00Z"}',
+  },
   '/example.com/preview/@v/v1.1.0-0.20261001120000-abcdef123456.info': {
     status: 200,
     body: '{"Version":"v1.1.0-0.20261001120000-abcdef123456","Time":"2026-10-05T00:00:00Z"}',
   },
-  '/example.com/preview/@v/v1.2.0.info': { status: 200, body: '{"Version":"v1.2.0","Time":"2026-10-10T12:00:00Z"}' },
+  '/example.com/preview/@v/v1.2.0.info': {
+    status: 200,
+    body: '{"Version":"v1.2.0","Time":"2026-10-10T12:00:00Z"}',
+  },
   '/sumdb/sum.golang.org/supported': { status: 200, body: '' },
   '/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0': { status: 200, body: 'fakehash\n' },
   '/nope': { status: 404, body: '{"error":"Not found"}' },
   '/boom500': { status: 500, body: 'internal error' },
 
   // claude-factory-8ub: an .info Time 30d old, but first logged in sum.golang.org after the floor -- AC1
-  '/backdated.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  '/backdated.example.com/mod/@v/v1.0.0.info': {
+    status: 200,
+    body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`,
+  },
   // the control for AC1: same .info Time, but a record at or below the floor -- AC2
-  '/loggedold.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  '/loggedold.example.com/mod/@v/v1.0.0.info': {
+    status: 200,
+    body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`,
+  },
   // AC3: a module whose @v/list has one allowed version and one backdated one, and whose @latest names the
   // backdated one -- the list must drop it, and the @latest fallback must pick the allowed release instead
   '/listfixture.example.com/mod/@v/list': { status: 200, body: 'v1.0.0\nv2.0.0\n' },
-  '/listfixture.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
-  '/listfixture.example.com/mod/@v/v2.0.0.info': { status: 200, body: `{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
-  '/listfixture.example.com/mod/@latest': { status: 200, body: `{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  '/listfixture.example.com/mod/@v/v1.0.0.info': {
+    status: 200,
+    body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`,
+  },
+  '/listfixture.example.com/mod/@v/v2.0.0.info': {
+    status: 200,
+    body: `{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`,
+  },
+  '/listfixture.example.com/mod/@latest': {
+    status: 200,
+    body: `{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`,
+  },
   // AC4: a sum.golang.org lookup that 500s, hangs, or answers a non-numeric body -- none is ever an allow
-  '/lookupfail500.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
-  '/lookuptimeout.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
-  '/lookupbadbody.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  '/lookupfail500.example.com/mod/@v/v1.0.0.info': {
+    status: 200,
+    body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`,
+  },
+  '/lookuptimeout.example.com/mod/@v/v1.0.0.info': {
+    status: 200,
+    body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`,
+  },
+  '/lookupbadbody.example.com/mod/@v/v1.0.0.info': {
+    status: 200,
+    body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`,
+  },
 }
 
 // trimmed from a real `curl -H 'Accept: application/json' https://registry.npmjs.org/@types%2fms`
@@ -221,14 +271,20 @@ const evilNpmPackument = (version: string, tarball: string) =>
     name: 'evilnpm',
     'dist-tags': { latest: version },
     versions: { [version]: { name: 'evilnpm', version, dist: { tarball } } },
-    time: { created: '2020-01-01T00:00:00Z', modified: '2020-01-01T00:00:00Z', [version]: '2020-01-01T00:00:00Z' },
+    time: {
+      created: '2020-01-01T00:00:00Z',
+      modified: '2020-01-01T00:00:00Z',
+      [version]: '2020-01-01T00:00:00Z',
+    },
   })
 
 // trimmed from a real `curl -H 'Accept: application/vnd.pypi.simple.v1+json' https://pypi.org/simple/requests/`
 // (2026-10-14): two real files (PEP 700 upload-time included), plus a synthetic young one and a synthetic
 // one with no upload-time at all, to exercise the age gate
-const PYPI_OLD_WHEEL_PATH = '/packages/70/8e/0e2d847013cb52cd35b38c009bb167a1a26b2ce6cd6965bf26b47bc0bf44/requests-2.31.0-py3-none-any.whl'
-const PYPI_OLD_SDIST_PATH = '/packages/9d/be/10918a2eac4ae9f02f6cfe6414b7a155ccd8f7f9d4380d62fd5b955065c3/requests-2.31.0.tar.gz'
+const PYPI_OLD_WHEEL_PATH =
+  '/packages/70/8e/0e2d847013cb52cd35b38c009bb167a1a26b2ce6cd6965bf26b47bc0bf44/requests-2.31.0-py3-none-any.whl'
+const PYPI_OLD_SDIST_PATH =
+  '/packages/9d/be/10918a2eac4ae9f02f6cfe6414b7a155ccd8f7f9d4380d62fd5b955065c3/requests-2.31.0.tar.gz'
 const PYPI_YOUNG_PATH = '/packages/zz/zz/synthetic/requests-2.36.0.tar.gz'
 const PYPI_NOTIME_PATH = '/packages/yy/yy/synthetic/requests-2.37.0.tar.gz'
 const pypiIndex = (origin: string) =>
@@ -247,7 +303,9 @@ const pypiIndex = (origin: string) =>
         yanked: false,
         // PEP 658/714: pip 25.3 GETs `<url>.metadata` with no fallback whenever these are present (ei0.9)
         'core-metadata': { sha256: '7823e890e9db6f415138badf9744791290ef76e7ec6fd09a3789e8247fffe782' },
-        'data-dist-info-metadata': { sha256: '7823e890e9db6f415138badf9744791290ef76e7ec6fd09a3789e8247fffe782' },
+        'data-dist-info-metadata': {
+          sha256: '7823e890e9db6f415138badf9744791290ef76e7ec6fd09a3789e8247fffe782',
+        },
       },
       {
         filename: 'requests-2.31.0.tar.gz',
@@ -331,7 +389,13 @@ let filesUpstream: ReturnType<typeof Bun.serve>
 const filesprojIndex = (filesOrigin: string) =>
   JSON.stringify({
     name: 'filesproj',
-    files: [{ filename: 'goodfile-1.0.0.tar.gz', url: `${filesOrigin}${FILESPROJ_PATH}`, 'upload-time': '2020-01-01T00:00:00Z' }],
+    files: [
+      {
+        filename: 'goodfile-1.0.0.tar.gz',
+        url: `${filesOrigin}${FILESPROJ_PATH}`,
+        'upload-time': '2020-01-01T00:00:00Z',
+      },
+    ],
   })
 
 let upstream: ReturnType<typeof Bun.serve>
@@ -355,10 +419,14 @@ beforeAll(() => {
       const tarballFile = url.pathname.match(/^\/@types\/ms\/-\/(.+)$/)?.[1]
       if (tarballFile && NPM_TARBALLS[tarballFile]) return new Response(NPM_TARBALLS[tarballFile])
       if (url.pathname === '/preview-pkg')
-        return new Response(PREVIEW_PACKUMENT(url.origin), { headers: { 'content-type': 'application/json' } })
+        return new Response(PREVIEW_PACKUMENT(url.origin), {
+          headers: { 'content-type': 'application/json' },
+        })
       // a malicious/compromised upstream naming a tarball the gate must refuse to fetch verbatim (ei0.23)
       if (url.pathname === '/evilnpm-file')
-        return new Response(evilNpmPackument('1.0.0', 'file:///etc/passwd'), { headers: { 'content-type': 'application/json' } })
+        return new Response(evilNpmPackument('1.0.0', 'file:///etc/passwd'), {
+          headers: { 'content-type': 'application/json' },
+        })
       // reachable but never configured as this gate's npm upstream (it's the separate `files` fixture
       // server) -- proves the off-origin refusal by a byte-identical fetch that would otherwise succeed,
       // not merely by hitting a closed port (ei0.23)
@@ -371,25 +439,39 @@ beforeAll(() => {
       // text through the handler's catch-all (ei0.20)
       if (url.pathname === '/badpkg')
         return new Response(
-          JSON.stringify({ name: 'badpkg', 'dist-tags': {}, versions: { '1.0.0': null }, time: { '1.0.0': '2020-01-01T00:00:00Z' } }),
+          JSON.stringify({
+            name: 'badpkg',
+            'dist-tags': {},
+            versions: { '1.0.0': null },
+            time: { '1.0.0': '2020-01-01T00:00:00Z' },
+          }),
           { headers: { 'content-type': 'application/json' } },
         )
       if (url.pathname === '/simple/requests/')
         return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
-          ? new Response(pypiIndex(url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+          ? new Response(pypiIndex(url.origin), {
+              headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
+            })
           : new Response(PYPI_LEGACY_HTML, { headers: { 'content-type': 'text/html' } }) // proves the gate always asks for PEP 691 JSON
       if (url.pathname === '/simple/pyyaml/')
         return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
-          ? new Response(pyyamlIndex(url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+          ? new Response(pyyamlIndex(url.origin), {
+              headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
+            })
           : new Response('', { status: 404 })
       if (url.pathname === '/simple/relproj/')
         return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
-          ? new Response(relprojIndex(), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+          ? new Response(relprojIndex(), {
+              headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
+            })
           : new Response('', { status: 404 })
-      if (url.pathname === `/simple/relproj/${RELPROJ_RELATIVE_FILE}`) return new Response('FILEBYTES-relproj-1.0.0')
+      if (url.pathname === `/simple/relproj/${RELPROJ_RELATIVE_FILE}`)
+        return new Response('FILEBYTES-relproj-1.0.0')
       // same probe as evilnpm above, for PyPI's own file `url` (ei0.23)
       if (url.pathname === '/simple/evilpypi-file/')
-        return new Response(evilPypiIndex('evil.whl', 'file:///etc/passwd'), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+        return new Response(evilPypiIndex('evil.whl', 'file:///etc/passwd'), {
+          headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
+        })
       // reachable but, for the default `gate()` below, not a configured pypi/files upstream either (it's
       // the separate `files` fixture server) -- proves the off-origin refusal by a byte-identical fetch
       // that would otherwise succeed, not merely by hitting a closed port (ei0.23)
@@ -400,7 +482,9 @@ beforeAll(() => {
       // the file `url` here points at `filesUpstream`, a host distinct from this server, proving PKG_GATE_UPSTREAM_FILES
       // is honored and actually fetched from, not merely accepted and ignored (ei0.23)
       if (url.pathname === '/simple/filesproj/')
-        return new Response(filesprojIndex(filesUpstream.url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+        return new Response(filesprojIndex(filesUpstream.url.origin), {
+          headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
+        })
       if (url.pathname === '/simple/missingproj/') return new Response('not found', { status: 404 })
       if (url.pathname === '/simple/brokenproj/') return new Response('internal error', { status: 500 })
       if (PYPI_FILES[url.pathname]) return new Response(PYPI_FILES[url.pathname])
@@ -411,7 +495,8 @@ beforeAll(() => {
       // claude-factory-8ub: index.golang.org's /index, which refreshGoFloor samples. Every `since` gets the
       // same 9 synthetic entries. Each entry's Timestamp sits inside the requested window. So the floor
       // always comes out as GO_FLOOR_RECORD (100), no matter which test's `now`/minDays asked for it.
-      if (url.pathname === '/index') return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/index')
+        return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
       // claude-factory-8ub.6: sum.golang.org's /latest, read before every floor refresh's lookups. 1,000,000
       // sits far above every record id this file hands out, so the outlier filter never drops a sample here.
       if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
@@ -523,7 +608,7 @@ test('a missing publish time is refused, never allowed through', async () => {
   expect(await r.text()).toContain('pkg-gate')
 })
 
-test('a hanging upstream is refused (502) after fetchTimeoutMs, not left waiting for the server\'s own idle timeout (ei0.12)', async () => {
+test("a hanging upstream is refused (502) after fetchTimeoutMs, not left waiting for the server's own idle timeout (ei0.12)", async () => {
   const g = makeGate({
     upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
@@ -544,7 +629,9 @@ test('AC1: an .info Time 30d old but first logged in sum.golang.org after the fl
   const g = gate()
   const info = await g(new Request('http://gate/go/backdated.example.com/mod/@v/v1.0.0.info'))
   expect(info.status).toBe(404)
-  expect(await info.text()).toBe('pkg-gate: backdated.example.com/mod@v1.0.0 first logged in sum.golang.org less than 4d ago, minimum 4d')
+  expect(await info.text()).toBe(
+    'pkg-gate: backdated.example.com/mod@v1.0.0 first logged in sum.golang.org less than 4d ago, minimum 4d',
+  )
   const mod = await g(new Request('http://gate/go/backdated.example.com/mod/@v/v1.0.0.mod'))
   expect(mod.status).toBe(404)
   const zip = await g(new Request('http://gate/go/backdated.example.com/mod/@v/v1.0.0.zip'))
@@ -574,7 +661,11 @@ test('AC4: a sum.golang.org lookup that 500s, times out, or answers a non-numeri
     now: () => NOW,
     fetchTimeoutMs: 50,
   })
-  for (const mod of ['lookupfail500.example.com/mod', 'lookuptimeout.example.com/mod', 'lookupbadbody.example.com/mod']) {
+  for (const mod of [
+    'lookupfail500.example.com/mod',
+    'lookuptimeout.example.com/mod',
+    'lookupbadbody.example.com/mod',
+  ]) {
     const key = `${mod}@v1.0.0`
     const before = goLookupHits[key] ?? 0
     const first = await g(new Request(`http://gate/go/${mod}/@v/v1.0.0.info`))
@@ -601,14 +692,24 @@ test('AC5: a cold start with index.golang.org down refuses an old version (no fl
         lookupHits++
         return new Response('1\n')
       }
-      if (url.pathname === '/coldstart.example.com/mod/@v/v1.0.0.info' || url.pathname === '/coldstart.example.com/allowed/@v/v1.0.0.info')
+      if (
+        url.pathname === '/coldstart.example.com/mod/@v/v1.0.0.info' ||
+        url.pathname === '/coldstart.example.com/allowed/@v/v1.0.0.info'
+      )
         return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
       return new Response('not found', { status: 404 })
     },
   })
   try {
     const g = makeGate({
-      upstream: { go: deadIndex.url.origin, npm: base(), pypi: base(), files: base(), sumdb: deadIndex.url.origin, goIndex: deadIndex.url.origin },
+      upstream: {
+        go: deadIndex.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: deadIndex.url.origin,
+        goIndex: deadIndex.url.origin,
+      },
       now: () => NOW,
       allowlist: { go: ['coldstart.example.com/allowed'] },
     })
@@ -641,8 +742,11 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
       if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
-        const probeVersion = key.startsWith('floortiming.example.com/mod@') ? key.slice('floortiming.example.com/mod@'.length) : null
-        if (probeVersion && probeRecords[probeVersion] !== undefined) return new Response(`${probeRecords[probeVersion]}\n`)
+        const probeVersion = key.startsWith('floortiming.example.com/mod@')
+          ? key.slice('floortiming.example.com/mod@'.length)
+          : null
+        if (probeVersion && probeRecords[probeVersion] !== undefined)
+          return new Response(`${probeRecords[probeVersion]}\n`)
         const sample = GO_FLOOR_RECORDS[key]
         return new Response(`${(sample ?? GO_FLOOR_RECORD - 1) + recordOffset}\n`)
       }
@@ -661,7 +765,14 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
   console.log = (s: string) => lines.push(s)
   try {
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => now,
     })
     // the floor builds at 100 (a cold start always waits for it); the probe's own record (500) outranks it
@@ -686,7 +797,9 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v0.5.0.info'))
     await waitForFloorRefresh(lines, m2)
     const healthzThird = await g(new Request('http://gate/healthz'))
-    expect((await (healthzThird.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(700)
+    expect(
+      (await (healthzThird.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
+    ).toBe(700)
     // the probe's own record (500) is now below the floor; the same probe, under a new version so its
     // decision does not come from cache, is allowed
     const third = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v3.0.0.info'))
@@ -700,7 +813,9 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v0.6.0.info'))
     await waitForFloorRefresh(lines, m3)
     const healthzFourth = await g(new Request('http://gate/healthz'))
-    expect((await (healthzFourth.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(700)
+    expect(
+      (await (healthzFourth.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
+    ).toBe(700)
     // a 4th probe version, with a record (300) between the two floors, is still allowed
     const fourth = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v4.0.0.info'))
     expect(fourth.status).toBe(200)
@@ -713,7 +828,10 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
 test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
   // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
   // records differ by phase (below), to prove the floor cannot be poisoned upward.
-  const POISON_PATHS = Array.from({ length: 9 }, (_, i) => `poisonfloor-${String.fromCharCode(97 + i)}.example.com/mod`)
+  const POISON_PATHS = Array.from(
+    { length: 9 },
+    (_, i) => `poisonfloor-${String.fromCharCode(97 + i)}.example.com/mod`,
+  )
   const POISON_VERSION = 'v1.0.0'
   // phase 'honest': every sample sits far below sum.golang.org's tree size (1,000,000), so none is dropped,
   // and the floor comes out as their minimum, 50.
@@ -736,13 +854,19 @@ test('claude-factory-8ub.6: a floor refresh never trusts sample records logged o
       if (url.pathname === '/index') {
         const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(now).toISOString())
         const ts = new Date(sinceMs + 15 * 60_000).toISOString()
-        return new Response(POISON_PATHS.map(p => JSON.stringify({ Path: p, Version: POISON_VERSION, Timestamp: ts })).join('\n') + '\n')
+        return new Response(
+          POISON_PATHS.map(p => JSON.stringify({ Path: p, Version: POISON_VERSION, Timestamp: ts })).join(
+            '\n',
+          ) + '\n',
+        )
       }
-      if (url.pathname === '/latest') return new Response(sumdbLatestBody(phase === 'honest' ? 1_000_000 : 200))
+      if (url.pathname === '/latest')
+        return new Response(sumdbLatestBody(phase === 'honest' ? 1_000_000 : 200))
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
         const probePrefix = 'poisonprobe.example.com/mod@'
-        if (key.startsWith(probePrefix)) return new Response(`${PROBE_RECORDS[key.slice(probePrefix.length)] ?? 10}\n`)
+        if (key.startsWith(probePrefix))
+          return new Response(`${PROBE_RECORDS[key.slice(probePrefix.length)] ?? 10}\n`)
         const idx = POISON_PATHS.findIndex(p => key === `${escapeGoPath(p)}@${escapeGoPath(POISON_VERSION)}`)
         const id = idx >= 0 ? (phase === 'honest' ? HONEST_IDS[idx] : POISON_IDS[idx]) : 999_999
         return new Response(`${id}\n`)
@@ -757,7 +881,14 @@ test('claude-factory-8ub.6: a floor refresh never trusts sample records logged o
   console.log = (s: string) => lines.push(s)
   try {
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => now,
     })
     // the honest phase establishes a floor of 50 (the minimum of 50..58); the probe's own record (10) sits
@@ -767,7 +898,9 @@ test('claude-factory-8ub.6: a floor refresh never trusts sample records logged o
     await waitForFloorRefresh(lines, m0)
     expect(first.status).toBe(200)
     const healthzHonest = await g(new Request('http://gate/healthz'))
-    expect((await (healthzHonest.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(50)
+    expect(
+      (await (healthzHonest.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
+    ).toBe(50)
 
     // the poison phase: a priming decision triggers a background refresh; wait for it to land, then check
     // the floor never jumped toward the poisoned ids (250-290) -- it failed instead, and kept 50
@@ -777,7 +910,9 @@ test('claude-factory-8ub.6: a floor refresh never trusts sample records logged o
     await g(new Request('http://gate/go/poisonprobe.example.com/mod/@v/v2.0.0.info'))
     await waitForFloorRefresh(lines, m1)
     const healthzPoison = await g(new Request('http://gate/healthz'))
-    expect((await (healthzPoison.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(50)
+    expect(
+      (await (healthzPoison.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
+    ).toBe(50)
 
     // decisive proof: a version whose own record (150) sits strictly between the honest floor (50) and the
     // poisoned peak (290) is still refused. A floor that had jumped to 250 (the old median+ratchet behavior)
@@ -811,10 +946,14 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
         const key = url.pathname.slice('/lookup/'.length)
         return new Response(`${GO_FLOOR_RECORDS[key] ?? GO_FLOOR_RECORD - 1}\n`)
       }
-      if (url.pathname === '/backoffprobe.example.com/mod/@v/v1.0.0.info') return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
-      if (url.pathname === '/backoffprobe.example.com/mod/@v/v2.0.0.info') return new Response(`{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
-      if (url.pathname === '/backoffprobe.example.com/mod/@v/v3.0.0.info') return new Response(`{"Version":"v3.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
-      if (url.pathname === '/backoffprobe.example.com/mod/@v/v4.0.0.info') return new Response(`{"Version":"v4.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/backoffprobe.example.com/mod/@v/v1.0.0.info')
+        return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/backoffprobe.example.com/mod/@v/v2.0.0.info')
+        return new Response(`{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/backoffprobe.example.com/mod/@v/v3.0.0.info')
+        return new Response(`{"Version":"v3.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/backoffprobe.example.com/mod/@v/v4.0.0.info')
+        return new Response(`{"Version":"v4.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
       return new Response('not found', { status: 404 })
     },
   })
@@ -826,7 +965,14 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
     // missing) long enough for the timing assertions below to tell it apart from an unblocked one
     const FETCH_TIMEOUT_MS = 2000
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => now,
       fetchTimeoutMs: FETCH_TIMEOUT_MS,
     })
@@ -892,7 +1038,8 @@ test('AC8: a @v/list of 20 versions, decided concurrently, causes exactly one in
       }
       if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) return new Response(`${GO_FLOOR_RECORD - 1}\n`)
-      if (url.pathname === '/concurrent20.example.com/mod/@v/list') return new Response(versions.join('\n') + '\n')
+      if (url.pathname === '/concurrent20.example.com/mod/@v/list')
+        return new Response(versions.join('\n') + '\n')
       const m = url.pathname.match(/^\/concurrent20\.example\.com\/mod\/@v\/(v[\d.]+)\.info$/)
       if (m) return new Response(`{"Version":"${m[1]}","Time":"${GO_INFO_BACKDATED_TIME}"}`)
       return new Response('not found', { status: 404 })
@@ -900,7 +1047,14 @@ test('AC8: a @v/list of 20 versions, decided concurrently, causes exactly one in
   })
   try {
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => NOW,
     })
     const r = await g(new Request('http://gate/go/concurrent20.example.com/mod/@v/list'))
@@ -934,13 +1088,21 @@ test('AC9: index lines with bad JSON, missing fields, or a Timestamp outside the
       }
       if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) return new Response('1\n')
-      if (url.pathname === '/thin.example.com/mod/@v/v1.0.0.info') return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/thin.example.com/mod/@v/v1.0.0.info')
+        return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
       return new Response('not found', { status: 404 })
     },
   })
   try {
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => NOW,
     })
     // only 4 lines are both well-formed and inside the window (thin-c..f): below GO_FLOOR_MIN_SAMPLES (5),
@@ -966,29 +1128,38 @@ test('AC11: /healthz shows the sumdb goFloor as null, then {record, at}; a succe
   try {
     const g = gate() // a fresh gate: its own goFloor starts null
     const before = await g(new Request('http://gate/healthz'))
-    expect((await before.json() as { goFloor: unknown }).goFloor).toBeNull()
+    expect(((await before.json()) as { goFloor: unknown }).goFloor).toBeNull()
 
     await g(new Request('http://gate/go/golang.org/x/text/@v/v0.26.0.info')) // allow: forces the first refresh
 
     const after = await g(new Request('http://gate/healthz'))
-    expect((await after.json() as { goFloor: unknown }).goFloor).toEqual({ record: GO_FLOOR_RECORD, at: '2026-10-07T00:00:00.000Z' })
+    expect(((await after.json()) as { goFloor: unknown }).goFloor).toEqual({
+      record: GO_FLOOR_RECORD,
+      at: '2026-10-07T00:00:00.000Z',
+    })
 
     const parsed = lines.map(l => JSON.parse(l))
     const floorLine = parsed.find(l => l.eco === 'go' && typeof l.floor === 'number')
-    expect(floorLine).toMatchObject({ eco: 'go', floor: GO_FLOOR_RECORD, at: '2026-10-07T00:00:00.000Z', samples: 9 })
+    expect(floorLine).toMatchObject({
+      eco: 'go',
+      floor: GO_FLOOR_RECORD,
+      at: '2026-10-07T00:00:00.000Z',
+      samples: 9,
+    })
     for (const l of lines) expect(l).not.toContain('http')
   } finally {
     console.log = orig
   }
 })
 
-test('AC11: a failed floor refresh (index.golang.org down) logs a decision:\'error\' line naming no URL', async () => {
+test("AC11: a failed floor refresh (index.golang.org down) logs a decision:'error' line naming no URL", async () => {
   const srv = Bun.serve({
     port: 0,
     fetch(req) {
       const url = new URL(req.url)
       if (url.pathname === '/index') return new Response('internal error', { status: 500 })
-      if (url.pathname === '/healthzfail.example.com/mod/@v/v1.0.0.info') return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/healthzfail.example.com/mod/@v/v1.0.0.info')
+        return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
       return new Response('not found', { status: 404 })
     },
   })
@@ -997,12 +1168,22 @@ test('AC11: a failed floor refresh (index.golang.org down) logs a decision:\'err
   console.log = (s: string) => lines.push(s)
   try {
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => NOW,
     })
     await g(new Request('http://gate/go/healthzfail.example.com/mod/@v/v1.0.0.info'))
     const parsed = lines.map(l => JSON.parse(l))
-    const errLine = parsed.find(l => l.decision === 'error' && typeof l.reason === 'string' && l.reason.startsWith('sumdb floor refresh'))
+    const errLine = parsed.find(
+      l =>
+        l.decision === 'error' && typeof l.reason === 'string' && l.reason.startsWith('sumdb floor refresh'),
+    )
     expect(errLine).toBeDefined()
     for (const l of lines) expect(l).not.toContain('http')
   } finally {
@@ -1011,7 +1192,7 @@ test('AC11: a failed floor refresh (index.golang.org down) logs a decision:\'err
   }
 })
 
-test('claude-factory-8ub.8: a sumdb lookup escapes an uppercase prerelease in the .info body\'s Version, not just the module path', async () => {
+test("claude-factory-8ub.8: a sumdb lookup escapes an uppercase prerelease in the .info body's Version, not just the module path", async () => {
   // "v1.0.0-RC1" is the .info body's raw Version. The sumdb lookup key must use its Go-case-escaped form,
   // the same way index.golang.org's Path is already escaped elsewhere (AC10). This server answers only
   // that escaped key; the raw, unescaped form (the bug) is a lookup miss.
@@ -1021,7 +1202,8 @@ test('claude-factory-8ub.8: a sumdb lookup escapes an uppercase prerelease in th
     port: 0,
     fetch(req) {
       const url = new URL(req.url)
-      if (url.pathname === '/index') return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/index')
+        return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
       if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
@@ -1036,7 +1218,14 @@ test('claude-factory-8ub.8: a sumdb lookup escapes an uppercase prerelease in th
   })
   try {
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => NOW,
     })
     const r = await g(new Request(`http://gate/go/rcversion.example.com/mod/@v/${escapedVersion}.info`))
@@ -1052,20 +1241,29 @@ test('claude-factory-8ub.9: @latest caches its own sumdb record, so a second @la
     port: 0,
     fetch(req) {
       const url = new URL(req.url)
-      if (url.pathname === '/index') return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/index')
+        return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
       if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) {
         lookupHits++
         const key = url.pathname.slice('/lookup/'.length)
         return new Response(`${GO_FLOOR_RECORDS[key] ?? GO_FLOOR_RECORD - 1}\n`)
       }
-      if (url.pathname === '/latestcache.example.com/mod/@latest') return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/latestcache.example.com/mod/@latest')
+        return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
       return new Response('not found', { status: 404 })
     },
   })
   try {
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => NOW,
     })
     const first = await g(new Request('http://gate/go/latestcache.example.com/mod/@latest'))
@@ -1081,7 +1279,7 @@ test('claude-factory-8ub.9: @latest caches its own sumdb record, so a second @la
   }
 })
 
-test("claude-factory-8ub.13: an uppercase prerelease .info caches, so a third request repeats neither the .info fetch nor the sumdb lookup", async () => {
+test('claude-factory-8ub.13: an uppercase prerelease .info caches, so a third request repeats neither the .info fetch nor the sumdb lookup', async () => {
   // "v1.0.0-RC1" is the .info body's raw Version. goDecideVersion's cache guard compared that raw form
   // against the escaped path segment (v1.0.0-!r!c1) and never matched, so every request repeated both the
   // .info fetch and the sumdb lookup. This server 404s on anything but the exact escaped key, so a bug that
@@ -1094,7 +1292,8 @@ test("claude-factory-8ub.13: an uppercase prerelease .info caches, so a third re
     port: 0,
     fetch(req) {
       const url = new URL(req.url)
-      if (url.pathname === '/index') return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/index')
+        return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
       if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
@@ -1114,7 +1313,14 @@ test("claude-factory-8ub.13: an uppercase prerelease .info caches, so a third re
   })
   try {
     const g = makeGate({
-      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
       now: () => NOW,
     })
     for (let i = 0; i < 3; i++) {
@@ -1142,7 +1348,17 @@ test('a module version is decided once, then cached: a second request for the sa
     },
   })
   try {
-    const g = makeGate({ upstream: { go: counting.url.origin, npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() }, now: () => NOW })
+    const g = makeGate({
+      upstream: {
+        go: counting.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: base(),
+        goIndex: base(),
+      },
+      now: () => NOW,
+    })
     await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
     await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
     await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
@@ -1163,7 +1379,17 @@ test('a non-canonical query (a branch/tag, whose .info resolves to a moving vers
     },
   })
   try {
-    const g = makeGate({ upstream: { go: moving.url.origin, npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() }, now: () => NOW })
+    const g = makeGate({
+      upstream: {
+        go: moving.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: base(),
+        goIndex: base(),
+      },
+      now: () => NOW,
+    })
     const first = await g(new Request('http://gate/go/moving.example.com/mod/@v/master.info'))
     expect(first.status).toBe(200)
     expect(await first.text()).toBe(GO_INFO_OLD)
@@ -1188,7 +1414,17 @@ test('an unparseable .info is never cached, so a later, parseable answer is serv
     },
   })
   try {
-    const g = makeGate({ upstream: { go: flaky.url.origin, npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() }, now: () => NOW })
+    const g = makeGate({
+      upstream: {
+        go: flaky.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: base(),
+        goIndex: base(),
+      },
+      now: () => NOW,
+    })
     const first = await g(new Request('http://gate/go/flaky.example.com/mod/@v/v1.0.0.info'))
     expect(first.status).toBe(404) // missing time: refused
     answer = '{"Version":"v1.0.0","Time":"2025-06-05T15:08:00Z"}' // same version, now with a real, old-enough Time
@@ -1213,7 +1449,14 @@ test('the npm packument cache evicts the oldest entry once over its cap, so a la
   })
   try {
     const g = makeGate({
-      upstream: { go: base(), npm: counting.url.origin, pypi: base(), files: base(), sumdb: base(), goIndex: base() },
+      upstream: {
+        go: base(),
+        npm: counting.url.origin,
+        pypi: base(),
+        files: base(),
+        sumdb: base(),
+        goIndex: base(),
+      },
       now: () => NOW,
       registryCacheMaxEntries: 2,
     })
@@ -1259,7 +1502,7 @@ test('an allowlisted module is let through even when young', async () => {
   expect(await r.text()).toBe(GO_ALLOWLISTED_INFO)
 })
 
-test('an allowlist entry in a Go module\'s real casing matches the proxy protocol\'s !-case-encoded path (ei0.18)', async () => {
+test("an allowlist entry in a Go module's real casing matches the proxy protocol's !-case-encoded path (ei0.18)", async () => {
   const g = makeGate({
     upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
@@ -1269,7 +1512,7 @@ test('an allowlist entry in a Go module\'s real casing matches the proxy protoco
   expect(r.status).toBe(200)
 })
 
-test('a Go allowlist entry already in the proxy\'s lowercase-escaped form does not match the real uppercase module (the missing ei0.18 negative, ei0.22)', async () => {
+test("a Go allowlist entry already in the proxy's lowercase-escaped form does not match the real uppercase module (the missing ei0.18 negative, ei0.22)", async () => {
   const g = makeGate({
     upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
@@ -1279,7 +1522,7 @@ test('a Go allowlist entry already in the proxy\'s lowercase-escaped form does n
   expect(r.status).toBe(404) // goModuleUnescape(path) => "...Azure...", which != the lowercase entry
 })
 
-test('an allowlist entry in a PyPI project\'s real casing matches its PEP 503 normalized name (ei0.18)', async () => {
+test("an allowlist entry in a PyPI project's real casing matches its PEP 503 normalized name (ei0.18)", async () => {
   const g = makeGate({
     upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
@@ -1343,7 +1586,11 @@ test('an npm packument drops the young version, re-points latest, and rewrites t
   const g = gate()
   const r = await g(new Request('http://gate/npm/@types%2fms'))
   expect(r.status).toBe(200)
-  const p = (await r.json()) as { versions: Record<string, { dist: { tarball: string; shasum: string } }>; 'dist-tags': { latest: string }; time: Record<string, string> }
+  const p = (await r.json()) as {
+    versions: Record<string, { dist: { tarball: string; shasum: string } }>
+    'dist-tags': { latest: string }
+    time: Record<string, string>
+  }
   expect(Object.keys(p.versions).sort()).toEqual(['0.7.34', '2.1.0']) // 2.2.0 (young) is gone
   expect(p['dist-tags'].latest).toBe('2.1.0') // re-pointed off the removed young version
   expect(p.time['2.2.0']).toBeUndefined()
@@ -1356,7 +1603,10 @@ test('an npm packument works for the unencoded scoped form too (@scope/name, two
   const g = gate()
   const r = await g(new Request('http://gate/npm/@types/ms'))
   expect(r.status).toBe(200)
-  expect(Object.keys((await r.json() as { versions: Record<string, unknown> }).versions).sort()).toEqual(['0.7.34', '2.1.0'])
+  expect(Object.keys(((await r.json()) as { versions: Record<string, unknown> }).versions).sort()).toEqual([
+    '0.7.34',
+    '2.1.0',
+  ])
 })
 
 test('an old npm tarball is served byte-identical; a young one is refused', async () => {
@@ -1379,7 +1629,7 @@ test('a re-pointed npm `latest` picks the highest release, not a prerelease that
   expect(p['dist-tags'].latest).toBe('1.0.0') // not '2.0.0-beta.1', even though it was published more recently
 })
 
-test('an npm tarball url of file:// is refused before fetch, never reading the gate pod\'s filesystem (ei0.23)', async () => {
+test("an npm tarball url of file:// is refused before fetch, never reading the gate pod's filesystem (ei0.23)", async () => {
   const g = gate()
   const r = await g(new Request('http://gate/npm/evilnpm-file/-/passwd'))
   const body = await r.text()
@@ -1414,14 +1664,18 @@ test('the PyPI simple index drops a young file and one with no upload-time, and 
   expect(names).toEqual(['requests-2.31.0-py3-none-any.whl', 'requests-2.31.0.tar.gz']) // young and no-upload-time files are gone
   const sdist = idx.files.find(f => f.filename === 'requests-2.31.0.tar.gz')!
   expect(sdist.url).toBe(`http://gate/pypi/files/requests${PYPI_OLD_SDIST_PATH}`)
-  const wheel = idx.files.find((f: { filename: string }) => f.filename === 'requests-2.31.0-py3-none-any.whl') as unknown as {
+  const wheel = idx.files.find(
+    (f: { filename: string }) => f.filename === 'requests-2.31.0-py3-none-any.whl',
+  ) as unknown as {
     'core-metadata': { sha256: string }
   }
   // PEP 658/714: the advertisement a kept file carries passes through unchanged, so pip still GETs <url>.metadata
-  expect(wheel['core-metadata']).toEqual({ sha256: '7823e890e9db6f415138badf9744791290ef76e7ec6fd09a3789e8247fffe782' })
+  expect(wheel['core-metadata']).toEqual({
+    sha256: '7823e890e9db6f415138badf9744791290ef76e7ec6fd09a3789e8247fffe782',
+  })
 })
 
-test('a wheel\'s PEP 658/714 <url>.metadata is served byte-identical when the wheel is allowed, refused when it is not (ei0.9)', async () => {
+test("a wheel's PEP 658/714 <url>.metadata is served byte-identical when the wheel is allowed, refused when it is not (ei0.9)", async () => {
   const g = gate()
   const old = await g(new Request(`http://gate/pypi/files/requests${PYPI_OLD_WHEEL_PATH}.metadata`))
   expect(old.status).toBe(200)
@@ -1472,7 +1726,7 @@ test('a PEP 691 file url relative to the index (a devpi/Artifactory/Nexus mirror
   expect(await fileResp.text()).toBe('FILEBYTES-relproj-1.0.0')
 })
 
-test('a PyPI file url of file:// is refused before fetch, never reading the gate pod\'s filesystem (ei0.23)', async () => {
+test("a PyPI file url of file:// is refused before fetch, never reading the gate pod's filesystem (ei0.23)", async () => {
   const g = gate()
   const r = await g(new Request('http://gate/pypi/files/evilpypi-file/etc/passwd'))
   const body = await r.text()
@@ -1491,7 +1745,17 @@ test('a PyPI file url on an unconfigured (off-origin) host is refused, even thou
 test('a PyPI file url on the separate `files` upstream is fetched and served; PKG_GATE_UPSTREAM_FILES is honored, not dead (ei0.23)', async () => {
   // unlike every other test in this file, `files` is genuinely a different host than `pypi` here -- the only
   // way to tell a real fetch from it apart from one that silently never happens
-  const g = makeGate({ upstream: { go: base(), npm: base(), pypi: base(), files: filesUpstream.url.origin, sumdb: base(), goIndex: base() }, now: () => NOW })
+  const g = makeGate({
+    upstream: {
+      go: base(),
+      npm: base(),
+      pypi: base(),
+      files: filesUpstream.url.origin,
+      sumdb: base(),
+      goIndex: base(),
+    },
+    now: () => NOW,
+  })
   const r = await g(new Request('http://gate/pypi/files/filesproj/dist/goodfile-1.0.0.tar.gz'))
   expect(r.status).toBe(200)
   expect(await r.text()).toBe('FILEBYTES-fromfiles')
@@ -1520,7 +1784,9 @@ test('/healthz reports minDays, the allow/refuse/error counters since start, and
 })
 
 test('makeGate throws on a non-finite or negative minDays instead of silently allowing everything (ei0.10)', () => {
-  const cfg = { upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() } }
+  const cfg = {
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
+  }
   expect(() => makeGate({ ...cfg, minDays: Number('four') })).toThrow(/finite, non-negative/)
   expect(() => makeGate({ ...cfg, minDays: NaN })).toThrow(/finite, non-negative/)
   expect(() => makeGate({ ...cfg, minDays: Infinity })).toThrow(/finite, non-negative/)
@@ -1539,10 +1805,10 @@ test('a malformed request (invalid percent-encoding) is a plain-text refusal cou
   const text = await r.text()
   expect(text).toContain('pkg-gate')
   expect(text).not.toContain('<html')
-  expect((r.headers.get('content-type') ?? '')).toContain('text/plain')
+  expect(r.headers.get('content-type') ?? '').toContain('text/plain')
 
   const health = await g(new Request('http://gate/healthz'))
-  expect((await health.json() as { error: number }).error).toBe(1)
+  expect(((await health.json()) as { error: number }).error).toBe(1)
 })
 
 test('a malformed upstream packument (a null version entry) is a fixed-text 5xx, never echoing the exception, with one error log line (ei0.20)', async () => {
@@ -1570,7 +1836,7 @@ test('a malformed upstream packument (a null version entry) is a fixed-text 5xx,
   // eco/name): proves the bad shape never got as far as throwing inside filterPackument
   expect(errorLines[0]).toMatchObject({ eco: 'npm', name: 'badpkg' })
   const health = await g(new Request('http://gate/healthz'))
-  expect((await health.json() as { error: number }).error).toBeGreaterThanOrEqual(1)
+  expect(((await health.json()) as { error: number }).error).toBeGreaterThanOrEqual(1)
 })
 
 test('a non-URIError thrown from the handler is a fixed-text 502, never echoing the exception, with one error log line (ei0.20)', async () => {

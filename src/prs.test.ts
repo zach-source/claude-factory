@@ -36,7 +36,12 @@ test('prRef parses a github pull request URL and rejects anything else', () => {
 
 test('checksOf tallies a statusCheckRollup by conclusion, unresolved checks counting as pending', () => {
   expect(
-    checksOf([{ conclusion: 'SUCCESS' }, { conclusion: 'failure' }, { conclusion: null }, { conclusion: 'NEUTRAL' }]),
+    checksOf([
+      { conclusion: 'SUCCESS' },
+      { conclusion: 'failure' },
+      { conclusion: null },
+      { conclusion: 'NEUTRAL' },
+    ]),
   ).toEqual({ pass: 2, fail: 1, pending: 1 })
   expect(checksOf()).toEqual({ pass: 0, fail: 0, pending: 0 })
 })
@@ -138,16 +143,32 @@ const MAIL = [
     text: 'https://github.com/acme/widget-deploy/pull/65 changed since you parked: it is merged.',
   },
 ]
-const IS_STATION = (id: string) => ['triage', 'plan', 'implement', 'verify', 'review', 'release', 'deploy', 'soak'].includes(id)
+const IS_STATION = (id: string) =>
+  ['triage', 'plan', 'implement', 'verify', 'review', 'release', 'deploy', 'soak'].includes(id)
 
 test('collectMentions reads every linked PR out of a log of reports and a run of mail, crediting mail to whichever of from/to is a station; #63 and #67 are only ever named, never linked, so neither turns up', () => {
   const hits = collectMentions(LOG as never, MAIL, IS_STATION, prsIn)
   expect(hits).toEqual([
-    { url: 'https://github.com/acme/widget/pull/550', station: 'triage', at: 1791794969799, source: 'report' },
-    { url: 'https://github.com/acme/widget/pull/551', station: 'review', at: 1791814041138, source: 'report' },
+    {
+      url: 'https://github.com/acme/widget/pull/550',
+      station: 'triage',
+      at: 1791794969799,
+      source: 'report',
+    },
+    {
+      url: 'https://github.com/acme/widget/pull/551',
+      station: 'review',
+      at: 1791814041138,
+      source: 'report',
+    },
     { url: 'https://github.com/acme/widget/pull/550', station: 'triage', at: 1791795088862, source: 'mail' },
     { url: 'https://github.com/acme/widget/pull/551', station: 'deploy', at: 1791816985476, source: 'mail' },
-    { url: 'https://github.com/acme/widget-deploy/pull/65', station: 'deploy', at: 1791818289210, source: 'mail' },
+    {
+      url: 'https://github.com/acme/widget-deploy/pull/65',
+      station: 'deploy',
+      at: 1791818289210,
+      source: 'mail',
+    },
   ])
 })
 
@@ -167,7 +188,10 @@ test('foldMentions keeps the first-seen station, source and time for a URL seen 
 })
 
 test('foldFound marks a URL corroborated whether it already exists or is new, and drops anything that is not a PR URL', () => {
-  const base = foldMentions([], [{ url: 'https://github.com/acme/widget/pull/550', station: 'triage', at: 1, source: 'report' }])
+  const base = foldMentions(
+    [],
+    [{ url: 'https://github.com/acme/widget/pull/550', station: 'triage', at: 1, source: 'report' }],
+  )
   const found = foldFound(base, [
     { url: 'https://github.com/acme/widget/pull/550', at: 2, source: 'search' },
     { url: 'https://github.com/acme/widget/pull/551', at: 3, source: 'branch' },
@@ -194,7 +218,13 @@ const CTX = { runId: RUN_ID, runRepo: 'acme/widget' }
 test('role classes the run"s own PR in its own repo as code', () => {
   expect(
     role(
-      { repo: 'acme/widget', title: 'ex-12.3 trusted test policy', station: 'review', corroborated: true, headRefName: `factory/${RUN_ID}` },
+      {
+        repo: 'acme/widget',
+        title: 'ex-12.3 trusted test policy',
+        station: 'review',
+        corroborated: true,
+        headRefName: `factory/${RUN_ID}`,
+      },
       { ...CTX, bead: 'ex-12.3' },
     ),
   ).toBe('code')
@@ -206,7 +236,7 @@ test('role classes a cross-repo PR that names the bead as companion, even first 
       {
         repo: 'acme/widget-deploy',
         title: 'migrate-stage tester-trusted-root',
-        body: 'Carries ex-12.3\'s re-pin into the migrate stage.',
+        body: "Carries ex-12.3's re-pin into the migrate stage.",
         station: 'deploy',
         corroborated: true,
       },
@@ -215,7 +245,7 @@ test('role classes a cross-repo PR that names the bead as companion, even first 
   ).toBe('companion')
 })
 
-test('role classes a same-repo PR on another run\'s branch, naming neither bead nor corroborated, as mentioned', () => {
+test("role classes a same-repo PR on another run's branch, naming neither bead nor corroborated, as mentioned", () => {
   expect(
     role(
       {
@@ -247,22 +277,35 @@ test('role classes a cross-repo PR on an unrelated branch that names neither bea
   ).toBe('mentioned')
 })
 
-test('role falls to deploy for a cross-repo PR that is the run\'s own (corroborated) but names no bead, first seen at deploy or rollback', () => {
-  const pr = { repo: 'acme/platform-flux', title: 'bump the image pin', station: 'deploy', corroborated: true }
+test("role falls to deploy for a cross-repo PR that is the run's own (corroborated) but names no bead, first seen at deploy or rollback", () => {
+  const pr = {
+    repo: 'acme/platform-flux',
+    title: 'bump the image pin',
+    station: 'deploy',
+    corroborated: true,
+  }
   expect(role(pr, { ...CTX, bead: 'ex-12.3' })).toBe('deploy')
   expect(role({ ...pr, station: 'rollback' }, { ...CTX, bead: 'ex-12.3' })).toBe('deploy')
   expect(role({ ...pr, station: 'release' }, { ...CTX, bead: 'ex-12.3' })).toBe('companion')
 })
 
-test('role without a bead to match against still classes the run\'s own branch as code and all else as mentioned', () => {
+test("role without a bead to match against still classes the run's own branch as code and all else as mentioned", () => {
   expect(
-    role({ repo: CTX.runRepo, title: 't', station: '', corroborated: false, headRefName: `factory/${RUN_ID}` }, { ...CTX, bead: undefined }),
+    role(
+      { repo: CTX.runRepo, title: 't', station: '', corroborated: false, headRefName: `factory/${RUN_ID}` },
+      { ...CTX, bead: undefined },
+    ),
   ).toBe('code')
-  expect(role({ repo: 'o/r', title: 't', station: '', corroborated: false }, { ...CTX, bead: undefined })).toBe('mentioned')
+  expect(
+    role({ repo: 'o/r', title: 't', station: '', corroborated: false }, { ...CTX, bead: undefined }),
+  ).toBe('mentioned')
 })
 
 test('needsView refreshes OPEN every 2 min and CLOSED every 30 min, never a MERGED PR again', () => {
-  const at = (state: PrRecord['state'], checkedAt: number): Pick<PrRecord, 'state' | 'checkedAt'> => ({ state, checkedAt })
+  const at = (state: PrRecord['state'], checkedAt: number): Pick<PrRecord, 'state' | 'checkedAt'> => ({
+    state,
+    checkedAt,
+  })
   const now = 1_000_000_000
   expect(needsView(at('OPEN', now - 2 * 60_000), now)).toBe(true)
   expect(needsView(at('OPEN', now - 60_000), now)).toBe(false)
@@ -308,11 +351,21 @@ test('needsSearch: no bead never searches, a live run searches every 10 min, an 
 test('needsSearch: an ended run whose final search errored backs off like a view error, but is never marked final by an error alone (wyc.11)', () => {
   const now = 1_000_000_000
   // one failed search: not final, but within the first backoff window (1 min)
-  expect(needsSearch({ ended: true, bead: 'x' }, { searchErrorStreak: 1, searchErroredAt: now - 30_000 }, now)).toBe(false)
+  expect(
+    needsSearch({ ended: true, bead: 'x' }, { searchErrorStreak: 1, searchErroredAt: now - 30_000 }, now),
+  ).toBe(false)
   // past the backoff window: due again
-  expect(needsSearch({ ended: true, bead: 'x' }, { searchErrorStreak: 1, searchErroredAt: now - 61_000 }, now)).toBe(true)
+  expect(
+    needsSearch({ ended: true, bead: 'x' }, { searchErrorStreak: 1, searchErroredAt: now - 61_000 }, now),
+  ).toBe(true)
   // searchedFinal is never set by an error, so the run keeps retrying instead of giving up for good
-  expect(needsSearch({ ended: true, bead: 'x' }, { searchErrorStreak: 1, searchErroredAt: now - 61_000, searchedFinal: false }, now)).toBe(true)
+  expect(
+    needsSearch(
+      { ended: true, bead: 'x' },
+      { searchErrorStreak: 1, searchErroredAt: now - 61_000, searchedFinal: false },
+      now,
+    ),
+  ).toBe(true)
 })
 
 test('due orders live runs before ended runs (newest first) and stops at the search and view budgets, leaving the rest for later', () => {
@@ -325,7 +378,10 @@ test('due orders live runs before ended runs (newest first) and stops at the sea
   const files = new Map()
   const prsByRun = new Map([
     ['live-1', Array.from({ length: 2 }, (_, i) => ({ url: `u${i}`, state: 'OPEN' as const, checkedAt: 0 }))],
-    ['ended-new', Array.from({ length: 2 }, (_, i) => ({ url: `v${i}`, state: 'OPEN' as const, checkedAt: 0 }))],
+    [
+      'ended-new',
+      Array.from({ length: 2 }, (_, i) => ({ url: `v${i}`, state: 'OPEN' as const, checkedAt: 0 })),
+    ],
   ])
   const out = due(runs, prsByRun, files, now, { searches: 2, views: 3 })
   expect(out.searches).toEqual(['live-1', 'ended-new']) // live first, then newest ended; ended-old deferred
@@ -370,11 +426,16 @@ test('parseSearch keeps a hit at or after the run start minus 10 min and at or b
   expect(parseSearch('not json', runStart, runEnd, now)).toEqual([])
   // a live run (Infinity) keeps a hit no matter how recent
   expect(
-    parseSearch(JSON.stringify([{ url: 'https://github.com/acme/widget/pull/552', createdAt: '2026-10-13T00:00:00Z' }]), runStart, Infinity, now),
+    parseSearch(
+      JSON.stringify([{ url: 'https://github.com/acme/widget/pull/552', createdAt: '2026-10-13T00:00:00Z' }]),
+      runStart,
+      Infinity,
+      now,
+    ),
   ).toEqual([{ url: 'https://github.com/acme/widget/pull/552', at: now, source: 'search' }])
 })
 
-test('parseBranchList and branchFound: only the listed PR whose head is this run\'s own branch counts, bad JSON yields nothing', () => {
+test("parseBranchList and branchFound: only the listed PR whose head is this run's own branch counts, bad JSON yields nothing", () => {
   const list = parseBranchList(
     JSON.stringify([
       { url: 'https://github.com/acme/widget/pull/551', headRefName: 'factory/lifecycle-abc123' },
@@ -452,7 +513,12 @@ test('applyView refreshes gh-sourced fields, recomputes role from the fresh head
       body: "carries ex-12.3's re-pin",
     }),
   )!
-  const next = applyView(pr, viewed, { runId: 'lifecycle-abc123', runRepo: 'acme/widget', bead: 'ex-12.3' }, 999)
+  const next = applyView(
+    pr,
+    viewed,
+    { runId: 'lifecycle-abc123', runRepo: 'acme/widget', bead: 'ex-12.3' },
+    999,
+  )
   expect(next.state).toBe('MERGED')
   expect(next.title).toBe('migrate-stage tester-trusted-root')
   expect(next.role).toBe('companion') // names the bead, cross-repo
@@ -523,7 +589,7 @@ function fakeGh(table: { when: string; reply: GhResult }[], calls: string[][] = 
   }
 }
 
-test('buildPrs: a search finds a companion PR in another repo and drops one created before the run started; the run\'s own branch PR is corroborated by the branch listing', async () => {
+test("buildPrs: a search finds a companion PR in another repo and drops one created before the run started; the run's own branch PR is corroborated by the branch listing", async () => {
   const now = 2_000_000_000
   const calls: string[][] = []
   const gh = fakeGh(
@@ -532,7 +598,9 @@ test('buildPrs: a search finds a companion PR in another repo and drops one crea
         when: 'pr list --state all',
         reply: {
           code: 0,
-          out: JSON.stringify([{ url: 'https://github.com/acme/widget/pull/551', headRefName: `factory/${RUN_ID}` }]),
+          out: JSON.stringify([
+            { url: 'https://github.com/acme/widget/pull/551', headRefName: `factory/${RUN_ID}` },
+          ]),
           err: '',
         },
       },
@@ -593,7 +661,11 @@ test('buildPrs: a search finds a companion PR in another repo and drops one crea
   expect(prs.find(p => p.number === 551)).toMatchObject({ role: 'code', state: 'MERGED' })
   // #65 is found by this same call's search, but a budget's views are decided before the search runs, so
   // it is only corroborated (and already classed companion from that alone) here; it is viewed next call
-  expect(prs.find(p => p.number === 65)).toMatchObject({ role: 'companion', state: 'UNKNOWN', corroborated: true })
+  expect(prs.find(p => p.number === 65)).toMatchObject({
+    role: 'companion',
+    state: 'UNKNOWN',
+    corroborated: true,
+  })
   expect(prs.find(p => p.number === 549)).toBeUndefined() // dropped by keepSearchHit before it ever became a record
   expect(files.get(RUN_ID)!.searchedAt).toBe(now)
   // the view call for #549 never happens: it was never added, so never due
@@ -627,7 +699,11 @@ test('buildPrs: a search finds a companion PR in another repo and drops one crea
   )
   const r2 = run({ file: files.get(RUN_ID)! })
   const second = await buildPrs([r2], IS_STATION, gh2, now + 1000)
-  expect(second.rows[0]!.prs.find(p => p.number === 65)).toMatchObject({ role: 'companion', state: 'OPEN', isDraft: true })
+  expect(second.rows[0]!.prs.find(p => p.number === 65)).toMatchObject({
+    role: 'companion',
+    state: 'OPEN',
+    isDraft: true,
+  })
 })
 
 test('buildPrs: a MERGED PR is never viewed again; a failed view on a second call keeps the record and sets its error', async () => {
@@ -655,7 +731,13 @@ test('buildPrs: a MERGED PR is never viewed again; a failed view on a second cal
     errorStreak: 0,
     erroredAt: 0,
   }
-  const mergedPr = { ...openPr, url: 'https://github.com/acme/widget/pull/552', number: 552, state: 'MERGED' as const, checkedAt: now1 }
+  const mergedPr = {
+    ...openPr,
+    url: 'https://github.com/acme/widget/pull/552',
+    number: 552,
+    state: 'MERGED' as const,
+    checkedAt: now1,
+  }
   const noList: GhResult = { code: 0, out: '[]', err: '' }
   const gh1 = fakeGh(
     [
@@ -691,7 +773,10 @@ test('buildPrs: a MERGED PR is never viewed again; a failed view on a second cal
   const gh2 = fakeGh(
     [
       { when: 'pr list --state all', reply: noList },
-      { when: 'pr view https://github.com/acme/widget/pull/551', reply: { code: 1, out: '', err: 'HTTP 502' } },
+      {
+        when: 'pr view https://github.com/acme/widget/pull/551',
+        reply: { code: 1, out: '', err: 'HTTP 502' },
+      },
     ],
     calls2,
   )
@@ -772,7 +857,7 @@ test('buildPrs: a MERGED companion PR named only in its gh-viewed body keeps its
   expect(pr65after2.state).toBe('MERGED')
 })
 
-test('buildPrs: a run whose rig has no GitHub owner never calls `gh search prs --owner \'\'`, and still marks itself searched so it is not retried every call (wyc.8)', async () => {
+test("buildPrs: a run whose rig has no GitHub owner never calls `gh search prs --owner ''`, and still marks itself searched so it is not retried every call (wyc.8)", async () => {
   const now = 1_000_000_000
   const calls: string[][] = []
   const gh = fakeGh([{ when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } }], calls)
@@ -830,7 +915,13 @@ test('buildPrs: a failed final search is retried (not given up on) once its back
     { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
     {
       when: 'search prs --owner acme',
-      reply: { code: 0, out: JSON.stringify([{ url: 'https://github.com/acme/widget/pull/700', createdAt: '2026-10-12T15:45:00Z' }]), err: '' },
+      reply: {
+        code: 0,
+        out: JSON.stringify([
+          { url: 'https://github.com/acme/widget/pull/700', createdAt: '2026-10-12T15:45:00Z' },
+        ]),
+        err: '',
+      },
     },
   ])
   const r3 = run({ ended: true, endAt: 1791819735929, file: file1 })
@@ -873,7 +964,21 @@ test('buildPrs spends at most the view budget in one call, 6 at a time, deferrin
     maxInFlight = Math.max(maxInFlight, inFlight)
     await new Promise(res => setTimeout(res, 1))
     inFlight--
-    return { code: 0, out: JSON.stringify({ title: '', state: 'open', isDraft: false, reviewDecision: '', mergeStateStatus: '', statusCheckRollup: [], updatedAt: '', headRefName: '', body: '' }), err: '' }
+    return {
+      code: 0,
+      out: JSON.stringify({
+        title: '',
+        state: 'open',
+        isDraft: false,
+        reviewDecision: '',
+        mergeStateStatus: '',
+        statusCheckRollup: [],
+        updatedAt: '',
+        headRefName: '',
+        body: '',
+      }),
+      err: '',
+    }
   }
   const r = run({ bead: undefined, file: { version: 1, prs } })
   const { rows } = await buildPrs([r], IS_STATION, gh, now)
@@ -898,7 +1003,17 @@ test('buildPrs: an exhausted overall deadline stops spending new gh calls past i
     if (argv[0] === 'pr' && argv[1] === 'list') return { code: 0, out: '[]', err: '' }
     return {
       code: 0,
-      out: JSON.stringify({ title: '', state: 'open', isDraft: false, reviewDecision: '', mergeStateStatus: '', statusCheckRollup: [], updatedAt: '', headRefName: '', body: '' }),
+      out: JSON.stringify({
+        title: '',
+        state: 'open',
+        isDraft: false,
+        reviewDecision: '',
+        mergeStateStatus: '',
+        statusCheckRollup: [],
+        updatedAt: '',
+        headRefName: '',
+        body: '',
+      }),
       err: '',
     }
   }

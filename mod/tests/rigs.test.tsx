@@ -30,33 +30,41 @@ const TICK = {
   ],
 }
 
-test('the rigs tab draws each rig with its live stations, gates and stuck runs, past its cap too', SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-    on(event, () => ({ value: undefined }) as never)
-  on('process.run', ($, e) => ({
-    value: { exitCode: 0, stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '', stderr: '' } as never,
-  }))
-  await $.command.run({ command: 'factory', args: 'status' } as never) // any command ticks after it
-  await clock.settle()
-  await $.command.run({ command: 'factory', args: 'rigs' } as never)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({
-      plugin: 'factory',
-      surface,
-      component: 'Pane',
-      requestId: 'factory',
-      props: { bodyColumns: 100, placement: 'dock' } as never,
-      viewport: { columns: 100, rows: 60 },
-    })
-    const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).toContain('api')
-    expect(drawn).toContain('"deploy"," ","1"')
-    expect(drawn).toContain('"stuck: ","r4"')
-    await ui.unmount()
-  }
-})
+test(
+  'the rigs tab draws each rig with its live stations, gates and stuck runs, past its cap too',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => ({
+      value: {
+        exitCode: 0,
+        stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
+        stderr: '',
+      } as never,
+    }))
+    await $.command.run({ command: 'factory', args: 'status' } as never) // any command ticks after it
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'rigs' } as never)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({
+        plugin: 'factory',
+        surface,
+        component: 'Pane',
+        requestId: 'factory',
+        props: { bodyColumns: 100, placement: 'dock' } as never,
+        viewport: { columns: 100, rows: 60 },
+      })
+      const drawn = JSON.stringify(await ui.drawn())
+      expect(drawn).toContain('api')
+      expect(drawn).toContain('"deploy"," ","1"')
+      expect(drawn).toContain('"stuck: ","r4"')
+      await ui.unmount()
+    }
+  },
+)
 
 test('a tick that logs to stderr, as a reaped pane does, still parses', SLOW, async ($, on) => {
   const clock = mock.clock(on)
@@ -80,51 +88,55 @@ test('a tick that logs to stderr, as a reaped pane does, still parses', SLOW, as
   expect(JSON.stringify(status)).not.toContain('SyntaxError')
 })
 
-test('a failing tick says why in the status line and marks the board stale until one succeeds', SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  const status: unknown[] = []
-  let isFailing = true
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
-  for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
-  on('process.run', ($, e) => {
-    if (e.argv.includes('tick') && isFailing)
+test(
+  'a failing tick says why in the status line and marks the board stale until one succeeds',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const status: unknown[] = []
+    let isFailing = true
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
+    for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      if (e.argv.includes('tick') && isFailing)
+        return {
+          value: {
+            exitCode: 1,
+            stdout: '',
+            stderr: `dolt: ${'x'.repeat(90)} timed out after 120000 ms\n`,
+          } as never,
+        }
       return {
         value: {
-          exitCode: 1,
-          stdout: '',
-          stderr: `dolt: ${'x'.repeat(90)} timed out after 120000 ms\n`,
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
+          stderr: '',
         } as never,
       }
-    return {
-      value: {
-        exitCode: 0,
-        stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
-        stderr: '',
-      } as never,
-    }
-  })
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
-  const failed = JSON.stringify(status)
-  expect(failed).toContain('factory tick failed: ')
-  // past the old 80-character cut: the reason itself survives
-  expect(failed).toContain('timed out after 120000 ms')
-  const ui = await $.ui.mount({
-    plugin: 'factory',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'factory',
-    props: { bodyColumns: 100, placement: 'dock' } as never,
-    viewport: { columns: 100, rows: 60 },
-  })
-  expect(JSON.stringify(await ui.drawn())).toContain('stale since')
-  isFailing = false
-  await clock.advance(5_000)
-  await clock.settle()
-  expect(JSON.stringify(await ui.drawn())).not.toContain('stale since')
-  await ui.unmount()
-})
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    const failed = JSON.stringify(status)
+    expect(failed).toContain('factory tick failed: ')
+    // past the old 80-character cut: the reason itself survives
+    expect(failed).toContain('timed out after 120000 ms')
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    expect(JSON.stringify(await ui.drawn())).toContain('stale since')
+    isFailing = false
+    await clock.advance(5_000)
+    await clock.settle()
+    expect(JSON.stringify(await ui.drawn())).not.toContain('stale since')
+    await ui.unmount()
+  },
+)
 
 test("a rig's backlog button opens the Backlog on that rig, and all rigs clears it", SLOW, async ($, on) => {
   const clock = mock.clock(on)

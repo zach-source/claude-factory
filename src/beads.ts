@@ -186,7 +186,8 @@ export const beads = (repo: string, actor: string) => ({
       b => isOwned(b) && !b.assignee,
     ),
   /** answers a human-flagged bead: a comment, and bd closes it */
-  respond: (id: string, text: string) => must(bd(repo, actor, 'human', 'respond', id, '-r', text), 'human respond'),
+  respond: (id: string, text: string) =>
+    must(bd(repo, actor, 'human', 'respond', id, '-r', text), 'human respond'),
   /** hands a bead to the factory: a rig starts it at the next dispatch, a rejected one too */
   queue: (id: string, station?: string) =>
     must(
@@ -228,7 +229,17 @@ export const beads = (repo: string, actor: string) => ({
         ...extra,
       )
     const landed = (afterErr: string) => {
-      const r = bd(repo, actor, 'list', '--all', '--metadata-field', `factory_create=${token}`, '--json', '-n', '2')
+      const r = bd(
+        repo,
+        actor,
+        'list',
+        '--all',
+        '--metadata-field',
+        `factory_create=${token}`,
+        '--json',
+        '-n',
+        '2',
+      )
       if (!r.isOk)
         throw new Error(
           `bd create: ${afterErr}; it may have landed: bd list --all --metadata-field factory_create=${token}`,
