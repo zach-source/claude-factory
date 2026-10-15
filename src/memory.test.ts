@@ -15,17 +15,20 @@ import {
   installSkill,
   type LongEntry,
   managerActivity,
+  noteExists,
   outline,
   parse,
   parseLong,
   pendingSkills,
   rank,
   rejectSkill,
+  resolvePath,
   same,
   type ShortCandidate,
   skillsDir,
   skillSources,
   search,
+  tally,
   usage,
   usageLines,
   use,
@@ -140,7 +143,13 @@ test('usage follows a note the dream files, and is dropped with a note it remove
   use(dir, ['inbox/lock.md', 'inbox/gone.md'], 'shown', day)
   use(dir, ['inbox/lock.md'], 'shown', day + 1)
   use(dir, ['inbox/lock.md'], 'helped', day + 2)
-  expect(usage(dir).get('inbox/lock.md')).toEqual({ path: 'inbox/lock.md', shown: 2, helped: 1, at: day + 2 })
+  expect(usage(dir).get('inbox/lock.md')).toEqual({
+    path: 'inbox/lock.md',
+    shown: 2,
+    helped: 1,
+    at: day + 2,
+    runs: 1, // all three lines fall on the same UTC day
+  })
 
   // the dream moved lock.md under beads/ and removed gone.md
   writeFileSync(join(dir, 'beads', 'lock.md'), format({ summary: 'bd init locks every repo', body: '' }))
@@ -151,6 +160,61 @@ test('usage follows a note the dream files, and is dropped with a note it remove
     '- beads/lock.md: helped 1, shown 2, last used 2026-10-06',
     '- beads/unused.md: never shown',
   ])
+})
+
+test('tally counts runs by distinct `by`, or by distinct UTC day for an older line with none', () => {
+  const at = Date.parse('2026-10-06T12:00:00Z')
+  const withBy = [
+    JSON.stringify({ path: 'a.md', helped: 1, at, by: 'run1/verify' }),
+    JSON.stringify({ path: 'a.md', helped: 1, at: at + 1000, by: 'run1/verify' }), // same run again: still 1
+    JSON.stringify({ path: 'a.md', helped: 1, at: at + 2000, by: 'run2/implement' }),
+  ]
+  expect(tally(withBy).get('a.md')).toEqual({ path: 'a.md', shown: 0, helped: 3, at: at + 2000, runs: 2 })
+
+  const legacy = [
+    JSON.stringify({ path: 'b.md', helped: 1, at }),
+    JSON.stringify({ path: 'b.md', helped: 1, at: at + 24 * 60 * 60 * 1000 }), // next UTC day
+  ]
+  expect(tally(legacy).get('b.md')?.runs).toBe(2)
+
+  // an aggregate compact() already wrote (its own `runs`) adds to the total instead of becoming 1 key
+  const folded = [
+    JSON.stringify({ path: 'c.md', shown: 5, helped: 2, at, runs: 2 }),
+    JSON.stringify({ path: 'c.md', helped: 1, at: at + 2000, by: 'run3/verify' }),
+  ]
+  expect(tally(folded).get('c.md')).toEqual({ path: 'c.md', shown: 5, helped: 3, at: at + 2000, runs: 3 })
+})
+
+test('compact() keeps a LONG.md entry\'s usage under its #id, and drops it only when the id is gone', () => {
+  const dir = join(tmpdir(), `memory-long-usage-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([{ id: 'lock', summary: 'bd init locks every repo', body: 'merged' }]),
+  )
+  use(dir, ['beads/LONG.md#lock'], 'helped')
+  expect(noteExists(dir, 'beads/LONG.md#lock')).toBe(true)
+  expect(noteExists(dir, 'beads/LONG.md#gone')).toBe(false)
+  compact(dir, {})
+  expect(usage(dir).get('beads/LONG.md#lock')?.helped).toBe(1)
+})
+
+test('compact() logs a rename so a later `helped <old path>` still resolves, even through a chain', () => {
+  const dir = join(tmpdir(), `memory-renames-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  use(dir, ['inbox/lock.md'], 'helped')
+  writeFileSync(join(dir, 'beads', 'lock.md'), format({ summary: 'bd init locks every repo', body: '' }))
+  compact(dir, { 'inbox/lock.md': 'beads/lock.md' }) // dream #1: filed
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([{ id: 'lock', summary: 'bd init locks every repo', body: 'merged' }]),
+  )
+  rmSync(join(dir, 'beads', 'lock.md'))
+  compact(dir, { 'beads/lock.md': 'beads/LONG.md#lock' }) // dream #2: merged into the long tier
+  expect(resolvePath(dir, 'inbox/lock.md')).toBe('beads/LONG.md#lock')
+  expect(usage(dir).get('beads/LONG.md#lock')?.helped).toBe(1)
 })
 
 test('a search keeps the matches and drops the filler after them', () => {

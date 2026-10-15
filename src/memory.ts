@@ -296,43 +296,98 @@ export const corpus = (dir: string) =>
     ...[...walk(dir).topics.values(), ...walk(dir).notes].map(n => `${n.summary}\n${n.body}`),
   ].join('\n')
 
-// how notes get used, the signal the dream orders by: a search shows a note, a worker says it helped
-export type Use = { path: string; shown: number; helped: number; at: number }
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+
+// How notes get used. A search shows a note. A worker says it helped. The dream orders notes by this.
+// `runs` counts the distinct runs or stations that helped a note (its `by`). For an older line with no
+// `by`, it counts the distinct UTC day instead. decide()'s promote threshold reads `runs`.
+export type Use = { path: string; shown: number; helped: number; at: number; runs: number }
 const usageFile = (dir: string) => join(dir, '.usage.jsonl')
 /** appended only while workers search, one short line each, so concurrent writers do not interleave */
-export const use = (dir: string, paths: string[], kind: 'shown' | 'helped', at = Date.now()) => {
+export const use = (
+  dir: string,
+  paths: string[],
+  kind: 'shown' | 'helped',
+  at = Date.now(),
+  by?: string,
+) => {
   if (paths.length)
     appendFileSync(
       usageFile(dir),
-      paths.map(path => JSON.stringify({ path, [kind]: 1, at })).join('\n') + '\n',
+      paths.map(path => JSON.stringify({ path, [kind]: 1, at, ...(by ? { by } : {}) })).join('\n') + '\n',
     )
 }
-/** each note's totals, under the name the dream gave it */
+/** each note's totals, under the name the dream gave it. compact() folds old lines into one with `runs` set, already counted; this adds only what is new since. */
 export const tally = (lines: string[], renamed: Record<string, string> = {}) => {
-  const out = new Map<string, Use>()
+  const out = new Map<string, { path: string; shown: number; helped: number; at: number; runsBase: number; keys: Set<string> }>()
   for (const line of lines.filter(Boolean)) {
-    const u: Partial<Use> & { path: string; at: number } = JSON.parse(line)
+    const u: Partial<Use> & { path: string; at: number; by?: string } = JSON.parse(line)
     const path = renamed[u.path] ?? u.path
-    const t = out.get(path) ?? { path, shown: 0, helped: 0, at: 0 }
-    out.set(path, {
-      path,
-      shown: t.shown + (u.shown ?? 0),
-      helped: t.helped + (u.helped ?? 0),
-      at: Math.max(t.at, u.at),
-    })
+    const t = out.get(path) ?? { path, shown: 0, helped: 0, at: 0, runsBase: 0, keys: new Set<string>() }
+    t.shown += u.shown ?? 0
+    t.helped += u.helped ?? 0
+    t.at = Math.max(t.at, u.at)
+    if (typeof u.runs === 'number') t.runsBase += u.runs
+    else t.keys.add(u.by ?? day(u.at))
+    out.set(path, t)
   }
-  return out
+  const result = new Map<string, Use>()
+  for (const [path, t] of out)
+    result.set(path, { path, shown: t.shown, helped: t.helped, at: t.at, runs: t.runsBase + t.keys.size })
+  return result
 }
 export const usage = (dir: string, renamed?: Record<string, string>) =>
   tally(existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : [], renamed)
-/** after a dream: one line per note left, renames followed; a removed note's counts go with it */
+
+/** a note's path, inside its topic's LONG.md when it has a `#id` suffix */
+export function noteExists(dir: string, path: string): boolean {
+  const i = path.indexOf('#')
+  if (i < 0) return existsSync(join(dir, path))
+  const file = join(dir, path.slice(0, i))
+  return existsSync(file) && parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))
+}
+
+const renamesFile = (dir: string) => join(dir, '.renames.jsonl')
+/** every rename a dream or a tiering pass has ever made, oldest first: old path -> its newest known path */
+function renameLog(dir: string): Record<string, string> {
+  const lines = existsSync(renamesFile(dir)) ? readFileSync(renamesFile(dir), 'utf8').split('\n') : []
+  const map: Record<string, string> = {}
+  for (const line of lines.filter(Boolean)) {
+    const r: { old: string; new: string } = JSON.parse(line)
+    map[r.old] = r.new
+  }
+  return map
+}
+/** where a note lives now, following a rename chain (a -> b -> c) to its last link */
+export function resolvePath(dir: string, path: string, extra: Record<string, string> = {}): string {
+  const map = { ...renameLog(dir), ...extra }
+  let p = path
+  for (const seen = new Set<string>(); map[p] && map[p] !== p && !seen.has(p); ) {
+    seen.add(p)
+    p = map[p]!
+  }
+  return p
+}
+/**
+ * after a dream or a tiering pass. It logs `renamed`, so a later `helped <old path>` still resolves,
+ * even over several dreams. Then it keeps one usage line per note left. It follows renames, and a
+ * removed note's counts go with it.
+ */
 export function compact(dir: string, renamed: Record<string, string>) {
-  const kept = [...usage(dir, renamed).values()].filter(u => existsSync(join(dir, u.path)))
+  if (Object.keys(renamed).length)
+    appendFileSync(
+      renamesFile(dir),
+      Object.entries(renamed)
+        .map(([old, to]) => `${JSON.stringify({ old, new: to })}\n`)
+        .join(''),
+    )
+  const log = renameLog(dir)
+  const resolved = Object.fromEntries([...new Set(Object.keys(log))].map(k => [k, resolvePath(dir, k)]))
+  const kept = [...usage(dir, resolved).values()].filter(u => noteExists(dir, u.path))
   writeFileSync(`${usageFile(dir)}.tmp`, kept.map(u => JSON.stringify(u) + '\n').join(''))
   // ponytail: a search appending between the read and this rename loses its count; a lock if counts must be exact
   renameSync(`${usageFile(dir)}.tmp`, usageFile(dir))
 }
-const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 /** one line per note for the dream, the unused ones included: they are what it may drop */
 export const usageLines = (dir: string) => {
   const used = usage(dir)

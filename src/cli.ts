@@ -3307,7 +3307,7 @@ const usage = `factory — herdr software factories on xstate
   memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
   memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping
-  memory helped <note path...>       a note helped: the dream ranks notes by this
+  memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
   skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
                                      once reviewed, or reject it, saying why
@@ -3486,14 +3486,14 @@ if (import.meta.main && !outboxCmd)
             console.log(memory.add(MEMORY, { ...note, from, at }))
           }
         } else if (sub === 'helped' && words.length) {
-          const paths = words.map(w => relative(MEMORY, resolve(MEMORY, w)))
-          const bad = paths.filter(p => p.startsWith('..') || !existsSync(join(MEMORY, p)))
+          const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
+          const bad = paths.filter(p => p.startsWith('..') || !memory.noteExists(MEMORY, p))
           if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
-          memory.use(MEMORY, paths, 'helped')
+          memory.use(MEMORY, paths, 'helped', Date.now(), from)
           console.log(`noted: ${paths.join(', ')}`)
         } else
           fail(
-            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped <note path...>',
+            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped [--from run/station] <note path...>',
           )
         break
       }
