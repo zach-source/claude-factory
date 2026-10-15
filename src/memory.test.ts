@@ -120,6 +120,28 @@ test('rank() breaks a near-tie for a higher tier, but a clearly worse match stil
   expect(stillLoses.map(f => f.note.path)).toEqual(['beads/short.md', 'beads/long-far.md'])
 })
 
+test('rank() tells TIER_BONUS.long (0.01) from TIER_BONUS.fact (0.02) at the same raw gap (claude-factory-59r.14)', () => {
+  const note = (path: string, tier: Note['tier']): Note => ({ path, summary: path, body: '', tier })
+  // both tied notes score 0.015 below short in their own match: past the 0.01 long bonus, so long must
+  // still lose to short, but within the 0.02 fact bonus, so fact must still beat short
+  const vecs: Record<string, number[]> = { 'beads/short.md': [1, 0], 'beads/other.md': [0.985, 0] }
+  const withLong = rank(
+    [note('beads/short.md', 'short'), note('beads/other.md', 'long')],
+    n => vecs[n.path]!,
+    () => undefined,
+    [1, 0],
+  )
+  expect(withLong.map(f => f.note.path)).toEqual(['beads/short.md', 'beads/other.md'])
+
+  const withFact = rank(
+    [note('beads/short.md', 'short'), note('beads/other.md', 'fact')],
+    n => vecs[n.path]!,
+    () => undefined,
+    [1, 0],
+  )
+  expect(withFact.map(f => f.note.path)).toEqual(['beads/other.md', 'beads/short.md'])
+})
+
 test('search indexes CORE.md bullets as fact notes, scoped to their rig section', async () => {
   const dir = join(tmpdir(), `memory-core-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
