@@ -23,14 +23,16 @@ with `herdr pane read`.
 Live runs sit in four columns by state, in this order: `? AWAITING YOU` (yellow), `! STUCK`
 (red), `● WORKING` (green) and `◷ WAITING` (blue). Each run is in exactly one, the same
 state the header and status line count. A column lists its runs oldest first. From 120
-columns the columns sit side by side, and an empty one stays as a header reading `none`.
+columns the runs awaiting you take a full-width band on top, where a gate's question and
+buttons have room, and the other three sit side by side below it, an empty one reading `none`.
 Narrower, they stack as titled sections in the same order, and an empty one is left out.
 Finished runs sit below a `Finished` rule, collapsed by default.
 
-Each run is a compact card: its id shortened to the first and last 4 characters (`mv4y…yjy4`),
-its bead, its station with a time (elapsed in the station, `quiet 40m` for a stuck run,
-`wakes 14:20` for a waiting one), and one line of why: the gate's question, the stuck reason
-or the last summary. A gate's note input and outcome buttons show on its card.
+Each run is a compact card: its id (shortened to `mv4y…yjy4` in a narrow column) and rig, its
+bead and goal, its station with a time (elapsed in the station, `quiet 40m` for a stuck run,
+`wakes 14:20` for a waiting one) followed by its try, how long ago it last reported and any
+usage-limit wait, and one line of why: the gate's question, the stuck reason or the last
+summary. An open card's `-` at its top shrinks it back to the compact card. A gate's note input and outcome buttons show on its card.
 
 | Key or button | What it does |
 | --- | --- |

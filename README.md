@@ -46,8 +46,9 @@ rigs, PRs and interview. The figures are made-up demo data.
 
 ![The console's six tabs: board, backlog, mail, rigs, PRs and interview](docs/images/console-tabs.png)
 
-The board lays the live runs in four columns by state, awaiting you, stuck, working and waiting,
-each oldest first (stacked as sections when the console is narrower than 120 columns). Gates are
+The board lays the live runs out by state, oldest first: what awaits you in a full-width band on
+top, then stuck, working and waiting side by side (stacked as sections when the console is
+narrower than 120 columns). Gates are
 answered on their card; pressing open on a card expands the run with its full goal, Steer, Tasks,
 Journal and worker peek, so a look at one run is never a tab switch and back:
 
