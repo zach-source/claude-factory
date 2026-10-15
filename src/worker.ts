@@ -642,8 +642,14 @@ function gitHead() {
   return p.exitCode === 0 ? p.stdout.toString().trim() : ''
 }
 
-/** the size of the harness's own live stream copy (own()/<h>.jsonl, written chunk by chunk by turn()); 0 if absent */
+/**
+ * the size of the harness's own live stream copy (own()/<h>.jsonl, written chunk by chunk by turn()); 0 if absent.
+ * pi -p only prints once its turn exits (own()/pi.jsonl never grows mid-turn), so a constant size there would look
+ * like no progress to the stall signature and fail a productive pi turn that happens not to commit; undefined for
+ * pi keeps it out of that signature the way an unknown-session Claude tail already is (claude-factory-xq3)
+ */
 function streamBytes() {
+  if (harness() === 'pi') return undefined
   try {
     return statSync(join(own(), `${harness()}.jsonl`)).size
   } catch {

@@ -749,6 +749,10 @@ test('a pi worker names its own session and keeps it across turns', async () => 
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
     expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} pi brief`)
     expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} more`)
+    // pi -p only prints once a turn exits, so own()/pi.jsonl never grows mid-turn: a constant size would look
+    // like a non-committing pi worker is stalled; bytes must stay out of the stall signature entirely for pi
+    // (claude-factory-xq3.6)
+    expect(worker.poll(0).bytes).toBeUndefined()
   } finally {
     process.env = saved
   }
