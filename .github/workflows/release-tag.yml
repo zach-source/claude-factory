@@ -1,0 +1,99 @@
+name: release-tag
+
+# A person merges a release/vX.Y.Z pull request opened by release.yml (claude-factory-5h9.7).
+# This workflow runs after that merge. This workflow tags the merge commit. This workflow
+# publishes a GitHub release. This workflow needs no hand edits from the person.
+#
+# This workflow signs the tag with gitsign, Sigstore's keyless signer. The job has the
+# id-token: write permission. This permission lets gitsign fetch a short-lived OIDC token from
+# GitHub's own token service. The step below sets GITSIGN_TOKEN_PROVIDER=github-actions for
+# this. gitsign trades that token at Fulcio for a one-time signing certificate. This public
+# repo's secrets hold no long-lived signing key. docs/releasing.md records this decision and
+# the verify command.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: tag
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.13'
+
+      - name: read the released version and refuse a drift
+        id: version
+        run: |
+          set -e
+          pkg_version="$(jq -r .version package.json)"
+          plugin_version="$(jq -r .version mod/.claude-plugin/plugin.json)"
+          if [ "$pkg_version" != "$plugin_version" ]; then
+            echo "package.json is $pkg_version but mod/.claude-plugin/plugin.json is $plugin_version; refusing" >&2
+            exit 1
+          fi
+          echo "version=$pkg_version" >> "$GITHUB_OUTPUT"
+
+      - name: refuse an existing tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null 2>&1; then
+            echo "tag v$VERSION already exists; refusing" >&2
+            exit 1
+          fi
+
+      - name: install gitsign 0.17.1
+        # Pinned release binary, checked by its published sha256 (checksums.txt on the v0.17.1
+        # GitHub release). gitsign has no GitHub Action of its own.
+        run: |
+          set -e
+          curl -sSL -o gitsign https://github.com/sigstore/gitsign/releases/download/v0.17.1/gitsign_0.17.1_linux_amd64
+          echo "69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae  gitsign" | sha256sum -c -
+          chmod +x gitsign
+          sudo mv gitsign /usr/local/bin/gitsign
+
+      - name: sign and push the tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GITSIGN_TOKEN_PROVIDER: github-actions
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config gpg.format x509
+          git config gpg.x509.program gitsign
+          git tag -s -m "release v$VERSION" "v$VERSION"
+          git push origin "v$VERSION"
+
+      - name: verify the signature before publishing
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+          gitsign verify-tag "v$VERSION" \
+            --certificate-identity="https://github.com/${{ github.repository }}/.github/workflows/release-tag.yml@refs/heads/main" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
+      - name: publish the GitHub release from the moved CHANGELOG section
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+          bun install --frozen-lockfile
+          bun src/release.ts notes "$VERSION" > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" --verify-tag --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
