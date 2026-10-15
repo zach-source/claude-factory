@@ -2691,7 +2691,7 @@ async function defineRig(
       fail((err as Error).message)
     }
     rig.egress = parsed!
-    for (const host of parsed!.flatMap(e => e.hosts).filter(h => ax.REGISTRY_HOSTS.includes(h)))
+    for (const host of parsed!.flatMap(e => e.hosts).filter(h => ax.isRegistryHost(h)))
       console.warn(
         `warning: --egress ${host} is a package registry host; once a pkg-gate is on (FACTORY_AX_PKG_GATE), ` +
           `it is stripped from this rig's policy and never reaches the VM directly`,

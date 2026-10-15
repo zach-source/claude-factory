@@ -473,6 +473,13 @@ test('rig add --egress warns, but still adds, when a host is a package registry 
   expect(clean.err).not.toContain('package registry host')
 })
 
+test('rig add --egress warns on a mixed-case registry host too, since parseEgress accepts any case (ei0.16)', () => {
+  const r = repo()
+  const warned = factory(['rig', 'add', 'x', r, '--runner', 'ax', '--egress', 'PyPI.org,api.openai.com=OPENAI'])
+  expect(warned.code).toBe(0)
+  expect(warned.err).toContain('PyPI.org is a package registry host')
+})
+
 test("inside a VM Claude keeps the worker's tools and prompt but none of the laptop's settings", () => {
   const flags = vmClaudeFlags({ maxContextK: 150 })
   expect(flags.slice(0, 4)).toEqual([

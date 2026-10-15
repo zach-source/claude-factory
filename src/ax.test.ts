@@ -741,6 +741,23 @@ test('a set pkg-gate adds its own rule and strips every registry host, dropping 
   expect(rules.some(r => r.https?.hostnames.includes('proxy.golang.org'))).toBe(false)
 })
 
+test('isRegistryHost matches case-insensitively and ignores a trailing dot (ei0.16)', () => {
+  expect(ax.isRegistryHost('pypi.org')).toBe(true)
+  expect(ax.isRegistryHost('PyPI.org')).toBe(true)
+  expect(ax.isRegistryHost('PYPI.ORG')).toBe(true)
+  expect(ax.isRegistryHost('pypi.org.')).toBe(true) // an absolute FQDN form, trailing dot and all
+  expect(ax.isRegistryHost('api.openai.com')).toBe(false)
+})
+
+test("--egress PyPI.org (mixed case) is still stripped once a pkg-gate is on, since parseEgress's HOST regex is case-insensitive (ei0.16)", () => {
+  const extra = [ax.parseEgress('PyPI.org,api.openai.com')]
+  const rules = ax.egressPolicy('factory', extra, 'http://pkg-gate.pkg-gate.svc:8080').rules as {
+    https?: { hostnames: string[] }
+  }[]
+  expect(rules.some(r => r.https?.hostnames.some(h => h.toLowerCase() === 'pypi.org'))).toBe(false)
+  expect(rules.some(r => r.https?.hostnames.includes('api.openai.com'))).toBe(true)
+})
+
 test("the gate's own rule is https at its default port when the gate URL is https, and omits a default port either way", () => {
   expect(ax.egressPolicy('', [], 'https://pkg-gate.example.com').rules).toContainEqual({
     https: { hostnames: ['pkg-gate.example.com'] },

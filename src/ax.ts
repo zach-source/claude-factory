@@ -202,11 +202,15 @@ export const REGISTRY_HOSTS = [
   'files.pythonhosted.org',
 ]
 
+/** DNS is case-insensitive and tolerates a trailing dot (an absolute FQDN); --egress's HOST regex accepts
+ * both, so comparing against REGISTRY_HOSTS has to normalize the same way or a differently-cased or
+ * dot-terminated registry host slips through both the strip below and the rig-add warning (ei0.16) */
+const normalizeHost = (h: string) => h.toLowerCase().replace(/\.$/, '')
+export const isRegistryHost = (h: string) => REGISTRY_HOSTS.includes(normalizeHost(h))
+
 /** an extra rule with every REGISTRY_HOSTS host dropped; a rule left with none is dropped entirely */
 function stripRegistryHosts(extra: Egress[]): Egress[] {
-  return extra
-    .map(e => ({ ...e, hosts: e.hosts.filter(h => !REGISTRY_HOSTS.includes(h)) }))
-    .filter(e => e.hosts.length > 0)
+  return extra.map(e => ({ ...e, hosts: e.hosts.filter(h => !isRegistryHost(h)) })).filter(e => e.hosts.length > 0)
 }
 
 /** the gate's own egress rule: an https rule for https://, a Substrate HTTPRule ({http: ...}) for http:// */
