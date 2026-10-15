@@ -206,6 +206,22 @@ const pyyamlIndex = (origin: string) =>
     ],
   })
 
+// PEP 691 allows a file `url` relative to the index URL; a mirror (devpi, Artifactory, Nexus) commonly sends
+// one, unlike pypi.org itself (ei0.21). The resolved absolute URL lands on the *index* host, not necessarily
+// the separate `files` upstream.
+const RELPROJ_RELATIVE_FILE = 'relproj-1.0.0.tar.gz' // relative to /simple/relproj/
+const relprojIndex = () =>
+  JSON.stringify({
+    name: 'relproj',
+    files: [
+      {
+        filename: 'relproj-1.0.0.tar.gz',
+        url: RELPROJ_RELATIVE_FILE,
+        'upload-time': '2020-01-01T00:00:00Z', // old enough
+      },
+    ],
+  })
+
 let upstream: ReturnType<typeof Bun.serve>
 beforeAll(() => {
   upstream = Bun.serve({
@@ -220,6 +236,14 @@ beforeAll(() => {
       if (tarballFile && NPM_TARBALLS[tarballFile]) return new Response(NPM_TARBALLS[tarballFile])
       if (url.pathname === '/preview-pkg')
         return new Response(PREVIEW_PACKUMENT(url.origin), { headers: { 'content-type': 'application/json' } })
+      // a malformed upstream packument (a null version entry): proves a bad shape is refused as an upstream
+      // error at the parse site, instead of throwing deep inside filterPackument and surfacing raw exception
+      // text through the handler's catch-all (ei0.20)
+      if (url.pathname === '/badpkg')
+        return new Response(
+          JSON.stringify({ name: 'badpkg', 'dist-tags': {}, versions: { '1.0.0': null }, time: { '1.0.0': '2020-01-01T00:00:00Z' } }),
+          { headers: { 'content-type': 'application/json' } },
+        )
       if (url.pathname === '/simple/requests/')
         return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
           ? new Response(pypiIndex(url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
@@ -228,6 +252,11 @@ beforeAll(() => {
         return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
           ? new Response(pyyamlIndex(url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
           : new Response('', { status: 404 })
+      if (url.pathname === '/simple/relproj/')
+        return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
+          ? new Response(relprojIndex(), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+          : new Response('', { status: 404 })
+      if (url.pathname === `/simple/relproj/${RELPROJ_RELATIVE_FILE}`) return new Response('FILEBYTES-relproj-1.0.0')
       if (url.pathname === '/simple/missingproj/') return new Response('not found', { status: 404 })
       if (url.pathname === '/simple/brokenproj/') return new Response('internal error', { status: 500 })
       if (PYPI_FILES[url.pathname]) return new Response(PYPI_FILES[url.pathname])
@@ -613,6 +642,20 @@ test('an old PyPI file is served byte-identical; a young or unlisted one is refu
   expect(unlisted.status).toBe(404)
 })
 
+test('a PEP 691 file url relative to the index (a devpi/Artifactory/Nexus mirror, not pypi.org) is resolved and gated, not thrown on (ei0.21)', async () => {
+  const g = gate()
+  const idxResp = await g(new Request('http://gate/pypi/simple/relproj/'))
+  expect(idxResp.status).toBe(200)
+  const idx = (await idxResp.json()) as { files: { filename: string; url: string }[] }
+  expect(idx.files).toHaveLength(1)
+  const rewrittenUrl = idx.files[0]!.url
+  expect(rewrittenUrl).toBe(`http://gate/pypi/files/relproj/simple/relproj/${RELPROJ_RELATIVE_FILE}`)
+
+  const fileResp = await g(new Request(rewrittenUrl))
+  expect(fileResp.status).toBe(200)
+  expect(await fileResp.text()).toBe('FILEBYTES-relproj-1.0.0')
+})
+
 test('/healthz reports minDays and the allow/refuse/error counters since start', async () => {
   const g = gate()
   const before = await g(new Request('http://gate/healthz'))
@@ -651,6 +694,55 @@ test('a malformed request (invalid percent-encoding) is a plain-text refusal cou
 
   const health = await g(new Request('http://gate/healthz'))
   expect((await health.json() as { error: number }).error).toBe(1)
+})
+
+test('a malformed upstream packument (a null version entry) is a fixed-text 5xx, never echoing the exception, with one error log line (ei0.20)', async () => {
+  const g = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    now: () => NOW,
+  })
+  const lines: string[] = []
+  const orig = console.log
+  console.log = (s: string) => lines.push(s)
+  let r: Response
+  try {
+    r = await g(new Request('http://gate/npm/badpkg'))
+  } finally {
+    console.log = orig
+  }
+  expect(r.status).toBeGreaterThanOrEqual(500)
+  const text = await r.text()
+  expect(text).toContain('pkg-gate')
+  expect(text).not.toContain('null') // no exception text (e.g. "null is not an object (evaluating vd.dist)")
+  expect(text).not.toContain('evaluating')
+  const errorLines = lines.map(l => JSON.parse(l)).filter(p => p.decision === 'error')
+  expect(errorLines.length).toBeGreaterThanOrEqual(1)
+  const health = await g(new Request('http://gate/healthz'))
+  expect((await health.json() as { error: number }).error).toBeGreaterThanOrEqual(1)
+})
+
+test('a non-URIError thrown from the handler is a fixed-text 502, never echoing the exception, with one error log line (ei0.20)', async () => {
+  const g = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    // a generic throw from anywhere other code calls into (here: the injected clock), not decodeURIComponent's
+    // URIError, must still never reach the response body and must still count/log as an error (ei0.20)
+    now: () => {
+      throw new Error('boom: should never reach the response body')
+    },
+  })
+  const lines: string[] = []
+  const orig = console.log
+  console.log = (s: string) => lines.push(s)
+  let r: Response
+  try {
+    r = await g(new Request('http://gate/go/golang.org/x/text/@v/v0.26.0.info'))
+  } finally {
+    console.log = orig
+  }
+  expect(r.status).toBe(502)
+  expect(await r.text()).toBe('pkg-gate: internal error')
+  const errorLines = lines.map(l => JSON.parse(l)).filter(p => p.decision === 'error')
+  expect(errorLines.length).toBeGreaterThanOrEqual(1)
 })
 
 test('PyPI upstream errors refuse rather than pass through', async () => {

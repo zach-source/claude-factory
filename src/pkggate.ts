@@ -142,6 +142,14 @@ function logSummary(eco: string, name: string, counts: { allow: number; refuse: 
   console.log(JSON.stringify({ eco, name, summary: true, ...counts }))
 }
 
+/** a whole-request failure that never got as far as a per-version/file decision (an unparseable upstream
+ * packument/index, say): counted and logged the same way a decision is, so it leaves the same audit trail
+ * `stats.error`/the log readers of `logDecision` already expect (ei0.20) */
+function logUpstreamError(eco: string, name: string, reason: string, cfg: Resolved) {
+  cfg.stats.error++
+  console.log(JSON.stringify({ eco, name, version: null, published: null, ageH: null, decision: 'error', reason }))
+}
+
 // a minimal semver reader, just enough to tell a release from a prerelease/pseudo-version and to rank
 // releases against each other -- used so a nightly, prerelease, or pseudo-version never outranks a real
 // release merely for being newer by publish time (ei0.11)
@@ -382,10 +390,18 @@ function parseNpmPath(
   return pkg && file ? { kind: 'tarball', pkg, file } : null
 }
 
+/**
+ * every `versions[v]` must itself be a (non-null) object: a bad upstream shape (e.g. `{"1.0.0": null}`) is
+ * refused as an upstream error right here, rather than later throwing deep inside `filterPackument` (reading
+ * a null's `.dist`) and surfacing raw exception text through the handler's catch-all (ei0.20)
+ */
 function parsePackument(text: string): NpmPackument | null {
   try {
     const j = JSON.parse(text)
-    return j && typeof j === 'object' && typeof j.versions === 'object' && typeof j.time === 'object' ? j : null
+    if (!j || typeof j !== 'object' || !j.versions || typeof j.versions !== 'object' || !j.time || typeof j.time !== 'object')
+      return null
+    for (const v of Object.values(j.versions)) if (!v || typeof v !== 'object') return null
+    return j
   } catch {
     return null
   }
@@ -405,7 +421,10 @@ async function fetchPackument(cfg: Resolved, pkg: string) {
     })
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePackument(await r.text())
-    if (!parsed) return { ok: false as const, status: 0 }
+    if (!parsed) {
+      logUpstreamError('npm', pkg, 'unparseable or malformed upstream packument', cfg)
+      return { ok: false as const, status: 0 }
+    }
     cfg.npmCache.set(pkg, { parsed, expiresAt: Date.now() + REGISTRY_CACHE_MS })
     evictOverCap(cfg.npmCache, cfg.registryCacheMaxEntries)
     return { ok: true as const, parsed }
@@ -496,13 +515,36 @@ type PypiIndex = { files: PypiFile[]; [k: string]: unknown }
 /** PEP 503: lowercase, runs of -_. collapsed to a single - */
 const pepNormalize = (name: string) => name.toLowerCase().replace(/[-_.]+/g, '-')
 
+/** every `files[i]` must carry a string `filename` and `url`: a bad shape is refused as an upstream error
+ * right here, rather than later throwing inside `pypiSimple`/`pypiFile` (`new URL(f.url)` on a non-string) (ei0.20) */
 function parsePypiIndex(text: string): PypiIndex | null {
   try {
     const j = JSON.parse(text)
-    return j && typeof j === 'object' && Array.isArray(j.files) ? j : null
+    if (!j || typeof j !== 'object' || !Array.isArray(j.files)) return null
+    for (const f of j.files) if (!f || typeof f !== 'object' || typeof f.filename !== 'string' || typeof f.url !== 'string') return null
+    return j
   } catch {
     return null
   }
+}
+
+/** the exact upstream index URL a project's files' PEP 691 `url` resolves against when relative (ei0.21) */
+function pypiIndexUrl(cfg: Resolved, project: string): string {
+  return `${cfg.upstream.pypi}/simple/${project}/`
+}
+
+/**
+ * a file's absolute URL, resolved against the index it came from: PEP 691 allows `url` relative to the
+ * index URL, which pypi.org never sends but a mirror (devpi, Artifactory, Nexus; `PKG_GATE_UPSTREAM_PYPI`)
+ * commonly does. `new URL(f.url)` with no base throws on one of those instead of resolving it, which 404ed
+ * (pre ei0.20 hardening, 400ed) every index request for the project (ei0.21). The resolved URL can land on
+ * the index host itself, not necessarily the separate `files` upstream -- so this, not `cfg.upstream.files`,
+ * is what a file is actually fetched from.
+ */
+function pypiResolvedFileUrl(cfg: Resolved, project: string, file: PypiFile, metadataSuffix = false): URL {
+  const u = new URL(file.url, pypiIndexUrl(cfg, project))
+  if (metadataSuffix) u.pathname += METADATA_SUFFIX
+  return u
 }
 
 /** the upstream simple index for a (PEP 503 normalized) project, cached a short while */
@@ -513,13 +555,16 @@ async function fetchPypiIndex(cfg: Resolved, project: string) {
     cfg.pypiCache.delete(project) // expired: evict rather than leave it to grow the map forever (ei0.13)
   }
   try {
-    const r = await cfg.fetch(`${cfg.upstream.pypi}/simple/${project}/`, {
+    const r = await cfg.fetch(pypiIndexUrl(cfg, project), {
       headers: { accept: 'application/vnd.pypi.simple.v1+json' },
       signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
     })
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePypiIndex(await r.text())
-    if (!parsed) return { ok: false as const, status: 0 }
+    if (!parsed) {
+      logUpstreamError('pypi', project, 'unparseable or malformed upstream index', cfg)
+      return { ok: false as const, status: 0 }
+    }
     cfg.pypiCache.set(project, { parsed, expiresAt: Date.now() + REGISTRY_CACHE_MS })
     evictOverCap(cfg.pypiCache, cfg.registryCacheMaxEntries)
     return { ok: true as const, parsed }
@@ -550,7 +595,7 @@ async function pypiSimple(cfg: Resolved, project: string, origin: string) {
       counts[d.decision]++
       return d.decision === 'allow'
     })
-    .map(f => ({ ...f, url: `${origin}/pypi/files/${project}${new URL(f.url).pathname}` }))
+    .map(f => ({ ...f, url: `${origin}/pypi/files/${project}${pypiResolvedFileUrl(cfg, project, f).pathname}` }))
   logSummary('pypi', project, counts)
   return new Response(JSON.stringify({ ...idx.parsed, files }), {
     headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
@@ -569,11 +614,11 @@ async function pypiFile(cfg: Resolved, project: string, path: string) {
   const filePath = isMetadata ? path.slice(0, -METADATA_SUFFIX.length) : path
   const idx = await fetchPypiIndex(cfg, project)
   if (!idx.ok) return refuse(idx.status === 404 ? 404 : 502, `pkg-gate: ${project}: upstream error`)
-  const file = idx.parsed.files.find(f => new URL(f.url).pathname === filePath)
+  const file = idx.parsed.files.find(f => pypiResolvedFileUrl(cfg, project, f).pathname === filePath)
   if (!file) return refuse(404, `pkg-gate: ${project}${path} not found`)
   const d = fileDecision(cfg, project, file)
   if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''} ${ageText(d)}, minimum ${cfg.minDays}d`)
-  const b = await fetchBytes(cfg, `${cfg.upstream.files}${path}`)
+  const b = await fetchBytes(cfg, pypiResolvedFileUrl(cfg, project, file, isMetadata).toString())
   if (!b.ok) return refuse(b.status === 404 ? 404 : 502, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''}: upstream error`)
   return new Response(b.buf)
 }
@@ -616,9 +661,14 @@ export function makeGate(cfg: GateConfig): Gate {
     } catch (err) {
       // a malformed request (bad percent-encoding in decodeURIComponent, say) is a client error, not a pass
       // or a crash: an uncaught throw here would otherwise surface Bun's dev-mode HTML error page (source and
-      // stack included) straight to the caller, uncounted in `resolved.stats` (ei0.15)
+      // stack included) straight to the caller, uncounted in `resolved.stats` (ei0.15). Never echo the
+      // exception's own message in the body: it can carry upstream-supplied content (ei0.20), so the body is
+      // always one of two fixed strings, and the one audit line that matters goes to the log instead, by name
+      // only (never a URL or query string, same as `logDecision`).
       resolved.stats.error++
-      return refuse(400, `pkg-gate: malformed request: ${(err as Error).message ?? err}`)
+      const isMalformedRequest = err instanceof URIError
+      console.log(JSON.stringify({ decision: 'error', reason: isMalformedRequest ? 'URIError' : (err as Error)?.name ?? 'Error' }))
+      return isMalformedRequest ? refuse(400, 'pkg-gate: malformed request') : refuse(502, 'pkg-gate: internal error')
     }
   }) as Gate
   handler.stats = () => ({ ...resolved.stats })
