@@ -166,6 +166,36 @@ test('patrol skips a heartbeat when only time facts moved, but wakes on any real
   expect(patrol([run({ quietMin: 10 })], [], new Set(), true, [rig], quiet.sig)).not.toBeNull()
 })
 
+test('patrol puts a short per-rig summary on line 2, before the News or Heartbeat line', () => {
+  const web = { name: 'web', repo: '/r/web', factory: 'lifecycle', maxRuns: 3 }
+  const api = { name: 'api', repo: '/r/api', factory: 'lifecycle', maxRuns: 2, goal: 'ship the thing' }
+  const run = (o: object) => ({ id: 'r', rig: 'web', node: 'implement', sub: 'working', since: 1, ...o })
+  const runs = [
+    run({ id: 'a' }),
+    run({ id: 'b', sub: 'stuck' }),
+    run({ id: 'c', gate: { question: 'ship?', outcomes: ['yes'] } }),
+  ]
+  const beat = patrol(runs, [], new Set(), true, [web, api])!
+  // web: a and b hold workers (busy 2/3); c is a gate (1 at the person); b is stuck (1 stuck)
+  // api: no live run, but it has a goal, so it still lists with its busy count
+  expect(beat.text.split('\n')[1]).toBe('Rigs: web busy 2/3, 1 at the person, 1 stuck; api busy 0/2.')
+  expect(beat.text.split('\n')[2]).toMatch(/^(New:|Heartbeat:)/)
+
+  // no rig has a live run or a goal: the summary line is absent, and line 2 is News or Heartbeat
+  const none = patrol([{ id: 'z', node: 'implement', sub: 'working', since: 1 }], [], new Set(), true, [])!
+  expect(none.text.split('\n')[1]).toMatch(/^(New:|Heartbeat:)/)
+
+  // a rig summary does not push a long-mail message past the 600-char cap
+  const long = patrol(
+    [run({ id: 'a' })],
+    [{ run: 'a', from: 'plan', text: 'x'.repeat(5000), at: 2 }],
+    new Set(),
+    false,
+    [web],
+  )!
+  expect(long.text.length).toBeLessThan(600)
+})
+
 test("patrol keeps the manager working toward a rig's goal while the rig has room", () => {
   const fab = { name: 'fab', repo: '/r/fab', factory: 'lifecycle', maxRuns: 2, goal: 'finish the features' }
   const run = (id: string, sub: string) => ({ id, rig: 'fab', node: 'implement', sub, goal: id, since: 1 })

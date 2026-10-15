@@ -298,6 +298,11 @@ export function runFacts(
  * the quiet minute count. A worker that keeps running, with no other change, does not change `sig`.
  * Take this case: no mail, no new blocked worker, no new idle rig, and `sig` equal to `lastSig`.
  * In this case the heartbeat wakes nobody. It does not send a shrunk 'unchanged' message.
+ *
+ * When a patrol does wake the manager, line 2 of `text` is a short per-rig summary (for example
+ * `Rigs: web busy 2/3, 1 at the person, 1 stuck; api busy 0/2.`), ahead of the `New:` or
+ * `Heartbeat:` line. It lists each rig in `rigs` that has a live run or a goal. Compaction that
+ * trims the end of the message keeps this summary.
  */
 export function patrol(
   runs: readonly FactoryRun[],
@@ -343,8 +348,19 @@ export function patrol(
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
     ...idle.map(r => `- rig ${r.rig}: idle, ${r.idle}. Set it a goal or queue beads for it.`),
   ]
+  // one line per rig with a live run or a goal, so a compacted transcript keeps this even without the board
+  const rigLine = (g: FactoryRig) => {
+    const s = rigStats(g, runs)
+    const hasLiveRun = s.stations.some(st => st.n > 0)
+    if (!hasLiveRun && !g.goal) return undefined
+    return `${g.name} busy ${s.busy}${g.maxRuns ? `/${g.maxRuns}` : ''}${
+      s.gates.length ? `, ${s.gates.length} at the person` : ''
+    }${s.stuck.length ? `, ${s.stuck.length} stuck` : ''}`
+  }
+  const rigSummary = rigs.map(rigLine).filter((l): l is string => !!l)
   const text = [
     '[factory] patrol',
+    ...(rigSummary.length ? [line(`Rigs: ${rigSummary.join('; ')}.`, 300)] : []),
     news.length
       ? `New:\n${news.join('\n')}`
       : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
