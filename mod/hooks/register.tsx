@@ -27,7 +27,6 @@ import {
   isLive,
   mailView,
   prsView,
-  newView,
   runView,
   type Actions,
   type UI,
@@ -65,9 +64,6 @@ const history = atom({ plugin: 'factory', key: 'history' } as const, [] as numbe
 const draft = atom(
   { plugin: 'factory', key: 'draft' } as const,
   {
-    repo: '',
-    factory: 'lifecycle',
-    goal: '',
     mail: '',
     target: '',
     notes: {},
@@ -75,7 +71,7 @@ const draft = atom(
     answered: {},
   } as FactoryDraft,
 )
-const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'prs', 'new', 'rigs', 'interview'])
+const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'prs', 'rigs', 'interview'])
 
 const manual = (cli: string) => `## Software factory manager
 You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
@@ -111,7 +107,6 @@ const rt = {
   /** a tick was asked for while one ran: run another right after it, so an action shows at once */
   isTickWanted: false,
   isAutopilot: true,
-  cwd: '',
   agents: new Map<string, string | null | undefined>(),
   /** manager mail no patrol has carried yet */
   unsent: [] as FactoryMail[],
@@ -418,14 +413,6 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
   }))
 }
 
-async function startRun($: EngineInterface) {
-  const d = await read($, draft)
-  if (!d.goal.trim()) return $.ui.toast('factory: write a goal first')
-  await act($, ['start', d.factory.trim() || 'lifecycle', d.repo.trim() || rt.cwd, d.goal.trim()])
-  await update($, draft, x => ({ ...x, goal: '' }))
-  await show($, 'board')
-}
-
 /** herdr focuses the worker's pane: the person takes over that terminal */
 async function jump($: EngineInterface, pane: string) {
   const r = await $.process.run(['herdr', 'agent', 'focus', pane]).catch(() => undefined)
@@ -468,7 +455,6 @@ function actions($: EngineInterface): Actions {
     decide: (run, outcome) => void decide($, run, outcome),
     answer: (m, kind) => void answer($, m, kind),
     interview: (iv, choice) => void interview($, iv, choice),
-    start: () => void startRun($),
     jump: pane => void jump($, pane),
     sweep: () => void interviewMe($),
   }
@@ -478,7 +464,6 @@ export const register: Register = (on, options) => {
   rt.isAutopilot = options.autopilot !== false
 
   on('session.start', async ($, e, next) => {
-    rt.cwd = e.cwd
     await $.command.register({
       name: 'factory',
       description:
@@ -556,13 +541,11 @@ export const register: Register = (on, options) => {
             ? mailView(p, b, dr)
             : shown === 'prs'
               ? prsView(p, pr, b)
-              : shown === 'new'
-                ? newView(p, dr, rt.cwd)
-                : shown === 'rigs'
-                  ? rigsView(p, b)
-                  : shown === 'interview'
-                    ? interviewView(p, b, dr, dec)
-                    : boardView(p, b, dr)
+              : shown === 'rigs'
+                ? rigsView(p, b)
+                : shown === 'interview'
+                  ? interviewView(p, b, dr, dec)
+                  : boardView(p, b, dr)
     return (
       <Box flexDirection="column">
         {header(p, b, samples, shown)}
