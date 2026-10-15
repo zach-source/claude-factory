@@ -122,10 +122,13 @@ second sub-tab.
 
 ## The manager drives
 
-You talk to the manager session; it runs the factory. With `autopilot` on (the default)
-the mod wakes the manager model with a `[factory] patrol` whenever there is mail for it (a
-worker's question, a stuck station, a gate, a finished run), when a worker is blocked on a
-prompt, and every 10 minutes while workers run or a rig with a goal has room. A patrol answers mail, unsticks runs
+You talk to the manager session; it runs the factory. With `autopilot` on (the default),
+the mod wakes the manager model with a `[factory] patrol`. A patrol wakes it at once for new
+mail (a worker's question, a stuck station, a gate, a finished run) or a worker blocked on a
+prompt. It also wakes the manager every 10 minutes while workers run or a rig with a goal has
+room, but only when the board or the rig goals changed; time spent in a station does not count
+as a change. An unchanged board still goes out in full once an hour, so a manager that
+compacted it away from its context gets it back. A patrol answers mail, unsticks runs
 (`retry`, `goto`, `fork`, `abort`), pokes workers (`factory poke <run> [steer]`), takes the
 next work from the backlog when there is room, brings gates to you, and ends with a report
 of at most three lines. Underneath, the runtime stays mechanical: it ticks every 5 s,
