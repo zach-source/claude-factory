@@ -1329,10 +1329,13 @@ export type Progress = { seq: number; sig: string; at: number; nudged: boolean }
  * the stall guard's fingerprint: the tail's end, the branch head and, for a non-local (AX) worker, the live
  * stream's byte count, which moves while a long turn runs even when its tail and the VM's HEAD do not (claude-
  * factory-xq3). '' when there is no signal at all -- a worker that has reported nothing yet is not yet "quiet",
- * so `seen.sig &&` at the call site must stay false for it, not a stand-in fingerprint of its own
+ * so `seen.sig &&` at the call site must stay false for it, not a stand-in fingerprint of its own. head alone
+ * never makes it non-empty: a local worker's head is always set (`git rev-parse HEAD`, cli.ts L1553) even
+ * before its tail or any transcript exists, so head-only would make every local codex/pi/script worker, and a
+ * local claude worker before its session is known, newly stall-failable (claude-factory-xq3.4, PR #19 review).
  */
 export function progressSig(tail: string, head: string, bytes?: number) {
-  return tail || head || bytes ? `${tail.length}${tail.slice(-300)}${head}${bytes ?? ''}` : ''
+  return tail || bytes ? `${tail.length}${tail.slice(-300)}${head}${bytes ?? ''}` : ''
 }
 
 /** the worker's progress now: the last one while nothing changed, else a fresh one (a new worker or any output) */

@@ -376,10 +376,17 @@ test('progressSig is empty, and so stall-exempt, when tail, head and bytes are a
   expect(progressSig('', '', undefined)).toBe('')
 })
 
-test('progressSig is non-empty as soon as any one of tail, head or bytes is non-empty', () => {
-  expect(progressSig('', 'sha1', 0)).not.toBe('')
+test('progressSig is non-empty as soon as tail or bytes is non-empty, even with head empty', () => {
   expect(progressSig('', '', 5)).not.toBe('')
   expect(progressSig('some tail', '', 0)).not.toBe('')
+})
+
+// head alone must never make a fingerprint: a local worker's head is always set (git rev-parse HEAD) even
+// before it has a tail or a session, so head-only would make every local codex/pi/script worker, and a local
+// claude worker before its session is known, newly stall-failable (claude-factory-xq3.4, PR #19 review finding 1).
+test('progressSig stays empty, and so stall-exempt, when only head is set (a local worker with no tail yet)', () => {
+  expect(progressSig('', 'sha1', 0)).toBe('')
+  expect(progressSig('', 'sha1', undefined)).toBe('')
 })
 
 test('the worker system prompt names a mktemp -d scratch dir and restores a mutation with git checkout', () => {
