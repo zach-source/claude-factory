@@ -2319,12 +2319,25 @@ function runSelfUpdate(): selfupdate.State | null {
   }
 }
 
-/** the manager hears once of each real outcome: an update, or a new refusal reason; a no-op stays quiet */
-function selfUpdateMail(now: number): (Mail & { run: string })[] {
-  if (!existsSync(selfUpdateFile())) return []
-  const state = readJson<selfupdate.State>(selfUpdateFile())
-  if (state.ok && state.from === state.to) return [] // already up to date: nothing worth a mail
-  const mailedFile = join(HOME, 'self-update-mailed.json')
+/**
+ * The manager hears of each real outcome once: an update, or a new refusal reason. A no-op stays
+ * quiet. But a no-op also clears the mailed marker (claude-factory-5h9.12, claude-factory-6d9).
+ *
+ * Without this clear, 2 refusals with one no-op between them mailed only the first. The no-op
+ * left the marker untouched. The second refusal's reason matched that old marker, so it looked
+ * already mailed.
+ *
+ * `home` defaults to HOME. A test can pass its own temp dir instead.
+ */
+export function selfUpdateMail(now: number, home = HOME): (Mail & { run: string })[] {
+  const file = join(home, 'self-update.json')
+  if (!existsSync(file)) return []
+  const state = readJson<selfupdate.State>(file)
+  const mailedFile = join(home, 'self-update-mailed.json')
+  if (state.ok && state.from === state.to) {
+    if (existsSync(mailedFile)) rmSync(mailedFile)
+    return [] // already up to date: nothing worth a mail
+  }
   const last = existsSync(mailedFile) ? readJson<string>(mailedFile) : ''
   if (state.why === last) return []
   writeJson(mailedFile, state.why)
@@ -2441,8 +2454,8 @@ function reap(rows: Row[]) {
     return [{ ...run, isOver: r.node === 'done' || r.node === 'aborted', pane: r.pane }]
   })
   const { workspaces, panes } = reapable(runs, herdrPanes())
-  for (const ws of workspaces) Bun.spawnSync(['herdr', 'workspace', 'close', ws])
-  for (const pane of panes) Bun.spawnSync(['herdr', 'pane', 'close', pane])
+  for (const ws of workspaces) Bun.spawnSync([HERDR(), 'workspace', 'close', ws])
+  for (const pane of panes) Bun.spawnSync([HERDR(), 'pane', 'close', pane])
   for (const what of [...workspaces.map(w => `workspace ${w}`), ...panes.map(p => `pane ${p}`)])
     console.error(`${new Date().toISOString()} reaped ${what}`)
 }
