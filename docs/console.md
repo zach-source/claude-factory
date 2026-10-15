@@ -31,11 +31,10 @@ shows the goal's first line, the station trail, the last report, and any error.
 | --- | --- |
 | `1` | Switch to the Board tab. |
 | `open` | Expand the card in place. It shows the full goal, the Steer controls, Tasks, Journal, and the Worker pane peek. |
-| `jump to worker` (`j`) | Jump to the run's pane in herdr. |
+| `jump to worker` | Jump to the run's pane in herdr. Shows only when the run has a pane. |
 | `retry` | Retry a stuck run. This button shows only when the run is stuck. |
 | `abort` | Abort the run. |
 | A gate's outcome buttons | Decide the run's gate. An optional note goes to the next station. |
-| `close` (`b`) | Collapse an open card. |
 
 An open card adds these controls, under a `Steer` rule:
 
