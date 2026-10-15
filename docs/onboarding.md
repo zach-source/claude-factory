@@ -116,7 +116,11 @@ With `autopilot` on (the default), the manager wakes on a `[factory] patrol`. A 
 
 - the manager has mail (a question, a stuck station, a gate, a finished run);
 - a worker waits on a prompt;
-- 10 minutes pass while workers run, or while a rig with a goal has room.
+- 10 minutes pass while workers run, or while a rig with a goal has room, and the board or the
+  rig goals changed since the last patrol (time in station does not count as a change).
+
+An unchanged board still goes out in full once an hour, so a manager that compacted it away
+from its context gets it back.
 
 Between patrols, the runtime ticks every 5 seconds. A tick starts and resumes workers. It nudges an idle worker two times, and then retries with backoff. Run only one manager session for each factory.
 
