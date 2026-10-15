@@ -35,6 +35,9 @@ spec:
       labels:
         app: pkg-gate
     spec:
+      # the gate needs no Kubernetes API access; without this the namespace's default SA token would still
+      # be mounted (mode 0644, readable by uid 65532) for nothing to use (ei0.24)
+      automountServiceAccountToken: false
       containers:
         - name: pkg-gate
           image: ${FACTORY_AX_IMAGE}
