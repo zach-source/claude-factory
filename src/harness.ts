@@ -1,8 +1,8 @@
 // The coding agents a station's worker can run as. herdr detects each in its pane (status, session),
 // so the runner watches them all the same way; they differ only in how a launch, a resume and an
 // MCP config are spelled on the command line.
-import { readFileSync } from 'node:fs'
-import { basename } from 'node:path'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 
 export type Harness = 'claude' | 'codex' | 'pi'
 
@@ -98,4 +98,25 @@ export function command(
     default:
       return `${agent} ${text}`
   }
+}
+
+/**
+ * the one line ever typed into a worker's pane: it holds no run ID, path or prompt text, so nothing
+ * in those can trip a shell key binding (zsh-vi-mode's 'jk' insert-mode escape cut a typed launch
+ * line mid-command, claude-factory-r21). The pane's own shell expands both variables: HERDR_PANE_ID
+ * is exported in every herdr pane, FACTORY_HOME by launchPane's `tab create --env`.
+ */
+export const LAUNCH_LINE = '. "$FACTORY_HOME/launch/$HERDR_PANE_ID.sh"'
+
+/**
+ * writes the real launch command to the file LAUNCH_LINE sources, mode 0600 (it can hold MCP env
+ * or headers from codexMcp). Returns LAUNCH_LINE so a caller types that instead of `cmd`.
+ */
+export function writeLaunch(home: string, pane: string, cmd: string): string {
+  const dir = join(home, 'launch')
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, `${pane}.sh`)
+  writeFileSync(file, `${cmd}\n`, { mode: 0o600 })
+  chmodSync(file, 0o600) // writeFileSync's mode is masked by umask; an existing file keeps its old mode otherwise
+  return LAUNCH_LINE
 }
