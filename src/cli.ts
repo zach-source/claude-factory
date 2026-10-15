@@ -944,11 +944,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 }
 
 /**
- * the part of workerFlags that holds in a VM: the same tools, no user settings or project-level mods, the
- * worker system prompt (the image carries it), settings for no auto memory and a compaction backstop. Left
- * out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global CLAUDE.md to exclude,
- * and so the asd-ste100 plugin and its STE env too (claude-factory-fxu tracks that gap). disableBundledSkills
- * keeps Skill's bundled-skill listing (~2.2k tokens/turn) off since the VM has no skill worth it yet.
+ * the part of `workerFlags` that holds in a VM: worker system prompt, no auto memory, a compaction backstop.
+ * It also keeps the same tools; it skips the laptop's own settings and project-level mods.
+ * Left out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global `CLAUDE.md`.
+ * So a VM worker gets no `asd-ste100` plugin and no STE env either; `claude-factory-fxu` tracks that gap.
+ * `disableBundledSkills` keeps `Skill`'s bundled-skill listing off, since the VM has no skill worth it yet.
  */
 export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
   if (process.env.FACTORY_LEAN === '0') return []
@@ -1175,15 +1175,12 @@ function runTokenSwap(
 }
 
 /**
- * a worker's own Claude settings, in full: none of the user's (their plugins, agents, skills, global
- * CLAUDE.md, auto memory and compaction window cost every turn tens of thousands of tokens a worker never
- * uses), so these win. It keeps their hooks (secret guards, herdr's session hook) and environment, never
- * asks before skipping permissions, and compacts well past the handoff limit, as a backstop only.
- * The global CLAUDE.md is excluded by path too: worktrees live under the home directory, so Claude Code
- * would read ~/.claude/CLAUDE.md as an ancestor's project file.
- * One plugin is the exception: asd-ste100, when the user has it on, carries over alone, so a worker
- * still writes in ASD-STE100 without the token cost of the user's other plugins. disableBundledSkills
- * keeps that one skill from pulling in every other bundled skill's listing too.
+ * a worker's own Claude settings, in full: none of the user's plugins, agents, skills, global `CLAUDE.md` or auto memory.
+ * Those cost a worker tens of thousands of tokens a turn it never uses, so this wins instead.
+ * It keeps the user's hooks (secret guards, herdr's session hook) and env, and skips every permission prompt.
+ * It compacts well past the handoff limit too, only as a backstop.
+ * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
+ * One plugin stays in: `asd-ste100`, so the worker still writes in ASD-STE100; `disableBundledSkills` keeps its skill alone.
  */
 export const workerSettings = (
   user: { env?: Record<string, string>; hooks?: unknown; enabledPlugins?: Record<string, boolean> },

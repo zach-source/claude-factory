@@ -6,7 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
-- A pane worker now gets the user's `asd-ste100` plugin (ASD-STE100 writing rules) alone, if the user has it on: `workerSettings` (`src/cli.ts`) copies only `enabledPlugins` entries whose key starts with `asd-ste100@` and whose value is `true`, so its SessionStart hook and skill teach a worker to write PR bodies, commit messages, bead comments, reports and docs in ASD-STE100, without the ~40k-token cost of the user's other plugins. `WORKER_TOOLS` gains `Skill`, and both `workerSettings` and `vmClaudeFlags` set `disableBundledSkills` so `Skill` alone does not pull in every bundled skill's listing (measured +1.2k tokens/turn, not +2.2k). `src/worker-system.md` now says to write in ASD-STE100 and to load the `asd-ste100` skill before a long piece of text. A VM (`ax`) worker gets `Skill` and the same system-prompt line but, like today, none of the user's plugins or env, so it still has no `asd-ste100` plugin or STE env; tracked separately as claude-factory-fxu.
+- A pane worker now gets the user's `asd-ste100` plugin alone, if the user turns it on. `workerSettings` (`src/cli.ts`) copies only `enabledPlugins` entries whose key starts `asd-ste100@` and whose value is `true`. Its hook and skill teach the worker to write PR text, commits, bead comments and reports in ASD-STE100. `WORKER_TOOLS` now lists `Skill`; `disableBundledSkills` keeps its cost at `+1.2k tokens/turn`, not `+2.2k`. `src/worker-system.md` tells a worker to load the `asd-ste100` skill before a long piece of text. A VM (`ax`) worker still lacks the plugin and its env; `claude-factory-fxu` tracks this gap.
 
 ## 0.10.0 (2026-10-15)
 

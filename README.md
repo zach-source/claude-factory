@@ -344,16 +344,7 @@ rows = [
   `handoff` with notes; a fresh worker at the same station starts from them, spending no
   attempt. One that keeps going to 1.25x the limit is cut off and handed off anyway; its
   uncommitted changes stay in the worktree.
-- **Lean workers**: a Claude worker gets its own settings, not the user's: `--setting-sources
-project,local` plus a `--settings` file that keeps only the user's hooks and environment,
-  a short worker system prompt ([src/worker-system.md](src/worker-system.md)) and the tools
-  workers use (MCP tools stay deferred behind ToolSearch; auto memory is off). The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
-  cost ~40k tokens on every turn and are left out, except the user's `asd-ste100` plugin
-  (ASD-STE100 writing rules): it carries over alone, with its bundled skill but
-  `disableBundledSkills` on so no other bundled skill's listing rides along, so a worker
-  still writes PR bodies, commits, bead comments and reports in ASD-STE100; the repo's own
-  CLAUDE.md and settings still apply. `FACTORY_LEAN=0` launches workers with the user's setup
-  again.
+- **Lean workers**: a Claude worker gets its own settings: `--setting-sources project,local` plus a `--settings` file with the user's hooks and env. It also gets a short system prompt ([src/worker-system.md](src/worker-system.md)) and its own tools. MCP tools stay deferred behind ToolSearch, and auto memory is off. The worker skips the user's plugins, agents, skills, global `CLAUDE.md` and connectors, which cost `~40k tokens/turn`. One plugin stays in: `asd-ste100`, if the user has it on, so it writes PR text and reports in ASD-STE100. The repo's own `CLAUDE.md` still applies, and `FACTORY_LEAN=0` restores the user's full setup.
 - **Usage limits**: a worker whose turn is refused for the account's usage limit (weekly or
   5-hour) is restarted on the next account: `ccswitch switch-to` moves
   every Claude on the machine to the next account in its sequence whose limit has reset, and
