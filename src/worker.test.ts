@@ -525,6 +525,35 @@ describe('startServices', () => {
     }
   })
 
+  // claude-factory-iap review: a Bun.serve handler that never answers must not block waitReady past its own
+  // 4s fetch timeout. The test sets idleTimeout: 0, because Bun.serve's default 10s idle timeout would
+  // otherwise close the socket first and return at about 10s for the wrong reason.
+  test('an http ready probe that never answers times out at its own 4s budget, not FACTORY_SERVICES_WAIT_MS', async () => {
+    set({ FACTORY_SERVICES_WAIT_MS: '1500' })
+    const server = Bun.serve({ port: 0, idleTimeout: 0, fetch: () => new Promise<Response>(() => {}) })
+    try {
+      process.env.DEVENV_TASK_FILE = tasksFile([
+        {
+          name: 'devenv:processes:web',
+          type: 'process',
+          command: `echo ${TAG}; exec sleep 10`,
+          cwd: null,
+          process: {
+            start: { enable: true },
+            ready: { exec: null, http: { get: { host: '127.0.0.1', path: '/', port: server.port, scheme: 'http' } } },
+          },
+        },
+      ])
+      const t0 = Date.now()
+      const results = await startServices()
+      expect(Date.now() - t0).toBeLessThan(7000)
+      expect(results[0]).toMatchObject({ name: 'web', ok: false })
+      expect(results[0]!.detail).toMatch(/^not ready after \ds$/)
+    } finally {
+      server.stop(true)
+    }
+  }, 20_000)
+
   // claude-factory-5sn.7 review: processes.<name>.env lands in the task's own 'env' field, which the command
   // script never holds. Both the spawn and the ready probe must see it merged over the serve process's env.
   test("merges the task's own env over the serve env, for both the spawn and the ready probe", async () => {
