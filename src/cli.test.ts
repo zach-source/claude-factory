@@ -6,6 +6,7 @@ import { compile, fill, validate } from './machine'
 import {
   deadline,
   haltStep,
+  helpedHint,
   idle,
   isTrusted,
   labelAction,
@@ -461,4 +462,17 @@ test('PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI parse to one list per ecosystem, and the 
   // the old name silently meant "all three ecosystems": refuse to start rather than let its meaning change
   // underneath a deploy that still sets it
   expect(() => parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST: 'left-pad' })).toThrow(/PKG_GATE_ALLOWLIST/)
+})
+
+test('helpedHint tells a worker to pass --from <run>/<station>, so usage() counts distinct runs, not UTC days (claude-factory-59r.16)', () => {
+  const run = {
+    id: 'lifecycle-abc',
+    factory: 'f',
+    repo: 'r',
+    goal: 'g',
+    ws: 'w',
+    worktree: 'wt',
+    branch: 'b',
+  }
+  expect(helpedHint(run, 'implement')).toContain('memory helped --from lifecycle-abc/implement')
 })
