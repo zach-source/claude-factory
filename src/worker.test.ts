@@ -1,8 +1,14 @@
 import { describe, expect, test, afterEach } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bazelrc, lastTurn } from './worker'
+import { bazelrc, excludeScratch, lastTurn } from './worker'
+
+function sh(cmd: string[], cwd: string) {
+  const p = Bun.spawnSync(cmd, { cwd })
+  if (p.exitCode !== 0) throw new Error(`${cmd.join(' ')}: ${p.stderr.toString()}`)
+  return p.stdout.toString().trim()
+}
 
 // bazelrc()'s pkg-gate propagation (ei0.5, commit 3a6d54d): when launch() set registry env vars in the VM,
 // rules_go/rules_python/rules_js must fetch through the gate too, via `common --repo_env=<VAR>=<value>` lines.
@@ -116,5 +122,42 @@ describe('lastTurn', () => {
     process.env.FACTORY_HARNESS = 'codex'
     writeFileSync(join(own, 'claude.jsonl'), '{"type":"assistant"}\n')
     expect(lastTurn('s1')).toBeUndefined()
+  })
+})
+
+// claude-factory-9wu.1: a worker's scratch dir (.scratch/ in the worktree) must stay untracked without a commit,
+// in every rig repo, not only claude-factory -- so it goes in the shared info/exclude, not a committed .gitignore.
+describe('excludeScratch', () => {
+  let dir: string
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  test('adds .scratch/ to the common info/exclude once, keeps other lines, and git then ignores it in a worktree', () => {
+    dir = mkdtempSync(join(tmpdir(), 'excludescratch-'))
+    const main = join(dir, 'main')
+    mkdirSync(main, { recursive: true })
+    sh(['git', 'init', '-q'], main)
+    sh(['git', 'config', 'user.email', 'a@b.c'], main)
+    sh(['git', 'config', 'user.name', 'a'], main)
+    writeFileSync(join(main, 'f'), 'x')
+    sh(['git', 'add', 'f'], main)
+    sh(['git', 'commit', '-q', '-m', 'init'], main)
+    const common = sh(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], main)
+    mkdirSync(join(common, 'info'), { recursive: true })
+    writeFileSync(join(common, 'info', 'exclude'), '*.log\n')
+
+    const wt = join(dir, 'wt')
+    sh(['git', 'worktree', 'add', '-q', '-b', 'feature', wt], main)
+
+    excludeScratch(wt)
+    excludeScratch(wt) // a second call must add no second line
+
+    const exclude = readFileSync(join(common, 'info', 'exclude'), 'utf8')
+    expect(exclude.split('\n').filter(l => l === '.scratch/').length).toBe(1)
+    expect(exclude).toContain('*.log') // an existing line stays
+
+    mkdirSync(join(wt, '.scratch', 'a'), { recursive: true })
+    writeFileSync(join(wt, '.scratch', 'a', 'b'), 'scratch')
+    expect(sh(['git', 'status', '--porcelain'], wt)).toBe('')
+    expect(Bun.spawnSync(['git', 'check-ignore', '.scratch/a/b'], { cwd: wt }).exitCode).toBe(0)
   })
 })

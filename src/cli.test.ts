@@ -416,9 +416,16 @@ test('progressSig stays empty, and so stall-exempt, when only head is set (a loc
   expect(progressSig('', 'sha1', undefined)).toBe('')
 })
 
-test('the worker system prompt names a mktemp -d scratch dir and restores a mutation with git checkout', () => {
+// claude-factory-9wu: Claude Code stops cd+rm-outside-worktree chains for an approval nobody answers, so a
+// worker's scratch dir must stay inside the worktree (.scratch/, which excludeScratch() git-ignores) and a
+// worker must never chain cd with rm -rf; git -C/go -C replace the cd.
+test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, and restores a mutation with git checkout', () => {
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
-  expect(text).toContain('mktemp -d')
+  expect(text).toContain('.scratch/')
+  expect(text).toContain('git -C')
+  expect(text).toContain('go -C')
+  expect(text).toContain('rm -rf')
+  expect(text).not.toContain('mktemp -d')
   expect(text).toContain('/tmp_')
   expect(text).toContain('2>/dev/null')
   expect(text).toContain('git checkout -- <file>')
