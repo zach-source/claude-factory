@@ -374,15 +374,16 @@ async function mountStates($: any, on: any, columns: number, ran: string[][] = [
   return { clock, ui: await mountUi($, columns) }
 }
 
-test('wide, the board is four columns by state, each oldest first, with the gate answerable (kanban)', async ($, on) => {
+test('wide, what awaits the person is a full-width band on top, then three columns by state, each oldest first (kanban)', async ($, on) => {
   const ran: string[][] = []
   const { clock, ui } = await mountStates($, on, 140, ran)
   const drawn = JSON.stringify(await ui.drawn())
-  for (const t of ['? AWAITING YOU (1)', '! STUCK (1)', '● WORKING (2)', '◷ WAITING (1)'])
-    expect(drawn).toContain(t)
-  // the column order, and each run under its own state's column
+  expect(drawn).toContain('? AWAITING YOU')
+  for (const t of ['! STUCK (1)', '● WORKING (2)', '◷ WAITING (1)']) expect(drawn).toContain(t)
+  // the band above the columns, then the column order, and each run under its own state's column
   const at = (s: string) => drawn.indexOf(s)
-  expect(at('lane-head-gates')).toBeLessThan(at('lane-head-stuck'))
+  expect(at('"key":"lane-gates"')).toBeLessThan(at('"key":"lanes"'))
+  expect(drawn).not.toContain('lane-head-gates')
   expect(at('lane-head-stuck')).toBeLessThan(at('lane-head-working'))
   expect(at('lane-head-working')).toBeLessThan(at('lane-head-waiting'))
   expect(at('tile-id-g1')).toBeLessThan(at('lane-head-stuck'))
@@ -397,6 +398,8 @@ test('wide, the board is four columns by state, each oldest first, with the gate
   expect(drawn).toContain('pi stalled')
   expect(drawn).toContain('CI pending')
   expect(drawn).toContain('"ship?"')
+  // each tile says when its run last reported
+  expect(drawn).toContain('reported ')
   // the gate still decides from the board
   await ui.press({ key: 'decide-g1-ship' })
   await clock.settle()
@@ -404,7 +407,7 @@ test('wide, the board is four columns by state, each oldest first, with the gate
   await ui.unmount()
 })
 
-test('wide, an empty column stays as a header saying none, and an opened card shows below the columns (kanban)', async ($, on) => {
+test('wide, an empty column says none, no band shows with nothing awaiting, and an opened card shows below and shrinks with - (kanban)', async ($, on) => {
   const ran: string[][] = []
   const clock = mountFake($, on, ran)
   await $.command.run({ command: 'factory', args: 'status' } as never)
@@ -412,7 +415,7 @@ test('wide, an empty column stays as a header saying none, and an opened card sh
   await $.command.run({ command: 'factory', args: 'board' } as never)
   const ui = await mountUi($, 140)
   let drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('? AWAITING YOU (0)')
+  expect(drawn).not.toContain('AWAITING YOU')
   expect(drawn).toContain('"none"')
   await ui.press({ key: 'open-r1' })
   await clock.settle()
@@ -422,6 +425,12 @@ test('wide, an empty column stays as a header saying none, and an opened card sh
   expect(drawn).not.toContain('"key":"open-r1"')
   expect(drawn.indexOf('"key":"close-r1"')).toBeGreaterThan(drawn.indexOf('lane-head-waiting'))
   expect(drawn).toContain('Steer')
+  // the - at the card's top shrinks it back to its tile
+  await ui.press({ key: 'shrink-r1' })
+  await clock.settle()
+  drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).not.toContain('"key":"close-r1"')
+  expect(drawn).toContain('"key":"open-r1"')
   await ui.unmount()
 })
 

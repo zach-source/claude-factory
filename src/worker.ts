@@ -48,6 +48,42 @@ export function queue(argv: string[]) {
   appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
 }
 
+/** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
+ * args (exit 1): see `outboxUsage` */
+export const OUTBOX_USAGE = {
+  report: 'usage: factory report <run> <seq> <outcome> <summary...>',
+  mail: 'usage: factory mail <run> <node|manager> <text...>',
+  memory: 'usage: factory memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]',
+}
+
+/**
+ * whether `factory report|mail|memory add`'s own args, inside a VM, ask for help, are malformed, or are fine
+ * to queue: 'help' when `--help`/`-h` sits in a positional slot (report's run/seq/outcome, mail's run/node,
+ * memory add's summary) -- never in free text, so a report outcome that happens to mention '-h' still queues
+ * -- a usage string when the args are malformed, else null. Before this, `report --help` queued a fake report
+ * indistinguishable from a real one, which let a worker fake "reported ready" twice (claude-factory-4x1)
+ */
+export function outboxUsage(cmd: string, args: string[]): 'help' | string | null {
+  const helpAt = (slots: (string | undefined)[]) => slots.some(a => a === '--help' || a === '-h')
+  if (cmd === 'report') {
+    if (helpAt(args.slice(0, 3))) return 'help'
+    if (args.length < 3 || !/^\d+$/.test(args[1] ?? '') || (args[2] ?? '').startsWith('-'))
+      return OUTBOX_USAGE.report
+    return null
+  }
+  if (cmd === 'mail') {
+    if (helpAt(args.slice(0, 2))) return 'help'
+    if (args.length < 2) return OUTBOX_USAGE.mail
+    return null
+  }
+  if (cmd === 'memory' && args[0] === 'add') {
+    if (helpAt([args[1]])) return 'help'
+    if (!args[1]) return OUTBOX_USAGE.memory
+    return null
+  }
+  return null
+}
+
 /**
  * a file the laptop sends in parts (`factory worker put <name> <part> <parts> <base64>`): each part lands on
  * its own, so a part sent again is harmless, and the whole file appears, decoded, once the last is in
