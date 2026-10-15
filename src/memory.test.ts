@@ -701,6 +701,28 @@ test("applyTiers() picks a new LONG.md id that is not already an alias or an old
   expect(renamed).toEqual({ 'beads/new.md': 'beads/LONG.md#bd-init-locks-every-repo-2' })
 })
 
+test('applyTiers() picks a new LONG.md id that avoids a renameLog key with no current entry or alias (claude-factory-59r.20)', () => {
+  const dir = join(tmpdir(), `memory-apply-id-collision-renamelog-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  // "other" holds no aliases: a later dream deleted the survivor entry that once aliased
+  // "bd-init-locks-every-repo" away, but the rename log still remembers that old id forever.
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([{ id: 'other', summary: 'another lesson entirely', body: 'x' }]),
+  )
+  compact(dir, { 'beads/LONG.md#bd-init-locks-every-repo': 'beads/LONG.md#other' })
+  writeFileSync(
+    join(dir, 'beads', 'new.md'),
+    format({ summary: 'bd init locks every repo', at: '2026-10-01', body: 'why' }),
+  )
+  use(dir, ['beads/new.md'], 'helped', now - 1000)
+
+  const { renamed } = applyTiers(dir, { now })
+  expect(renamed).toEqual({ 'beads/new.md': 'beads/LONG.md#bd-init-locks-every-repo-2' })
+})
+
 test('applyTiers() rewrites a short note\'s markdown link in its topic README to the LONG.md entry it became (claude-factory-59r.19a)', () => {
   const dir = join(tmpdir(), `memory-apply-readme-link-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
