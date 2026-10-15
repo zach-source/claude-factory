@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: the Go age gate (`src/pkggate.ts`) no longer trusts `.info` `Time` alone. A module's author controls that time and can backdate it. The gate now also checks when `sum.golang.org` first logged the version, against a floor it builds from `index.golang.org`. It refuses a version whose sum.golang.org record is newer than the floor, even when `.info` `Time` alone looks old enough. New env vars: `PKG_GATE_UPSTREAM_SUMDB` and `PKG_GATE_UPSTREAM_GO_INDEX` (`https://sum.golang.org` and `https://index.golang.org` by default). `/healthz` now reports the floor. The gate's namespace needs new egress to both hosts. (claude-factory-8ub)
 - Docs: [docs/onboarding.md](docs/onboarding.md) takes a new developer from install to a first finished run, and then to the next steps. It is written in ASD-STE100 Simplified Technical English. README links it.
 
 ## 0.11.0 (2026-10-15)
