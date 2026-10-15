@@ -88,7 +88,14 @@ A rig name stands for its repo in all commands. To remove a rig, run `factory ri
 
 ### Label a bead
 
-A bead starts as a run when all of these are true: it is ready, it has the label `factory`, it has no assignee, and it is a top-level bead. Dispatch looks every 30 seconds while the rig and the factory have room.
+A bead starts as a run when all of these are true:
+
+- It is ready.
+- It has the label `factory`.
+- It has no assignee.
+- It is a top-level bead.
+
+Dispatch looks every 30 seconds while the rig and the factory have room.
 
 ```sh
 bd create "Add a /health endpoint" -t feature -p 1 -d "What, why, and how to verify it" -l factory
