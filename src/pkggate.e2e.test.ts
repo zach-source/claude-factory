@@ -18,6 +18,53 @@ const PYTHON3 = Bun.which('python3')
 // only used to build the Go module zip and the PyPI wheel fixtures below, never to run a tool under test
 const ZIP = Bun.which('zip')
 
+// CI's test job sets PKGGATE_E2E_REQUIRE=1 (claude-factory-5h9): a hosted runner missing go, npm, pip, uv,
+// python3 or zip must fail the run by name, not quietly skip the real-protocol test that binary needs.
+// Without it (a laptop that may lack some of these), a missing binary still just skips its own test.
+export const REQUIRE_TOOLS = process.env.PKGGATE_E2E_REQUIRE === '1'
+
+// The name of the first tool in `tools` whose binary is null, or null when every one is present.
+export function missingTool(...tools: [name: string, bin: string | null][]): string | null {
+  for (const [name, bin] of tools) if (!bin) return name
+  return null
+}
+
+// Registers `title` to run `fn` when every tool is present. When a tool is missing and
+// PKGGATE_E2E_REQUIRE=1, it registers a test that fails by name instead. When a tool is missing and
+// PKGGATE_E2E_REQUIRE is unset, it registers a skipped test that says why.
+function toolTest(
+  title: string,
+  tools: [name: string, bin: string | null][],
+  fn: () => void | Promise<void>,
+) {
+  const missing = missingTool(...tools)
+  if (!missing) {
+    test(title, fn)
+    return
+  }
+  if (REQUIRE_TOOLS)
+    test(`${title} [REQUIRED: ${missing} missing from PATH]`, () => {
+      throw new Error(`PKGGATE_E2E_REQUIRE=1 but ${missing} is not on PATH`)
+    })
+  else test.skip(`${title} [${missing} missing from PATH, PKGGATE_E2E_REQUIRE unset]`, fn)
+}
+
+test('missingTool names the first tool whose binary is null, or null when every one is present', () => {
+  expect(missingTool(['go', null], ['zip', '/usr/bin/zip'])).toBe('go')
+  expect(missingTool(['npm', '/usr/bin/npm'], ['pip', null])).toBe('pip')
+  expect(missingTool(['uv', '/usr/bin/uv'])).toBeNull()
+})
+
+test("the npm pack test pins npm_config_before, so the host's own release cooldown never hides a fixture", () => {
+  const src = readFileSync(new URL(import.meta.url), 'utf8')
+  expect(src).toContain('npm_config_before: new Date().toISOString()')
+})
+
+test("the uv test pins UV_EXCLUDE_NEWER, so the host's own release cooldown never hides a fixture", () => {
+  const src = readFileSync(new URL(import.meta.url), 'utf8')
+  expect(src).toContain('UV_EXCLUDE_NEWER: new Date().toISOString()')
+})
+
 const scratch = mkdtempSync(join(tmpdir(), 'pkggate-e2e-'))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
@@ -262,8 +309,12 @@ test("AC12: a backdated version (.info old enough, record above the floor) is re
   expect(await old.json()).toMatchObject({ Version: 'v1.0.0' })
 })
 
-test.if(!!GO && !!ZIP)(
+toolTest(
   'go mod download: a young module version fails with pkg-gate in stderr; an old one succeeds',
+  [
+    ['go', GO],
+    ['zip', ZIP],
+  ],
   async () => {
     const env = {
       GOPROXY: `${gateBase}/go`,
@@ -282,7 +333,7 @@ test.if(!!GO && !!ZIP)(
   },
 )
 
-test.if(!!NPM)('npm pack: a young package version fails; an old one succeeds', async () => {
+toolTest('npm pack: a young package version fails; an old one succeeds', [['npm', NPM]], async () => {
   const outDir = join(scratch, 'npmout')
   mkdirSync(outDir, { recursive: true })
   const env = {
@@ -299,7 +350,7 @@ test.if(!!NPM)('npm pack: a young package version fails; an old one succeeds', a
   expect(old.code).toBe(0)
 })
 
-test.if(!!PIP)('pip download --no-deps: a young file fails; an old one succeeds', async () => {
+toolTest('pip download --no-deps: a young file fails; an old one succeeds', [['pip', PIP]], async () => {
   const outDir = join(scratch, 'pipout')
   mkdirSync(outDir, { recursive: true })
   const env = { PIP_INDEX_URL: `${gateBase}/pypi/simple`, PIP_TRUSTED_HOST: new URL(gateBase).hostname }
@@ -310,8 +361,12 @@ test.if(!!PIP)('pip download --no-deps: a young file fails; an old one succeeds'
   expect(old.code).toBe(0)
 })
 
-test.if(!!UV && !!PYTHON3)(
+toolTest(
   'uv pip install --dry-run: a young version fails; an old one succeeds',
+  [
+    ['uv', UV],
+    ['python3', PYTHON3],
+  ],
   async () => {
     const venv = join(scratch, 'uvvenv')
     const made = await run([UV!, 'venv', venv, '--python', PYTHON3!], {})
