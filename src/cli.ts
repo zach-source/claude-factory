@@ -491,7 +491,15 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   }
   return polled.status === 'exited'
     ? gone(`serve exited; its log: ${polled.log || '(empty)'}`)
-    : { status: polled.status, agent: 'ax', session: polled.session, tail: polled.tail, egress: polled.egress }
+    : {
+        status: polled.status,
+        agent: 'ax',
+        session: polled.session,
+        tail: polled.tail,
+        head: polled.head,
+        bytes: polled.bytes,
+        egress: polled.egress,
+      }
 }
 
 const herdrRunner: Runner = {
@@ -1317,6 +1325,19 @@ export function deadline(elapsedMs: number, timeoutMin: number, isWorking: boole
 /** what a working worker's progress was when last seen: the fingerprint of its tail and branch head, since when, and whether it was nudged for standing still */
 export type Progress = { seq: number; sig: string; at: number; nudged: boolean }
 
+/**
+ * the stall guard's fingerprint: the tail's end, the branch head and, for a non-local (AX) worker, the live
+ * stream's byte count, which moves while a long turn runs even when its tail and the VM's HEAD do not (claude-
+ * factory-xq3). '' when there is no signal at all -- a worker that has reported nothing yet is not yet "quiet",
+ * so `seen.sig &&` at the call site must stay false for it, not a stand-in fingerprint of its own. head alone
+ * never makes it non-empty: a local worker's head is always set (`git rev-parse HEAD`, cli.ts L1553) even
+ * before its tail or any transcript exists, so head-only would make every local codex/pi/script worker, and a
+ * local claude worker before its session is known, newly stall-failable (claude-factory-xq3.4, PR #19 review).
+ */
+export function progressSig(tail: string, head: string, bytes?: number) {
+  return tail || bytes ? `${tail.length}${tail.slice(-300)}${head}${bytes ?? ''}` : ''
+}
+
 /** the worker's progress now: the last one while nothing changed, else a fresh one (a new worker or any output) */
 export const progressNow = (prev: Progress | undefined, seq: number, sig: string, now: number): Progress =>
   prev && prev.seq === seq && prev.sig === sig ? prev : { seq, sig, at: now, nudged: false }
@@ -1455,9 +1476,11 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)
   const isAsking =
     asked !== undefined && !(c.mail[node] ?? []).some(m => m.from === 'manager' && m.at > asked.at)
-  // a remote worker's transcript is in its VM: its runner hands over the end of it
-  const tail =
-    !isClaude || !c.session ? '' : runner.local ? tailOf(run.worktree, c.session) : (info?.tail ?? '')
+  // a remote worker's transcript is in its VM: its runner hands over the end of it, available from the moment
+  // it has one (own()/claude.jsonl's fallback -- see worker.ts lastTurn), not gated on this tick having already
+  // learned c.session, which lags the runner's own info.session by at least one tick (the SESSION send above)
+  // -- gating it left an AX worker's tail empty for its whole first turn too (claude-factory-xq3)
+  const tail = !isClaude ? '' : runner.local ? (c.session ? tailOf(run.worktree, c.session) : '') : (info?.tail ?? '')
   const hit = limitHit(tail)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
@@ -1525,12 +1548,14 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const text = `[factory] This session's context is ${k}k tokens, ${HANDOFF_ASK} of ${maxK}k: every turn re-reads all of it. At the next safe point, commit your work in progress (a WIP commit is fine) and hand off to a fresh worker, then stop: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text })
   }
-  // ponytail: a fingerprint of the tail's end and the local branch head; a worker that only thinks is nudged, not failed
+  // ponytail: a fingerprint of the tail's end, the branch head and (a non-local worker) its live stream's byte
+  // count; a worker that only thinks is nudged, not failed. An AX worker's head and bytes come from its own
+  // poll (taskInfo/worker.ts poll), since there is no local worktree to `git rev-parse` on
   const prev = progressOf(run)
   const head = runner.local
     ? Bun.spawnSync(['git', '-C', run.worktree, 'rev-parse', 'HEAD']).stdout.toString()
-    : ''
-  const seen = progressNow(prev, c.seq, tail ? `${tail.length}${tail.slice(-300)}${head}` : '', now)
+    : (info?.head ?? '')
+  const seen = progressNow(prev, c.seq, progressSig(tail, head, runner.local ? undefined : info?.bytes), now)
   // a retry in progress looks like no output for a while on purpose: never call that a stall
   const stall =
     status === 'working' && !isAsking && seen.sig && !egress ? stalled(now - seen.at, seen.nudged) : null

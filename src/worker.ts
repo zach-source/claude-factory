@@ -223,11 +223,19 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
   return (line ?? text).slice(0, 300)
 }
 
-/** one turn of the station's agent: its session id, given the one before, and the egress gateway's failure, if it was that */
-async function turn(text: string, model?: string, session?: string) {
+/**
+ * one turn of the station's agent: its session id, given the one before, and the egress gateway's failure, if
+ * it was that. stdout is streamed (not buffered to exit): each chunk lands in own()/<h>.jsonl as it arrives, so
+ * poll's lastTurn can read it while the turn is still running, and `onSession` fires once, the moment the
+ * session id first appears in the output (pi's is known up front), instead of only after the whole process
+ * exits -- a single claude -p call can run 30-90+ min, which left poll's tail null for the turn's entire length
+ * (claude-factory-xq3)
+ */
+async function turn(text: string, model?: string, session?: string, onSession?: (id: string) => void) {
   const h = harness()
   // pi has no output to read an id from: it takes one on first use
   const id = h === 'pi' ? (session ?? crypto.randomUUID()) : session
+  if (id && h === 'pi') onSession?.(id)
   const argv = turnArgv(h, text, {
     model,
     provider: process.env.FACTORY_PROVIDER,
@@ -238,11 +246,33 @@ async function turn(text: string, model?: string, session?: string) {
   // env spelled out: Bun's default is the env at startup, without what setup() added
   const p = Bun.spawn(argv, { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'pipe' })
   const errP = new Response(p.stderr).text()
-  const out = await new Response(p.stdout).text()
+  const chunkFile = join(own(), `${h}.jsonl`)
+  const reader = p.stdout.getReader()
+  const decoder = new TextDecoder()
+  let out = ''
+  let found = h === 'pi' // already given up front; claude and codex name theirs in the stream
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    const piece = decoder.decode(value, { stream: true })
+    out += piece
+    appendFileSync(chunkFile, piece)
+    if (!found) {
+      const sid = sessionIn(h, out)
+      if (sid) {
+        found = true
+        onSession?.(sid)
+      }
+    }
+  }
+  const last = decoder.decode() // a multi-byte char split across the final chunk
+  if (last) {
+    out += last
+    appendFileSync(chunkFile, last)
+  }
   const err = await errP
   const code = await p.exited
   if (code !== 0 || err) appendFileSync(serveLog(), `${new Date().toISOString()} ${h} exited ${code}: ${err.slice(-4000)}\n`)
-  appendFileSync(join(own(), `${h}.jsonl`), out)
   return { session: h === 'pi' ? id : (sessionIn(h, out) ?? session), egress: egressFailure(h, out, err) }
 }
 
@@ -263,13 +293,15 @@ const egressBudgetMs = () => Number(process.env.FACTORY_EGRESS_BUDGET_MS ?? 30 *
  * call it takes, not restart counting from zero each time. `onEgress` is given the session each call learns,
  * too (not just the egress state), so a crash or restart mid-retry resumes the session already opened, rather
  * than silently losing it and re-briefing. It records the outage for poll as it goes, and clears it once a
- * turn gets through
+ * turn gets through. `onSession` fires as soon as the running turn's own session id streams in (see turn()),
+ * well before this call returns, so poll can read the live transcript while a long turn is still going
  */
 async function turnWithRetry(
   text: string,
   model: string | undefined,
   session: string | undefined,
   onEgress: (e: Egress | undefined, session?: string) => void,
+  onSession: (id: string) => void,
   initial?: Egress,
 ) {
   const waitMs = egressWaitMs()
@@ -280,7 +312,10 @@ async function turnWithRetry(
   let tries = initial?.tries ?? 0
   let since = initial?.since ?? 0
   for (;;) {
-    const r = await turn(prompt, model, cur)
+    const r = await turn(prompt, model, cur, id => {
+      cur = id
+      onSession(id)
+    })
     cur = r.session
     if (!r.egress) {
       onEgress(undefined, cur)
@@ -557,11 +592,18 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     if (cur) session = cur
     set('working')
   }
+  // fires the moment the running turn's session id streams in, not only once it ends: without this, state.json's
+  // session (and so poll's tail) stays whatever it was before the turn for the turn's whole length, which for one
+  // big agentic call is 30-90+ min (claude-factory-xq3)
+  const onSession = (id: string) => {
+    session = id
+    set('working')
+  }
   if (!session) {
     // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
-    session = await turnWithRetry(brief, model, undefined, onEgress, egress)
+    session = await turnWithRetry(brief, model, undefined, onEgress, onSession, egress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
@@ -573,7 +615,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     }
     set('working')
     const file = join(prompts(), next)
-    session = await turnWithRetry(readFileSync(file, 'utf8'), model, session, onEgress, egress)
+    session = await turnWithRetry(readFileSync(file, 'utf8'), model, session, onEgress, onSession, egress)
     rmSync(file) // after the turn (retried in place through an egress outage): a prompt cut off by a crash runs again
   }
 }
@@ -587,16 +629,36 @@ export function poll(cursor: number) {
     session: s?.session,
     lines: lines.slice(cursor),
     tail: lastTurn(s?.session),
+    head: gitHead(),
+    bytes: streamBytes(),
     log: logTail(),
     ...(s?.egress && { egress: s.egress }),
   }
 }
 
-/** a Claude session's last assistant entry: the laptop reads a usage limit and the context size from it */
-export function lastTurn(session?: string) {
-  if (harness() !== 'claude' || !session) return undefined
-  const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  const file = join(dir, 'projects', repo().replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+/** the worker repo's HEAD, read inside the VM; '' on any error (no repo yet, no commits), never throws */
+function gitHead() {
+  const p = Bun.spawnSync(['git', '-C', repo(), 'rev-parse', 'HEAD'])
+  return p.exitCode === 0 ? p.stdout.toString().trim() : ''
+}
+
+/**
+ * the size of the harness's own live stream copy (own()/<h>.jsonl, written chunk by chunk by turn()); 0 if absent.
+ * pi -p only prints once its turn exits (own()/pi.jsonl never grows mid-turn), so a constant size there would look
+ * like no progress to the stall signature and fail a productive pi turn that happens not to commit; undefined for
+ * pi keeps it out of that signature the way an unknown-session Claude tail already is (claude-factory-xq3)
+ */
+function streamBytes() {
+  if (harness() === 'pi') return undefined
+  try {
+    return statSync(join(own(), `${harness()}.jsonl`)).size
+  } catch {
+    return 0
+  }
+}
+
+/** the last assistant entry in a Claude transcript file (its last 512 KiB); undefined when there is none */
+function lastAssistant(file: string) {
   if (!existsSync(file)) return undefined
   const size = statSync(file).size
   const buf = Buffer.alloc(Math.min(size, 512 * 1024))
@@ -607,6 +669,24 @@ export function lastTurn(session?: string) {
     .toString()
     .split('\n')
     .findLast(l => l.includes('"type":"assistant"'))
+}
+
+/**
+ * a Claude session's last assistant entry: the laptop reads a usage limit and the context size from it. The
+ * project transcript (~/.claude/projects/.../<session>.jsonl) is Claude's own, canonical copy, read first when
+ * there is a session and it exists; else (no session yet, or the project transcript is missing -- a path
+ * mismatch, or simply not written yet) this falls back to own()/claude.jsonl, the live copy turn() streams to as
+ * the current turn runs, so poll has something to read for the whole length of a turn, not just once it ends
+ * (claude-factory-xq3)
+ */
+export function lastTurn(session?: string) {
+  if (harness() !== 'claude') return undefined
+  if (session) {
+    const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+    const file = join(dir, 'projects', repo().replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+    if (existsSync(file)) return lastAssistant(file)
+  }
+  return lastAssistant(join(own(), 'claude.jsonl'))
 }
 
 export function prompt(base64: string) {
