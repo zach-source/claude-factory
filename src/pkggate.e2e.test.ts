@@ -38,6 +38,9 @@ async function run(cmd: string[], env: Record<string, string | undefined>) {
 // --- Go module zip, built with `zip` (real toolchain fixture, not a hand-rolled zip format) -----------
 
 const GO_MODULE = 'example.com/pkggate-e2e-fixture'
+// claude-factory-8ub, AC12: a version whose .info Time alone is old enough (OLD_TIME, like v1.0.0), but
+// whose sum.golang.org record sits far above the floor -- a backdated commit on a freshly tagged version
+const GO_BACKDATED_VERSION = 'v1.0.2'
 function buildGoZip(version: string): Buffer {
   const root = join(scratch, `gozip-${version}`, `${GO_MODULE}@${version}`)
   mkdirSync(root, { recursive: true })
@@ -122,9 +125,26 @@ beforeAll(async () => {
         return new Response(new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]), {
           headers: { 'content-type': 'application/octet-stream' },
         })
+      // claude-factory-8ub: the gate's sumdb/goIndex upstreams point at this same fake server. /index
+      // answers any `since` with 5 synthetic entries inside the requested window; /lookup/ answers every
+      // key with a low record (1), so it always sits at or below the floor this builds (also 1).
+      // /latest (claude-factory-8ub.6) answers with a tree size far above every record id here, so none is
+      // ever dropped as an outlier.
+      if (url.pathname === '/index') {
+        const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(NOW).toISOString())
+        const ts = new Date(sinceMs + 15 * 60_000).toISOString()
+        const lines = Array.from({ length: 5 }, (_, i) => JSON.stringify({ Path: `floorsample-${i}.example.com/mod`, Version: 'v1.0.0', Timestamp: ts }))
+        return new Response(lines.join('\n') + '\n')
+      }
+      if (url.pathname === '/latest') return new Response('go.sum database tree\n1000000\nfakehash\n\n— sum.golang.org fakesignature\n')
+      // the backdated probe's own record sits far above the floor (1); every other lookup defaults low (AC12)
+      if (url.pathname === `/lookup/${GO_MODULE}@${GO_BACKDATED_VERSION}`) return new Response('999999\n')
+      if (url.pathname.startsWith('/lookup/')) return new Response('1\n')
       if (url.pathname === `/${GO_MODULE}/@v/list`) return new Response('v1.0.0\nv1.0.1\n')
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.info`)
         return new Response(JSON.stringify({ Version: 'v1.0.0', Time: OLD_TIME }), { headers: { 'content-type': 'application/json' } })
+      if (url.pathname === `/${GO_MODULE}/@v/${GO_BACKDATED_VERSION}.info`)
+        return new Response(JSON.stringify({ Version: GO_BACKDATED_VERSION, Time: OLD_TIME }), { headers: { 'content-type': 'application/json' } })
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.1.info`)
         return new Response(JSON.stringify({ Version: 'v1.0.1', Time: YOUNG_TIME }), { headers: { 'content-type': 'application/json' } })
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.mod` || url.pathname === `/${GO_MODULE}/@v/v1.0.1.mod`)
@@ -175,7 +195,7 @@ beforeAll(async () => {
     },
   })
   const base = upstream.url.origin
-  gate = serve({ upstream: { go: base, npm: base, pypi: base, files: base }, port: 0 })
+  gate = serve({ upstream: { go: base, npm: base, pypi: base, files: base, sumdb: base, goIndex: base }, port: 0 })
   gateBase = gate.url.origin
   // a real-process client (go/npm/pip/uv) can hit a connection reset if it is the very first inbound
   // connection right after Bun.serve returns; warm both servers up with a real fetch before any test runs
@@ -191,6 +211,16 @@ test('a binary sumdb tile passes through serve()\'s real HTTP socket byte-identi
   const r = await fetch(`${gateBase}/go/sumdb/sum.golang.org/tile/8/0/000`)
   expect(r.status).toBe(200)
   expect(new Uint8Array(await r.arrayBuffer())).toEqual(new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]))
+})
+
+test('AC12: a backdated version (.info old enough, record above the floor) is refused through serve()\'s real socket; an old one with a low record still serves (claude-factory-8ub)', async () => {
+  const backdated = await fetch(`${gateBase}/go/${GO_MODULE}/@v/${GO_BACKDATED_VERSION}.info`)
+  expect(backdated.status).toBe(404)
+  expect(await backdated.text()).toContain('first logged in sum.golang.org')
+
+  const old = await fetch(`${gateBase}/go/${GO_MODULE}/@v/v1.0.0.info`)
+  expect(old.status).toBe(200)
+  expect(await old.json()).toMatchObject({ Version: 'v1.0.0' })
 })
 
 test.if(!!GO && !!ZIP)('go mod download: a young module version fails with pkg-gate in stderr; an old one succeeds', async () => {

@@ -15,6 +15,9 @@
 #
 # This namespace's own egress to the real registries (proxy.golang.org, registry.npmjs.org, pypi.org,
 # files.pythonhosted.org) is the cluster's NetworkPolicy, not a task's EgressPolicy, and not this file.
+# It also needs egress to sum.golang.org and index.golang.org. proxy.golang.org's .info Time alone is
+# the tagged commit's time, and an author can backdate it (claude-factory-8ub). So the gate looks up
+# each Go version's sum.golang.org record id, and samples index.golang.org to build a floor on it.
 apiVersion: v1
 kind: Namespace
 metadata:
