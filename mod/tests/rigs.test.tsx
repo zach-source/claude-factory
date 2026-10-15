@@ -69,6 +69,55 @@ test('a tick that logs to stderr, as a reaped pane does, still parses', async ($
   }))
   await $.command.run({ command: 'factory', args: 'status' } as never)
   await clock.settle()
-  expect(JSON.stringify(status)).toContain('running')
+  // one count for the status line, the header and the band: each run in one state, working ones by rig
+  expect(JSON.stringify(status)).toContain(
+    '4 working (api 2, deploys 1, no rig 1) · 1 awaiting you · 1 stuck',
+  )
   expect(JSON.stringify(status)).not.toContain('SyntaxError')
+})
+
+test('a failing tick says why in the status line and marks the board stale until one succeeds', async ($, on) => {
+  const clock = mock.clock(on)
+  const status: unknown[] = []
+  let isFailing = true
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
+  for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
+  on('process.run', ($, e) => {
+    if (e.argv.includes('tick') && isFailing)
+      return {
+        value: {
+          exitCode: 1,
+          stdout: '',
+          stderr: `dolt: ${'x'.repeat(90)} timed out after 120000 ms\n`,
+        } as never,
+      }
+    return {
+      value: {
+        exitCode: 0,
+        stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
+        stderr: '',
+      } as never,
+    }
+  })
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  const failed = JSON.stringify(status)
+  expect(failed).toContain('factory tick failed: ')
+  // past the old 80-character cut: the reason itself survives
+  expect(failed).toContain('timed out after 120000 ms')
+  const ui = await $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+  expect(JSON.stringify(await ui.drawn())).toContain('stale since')
+  isFailing = false
+  await clock.advance(5_000)
+  await clock.settle()
+  expect(JSON.stringify(await ui.drawn())).not.toContain('stale since')
+  await ui.unmount()
 })

@@ -37,7 +37,7 @@ export function tiers(beads: readonly FactoryBead[], type = 'all', limit = Infin
     { bead: b, depth },
     ...kidsOf(b.id).flatMap(k => family(k, depth + 1)),
   ]
-  const out: { tier: string; rows: { bead: FactoryBead; depth: number }[] }[] = []
+  const out: { tier: string; priority?: number; rows: { bead: FactoryBead; depth: number }[] }[] = []
   let drawn = 0
   const roots = list.filter(b => !b.parent || !ids.has(b.parent))
   for (const p of [0, 1, 2, 3, 4, undefined]) {
@@ -46,7 +46,7 @@ export function tiers(beads: readonly FactoryBead[], type = 'all', limit = Infin
     for (const b of roots.filter(r => r.priority === p))
       if (drawn + rows.length < limit) rows.push(...family(b, 0))
     drawn += rows.length
-    if (rows.length) out.push({ tier: p === undefined ? 'no priority' : `P${p}`, rows })
+    if (rows.length) out.push({ tier: p === undefined ? 'no priority' : `P${p}`, priority: p, rows })
   }
   return { tiers: out, total: list.length, drawn }
 }
@@ -79,6 +79,58 @@ export function bar(done: number, total: number, width: number) {
   // a rig can run past its cap (runs it had before the cap, a manager's start): the bar stays full
   const filled = total ? Math.min(width, Math.max(0, Math.round((done / total) * width))) : 0
   return '█'.repeat(filled) + '░'.repeat(width - filled)
+}
+
+export const isLive = (r: FactoryRun) => !!r.node && r.node !== 'done' && r.node !== 'aborted'
+
+/** what one live run is doing, each run in exactly one: a gate wins over stuck, stuck over waiting */
+export const stateOf = (r: FactoryRun) =>
+  r.gate
+    ? 'gates'
+    : r.sub === 'stuck' || r.agent === 'blocked'
+      ? 'stuck'
+      : r.sub === 'waiting'
+        ? 'waiting'
+        : 'working'
+
+/** the live runs counted by state, and the working ones by rig: the header, band and status line all read this */
+export function counts(runs: FactoryRun[]) {
+  const live = runs.filter(isLive)
+  const n = {
+    live: live.length,
+    working: 0,
+    gates: 0,
+    stuck: 0,
+    waiting: 0,
+    rigs: {} as Record<string, number>,
+  }
+  for (const r of live) {
+    const s = stateOf(r)
+    n[s]++
+    if (s === 'working') n.rigs[r.rig ?? 'no rig'] = (n.rigs[r.rig ?? 'no rig'] ?? 0) + 1
+  }
+  return n
+}
+
+/** the status line: "3 working (api 2, web 1) · 1 awaiting you · 1 stuck", nothing when no run is live */
+export function statusText(runs: FactoryRun[]) {
+  const n = counts(runs)
+  if (!n.live) return undefined
+  const rigs = Object.entries(n.rigs).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const byRig =
+    rigs.length > 1
+      ? ` (${rigs.map(([r, k]) => `${r} ${k}`).join(', ')})`
+      : rigs.length
+        ? ` (${rigs[0]![0]})`
+        : ''
+  return [
+    `${n.working} working${n.working ? byRig : ''}`,
+    n.gates && `${n.gates} awaiting you`,
+    n.stuck && `${n.stuck} stuck`,
+    n.waiting && `${n.waiting} waiting`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 /** one line of at most `max` characters */

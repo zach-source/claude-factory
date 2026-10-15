@@ -41,6 +41,8 @@ export type FactoryBoard = {
   rigs?: FactoryRig[]
   /** set while `factory stop` winds the workers down, and while the factory stays paused */
   halt?: 'stopping' | 'paused'
+  /** when ticks began failing: what the board shows is from before then; cleared by the next good tick */
+  staleSince?: number
 }
 
 // what `factory show <run>` prints: everything the run view draws
