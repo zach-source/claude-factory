@@ -41,6 +41,8 @@ export type FactoryBoard = {
   rigs?: FactoryRig[]
   /** set while `factory stop` winds the workers down, and while the factory stays paused */
   halt?: 'stopping' | 'paused'
+  /** when ticks began failing: what the board shows is from before then; cleared by the next good tick */
+  staleSince?: number
 }
 
 // what `factory show <run>` prints: everything the run view draws
@@ -108,6 +110,8 @@ export type FactoryPrs = {
     repo: string
     number: number
     title: string
+    /** 'gitlab' on a merge request; absent on a GitHub PR */
+    forge?: 'gitlab'
     role: 'code' | 'companion' | 'deploy' | 'mentioned'
     /** the station that first named it, or '' when it was only found by search or branch */
     station: string
@@ -120,7 +124,7 @@ export type FactoryPrs = {
     mergeStateStatus: string
     checks: { pass: number; fail: number; pending: number }
     updatedAt: string
-    /** this one PR's own last `gh` failure, kept until it is viewed again successfully */
+    /** this one PR's own last `gh` (or `glab`) failure, kept until it is viewed again successfully */
     error?: string
   }[]
 }[]

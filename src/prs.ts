@@ -1,11 +1,15 @@
 // Per-run pull request records: every PR a run touches, not just open ones on its own branch in its own
 // repo. Pure matching/merge/role/budget logic lives here, read-only against a run's log and inbox; the IO
-// half (`buildPrs`) calls `gh` through an injected function, so tests never shell out for real.
+// half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
+// tests never shell out for real.
 import { prsIn, type Entry } from './machine'
 
 export type PrSource = 'report' | 'mail' | 'search' | 'branch'
 export type PrRole = 'code' | 'companion' | 'deploy' | 'mentioned'
 export type PrState = 'OPEN' | 'MERGED' | 'CLOSED' | 'UNKNOWN'
+
+/** which forge a rig's repo lives on, told apart by its origin remote's host */
+export type ForgeKind = 'github' | 'gitlab'
 
 export type Checks = { pass: number; fail: number; pending: number }
 
@@ -15,6 +19,8 @@ export type PrRecord = {
   repo: string
   number: number
   title: string
+  /** 'gitlab' on a merge request; absent on a GitHub PR, so every older record reads as GitHub */
+  forge?: 'gitlab'
   role: PrRole
   /** the station that first named it, or '' when it was only found by search or branch */
   station: string
@@ -75,10 +81,42 @@ export function asPrsFile(parsed: unknown): PrsFile {
   return p && typeof p === 'object' && Array.isArray(p.prs) ? (p as PrsFile) : { version: 1, prs: [] }
 }
 
-/** owner/name and number out of a github.com pull request URL, or null for anything else */
-export function prRef(url: string): { repo: string; number: number } | null {
+/** owner/name and number out of a github.com pull request URL, or out of a GitLab merge request URL
+ * (`https://<host>/<group>/<sub>/<project>/-/merge_requests/<n>`: repo keeps the full project path, and
+ * forge says so); null for anything else */
+export function prRef(url: string): { repo: string; number: number; forge?: 'gitlab' } | null {
   const m = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/.exec(url)
-  return m ? { repo: m[1]!, number: Number(m[2]) } : null
+  if (m) return { repo: m[1]!, number: Number(m[2]) }
+  const g =
+    /^https:\/\/(?!github\.com\/)[\w.-]+(?::\d+)?\/((?:[\w.-]+\/)+[\w.-]+)\/-\/merge_requests\/(\d+)$/.exec(
+      url,
+    )
+  return g ? { repo: g[1]!, number: Number(g[2]), forge: 'gitlab' } : null
+}
+
+/** every GitLab merge request URL in a text; machine.ts's `prsIn` stays GitHub-only because the park
+ * watch behind it runs `gh pr view` */
+export const mrsIn = (text: string) => [
+  ...new Set(
+    text.match(
+      /https:\/\/(?!github\.com\/)[\w.-]+(?::\d+)?\/(?:[\w.-]+\/)+[\w.-]+\/-\/merge_requests\/\d+/g,
+    ) ?? [],
+  ),
+]
+
+/** host and project path out of a remote URL (https, ssh:// or scp-style), or null */
+export function parseRemote(url: string): { host: string; path: string } | null {
+  const m =
+    /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([\w.-]+)(?::\d+)?\/(.+?)(?:\.git)?\/?$/.exec(url) ??
+    /^(?:[^@/]+@)?([\w.-]+):(?!\/\/)(.+?)(?:\.git)?\/?$/.exec(url)
+  return m ? { host: m[1]!.toLowerCase(), path: m[2]! } : null
+}
+
+/** the forge behind a remote host: github.com is GitHub; a host named "gitlab", or one `glab` knows (a
+ * self-hosted GitLab under another name), is GitLab; anything else is neither */
+export function forgeOf(host: string, glabKnows: (host: string) => boolean = () => false): ForgeKind | null {
+  if (host === 'github.com') return 'github'
+  return host.includes('gitlab') || glabKnows(host) ? 'gitlab' : null
 }
 
 /**
@@ -111,11 +149,20 @@ export function collectMentions(
   return hits
 }
 
-const blank = (url: string, number: number, repo: string, station: string, at: number, source: PrSource): PrRecord => ({
+const blank = (
+  url: string,
+  number: number,
+  repo: string,
+  station: string,
+  at: number,
+  source: PrSource,
+  forge?: 'gitlab',
+): PrRecord => ({
   url,
   repo,
   number,
   title: '',
+  ...(forge ? { forge } : {}),
   role: 'mentioned',
   station,
   firstSeenAt: at,
@@ -142,7 +189,7 @@ export function foldMentions(existing: PrRecord[], hits: Mention[]): PrRecord[] 
     if (byUrl.has(h.url)) continue
     const ref = prRef(h.url)
     if (!ref) continue
-    byUrl.set(h.url, blank(h.url, ref.number, ref.repo, h.station, h.at, h.source))
+    byUrl.set(h.url, blank(h.url, ref.number, ref.repo, h.station, h.at, h.source, ref.forge))
   }
   return [...byUrl.values()]
 }
@@ -173,7 +220,10 @@ export function foldFound(existing: PrRecord[], found: Found[]): PrRecord[] {
     }
     const ref = prRef(f.url)
     if (!ref) continue
-    byUrl.set(f.url, { ...blank(f.url, ref.number, ref.repo, '', f.at, f.source), corroborated: true })
+    byUrl.set(f.url, {
+      ...blank(f.url, ref.number, ref.repo, '', f.at, f.source, ref.forge),
+      corroborated: true,
+    })
   }
   return [...byUrl.values()]
 }
@@ -311,8 +361,16 @@ export type GhResult = { code: number; out: string; err: string }
 export type Gh = (argv: string[], opts: { cwd: string; timeout: number }) => Promise<GhResult>
 
 /** the real `gh`, argv only (never a shell), stdout/stderr fully drained even past a kill */
-export async function spawnGh(argv: string[], opts: { cwd: string; timeout: number }): Promise<GhResult> {
-  const proc = Bun.spawn(['gh', ...argv], { cwd: opts.cwd, stdout: 'pipe', stderr: 'pipe' })
+export const spawnGh: Gh = (argv, opts) => spawnCli('gh', argv, opts)
+/** the real `glab`; it answers in the same shape, so it is typed `Gh` too */
+export const spawnGlab: Gh = (argv, opts) => spawnCli('glab', argv, opts)
+
+async function spawnCli(
+  bin: string,
+  argv: string[],
+  opts: { cwd: string; timeout: number },
+): Promise<GhResult> {
+  const proc = Bun.spawn([bin, ...argv], { cwd: opts.cwd, stdout: 'pipe', stderr: 'pipe' })
   const timer = setTimeout(() => {
     try {
       proc.kill()
@@ -345,8 +403,17 @@ export function parseSearch(out: string, runStartAt: number, runEndAt: number, n
   } catch {
     return []
   }
-  return hits.filter(h => keepSearchHit(h.createdAt, runStartAt, runEndAt)).map(h => ({ url: h.url, at: now, source: 'search' as const }))
+  return searchFound(hits, runStartAt, runEndAt, now)
 }
+const searchFound = (
+  hits: { url: string; createdAt: string }[],
+  runStartAt: number,
+  runEndAt: number,
+  now: number,
+): Found[] =>
+  hits
+    .filter(h => keepSearchHit(h.createdAt, runStartAt, runEndAt))
+    .map(h => ({ url: h.url, at: now, source: 'search' as const }))
 
 /** AC2d parsed: one `gh pr list --state all` per rig repo, independent of any run's budget */
 export function parseBranchList(out: string): { url: string; headRefName: string }[] {
@@ -384,6 +451,97 @@ export function parseView(out: string): Viewed | null {
     updatedAt: typeof v.updatedAt === 'string' ? v.updatedAt : '',
     headRefName: typeof v.headRefName === 'string' ? v.headRefName : '',
     body: typeof v.body === 'string' ? v.body : '',
+  }
+}
+
+// ---- GitLab: `glab api` answers with GitLab's REST objects; these map them onto the records above ----
+
+type Json = Record<string, unknown>
+const asJson = (out: string): unknown => {
+  try {
+    return JSON.parse(out)
+  } catch {
+    return null
+  }
+}
+const str = (v: unknown) => (typeof v === 'string' ? v : '')
+
+/** the merge requests of a project listing, in `parseBranchList`'s shape */
+export function parseGitlabList(out: string): { url: string; headRefName: string }[] {
+  const mrs = asJson(out)
+  if (!Array.isArray(mrs)) return []
+  return (mrs as Json[])
+    .map(m => ({ url: str(m.web_url), headRefName: str(m.source_branch) }))
+    .filter(m => m.url)
+}
+
+/** a project search of a bead's merge requests, in `parseSearch`'s shape and with the same time bounds */
+export function parseGitlabSearch(out: string, runStartAt: number, runEndAt: number, now: number): Found[] {
+  const mrs = asJson(out)
+  if (!Array.isArray(mrs)) return []
+  const hits = (mrs as Json[])
+    .map(m => ({ url: str(m.web_url), createdAt: str(m.created_at) }))
+    .filter(m => m.url)
+  return searchFound(hits, runStartAt, runEndAt, now)
+}
+
+const GITLAB_STATE: Record<string, PrState> = {
+  opened: 'OPEN',
+  merged: 'MERGED',
+  closed: 'CLOSED',
+  locked: 'CLOSED',
+}
+const PIPELINE: Record<string, string> = {
+  success: 'SUCCESS',
+  skipped: 'SKIPPED',
+  failed: 'FAILURE',
+  canceled: 'CANCELLED',
+}
+
+/** GitLab's detailed merge status in GitHub's vocabulary, which the console's `prNeed` reads: a failed
+ * pipeline that blocks the merge is UNSTABLE, any other open rule BLOCKED */
+function mergeStatusOf(mr: Json, failing: boolean): string {
+  const s =
+    str(mr.detailed_merge_status) ||
+    (mr.merge_status === 'cannot_be_merged'
+      ? 'conflict'
+      : mr.merge_status === 'can_be_merged'
+        ? 'mergeable'
+        : '')
+  if (s === 'mergeable') return 'CLEAN'
+  if (s === 'conflict') return 'DIRTY'
+  if (s === 'need_rebase') return 'BEHIND'
+  if (s === 'ci_must_pass' && failing) return 'UNSTABLE'
+  if (['', 'checking', 'unchecked', 'preparing', 'not_open'].includes(s)) return 'UNKNOWN'
+  return 'BLOCKED'
+}
+
+/** an MR (`GET projects/:id/merge_requests/:iid`) and its approvals (`.../approvals`, optional: a failed
+ * or missing answer leaves the review decision blank rather than failing the view) mapped onto `Viewed` */
+export function parseGitlabView(mrOut: string, approvalsOut = ''): Viewed | null {
+  const mr = asJson(mrOut) as Json | null
+  if (!mr || typeof mr !== 'object' || Array.isArray(mr)) return null
+  const pipeline = (mr.head_pipeline ?? mr.pipeline) as Json | null | undefined
+  const status = str(pipeline?.status)
+  const checks = pipeline
+    ? checksOf([{ conclusion: PIPELINE[status] ?? null }])
+    : { pass: 0, fail: 0, pending: 0 }
+  const approvals = asJson(approvalsOut) as Json | null
+  let reviewDecision = ''
+  if (mr.detailed_merge_status === 'requested_changes') reviewDecision = 'CHANGES_REQUESTED'
+  else if (approvals?.approved === true) reviewDecision = 'APPROVED'
+  else if (typeof approvals?.approvals_left === 'number' && approvals.approvals_left > 0)
+    reviewDecision = 'REVIEW_REQUIRED'
+  return {
+    title: str(mr.title),
+    state: GITLAB_STATE[str(mr.state)] ?? 'UNKNOWN',
+    isDraft: !!(mr.draft ?? mr.work_in_progress),
+    reviewDecision,
+    mergeStateStatus: mergeStatusOf(mr, checks.fail > 0),
+    checks,
+    updatedAt: str(mr.updated_at),
+    headRefName: str(mr.source_branch),
+    body: str(mr.description),
   }
 }
 
@@ -451,8 +609,13 @@ export type RunMeta = {
   repoDir: string
   /** owner/name of the run's own rig repo */
   runRepo: string
-  /** the rig repo's GitHub owner, for `gh search prs --owner`; '' when the repo has no GitHub origin */
+  /** the rig repo's GitHub owner, for `gh search prs --owner`; '' when the repo has no GitHub origin
+   * (on GitLab, its namespace: only a gate here, the search is scoped to the project) */
   owner: string
+  /** the forge the rig's origin is on, github when unset */
+  forge?: ForgeKind
+  /** the origin's host, for `glab api --hostname` */
+  host?: string
   log: Entry[]
   mail: { from: string; to: string; text: string; at: number }[]
   /** runs/<id>/prs.json as last written, or `{ version: 1, prs: [] }` for a run that never had one */
@@ -467,6 +630,69 @@ export type BuildResult = {
 }
 
 const VIEW_TIMEOUT_MS = 30_000
+
+/** what `buildPrs` needs from a forge: the calls that list, search and view, and how to read each answer */
+type Forge = {
+  list(r: RunMeta): Promise<GhResult>
+  parseList(out: string): { url: string; headRefName: string }[]
+  search(r: RunMeta): Promise<GhResult>
+  parseSearch(out: string, startAt: number, endAt: number, now: number): Found[]
+  view(url: string, cwd: string): Promise<{ viewed: Viewed } | { err: string }>
+}
+
+const timed = (cwd: string) => ({ cwd, timeout: VIEW_TIMEOUT_MS })
+
+const githubForge = (gh: Gh): Forge => ({
+  list: r =>
+    gh(['pr', 'list', '--state', 'all', '--limit', '100', '--json', 'url,headRefName'], timed(r.repoDir)),
+  parseList: parseBranchList,
+  search: r =>
+    gh(
+      ['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`],
+      timed(r.repoDir),
+    ),
+  parseSearch,
+  async view(url, cwd) {
+    const res = await gh(
+      [
+        'pr',
+        'view',
+        url,
+        '--json',
+        'title,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,updatedAt,headRefName,body',
+      ],
+      timed(cwd),
+    )
+    const viewed = res.code === 0 ? parseView(res.out) : null
+    return viewed ? { viewed } : { err: res.code === 0 ? 'gh pr view: unparseable JSON' : res.err }
+  },
+})
+
+/** `glab api` rather than `glab mr`: one REST shape for every host, and the approvals only the API has */
+const gitlabForge = (glab: Gh): Forge => {
+  const api = (host: string | undefined, path: string, cwd: string) =>
+    glab(['api', ...(host ? ['--hostname', host] : []), path], timed(cwd))
+  const project = (path: string) => `projects/${encodeURIComponent(path)}/merge_requests`
+  return {
+    list: r => api(r.host, `${project(r.runRepo)}?state=all&order_by=updated_at&per_page=100`, r.repoDir),
+    parseList: parseGitlabList,
+    search: r =>
+      api(
+        r.host,
+        `${project(r.runRepo)}?state=all&in=title,description&per_page=100&search=${encodeURIComponent(r.bead!)}`,
+        r.repoDir,
+      ),
+    parseSearch: parseGitlabSearch,
+    async view(url, cwd) {
+      const ref = prRef(url)!
+      const path = `${project(ref.repo)}/${ref.number}`
+      const host = new URL(url).hostname
+      const [mr, approvals] = await Promise.all([api(host, path, cwd), api(host, `${path}/approvals`, cwd)])
+      const viewed = mr.code === 0 ? parseGitlabView(mr.out, approvals.code === 0 ? approvals.out : '') : null
+      return viewed ? { viewed } : { err: mr.code === 0 ? 'glab api: unparseable JSON' : mr.err }
+    },
+  }
+}
 
 const DEADLINE_MS = 60_000
 
@@ -486,7 +712,10 @@ export async function buildPrs(
   budget: Budget = DEFAULT_BUDGET,
   clock: () => number = Date.now,
   deadlineMs: number = DEADLINE_MS,
+  glab: Gh = spawnGlab,
 ): Promise<BuildResult> {
+  const forges = { github: githubForge(gh), gitlab: gitlabForge(glab) }
+  const forgeOfRun = (r: RunMeta) => forges[r.forge ?? 'github']
   const deadlineAt = clock() + deadlineMs
   const overDeadline = () => clock() >= deadlineAt
   const files = new Map(runs.map(r => [r.id, r.file]))
@@ -494,7 +723,7 @@ export async function buildPrs(
 
   // AC2a/b, always: every run's own mentions, folded in
   for (const r of runs) {
-    const hits = collectMentions(r.log, r.mail, isStation, prsIn)
+    const hits = collectMentions(r.log, r.mail, isStation, text => [...prsIn(text), ...mrsIn(text)])
     const folded = foldMentions(files.get(r.id)!.prs, hits)
     files.set(r.id, { ...files.get(r.id)!, prs: folded.map(p => ({ ...p, role: role(p, ctxOf(r)) })) })
   }
@@ -504,16 +733,14 @@ export async function buildPrs(
   const runErrors = new Map<string, string>()
   for (const rep of repos) {
     if (overDeadline()) break
-    const res = await gh(['pr', 'list', '--state', 'all', '--limit', '100', '--json', 'url,headRefName'], {
-      cwd: rep.repoDir,
-      timeout: VIEW_TIMEOUT_MS,
-    })
+    const forge = forgeOfRun(rep)
+    const res = await forge.list(rep)
     const sameRepo = runs.filter(x => x.repoDir === rep.repoDir)
     if (res.code !== 0) {
       for (const r of sameRepo) runErrors.set(r.id, ghError(res.err))
       continue
     }
-    const list = parseBranchList(res.out)
+    const list = forge.parseList(res.out)
     for (const r of sameRepo) {
       const found = branchFound(list, r.id, now)
       if (!found.length) continue
@@ -548,10 +775,8 @@ export async function buildPrs(
       files.set(runId, { ...cur, searchedAt: now, searchedFinal: r.ended || cur.searchedFinal, searchErrorStreak: 0, searchErroredAt: 0 })
       continue
     }
-    const res = await gh(['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`], {
-      cwd: r.repoDir,
-      timeout: VIEW_TIMEOUT_MS,
-    })
+    const forge = forgeOfRun(r)
+    const res = await forge.search(r)
     if (res.code !== 0) {
       // wyc.11: a failed search must not spend the run's one final-search shot (searchedFinal stays as
       // it was); it only bumps an error streak so `needsSearch` backs off instead of retrying every call
@@ -559,7 +784,7 @@ export async function buildPrs(
       files.set(runId, { ...cur, searchedAt: now, searchErrorStreak: (cur.searchErrorStreak ?? 0) + 1, searchErroredAt: now })
       continue
     }
-    const found = parseSearch(res.out, r.startAt, r.endAt, now)
+    const found = forge.parseSearch(res.out, r.startAt, r.endAt, now)
     const folded = foldFound(cur.prs, found)
     files.set(runId, {
       ...cur,
@@ -576,16 +801,13 @@ export async function buildPrs(
     6,
     async ({ run: runId, url }) => {
       const r = runs.find(x => x.id === runId)!
-      const res = await gh(['pr', 'view', url, '--json', 'title,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,updatedAt,headRefName,body'], {
-        cwd: r.repoDir,
-        timeout: VIEW_TIMEOUT_MS,
-      })
+      // the PR's own URL says which forge answers for it: a run can name a PR on a forge its rig is not on
+      const forge = prRef(url)?.forge ? forges.gitlab : forges.github
+      const res = await forge.view(url, r.repoDir)
       const cur = files.get(runId)!
-      const viewed = res.code === 0 ? parseView(res.out) : null
       const prs = cur.prs.map(p => {
         if (p.url !== url) return p
-        if (viewed) return applyView(p, viewed, ctxOf(r), now)
-        return applyViewError(p, res.code === 0 ? 'gh pr view: unparseable JSON' : res.err, now)
+        return 'viewed' in res ? applyView(p, res.viewed, ctxOf(r), now) : applyViewError(p, res.err, now)
       })
       files.set(runId, { ...cur, prs })
     },

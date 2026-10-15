@@ -19,16 +19,22 @@ import {
   BEAD_TYPES,
   bar,
   beadInterviews,
+  byState,
   clockOf,
+  counts,
   dur,
+  isLive,
   interviews,
   line,
   mailKey,
   mailTabs,
+  prName,
   prState,
   tiers,
   rigStats,
+  shortId,
   sparkline,
+  stateOf,
   track,
   withProposals,
   type Interview,
@@ -59,7 +65,7 @@ export type Actions = {
 
 type Base = { ui: UI; act: Actions; width: number; now: number }
 
-export const isLive = (r: FactoryRun) => !!r.node && r.node !== 'done' && r.node !== 'aborted'
+export { isLive } from './view'
 
 /** one phrase and one color for where a run stands */
 export function standing(r: FactoryRun, now: number) {
@@ -77,10 +83,6 @@ export function standing(r: FactoryRun, now: number) {
   return { word: word ?? 'starting', color: 'green' }
 }
 
-/** gates and trouble first, then work in flight, then what waits on a timer */
-const urgency = (r: FactoryRun) =>
-  r.gate ? 0 : r.sub === 'stuck' || r.agent === 'blocked' ? 1 : r.sub === 'waiting' ? 3 : 2
-
 /** an absolute path cut to its last two parts; a repo's own `.factory/x.ts at sha` stays whole */
 const shortPath = (path: string) => (path.startsWith('/') ? `…/${path.split('/').slice(-2).join('/')}` : path)
 
@@ -95,6 +97,36 @@ const TABS: [FactoryView, string, string][] = [
   ['prs', 'PRs', '5'],
   ['interview', 'Interview', '6'],
 ]
+
+/** a column that keeps its width: ids, badges and times never shrink, so free text beside them truncates instead */
+function cell(
+  { ui }: Base,
+  key: string,
+  text: string,
+  props: { color?: string; dimColor?: boolean; width?: number } = {},
+) {
+  const { Box, Text } = ui
+  const { width, ...paint } = props
+  return (
+    <Box key={key} flexShrink={0} width={width}>
+      <Text {...paint} wrap="truncate-end">
+        {text}
+      </Text>
+    </Box>
+  )
+}
+
+/** the row's free text: the one column that shrinks, truncated at the edge */
+function rest({ ui }: Base, key: string, text: string, props: { color?: string; dimColor?: boolean } = {}) {
+  const { Box, Text } = ui
+  return (
+    <Box key={key} flexGrow={1} flexShrink={1} minWidth={0}>
+      <Text {...props} wrap="truncate-end">
+        {text}
+      </Text>
+    </Box>
+  )
+}
 
 function rule({ ui, width }: Base, title: string, note = '') {
   const { Text } = ui
@@ -161,11 +193,7 @@ function gate(p: Base, r: FactoryRun, draft: FactoryDraft, isFocused = false) {
 export function header(p: Base, board: FactoryBoard, history: number[], view: FactoryView) {
   const { Box, Text, Button } = p.ui
   const live = board.runs.filter(isLive)
-  const count = (f: (r: FactoryRun) => boolean) => live.filter(f).length
-  const gates = count(r => !!r.gate)
-  const stuck = count(r => r.sub === 'stuck' || r.agent === 'blocked')
-  const waiting = count(r => r.sub === 'waiting')
-  const working = live.length - gates - stuck - waiting
+  const { working, gates, stuck, waiting } = counts(board.runs)
   const stat = (n: number, color: string, label: string) =>
     n > 0 && (
       <Text>
@@ -187,6 +215,11 @@ export function header(p: Base, board: FactoryBoard, history: number[], view: Fa
         {stat(stuck, 'red', 'stuck')}
         {stat(waiting, 'blue', 'waiting')}
         {live.length === 0 && !board.halt && <Text dimColor>idle</Text>}
+        {board.staleSince !== undefined && (
+          <Text bold color="red">
+            ! stale since {clockOf(board.staleSince)}
+          </Text>
+        )}
         {board.halt && (
           <Text bold color="yellow">
             {board.halt === 'paused' ? '⏸ paused' : '… stopping'}
@@ -364,17 +397,9 @@ function runDetail(p: Base, d: FactoryDetail | null, peek: string, draft: Factor
   )
 }
 
-/** a board row; `isOpen` swaps its collapsed goal/trail/buttons for the full `runDetail`, with
- * the border's padding taken off the detail's width (A7) */
-function card(
-  p: Base,
-  r: FactoryRun,
-  draft: FactoryDraft,
-  isOpen: boolean,
-  detail: FactoryDetail | null,
-  peek: string,
-) {
-  const { Box, Text, Button } = p.ui
+/** an open board card: the run's full `runDetail`, with the border's padding taken off its width (A7) */
+function card(p: Base, r: FactoryRun, draft: FactoryDraft, detail: FactoryDetail | null, peek: string) {
+  const { Box, Text } = p.ui
   const s = standing(r, p.now)
   const timer = r.sub === 'working' && r.since && !r.gate ? ` · ${dur(p.now - r.since)}` : ''
   const tries = r.attempt && r.attempt > 1 ? ` · try ${r.attempt}/${r.attempts}` : ''
@@ -392,37 +417,98 @@ function card(
           {timer}
         </Text>
       </Box>
-      {!isOpen && r.goal && <Text wrap="truncate-end">{line(r.goal, 300)}</Text>}
-      {!isOpen && trail(p, r)}
-      {!isOpen && r.last && (
-        <Text dimColor wrap="truncate-end">
-          └ {r.last.node} {r.last.outcome}: {line(r.last.summary, 300)}
-        </Text>
-      )}
-      {!isOpen && r.error && (
-        <Text color="red" wrap="truncate-end">
-          ! {line(r.error, 300)}
-        </Text>
-      )}
-      {!isOpen && r.gate && gate(p, r, draft)}
-      {!isOpen && (
-        <Box gap={1}>
-          <Button key={`open-${r.id}`} label="open" onPress={() => p.act.select(r.id)} />
-          {r.pane && (
-            <Button key={`jump-${r.id}`} label="jump to worker" dimColor onPress={() => p.act.jump(r.pane!)} />
-          )}
-          {r.sub === 'stuck' && (
-            <Button
-              key={`retry-${r.id}`}
-              label="retry"
-              variant="primary"
-              onPress={() => p.act.cli('retry', r.id)}
-            />
-          )}
-          <Button key={`abort-${r.id}`} label="abort" dimColor onPress={() => p.act.cli('abort', r.id)} />
+      {runDetail({ ...p, width: Math.max(1, p.width - 4) }, detail, peek, draft, r.id)}
+    </Box>
+  )
+}
+
+const COLUMNS = {
+  gates: { title: '? AWAITING YOU', color: 'yellow' },
+  stuck: { title: '! STUCK', color: 'red' },
+  working: { title: '● WORKING', color: 'green' },
+  waiting: { title: '◷ WAITING', color: 'blue' },
+}
+
+/** side by side from here: four columns of at least 29 cells each */
+const WIDE = 120
+
+/** the station and how long: time in it, how quiet a stuck one is, when a waiting one wakes */
+function stationTime(r: FactoryRun, now: number) {
+  const state = stateOf(r)
+  const time =
+    state === 'stuck' && r.quietMin !== undefined
+      ? `quiet ${dur(r.quietMin * 60_000)}`
+      : state === 'waiting' && r.wakeAt
+        ? `wakes ${clockOf(r.wakeAt)}`
+        : r.since
+          ? dur(now - r.since)
+          : ''
+  return [r.node, time].filter(Boolean).join(' ')
+}
+
+/** the one line of why: the gate's question, what stuck it, or where the run last got to */
+function why(r: FactoryRun) {
+  const last = r.last ? line(r.last.summary, 120) : ''
+  if (r.gate) return line(r.gate.question, 120)
+  if (stateOf(r) === 'stuck')
+    return r.error ? line(r.error, 120) : r.agent === 'blocked' ? 'worker blocked' : last
+  return `${r.attempt && r.attempt > 1 ? `try ${r.attempt}/${r.attempts} ` : ''}${last}`.trim()
+}
+
+/** a compact board card `w` cells wide; a gate stays answerable here, its question and buttons in place of the why line */
+function tile(p: Base, r: FactoryRun, draft: FactoryDraft, w: number, isOpen: boolean) {
+  const { Box, Button } = p.ui
+  const q = { ...p, width: w }
+  return (
+    <Box key={`tile-${r.id}`} flexDirection="column" width={w} marginBottom={1}>
+      <Box gap={1}>
+        {cell(q, `tile-id-${r.id}`, shortId(r.id), { color: 'cyan' })}
+        {/* the open card below carries the close button */}
+        {!isOpen && <Button key={`open-${r.id}`} label="open" onPress={() => p.act.select(r.id)} />}
+      </Box>
+      {cell(q, `tile-bead-${r.id}`, r.bead ?? '', { color: 'magenta', width: w })}
+      {cell(q, `tile-at-${r.id}`, stationTime(r, p.now), { width: w })}
+      {r.gate ? gate(q, r, draft) : cell(q, `tile-why-${r.id}`, why(r), { dimColor: true, width: w })}
+    </Box>
+  )
+}
+
+/** the live runs by state: columns side by side when wide, else stacked sections with the open card in place */
+function lanes(
+  p: Base,
+  runs: FactoryRun[],
+  draft: FactoryDraft,
+  selected: string | null,
+  expanded: (r: FactoryRun) => JSX.Element,
+) {
+  const { Box, Text } = p.ui
+  const groups = byState(runs)
+  if (p.width < WIDE)
+    return groups
+      .filter(g => g.runs.length)
+      .map(g => (
+        <Box key={`lane-${g.state}`} flexDirection="column">
+          {rule(p, COLUMNS[g.state].title, String(g.runs.length))}
+          {g.runs.map(r => (r.id === selected ? expanded(r) : tile(p, r, draft, p.width, false)))}
         </Box>
-      )}
-      {isOpen && runDetail({ ...p, width: Math.max(1, p.width - 4) }, detail, peek, draft, r.id)}
+      ))
+  const w = Math.floor((p.width - 3) / 4)
+  return (
+    <Box key="lanes" gap={1}>
+      {groups.map(g => (
+        <Box key={`lane-${g.state}`} flexDirection="column" width={w}>
+          {cell(p, `lane-head-${g.state}`, `${COLUMNS[g.state].title} (${g.runs.length})`, {
+            color: COLUMNS[g.state].color,
+            width: w,
+          })}
+          <Text dimColor>{'─'.repeat(w)}</Text>
+          {g.runs.length ? (
+            g.runs.map(r => tile(p, r, draft, w, r.id === selected))
+          ) : (
+            <Text dimColor>none</Text>
+          )}
+        </Box>
+      ))}
     </Box>
   )
 }
@@ -436,7 +522,7 @@ export function boardView(
   peek: string,
 ) {
   const { Box, Text, Button } = p.ui
-  const live = board.runs.filter(isLive).sort((a, b) => urgency(a) - urgency(b))
+  const live = board.runs.filter(isLive)
   // newest first; the rest stay until `factory rm`
   const over = board.runs.filter(r => !isLive(r)).sort((a, b) => (b.last?.at ?? 0) - (a.last?.at ?? 0))
   if (!board.runs.length)
@@ -446,17 +532,20 @@ export function boardView(
         <Text dimColor>2 shows the backlog each rig feeds; queue or start one from there.</Text>
       </Box>
     )
-  const liveIds = new Set(live.map(r => r.id))
+  const open = live.find(r => r.id === selected)
   // a selected run that isn't live (finished, or opened from elsewhere and since finished) still
   // opens above the Finished rule, even while that list stays collapsed (A5)
   const openOver: FactoryRun | undefined =
-    selected && !liveIds.has(selected)
+    selected && !open
       ? over.find(r => r.id === selected) ?? (detail?.id === selected ? detail : { id: selected })
       : undefined
+  const expanded = (r: FactoryRun) => card(p, r, draft, detail, peek)
   return (
     <Box key="board" flexDirection="column">
-      {live.map(r => card(p, r, draft, r.id === selected, detail, peek))}
-      {openOver && card(p, openOver, draft, true, detail, peek)}
+      {lanes(p, live, draft, selected, expanded)}
+      {/* side by side, the open card goes below the columns; stacked, `lanes` drew it in place */}
+      {open && p.width >= WIDE && expanded(open)}
+      {openOver && expanded(openOver)}
       {over.length > 0 && (
         <Box gap={1}>
           {rule({ ...p, width: p.width - 8 }, 'Finished', String(over.length))}
@@ -475,15 +564,20 @@ export function boardView(
         .filter(r => r.id !== selected)
         .map(r => (
           <Box key={`over-${r.id}`} gap={1}>
-            <Text color={standing(r, p.now).color}>{r.node === 'done' ? '✓' : r.node ? '✗' : '!'}</Text>
-            <Text bold>{r.id}</Text>
-            <Text dimColor wrap="truncate-end">
-              {r.error
+            {cell(p, `over-glyph-${r.id}`, r.node === 'done' ? '✓' : r.node ? '✗' : '!', {
+              color: standing(r, p.now).color,
+            })}
+            {cell(p, `over-id-${r.id}`, r.id, { color: 'cyan' })}
+            {rest(
+              p,
+              `over-text-${r.id}`,
+              r.error
                 ? line(r.error, 120)
                 : r.last
                   ? `${r.last.node} ${r.last.outcome}: ${line(r.last.summary, 120)}`
-                  : ''}
-            </Text>
+                  : '',
+              { dimColor: true },
+            )}
             <Button key={`view-${r.id}`} label="open" dimColor onPress={() => p.act.select(r.id)} />
             <Button key={`rm-${r.id}`} label="remove" dimColor onPress={() => p.act.cli('rm', r.id)} />
           </Box>
@@ -497,19 +591,21 @@ function beadRow(
   repo: { repo: string; factory: string },
   b: FactoryBead,
   isQueued: boolean,
-  depth = 0,
+  row: { depth: number; tier?: number; idWidth: number },
 ) {
   const { Box, Text, Button } = p.ui
+  const { depth } = row
+  // the tier heading says the priority; a row repeats it only when it differs (a child of another priority)
+  const badge = b.priority === row.tier ? '' : b.priority === undefined ? '–' : `P${b.priority}`
   return (
     <Box key={`bead-${b.id}`} gap={1} paddingLeft={depth * 2}>
-      <Text
-        color={b.priority !== undefined && b.priority <= 1 ? 'red' : undefined}
-        dimColor={(b.priority ?? 2) > 1}
-      >
-        P{String(b.priority ?? 2)}
-      </Text>
-      <Text color="cyan">{b.id}</Text>
-      <Box flexGrow={1}>
+      {cell(p, `prio-${b.id}`, badge, {
+        width: 2,
+        color: b.priority !== undefined && b.priority <= 1 ? 'red' : undefined,
+        dimColor: b.priority === undefined || b.priority > 1,
+      })}
+      {cell(p, `id-${b.id}`, b.id, { color: 'cyan', width: row.idWidth - depth * 2 })}
+      <Box flexGrow={1} flexShrink={1} minWidth={0}>
         <Text wrap="truncate-end">
           {b.title}
           <Text dimColor>{b.type ? `  ${b.type}` : ''}</Text>
@@ -539,12 +635,14 @@ function beadList(
 ) {
   const { Box, Text } = p.ui
   const t = tiers(list, type, limit)
+  // ids padded to the widest, indent included, so every title in the list starts in one column
+  const idWidth = Math.max(0, ...t.tiers.flatMap(g => g.rows.map(x => x.depth * 2 + x.bead.id.length)))
   return (
     <Box key={`list-${r.name}-${isQueued}`} flexDirection="column">
       {t.tiers.map(g => (
         <Box key={`tier-${r.name}-${isQueued}-${g.tier}`} flexDirection="column">
           <Text dimColor> {g.tier}</Text>
-          {g.rows.map(x => beadRow(p, r, x.bead, isQueued, x.depth))}
+          {g.rows.map(x => beadRow(p, r, x.bead, isQueued, { depth: x.depth, tier: g.priority, idWidth }))}
         </Box>
       ))}
       {t.drawn < t.total && <Text dimColor> + {String(t.total - t.drawn)} more</Text>}
@@ -659,8 +757,8 @@ export function rigsView(p: Base, board: FactoryBoard) {
       {loose.length > 0 && rule(p, 'outside any rig', String(loose.length))}
       {loose.map(r => (
         <Box key={`rigs-loose-${r.id}`} gap={1}>
-          <Text bold>{r.id}</Text>
-          <Text color={standing(r, p.now).color}>{r.node}</Text>
+          {cell(p, `rigs-loose-id-${r.id}`, r.id, { color: 'cyan' })}
+          {rest(p, `rigs-loose-node-${r.id}`, r.node ?? '', { color: standing(r, p.now).color })}
           <Button key={`rigs-open-${r.id}`} label="open" dimColor onPress={() => p.act.select(r.id)} />
         </Box>
       ))}
@@ -743,9 +841,9 @@ export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
       {mail.map(m => (
         <Box key={`mail-${m.run}-${m.at}`} flexDirection="column" marginBottom={1}>
           <Box gap={1}>
-            <Text dimColor>{clockOf(m.at)}</Text>
-            <Text bold>{m.run}</Text>
-            <Text color="cyan">{m.from}</Text>
+            {cell(p, `mail-at-${m.run}-${m.at}`, clockOf(m.at), { dimColor: true })}
+            {cell(p, `mail-run-${m.run}-${m.at}`, m.run, { color: 'cyan' })}
+            {rest(p, `mail-from-${m.run}-${m.at}`, m.from, { dimColor: true })}
             <Button
               key={`mail-open-${m.run}-${m.at}`}
               label="open run"
@@ -813,14 +911,16 @@ export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft,
           return (
             <Box key={iv.key} flexDirection="column" marginBottom={1}>
               <Box gap={1}>
-                <Text dimColor>{String(i + 1)}.</Text>
-                <Text color="magenta">{iv.rig ?? ''}</Text>
-                {iv.run && <Text bold>{iv.run}</Text>}
-                {iv.bead && <Text bold>{iv.bead}</Text>}
-                <Text color={iv.kind === 'stuck' ? 'red' : 'blue'}>
-                  {iv.node ?? iv.kind} · {iv.kind}
-                  {iv.run ? ` ${dur(p.now - iv.at)}` : ''}
-                </Text>
+                {cell(p, `iv-n-${iv.key}`, `${i + 1}.`, { dimColor: true })}
+                {iv.rig && cell(p, `iv-rig-${iv.key}`, iv.rig, { color: 'magenta' })}
+                {iv.run && cell(p, `iv-run-${iv.key}`, iv.run, { color: 'cyan' })}
+                {iv.bead && cell(p, `iv-bead-${iv.key}`, iv.bead, { color: 'cyan' })}
+                {rest(
+                  p,
+                  `iv-kind-${iv.key}`,
+                  `${iv.node ?? iv.kind} · ${iv.kind}${iv.run ? ` ${dur(p.now - iv.at)}` : ''}`,
+                  { color: iv.kind === 'stuck' ? 'red' : 'blue' },
+                )}
                 {iv.run && (
                   <Button
                     key={`iv-open-${iv.key}`}
@@ -954,28 +1054,30 @@ export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
                     ) : (
                       <Text dimColor>run ended</Text>
                     )}
-                    {r.error && <Text color="red">! {line(r.error, 120)}</Text>}
+                    {r.error && rest(p, `prs-err-${r.run}`, `! ${line(r.error, 120)}`, { color: 'red' })}
                   </Box>
                   {own.length === 0 && <Text dimColor>no pull requests seen</Text>}
                   {own.map(pr => {
                     const state = prState(pr)
                     return (
                       <Box key={`pr-${r.run}-${pr.repo}-${pr.number}`} gap={1}>
-                        <Text bold>
-                          {pr.repo}#{String(pr.number)}
-                        </Text>
-                        <Text color={state.color}>
-                          {state.word}
-                          {state.checks}
-                        </Text>
-                        <Text dimColor>{pr.role}</Text>
-                        <Text wrap="truncate-end">{pr.title}</Text>
+                        {cell(p, `pr-n-${r.run}-${pr.repo}-${pr.number}`, prName(pr), {
+                          color: 'cyan',
+                        })}
+                        {cell(
+                          p,
+                          `pr-state-${r.run}-${pr.repo}-${pr.number}`,
+                          `${state.word}${state.checks}`,
+                          { color: state.color },
+                        )}
+                        {cell(p, `pr-role-${r.run}-${pr.repo}-${pr.number}`, pr.role, { dimColor: true })}
+                        {rest(p, `pr-title-${r.run}-${pr.repo}-${pr.number}`, pr.title)}
                       </Box>
                     )
                   })}
                   {mentioned.length > 0 && (
                     <Text dimColor wrap="truncate-end">
-                      also named: {mentioned.map(pr => `${pr.repo}#${pr.number}`).join(', ')}
+                      also named: {mentioned.map(prName).join(', ')}
                     </Text>
                   )}
                 </Box>
@@ -999,18 +1101,17 @@ export function band(p: Base, board: FactoryBoard, draft: FactoryDraft) {
   const { Box, Text, Button } = p.ui
   const live = board.runs.filter(isLive)
   const first = live.find(r => r.gate)
-  const stuck = live.filter(r => r.sub === 'stuck' || r.agent === 'blocked').length
+  const n = counts(board.runs)
   return (
     <Box key="band" flexDirection="column">
       <Box gap={1}>
         <Text bold color="magenta">
           ◆
         </Text>
-        <Text>
-          {String(live.length)} run{live.length === 1 ? '' : 's'}
-        </Text>
-        {first && <Text color="yellow">· {String(live.filter(r => r.gate).length)} awaiting you</Text>}
-        {stuck > 0 && <Text color="red">· {String(stuck)} stuck</Text>}
+        <Text color="green">{String(n.working)} working</Text>
+        {n.gates > 0 && <Text color="yellow">· {String(n.gates)} awaiting you</Text>}
+        {n.stuck > 0 && <Text color="red">· {String(n.stuck)} stuck</Text>}
+        {n.waiting > 0 && <Text color="blue">· {String(n.waiting)} waiting</Text>}
         <Text dimColor>·</Text>
         <Button key="band-open" label="open console" dimColor onPress={() => p.act.show('board')} />
       </Box>

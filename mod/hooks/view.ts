@@ -37,7 +37,7 @@ export function tiers(beads: readonly FactoryBead[], type = 'all', limit = Infin
     { bead: b, depth },
     ...kidsOf(b.id).flatMap(k => family(k, depth + 1)),
   ]
-  const out: { tier: string; rows: { bead: FactoryBead; depth: number }[] }[] = []
+  const out: { tier: string; priority?: number; rows: { bead: FactoryBead; depth: number }[] }[] = []
   let drawn = 0
   const roots = list.filter(b => !b.parent || !ids.has(b.parent))
   for (const p of [0, 1, 2, 3, 4, undefined]) {
@@ -46,7 +46,7 @@ export function tiers(beads: readonly FactoryBead[], type = 'all', limit = Infin
     for (const b of roots.filter(r => r.priority === p))
       if (drawn + rows.length < limit) rows.push(...family(b, 0))
     drawn += rows.length
-    if (rows.length) out.push({ tier: p === undefined ? 'no priority' : `P${p}`, rows })
+    if (rows.length) out.push({ tier: p === undefined ? 'no priority' : `P${p}`, priority: p, rows })
   }
   return { tiers: out, total: list.length, drawn }
 }
@@ -79,6 +79,78 @@ export function bar(done: number, total: number, width: number) {
   // a rig can run past its cap (runs it had before the cap, a manager's start): the bar stays full
   const filled = total ? Math.min(width, Math.max(0, Math.round((done / total) * width))) : 0
   return '█'.repeat(filled) + '░'.repeat(width - filled)
+}
+
+export const isLive = (r: FactoryRun) => !!r.node && r.node !== 'done' && r.node !== 'aborted'
+
+/** what one live run is doing, each run in exactly one: a gate wins over stuck, stuck over waiting */
+export const stateOf = (r: FactoryRun) =>
+  r.gate
+    ? 'gates'
+    : r.sub === 'stuck' || r.agent === 'blocked'
+      ? 'stuck'
+      : r.sub === 'waiting'
+        ? 'waiting'
+        : 'working'
+
+/** the live runs counted by state, and the working ones by rig: the header, band and status line all read this */
+export function counts(runs: FactoryRun[]) {
+  const live = runs.filter(isLive)
+  const n = {
+    live: live.length,
+    working: 0,
+    gates: 0,
+    stuck: 0,
+    waiting: 0,
+    rigs: {} as Record<string, number>,
+  }
+  for (const r of live) {
+    const s = stateOf(r)
+    n[s]++
+    if (s === 'working') n.rigs[r.rig ?? 'no rig'] = (n.rigs[r.rig ?? 'no rig'] ?? 0) + 1
+  }
+  return n
+}
+
+/** the board's columns, in the order a person should look: what needs them first, then trouble, work, timers */
+export const BOARD_STATES = ['gates', 'stuck', 'working', 'waiting'] as const
+
+/** the live runs split by `stateOf` (so the board agrees with `counts`), each column oldest first; a run with no `since` sorts last */
+export function byState(runs: readonly FactoryRun[]) {
+  const age = (r: FactoryRun) => r.since ?? Infinity
+  return BOARD_STATES.map(state => ({
+    state,
+    runs: runs
+      .filter(r => isLive(r) && stateOf(r) === state)
+      .sort((a, b) => (age(a) === age(b) ? 0 : age(a) < age(b) ? -1 : 1)),
+  }))
+}
+
+/** a run id short enough for a column: the part after the factory's prefix, cut to its first and last 4 */
+export function shortId(id: string) {
+  const tail = id.slice(id.lastIndexOf('-') + 1) || id
+  return tail.length <= 9 ? tail : `${tail.slice(0, 4)}…${tail.slice(-4)}`
+}
+
+/** the status line: "3 working (api 2, web 1) · 1 awaiting you · 1 stuck", nothing when no run is live */
+export function statusText(runs: FactoryRun[]) {
+  const n = counts(runs)
+  if (!n.live) return undefined
+  const rigs = Object.entries(n.rigs).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const byRig =
+    rigs.length > 1
+      ? ` (${rigs.map(([r, k]) => `${r} ${k}`).join(', ')})`
+      : rigs.length
+        ? ` (${rigs[0]![0]})`
+        : ''
+  return [
+    `${n.working} working${n.working ? byRig : ''}`,
+    n.gates && `${n.gates} awaiting you`,
+    n.stuck && `${n.stuck} stuck`,
+    n.waiting && `${n.waiting} waiting`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 /** one line of at most `max` characters */
@@ -258,6 +330,10 @@ export function prState(
   if (pr.state === 'CLOSED') return { word: 'closed', color: 'red', checks }
   return { ...prNeed(pr), checks }
 }
+
+/** a PR's short name for the PRs tab: `repo#n` on GitHub, GitLab's `repo!n` for a merge request */
+export const prName = (pr: Pick<FactoryPrs[number]['prs'][number], 'repo' | 'number' | 'forge'>) =>
+  `${pr.repo}${pr.forge === 'gitlab' ? '!' : '#'}${pr.number}`
 
 /** one question the factory puts to the person: a run stuck or parked, a gate, a blocked worker, or a bd decision */
 export type Interview = {

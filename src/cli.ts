@@ -72,7 +72,18 @@ import {
   type RunRecord,
   type Session,
 } from './metrics'
-import { asPrsFile, buildPrs, DEFAULT_BUDGET, sameFile, spawnGh, type PrsFile, type RunMeta } from './prs'
+import {
+  asPrsFile,
+  buildPrs,
+  DEFAULT_BUDGET,
+  forgeOf,
+  parseRemote,
+  sameFile,
+  spawnGh,
+  type ForgeKind,
+  type PrsFile,
+  type RunMeta,
+} from './prs'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -994,9 +1005,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 }
 
 /**
- * the part of workerFlags that holds in a VM: the same tools, no user settings or project-level mods, the
- * worker system prompt (the image carries it), settings for no auto memory and a compaction backstop. Left
- * out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global CLAUDE.md to exclude.
+ * the part of `workerFlags` that holds in a VM: worker system prompt, no auto memory, a compaction backstop.
+ * It also keeps the same tools; it skips the laptop's own settings and project-level mods.
+ * Left out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global `CLAUDE.md`.
+ * So a VM worker gets no `asd-ste100` plugin and no STE env either; `claude-factory-fxu` tracks that gap.
+ * `disableBundledSkills` keeps `Skill`'s bundled-skill listing off, since the VM has no skill worth it yet.
  */
 export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
   if (process.env.FACTORY_LEAN === '0') return []
@@ -1005,6 +1018,7 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
     env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
+    disableBundledSkills: true,
   }
   return [
     ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
@@ -1222,32 +1236,38 @@ function runTokenSwap(
 }
 
 /**
- * a worker's own Claude settings, in full: none of the user's (their plugins, agents, skills, global
- * CLAUDE.md, auto memory and compaction window cost every turn tens of thousands of tokens a worker never
- * uses), so these win. It keeps their hooks (secret guards, herdr's session hook) and environment, never
- * asks before skipping permissions, and compacts well past the handoff limit, as a backstop only.
- * The global CLAUDE.md is excluded by path too: worktrees live under the home directory, so Claude Code
- * would read ~/.claude/CLAUDE.md as an ancestor's project file
+ * a worker's own Claude settings, in full: none of the user's plugins, agents, skills, global `CLAUDE.md` or auto memory.
+ * Those cost a worker tens of thousands of tokens a turn it never uses, so this wins instead.
+ * It keeps the user's hooks (secret guards, herdr's session hook) and env, and skips every permission prompt.
+ * It compacts well past the handoff limit too, only as a backstop.
+ * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
+ * One plugin stays in: `asd-ste100`, so the worker still writes in ASD-STE100; `disableBundledSkills` keeps its skill alone.
  */
 export const workerSettings = (
-  user: { env?: Record<string, string>; hooks?: unknown },
+  user: { env?: Record<string, string>; hooks?: unknown; enabledPlugins?: Record<string, boolean> },
   maxContextK: number,
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
-) => ({
-  claudeMdExcludes: [globalClaudeMd],
-  autoMemoryEnabled: false, // workers share the factory's memory, not the user's per-repo notes
-  env: {
-    ...user.env,
-    ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
-    ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
-  },
-  ...(user.hooks ? { hooks: user.hooks } : {}),
-  skipDangerousModePermissionPrompt: true,
-  autoCompactWindow: Math.max(100, 2 * maxContextK) * 1000,
-})
+) => {
+  const ste = Object.entries(user.enabledPlugins ?? {}).filter(([k, v]) => v && k.startsWith('asd-ste100@'))
+  return {
+    claudeMdExcludes: [globalClaudeMd],
+    autoMemoryEnabled: false, // workers share the factory's memory, not the user's per-repo notes
+    env: {
+      ...user.env,
+      ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
+      ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+    },
+    ...(user.hooks ? { hooks: user.hooks } : {}),
+    ...(ste.length ? { enabledPlugins: Object.fromEntries(ste) } : {}),
+    disableBundledSkills: true,
+    skipDangerousModePermissionPrompt: true,
+    autoCompactWindow: Math.max(100, 2 * maxContextK) * 1000,
+  }
+}
 // what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn.
 // ToolSearch keeps MCP tools deferred: without it every MCP server's tools load into every turn (~60k)
-const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch,ToolSearch'
+// Skill lets a worker run the asd-ste100 skill (workerSettings carries that one plugin over)
+export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch,ToolSearch,Skill'
 
 /** the flags that give a Claude worker its own settings, system prompt and tools; FACTORY_LEAN=0 turns them off */
 function workerFlags(def: Factory) {
@@ -2979,14 +2999,27 @@ async function backlog() {
   })
 }
 
-/** a repo's origin remote, split into the GitHub owner and owner/name: `gh search prs --owner` and the
- * run's own repo for role()'s `sameRepo`. undefined when there is no origin (not a GitHub remote, or none) */
-function originRef(repoPath: string): { owner: string; repo: string } | undefined {
+/** a repo's origin remote, split into the owner and name: `gh search prs --owner` and the run's own repo
+ * for role()'s `sameRepo`. On GitLab the owner is the namespace (group/sub) and the name the project.
+ * undefined when there is no origin (neither a GitHub nor a GitLab remote, or none) */
+function originRef(
+  repoPath: string,
+): { owner: string; repo: string; forge: ForgeKind; host: string } | undefined {
   const p = Bun.spawnSync(['git', '-C', repoPath, 'remote', 'get-url', 'origin'])
   if (p.exitCode !== 0) return undefined
-  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(p.stdout.toString().trim())
-  return m ? { owner: m[1]!, repo: m[2]! } : undefined
+  const url = p.stdout.toString().trim()
+  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(url)
+  if (m) return { owner: m[1]!, repo: m[2]!, forge: 'github', host: 'github.com' }
+  const remote = parseRemote(url)
+  if (!remote || forgeOf(remote.host, glabKnows) !== 'gitlab') return undefined
+  const parts = remote.path.split('/')
+  if (parts.length < 2) return undefined
+  return { owner: parts.slice(0, -1).join('/'), repo: parts.at(-1)!, forge: 'gitlab', host: remote.host }
 }
+
+/** whether `glab` is signed in to a host: how a self-hosted GitLab without "gitlab" in its name is told */
+const glabKnows = (host: string) =>
+  Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
 
 const prsFile = (id: string) => join(runDir(id), 'prs.json')
 
@@ -3054,6 +3087,8 @@ async function prs() {
         repoDir: run.repo,
         runRepo: ref ? `${ref.owner}/${ref.repo}` : run.repo,
         owner: ref?.owner ?? '',
+        forge: ref?.forge,
+        host: ref?.host,
         log: c.log,
         mail,
         file,

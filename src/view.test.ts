@@ -2,6 +2,7 @@
 import { expect, test } from 'bun:test'
 import {
   bar,
+  counts,
   beadInterviews,
   dur,
   line,
@@ -466,4 +467,17 @@ test('patrol lists a rig with nothing to start once, without waking the manager 
   expect(first.text).toContain('- rig web: idle, no goal, no ready beads')
   expect(first.keys).toEqual(['idle:web'])
   expect(patrol([rig], [], new Set(first.keys), true)).toBeNull()
+})
+
+test('each live run counts in one state, so a gate that is also stuck is not subtracted twice', () => {
+  const run = (o: object) => ({ id: 'r', node: 'build', ...o })
+  const n = counts([
+    run({ gate: { question: 'ship?', outcomes: ['yes'] }, sub: 'stuck', rig: 'api' }),
+    run({ agent: 'blocked', sub: 'waiting', rig: 'api' }),
+    run({ sub: 'waiting', rig: 'api' }),
+    run({ sub: 'working', rig: 'api' }),
+    run({ rig: 'web' }),
+    run({ node: 'done', rig: 'web' }),
+  ])
+  expect(n).toEqual({ live: 5, working: 2, gates: 1, stuck: 1, waiting: 1, rigs: { api: 1, web: 1 } })
 })
