@@ -10,6 +10,7 @@ import {
   CORE_BUDGET,
   coreFor,
   decide,
+  dreamPrompt,
   type EvalCase,
   evalScore,
   evaluate,
@@ -18,6 +19,7 @@ import {
   inboxCount,
   installSkill,
   type LongEntry,
+  longSimPairs,
   managerActivity,
   mdFileCount,
   noteExists,
@@ -34,6 +36,7 @@ import {
   skillSources,
   search,
   tally,
+  tierCandidates,
   usage,
   usageLines,
   use,
@@ -566,4 +569,81 @@ test('evaluate() runs the fixed query set against a real store through search()'
   ])
   expect(r.recall).toBe(1)
   expect(r.misses).toEqual([])
+}, 60_000)
+
+test("dreamPrompt names the long tier and the id rule, and adds the promotion and duplicate sections", () => {
+  const empty = dreamPrompt('/tmp/memory', [], [], [])
+  expect(empty).toContain('LONG.md')
+  expect(empty).toContain("Never change an entry's id line")
+  expect(empty).toContain('## Promotion candidates')
+  expect(empty).toContain('## Possible duplicates')
+  expect(empty).toContain('(none)')
+
+  const filled = dreamPrompt(
+    '/tmp/memory',
+    [],
+    [],
+    [],
+    { activity: [], skills: [] },
+    ['- beads/LONG.md#lock (bd init locks every repo): helped 3 times across 3 runs'],
+    ['- beads/LONG.md#a (x) vs beads/LONG.md#b (y): similarity 0.90'],
+  )
+  expect(filled).toContain('helped 3 times across 3 runs')
+  expect(filled).toContain('similarity 0.90')
+})
+
+test('longSimPairs finds a near-duplicate pair of LONG.md entries in the same topic and rig, not across a topic or a rig', async () => {
+  const dir = join(tmpdir(), `memory-longsim-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  mkdirSync(join(dir, 'ci'), { recursive: true })
+  const entries: LongEntry[] = [
+    { id: 'a', summary: 'bd init on the shared Dolt server locks every repo', rig: 'claude-factory', body: 'why' },
+    { id: 'b', summary: 'bd init takes a lock on the shared Dolt server, blocking every repo', rig: 'claude-factory', body: 'why, reworded' },
+    { id: 'c', summary: 'kubectl rollout status confirms a deploy finished', rig: 'claude-factory', body: 'unrelated' },
+    { id: 'd', summary: 'bd init on the shared Dolt server locks every repo', rig: 'sluis', body: 'same words, another rig' },
+  ]
+  writeFileSync(join(dir, 'beads', 'LONG.md'), formatLong(entries))
+  writeFileSync(
+    join(dir, 'ci', 'LONG.md'),
+    formatLong([{ id: 'e', summary: 'bd init on the shared Dolt server locks every repo', rig: 'claude-factory', body: 'same words, another topic' }]),
+  )
+
+  const pairs = await longSimPairs(dir)
+  expect(pairs.every(p => p.score >= 0.88)).toBe(true)
+  expect(
+    pairs.some(
+      p => (p.a === 'beads/LONG.md#a' && p.b === 'beads/LONG.md#b') || (p.a === 'beads/LONG.md#b' && p.b === 'beads/LONG.md#a'),
+    ),
+  ).toBe(true)
+  // c (a different lesson) pairs with nothing
+  expect(pairs.some(p => p.a.includes('#c') || p.b.includes('#c'))).toBe(false)
+  // d (another rig) and e (another topic) never pair with a, even with identical wording
+  expect(pairs.some(p => p.a.includes('#d') || p.b.includes('#d') || p.a.includes('#e') || p.b.includes('#e'))).toBe(false)
+}, 60_000)
+
+test('tierCandidates composes decide(), longSimPairs() and usage() into dream-prompt lines for promotion and dedupe', async () => {
+  const dir = join(tmpdir(), `memory-tiercand-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([
+      { id: 'lock', summary: 'bd init on the shared Dolt server locks every repo', rig: 'claude-factory', body: 'why' },
+      { id: 'x', summary: 'a note that only helped once', rig: 'claude-factory', body: 'body x' },
+      { id: 'y', summary: 'a note that only helped once, in other words', rig: 'claude-factory', body: 'body y' },
+    ]),
+  )
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-a')
+  use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-b')
+  use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-c')
+
+  const { promotions, duplicates } = await tierCandidates(dir)
+  expect(promotions).toEqual([
+    '- beads/LONG.md#lock (bd init on the shared Dolt server locks every repo): helped 3 times across 3 runs',
+  ])
+  expect(duplicates).toHaveLength(1)
+  expect(duplicates[0]).toContain('beads/LONG.md#x')
+  expect(duplicates[0]).toContain('beads/LONG.md#y')
 }, 60_000)

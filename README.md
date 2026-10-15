@@ -245,30 +245,45 @@ commit it, and the repo owns its factory like any other code:
 
 ## Shared memory and the dream
 
-A factory's workers share what they learn in `<factory>/memory/`, three levels deep so a
-brief stays short and a search finds the rest:
+A factory's workers share what they learn in `<factory>/memory/`, in tiers so a brief stays
+short and a search finds the rest:
 
 ```
 memory/
-  CORE.md              the few lessons nearly every run needs: every brief carries it whole
+  CORE.md              fact/behavior tier: the few lessons nearly every run needs, every brief carries it whole
   <topic>/README.md    what the topic covers, its notes most important first: briefs list topics
-  <topic>/<note>.md    one learning each (summary, rig, from, at, body): found by search
+  <topic>/LONG.md      long tier: lessons merged from several short notes, one `## ` heading each
+  <topic>/<note>.md    short tier: one worker's learning (summary, rig, from, at, body): found by search
   inbox/<note>.md      new notes, until the dream files them
+  .archive/<topic>.md  notes a tiering pass dropped: stale, never helped, or marked superseded
 ```
 
 - Workers search before they start and save what a later worker would otherwise relearn:
   `factory memory search [--rig r] <query>` (local embeddings, bge-small, no service; a note
-  ranks by its own match and its topic's, and another rig's notes never show) and
+  ranks by its own match and its topic's, a long or fact note ranks slightly above a short one
+  on a near-tie, and another rig's notes never show) and
   `factory memory add [--rig r] [--from run/station] <summary> [body]`. The manager searches
   it before answering a worker and saves the person's decisions that later runs should follow.
-  `factory memory helped <note>` marks a note that saved a worker time; with how often searches
-  return each note, it is what the dream orders by.
+  `factory memory helped [--from run/station] <note>` marks a note that saved a worker time;
+  with how often searches return each note, it is what the dream orders by.
 - **The dream** (`factory dream`; each tick starts one a day) is a headless Claude that can only
   edit inside the memory: it files the inbox under topics, merges duplicates, drops what is
   wrong or stale, writes lessons from the run journals since the last dream, and reorders the
-  READMEs and `CORE.md` by importance. A lesson that holds only while a bead is open names it;
+  READMEs and `CORE.md` by importance. It also sees two lists the memory computes for it:
+  promotion candidates (a `LONG.md` entry several runs found helpful several times, for the dream
+  to write as a `CORE.md` line) and possible duplicates (two `LONG.md` entries that score as the
+  same lesson, for the dream to merge). A lesson that holds only while a bead is open names it;
   the dream is told which named beads have closed and retires what waited on them. The memory is its own git repo, committed before and
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
+- **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
+  `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
+  topic's `LONG.md` once the note is 7 days old and was shown or helped at least once, and
+  archives a short note into `.archive/<topic>.md` once it is 30 days unused and never helped (or
+  marked `superseded:` outright). A merge keeps the note's usage count under its new
+  `<topic>/LONG.md#<id>` path, through `.renames.jsonl`, so a later `factory memory helped <old
+  path>` still resolves and nothing helped is lost. `--dry-run` prints the plan without writing.
+- `factory memory eval` runs a fixed query set (`<memory>/.eval.jsonl`) through search and prints
+  recall@5 and MRR, with which queries missed: how to tell that tiering did not cost search quality.
 
 ## Pull request labels
 

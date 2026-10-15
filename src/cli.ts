@@ -2088,7 +2088,16 @@ async function dream() {
       return 'nothing new since the last dream'
     const start = Date.now()
     const before = git(MEMORY, 'rev-parse', 'HEAD')
-    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads(), manager)
+    const { promotions, duplicates } = await memory.tierCandidates(MEMORY)
+    const prompt = memory.dreamPrompt(
+      MEMORY,
+      journal,
+      memory.usageLines(MEMORY),
+      closedBeads(),
+      manager,
+      promotions,
+      duplicates,
+    )
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
       [

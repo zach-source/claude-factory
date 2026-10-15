@@ -12,13 +12,17 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-// A factory's shared memory: what its workers learned, three levels deep so a brief stays short and a
-// search finds the rest.
-//   CORE.md              the few lessons nearly every run needs: every brief carries it whole
+// A factory's shared memory: what its workers learned, tiered so a brief stays short and a search finds
+// the rest.
+//   CORE.md              fact/behavior tier: the few lessons nearly every run needs, every brief carries it whole
 //   <topic>/README.md    what the topic covers, then its notes in order of importance: briefs list topics
-//   <topic>/<note>.md    one learning each, found by `factory memory search`
+//   <topic>/LONG.md      long tier: lessons merged from several short notes, one `## ` heading each
+//   <topic>/<note>.md    short tier: one worker's learning, found by `factory memory search`
 //   inbox/<note>.md      new notes, until the dream files them under a topic
-// The dream (`factory dream`) grooms it daily. The folder is its own git repo, so every pass can be undone.
+//   .archive/<topic>.md  notes a tiering pass dropped: stale, never helped, or marked superseded
+// The dream (`factory dream`) files the inbox and writes notes daily; `factory memory compact` (which it
+// also runs itself, unless FACTORY_MEMORY_TIERS=0) does the merge-to-long and archive pass deterministically.
+// The folder is its own git repo, so every pass can be undone.
 
 // A note's tier: short (one worker's note, in <topic>/<slug>.md or inbox/), long (a merged lesson, in
 // <topic>/LONG.md, one entry per `## ` heading), fact (a distilled CORE.md bullet). search ranks higher
@@ -310,6 +314,56 @@ export async function same(dir: string, note: Pick<Note, 'summary' | 'rig'>) {
     .map(n => ({ note: n, score: dot(vec(n), v!) }))
     .sort((a, b) => b.score - a.score)[0]
   return best && best.score >= SAME ? best : null
+}
+
+/**
+ * Near-duplicate long entries. Uses the same summary vectors and SAME cutoff as same(). Scores every
+ * pair within one topic and rig. No rig on either side counts as the same rig: that entry holds for
+ * every rig. The dream prompt lists the results as possible duplicates. This function merges nothing:
+ * a merge needs judgment about which id and wording survive.
+ */
+export async function longSimPairs(dir: string): Promise<SimPair[]> {
+  const { notes } = walk(dir)
+  const long = notes.filter(n => n.tier === 'long')
+  if (long.length < 2) return []
+  const vec = await vectors(dir, long, n => n.summary, '.index.json.summaries')
+  const groups = new Map<string, Note[]>()
+  for (const n of long) {
+    const key = `${topicOf(n)}::${n.rig ?? ''}`
+    groups.set(key, [...(groups.get(key) ?? []), n])
+  }
+  const pairs: SimPair[] = []
+  for (const g of groups.values())
+    for (let i = 0; i < g.length; i++)
+      for (let j = i + 1; j < g.length; j++) {
+        const score = dot(vec(g[i]!), vec(g[j]!))
+        if (score >= SAME) pairs.push({ a: g[i]!.path, b: g[j]!.path, score })
+      }
+  return pairs
+}
+
+/**
+ * decide()'s promote and dedupe candidates among the long tier, worded for the dream prompt. A path
+ * alone means little to the dream, so each line also carries its entry's summary.
+ */
+export async function tierCandidates(dir: string): Promise<{ promotions: string[]; duplicates: string[] }> {
+  const { notes } = walk(dir)
+  const long = notes.filter(n => n.tier === 'long')
+  const uses = usage(dir)
+  const summaryOf = (path: string) => long.find(n => n.path === path)?.summary ?? path
+  const candidates: LongCandidate[] = long.map(n => {
+    const u = uses.get(n.path)
+    return { path: n.path, helped: u?.helped ?? 0, runs: u?.runs ?? 0 }
+  })
+  const decisions = decide([], candidates, await longSimPairs(dir))
+  return {
+    promotions: decisions
+      .filter(d => d.kind === 'promote')
+      .map(d => `- ${d.path} (${summaryOf(d.path)}): ${d.reason}`),
+    duplicates: decisions
+      .filter(d => d.kind === 'dedupe')
+      .map(d => `- ${d.a} (${summaryOf(d.a)}) vs ${d.b} (${summaryOf(d.b)}): ${d.reason}`),
+  }
 }
 
 const slug = (s: string) =>
@@ -741,12 +795,15 @@ export const dreamPrompt = (
   uses: string[],
   closed: string[],
   manager: { activity: string[]; skills: string[] } = { activity: [], skills: [] },
+  promotions: string[] = [],
+  duplicates: string[] = [],
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
-The structure, three levels:
-- CORE.md: the lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig; a \`## rig: <name>\` section holds what nearly every run in that rig needs, and only that rig's workers read it. Every worker re-reads it on every turn, so each part (the top, each rig section) stays under ${CORE_BUDGET} bytes, one short line per lesson (at most 200 characters: the rule, not its story; the story goes in a note). Briefs cut a part at that budget, so what is past it is lost to them: move detail into topic notes, which search finds.
+The structure, three tiers:
+- CORE.md: the fact-and-behavior tier. The lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig; a \`## rig: <name>\` section holds what nearly every run in that rig needs, and only that rig's workers read it. Every worker re-reads it on every turn, so each part (the top, each rig section) stays under ${CORE_BUDGET} bytes, one short line per lesson (at most 200 characters: the rule, not its story; the story goes in a note). Briefs cut a part at that budget, so what is past it is lost to them: move detail into topic notes, which search finds.
 - <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
-- <topic>/<note>.md: one learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
+- <topic>/LONG.md: the long tier. One merged lesson per \`## summary\` heading, followed by a comment \`<!-- id: ... -->\`. A tiering pass (\`factory memory compact\`, which runs after you finish) merges an aging, used short note in here on its own. Never change an entry's id line: usage counts and renames follow it. You can still edit an entry's body, or merge two entries into one by hand, but keep the id you keep unchanged.
+- <topic>/<note>.md: the short tier. One learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
 - inbox/: new notes from workers. Empty it every pass.
 A lesson that holds only while some bead is open (an owner's hold, a pending decision, a known outage) names that bead ("until fab-8aq4 closes") and never goes in CORE.md: when the bead closes, it is retired.
 A note about one bead's own status (already fixed on main, a duplicate of another, still live at HEAD) is not memory: it belongs in that bead's comments. Drop it, unless it teaches something about how to tell (how to check that a bead is already done, say).
@@ -757,6 +814,8 @@ This pass:
 3. Read the run journal below for lessons no note holds yet: a station that failed for a reason the next worker could have avoided, a fix that worked, a review finding that recurs, a person's decision later runs should follow. Write each as a note. Skip the routine.
 4. Rewrite each touched topic's README and CORE.md so their order is by importance: what helped workers most (Usage below) first, then what holds most broadly. A note that keeps helping belongs higher, its lesson in CORE.md when it holds for every rig.
 5. Manager skills, proposed in ${skillSources(dir)} (the manager reviews each new, changed or reaped one and installs it or not; a rejection comes back to you as an inbox note): the manager is the Claude session that runs the factory for the person; Manager activity below is what it was asked and what it ran. Where it did the same multi-step work three or more times (the same sequence of commands to triage a stuck station, answer one kind of worker question, check a rig, start work), write it a skill so it need not work it out again: <name>/SKILL.md, a kebab-case name, frontmatter \`name:\` and \`description:\` (one line saying when to use it: the manager picks skills by it), then the steps with the exact commands, what to look for and what to decide. Fold what the activity shows into an existing skill rather than writing a near copy. Reap (git rm -r) a skill that no longer fits how the factory works, or that the manager has not used in 30 days and is older than that (Skill uses below). Write no skill for one-off work.
+6. Promotion candidates below: each is a LONG.md entry that several runs have found helpful several times. Write it as one short line (under 200 characters) in CORE.md: the top when every rig needs it, else that entry's rig's \`## rig:\` section. The LONG.md entry stays as that line's detail.
+7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry, keep the older id, and delete the other entry's block.
 Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
 
 ## Manager skills (name: uses, last used: description)
@@ -767,6 +826,12 @@ ${manager.activity.join('\n') || '(nothing new)'}
 
 ## Usage (helped: a worker said the note helped; shown: a search returned it)
 ${uses.join('\n') || '(no notes yet)'}
+
+## Promotion candidates (a LONG.md entry helped across several runs: write it into CORE.md)
+${promotions.join('\n') || '(none)'}
+
+## Possible duplicates (two LONG.md entries scoring as the same lesson: merge them)
+${duplicates.join('\n') || '(none)'}
 
 ## Closed beads this memory names
 ${closed.join('\n') || '(none)'}
