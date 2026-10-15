@@ -217,6 +217,8 @@ test.if(!!NPM)('npm pack: a young package version fails; an old one succeeds', a
     NPM_CONFIG_REGISTRY: `${gateBase}/npm/`,
     HOME: join(scratch, 'npmhome'),
     npm_config_cache: join(scratch, 'npmcache'),
+    // the host's own release cooldown (npm `before`) would hide the 6-day-old fixture before the gate sees it
+    npm_config_before: new Date().toISOString(),
   }
   const young = await run([NPM!, 'pack', `${NPM_PKG}@1.0.1`, '--pack-destination', outDir], env)
   expect(young.code).not.toBe(0)
@@ -240,7 +242,11 @@ test.if(!!UV && !!PYTHON3)('uv pip install --dry-run: a young version fails; an 
   const venv = join(scratch, 'uvvenv')
   const made = await run([UV!, 'venv', venv, '--python', PYTHON3!], {})
   expect(made.code).toBe(0)
-  const env = { UV_DEFAULT_INDEX: `${gateBase}/pypi/simple`, UV_INSECURE_HOST: new URL(gateBase).hostname }
+  const env = {
+    UV_DEFAULT_INDEX: `${gateBase}/pypi/simple`,
+    UV_INSECURE_HOST: new URL(gateBase).hostname,
+    UV_EXCLUDE_NEWER: new Date().toISOString(), // the host's own cooldown, as npm's `before` above
+  }
 
   const young = await run([UV!, 'pip', 'install', '--dry-run', '--python', venv, `${PY_PROJECT}==1.0.1`], env)
   expect(young.code).not.toBe(0)
