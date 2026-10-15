@@ -7,6 +7,8 @@ minor release may change the factory format, the CLI or the run state.
 ## Unreleased
 
 - Fixed: `factory status`, `waiting` and `show` (the console's Run view) exited 1 on the first AX run whose server they could not reach, such as when the `ax-server` port-forward has died, listing nothing past it. That run's agent now reads `unreachable: <error>` and the rest of the listing still prints. The tick already caught this.
+- Fixed: `factory memory add` caches the summaries' vectors beside the full-text ones, so it embeds only its own summary. Embedding every summary on each add took minutes past 400 notes, and the tick that replays a VM worker's add was killed at its 120 s limit before finishing, so every tick failed with a `$.process.run` HooksError and that outbox line was retried forever.
+
 ## 0.9.0 (2026-10-15)
 
 - The console's New run tab is gone: runs are started from the manager session or Backlog's `queue`/`start`, which this tab never fed into, and its only other caller was the Rigs tab's now-removed 'new run here' button. Rigs, PRs and Interview move down to hotkeys 5, 6 and 7.
