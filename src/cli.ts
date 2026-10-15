@@ -2426,6 +2426,7 @@ async function createRun(
   )
   const ws: string = created.workspace.workspace_id
   const worktree: string = created.worktree.path
+  worker.excludeScratch(worktree) // claude-factory-9wu: .scratch/ stays untracked, with no commit, in this repo
   const source = from ? from.run.factory : factorySource(spec, worktree)
   // pinned resolved, as data: a base it extends may change after the run starts
   const pinned = join(runDir(id), 'factory.json')

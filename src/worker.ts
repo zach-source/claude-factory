@@ -859,6 +859,24 @@ function asWorker() {
 }
 
 /**
+ * makes git ignore a worker's `.scratch/` dir, with no commit, in any rig repo (claude-factory-9wu). It adds
+ * one line to the shared info/exclude file (`git rev-parse --git-common-dir`), so every worktree of the repo
+ * shares it. It writes the line once: a line already there, from an earlier call or another worktree, stops
+ * a second write. Outside a git repo (a test fixture with no .git), it does nothing.
+ */
+export function excludeScratch(dir: string) {
+  const p = Bun.spawnSync(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (p.exitCode !== 0) return
+  const common = p.stdout.toString().trim()
+  const infoDir = join(common, 'info')
+  mkdirSync(infoDir, { recursive: true })
+  const file = join(infoDir, 'exclude')
+  const text = existsSync(file) ? readFileSync(file, 'utf8') : ''
+  if (text.split('\n').some(line => line.trim() === '.scratch/')) return
+  writeFileSync(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.scratch/\n`)
+}
+
+/**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
@@ -895,7 +913,10 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   for (let i = 0; i < tries; i++) {
     rmSync(repo(), { recursive: true, force: true })
     const r = sh(['git', 'clone', '--branch', process.env.FACTORY_BRANCH ?? 'main', remote, repo()])
-    if (r.ok) return
+    if (r.ok) {
+      excludeScratch(repo())
+      return
+    }
     err = r.err
     await Bun.sleep(waitMs)
   }
