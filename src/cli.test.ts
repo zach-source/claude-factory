@@ -33,6 +33,7 @@ import {
   watchWake,
   workerSettings,
   WORKER_TOOLS,
+  commitIdentity,
   room,
   withoutFleet,
 } from './cli'
@@ -359,6 +360,26 @@ test('a worker gets the asd-ste100 plugin alone, with bundled skills off, so it 
 
 test('WORKER_TOOLS carries Skill, so a worker can load the asd-ste100 skill', () => {
   expect(WORKER_TOOLS.split(',')).toContain('Skill')
+})
+
+test("workers commit as the factory home's own git identity, crediting factory.coauthor", () => {
+  const home = mkdtempSync(join(tmpdir(), 'factory-id-'))
+  expect(commitIdentity(home)).toEqual({ env: {}, rule: '' }) // not a repo: the rig's own config
+  Bun.spawnSync(['git', 'init', '-q', home])
+  for (const [k, v] of Object.entries({
+    'user.name': 'gen-ai factory',
+    'user.email': 'factory@x.invalid',
+    'factory.coauthor': 'Pat <pat@x.com>',
+  }))
+    Bun.spawnSync(['git', '-C', home, 'config', k, v])
+  const id = commitIdentity(home)
+  expect(id.env).toEqual({
+    GIT_AUTHOR_NAME: 'gen-ai factory',
+    GIT_AUTHOR_EMAIL: 'factory@x.invalid',
+    GIT_COMMITTER_NAME: 'gen-ai factory',
+    GIT_COMMITTER_EMAIL: 'factory@x.invalid',
+  })
+  expect(id.rule).toContain('Co-authored-by: Pat <pat@x.com>')
 })
 
 test("a usage limit is read from the transcript's last turn, and the next account is one whose limit has reset", () => {
