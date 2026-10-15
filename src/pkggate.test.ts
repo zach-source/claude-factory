@@ -22,6 +22,54 @@ require (
 `
 const GO_ZIP_OLD = 'ZIPBYTES-v0.26.0'
 const GO_ALLOWLISTED_INFO = '{"Version":"v9.9.9","Time":"2026-10-10T23:00:00Z"}'
+// an .info Time 30 days before the test clock (NOW, below): old enough on its own, used by every
+// claude-factory-8ub fixture below so the sum.golang.org first-logged check is what actually decides it
+const GO_INFO_BACKDATED_TIME = '2026-09-11T00:00:00Z'
+
+// claude-factory-8ub: the Go age gate also checks sum.golang.org's first-logged record.
+// It does this through two new upstreams (`sumdb`, `goIndex`). Every fixture in this file now points both
+// at this same fake server. `/index` answers any `since` with 9 synthetic entries, each timestamped inside
+// the requested window. So the floor comes out the same (104, see below), no matter which `now`/minDays a
+// given test uses. `/lookup/<mod>@<version>` answers with a low id (at or below the floor) for anything not
+// explicitly listed below. So every pre-existing "old enough" Go fixture in this file keeps passing,
+// without each needing its own record.
+const escapeGoPath = (s: string) => s.replace(/[A-Z]/g, c => `!${c.toLowerCase()}`)
+const GO_FLOOR_SAMPLE_VERSION = 'v1.0.0'
+const GO_FLOOR_SAMPLE_PATHS = [
+  'floorsample-a.example.com/mod',
+  'floorsample-b.example.com/mod',
+  'floorsample-c.example.com/mod',
+  // real casing has an uppercase letter: proves the floor refresh escapes Path/Version the way a real Go
+  // client would, not the raw casing index.golang.org reports (AC10)
+  'github.com/Azure/floorsample',
+  'floorsample-e.example.com/mod',
+  'floorsample-f.example.com/mod',
+  'floorsample-g.example.com/mod',
+  'floorsample-h.example.com/mod',
+  'floorsample-i.example.com/mod',
+]
+// ids 100..108: sorted, the lower median (what makeGate's goFloor should compute) is the 5th value, 104
+const GO_FLOOR_RECORD = 104
+const GO_FLOOR_RECORDS: Record<string, number> = Object.fromEntries(
+  GO_FLOOR_SAMPLE_PATHS.map((p, i) => [`${escapeGoPath(p)}@${escapeGoPath(GO_FLOOR_SAMPLE_VERSION)}`, 100 + i]),
+)
+// versions this file needs to look too-new (first logged after the floor); everything else defaults to
+// GO_FLOOR_RECORD - 1, always at or below it
+const GO_HIGH_RECORDS: Record<string, number> = {
+  'backdated.example.com/mod@v1.0.0': GO_FLOOR_RECORD + 1000,
+  'listfixture.example.com/mod@v2.0.0': GO_FLOOR_RECORD + 1000,
+}
+const GO_LOOKUP_500 = new Set(['lookupfail500.example.com/mod@v1.0.0'])
+const GO_LOOKUP_HANGS = new Set(['lookuptimeout.example.com/mod@v1.0.0'])
+const GO_LOOKUP_BAD_BODY: Record<string, string> = { 'lookupbadbody.example.com/mod@v1.0.0': 'abc\n' }
+// counts every /lookup/<key> hit, so a test can assert a specific key was (or was never) looked up
+const goLookupHits: Record<string, number> = {}
+
+function goIndexBody(sinceIso: string): string {
+  const sinceMs = Date.parse(sinceIso)
+  const ts = new Date(sinceMs + 15 * 60_000).toISOString() // inside [since, since + 30min]
+  return GO_FLOOR_SAMPLE_PATHS.map(p => JSON.stringify({ Path: p, Version: GO_FLOOR_SAMPLE_VERSION, Timestamp: ts })).join('\n') + '\n'
+}
 
 // a transparency-log tile is raw hash bytes, not text: this probe (00 ff 80 c3, repeated) is exactly what
 // review found UTF-8 decoding turns into 00 ef bf bd ef bf bd... when passed through fetchText (ei0.8)
@@ -57,6 +105,21 @@ const routes: Record<string, Route> = {
   '/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0': { status: 200, body: 'fakehash\n' },
   '/nope': { status: 404, body: '{"error":"Not found"}' },
   '/boom500': { status: 500, body: 'internal error' },
+
+  // claude-factory-8ub: an .info Time 30d old, but first logged in sum.golang.org after the floor -- AC1
+  '/backdated.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  // the control for AC1: same .info Time, but a record at or below the floor -- AC2
+  '/loggedold.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  // AC3: a module whose @v/list has one allowed version and one backdated one, and whose @latest names the
+  // backdated one -- the list must drop it, and the @latest fallback must pick the allowed release instead
+  '/listfixture.example.com/mod/@v/list': { status: 200, body: 'v1.0.0\nv2.0.0\n' },
+  '/listfixture.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  '/listfixture.example.com/mod/@v/v2.0.0.info': { status: 200, body: `{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  '/listfixture.example.com/mod/@latest': { status: 200, body: `{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  // AC4: a sum.golang.org lookup that 500s, hangs, or answers a non-numeric body -- none is ever an allow
+  '/lookupfail500.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  '/lookuptimeout.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
+  '/lookupbadbody.example.com/mod/@v/v1.0.0.info': { status: 200, body: `{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}` },
 }
 
 // trimmed from a real `curl -H 'Accept: application/json' https://registry.npmjs.org/@types%2fms`

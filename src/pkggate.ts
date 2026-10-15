@@ -45,8 +45,19 @@ type Resolved = {
   /** the npm packument / PyPI index a tarball or file request reads its entry's time from, short TTL */
   npmCache: Map<string, { parsed: NpmPackument; expiresAt: number }>
   pypiCache: Map<string, { parsed: PypiIndex; expiresAt: number }>
-  /** a module version's `.info` is immutable once published, so a successful fetch is cached forever (ei0.12) */
-  goInfoCache: Map<string, { info: string; version?: string; time?: string }>
+  /** a module version's `.info` never changes once published, so the gate caches a successful fetch
+   * forever (ei0.12). `record` holds that version's sum.golang.org first-logged id, once a lookup
+   * succeeds (claude-factory-8ub). */
+  goInfoCache: Map<string, { info: string; version?: string; time?: string; record?: number }>
+  /** goFloor holds a floor on the sum.golang.org record id. A version counts as old enough only when its
+   * own record id is at or below this floor. The floor estimates the sum.golang.org tree size at
+   * now-minDays, always on the safe side (never above the true size). It stays `null` until the first
+   * successful refresh, and it never decreases (claude-factory-8ub). */
+  goFloor: { record: number; at: number } | null
+  /** goFloorRefreshing holds the one in-flight floor refresh. Every decision that needs a refresh shares
+   * this promise, so concurrent decisions trigger at most one index.golang.org request
+   * (claude-factory-8ub). */
+  goFloorRefreshing: Promise<void> | null
 }
 
 const REGISTRY_CACHE_MS = 60_000
@@ -56,6 +67,13 @@ const GO_LIST_CONCURRENCY = 8
 /** packuments/indexes are multi-MB; .info entries are tiny but there can be many more of them (ei0.13) */
 const DEFAULT_REGISTRY_CACHE_MAX_ENTRIES = 200
 const DEFAULT_GO_INFO_CACHE_MAX_ENTRIES = 20_000
+/** the floor sample window sits inside now-minDays. index.golang.org's refresh lag (about 5 min) and its
+ * several stale backends still leave enough entries in this window to sample (claude-factory-8ub) */
+const GO_FLOOR_WINDOW_MS = 30 * 60_000
+/** the floor estimate looks up at most this many index entries, evenly spaced across the window */
+const GO_FLOOR_SAMPLE_LIMIT = 9
+/** fewer successful lookups than this and the sample is too thin to trust: no floor from this refresh */
+const GO_FLOOR_MIN_SAMPLES = 5
 
 function resolve(cfg: GateConfig): Resolved {
   const minDays = cfg.minDays ?? 4
@@ -76,6 +94,8 @@ function resolve(cfg: GateConfig): Resolved {
     npmCache: new Map(),
     pypiCache: new Map(),
     goInfoCache: new Map(),
+    goFloor: null,
+    goFloorRefreshing: null,
   }
 }
 
@@ -246,6 +266,15 @@ function goModuleUnescape(path: string): string {
   return path.replace(/!([a-z])/g, (_, c: string) => c.toUpperCase())
 }
 
+/**
+ * Go's module-path case encoding, the reverse of `goModuleUnescape`: an uppercase letter becomes `!`
+ * followed by its lowercase. index.golang.org's `Path` and `Version` fields arrive un-encoded; a
+ * sum.golang.org lookup needs them encoded the way the go command itself would send them (claude-factory-8ub)
+ */
+function goModuleEscape(s: string): string {
+  return s.replace(/[A-Z]/g, c => `!${c.toLowerCase()}`)
+}
+
 function parseGoInfo(text: string): { version: string; time: string } | null {
   try {
     const j = JSON.parse(text)
@@ -253,6 +282,135 @@ function parseGoInfo(text: string): { version: string; time: string } | null {
   } catch {
     return null
   }
+}
+
+/**
+ * looks up `<mod>@<version>` on sum.golang.org.
+ * sum.golang.org sets a module's record id once, the first time any client asks for that content hash.
+ * The module author cannot move this id (claude-factory-8ub).
+ * The caller sends `mod` and `version` exactly as given: already Go-case-escaped by the caller itself.
+ * This function returns `ok:false` on a non-2xx status, a timeout, or a body whose first line is not a
+ * plain non-negative integer. It never caches that result, and never treats it as an allow.
+ */
+async function goSumdbRecord(cfg: Resolved, mod: string, version: string): Promise<{ ok: true; record: number } | { ok: false }> {
+  const r = await fetchText(cfg, `${cfg.upstream.sumdb}/lookup/${mod}@${version}`)
+  if (!r.ok) return { ok: false }
+  const line1 = (r.text.split('\n')[0] ?? '').trim()
+  if (!/^\d+$/.test(line1)) return { ok: false }
+  const record = Number(line1)
+  return Number.isSafeInteger(record) ? { ok: true, record } : { ok: false }
+}
+
+/** up to `n` evenly spaced items from `items`, in their original order; `items` itself when it already has
+ * `n` or fewer entries */
+function pickEvenlySpaced<T>(items: T[], n: number): T[] {
+  if (items.length <= n) return items
+  const step = items.length / n
+  return Array.from({ length: n }, (_, i) => items[Math.floor(i * step)]!)
+}
+
+/** the lower of the two middle values of a sorted array with an even length, or the single middle value
+ * with an odd one: one old record among the sample must not drag the floor down (claude-factory-8ub) */
+function lowerMedian(sorted: number[]): number {
+  return sorted[Math.floor((sorted.length - 1) / 2)]!
+}
+
+type GoIndexLine = { Path: string; Version: string; Timestamp: string }
+
+function parseGoIndexLine(line: string): GoIndexLine | null {
+  try {
+    const j = JSON.parse(line)
+    return typeof j?.Path === 'string' && typeof j?.Version === 'string' && typeof j?.Timestamp === 'string'
+      ? { Path: j.Path, Version: j.Version, Timestamp: j.Timestamp }
+      : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * refreshes `cfg.goFloor` from index.golang.org.
+ * It samples up to `GO_FLOOR_SAMPLE_LIMIT` entries first seen in the window ending at `now - minDays`.
+ * It looks up each sampled entry on sum.golang.org.
+ * It takes the lower median of the ids that answer as the new floor.
+ * The median, not the minimum, stops one re-logged old version in the sample from dragging the floor near
+ * zero (claude-factory-8ub).
+ * A failed fetch, or fewer than `GO_FLOOR_MIN_SAMPLES` answers, leaves the existing floor in place: an old
+ * floor is still safe, since it only refuses more than a fresh one would.
+ */
+async function refreshGoFloor(cfg: Resolved): Promise<void> {
+  const t0 = cfg.now() - cfg.minDays * 24 * 3_600_000
+  const sinceMs = t0 - GO_FLOOR_WINDOW_MS
+  const r = await fetchText(cfg, `${cfg.upstream.goIndex}/index?since=${encodeURIComponent(new Date(sinceMs).toISOString())}&limit=2000`)
+  if (!r.ok) return
+  const entries = r.text
+    .split('\n')
+    .map(parseGoIndexLine)
+    .filter((e): e is GoIndexLine => {
+      if (!e) return false
+      const ts = Date.parse(e.Timestamp)
+      return !Number.isNaN(ts) && ts >= sinceMs && ts <= t0
+    })
+  const sample = pickEvenlySpaced(entries, GO_FLOOR_SAMPLE_LIMIT)
+  const ids: number[] = []
+  await mapLimit(sample, GO_LIST_CONCURRENCY, async e => {
+    const looked = await goSumdbRecord(cfg, goModuleEscape(e.Path), goModuleEscape(e.Version))
+    if (looked.ok) ids.push(looked.record)
+  })
+  if (ids.length < GO_FLOOR_MIN_SAMPLES) return
+  ids.sort((a, b) => a - b)
+  const median = lowerMedian(ids)
+  cfg.goFloor = { record: cfg.goFloor ? Math.max(cfg.goFloor.record, median) : median, at: t0 }
+}
+
+/**
+ * makes sure `cfg.goFloor` is fresh enough.
+ * It refreshes the floor first when it is `null`, or older than the current window allows.
+ * Every caller that needs a refresh shares the one in-flight promise.
+ * So a burst of decisions (a `@v/list` of 20 versions, say) causes at most one index.golang.org request
+ * (claude-factory-8ub).
+ */
+async function ensureGoFloor(cfg: Resolved): Promise<Resolved['goFloor']> {
+  const t0 = cfg.now() - cfg.minDays * 24 * 3_600_000
+  const stale = !cfg.goFloor || cfg.goFloor.at < t0 - GO_FLOOR_WINDOW_MS
+  if (stale && !cfg.goFloorRefreshing) cfg.goFloorRefreshing = refreshGoFloor(cfg).finally(() => (cfg.goFloorRefreshing = null))
+  if (cfg.goFloorRefreshing) await cfg.goFloorRefreshing
+  return cfg.goFloor
+}
+
+/**
+ * the second half of a Go version's decision.
+ * The caller must run this only once `infoDecision` is an `allow` that is not merely `allowlisted`: a
+ * version too young, missing its publish time, or itself allowlisted never reaches sum.golang.org at all.
+ * This function refuses when the floor is unavailable, the lookup fails, or the version's own record
+ * outranks the floor (so the gate cannot yet trust it as first logged long enough ago).
+ * Otherwise it returns `infoDecision` unchanged.
+ * `cacheEntry`, when given, carries the looked-up record forward, so the gate never looks up the same
+ * version twice (claude-factory-8ub).
+ */
+async function goSumdbGate(
+  cfg: Resolved,
+  mod: string,
+  version: string,
+  cacheEntry: { record?: number } | undefined,
+  infoDecision: Decision,
+): Promise<Decision> {
+  const floor = await ensureGoFloor(cfg)
+  if (!floor) return { decision: 'error', reason: 'sum.golang.org floor unavailable', ageH: infoDecision.ageH }
+  let record = cacheEntry?.record
+  if (record === undefined) {
+    const looked = await goSumdbRecord(cfg, mod, version)
+    if (!looked.ok) return { decision: 'error', reason: 'sum.golang.org lookup failed', ageH: infoDecision.ageH }
+    record = looked.record
+    if (cacheEntry) cacheEntry.record = record
+  }
+  if (record > floor.record)
+    return {
+      decision: 'refuse',
+      reason: `first logged in sum.golang.org after ${new Date(floor.at).toISOString()} (record ${record} > floor ${floor.record}), minimum ${cfg.minDays}d`,
+      ageH: infoDecision.ageH,
+    }
+  return infoDecision
 }
 
 /**
@@ -285,7 +443,10 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
     cached = entry
   }
   const publishedMs = cached.time ? Date.parse(cached.time) : NaN
-  const d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.go)
+  let d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.go)
+  // old enough by .info Time and not merely allowlisted: the time alone is not trustworthy (a module author
+  // controls the tagged commit's VCS time), so also check sum.golang.org's first-logged record (claude-factory-8ub)
+  if (d.decision === 'allow' && d.reason !== 'allowlisted') d = await goSumdbGate(cfg, mod, cached.version ?? version, cached, d)
   logDecision('go', mod, cached.version ?? version, cached.time ?? null, d, cfg, quiet)
   return { ok: true as const, info: cached.info, time: cached.time, decision: d }
 }
@@ -297,7 +458,17 @@ function ageText(d: Decision) {
 async function goVersion(cfg: Resolved, mod: string, version: string, ext: 'info' | 'mod' | 'zip') {
   const r = await goDecideVersion(cfg, mod, version)
   if (!r.ok) return refuse(502, `pkg-gate: ${mod}@${version}: upstream error`)
-  if (r.decision.decision === 'refuse') return refuse(404, `pkg-gate: ${mod}@${version} ${ageText(r.decision)}, minimum ${cfg.minDays}d`)
+  if (r.decision.decision === 'refuse') {
+    // a sum.golang.org refusal (first logged too recently) carries its own reason; everything else keeps
+    // the age-based wording (claude-factory-8ub)
+    const text = r.decision.reason.startsWith('first logged in sum.golang.org')
+      ? `pkg-gate: ${mod}@${version} first logged in sum.golang.org less than ${cfg.minDays}d ago, minimum ${cfg.minDays}d`
+      : `pkg-gate: ${mod}@${version} ${ageText(r.decision)}, minimum ${cfg.minDays}d`
+    return refuse(404, text)
+  }
+  // the floor was unavailable, or the sum.golang.org lookup itself failed: an upstream error, same as a
+  // failed .info/.mod/.zip fetch, never a pass-through (claude-factory-8ub)
+  if (r.decision.decision === 'error') return refuse(502, `pkg-gate: ${mod}@${version}: upstream error`)
   if (ext === 'info') return new Response(r.info, { headers: { 'content-type': 'application/json' } })
   const b = await fetchBytes(cfg, `${cfg.upstream.go}/${mod}/@v/${version}.${ext}`)
   if (!b.ok) return refuse(502, `pkg-gate: ${mod}@${version}.${ext}: upstream error`)
@@ -333,14 +504,19 @@ async function goLatest(cfg: Resolved, mod: string) {
     const parsed = parseGoInfo(latest.text)
     if (parsed) {
       const publishedMs = Date.parse(parsed.time)
-      const d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.go)
+      let d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.go)
+      if (d.decision === 'allow' && d.reason !== 'allowlisted') {
+        const cacheEntry = cfg.goInfoCache.get(`${mod}@${parsed.version}`)
+        d = await goSumdbGate(cfg, mod, parsed.version, cacheEntry, d)
+      }
       logDecision('go', mod, parsed.version, parsed.time, d, cfg)
       if (d.decision === 'allow') return new Response(latest.text, { headers: { 'content-type': 'application/json' } })
     } else {
       logDecision('go', mod, undefined, null, { decision: 'error', reason: 'unparseable @latest', ageH: null }, cfg)
     }
   }
-  // the real latest is too young (or unreadable): fall back to the newest version old enough
+  // the real latest is too young, not yet trusted by sum.golang.org, or unreadable: fall back to the newest
+  // version old enough (claude-factory-8ub)
   const list = await fetchText(cfg, `${cfg.upstream.go}/${mod}/@v/list`)
   if (!list.ok) return refuse(502, `pkg-gate: ${mod}: upstream error`)
   const versions = list.text
