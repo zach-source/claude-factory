@@ -1050,3 +1050,54 @@ test("envtest's kube-apiserver runs through a wrapper that advertises 127.0.0.1,
   )
   expect(run({ KUBEBUILDER_ASSETS: join(d, 'none') }).exitCode).toBe(127)
 })
+
+const envOf = () => {
+  const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+  return Object.fromEntries(task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]))
+}
+
+test('a GitLab rig adds one rule for its host: PRIVATE-TOKEN from GITLAB, Basic from GITLAB_BASIC', () => {
+  const uri = (key: string) => `ate-secret://agent-vault/factory/${key}`
+  expect(ax.egressPolicy('', [], undefined, 'gitlab.example.com').rules).toContainEqual({
+    https: { hostnames: ['gitlab.example.com'] },
+  })
+  const rules = ax.egressPolicy('factory', [], undefined, 'gitlab.example.com').rules
+  expect(rules).toContainEqual({
+    https: {
+      hostnames: ['gitlab.example.com'],
+      effects: {
+        replaceHeaders: [
+          { header: 'PRIVATE-TOKEN', prefix: '', credentialUri: uri('GITLAB') },
+          { header: 'Authorization', prefix: 'Basic ', credentialUri: uri('GITLAB_BASIC') },
+        ],
+      },
+    },
+  })
+  // a GitHub rig's policy is the same as before
+  expect(ax.egressPolicy('factory', [], undefined, undefined)).toEqual(ax.egressPolicy('factory'))
+  expect(ax.egressPolicy('factory').rules.length).toBe(rules.length - 1)
+})
+
+test('a GitLab rig gets placeholders and a second extraHeader; a GitHub rig keeps its one', () => {
+  writeFileSync(join(dir, 'actor'), '')
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    const base = { repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} }
+    ax.launch({ ...base, name: 't4', gitlabHost: 'gitlab.example.com' })
+    expect(envOf()).toMatchObject({
+      GH_TOKEN: 'placeholder',
+      GITLAB_TOKEN: 'placeholder',
+      GITLAB_HOST: 'gitlab.example.com',
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
+      GIT_CONFIG_KEY_1: 'http.https://gitlab.example.com/.extraHeader',
+      GIT_CONFIG_VALUE_1: 'Authorization: Basic placeholder',
+    })
+    ax.launch({ ...base, name: 't5' })
+    const env = envOf()
+    expect(env.GIT_CONFIG_COUNT).toBe('1')
+    expect(Object.keys(env).filter(k => /GITLAB|KEY_1/.test(k))).toEqual([])
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})

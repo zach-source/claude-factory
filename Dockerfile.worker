@@ -18,12 +18,16 @@ ARG CLAUDE_CODE_VERSION=2.1.291
 ARG CODEX_VERSION=0.160.1
 ARG PI_VERSION=0.80.2
 ARG GH_VERSION=2.98.0
+ARG GLAB_VERSION=1.99.0
 ARG BD_VERSION=1.3.0
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
   && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz \
   | tar -xz -C /tmp && mv /tmp/gh_${GH_VERSION}_linux_amd64/bin/gh /usr/local/bin/gh && rm -rf /tmp/gh_*
+# glab is gh for a rig on GitLab (its workers use it on merge requests)
+RUN mkdir /tmp/glab && curl -fsSL https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_amd64.tar.gz \
+  | tar -xz -C /tmp/glab && mv /tmp/glab/bin/glab /usr/local/bin/glab && rm -rf /tmp/glab
 RUN curl -fsSL https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz \
   | tar -xz -C /usr/local/bin bd
 # the agents a rig can choose (rig add --agent): claude, codex or pi, each run headless by `factory worker serve`
