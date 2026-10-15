@@ -7,6 +7,8 @@ the run's git worktree, and the outcome it reports routes the run along the grap
 A Claude mod turns one session into the manager: it ticks every run, draws the
 board, and wakes the manager model with mail and toward each rig's goal.
 
+New to claude-factory? Start with [docs/onboarding.md](docs/onboarding.md).
+
 ## Run it
 
 ```sh
