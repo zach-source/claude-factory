@@ -544,6 +544,73 @@ export function loadDevenv() {
   if (process.env.PATH !== basePath) process.env.PATH = `${process.env.PATH}:${basePath}`
 }
 
+/** One process that a devenv declares in services.* or processes.*. It is read from DEVENV_TASK_FILE. */
+export type DevenvProcess = { name: string; command: string; cwd?: string; readyExec?: string; readyHttp?: string }
+
+/**
+ * The processes of a devenv are the services.* and processes.* options.
+ * This function reads them from DEVENV_TASK_FILE (devenv 2.2.2's tasks.json; verified in claude-factory-5sn plan#1).
+ * It returns each entry named 'devenv:processes:<name>' whose type is 'process' and whose process.start.enable is not false.
+ *
+ * Oneshots (devenv:enterShell, devenv:files, and so on) are never processes. So they never appear here.
+ *
+ * A file that is missing or cannot be parsed returns no processes. It does not return an error.
+ * So an old devenv (with no DEVENV_TASK_FILE) or a rig with no processes declared is not affected.
+ */
+type DevenvTask = {
+  name: string
+  type: string
+  command?: string
+  cwd?: string
+  process?: { start?: { enable?: boolean }; ready?: { exec?: string; http?: { get?: string } } | null }
+}
+
+export function devenvProcesses(file: string): DevenvProcess[] {
+  if (!existsSync(file)) return []
+  let tasks: unknown
+  try {
+    tasks = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return []
+  }
+  if (!Array.isArray(tasks)) return []
+  return (tasks as DevenvTask[])
+    .filter(t => t?.type === 'process' && typeof t.command === 'string' && t.process?.start?.enable !== false)
+    .map(t => ({
+      name: t.name.replace(/^devenv:processes:/, ''),
+      command: t.command!,
+      cwd: t.cwd,
+      readyExec: t.process?.ready?.exec,
+      readyHttp: t.process?.ready?.http?.get,
+    }))
+}
+
+/**
+ * This function returns the agent's DATABASE_URL. See A2 of claude-factory-5sn's plan.
+ * If the devenv sets DATABASE_URL, this function returns that value.
+ * Otherwise, this function builds the URL from PGHOST and PGPORT.
+ * devenv's services.postgres sets PGHOST and PGPORT. It does not set DATABASE_URL.
+ * This was verified in plan#1 against devenv 2.2.2.
+ *
+ * If PGHOST starts with '/', it is a Unix socket directory. It is not a host.
+ * Postgres takes that directory as a url-encoded ?host=<dir> query parameter in the connection URL.
+ *
+ * If PGHOST is not set, this function returns undefined.
+ * This happens when no services.* ran. It also happens when the service is not Postgres.
+ */
+export function databaseUrl(env: Record<string, string | undefined>): string | undefined {
+  if (env.DATABASE_URL) return env.DATABASE_URL
+  const host = env.PGHOST
+  if (!host) return undefined
+  const port = env.PGPORT
+  if (host.startsWith('/')) {
+    const params = new URLSearchParams({ host })
+    if (port) params.set('port', port)
+    return `postgresql:///postgres?${params.toString()}`
+  }
+  return port ? `postgresql://${host}:${port}/postgres` : `postgresql://${host}/postgres`
+}
+
 /** the VM has no /etc/hosts, so localhost does not resolve (a test's local API server, say) */
 function localhost() {
   if (!existsSync('/etc/hosts') || !/^127\.0\.0\.1\s+localhost\b/m.test(readFileSync('/etc/hosts', 'utf8')))
