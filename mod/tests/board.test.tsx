@@ -248,5 +248,11 @@ test('the opened card fits inside its border at 40 columns (A7)', async ($, on) 
   const drawn = JSON.stringify(await ui.drawn())
   expect(drawn).toContain('Steer')
   expect(drawn).toContain('Worker')
+  // the card's border and padding take 4 columns off the 40-column body (p.width - 4 = 36); the
+  // Steer rule's dash fill (no note) renders as its own Text node, "── Steer " (9 chars) plus
+  // 36 - 9 = 27 dashes, not the unadjusted 40 - 9 = 31: a mutation dropping the -4 keeps every
+  // other assertion in this test green, so check the dash count exactly and structurally
+  expect(drawn).toContain(`"children":["${'─'.repeat(27)}"]`)
+  expect(drawn).not.toMatch(/─{28,}/)
   await ui.unmount()
 })
