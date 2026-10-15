@@ -1,8 +1,8 @@
 import { describe, expect, test, afterEach } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bazelrc, databaseUrl, devenvProcesses, lastTurn } from './worker'
+import { bazelrc, databaseUrl, devenvProcesses, lastTurn, servicesNote, startServices } from './worker'
 
 // bazelrc()'s pkg-gate propagation (ei0.5, commit 3a6d54d): when launch() set registry env vars in the VM,
 // rules_go/rules_python/rules_js must fetch through the gate too, via `common --repo_env=<VAR>=<value>` lines.
@@ -226,5 +226,182 @@ describe('databaseUrl', () => {
 
   test('returns undefined with no PGHOST and no PGPORT', () => {
     expect(databaseUrl({})).toBeUndefined()
+  })
+})
+
+// startServices (claude-factory-5sn.2): runs a devenv process's own command directly, never `devenv up` or
+// `devenv shell`, so an enterShell oneshot in the same tasks.json must never run (A4). Each spawned command
+// echoes a unique tag so afterEach can pkill it, instead of leaking a background `sleep`.
+describe('startServices', () => {
+  const TAG = 'worker-test-5sn-tag'
+  const ENV_VARS = [
+    'FACTORY_WORKER_DIR',
+    'FACTORY_WORKER_REPO',
+    'DEVENV_TASK_FILE',
+    'FACTORY_SERVICES',
+    'FACTORY_SERVICES_WAIT_MS',
+    'PGHOST',
+    'PGPORT',
+    'DATABASE_URL',
+  ] as const
+  const saved: Record<string, string | undefined> = {}
+  let dir: string
+
+  afterEach(() => {
+    Bun.spawnSync(['pkill', '-f', TAG])
+    for (const v of ENV_VARS) {
+      if (saved[v] === undefined) delete process.env[v]
+      else process.env[v] = saved[v]
+      delete saved[v]
+    }
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  function set(vars: Partial<Record<(typeof ENV_VARS)[number], string>> = {}) {
+    for (const v of ENV_VARS) saved[v] = process.env[v]
+    for (const v of ENV_VARS) delete process.env[v]
+    dir = mkdtempSync(join(tmpdir(), 'start-services-'))
+    const own = join(dir, 'own')
+    const repo = join(dir, 'repo')
+    mkdirSync(own, { recursive: true })
+    mkdirSync(repo, { recursive: true })
+    Object.assign(process.env, { FACTORY_WORKER_DIR: own, FACTORY_WORKER_REPO: repo })
+    Object.assign(process.env, vars)
+    return { own }
+  }
+
+  function tasksFile(tasks: unknown) {
+    const file = join(dir, 'tasks.json')
+    writeFileSync(file, JSON.stringify(tasks))
+    return file
+  }
+
+  test('starts an enabled process, waits for its ready probe, logs it, and sets DATABASE_URL', async () => {
+    const { own } = set({ PGHOST: '127.0.0.1', PGPORT: '55432' })
+    const marker = join(dir, 'ready-marker')
+    const entershellMarker = join(dir, 'entershell-marker')
+    process.env.DEVENV_TASK_FILE = tasksFile([
+      {
+        name: 'devenv:enterShell',
+        type: 'oneshot',
+        command: `touch ${entershellMarker}`,
+        cwd: null,
+        process: { start: { enable: true }, ready: null },
+      },
+      {
+        name: 'devenv:processes:postgres',
+        type: 'process',
+        command: `echo ${TAG}; touch ${marker}; exec sleep 5`,
+        cwd: null,
+        process: { start: { enable: true }, ready: { exec: `test -f ${marker}` } },
+      },
+    ])
+    const results = await startServices()
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({ name: 'postgres', ok: true, log: join(own, 'services', 'postgres.log') })
+    expect(results[0]!.detail).toMatch(/^ready in \ds$/)
+    expect(existsSync(join(own, 'services', 'postgres.log'))).toBe(true)
+    // the oneshot never ran: only the process's own command does (A4)
+    expect(existsSync(entershellMarker)).toBe(false)
+    expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('services: postgres ready in')
+    expect(process.env.DATABASE_URL).toBe('postgresql://127.0.0.1:55432/postgres')
+  })
+
+  test('a process that exits leaves a failed result naming the exit code', async () => {
+    const { own } = set()
+    process.env.DEVENV_TASK_FILE = tasksFile([
+      {
+        name: 'devenv:processes:broken',
+        type: 'process',
+        command: `echo ${TAG}; exit 7`,
+        cwd: null,
+        process: { start: { enable: true }, ready: { exec: 'exit 1' } },
+      },
+    ])
+    const results = await startServices()
+    expect(results).toEqual([
+      { name: 'broken', ok: false, log: join(own, 'services', 'broken.log'), detail: 'exit 7' },
+    ])
+    expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('services: broken failed: exit 7')
+  }, 10_000)
+
+  test('a process whose ready probe never passes times out at FACTORY_SERVICES_WAIT_MS', async () => {
+    const { own } = set({ FACTORY_SERVICES_WAIT_MS: '1500' })
+    process.env.DEVENV_TASK_FILE = tasksFile([
+      {
+        name: 'devenv:processes:slow',
+        type: 'process',
+        command: `echo ${TAG}; exec sleep 5`,
+        cwd: null,
+        process: { start: { enable: true }, ready: { exec: 'exit 1' } },
+      },
+    ])
+    const results = await startServices()
+    expect(results[0]).toMatchObject({ name: 'slow', ok: false })
+    expect(results[0]!.detail).toMatch(/^not ready after \ds$/)
+    expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('services: slow failed: not ready after')
+  }, 10_000)
+
+  test('FACTORY_SERVICES=0 spawns nothing and leaves DATABASE_URL unset', async () => {
+    const { own } = set({ FACTORY_SERVICES: '0', PGHOST: '127.0.0.1', PGPORT: '5432' })
+    process.env.DEVENV_TASK_FILE = tasksFile([
+      {
+        name: 'devenv:processes:postgres',
+        type: 'process',
+        command: `echo ${TAG}; exit 1`,
+        cwd: null,
+        process: { start: { enable: true }, ready: null },
+      },
+    ])
+    const results = await startServices()
+    expect(results).toEqual([])
+    expect(existsSync(join(own, 'services'))).toBe(false)
+    expect(process.env.DATABASE_URL).toBeUndefined()
+  })
+
+  test('no DEVENV_TASK_FILE spawns nothing', async () => {
+    const { own } = set()
+    const results = await startServices()
+    expect(results).toEqual([])
+    expect(existsSync(join(own, 'services'))).toBe(false)
+  })
+
+  test('a devenv with only oneshots spawns nothing', async () => {
+    set()
+    process.env.DEVENV_TASK_FILE = tasksFile([
+      {
+        name: 'devenv:enterShell',
+        type: 'oneshot',
+        command: `echo ${TAG}; touch ${join(dir, 'marker')}`,
+        cwd: null,
+        process: { start: { enable: true }, ready: null },
+      },
+    ])
+    const results = await startServices()
+    expect(results).toEqual([])
+  })
+})
+
+describe('servicesNote', () => {
+  test('names ready and failed processes and says DATABASE_URL is set', () => {
+    const note = servicesNote(
+      [
+        { name: 'postgres', ok: true, log: '/x/postgres.log', detail: 'ready in 4s' },
+        { name: 'redis', ok: false, log: '/x/redis.log', detail: 'not ready after 120s' },
+      ],
+      { DATABASE_URL: 'postgresql://x/postgres' },
+    )
+    expect(note).toContain('ready: postgres')
+    expect(note).toContain('failed: redis (not ready after 120s, see /x/redis.log)')
+    expect(note).toContain('DATABASE_URL is set.')
+  })
+
+  test('is empty with no results', () => {
+    expect(servicesNote([], {})).toBe('')
+  })
+
+  test('omits the DATABASE_URL line when it is not set', () => {
+    const note = servicesNote([{ name: 'redis', ok: true, log: '/x/redis.log', detail: 'ready in 1s' }], {})
+    expect(note).not.toContain('DATABASE_URL')
   })
 })

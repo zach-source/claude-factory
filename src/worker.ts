@@ -611,6 +611,124 @@ export function databaseUrl(env: Record<string, string | undefined>): string | u
   return port ? `postgresql://${host}:${port}/postgres` : `postgresql://${host}/postgres`
 }
 
+/** The directory where serve writes the log of each process: own()/services/<name>.log */
+const servicesDir = () => join(own(), 'services')
+
+/** how long startServices waits for one process to answer its ready probe, default 120s (claude-factory-5sn) */
+const servicesWaitMs = () => Number(process.env.FACTORY_SERVICES_WAIT_MS ?? 120_000)
+
+/** One devenv process that startServices tries to start. Its result is ready, or failed. A failed result gives the reason and the log file. */
+export type ServiceResult = { name: string; ok: boolean; log: string; detail: string }
+
+/**
+ * waitReady probes one running process until it answers ready, exits, or the wait time ends.
+ * If the entry has readyExec, bash runs its script with a 4s timeout, as devenv does for its probe.
+ * If the process entry has readyHttp, waitReady fetches its URL instead.
+ * If the process entry has neither, waitReady counts the process as ready after 2s of running.
+ * waitReady never throws. A failed probe, for example a bad script or a refused connection, counts as not ready yet.
+ */
+async function waitReady(
+  p: DevenvProcess,
+  exited: Promise<number>,
+  startedAt: number,
+  waitMs: number,
+): Promise<{ ok: boolean; detail: string }> {
+  let exitCode: number | undefined
+  exited.then(code => (exitCode = code))
+  for (;;) {
+    if (exitCode !== undefined) return { ok: false, detail: `exit ${exitCode}` }
+    const elapsed = Date.now() - startedAt
+    let ready = false
+    try {
+      if (p.readyExec) {
+        ready = Bun.spawnSync(['bash', '-c', p.readyExec], { cwd: p.cwd ?? repo(), env: process.env, timeout: 4000 })
+          .exitCode === 0
+      } else if (p.readyHttp) {
+        ready = (await fetch(p.readyHttp)).ok
+      } else {
+        ready = elapsed >= 2000
+      }
+    } catch {
+      ready = false
+    }
+    if (ready) return { ok: true, detail: `ready in ${Math.round(elapsed / 1000)}s` }
+    if (elapsed >= waitMs) return { ok: false, detail: `not ready after ${Math.round(elapsed / 1000)}s` }
+    await Bun.sleep(1000)
+  }
+}
+
+/**
+ * startServices starts every process that the repo's devenv declares (services.* and processes.*), before the
+ * agent's first turn.
+ * startServices reads DEVENV_TASK_FILE. loadDevenv() already put it in process.env.
+ *
+ * startServices runs each process's own command directly. It never runs `devenv up` or `devenv shell`, so no
+ * oneshot (devenv:enterShell, say) runs here.
+ *
+ * startServices sends the stdout and stderr of each process to its own log under servicesDir(). It never sends
+ * them to serve's own output. A daemonized child must not keep a pipe to this process open past a suspend.
+ * startServices spawns each child unref'd, so serve does not wait for it.
+ * The child keeps running after this function returns.
+ *
+ * If FACTORY_SERVICES is '0', startServices changes nothing.
+ * It also changes nothing when the devenv has no DEVENV_TASK_FILE (an old devenv, or none cached), or when it
+ * declares no process.
+ * In these cases, no process starts, and startServices does not change process.env.
+ *
+ * After startServices tries every process, it sets DATABASE_URL on process.env from PGHOST/PGPORT.
+ * It does not set DATABASE_URL when the devenv itself sets it, or when process.env has neither PGHOST nor PGPORT.
+ */
+export async function startServices(): Promise<ServiceResult[]> {
+  if (process.env.FACTORY_SERVICES === '0') return []
+  const file = process.env.DEVENV_TASK_FILE
+  if (!file) return []
+  const procs = devenvProcesses(file)
+  if (!procs.length) return []
+  const waitMs = servicesWaitMs()
+  mkdirSync(servicesDir(), { recursive: true })
+  const results: ServiceResult[] = []
+  for (const p of procs) {
+    const log = join(servicesDir(), `${p.name}.log`)
+    const startedAt = Date.now()
+    const fd = openSync(log, 'a')
+    let sub: ReturnType<typeof Bun.spawn>
+    try {
+      sub = Bun.spawn(['bash', '-c', p.command], { cwd: p.cwd ?? repo(), env: process.env, stdin: 'ignore', stdout: fd, stderr: fd })
+    } finally {
+      closeSync(fd)
+    }
+    sub.unref()
+    const r = await waitReady(p, sub.exited, startedAt, waitMs)
+    const line = r.ok ? `services: ${p.name} ${r.detail}` : `services: ${p.name} failed: ${r.detail}, see ${log}`
+    appendFileSync(serveLog(), `${new Date().toISOString()} ${line}\n`)
+    results.push({ name: p.name, ok: r.ok, log, detail: r.detail })
+  }
+  if (!process.env.DATABASE_URL) {
+    const url = databaseUrl(process.env)
+    if (url) process.env.DATABASE_URL = url
+  }
+  return results
+}
+
+/**
+ * servicesNote builds the [factory] note from the results of startServices.
+ * servicesNote adds the note to the brief of the first turn only.
+ * A resumed VM restarts the processes, but it is never briefed again.
+ *
+ * When startServices starts nothing (A7), servicesNote returns an empty string.
+ * This means no note, the same as when the devenv declares no services.
+ */
+export function servicesNote(results: ServiceResult[], env: Record<string, string | undefined>): string {
+  if (!results.length) return ''
+  const ready = results.filter(r => r.ok).map(r => r.name)
+  const failed = results.filter(r => !r.ok)
+  const parts: string[] = []
+  if (ready.length) parts.push(`ready: ${ready.join(', ')}`)
+  if (failed.length) parts.push(`failed: ${failed.map(f => `${f.name} (${f.detail}, see ${f.log})`).join('; ')}`)
+  const dbLine = env.DATABASE_URL ? ' DATABASE_URL is set.' : ''
+  return `\n\n[factory] services: ${parts.join('; ')}.${dbLine}`
+}
+
 /** the VM has no /etc/hosts, so localhost does not resolve (a test's local API server, say) */
 function localhost() {
   if (!existsSync('/etc/hosts') || !/^127\.0\.0\.1\s+localhost\b/m.test(readFileSync('/etc/hosts', 'utf8')))
@@ -723,6 +841,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
+  const services = await startServices()
   let session = prior?.session
   let egress: Egress | undefined = prior?.egress
   const set = (status: State['status']) => save({ status, session, pid: process.pid, egress })
@@ -744,7 +863,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
-    session = await turnWithRetry(brief, model, undefined, onEgress, onSession, egress)
+    session = await turnWithRetry(brief + servicesNote(services, process.env), model, undefined, onEgress, onSession, egress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
