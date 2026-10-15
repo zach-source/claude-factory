@@ -16,7 +16,7 @@ const dir = join(tmpdir(), `start-${process.pid}`)
 const home = join(dir, 'home')
 const bin = join(dir, 'bin')
 const calls = join(dir, 'calls.log')
-const showMode = join(dir, 'show-mode') // found | notfound | timeout
+const showMode = join(dir, 'show-mode') // found | notfound | timeout | query-timeout
 const claudeConfig = join(dir, 'claude-config')
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -38,7 +38,8 @@ const run = (args: string[]) => {
 
 /** fake bd: `config get issue_prefix` -> prefix, `show <id> --json` -> $(cat showMode), `create` -> a
  * fresh id (logged), `update --claim` -> ok. Every call is logged so a test can prove create/claim were
- * never reached. */
+ * never reached. `query-timeout` reproduces bd 1.3.0's query-time failure: the *same* not-found JSON on
+ * stdout as `notfound`, but stderr says "Error fetching <id>: <err>" instead of "Issue <id> not found". */
 function fakeBd(prefix: string) {
   mkdirSync(bin, { recursive: true })
   const script = [
@@ -50,8 +51,9 @@ function fakeBd(prefix: string) {
     `    m=$(cat ${showMode} 2>/dev/null || echo found)`,
     '    case "$m" in',
     '      found) printf \'%s\' \'[{"id":"acme-1","title":"t"}]\';;',
-    '      notfound) echo "Issue not found" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
+    '      notfound) echo "Issue $2 not found" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
     '      timeout) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
+    '      query-timeout) echo "Error fetching $2: dial tcp 127.0.0.1:3308: i/o timeout" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
     '    esac;;',
     '  create) echo new-bead-1;;',
     '  update) exit 0;;',
@@ -128,6 +130,22 @@ test('a bead-ID-shaped goal whose lookup fails (a timeout) fails the start even 
   expect(out.err).toContain('nothing was created')
   const log = readFileSync(calls, 'utf8')
   expect(log).not.toContain('create ')
+  expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
+})
+
+test('a bead-ID-shaped goal whose bd show times out mid-query (the same not-found JSON on stdout as a real 404) fails the start and creates nothing, even under another rig\'s prefix: this is the original incident', () => {
+  reset()
+  const r = repo()
+  fakeBd('zzz') // this rig's own prefix is not "acme": the goal does not carry it
+  fakeHerdr()
+  writeFileSync(showMode, 'query-timeout')
+  const out = run(['start', factoryFixture(), r, 'acme-yrq'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('acme-yrq')
+  expect(out.err).toContain('nothing was created')
+  const log = readFileSync(calls, 'utf8')
+  expect(log).not.toContain('create ')
+  expect(log).not.toContain('--claim')
   expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
 })
 

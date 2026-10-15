@@ -113,7 +113,9 @@ test('respond answers a human-flagged bead through bd human respond', () => {
 test('lookup tells a genuine "not found" from any other bd show failure, which it throws instead of swallowing', () => {
   const bin = join(tmpdir(), `fake-bd-lookup-${process.pid}`)
   mkdirSync(bin, { recursive: true })
-  // SHOW_MODE: found | notfound (bd's real not-found JSON on stdout, exit 1) | timeout (no JSON, exit 1)
+  // SHOW_MODE: found | notfound (bd's real not-found JSON on stdout, exit 1) | timeout (no JSON, exit 1) |
+  // query-timeout (bd 1.3.0's query-time failure: the *same* not-found JSON on stdout as notfound, but
+  // exit 1 with stderr "Error fetching <id>: <err>" instead of "Issue <id> not found")
   const script = [
     '#!/bin/sh',
     'case "$1" in',
@@ -122,6 +124,7 @@ test('lookup tells a genuine "not found" from any other bd show failure, which i
     `    found) printf '%s' '[{"id":"fx-1","title":"t"}]'; exit 0;;`,
     `    notfound) echo "Issue $2 not found" >&2; printf '%s' '{"error":"no issues found matching the provided IDs"}'; exit 1;;`,
     '    timeout) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
+    `    query-timeout) echo "Error fetching $2: dial tcp 127.0.0.1:3308: i/o timeout" >&2; printf '%s' '{"error":"no issues found matching the provided IDs"}'; exit 1;;`,
     '  esac;;',
     'esac',
   ].join('\n')
@@ -136,6 +139,9 @@ test('lookup tells a genuine "not found" from any other bd show failure, which i
     process.env.SHOW_MODE = 'notfound'
     expect(b.lookup('fx-9')).toBeNull()
     process.env.SHOW_MODE = 'timeout'
+    expect(() => b.lookup('fx-9')).toThrow('bd show fx-9')
+    expect(() => b.lookup('fx-9')).toThrow(/i\/o timeout/)
+    process.env.SHOW_MODE = 'query-timeout'
     expect(() => b.lookup('fx-9')).toThrow('bd show fx-9')
     expect(() => b.lookup('fx-9')).toThrow(/i\/o timeout/)
   } finally {

@@ -51,7 +51,8 @@ export const dispatchable = (ready: Bead[], linked: Set<string>, room: number) =
 function bd(repo: string, actor: string, ...args: string[]) {
   const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo, env: process.env })
   const out = p.stdout.toString().trim()
-  return { isOk: p.exitCode === 0, out, err: p.stderr.toString().trim() || out }
+  const stderr = p.stderr.toString().trim()
+  return { isOk: p.exitCode === 0, out, err: stderr || out, stderr }
 }
 const must = (r: ReturnType<typeof bd>, what: string) => {
   if (!r.isOk) throw new Error(`bd ${what}: ${r.err.split('\n')[0]}`)
@@ -72,6 +73,11 @@ export const beads = (repo: string, actor: string) => ({
    * null only for bd's own "not found" (a real answer); any other failure (a timeout, bd down) throws
    * instead of being indistinguishable from a 404. For a goal that is shaped like one of this rig's own
    * bead ids, a failed lookup must never fall through to creating a bead titled with the id itself.
+   *
+   * bd 1.3.0 prints the *same* "no issues found matching the provided IDs" JSON body on stdout, exit 1,
+   * both for a genuine not-found and for a query-time failure after the store opened (e.g. a timeout) --
+   * the stdout body alone cannot tell them apart. Only stderr can: a real not-found says
+   * "Issue <id> not found"; a query-time failure says "Error fetching <id>: <err>" instead.
    */
   lookup: (id: string): Bead | null => {
     const r = bd(repo, actor, 'show', id, '--json')
@@ -79,9 +85,9 @@ export const beads = (repo: string, actor: string) => ({
       const parsed = JSON.parse(r.out)
       return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
     }
-    const body = r.out.startsWith('{') ? JSON.parse(r.out) : null
-    if (body?.error) return null // bd's own "not found" JSON body: a real answer, not a lookup failure
-    throw new Error(`bd show ${id}: ${r.err.split('\n')[0]}`)
+    if (/^Error fetching\b/m.test(r.stderr)) throw new Error(`bd show ${id}: ${r.stderr.split('\n')[0]}`)
+    if (/not found/i.test(r.stderr)) return null
+    throw new Error(`bd show ${id}: ${(r.stderr || r.out).split('\n')[0]}`)
   },
   /** the rig's bead-id prefix, thrown on failure instead of prefix()'s lenient "" (bd down looks the same as no prefix) */
   prefixStrict: () => must(bd(repo, actor, 'config', 'get', 'issue_prefix'), 'config get issue_prefix'),
