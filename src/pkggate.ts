@@ -49,22 +49,22 @@ type Resolved = {
    * forever (ei0.12). `record` holds that version's sum.golang.org first-logged id, once a lookup
    * succeeds (claude-factory-8ub). */
   goInfoCache: Map<string, { info: string; version?: string; time?: string; record?: number }>
-  /** goFloor holds a floor on the sum.golang.org record id. A version counts as old enough only when its
+  /** goFloor holds a floor on the sum.golang.org record id. A version is old enough only when its
    * own record id is at or below this floor.
    *
-   * The floor estimates the sum.golang.org tree size at now-minDays. It stays `null` until the first
-   * successful refresh. A refresh can raise or lower this floor. A lower floor only refuses more versions,
-   * the safe side (claude-factory-56j).
+   * The floor is an estimate of the sum.golang.org tree size at now-minDays. The floor is `null` until
+   * the first successful refresh. A refresh can increase or decrease the floor.
+   * A lower floor makes more versions too new. That is the safe side (claude-factory-56j).
    *
-   * `latest` holds the sum.golang.org tree size this refresh read, before its lookups. The next refresh's
-   * rise cap measures real traffic against this value. See GO_FLOOR_RISE_MARGIN and refreshGoFloor.
+   * `latest` is the sum.golang.org tree size. This refresh reads it before its lookups. The next refresh
+   * uses this value to measure real traffic for its increase cap. See GO_FLOOR_RISE_MARGIN and refreshGoFloor.
    *
-   * Suppose an attacker controls every sampled index entry. Suppose the attacker logs each one in
-   * sum.golang.org right before a refresh. The margin caps the rise this attack can cause. The floor
-   * cannot jump straight to `now` (claude-factory-56j).
+   * An attacker can control every sampled index entry. The attacker can record each one in
+   * sum.golang.org right before a refresh. The margin sets a limit on the increase that this attack can
+   * cause. The floor cannot jump straight to `now` (claude-factory-56j).
    *
-   * The first refresh after a pod start has no prior `latest` to cap against. claude-factory-b9f names
-   * this gap. */
+   * The first refresh after a pod start has no earlier `latest` value. So it cannot limit its increase.
+   * See claude-factory-b9f for this gap. */
   goFloor: { record: number; at: number; latest: number } | null
   /** goFloorRefreshing holds the one in-flight floor refresh. Every decision that needs a refresh shares
    * this promise, so concurrent decisions trigger at most one index.golang.org request
@@ -100,14 +100,14 @@ const GO_FLOOR_SAMPLE_LIMIT = 9
 const GO_FLOOR_MIN_SAMPLES = 5
 
 /**
- * caps how much one refresh can raise the floor.
+ * Sets a limit on how much one refresh can increase the floor.
  *
  * The cap is a multiple of the real sum.golang.org traffic since the prior refresh (`latest -
- * prev.latest`). sumdb record ids rise about 1:1 with time (claude-factory-8ub). So this traffic count
- * is a fair estimate of the true floor's own rise across the same span.
+ * prev.latest`). sumdb record ids increase about 1:1 with time (claude-factory-8ub). So this traffic
+ * count is a fair estimate of how far the true floor can increase across the same span.
  *
- * A margin of 3 allows normal variance, such as bursty publishing or a refresh that runs late. It still
- * stops an attacker who owns every sampled entry from pushing the floor far past real traffic
+ * A margin of 3 allows normal variance. Examples are bursty publishing and a refresh that runs late. It
+ * still stops an attacker who controls every sampled entry from pushing the floor far past real traffic
  * (claude-factory-56j).
  *
  * The cap has no time term. A long idle or backoff gap still shows up as a large `latest` delta. So the
@@ -413,25 +413,29 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
 /**
  * refreshes `cfg.goFloor` from index.golang.org.
  *
- * It samples up to `GO_FLOOR_SAMPLE_LIMIT` entries first seen in the window ending at `now - minDays`. It
- * reads sum.golang.org's current tree size, then looks up each sampled entry there. It drops any sample
- * whose own record sits at or past that size: sum.golang.org logged it no earlier than this refresh's own
- * lookups, so it is no evidence of a record logged well before now (claude-factory-8ub.6). The minimum of
- * the remaining ids, `sampled`, is this refresh's raw estimate: every one of those ids is a record
- * sum.golang.org already held before this refresh began.
+ * It samples up to `GO_FLOOR_SAMPLE_LIMIT` entries first seen in the window ending at `now - minDays`.
+ * It reads the current sum.golang.org tree size. Then it looks up each sampled entry there.
  *
- * `sampled` alone is not the new floor. An attacker who controls every sampled index entry and logs each
- * one in sum.golang.org right before the refresh can push `sampled` close to `now`. So the new floor is
- * `Math.min(sampled, bound)`, where `bound` caps the rise since the prior refresh at GO_FLOOR_RISE_MARGIN
- * times the real sum.golang.org traffic in that span (`latest - prev.latest`, see `goFloor`'s own doc
- * comment and claude-factory-56j). A cold start (no prior floor) has no bound. The new floor can come out
- * below the old one: a low `bound` only refuses more versions, the safe side.
+ * It drops any sample whose own record is at or past that size, because sum.golang.org recorded that
+ * record no earlier than this refresh's own lookups. So it is no evidence of a record recorded well
+ * before now (claude-factory-8ub.6). The minimum of the remaining ids, `sampled`, is the raw estimate of
+ * this refresh. Each of those ids is a record that sum.golang.org already held before this refresh began.
+ *
+ * `sampled` alone is not the new floor. An attacker can control every sampled index entry. The attacker
+ * can record each one in sum.golang.org right before the refresh. Then `sampled` can move close to `now`.
+ * So the new floor is `Math.min(sampled, bound)`.
+ *
+ * Here `bound` sets a limit on the increase since the prior refresh. Its value is GO_FLOOR_RISE_MARGIN
+ * times the real sum.golang.org traffic in that span (`latest - prev.latest`). See `goFloor`'s own doc
+ * comment and claude-factory-56j. A cold start (no prior floor) has no bound. The new floor can come out
+ * below the old one, and a low `bound` makes more versions too new, which is the safe side.
  *
  * A failed fetch, or fewer than `GO_FLOOR_MIN_SAMPLES` answers left after the drop, leaves the existing
- * floor in place, so a down upstream never blocks every decision behind a refresh. Either way, exactly one
- * JSON line goes to stdout: `{eco:'go', floor, at, samples, sampled, capped}` on success, `{eco:'go',
- * decision:'error', reason}` on failure -- the same audit trail `/healthz`'s `goFloor` field summarizes as
- * current state (claude-factory-8ub).
+ * floor in place. So a down upstream never blocks every decision behind a refresh.
+ * Either way, exactly one JSON line goes to stdout.
+ * On success, the line is `{eco:'go', floor, at, samples, sampled, capped}`.
+ * On failure, the line is `{eco:'go', decision:'error', reason}`.
+ * The `goFloor` field of `/healthz` summarizes the same audit trail as current state (claude-factory-8ub).
  */
 async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const t0 = cfg.now() - cfg.minDays * 24 * 3_600_000
@@ -473,14 +477,14 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
  * makes sure `cfg.goFloor` is fresh enough to decide with -- or, when one is already in force, starts a
  * background refresh and returns that one right away.
  *
- * A `null` floor (a cold start) is not safe to decide with at all. The one caller that finds it `null`
- * waits for the in-flight refresh, if a stale check just started one.
+ * A `null` floor (a cold start) is not safe to decide with. The one caller that finds it `null` waits
+ * for the in-flight refresh, if a stale check started one.
  *
- * A stale-but-present floor decides at once: every other caller never waits on the refresh its own
- * staleness check starts (claude-factory-8ub.7). A refresh can lower the floor (claude-factory-56j). So a
- * decision made in this gap can use a floor the next refresh will lower -- one refresh period of lag, on
- * the safe side only when the floor is about to rise; this is the same lag the gate already accepts while
- * a refresh is in flight.
+ * A stale floor that is still present decides at once. Every other caller never waits on the refresh that
+ * its own staleness check starts (claude-factory-8ub.7). A refresh can decrease the floor (claude-factory-56j).
+ * So a decision made in this gap can use a floor that the next refresh will decrease. The lag is one refresh
+ * period, and it is on the safe side only when the floor is about to increase. The gate already accepts the
+ * same lag while a refresh is in flight.
  *
  * Every caller that needs a refresh shares the one in-flight promise, so a burst of decisions (a `@v/list`
  * of 20 versions, say) causes at most one index.golang.org request (claude-factory-8ub).
