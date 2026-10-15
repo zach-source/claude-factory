@@ -274,8 +274,13 @@ beforeAll(() => {
       // a malicious/compromised upstream naming a tarball the gate must refuse to fetch verbatim (ei0.23)
       if (url.pathname === '/evilnpm-file')
         return new Response(evilNpmPackument('1.0.0', 'file:///etc/passwd'), { headers: { 'content-type': 'application/json' } })
+      // reachable but never configured as this gate's npm upstream (it's the separate `files` fixture
+      // server) -- proves the off-origin refusal by a byte-identical fetch that would otherwise succeed,
+      // not merely by hitting a closed port (ei0.23)
       if (url.pathname === '/evilnpm-http')
-        return new Response(evilNpmPackument('1.0.0', 'http://127.0.0.1:1/secret.tgz'), { headers: { 'content-type': 'application/json' } })
+        return new Response(evilNpmPackument('1.0.0', `${filesUpstream.url.origin}${FILESPROJ_PATH}`), {
+          headers: { 'content-type': 'application/json' },
+        })
       // a malformed upstream packument (a null version entry): proves a bad shape is refused as an upstream
       // error at the parse site, instead of throwing deep inside filterPackument and surfacing raw exception
       // text through the handler's catch-all (ei0.20)
@@ -300,8 +305,11 @@ beforeAll(() => {
       // same probe as evilnpm above, for PyPI's own file `url` (ei0.23)
       if (url.pathname === '/simple/evilpypi-file/')
         return new Response(evilPypiIndex('evil.whl', 'file:///etc/passwd'), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+      // reachable but, for the default `gate()` below, not a configured pypi/files upstream either (it's
+      // the separate `files` fixture server) -- proves the off-origin refusal by a byte-identical fetch
+      // that would otherwise succeed, not merely by hitting a closed port (ei0.23)
       if (url.pathname === '/simple/evilpypi-http/')
-        return new Response(evilPypiIndex('evil.tar.gz', 'http://127.0.0.1:1/secret.tar.gz'), {
+        return new Response(evilPypiIndex('evil.tar.gz', `${filesUpstream.url.origin}${FILESPROJ_PATH}`), {
           headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
         })
       // the file `url` here points at `filesUpstream`, a host distinct from this server, proving PKG_GATE_UPSTREAM_FILES
@@ -684,9 +692,9 @@ test('an npm tarball url of file:// is refused before fetch, never reading the g
   expect(body).not.toContain('root:') // would appear if /etc/passwd were actually read back
 })
 
-test('an npm tarball url on an unconfigured (off-origin) host is refused, not fetched (ei0.23)', async () => {
+test('an npm tarball url on an unconfigured (off-origin) host is refused, even though that host would really answer (ei0.23)', async () => {
   const g = gate()
-  const r = await g(new Request('http://gate/npm/evilnpm-http/-/secret.tgz'))
+  const r = await g(new Request('http://gate/npm/evilnpm-http/-/goodfile-1.0.0.tar.gz'))
   expect(r.status).toBe(502)
   expect(await r.text()).toContain('pkg-gate')
 })
@@ -777,9 +785,9 @@ test('a PyPI file url of file:// is refused before fetch, never reading the gate
   expect(body).not.toContain('root:') // would appear if /etc/passwd were actually read back
 })
 
-test('a PyPI file url on an unconfigured (off-origin) host is refused, not fetched (ei0.23)', async () => {
+test('a PyPI file url on an unconfigured (off-origin) host is refused, even though that host would really answer (ei0.23)', async () => {
   const g = gate()
-  const r = await g(new Request('http://gate/pypi/files/evilpypi-http/secret.tar.gz'))
+  const r = await g(new Request(`http://gate/pypi/files/evilpypi-http${FILESPROJ_PATH}`))
   expect(r.status).toBe(502)
   expect(await r.text()).toContain('pkg-gate')
 })
