@@ -61,6 +61,13 @@ Do this once. Do it before the first real dispatch of `release.yml`
    - Stop here if a tag for that version exists. A push that is not a release merge
      leaves the version unchanged. Its tag is already there, so the workflow stops and
      does nothing else.
+   - Refuse if `## Unreleased` is not empty at this commit (`bun src/release.ts
+     check-no-late-unreleased`). A commit can land on `main` after the release PR's
+     cut, before the release PR itself merges. It ships in this tag. Its own bullet
+     stays under `## Unreleased`, so the release notes below (read from the
+     already-cut `## X.Y.Z (...)` section) would miss it (claude-factory-5h9.11).
+     When this happens, the fix is a follow-up release for the missed bullet; the tag
+     itself still carries the missed code.
    - Sign the tag `vX.Y.Z` with gitsign.
    - Verify the signature.
    - Push the tag.

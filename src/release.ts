@@ -94,6 +94,22 @@ export function notes(changelog: string, version: string): string {
 // `fetch-tags: false`, so a local `git rev-parse --verify refs/tags/vX` always says "not found" in
 // CI even when the tag is already on GitHub (claude-factory-5h9.15). `git ls-remote` asks origin
 // directly, so it works in any clone shape.
+// cut() moves everything under `## Unreleased` to a new `## X.Y.Z (date)` heading right below it.
+// Right after a cut, `## Unreleased` is empty.
+//
+// A later commit can still land on main before the release PR merges. It can add its own bullet
+// under `## Unreleased`, the normal per-change pattern. Its code ships in the tag that
+// release-tag.yml makes at the merge commit. But `notes()` reads only the already-cut
+// `## X.Y.Z (...)` section. So its bullet never reaches the GitHub release notes
+// (claude-factory-5h9.11).
+//
+// Call this at the merge commit, after `prepare` has run. A non-empty result means the tag is
+// about to ship undocumented changes.
+export function lateUnreleasedBullets(changelog: string): string {
+  const { body } = sectionBody(changelog, /^## Unreleased\n\n/m)
+  return body.trim()
+}
+
 export function tagExists(version: string, cwd = '.'): boolean {
   const p = Bun.spawnSync([
     'git',
@@ -115,7 +131,8 @@ function todayUTC(): string {
 function usage(): never {
   console.error(
     'usage: bun src/release.ts prepare <patch|minor|major> [--date YYYY-MM-DD]\n' +
-      '       bun src/release.ts notes <version>',
+      '       bun src/release.ts notes <version>\n' +
+      '       bun src/release.ts check-no-late-unreleased',
   )
   process.exit(1)
 }
@@ -153,6 +170,16 @@ function main(argv: string[]) {
     if (!version) usage()
     const changelog = readFileSync(changelogPath, 'utf8')
     console.log(notes(changelog, version))
+    return
+  }
+
+  if (cmd === 'check-no-late-unreleased') {
+    const changelog = readFileSync(changelogPath, 'utf8')
+    const late = lateUnreleasedBullets(changelog)
+    if (late !== '')
+      throw new Error(
+        `## Unreleased is not empty at the merge commit; it will not reach the release notes:\n${late}`,
+      )
     return
   }
 

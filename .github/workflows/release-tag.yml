@@ -74,6 +74,14 @@ jobs:
             echo "skip=0" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: refuse a commit merged after the cut, with its bullets still under Unreleased
+        # A commit can land on main after the release PR's cut, before the release PR itself
+        # merges. It ships in this tag. Its own CHANGELOG bullet stays under "## Unreleased",
+        # so the release notes below (read from the already-cut "## X.Y.Z (...)" section) would
+        # miss it (claude-factory-5h9.11).
+        if: steps.check.outputs.skip == '0'
+        run: bun src/release.ts check-no-late-unreleased
+
       - name: install gitsign 0.17.1
         # Pinned release binary, checked by its published sha256 (checksums.txt on the v0.17.1
         # GitHub release). gitsign has no GitHub Action of its own.

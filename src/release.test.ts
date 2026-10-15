@@ -6,6 +6,7 @@ import {
   bumpVersion,
   checkVersions,
   cut,
+  lateUnreleasedBullets,
   notes,
   parseVersion,
   readVersion,
@@ -62,6 +63,19 @@ test('notes() returns the bullets released under a version heading', () => {
 
 test('notes() refuses a version with no heading', () => {
   expect(() => notes(after, '9.9.9')).toThrow(/heading not found/)
+})
+
+test('lateUnreleasedBullets is empty right after cut()', () => {
+  expect(lateUnreleasedBullets(after)).toBe('')
+})
+
+test('lateUnreleasedBullets names a bullet a later commit added under Unreleased after the cut (claude-factory-5h9.11)', () => {
+  const lateBullet = '- Fixed: a late commit landed on main after the release PR was cut.\n'
+  const withLateCommit = after.replace(
+    '## 0.12.0 (2026-10-15)\n\n',
+    `${lateBullet}\n## 0.12.0 (2026-10-15)\n\n`,
+  )
+  expect(lateUnreleasedBullets(withLateCommit)).toBe(lateBullet.trimEnd())
 })
 
 test('bumpVersion: patch, minor and major, each resetting what comes after it', () => {
