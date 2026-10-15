@@ -679,6 +679,42 @@ test('applyTiers() skips a topic whose LONG.md parseLong cannot rebuild byte for
   expect(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).toBe(unsafe) // untouched
 })
 
+test('applyTiers() merges into a LONG.md that differs from canonical formatLong output only by a lossless edit (claude-factory-59r.21)', () => {
+  const variants: Record<string, string> = {
+    'an extra blank line after an entry body':
+      '---\ntier: long\n---\n## kept entry\n<!-- id: {"id":"kept-entry"} -->\n\nkept body\n\n\n',
+    'no trailing newline':
+      '---\ntier: long\n---\n## kept entry\n<!-- id: {"id":"kept-entry"} -->\n\nkept body',
+    'spaces inside the id JSON':
+      '---\ntier: long\n---\n## kept entry\n<!-- id: { "id": "kept-entry" } -->\n\nkept body\n',
+    'aliases before rig in the id JSON':
+      '---\ntier: long\n---\n## kept entry\n<!-- id: {"aliases":[],"id":"kept-entry","rig":"fabriek"} -->\n\nkept body\n',
+  }
+  for (const [why, text] of Object.entries(variants)) {
+    const dir = join(tmpdir(), `memory-apply-lossless-${process.pid}-${slugify(why)}`)
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(join(dir, 'beads'), { recursive: true })
+    const now = Date.parse('2026-10-15T00:00:00Z')
+    writeFileSync(join(dir, 'beads', 'LONG.md'), text)
+    writeFileSync(
+      join(dir, 'beads', 'new.md'),
+      format({ summary: 'bd init locks every repo', at: '2026-10-01', body: 'why' }),
+    )
+    use(dir, ['beads/new.md'], 'helped', now - 1000)
+
+    const { merged, skipped, renamed } = applyTiers(dir, { now })
+    expect([why, merged]).toEqual([why, 1])
+    expect([why, skipped]).toEqual([why, []])
+    expect([why, renamed]).toEqual([why, { 'beads/new.md': 'beads/LONG.md#bd-init-locks-every-repo' }])
+    // the entry the file already held survives the rewrite, body and all
+    expect(parseLong(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).map(e => e.id)).toContain('kept-entry')
+  }
+})
+
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+}
+
 test("applyTiers() picks a new LONG.md id that is not already an alias or an old id in the rename log (claude-factory-59r.18)", () => {
   const dir = join(tmpdir(), `memory-apply-id-collision-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
@@ -745,6 +781,32 @@ test('applyTiers() rewrites a short note\'s markdown link in its topic README to
   expect(readFileSync(join(dir, 'beads', 'README.md'), 'utf8')).not.toContain('(new.md)')
 })
 
+test('applyTiers() rewrites an archived note\'s README link, not just a merged one (claude-factory-59r.22)', () => {
+  const dir = join(tmpdir(), `memory-apply-archive-readme-link-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'old.md'), format({ summary: 'a note nobody used', body: 'never helped' }))
+  writeFileSync(
+    join(dir, 'beads', 'README.md'),
+    format({ summary: 'topic readme', body: '- [a note nobody used](old.md): a note nobody used' }),
+  )
+  Bun.spawnSync(['git', '-C', dir, 'init', '-q'])
+  Bun.spawnSync(['git', '-C', dir, 'add', '-A'])
+  Bun.spawnSync(
+    ['git', '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
+    {
+      env: { ...process.env, GIT_AUTHOR_DATE: '2026-08-01T00:00:00', GIT_COMMITTER_DATE: '2026-08-01T00:00:00' },
+    },
+  )
+  const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_STALE_DAYS (30)
+
+  const { archived } = applyTiers(dir, { now })
+  expect(archived).toBe(1)
+  const readme = readFileSync(join(dir, 'beads', 'README.md'), 'utf8')
+  expect(readme).not.toContain('(old.md)')
+  expect(readme).toContain('(../.archive/beads.md)')
+})
+
 test('applyTiers() ages a note with no at: from the commit that added it, not from now (claude-factory-59r.19b)', () => {
   const dir = join(tmpdir(), `memory-apply-no-at-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
@@ -766,6 +828,31 @@ test('applyTiers() ages a note with no at: from the commit that added it, not fr
 
   const { decisions, archived } = applyTiers(dir, { now })
   expect(archived).toBe(1)
+  expect(decisions).toEqual([
+    { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never helped') },
+  ])
+})
+
+test('applyTiers() ages a note with no at: from the commit that added it, not the commit that last edited it (claude-factory-59r.23)', () => {
+  const dir = join(tmpdir(), `memory-apply-no-at-edited-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const commit = (msg: string, date: string) => {
+    Bun.spawnSync(['git', '-C', dir, 'add', '-A'])
+    Bun.spawnSync(['git', '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', msg], {
+      env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    })
+  }
+  writeFileSync(join(dir, 'beads', 'old.md'), format({ summary: 'a note with no at', body: 'first body' }))
+  Bun.spawnSync(['git', '-C', dir, 'init', '-q'])
+  commit('init', '2026-08-01T00:00:00') // the add: 75 days before `now`
+  // a later edit to the same path must not reset the note's age to this commit's date
+  writeFileSync(join(dir, 'beads', 'old.md'), format({ summary: 'a note with no at', body: 'edited body' }))
+  commit('edit', '2026-10-14T00:00:00') // 1 day before `now`: too fresh to archive on its own
+  const now = Date.parse('2026-10-15T00:00:00Z')
+
+  const { decisions, archived } = applyTiers(dir, { now })
+  expect(archived).toBe(1) // archived only because the age comes from the 2026-08-01 add, not the edit
   expect(decisions).toEqual([
     { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never helped') },
   ])
@@ -829,13 +916,14 @@ test('evaluate() runs the fixed query set against a real store through search()'
   expect(r.misses).toEqual([])
 }, 60_000)
 
-test("dreamPrompt names the long tier and the id rule, and adds the promotion and duplicate sections", () => {
+test("dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate and unsafe sections", () => {
   const empty = dreamPrompt('/tmp/memory', [], [], [])
   expect(empty).toContain('LONG.md')
   expect(empty).toContain("Never change an entry's `id`")
   expect(empty).toContain('aliases')
   expect(empty).toContain('## Promotion candidates')
   expect(empty).toContain('## Possible duplicates')
+  expect(empty).toContain('## Unsafe LONG.md files')
   expect(empty).toContain('(none)')
 
   const filled = dreamPrompt(
@@ -846,9 +934,11 @@ test("dreamPrompt names the long tier and the id rule, and adds the promotion an
     { activity: [], skills: [] },
     ['- beads/LONG.md#lock (bd init locks every repo): helped 3 times across 3 runs'],
     ['- beads/LONG.md#a (x) vs beads/LONG.md#b (y): similarity 0.90'],
+    ['- beads/LONG.md holds text before its first entry that a merge would lose: stray prose'],
   )
   expect(filled).toContain('helped 3 times across 3 runs')
   expect(filled).toContain('similarity 0.90')
+  expect(filled).toContain('stray prose')
 })
 
 test('longSimPairs finds a near-duplicate pair of LONG.md entries in the same topic and rig, not across a topic or a rig', async () => {

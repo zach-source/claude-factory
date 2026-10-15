@@ -2095,6 +2095,9 @@ async function dream() {
     const start = Date.now()
     const before = git(MEMORY, 'rev-parse', 'HEAD')
     const { promotions, duplicates } = await memory.tierCandidates(MEMORY)
+    // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
+    // again, each time it skips a merge into one of them
+    const unsafe = memory.unsafeLongTopics(MEMORY).map(u => `- ${u.reason}`)
     const prompt = memory.dreamPrompt(
       MEMORY,
       journal,
@@ -2103,6 +2106,7 @@ async function dream() {
       manager,
       promotions,
       duplicates,
+      unsafe,
     )
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(

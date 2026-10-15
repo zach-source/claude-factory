@@ -269,10 +269,12 @@ memory/
 - **The dream** (`factory dream`; each tick starts one a day) is a headless Claude that can only
   edit inside the memory: it files the inbox under topics, merges duplicates, drops what is
   wrong or stale, writes lessons from the run journals since the last dream, and reorders the
-  READMEs and `CORE.md` by importance. It also sees two lists the memory computes for it:
+  READMEs and `CORE.md` by importance. It also sees three lists the memory computes for it:
   promotion candidates (a `LONG.md` entry several runs found helpful several times, for the dream
-  to write as a `CORE.md` line) and possible duplicates (two `LONG.md` entries that score as the
-  same lesson, for the dream to merge). A lesson that holds only while a bead is open names it;
+  to write as a `CORE.md` line), possible duplicates (two `LONG.md` entries that score as the
+  same lesson, for the dream to merge), and unsafe `LONG.md` files (one with text before its first
+  entry that a merge would lose, for the dream to fix by hand; until then, the tiering pass skips
+  a merge into that topic). A lesson that holds only while a bead is open names it;
   the dream is told which named beads have closed and retires what waited on them. The memory is its own git repo, committed before and
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless

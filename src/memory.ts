@@ -699,23 +699,85 @@ export function mdFileCount(dir: string): number {
 }
 
 /** when a note has no at:, its age since the commit that added it, so it ages like any other note
- * (claude-factory-59r.19b: treating it as added "now" meant it could never grow stale or merge) */
+ * (claude-factory-59r.19b: treating it as added "now" meant it could never grow stale or merge).
+ * `git log -1` gives the newest commit to touch the path. A later edit or a git mv reset the age to
+ * "now" each time one ran. `--diff-filter=A` finds only the commit(s) that added the path. git log lists
+ * newest first, so the last line is the oldest of those (claude-factory-59r.23). */
 function gitAddedMs(dir: string, path: string): number | undefined {
   if (!existsSync(join(dir, '.git'))) return undefined
-  const out = Bun.spawnSync(['git', '-C', dir, 'log', '-1', '--format=%ct', '--', path]).stdout.toString().trim()
-  const sec = Number(out)
-  return out && Number.isFinite(sec) && sec > 0 ? sec * 1000 : undefined
+  const out = Bun.spawnSync([
+    'git',
+    '-C',
+    dir,
+    'log',
+    '--follow',
+    '--diff-filter=A',
+    '--format=%ct',
+    '--',
+    path,
+  ])
+    .stdout.toString()
+    .trim()
+  const lines = out.split('\n').filter(Boolean)
+  const sec = Number(lines[lines.length - 1])
+  return lines.length && Number.isFinite(sec) && sec > 0 ? sec * 1000 : undefined
 }
 
-/** a merge drops <topic>/<slug>.md; a dream's own README.md may still link to it by that file name.
- * Point the link at the entry's new home instead, so the topic index never dead-links (claude-factory-59r.19a) */
-function rewriteReadmeLink(dir: string, topic: string, shortPath: string, id: string) {
+/** a merge or an archive drops <topic>/<slug>.md. A dream's own README.md may still link to it by that
+ * file name. Point the link at the note's new home instead, so the topic index never dead-links
+ * (claude-factory-59r.19a, and .22 for the archive branch, which has no new entry to link to). */
+function rewriteReadmeLink(dir: string, topic: string, shortPath: string, target: string) {
   const readmeFile = join(dir, topic, 'README.md')
   if (!existsSync(readmeFile)) return
   const base = shortPath.slice(shortPath.lastIndexOf('/') + 1)
   const text = readFileSync(readmeFile, 'utf8')
-  const updated = text.split(`(${base})`).join(`(LONG.md#${id})`)
+  const updated = text.split(`(${base})`).join(`(${target})`)
   if (updated !== text) writeFileSync(readmeFile, updated)
+}
+
+/**
+ * Find text a merge into this topic's LONG.md would lose.
+ * The lost text is non-blank text before the first recognized entry (a `## ` line right before a valid
+ * id comment). parseLong never attaches that text to any entry, so a rewrite drops it (claude-factory-59r.15).
+ * A lossless difference from canonical formatLong output loses nothing. Examples: an extra blank line, a
+ * missing trailing newline, or a different key order or spacing in the id JSON. Such a difference must not
+ * block a merge forever (claude-factory-59r.21).
+ */
+function longPreambleLoss(text: string): string {
+  const body = text.startsWith(LONG_HEADER)
+    ? text.slice(LONG_HEADER.length)
+    : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+  const lines = body.split('\n')
+  let start = lines.length
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.startsWith('## ') && decodeId(lines[i + 1] ?? '')) {
+      start = i
+      break
+    }
+  }
+  return lines.slice(0, start).join('\n').trim()
+}
+
+/**
+ * Every topic whose LONG.md a merge would damage: see longPreambleLoss(). Call this before the dream
+ * runs, so its prompt can list each one for a worker to fix by hand (claude-factory-59r.21). applyTiers()
+ * finds the same topics again, each time it tries to merge into one of them.
+ */
+export function unsafeLongTopics(dir: string): { topic: string; reason: string }[] {
+  if (!existsSync(dir)) return []
+  const out: { topic: string; reason: string }[] = []
+  for (const topic of readdirSync(dir, { withFileTypes: true })) {
+    if (!topic.isDirectory() || topic.name.startsWith('.')) continue
+    const file = join(dir, topic.name, 'LONG.md')
+    if (!existsSync(file)) continue
+    const lost = longPreambleLoss(readFileSync(file, 'utf8'))
+    if (lost)
+      out.push({
+        topic: topic.name,
+        reason: `${topic.name}/LONG.md holds text before its first entry that a merge would lose: ${clip(lost, 200)}`,
+      })
+  }
+  return out
 }
 
 /**
@@ -747,8 +809,12 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
       }
     })
   const decisions = decide(short, [], [])
+  // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
+  // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
+  // topic this pass, and try again later.
+  const unsafe = new Map(unsafeLongTopics(dir).map(u => [u.topic, u.reason]))
   const renamed: Record<string, string> = {}
-  const unsafeTopics = new Set<string>()
+  const skippedTopics = new Set<string>()
   const skipped: { topic: string; reason: string }[] = []
   let merged = 0
   let archived = 0
@@ -758,21 +824,16 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
     if (!note) continue
     if (d.kind === 'merge') {
       const topic = topicOf(note)
-      const longFile = join(dir, topic, 'LONG.md')
-      const rawText = existsSync(longFile) ? readFileSync(longFile, 'utf8') : null
-      // a LONG.md parseLong cannot rebuild byte for byte holds text outside any entry (a dream's own
-      // prose, or an entry with broken id JSON): merging into it with formatLong would delete that text
-      // (claude-factory-59r.15). Skip the whole topic this pass; the short note stays, to try again later.
-      if (rawText !== null && formatLong(parseLong(rawText)) !== rawText) {
-        if (!unsafeTopics.has(topic)) {
-          unsafeTopics.add(topic)
-          skipped.push({
-            topic,
-            reason: `${topic}/LONG.md holds text parseLong cannot rebuild byte for byte; merge skipped so nothing is lost`,
-          })
+      const reason = unsafe.get(topic)
+      if (reason) {
+        if (!skippedTopics.has(topic)) {
+          skippedTopics.add(topic)
+          skipped.push({ topic, reason })
         }
         continue
       }
+      const longFile = join(dir, topic, 'LONG.md')
+      const rawText = existsSync(longFile) ? readFileSync(longFile, 'utf8') : null
       merged++
       if (opts.dryRun) continue
       const existing = rawText !== null ? parseLong(rawText) : []
@@ -794,18 +855,20 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
       writeFileSync(longFile, formatLong(existing))
       rmSync(join(dir, note.path))
       renamed[note.path] = `${topic}/LONG.md#${id}`
-      rewriteReadmeLink(dir, topic, note.path, id)
+      rewriteReadmeLink(dir, topic, note.path, `LONG.md#${id}`)
     } else {
       archived++
       if (opts.dryRun) continue
+      const topic = topicOf(note)
       mkdirSync(join(dir, '.archive'), { recursive: true })
-      const archiveFile = join(dir, '.archive', `${topicOf(note)}.md`)
+      const archiveFile = join(dir, '.archive', `${topic}.md`)
       const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
       writeFileSync(
         archiveFile,
         prefix + format({ summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body }),
       )
       rmSync(join(dir, note.path))
+      rewriteReadmeLink(dir, topic, note.path, `../.archive/${topic}.md`)
       // no rename logged: decide() never archives a helped note, so no helped count is owed here
     }
   }
@@ -927,6 +990,7 @@ export const dreamPrompt = (
   manager: { activity: string[]; skills: string[] } = { activity: [], skills: [] },
   promotions: string[] = [],
   duplicates: string[] = [],
+  unsafe: string[] = [],
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
 The structure, three tiers:
@@ -946,6 +1010,7 @@ This pass:
 5. Manager skills, proposed in ${skillSources(dir)} (the manager reviews each new, changed or reaped one and installs it or not; a rejection comes back to you as an inbox note): the manager is the Claude session that runs the factory for the person; Manager activity below is what it was asked and what it ran. Where it did the same multi-step work three or more times (the same sequence of commands to triage a stuck station, answer one kind of worker question, check a rig, start work), write it a skill so it need not work it out again: <name>/SKILL.md, a kebab-case name, frontmatter \`name:\` and \`description:\` (one line saying when to use it: the manager picks skills by it), then the steps with the exact commands, what to look for and what to decide. Fold what the activity shows into an existing skill rather than writing a near copy. Reap (git rm -r) a skill that no longer fits how the factory works, or that the manager has not used in 30 days and is older than that (Skill uses below). Write no skill for one-off work.
 6. Promotion candidates below: each is a LONG.md entry that several runs have found helpful several times. Write it as one short line (under 200 characters) in CORE.md: the top when every rig needs it, else that entry's rig's \`## rig:\` section. The LONG.md entry stays as that line's detail.
 7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry: keep the older id, add the removed entry's id to the kept entry's \`"aliases"\` list in its id line's JSON (so its usage count carries over; start the list if it has none), then delete the removed entry's heading, id line and body.
+8. Unsafe LONG.md files below: each holds text before its first \`## summary\` + id comment that a tiering pass cannot place in any entry, so it cannot merge a new note into that topic until you fix it. Rewrite the file by hand: either give that text its own \`## summary\` heading and an id comment, or delete it when it says nothing worth keeping.
 Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
 
 ## Manager skills (name: uses, last used: description)
@@ -962,6 +1027,9 @@ ${promotions.join('\n') || '(none)'}
 
 ## Possible duplicates (two LONG.md entries scoring as the same lesson: merge them)
 ${duplicates.join('\n') || '(none)'}
+
+## Unsafe LONG.md files (a merge cannot write into these until you fix them by hand)
+${unsafe.join('\n') || '(none)'}
 
 ## Closed beads this memory names
 ${closed.join('\n') || '(none)'}
