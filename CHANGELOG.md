@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+## 0.8.0 (2026-10-14)
+
 - Fixed: dispatch synced each rig's beads with `bd sync`, which pulls and pushes as the laptop Dolt server's own `root`, so a remote that needs a login (a shared Dolt server) was refused every interval and the rig's claims never reached other machines. A rig with `beadsRemote` set now syncs through SQL as that remote's user (`CALL DOLT_PULL/DOLT_PUSH('--user', …)`), the way VM runs already did. The laptop's Dolt server must hold `DOLT_REMOTE_PASSWORD` in its environment.
 - Every worker's system prompt (`src/worker-system.md`) now names `mktemp -d` as the place for scratch files (never a bare `/tmp_<name>` at the filesystem root, which two workers typed for `/tmp/<name>` on 2026-10-12 and then had a silent `cp ... 2>/dev/null` hide the failure) and says a mutation check restores the original with `git checkout -- <file>`, never a `cp` backup.
 - Fixed: a worker pane's launch line was typed into the shell key by key, so any `jk` substring in it (a run ID, worktree path or prompt-file path) fired zsh-vi-mode's insert-mode escape mid-line, leaving stray characters and a continuation prompt; the station then failed with "the worker never started". `src/harness.ts` now writes the real launch command to a 0600 script (`writeLaunch`, `<FACTORY_HOME>/launch/<pane>.sh`) and `src/cli.ts`'s `typeLaunch` types only the fixed `LAUNCH_LINE` into the pane (launch, in-pane resume, and relaunch's retype), so no run-specific text is ever typed into a worker's shell.
