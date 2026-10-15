@@ -15,12 +15,12 @@ async function mountBoard($: any, on: any) {
   on('process.run', ($: any, e: any) => ({
     value: { exitCode: 0, stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '', stderr: '' } as never,
   }))
-  await $.command.run({ command: 'factory', args: 'status' }) // any command ticks after it
+  await $.command.run({ command: 'factory', args: 'status' } as never) // any command ticks after it
   await clock.settle()
-  await $.command.run({ command: 'factory', args: 'board' })
+  await $.command.run({ command: 'factory', args: 'board' } as never)
 }
 
-test('the tab bar has no New run tab: Board..Interview on contiguous hotkeys 1-7', async ($, on) => {
+test('the tab bar is Board..Interview on contiguous hotkeys 1-7, with exactly those 7 tabs', async ($, on) => {
   await mountBoard($, on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
@@ -28,11 +28,10 @@ test('the tab bar has no New run tab: Board..Interview on contiguous hotkeys 1-7
       surface,
       component: 'Pane',
       requestId: 'factory',
-      props: { bodyColumns: 100, placement: 'dock' },
+      props: { bodyColumns: 100, placement: 'dock' } as never,
       viewport: { columns: 100, rows: 60 },
     })
     const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).not.toContain('New run')
     expect(drawn).not.toContain('"key":"tab-new"')
     for (const [label, key] of [
       ['Board', '1'],
@@ -44,6 +43,8 @@ test('the tab bar has no New run tab: Board..Interview on contiguous hotkeys 1-7
       ['Interview', '7'],
     ])
       expect(drawn).toContain(`"label":"${label}","hotkey":"${key}"`)
+    // exactly 7 tab buttons: no leftover 8th tab
+    expect((drawn.match(/"key":"tab-/g) ?? []).length).toBe(7)
     expect(drawn).toContain('1-7 views')
     expect(drawn).not.toContain('1-8 views')
     await ui.unmount()
@@ -52,14 +53,14 @@ test('the tab bar has no New run tab: Board..Interview on contiguous hotkeys 1-7
 
 test("the rigs tab has no 'new run here' button, and still has 'backlog'", async ($, on) => {
   await mountBoard($, on)
-  await $.command.run({ command: 'factory', args: 'rigs' })
+  await $.command.run({ command: 'factory', args: 'rigs' } as never)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
       plugin: 'factory',
       surface,
       component: 'Pane',
       requestId: 'factory',
-      props: { bodyColumns: 100, placement: 'dock' },
+      props: { bodyColumns: 100, placement: 'dock' } as never,
       viewport: { columns: 100, rows: 60 },
     })
     const drawn = JSON.stringify(await ui.drawn())
