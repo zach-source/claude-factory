@@ -50,7 +50,7 @@ A ready bead **without** the `factory` label is **unqueued**: the board's Backlo
 
 **Priority**: dispatch takes queued beads in `bd ready` order, which is by priority first (`-p 0` is the most urgent, `-p 4` the backlog). Set it with `bd update <id> -p <n>` or `bd priority`.
 
-**Start one now**, not at the next dispatch: `factory start lifecycle app app-42`. `start` claims the bead for the new run. A goal that is not a bead id creates a new bead from the goal.
+**Start one now**, not at the next dispatch: `factory start lifecycle app app-42`. `start` claims the bead for the new run. A goal that is not a bead id creates a new bead from the goal. A goal shaped like one of the rig's own bead ids (its `issue_prefix`, e.g. `app-42`) never creates a bead: if bd cannot find it, or cannot answer at all (a timeout, bd down), `start` fails and creates nothing, rather than filing a new bead titled with the id text.
 
 ## Epics and children
 
@@ -136,3 +136,5 @@ Today a factory assumes that every `factory/...` claim and branch on a rig is it
 | A worker's bd writes fail with schema errors                | The `bd` on `PATH` does not match the repo's schema. Use one `bd` version everywhere, the factory machine and the AX image included.                                                                                                               |
 | A deferred bead never comes back                            | Deferred beads stay out of `bd ready` until you `bd undefer <id>`. That is how you hand held or aborted work back.                                                                                                                                 |
 | A bead that a station rejected                              | It is open with the `rejected` label and the reason in its metadata (`bd show <id>`). `factory queue <rig> <id>` queues it again, or close it yourself.                                                                                            |
+| `factory start ... <id>` fails with `could not look up bead <id> ...; nothing was created` | bd could not answer for a goal shaped like one of the rig's own bead ids (a timeout, bd down). Nothing was created or started; fix bd (`bd ping`) and start again. |
+| `factory start ... <id>` fails with `no bead <id> in <repo>; nothing was created` | The id carries the rig's own prefix but bd genuinely has no such bead. Check the id, or drop the `<prefix>-` shape if you meant it as plain goal text. |

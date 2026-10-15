@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beads, dispatchable, goalOf, isOwned, stationOf, type Bead } from './beads'
@@ -107,6 +107,147 @@ test('respond answers a human-flagged bead through bd human respond', () => {
     expect(readFileSync(log, 'utf8').trim()).toBe('human respond fx-7 -r go with postgres --actor factory/person')
   } finally {
     process.env.PATH = path
+  }
+})
+
+test('lookup tells a genuine "not found" from any other bd show failure, which it throws instead of swallowing', () => {
+  const bin = join(tmpdir(), `fake-bd-lookup-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  // SHOW_MODE: found | notfound (bd's real not-found JSON on stdout, exit 1) | timeout (no JSON, exit 1) |
+  // query-timeout (bd 1.3.0's query-time failure: the *same* not-found JSON on stdout as notfound, but
+  // exit 1 with stderr "Error fetching <id>: <err>" instead of "Issue <id> not found") |
+  // store-missing (bd 1.3.0's store-open failure: the shared server is up but this rig's own database is
+  // not there; empty stdout, exit 1, stderr "Error: failed to open database: database ... not found on
+  // Dolt server at ..." -- "not found" appears in that stderr too, so a lookup must not mistake it for a
+  // genuine not-found)
+  const script = [
+    '#!/bin/sh',
+    'case "$1" in',
+    'show)',
+    '  case "$SHOW_MODE" in',
+    `    found) printf '%s' '[{"id":"fx-1","title":"t"}]'; exit 0;;`,
+    `    notfound) echo "Issue $2 not found" >&2; printf '%s' '{"error":"no issues found matching the provided IDs"}'; exit 1;;`,
+    '    timeout) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
+    `    query-timeout) echo "Error fetching $2: dial tcp 127.0.0.1:3308: i/o timeout" >&2; printf '%s' '{"error":"no issues found matching the provided IDs"}'; exit 1;;`,
+    `    store-missing) echo 'Error: failed to open database: database "zz" not found on Dolt server at 127.0.0.1:3308' >&2; exit 1;;`,
+    '  esac;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    process.env.SHOW_MODE = 'found'
+    expect(b.lookup('fx-1')).toEqual({ id: 'fx-1', title: 't' })
+    process.env.SHOW_MODE = 'notfound'
+    expect(b.lookup('fx-9')).toBeNull()
+    process.env.SHOW_MODE = 'timeout'
+    expect(() => b.lookup('fx-9')).toThrow('bd show fx-9')
+    expect(() => b.lookup('fx-9')).toThrow(/i\/o timeout/)
+    process.env.SHOW_MODE = 'query-timeout'
+    expect(() => b.lookup('fx-9')).toThrow('bd show fx-9')
+    expect(() => b.lookup('fx-9')).toThrow(/i\/o timeout/)
+    process.env.SHOW_MODE = 'store-missing'
+    expect(() => b.lookup('fx-9')).toThrow('bd show fx-9')
+    expect(() => b.lookup('fx-9')).toThrow(/database "zz" not found/)
+  } finally {
+    process.env.PATH = path
+    delete process.env.SHOW_MODE
+  }
+})
+
+test('prefixStrict throws instead of answering "" when bd config get fails', () => {
+  const bin = join(tmpdir(), `fake-bd-prefix-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const script = [
+    '#!/bin/sh',
+    'case "$1 $2" in',
+    `"config get") if [ "$OK" = 1 ]; then printf '%s' 'acme'; else echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1; fi;;`,
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    process.env.OK = '1'
+    expect(b.prefixStrict()).toBe('acme')
+    delete process.env.OK
+    expect(() => b.prefixStrict()).toThrow(/i\/o timeout/)
+  } finally {
+    process.env.PATH = path
+    delete process.env.OK
+  }
+})
+
+test('create checks a timed-out create against its metadata token before one retry, never a silent duplicate', () => {
+  const bin = join(tmpdir(), `fake-bd-create-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const mode = join(bin, 'mode')
+  // CREATE_MODE: ok | landed | absent-then-ok | absent-always | list-fails
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    'create)',
+    '  case "$(cat ' + mode + ')" in',
+    '    ok) echo new-1; exit 0;;',
+    '    landed) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
+    '    absent-then-ok)',
+    '      if [ -f ' + bin + '/retried ]; then echo new-2; exit 0',
+    '      else touch ' + bin + '/retried; echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1',
+    '      fi;;',
+    '    absent-always) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
+    '    list-fails) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
+    '  esac;;',
+    'list)',
+    '  case "$(cat ' + mode + ')" in',
+    '    landed) printf \'%s\' \'[{"id":"landed-1"}]\'; exit 0;;',
+    '    list-fails) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
+    '    *) printf \'%s\' \'[]\'; exit 0;;',
+    '  esac;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    const calls = () => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean)
+    const createCalls = () => calls().filter(l => l.startsWith('create '))
+
+    writeFileSync(mode, 'ok')
+    writeFileSync(log, '')
+    expect(b.create('t', 'd')).toBe('new-1')
+    expect(createCalls().length).toBe(1)
+
+    writeFileSync(mode, 'landed')
+    writeFileSync(log, '')
+    expect(b.create('t', 'd')).toBe('landed-1')
+    expect(createCalls().length).toBe(1) // found via the metadata check: no retry
+
+    writeFileSync(mode, 'absent-then-ok')
+    writeFileSync(log, '')
+    expect(b.create('t', 'd')).toBe('new-2')
+    expect(createCalls().length).toBe(2) // absent: retried exactly once
+
+    writeFileSync(mode, 'absent-always')
+    writeFileSync(log, '')
+    expect(() => b.create('t', 'd')).toThrow('bd create')
+    expect(createCalls().length).toBe(2) // bounded: one retry, not more
+
+    writeFileSync(mode, 'list-fails')
+    writeFileSync(log, '')
+    expect(() => b.create('t', 'd')).toThrow(/it may have landed/)
+    expect(createCalls().length).toBe(1) // the check itself failed: no retry attempted
+  } finally {
+    process.env.PATH = path
+    rmSync(join(bin, 'retried'), { force: true })
   }
 })
 
