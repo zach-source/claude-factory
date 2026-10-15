@@ -39,6 +39,10 @@ const routes: Record<string, Route> = {
   '/example.com/bad500/@v/v1.0.0.info': { status: 500, body: 'internal error' },
   '/example.com/notime/@v/v1.0.0.info': { status: 200, body: '{"Version":"v1.0.0"}' },
   '/allowed.example.com/mod/@v/v9.9.9.info': { status: 200, body: GO_ALLOWLISTED_INFO },
+  // a module whose real casing has an uppercase letter: Go's proxy protocol case-encodes it (`!azure`) and
+  // never decodes it (handleGo's comment), so an allowlist entry written in the module's real casing has to
+  // be unescaped to match it (ei0.18)
+  '/github.com/!azure/azure-sdk-for-go/@v/v1.0.0.info': { status: 200, body: '{"Version":"v1.0.0","Time":"2026-10-10T23:00:00Z"}' },
   // a module whose real @latest (v1.2.0) is too young, with an old-enough pseudo-version published more
   // recently than the old-enough release -- proves the fallback picks the release, not the newest by time (ei0.11)
   '/example.com/preview/@latest': { status: 200, body: '{"Version":"v1.2.0","Time":"2026-10-10T12:00:00Z"}' },
@@ -186,6 +190,22 @@ const PYPI_FILES: Record<string, string> = {
   [`${PYPI_YOUNG_PATH}.metadata`]: 'METADATA-young-2.36.0',
 }
 
+// a project whose real distribution name is mixed-case (PyYAML): fileDecision/pypiSimple decide on the PEP
+// 503 normalized form ("pyyaml"), so an allowlist entry written in the real name has to be normalized the
+// same way to match (ei0.18)
+const PYYAML_YOUNG_PATH = '/packages/yaml/synthetic/PyYAML-6.0.2.tar.gz'
+const pyyamlIndex = (origin: string) =>
+  JSON.stringify({
+    name: 'PyYAML',
+    files: [
+      {
+        filename: 'PyYAML-6.0.2.tar.gz',
+        url: `${origin}${PYYAML_YOUNG_PATH}`,
+        'upload-time': '2026-10-10T12:00:00.000Z', // ~12h before the test clock: too young without the allowlist
+      },
+    ],
+  })
+
 let upstream: ReturnType<typeof Bun.serve>
 beforeAll(() => {
   upstream = Bun.serve({
@@ -204,6 +224,10 @@ beforeAll(() => {
         return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
           ? new Response(pypiIndex(url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
           : new Response(PYPI_LEGACY_HTML, { headers: { 'content-type': 'text/html' } }) // proves the gate always asks for PEP 691 JSON
+      if (url.pathname === '/simple/pyyaml/')
+        return req.headers.get('accept') === 'application/vnd.pypi.simple.v1+json'
+          ? new Response(pyyamlIndex(url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+          : new Response('', { status: 404 })
       if (url.pathname === '/simple/missingproj/') return new Response('not found', { status: 404 })
       if (url.pathname === '/simple/brokenproj/') return new Response('internal error', { status: 500 })
       if (PYPI_FILES[url.pathname]) return new Response(PYPI_FILES[url.pathname])
@@ -446,6 +470,28 @@ test('an allowlisted module is let through even when young', async () => {
   const r = await g(new Request('http://gate/go/allowed.example.com/mod/@v/v9.9.9.info'))
   expect(r.status).toBe(200)
   expect(await r.text()).toBe(GO_ALLOWLISTED_INFO)
+})
+
+test('an allowlist entry in a Go module\'s real casing matches the proxy protocol\'s !-case-encoded path (ei0.18)', async () => {
+  const g = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    now: () => NOW,
+    allowlist: ['github.com/Azure/azure-sdk-for-go'], // real casing, not the !azure the proxy sends
+  })
+  const r = await g(new Request('http://gate/go/github.com/!azure/azure-sdk-for-go/@v/v1.0.0.info'))
+  expect(r.status).toBe(200)
+})
+
+test('an allowlist entry in a PyPI project\'s real casing matches its PEP 503 normalized name (ei0.18)', async () => {
+  const g = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    now: () => NOW,
+    allowlist: ['PyYAML'], // real casing, not the PEP 503 "pyyaml" fileDecision compares
+  })
+  const r = await g(new Request('http://gate/pypi/simple/PyYAML/'))
+  expect(r.status).toBe(200)
+  const idx = (await r.json()) as { files: { filename: string }[] }
+  expect(idx.files.map(f => f.filename)).toEqual(['PyYAML-6.0.2.tar.gz'])
 })
 
 test('sumdb is proxied verbatim, including /supported', async () => {

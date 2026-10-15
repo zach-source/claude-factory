@@ -194,6 +194,16 @@ async function fetchBytes(cfg: Resolved, url: string): Promise<{ ok: true; buf: 
 // A module path keeps whatever case-encoding (`!x`) it arrived with; it is only ever matched and forwarded,
 // never decoded, so it reaches upstream exactly as Go sent it.
 
+/**
+ * reverses Go's module-path case encoding (a `!` followed by a lowercase letter is that letter's uppercase):
+ * `decide`'s allowlist match runs against this, so an entry written in a module's real casing
+ * (`github.com/Azure/azure-sdk-for-go`) matches the encoded path Go actually sends
+ * (`github.com/!azure/azure-sdk-for-go`) -- the gate still never decodes what it forwards upstream (ei0.18)
+ */
+function goModuleUnescape(path: string): string {
+  return path.replace(/!([a-z])/g, (_, c: string) => c.toUpperCase())
+}
+
 function parseGoInfo(text: string): { version: string; time: string } | null {
   try {
     const j = JSON.parse(text)
@@ -233,7 +243,7 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
     cached = entry
   }
   const publishedMs = cached.time ? Date.parse(cached.time) : NaN
-  const d = decide(mod, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+  const d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
   logDecision('go', mod, cached.version ?? version, cached.time ?? null, d, cfg, quiet)
   return { ok: true as const, info: cached.info, time: cached.time, decision: d }
 }
@@ -281,7 +291,7 @@ async function goLatest(cfg: Resolved, mod: string) {
     const parsed = parseGoInfo(latest.text)
     if (parsed) {
       const publishedMs = Date.parse(parsed.time)
-      const d = decide(mod, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+      const d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
       logDecision('go', mod, parsed.version, parsed.time, d, cfg)
       if (d.decision === 'allow') return new Response(latest.text, { headers: { 'content-type': 'application/json' } })
     } else {
@@ -521,7 +531,10 @@ async function fetchPypiIndex(cfg: Resolved, project: string) {
 function fileDecision(cfg: Resolved, project: string, f: PypiFile, quiet = false) {
   const t = f['upload-time']
   const publishedMs = t ? Date.parse(t) : NaN
-  const d = decide(project, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+  // `project` already went through pepNormalize (PEP 503: lowercase, -_. runs collapsed); normalize the
+  // allowlist entries the same way, so one written in a project's real distribution name (`PyYAML`) still
+  // matches (ei0.18)
+  const d = decide(project, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.map(pepNormalize))
   logDecision('pypi', project, f.filename, t ?? null, d, cfg, quiet)
   return d
 }
