@@ -28,6 +28,7 @@ import {
   line,
   mailKey,
   mailTabs,
+  prName,
   prState,
   tiers,
   rigStats,
@@ -1060,7 +1061,7 @@ export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
                     const state = prState(pr)
                     return (
                       <Box key={`pr-${r.run}-${pr.repo}-${pr.number}`} gap={1}>
-                        {cell(p, `pr-n-${r.run}-${pr.repo}-${pr.number}`, `${pr.repo}#${pr.number}`, {
+                        {cell(p, `pr-n-${r.run}-${pr.repo}-${pr.number}`, prName(pr), {
                           color: 'cyan',
                         })}
                         {cell(
@@ -1076,7 +1077,7 @@ export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
                   })}
                   {mentioned.length > 0 && (
                     <Text dimColor wrap="truncate-end">
-                      also named: {mentioned.map(pr => `${pr.repo}#${pr.number}`).join(', ')}
+                      also named: {mentioned.map(prName).join(', ')}
                     </Text>
                   )}
                 </Box>
