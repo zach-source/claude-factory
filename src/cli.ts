@@ -3271,10 +3271,20 @@ or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
 // inside an AX task the run lives on the laptop: what a worker reports, mails or learns waits in the outbox
-const queued =
+const outboxCmd =
   import.meta.main &&
   !!process.env.FACTORY_OUTBOX &&
   (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && args[0] === 'add'))
+// `--help`/`-h` and malformed args never reach the outbox: before this, `report --help` queued a fake report
+// indistinguishable from a real one (claude-factory-4x1)
+const outboxOk = outboxCmd ? worker.outboxUsage(cmd!, args) : null
+if (outboxOk === 'help')
+  console.log(worker.OUTBOX_USAGE[cmd === 'memory' ? 'memory' : cmd === 'mail' ? 'mail' : 'report'])
+else if (outboxOk) {
+  console.error(outboxOk)
+  process.exit(1)
+}
+const queued = outboxCmd && outboxOk === null
 if (queued) {
   // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
   // report that went without them would end the VM, and its writes with it
@@ -3288,7 +3298,7 @@ if (queued) {
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
-if (import.meta.main && !queued)
+if (import.meta.main && !outboxCmd)
   try {
     switch (cmd) {
       case 'worker': {

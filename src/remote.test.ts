@@ -65,6 +65,65 @@ test("inside a VM, a worker's report and mail wait in the outbox instead of touc
   expect(existsSync(home)).toBe(false) // nothing on this side was touched
 })
 
+test('inside a VM, `report`/`mail`/`memory add --help`|`-h` print usage and exit 0, nothing queued (claude-factory-4x1)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-help.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  for (const args of [['report', '--help'], ['report', '-h'], ['mail', '--help'], ['memory', 'add', '--help']]) {
+    const r = factory(args, env)
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('usage: factory')
+    expect(r.out).not.toContain('queued for the factory')
+  }
+  expect(existsSync(outbox)).toBe(false) // nothing was appended
+})
+
+test('inside a VM, malformed report/mail args refuse on stderr with exit 1, nothing queued (claude-factory-4x1)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-bad.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  const tooFew = factory(['report', 'r1'], env)
+  expect(tooFew.code).toBe(1)
+  expect(tooFew.err).toContain('usage: factory report')
+  const badSeq = factory(['report', 'r1', 'two', 'ready', 'x'], env)
+  expect(badSeq.code).toBe(1)
+  expect(badSeq.err).toContain('usage: factory report')
+  expect(existsSync(outbox)).toBe(false)
+})
+
+test('inside a VM, a well-formed report/mail still queues, and "-h" in free text is not help (claude-factory-4x1)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-ok.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  expect(factory(['mail', 'r1', 'manager', 'hi'], env).code).toBe(0)
+  const r = factory(['report', 'r1', '3', 'ready', 'fixed', 'the', '-h', 'flag'], env)
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('queued for the factory')
+  const lines = readFileSync(outbox, 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l).argv)
+  expect(lines).toEqual([
+    ['mail', 'r1', 'manager', 'hi'],
+    ['report', 'r1', '3', 'ready', 'fixed', 'the', '-h', 'flag'],
+  ])
+})
+
+test('outboxUsage: --help/-h only in a positional slot, malformed args, else null to queue (claude-factory-4x1)', () => {
+  expect(worker.outboxUsage('report', ['--help'])).toBe('help')
+  expect(worker.outboxUsage('report', ['-h'])).toBe('help')
+  expect(worker.outboxUsage('mail', ['--help'])).toBe('help')
+  expect(worker.outboxUsage('memory', ['add', '--help'])).toBe('help')
+  expect(worker.outboxUsage('report', ['r1'])).toContain('usage: factory report')
+  expect(worker.outboxUsage('report', ['r1', 'two', 'ready', 'x'])).toContain('usage: factory report')
+  expect(worker.outboxUsage('report', ['r1', '3', '-bad', 'x'])).toContain('usage: factory report')
+  expect(worker.outboxUsage('mail', ['r1'])).toContain('usage: factory mail')
+  expect(worker.outboxUsage('memory', ['add'])).toContain('usage: factory memory add')
+  expect(worker.outboxUsage('mail', ['r1', 'manager', 'hi'])).toBeNull()
+  expect(worker.outboxUsage('report', ['r1', '3', 'ready', 'fixed', 'the', '-h', 'flag'])).toBeNull()
+  expect(worker.outboxUsage('memory', ['add', 'a lesson'])).toBeNull()
+})
+
 const def: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'do a', next: { ready: 'done' } } } }
 /** a run as the tick that launched its task left it: working at a, its worker ax://<task>; returns the worker's seq */
 function launched(id: string, policy = true, task = 't') {
