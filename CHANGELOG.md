@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A VM runner's dependency age gate is no longer a PATH wrapper a worker can route around with `nix shell nixpkgs#go -c go get ...`: `factory pkg-gate serve` (`deploy/pkg-gate.yaml`) is an in-cluster Go/npm/PyPI registry proxy that refuses a version younger than `PKG_GATE_MIN_DAYS` (4 by default), failing closed on an upstream error or a missing publish time. `FACTORY_AX_PKG_GATE=<scheme://host[:port]>` makes it the only registry host a task's `EgressPolicy` allows (every other registry host is stripped, even one a rig lists directly), sets the common `GOPROXY`/`*_REGISTRY`/`*_INDEX`/`UV_*` env vars at it for convenience, and adds matching `--repo_env` flags to a Bazel rig's `.bazelrc`. `factory rig add --egress` now warns when a listed host is a registry one of these would strip. See docs/remote-runner.md, "Package age gate".
+
 ## 0.8.0 (2026-10-14)
 
 - Fixed: dispatch synced each rig's beads with `bd sync`, which pulls and pushes as the laptop Dolt server's own `root`, so a remote that needs a login (a shared Dolt server) was refused every interval and the rig's claims never reached other machines. A rig with `beadsRemote` set now syncs through SQL as that remote's user (`CALL DOLT_PULL/DOLT_PUSH('--user', …)`), the way VM runs already did. The laptop's Dolt server must hold `DOLT_REMOTE_PASSWORD` in its environment.

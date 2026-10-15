@@ -14,6 +14,8 @@ import {
   needsSwap,
   nextAccount,
   servedAt,
+  parsePkgGateAllowlist,
+  parsePkgGateMinDays,
   prOwner,
   loadFactory,
   missingSweeps,
@@ -366,4 +368,27 @@ test('a rig with no goal and no ready beads is idle', () => {
   expect(idle({}, 0)).toBe(true)
   expect(idle({ goal: 'v2' }, 0)).toBe(false) // the manager steers it
   expect(idle({}, 2)).toBe(false)
+})
+
+test('PKG_GATE_MIN_DAYS unset is undefined (the gate default), but a non-finite or negative value fails closed (ei0.10)', () => {
+  expect(parsePkgGateMinDays(undefined)).toBeUndefined()
+  expect(parsePkgGateMinDays('')).toBeUndefined()
+  expect(parsePkgGateMinDays('7')).toBe(7)
+  expect(() => parsePkgGateMinDays('four')).toThrow(/finite, non-negative/)
+  expect(() => parsePkgGateMinDays('NaN')).toThrow(/finite, non-negative/)
+  expect(() => parsePkgGateMinDays('Infinity')).toThrow(/finite, non-negative/)
+  expect(() => parsePkgGateMinDays('-1')).toThrow(/finite, non-negative/)
+})
+
+test('PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI parse to one list per ecosystem, and the old shared PKG_GATE_ALLOWLIST is refused, not reinterpreted (ei0.22)', () => {
+  expect(parsePkgGateAllowlist({})).toBeUndefined()
+  expect(parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST_GO: '' })).toBeUndefined()
+  expect(parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST_GO: 'a:b', PKG_GATE_ALLOWLIST_PYPI: 'c' })).toEqual({
+    go: ['a', 'b'],
+    pypi: ['c'],
+  })
+  expect(parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST_NPM: 'left-pad' })).toEqual({ npm: ['left-pad'] })
+  // the old name silently meant "all three ecosystems": refuse to start rather than let its meaning change
+  // underneath a deploy that still sets it
+  expect(() => parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST: 'left-pad' })).toThrow(/PKG_GATE_ALLOWLIST/)
 })

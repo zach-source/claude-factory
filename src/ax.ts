@@ -183,12 +183,63 @@ export function egressCA() {
 }
 
 /**
+ * registry hosts a rig's egress might list directly: once a pkg-gate is in front (FACTORY_AX_PKG_GATE), these
+ * never belong in a task's egress again -- the gate is the only registry host a task may reach, so every
+ * toolchain's fetches go through its age check, nix-provided ones included. See claude-factory-ei0.
+ */
+export const REGISTRY_HOSTS = [
+  'proxy.golang.org',
+  'sum.golang.org',
+  'goproxy.io',
+  'goproxy.cn',
+  'registry.npmjs.org',
+  'registry.npmjs.com',
+  'registry.yarnpkg.com',
+  'registry.npmmirror.com',
+  'pypi.org',
+  'pypi.python.org',
+  'test.pypi.org',
+  'files.pythonhosted.org',
+]
+
+/** DNS is case-insensitive and tolerates a trailing dot (an absolute FQDN); --egress's HOST regex accepts
+ * both, so comparing against REGISTRY_HOSTS has to normalize the same way or a differently-cased or
+ * dot-terminated registry host slips through both the strip below and the rig-add warning (ei0.16) */
+const normalizeHost = (h: string) => h.toLowerCase().replace(/\.$/, '')
+export const isRegistryHost = (h: string) => REGISTRY_HOSTS.includes(normalizeHost(h))
+
+/** an extra rule with every REGISTRY_HOSTS host dropped; a rule left with none is dropped entirely */
+function stripRegistryHosts(extra: Egress[]): Egress[] {
+  return extra.map(e => ({ ...e, hosts: e.hosts.filter(h => !isRegistryHost(h)) })).filter(e => e.hosts.length > 0)
+}
+
+/** the gate's own egress rule: an https rule for https://, a Substrate HTTPRule ({http: ...}) for http:// */
+function gateRule(gateUrl: string) {
+  const u = new URL(gateUrl)
+  const defaultPort = u.protocol === 'https:' ? 443 : 80
+  const port = u.port ? Number(u.port) : defaultPort
+  const ports = port !== defaultPort ? { ports: { numbers: [port] } } : {}
+  return u.protocol === 'https:'
+    ? { https: { hostnames: [u.hostname], ...ports } }
+    : { http: { hostnames: [u.hostname], ...ports } }
+}
+
+/**
  * a worker's EgressPolicy: HTTPS to Anthropic and GitHub, plus the rig's own rules, and nothing else. With FACTORY_AX_VAULT=<vault> the gateway
  * swaps the placeholder in each auth header for that agent-vault vault's credential: `ANTHROPIC` (a Claude OAuth token),
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
  * Basic auth). agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
+ *
+ * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
+ * before), the gate's own host is added and every REGISTRY_HOSTS host is stripped from the rig's extra rules
+ * -- nix-provided go/npm/pip/uv included, since the strip is what enforces the gate's age check, not launch()'s
+ * convenience env (below).
  */
-export function egressPolicy(vault = process.env.FACTORY_AX_VAULT, extra: Egress[] = []) {
+export function egressPolicy(
+  vault = process.env.FACTORY_AX_VAULT,
+  extra: Egress[] = [],
+  gate = process.env.FACTORY_AX_PKG_GATE,
+) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
   const rule = (hostnames: string[], header: string, prefix: string, key: string, port?: number) => ({
     https: {
@@ -206,7 +257,8 @@ export function egressPolicy(vault = process.env.FACTORY_AX_VAULT, extra: Egress
       // Nix's global flake registry, which the worker user has no cached copy of: turning it off in nix.conf would
       // change every devenv's derivation, and so miss the rig's cached devenv
       { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } },
-      ...extra.map(({ hosts, key, header, prefix, port }) =>
+      ...(gate ? [gateRule(gate)] : []),
+      ...(gate ? stripRegistryHosts(extra) : extra).map(({ hosts, key, header, prefix, port }) =>
         key
           ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port)
           : { https: { hostnames: hosts, ...(port && { ports: { numbers: [port] } }) } },
@@ -248,6 +300,24 @@ export const launch = (l: Launch) => {
       GIT_CONFIG_COUNT: '1',
       GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
       GIT_CONFIG_VALUE_0: 'Authorization: Basic placeholder',
+    }),
+    // convenience only: what actually enforces the gate is egressPolicy's REGISTRY_HOSTS strip above, so a
+    // worker that unsets these (or reaches for `nix shell nixpkgs#go` directly) still hits a refused host
+    ...(process.env.FACTORY_AX_PKG_GATE && {
+      GOPROXY: `${process.env.FACTORY_AX_PKG_GATE}/go`,
+      NPM_CONFIG_REGISTRY: `${process.env.FACTORY_AX_PKG_GATE}/npm/`,
+      BUN_CONFIG_REGISTRY: `${process.env.FACTORY_AX_PKG_GATE}/npm/`,
+      YARN_NPM_REGISTRY_SERVER: `${process.env.FACTORY_AX_PKG_GATE}/npm/`,
+      PIP_INDEX_URL: `${process.env.FACTORY_AX_PKG_GATE}/pypi/simple`,
+      UV_DEFAULT_INDEX: `${process.env.FACTORY_AX_PKG_GATE}/pypi/simple`,
+      UV_INDEX_URL: `${process.env.FACTORY_AX_PKG_GATE}/pypi/simple`,
+      ...(process.env.FACTORY_AX_PKG_GATE.startsWith('http://') && {
+        PIP_TRUSTED_HOST: new URL(process.env.FACTORY_AX_PKG_GATE).hostname,
+        UV_INSECURE_HOST: new URL(process.env.FACTORY_AX_PKG_GATE).hostname,
+        // yarn berry refuses to even try an http:// registry (npmRegistryServer) unless its host is on this
+        // whitelist, same reason pip and uv need their own overrides above (ei0.19)
+        YARN_UNSAFE_HTTP_WHITELIST: new URL(process.env.FACTORY_AX_PKG_GATE).hostname,
+      }),
     }),
   }
   must(['apply', '-f', '-'], manifest({ ...l, env }))

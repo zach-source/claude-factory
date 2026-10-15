@@ -59,6 +59,7 @@ import * as memory from './memory'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import * as worker from './worker'
+import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
   createdAt,
@@ -215,6 +216,36 @@ function writeJson(path: string, value: unknown) {
 }
 const fail = (msg: string): never => {
   throw new Error(msg)
+}
+
+/**
+ * PKG_GATE_MIN_DAYS, parsed and validated: `Number('four')` is NaN, and NaN makes every age comparison in
+ * pkggate's `decide()` false, which allows every version through -- fail closed here instead (claude-factory-ei0.10)
+ */
+export function parsePkgGateMinDays(raw: string | undefined): number | undefined {
+  if (!raw) return undefined
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) fail(`PKG_GATE_MIN_DAYS "${raw}" is not a finite, non-negative number`)
+  return n
+}
+
+/**
+ * PKG_GATE_ALLOWLIST_GO / _NPM / _PYPI, one list per ecosystem: a single shared PKG_GATE_ALLOWLIST let an
+ * entry meant for one ecosystem unlock the same spelling in the others, a typosquat surface
+ * (claude-factory-ei0.22). The old PKG_GATE_ALLOWLIST is refused outright rather than reinterpreted, so a
+ * deploy still carrying it fails loudly instead of its meaning silently changing underneath it.
+ */
+export function parsePkgGateAllowlist(env: Record<string, string | undefined>): pkggate.Allowlist | undefined {
+  if (env.PKG_GATE_ALLOWLIST)
+    fail(
+      'PKG_GATE_ALLOWLIST no longer exists (one list covered go, npm and pypi alike, so an entry for one ' +
+        'ecosystem unlocked the same name in the others). Set PKG_GATE_ALLOWLIST_GO / _NPM / _PYPI instead.',
+    )
+  const split = (raw: string | undefined) => (raw ? raw.split(':').filter(Boolean) : undefined)
+  const go = split(env.PKG_GATE_ALLOWLIST_GO)
+  const npm = split(env.PKG_GATE_ALLOWLIST_NPM)
+  const pypi = split(env.PKG_GATE_ALLOWLIST_PYPI)
+  return go || npm || pypi ? { ...(go && { go }), ...(npm && { npm }), ...(pypi && { pypi }) } : undefined
 }
 
 function herdr(...args: string[]) {
@@ -2696,11 +2727,18 @@ async function defineRig(
     fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
   if (egress?.length) {
     if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
+    let parsed: Egress[] | undefined
     try {
-      rig.egress = egress.map(ax.parseEgress)
+      parsed = egress.map(ax.parseEgress)
     } catch (err) {
       fail((err as Error).message)
     }
+    rig.egress = parsed!
+    for (const host of parsed!.flatMap(e => e.hosts).filter(h => ax.isRegistryHost(h)))
+      console.warn(
+        `warning: --egress ${host} is a package registry host; once a pkg-gate is on (FACTORY_AX_PKG_GATE), ` +
+          `it is stripped from this rig's policy and never reaches the VM directly`,
+      )
   }
   if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
   if (mcp !== undefined) {
@@ -3113,6 +3151,9 @@ const usage = `factory — herdr software factories on xstate
   report <run> <seq> <outcome> <summary...>   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
+  pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
+                                     PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
+                                     GET /healthz for its counters
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
@@ -3158,6 +3199,29 @@ if (import.meta.main && !queued)
           fail(
             'usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | put <name> <part> <parts> <base64>',
           )
+        break
+      }
+      case 'pkg-gate': {
+        const [sub] = args
+        if (sub !== 'serve') fail('usage: factory pkg-gate serve [--port 8080]')
+        const portIdx = args.indexOf('--port')
+        const port = portIdx >= 0 ? Number(args[portIdx + 1]) : undefined
+        if (portIdx >= 0 && !Number.isFinite(port)) fail(`--port "${args[portIdx + 1]}" is not a number`)
+        const upstream = {
+          go: process.env.PKG_GATE_UPSTREAM_GO ?? pkggate.DEFAULT_UPSTREAM.go,
+          npm: process.env.PKG_GATE_UPSTREAM_NPM ?? pkggate.DEFAULT_UPSTREAM.npm,
+          pypi: process.env.PKG_GATE_UPSTREAM_PYPI ?? pkggate.DEFAULT_UPSTREAM.pypi,
+          files: process.env.PKG_GATE_UPSTREAM_FILES ?? pkggate.DEFAULT_UPSTREAM.files,
+        }
+        const minDays = parsePkgGateMinDays(process.env.PKG_GATE_MIN_DAYS)
+        const allowlist = parsePkgGateAllowlist(process.env)
+        const server = pkggate.serve({
+          upstream,
+          ...(port !== undefined && { port }),
+          ...(minDays !== undefined && { minDays }),
+          ...(allowlist && { allowlist }),
+        })
+        console.log(`pkg-gate listening on :${server.port}, minDays=${minDays ?? 4}`)
         break
       }
       case 'start': {

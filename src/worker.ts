@@ -329,7 +329,7 @@ function kubeconfig() {
  * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (from Nix: the image
  * has no JDK, and its OpenSSL cannot write one Java trusts)
  */
-function bazelrc() {
+export function bazelrc() {
   const lines = [process.env.FACTORY_BAZELRC!]
   if (process.env.FACTORY_CA) {
     const ca = join(own(), 'egress-ca.crt')
@@ -358,6 +358,10 @@ function bazelrc() {
       `startup --host_jvm_args=-Djavax.net.ssl.trustStore=${store} --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit`,
     )
   }
+  // with a pkg-gate (launch() set these in the VM's env), rules_go/rules_python/rules_js fetch through it too,
+  // instead of straight to proxy.golang.org/pypi.org/registry.npmjs.org, which the gate's egress strip refuses
+  for (const v of ['GOPROXY', 'PIP_INDEX_URL', 'NPM_CONFIG_REGISTRY'])
+    if (process.env[v]) lines.push(`common --repo_env=${v}=${process.env[v]}`)
   return `${lines.join('\n')}\n`
 }
 
