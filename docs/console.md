@@ -50,8 +50,9 @@ An open card adds these controls, under a `Steer` rule:
 | `abort` | Abort the run. |
 | `close` (`b`) | Collapse the card. |
 
-Below Steer, an open card shows three more sections: Tasks (the run's bead's open children),
-Journal (the run's last 8 reports), and Worker (a peek at the worker's pane output).
+Below Steer, an open card shows three more sections. Tasks shows the run's bead's children: a
+closed-of-total count and bar, then up to 8 open ones. Journal shows the run's last 8 reports.
+Worker shows a peek at the worker's pane output.
 
 The Finished list, below the live runs, adds:
 
