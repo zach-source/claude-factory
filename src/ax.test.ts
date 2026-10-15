@@ -1102,16 +1102,16 @@ test.skipIf(!Bun.which('bd'))(
       BEADS_DOLT_SHARED_SERVER: '0',
       BD_NON_INTERACTIVE: '1',
     })
-    let ok: boolean
+    let sync: worker.SyncResult
     try {
-      ok = worker.syncBeads()
+      sync = worker.syncBeads()
     } finally {
       for (const [k, v] of Object.entries(was)) {
         if (v === undefined) delete (process.env as Record<string, string | undefined>)[k]
         else process.env[k] = v
       }
     }
-    expect(ok).toBe(true)
+    expect(sync.ok).toBe(true)
 
     // the remote now holds store b's type: a's next pull sees it, not its own discovered-from
     sh(a, bd, 'dolt', 'pull')

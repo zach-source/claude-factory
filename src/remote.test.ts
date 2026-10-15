@@ -628,9 +628,14 @@ test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them 
   expect(readFileSync(log, 'utf8')).toBe('dolt pull shared=0\ndolt push shared=0\n')
   expect(readFileSync(join(vm, 'outbox.jsonl'), 'utf8')).toContain('"report"')
 
-  // a push that never goes through refuses the report: queued, it would end the VM with the writes in it
+  // a push that never goes through refuses the report: queued, it would end the VM with the writes in it.
+  // the refusal names the failed step and bd's own last error line, with its URL redacted, and tells the
+  // worker to mail the manager instead of looping on it alone
   rmSync(join(vm, 'outbox.jsonl'))
-  writeFileSync(join(vm, 'bd'), `#!/bin/sh\n[ "$2" = push ] && exit 1\nexit 0\n`)
+  writeFileSync(
+    join(vm, 'bd'),
+    `#!/bin/sh\n[ "$2" = push ] && { echo "push to https://dolt.example.com:50051/app_beads: connection refused" >&2; exit 1; }\nexit 0\n`,
+  )
   const refused = Bun.spawnSync([CLI, 'report', 'r1', '1', 'ready', 'done'], {
     env: {
       ...process.env,
@@ -642,7 +647,36 @@ test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them 
     },
   })
   expect(refused.exitCode).toBe(1)
-  expect(refused.stderr.toString()).toContain('report again')
+  const pushErr = refused.stderr.toString()
+  expect(pushErr).toContain('bd dolt push failed')
+  expect(pushErr).toContain('connection refused')
+  expect(pushErr).toContain('factory mail')
+  expect(pushErr).not.toContain('dolt.example.com')
+  expect(existsSync(join(vm, 'outbox.jsonl'))).toBe(false)
+
+  // a pull that fails both plain and with --strategy ours (some other error, not a conflict) refuses too,
+  // naming 'pull' as the failed step
+  rmSync(join(vm, 'outbox.jsonl'), { force: true })
+  writeFileSync(
+    join(vm, 'bd'),
+    `#!/bin/sh\n[ "$2" = pull ] && { echo "pull from https://dolt.example.com:50051/app_beads: i/o timeout" >&2; exit 1; }\nexit 0\n`,
+  )
+  const refusedPull = Bun.spawnSync([CLI, 'report', 'r1', '1', 'ready', 'done'], {
+    env: {
+      ...process.env,
+      FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
+      FACTORY_FROM: 'a',
+      FACTORY_BD: join(vm, 'bd'),
+      BEADS_DIR: join(vm, '.beads'),
+      FACTORY_HOME: join(vm, 'nohome'),
+    },
+  })
+  expect(refusedPull.exitCode).toBe(1)
+  const pullErr = refusedPull.stderr.toString()
+  expect(pullErr).toContain('bd dolt pull failed')
+  expect(pullErr).toContain('i/o timeout')
+  expect(pullErr).toContain('factory mail')
+  expect(pullErr).not.toContain('dolt.example.com')
   expect(existsSync(join(vm, 'outbox.jsonl'))).toBe(false)
 })
 

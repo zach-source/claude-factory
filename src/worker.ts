@@ -119,20 +119,39 @@ export function setupBeads() {
   Object.assign(process.env, { ...bdEnv(), BEADS_DIR: join(dir, '.beads') })
 }
 
+/** The result of syncBeads for a push, a pull, or every try. It is ok. Or it names the command that does not succeed and bd's own last error line. */
+export type SyncResult = { ok: true } | { ok: false; step: 'pull' | 'push'; error: string }
+
+/**
+ * This returns the last line of stderr that is not empty. It comes from a bd command that does not succeed, and has a maximum of 300 chars.
+ * src/cli.ts uses this line in its refusal message.
+ * Each http(s) or file URL becomes <url>.
+ * A Dolt remote URL can contain its host.
+ * A refusal must not repeat that host where the worker's mail or logs can send it on.
+ */
+function lastError(stderr: string): string {
+  const line = stderr.split('\n').map(l => l.trim()).filter(Boolean).at(-1) ?? ''
+  return line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>').slice(0, 300)
+}
+
 /**
  * syncBeads sends the VM's bd writes to GitHub, where the laptop pulls them. It pulls first, then pushes.
- * This merges in writes from the laptop or a different worker. It tries again if a different push wins the
- * race. It returns false if the writes do not reach GitHub.
+ * The pull gets writes from the laptop or from another worker.
+ * If another push gets to GitHub first, syncBeads tries again.
+ * If the writes do not get to GitHub, it returns { ok: false, step, error }.
+ * The result names the command that does not succeed.
  *
- * The laptop and this VM can edit the same row on the same day. Then a pull can fail with a merge conflict.
- * This function tries the pull again, with the ours strategy. The ours strategy keeps the VM's own writes,
- * since the VM did the work it is about to report. The laptop's own pull function, pullResolving in
- * src/cli.ts, uses the same rule in reverse. A pull that fails for another reason still fails the same way
- * after the second try.
+ * The laptop and this VM can change the same row on the same day.
+ * So a pull can stop with a merge conflict.
+ * In that case, syncBeads tries the pull again with `--strategy ours`.
+ * The ours strategy keeps the VM's own writes, because the VM did the work that it will report.
+ * The laptop's pull function, pullResolving in src/cli.ts, uses the same rule in the opposite direction.
+ * If a pull stops for another cause, it still stops in the same way after the second try.
  */
-export function syncBeads({ tries = 3 } = {}) {
-  if (!process.env.BEADS_DIR) return true
+export function syncBeads({ tries = 3 } = {}): SyncResult {
+  if (!process.env.BEADS_DIR) return { ok: true }
   const bd = process.env.FACTORY_BD ?? 'bd'
+  let last: { step: 'pull' | 'push'; error: string } = { step: 'pull', error: '' }
   for (let i = 0; i < tries; i++) {
     const spawn = (args: string[]) => Bun.spawnSync([bd, ...args], { env: bdEnv(), stderr: 'pipe' })
     let pulled = spawn(['dolt', 'pull'])
@@ -142,9 +161,15 @@ export function syncBeads({ tries = 3 } = {}) {
       if (pulled.exitCode === 0 && conflict)
         console.error('bd sync: your bd changes and upstream changed the same rows; your version was kept')
     }
-    if (pulled.exitCode === 0 && spawn(['dolt', 'push']).exitCode === 0) return true
+    if (pulled.exitCode !== 0) {
+      last = { step: 'pull', error: lastError(pulled.stderr.toString()) }
+      continue
+    }
+    const pushed = spawn(['dolt', 'push'])
+    if (pushed.exitCode === 0) return { ok: true }
+    last = { step: 'push', error: lastError(pushed.stderr.toString()) }
   }
-  return false
+  return { ok: false, ...last }
 }
 
 type Harness = 'claude' | 'codex' | 'pi'
