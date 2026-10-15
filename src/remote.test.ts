@@ -806,6 +806,8 @@ test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them 
   expect(p.exitCode).toBe(0)
   expect(readFileSync(log, 'utf8')).toBe('dolt pull shared=0\ndolt push shared=0\n')
   expect(readFileSync(join(vm, 'outbox.jsonl'), 'utf8')).toContain('"report"')
+  // no conflict happened, so no "your version was kept" notice prints
+  expect(p.stderr.toString()).not.toContain('your version was kept')
 
   // a push that never goes through refuses the report: queued, it would end the VM with the writes in it.
   // the refusal names the failed step and bd's own last error line, with its URL redacted, and tells the
@@ -893,6 +895,39 @@ test('a conflicted pull retries with --strategy ours (the VM keeps its own write
   expect(p.stderr.toString()).toContain(
     'bd sync: your bd changes and upstream changed the same rows; your version was kept',
   )
+})
+
+test('a plain pull failing for a reason other than a conflict, that the --strategy ours retry still clears, prints no conflict notice', () => {
+  const vm = join(dir, 'vm-nonconflict')
+  mkdirSync(vm, { recursive: true })
+  const log = join(vm, 'bd.log')
+  writeFileSync(
+    join(vm, 'bd'),
+    [
+      '#!/bin/sh',
+      `echo "$*" >> ${log}`,
+      '[ "$1 $2" = "dolt pull" ] && [ "$3" != "--strategy" ] && {',
+      '  echo "Error: transient i/o timeout" >&2',
+      '  exit 1',
+      '}',
+      'exit 0',
+      '',
+    ].join('\n'),
+  )
+  chmodSync(join(vm, 'bd'), 0o755)
+  const p = Bun.spawnSync([CLI, 'report', 'r1', '1', 'ready', 'done'], {
+    env: {
+      ...process.env,
+      FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
+      FACTORY_FROM: 'a',
+      FACTORY_BD: join(vm, 'bd'),
+      BEADS_DIR: join(vm, '.beads'),
+      FACTORY_HOME: join(vm, 'nohome'),
+    },
+  })
+  expect(p.exitCode).toBe(0)
+  expect(readFileSync(log, 'utf8')).toBe('dolt pull\ndolt pull --strategy ours\ndolt push\n')
+  expect(p.stderr.toString()).not.toContain('your version was kept')
 })
 
 test("a launch starts from a gone worker's pushed commits instead of pushing the stale worktree over them", () => {
