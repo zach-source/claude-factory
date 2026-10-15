@@ -1,6 +1,6 @@
 // The runner with an AX worker, end to end through bin/factory: a fake `ax` stands in for the cluster.
 import { afterAll, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -138,6 +138,43 @@ esac
   )
   chmodSync(join(dir, 'ax'), 0o755)
 }
+/**
+ * unlike cluster()/clusterByTask(), which echo the same canned poll for any cursor (so a line-count-cursor
+ * bug would pass vacuously), this slices like the real worker.poll(cursor) does: one ssh-c<n> file per
+ * n in 0..lines.length, each holding {status, lines: lines.slice(n)}, keyed by the poll's actual last arg.
+ * `lines` is the outbox's real, current content; call again with new content once the worker edits it
+ * (claude-factory-4x1)
+ */
+function clusterCursor(phase: string, status: string, lines: string[]) {
+  rmSync(calls, { force: true })
+  for (const f of readdirSync(dir)) if (f.startsWith('ssh-c')) rmSync(join(dir, f))
+  for (let n = 0; n <= lines.length; n++)
+    writeFileSync(join(dir, `ssh-c${n}`), JSON.stringify({ status, lines: lines.slice(n) }))
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: ${phase}\\n' ;;
+esac
+case "$3" in
+  ssh)
+    n=0
+    for a in "$@"; do n="$a"; done
+    if [ -f ${dir}/ssh-c"$n" ]; then cat ${dir}/ssh-c"$n"; else echo '{"status":"${status}","lines":[]}'; fi
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+}
+/** the laptop's record of which outbox lines (by content hash) it has already replayed for a task */
+const seenOf = (id: string, task = 't') =>
+  JSON.parse(readFileSync(join(home, 'runs', id, `${task}.seen`), 'utf8')) as {
+    seen: Record<string, number>
+    missing: number
+  }
+const seenTotal = (id: string, task = 't') => Object.values(seenOf(id, task).seen).reduce((a, b) => a + b, 0)
 
 test("a tick replays an AX worker's report from its outbox, and the task goes when the station ends", () => {
   const seq = launched('r1')
@@ -147,7 +184,7 @@ test("a tick replays an AX worker's report from its outbox, and the task goes wh
   const first = factory(['tick'])
   expect(first.code).toBe(0)
   expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1', node: 'a', agent: 'idle', pane: 'ax://t' })
-  expect(readFileSync(join(home, 'runs', 'r1', 't.cursor'), 'utf8')).toBe('1')
+  expect(seenTotal('r1')).toBe(1)
   expect(inbox('r1')).toContain('"outcome":"ready"')
   expect(called()).toContain(`-a factory ssh t -- ${AS_WORKER} factory worker poll 0`)
 
@@ -196,11 +233,94 @@ test("an outbox replays only the worker's own report, its run's mail and memory,
     ],
   })
   factory(['tick'])
-  expect(readFileSync(join(home, 'runs', 'r3', 't.cursor'), 'utf8')).toBe('6') // a malformed line is refused and passed, not retried every tick
+  expect(seenTotal('r3')).toBe(6) // a malformed line is refused and passed, not retried every tick
   expect(inbox('r3')).not.toContain('"outcome"')
   expect(inbox('r3')).toContain('"from":"a","to":"manager","text":"hi"') // not as the manager it claimed
   expect(called().match(/worker prompt/g)).toHaveLength(5) // each refusal told to the worker
+
+  factory(['tick']) // the same outbox again: nothing already replayed re-runs or re-prompts
+  expect(called().match(/worker prompt/g)).toHaveLength(5)
   rmSync(join(home, 'runs', 'r3'), { recursive: true })
+})
+
+test('a report appended after the worker deletes its already-replayed probes still replays (claude-factory-4x1)', () => {
+  const seq = launched('r8')
+  const probe1 = JSON.stringify({ argv: ['mail', 'r8', 'manager', 'probe one'], from: 'a', at: 1 })
+  const probe2 = JSON.stringify({ argv: ['mail', 'r8', 'manager', 'probe two'], from: 'a', at: 2 })
+  const report = JSON.stringify({ argv: ['report', 'r8', String(seq), 'ready', 'did it'], from: 'a', at: 3 })
+
+  // tick 1: the outbox holds two probes; both replay
+  clusterCursor('Running', 'idle', [probe1, probe2])
+  factory(['tick'])
+  expect(inbox('r8')).toContain('probe one')
+  expect(inbox('r8')).toContain('probe two')
+
+  // the worker deletes both probes with the Edit tool, then appends its real report: the outbox now holds
+  // 1 line, not 3. A line-count cursor of 2 would put this line's index (0) below it and lose it forever
+  clusterCursor('Running', 'idle', [report])
+  factory(['tick'])
+  expect(inbox('r8')).toContain('"outcome":"ready"')
+  rmSync(join(home, 'runs', 'r8'), { recursive: true })
+})
+
+test('polling the same outbox twice replays nothing the second time (claude-factory-4x1)', () => {
+  launched('r9')
+  const mail = JSON.stringify({ argv: ['mail', 'r9', 'manager', 'hello'], from: 'a', at: 1 })
+  clusterCursor('Running', 'idle', [mail])
+  factory(['tick'])
+  const once = inbox('r9')
+  expect(once).toContain('hello')
+  factory(['tick']) // the same outbox, unchanged: no new mail, no prompt either
+  expect(inbox('r9')).toBe(once)
+  expect(called().match(/worker prompt/g)).toBeNull()
+  rmSync(join(home, 'runs', 'r9'), { recursive: true })
+})
+
+test('two identical outbox lines both replay, counted as a multiset like today (claude-factory-4x1)', () => {
+  launched('r10')
+  const mail = JSON.stringify({ argv: ['mail', 'r10', 'manager', 'dup'], from: 'a', at: 1 })
+  clusterCursor('Running', 'idle', [mail, mail])
+  factory(['tick'])
+  expect(inbox('r10').match(/"text":"dup"/g)).toHaveLength(2)
+  expect(seenTotal('r10')).toBe(2)
+  rmSync(join(home, 'runs', 'r10'), { recursive: true })
+})
+
+test('a task mid-flight at upgrade (an old .cursor, no .seen yet) treats its first N lines as already replayed', () => {
+  const seq = launched('r11')
+  const probe = JSON.stringify({ argv: ['mail', 'r11', 'manager', 'old probe'], from: 'a', at: 1 })
+  const report = JSON.stringify({ argv: ['report', 'r11', String(seq), 'ready', 'done'], from: 'a', at: 2 })
+  // as a pre-upgrade laptop left it: 1 line already replayed, no .seen file written yet
+  writeFileSync(join(home, 'runs', 'r11', 't.cursor'), '1')
+  clusterCursor('Running', 'idle', [probe, report])
+  factory(['tick'])
+  expect(inbox('r11')).not.toContain('old probe') // already counted as replayed before the upgrade
+  expect(inbox('r11')).toContain('"outcome":"ready"') // the rest replays once
+  expect(seenTotal('r11')).toBe(2)
+  rmSync(join(home, 'runs', 'r11'), { recursive: true })
+})
+
+test('lines already replayed going missing from the outbox are told once per increase, not every tick (claude-factory-4x1)', () => {
+  launched('r12')
+  const probe1 = JSON.stringify({ argv: ['mail', 'r12', 'manager', 'p1'], from: 'a', at: 1 })
+  const probe2 = JSON.stringify({ argv: ['mail', 'r12', 'manager', 'p2'], from: 'a', at: 2 })
+  const editedFile = join(home, 'runs', 'r12', 't.outbox-edited')
+
+  clusterCursor('Running', 'idle', [probe1, probe2])
+  factory(['tick']) // both replay; nothing missing yet
+  expect(existsSync(editedFile)).toBe(false)
+
+  clusterCursor('Running', 'idle', []) // the worker deletes both
+  factory(['tick'])
+  const marker = readFileSync(editedFile, 'utf8')
+  expect(marker).toContain('missing 2 of 2 consumed lines')
+  const promptsAfterFirstEdit = (called().match(/worker prompt/g) ?? []).length
+  expect(promptsAfterFirstEdit).toBeGreaterThan(0) // the worker is told
+
+  factory(['tick']) // the edit is unchanged since: no new marker line, no new prompt
+  expect(readFileSync(editedFile, 'utf8')).toBe(marker)
+  expect((called().match(/worker prompt/g) ?? []).length).toBe(promptsAfterFirstEdit)
+  rmSync(join(home, 'runs', 'r12'), { recursive: true })
 })
 
 test('files too big for the env (the brief) go to the VM over ssh in parts once the task runs, then never again', () => {
