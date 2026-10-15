@@ -19,6 +19,7 @@ import {
   BEAD_TYPES,
   bar,
   beadInterviews,
+  byState,
   clockOf,
   counts,
   dur,
@@ -30,7 +31,9 @@ import {
   prState,
   tiers,
   rigStats,
+  shortId,
   sparkline,
+  stateOf,
   track,
   withProposals,
   type Interview,
@@ -78,10 +81,6 @@ export function standing(r: FactoryRun, now: number) {
   const word = r.agent === 'idle' || r.agent === 'done' ? 'idle' : r.agent === 'unknown' ? 'running' : r.agent
   return { word: word ?? 'starting', color: 'green' }
 }
-
-/** gates and trouble first, then work in flight, then what waits on a timer */
-const urgency = (r: FactoryRun) =>
-  r.gate ? 0 : r.sub === 'stuck' || r.agent === 'blocked' ? 1 : r.sub === 'waiting' ? 3 : 2
 
 /** an absolute path cut to its last two parts; a repo's own `.factory/x.ts at sha` stays whole */
 const shortPath = (path: string) => (path.startsWith('/') ? `…/${path.split('/').slice(-2).join('/')}` : path)
@@ -397,17 +396,9 @@ function runDetail(p: Base, d: FactoryDetail | null, peek: string, draft: Factor
   )
 }
 
-/** a board row; `isOpen` swaps its collapsed goal/trail/buttons for the full `runDetail`, with
- * the border's padding taken off the detail's width (A7) */
-function card(
-  p: Base,
-  r: FactoryRun,
-  draft: FactoryDraft,
-  isOpen: boolean,
-  detail: FactoryDetail | null,
-  peek: string,
-) {
-  const { Box, Text, Button } = p.ui
+/** an open board card: the run's full `runDetail`, with the border's padding taken off its width (A7) */
+function card(p: Base, r: FactoryRun, draft: FactoryDraft, detail: FactoryDetail | null, peek: string) {
+  const { Box, Text } = p.ui
   const s = standing(r, p.now)
   const timer = r.sub === 'working' && r.since && !r.gate ? ` · ${dur(p.now - r.since)}` : ''
   const tries = r.attempt && r.attempt > 1 ? ` · try ${r.attempt}/${r.attempts}` : ''
@@ -425,37 +416,98 @@ function card(
           {timer}
         </Text>
       </Box>
-      {!isOpen && r.goal && <Text wrap="truncate-end">{line(r.goal, 300)}</Text>}
-      {!isOpen && trail(p, r)}
-      {!isOpen && r.last && (
-        <Text dimColor wrap="truncate-end">
-          └ {r.last.node} {r.last.outcome}: {line(r.last.summary, 300)}
-        </Text>
-      )}
-      {!isOpen && r.error && (
-        <Text color="red" wrap="truncate-end">
-          ! {line(r.error, 300)}
-        </Text>
-      )}
-      {!isOpen && r.gate && gate(p, r, draft)}
-      {!isOpen && (
-        <Box gap={1}>
-          <Button key={`open-${r.id}`} label="open" onPress={() => p.act.select(r.id)} />
-          {r.pane && (
-            <Button key={`jump-${r.id}`} label="jump to worker" dimColor onPress={() => p.act.jump(r.pane!)} />
-          )}
-          {r.sub === 'stuck' && (
-            <Button
-              key={`retry-${r.id}`}
-              label="retry"
-              variant="primary"
-              onPress={() => p.act.cli('retry', r.id)}
-            />
-          )}
-          <Button key={`abort-${r.id}`} label="abort" dimColor onPress={() => p.act.cli('abort', r.id)} />
+      {runDetail({ ...p, width: Math.max(1, p.width - 4) }, detail, peek, draft, r.id)}
+    </Box>
+  )
+}
+
+const COLUMNS = {
+  gates: { title: '? AWAITING YOU', color: 'yellow' },
+  stuck: { title: '! STUCK', color: 'red' },
+  working: { title: '● WORKING', color: 'green' },
+  waiting: { title: '◷ WAITING', color: 'blue' },
+}
+
+/** side by side from here: four columns of at least 29 cells each */
+const WIDE = 120
+
+/** the station and how long: time in it, how quiet a stuck one is, when a waiting one wakes */
+function stationTime(r: FactoryRun, now: number) {
+  const state = stateOf(r)
+  const time =
+    state === 'stuck' && r.quietMin !== undefined
+      ? `quiet ${dur(r.quietMin * 60_000)}`
+      : state === 'waiting' && r.wakeAt
+        ? `wakes ${clockOf(r.wakeAt)}`
+        : r.since
+          ? dur(now - r.since)
+          : ''
+  return [r.node, time].filter(Boolean).join(' ')
+}
+
+/** the one line of why: the gate's question, what stuck it, or where the run last got to */
+function why(r: FactoryRun) {
+  const last = r.last ? line(r.last.summary, 120) : ''
+  if (r.gate) return line(r.gate.question, 120)
+  if (stateOf(r) === 'stuck')
+    return r.error ? line(r.error, 120) : r.agent === 'blocked' ? 'worker blocked' : last
+  return `${r.attempt && r.attempt > 1 ? `try ${r.attempt}/${r.attempts} ` : ''}${last}`.trim()
+}
+
+/** a compact board card `w` cells wide; a gate stays answerable here, its question and buttons in place of the why line */
+function tile(p: Base, r: FactoryRun, draft: FactoryDraft, w: number, isOpen: boolean) {
+  const { Box, Button } = p.ui
+  const q = { ...p, width: w }
+  return (
+    <Box key={`tile-${r.id}`} flexDirection="column" width={w} marginBottom={1}>
+      <Box gap={1}>
+        {cell(q, `tile-id-${r.id}`, shortId(r.id), { color: 'cyan' })}
+        {/* the open card below carries the close button */}
+        {!isOpen && <Button key={`open-${r.id}`} label="open" onPress={() => p.act.select(r.id)} />}
+      </Box>
+      {cell(q, `tile-bead-${r.id}`, r.bead ?? '', { color: 'magenta', width: w })}
+      {cell(q, `tile-at-${r.id}`, stationTime(r, p.now), { width: w })}
+      {r.gate ? gate(q, r, draft) : cell(q, `tile-why-${r.id}`, why(r), { dimColor: true, width: w })}
+    </Box>
+  )
+}
+
+/** the live runs by state: columns side by side when wide, else stacked sections with the open card in place */
+function lanes(
+  p: Base,
+  runs: FactoryRun[],
+  draft: FactoryDraft,
+  selected: string | null,
+  expanded: (r: FactoryRun) => JSX.Element,
+) {
+  const { Box, Text } = p.ui
+  const groups = byState(runs)
+  if (p.width < WIDE)
+    return groups
+      .filter(g => g.runs.length)
+      .map(g => (
+        <Box key={`lane-${g.state}`} flexDirection="column">
+          {rule(p, COLUMNS[g.state].title, String(g.runs.length))}
+          {g.runs.map(r => (r.id === selected ? expanded(r) : tile(p, r, draft, p.width, false)))}
         </Box>
-      )}
-      {isOpen && runDetail({ ...p, width: Math.max(1, p.width - 4) }, detail, peek, draft, r.id)}
+      ))
+  const w = Math.floor((p.width - 3) / 4)
+  return (
+    <Box key="lanes" gap={1}>
+      {groups.map(g => (
+        <Box key={`lane-${g.state}`} flexDirection="column" width={w}>
+          {cell(p, `lane-head-${g.state}`, `${COLUMNS[g.state].title} (${g.runs.length})`, {
+            color: COLUMNS[g.state].color,
+            width: w,
+          })}
+          <Text dimColor>{'─'.repeat(w)}</Text>
+          {g.runs.length ? (
+            g.runs.map(r => tile(p, r, draft, w, r.id === selected))
+          ) : (
+            <Text dimColor>none</Text>
+          )}
+        </Box>
+      ))}
     </Box>
   )
 }
@@ -469,7 +521,7 @@ export function boardView(
   peek: string,
 ) {
   const { Box, Text, Button } = p.ui
-  const live = board.runs.filter(isLive).sort((a, b) => urgency(a) - urgency(b))
+  const live = board.runs.filter(isLive)
   // newest first; the rest stay until `factory rm`
   const over = board.runs.filter(r => !isLive(r)).sort((a, b) => (b.last?.at ?? 0) - (a.last?.at ?? 0))
   if (!board.runs.length)
@@ -479,17 +531,20 @@ export function boardView(
         <Text dimColor>2 shows the backlog each rig feeds; queue or start one from there.</Text>
       </Box>
     )
-  const liveIds = new Set(live.map(r => r.id))
+  const open = live.find(r => r.id === selected)
   // a selected run that isn't live (finished, or opened from elsewhere and since finished) still
   // opens above the Finished rule, even while that list stays collapsed (A5)
   const openOver: FactoryRun | undefined =
-    selected && !liveIds.has(selected)
+    selected && !open
       ? over.find(r => r.id === selected) ?? (detail?.id === selected ? detail : { id: selected })
       : undefined
+  const expanded = (r: FactoryRun) => card(p, r, draft, detail, peek)
   return (
     <Box key="board" flexDirection="column">
-      {live.map(r => card(p, r, draft, r.id === selected, detail, peek))}
-      {openOver && card(p, openOver, draft, true, detail, peek)}
+      {lanes(p, live, draft, selected, expanded)}
+      {/* side by side, the open card goes below the columns; stacked, `lanes` drew it in place */}
+      {open && p.width >= WIDE && expanded(open)}
+      {openOver && expanded(openOver)}
       {over.length > 0 && (
         <Box gap={1}>
           {rule({ ...p, width: p.width - 8 }, 'Finished', String(over.length))}

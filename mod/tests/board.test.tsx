@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { mapView } from '../hooks/register'
+import { byState, shortId } from '../hooks/view'
 
 // a live, stuck run: its detail has everything runDetail must draw (goal, follows line, an edge,
 // a gate-free Steer row with retry since it's stuck, tasks, a journal entry, inbox and a pane)
@@ -323,4 +324,149 @@ test("mapView maps a stored pre-fold 'run' to 'board', and passes every current 
   // still the legacy 'run' (from before the fold) must refresh and render as 'board' either way
   expect(mapView('run')).toBe('board')
   for (const v of ['board', 'backlog', 'mail', 'rigs', 'prs', 'interview']) expect(mapView(v)).toBe(v)
+})
+
+// one live run in each state, and two working ones to order by age
+const STATES_TICK = {
+  manager: [],
+  rigs: [{ name: 'api', repo: '/w/api', factory: 'lifecycle' }],
+  runs: [
+    { id: 'wnew', rig: 'api', bead: 'api-1', node: 'implement', sub: 'working', since: 50 },
+    {
+      id: 'g1',
+      rig: 'api',
+      bead: 'api-2',
+      node: 'review',
+      sub: 'gate',
+      since: 5,
+      gate: { question: 'ship?', outcomes: ['ship', 'hold'] },
+    },
+    {
+      id: 'wold',
+      rig: 'api',
+      bead: 'api-3',
+      node: 'verify',
+      sub: 'working',
+      since: 20,
+      last: { node: 'plan', attempt: 1, outcome: 'ok', summary: 'CI pending', at: 1 },
+    },
+    {
+      id: 's1',
+      rig: 'api',
+      bead: 'api-4',
+      node: 'implement',
+      sub: 'stuck',
+      since: 10,
+      quietMin: 40,
+      error: 'pi stalled',
+    },
+    { id: 'z1', rig: 'api', bead: 'api-5', node: 'verify', sub: 'waiting', since: 30, wakeAt: 3_600_000 },
+  ],
+}
+
+const lastDecide = (ran: string[][]) => ran.findLast(a => a.includes('decide'))?.slice(-3)
+
+async function mountStates($: any, on: any, columns: number, ran: string[][] = []) {
+  const clock = mountFake($, on, ran, { tick: STATES_TICK })
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'board' } as never)
+  return { clock, ui: await mountUi($, columns) }
+}
+
+test('wide, the board is four columns by state, each oldest first, with the gate answerable (kanban)', async ($, on) => {
+  const ran: string[][] = []
+  const { clock, ui } = await mountStates($, on, 140, ran)
+  const drawn = JSON.stringify(await ui.drawn())
+  for (const t of ['? AWAITING YOU (1)', '! STUCK (1)', '● WORKING (2)', '◷ WAITING (1)'])
+    expect(drawn).toContain(t)
+  // the column order, and each run under its own state's column
+  const at = (s: string) => drawn.indexOf(s)
+  expect(at('lane-head-gates')).toBeLessThan(at('lane-head-stuck'))
+  expect(at('lane-head-stuck')).toBeLessThan(at('lane-head-working'))
+  expect(at('lane-head-working')).toBeLessThan(at('lane-head-waiting'))
+  expect(at('tile-id-g1')).toBeLessThan(at('lane-head-stuck'))
+  expect(at('tile-id-s1')).toBeGreaterThan(at('lane-head-stuck'))
+  expect(at('tile-id-s1')).toBeLessThan(at('lane-head-working'))
+  expect(at('tile-id-z1')).toBeGreaterThan(at('lane-head-waiting'))
+  // working is oldest first
+  expect(at('tile-id-wold')).toBeLessThan(at('tile-id-wnew'))
+  // the compact facts: quiet time for stuck, the wake time for waiting, why per state
+  expect(drawn).toContain('implement quiet 40m')
+  expect(drawn).toContain('verify wakes ')
+  expect(drawn).toContain('pi stalled')
+  expect(drawn).toContain('CI pending')
+  expect(drawn).toContain('"ship?"')
+  // the gate still decides from the board
+  await ui.press({ key: 'decide-g1-ship' })
+  await clock.settle()
+  expect(lastDecide(ran)).toEqual(['decide', 'g1', 'ship'])
+  await ui.unmount()
+})
+
+test('wide, an empty column stays as a header saying none, and an opened card shows below the columns (kanban)', async ($, on) => {
+  const ran: string[][] = []
+  const clock = mountFake($, on, ran)
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'board' } as never)
+  const ui = await mountUi($, 140)
+  let drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('? AWAITING YOU (0)')
+  expect(drawn).toContain('"none"')
+  await ui.press({ key: 'open-r1' })
+  await clock.settle()
+  drawn = JSON.stringify(await ui.drawn())
+  // the tile keeps its place without an open button; the full card, with close, follows the columns
+  expect(drawn).toContain('"key":"tile-id-r1"')
+  expect(drawn).not.toContain('"key":"open-r1"')
+  expect(drawn.indexOf('"key":"close-r1"')).toBeGreaterThan(drawn.indexOf('lane-head-waiting'))
+  expect(drawn).toContain('Steer')
+  await ui.unmount()
+})
+
+test('narrow, the same groups stack as sections, empty ones omitted, and the open card replaces its tile (kanban)', async ($, on) => {
+  const ran: string[][] = []
+  const { clock, ui } = await mountStates($, on, 90, ran)
+  let drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).not.toContain('lane-head-')
+  expect(drawn).not.toContain('"none"')
+  for (const t of ['? AWAITING YOU', '! STUCK', '● WORKING', '◷ WAITING']) expect(drawn).toContain(t)
+  expect(drawn.indexOf('? AWAITING YOU')).toBeLessThan(drawn.indexOf('! STUCK'))
+  expect(drawn.indexOf('! STUCK')).toBeLessThan(drawn.indexOf('● WORKING'))
+  expect(drawn.indexOf('● WORKING')).toBeLessThan(drawn.indexOf('◷ WAITING'))
+  await ui.press({ key: 'decide-g1-hold' })
+  await clock.settle()
+  expect(lastDecide(ran)).toEqual(['decide', 'g1', 'hold'])
+  await ui.press({ key: 'open-s1' })
+  await clock.settle()
+  drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).not.toContain('"key":"tile-id-s1"')
+  expect(drawn).toContain('"key":"close-s1"')
+  await ui.unmount()
+})
+
+test('stacked, a state with no live run has no section (kanban)', async ($, on) => {
+  const ran: string[][] = []
+  const clock = mountFake($, on, ran)
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'board' } as never)
+  const ui = await mountUi($, 90)
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('! STUCK')
+  expect(drawn).not.toContain('AWAITING YOU')
+  expect(drawn).not.toContain('WORKING')
+  await ui.unmount()
+})
+
+test('shortId keeps the end of the id that tells runs apart; byState splits live runs by stateOf, oldest first', () => {
+  expect(shortId('lifecycle-mv4yabcdeyjy4')).toBe('mv4y…yjy4')
+  expect(shortId('lifecycle-mv9moci211')).toBe('mv9m…i211')
+  expect(shortId('r1')).toBe('r1')
+  expect(shortId('lifecycle-r1')).toBe('r1')
+  const runs = STATES_TICK.runs.concat([{ id: 'd', node: 'done' } as never])
+  const split = byState(runs)
+  expect(split.map(g => g.state)).toEqual(['gates', 'stuck', 'working', 'waiting'])
+  expect(split.map(g => g.runs.map(r => r.id))).toEqual([['g1'], ['s1'], ['wold', 'wnew'], ['z1']])
 })

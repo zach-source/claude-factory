@@ -20,20 +20,22 @@ The Board tab lists every run. Its data comes from `factory tick`, which the con
 every 5 seconds. Opening a run also calls `factory show <run>` and reads the worker's pane
 with `herdr pane read`.
 
-Live runs come first. Within live runs, the order is: runs at a gate, then stuck runs,
-then working runs, then waiting runs. Finished runs sit below a `Finished` rule, collapsed
-by default.
+Live runs sit in four columns by state, in this order: `? AWAITING YOU` (yellow), `! STUCK`
+(red), `● WORKING` (green) and `◷ WAITING` (blue). Each run is in exactly one, the same
+state the header and status line count. A column lists its runs oldest first. From 120
+columns the columns sit side by side, and an empty one stays as a header reading `none`.
+Narrower, they stack as titled sections in the same order, and an empty one is left out.
+Finished runs sit below a `Finished` rule, collapsed by default.
 
-Each run is a card. A closed card shows the run's id, bead, station, and standing. It also
-shows the goal's first line, the station trail, the last report, and any error.
+Each run is a compact card: its id shortened to the first and last 4 characters (`mv4y…yjy4`),
+its bead, its station with a time (elapsed in the station, `quiet 40m` for a stuck run,
+`wakes 14:20` for a waiting one), and one line of why: the gate's question, the stuck reason
+or the last summary. A gate's note input and outcome buttons show on its card.
 
 | Key or button | What it does |
 | --- | --- |
 | `1` | Switch to the Board tab. |
-| `open` | Expand the card in place. It shows the full goal, the Steer controls, Tasks, Journal, and the Worker pane peek. |
-| `jump to worker` | Jump to the run's pane in herdr. Shows only when the run has a pane. |
-| `retry` | Retry a stuck run. This button shows only when the run is stuck. |
-| `abort` | Abort the run. |
+| `open` | Expand the run's full card: below the columns when they are side by side, in place of the compact card when stacked. It shows the full goal, the Steer controls, Tasks, Journal, and the Worker pane peek. |
 | A gate's outcome buttons | Decide the run's gate. An optional note goes to the next station. |
 
 An open card adds these controls, under a `Steer` rule:
