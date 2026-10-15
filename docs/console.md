@@ -71,18 +71,25 @@ different station, or to read a run's recent history.
 ## Backlog (key 2)
 
 The Backlog tab lists each rig's beads. Its data comes from `factory backlog`: each rig's
-beads labeled `factory`, plus its unlabeled beads that are ready to start.
+beads labeled `factory`, plus its unlabeled beads that are ready to start, and beads held back
+by an open bead (marked `⛔` with the blocker's id). Per rig that is three `bd` listings
+(ready, blocked, every bead for the child counts), not one call per bead.
 
 A type filter narrows the list: `all`, `bug`, `feature`, `task`, `epic`, or `chore`.
 
-Each rig shows its repo, its factory, how busy it is, and its goal. Below that are two
-lists: beads that will start on their own, and beads that wait for you to queue them (the
-first 15).
+Each rig gets one rule: `── api · busy 2/2 · 3 queued · 41 waiting ──`. Its goal, cap bar and
+stations are on the Rigs tab. Below the rule are two lists: beads that will start on their
+own, and beads that wait for you to queue them (the first 15).
+
+A parent shows `[done/total]` of its children and starts collapsed; `▸` opens it and `▾`
+closes it, and its children hang from it with `├─` and `└─`.
 
 | Key or button | What it does |
 | --- | --- |
 | `2` | Switch to the Backlog tab. |
 | A type button (`all`, `bug`, `feature`, `task`, `epic`, `chore`) | Filter both lists to that bead type. |
+| `▸` / `▾` | Show or hide a parent's children. |
+| `all rigs` | Shows only after the Rigs tab's `backlog` button picked one rig; clears that filter. |
 | `queue` | Queue a bead to start on its own. This button shows only for a bead with no parent that is not queued yet. |
 | `start now` | Start a run on this bead now, with `factory start`. |
 
@@ -123,7 +130,7 @@ how many have finished or aborted.
 | Key or button | What it does |
 | --- | --- |
 | `4` | Switch to the Rigs tab. |
-| `backlog` | Switch to the Backlog tab. |
+| `backlog` | Switch to the Backlog tab, showing only this rig. |
 | `open` | Open a run that belongs to no rig. |
 
 A rig with no live runs says so. Runs that belong to no rig get their own list, "outside

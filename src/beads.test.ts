@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { beads, dispatchable, goalOf, isOwned, stationOf, type Bead } from './beads'
+import { backlogOf, beads, dispatchable, goalOf, isOwned, stationOf, type Bead } from './beads'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 
@@ -14,6 +14,43 @@ test('only top-level beads no run holds are dispatched, up to the room left', ()
   expect(dispatchable(ready, new Set(['fx-2']), 2).map(b => b.id)).toEqual(['fx-1', 'fx-3'])
   expect(dispatchable(ready, new Set(), 0)).toEqual([])
   expect(dispatchable(ready, new Set(), -3)).toEqual([])
+})
+
+test("the backlog counts each parent's closed children and marks open blockers, from the three listings", () => {
+  const all = [
+    bead('ap-1', { status: 'open' }),
+    bead('ap-1.1', { status: 'closed', parent: 'ap-1' }),
+    bead('ap-1.2', { status: 'open', parent: 'ap-1' }),
+    bead('ap-1.3', { status: 'open', parent: 'ap-1' }),
+    bead('ap-2', { status: 'open' }),
+    bead('ap-3', { status: 'open' }),
+  ]
+  const ready = [
+    bead('ap-1', { labels: ['factory'] }),
+    bead('ap-1.2', { labels: ['factory'], parent: 'ap-1' }),
+  ]
+  const blocked = [
+    // blocked by a closed bead and an open one: only the open one is shown
+    bead('ap-1.3', { parent: 'ap-1', labels: ['factory'], status: 'open', blocked_by: ['ap-1.2', 'ap-1.1'] }),
+    bead('ap-3', { status: 'open', blocked_by: ['ap-2'] }),
+    bead('ap-4', { status: 'open', assignee: 'zach', blocked_by: ['ap-2'] }),
+  ]
+  const out = backlogOf(ready, [bead('ap-2')], blocked, all)
+  expect(out.queued.map(b => b.id)).toEqual(['ap-1', 'ap-1.2', 'ap-1.3'])
+  expect(out.queued[0]!.children).toEqual({ done: 1, total: 3 })
+  expect(out.queued[2]!.blockedBy).toEqual(['ap-1.2'])
+  expect(out.unqueued.map(b => [b.id, b.blockedBy])).toEqual([
+    ['ap-2', undefined],
+    ['ap-3', ['ap-2']],
+  ])
+  expect(out.unqueued[0]!.children).toBeUndefined()
+})
+
+test('a labeled top-level bead that is blocked still waits in the queue, with its blocker', () => {
+  const blocked = [bead('ap-9', { labels: ['factory'], blocked_by: ['ap-8'] })]
+  const out = backlogOf([], [], blocked, [bead('ap-8', { status: 'open' }), bead('ap-9', { status: 'open' })])
+  expect(out.queued.map(b => [b.id, b.blockedBy])).toEqual([['ap-9', ['ap-8']]])
+  expect(out.unqueued).toEqual([])
 })
 
 test('a bead becomes a goal and may name its station', () => {
