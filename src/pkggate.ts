@@ -505,11 +505,14 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
     }
     const parsed = parseGoInfo(r.text)
     const entry = { info: r.text, version: parsed?.version, time: parsed?.time }
-    // only a canonical, immutable answer is cacheable: the query resolved to itself (an exact version's own
-    // .info never changes) and parsed. A branch/tag query (@v/master.info) can resolve to a different, moving
-    // version upstream, and an unparseable 200 is no decision at all -- caching either forever under the
-    // query's own key would pin a stale or broken answer in place (ei0.14)
-    if (parsed && parsed.version === version) {
+    // Cache only a canonical, immutable answer: the query must resolve to itself. An exact version's own
+    // .info never changes. A branch/tag query (@v/master.info) can resolve to a different, moving version
+    // upstream. An unparseable 200 is no decision at all. Caching either forever under the query's own key
+    // would pin a stale or broken answer in place (ei0.14).
+    // `version` is the escaped path segment (v1.0.0-!r!c1). `parsed.version` is the .info body's raw,
+    // un-escaped Version field (v1.0.0-RC1). The comparison must escape it first. Otherwise an uppercase
+    // prerelease never matches, and the gate never caches it (claude-factory-8ub.13).
+    if (parsed && goModuleEscape(parsed.version) === version) {
       cfg.goInfoCache.set(key, entry)
       evictOverCap(cfg.goInfoCache, cfg.goInfoCacheMaxEntries)
     }

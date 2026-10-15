@@ -1081,6 +1081,53 @@ test('claude-factory-8ub.9: @latest caches its own sumdb record, so a second @la
   }
 })
 
+test("claude-factory-8ub.13: an uppercase prerelease .info caches, so a third request repeats neither the .info fetch nor the sumdb lookup", async () => {
+  // "v1.0.0-RC1" is the .info body's raw Version. goDecideVersion's cache guard compared that raw form
+  // against the escaped path segment (v1.0.0-!r!c1) and never matched, so every request repeated both the
+  // .info fetch and the sumdb lookup. This server 404s on anything but the exact escaped key, so a bug that
+  // looks up or fetches the unescaped form shows up as an error, not a silent extra hit.
+  const rawVersion = 'v1.0.0-RC1'
+  const escapedVersion = escapeGoPath(rawVersion)
+  let infoHits = 0
+  let lookupHits = 0
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        if (key === `rc13.example.com/mod@${escapedVersion}`) {
+          lookupHits++
+          return new Response('10\n')
+        }
+        if (GO_FLOOR_RECORDS[key] !== undefined) return new Response(`${GO_FLOOR_RECORDS[key]}\n`)
+        return new Response('not found', { status: 404 })
+      }
+      if (url.pathname === `/rc13.example.com/mod/@v/${escapedVersion}.info`) {
+        infoHits++
+        return new Response(`{"Version":"${rawVersion}","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      }
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      now: () => NOW,
+    })
+    for (let i = 0; i < 3; i++) {
+      const r = await g(new Request(`http://gate/go/rc13.example.com/mod/@v/${escapedVersion}.info`))
+      expect(r.status).toBe(200)
+    }
+    expect(infoHits).toBe(1)
+    expect(lookupHits).toBe(1)
+  } finally {
+    srv.stop(true)
+  }
+})
+
 test('a module version is decided once, then cached: a second request for the same version makes no second upstream fetch (ei0.12)', async () => {
   let hits = 0
   const counting = Bun.serve({
