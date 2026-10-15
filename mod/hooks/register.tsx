@@ -120,9 +120,9 @@ const rt = {
   backlogAt: 0,
   /** when the interview tab last swept bd for decisions */
   decisionsAt: 0,
-  /** the board and rig goals the manager was last sent, and when */
-  board: undefined as string | undefined,
-  boardAt: 0,
+  /** the sig of the board and rig goals the manager was last sent, and when */
+  sig: undefined as string | undefined,
+  sigAt: 0,
   isPatrolling: false,
   /** told once that the console sits above the prompt because the layout cannot dock it */
   isInlineTold: false,
@@ -219,10 +219,12 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   if (!(await isPaneSession($))) return
   const now = await $.clock.now()
   // ponytail: the whole board again each hour, so a manager that compacted it away gets it back
-  const last = now - rt.boardAt < 3_600_000 ? rt.board : undefined
+  const last = now - rt.sigAt < 3_600_000 ? rt.sig : undefined
   const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last)
+  // a due heartbeat whose board repeats the last one sent wakes nobody: patrolAt stays put, so a
+  // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark
   if (!due) return
-  if (due.board !== last) [rt.board, rt.boardAt] = [due.board, now]
+  if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
   rt.unsent = []
   for (const key of due.keys) rt.seen.add(key)
   rt.patrolAt = now
