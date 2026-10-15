@@ -238,10 +238,12 @@ async function ensureTicking($: EngineInterface) {
   void tick($)
 }
 
-/** a stored view of 'run', from before the Run tab folded into Board, reads as 'board' */
+/** a stored view of 'run', from before the Run tab folded into Board, reads as 'board'; the one
+ * place both `readView` (refresh's fetch gate) and the render switch map it, so they can't drift */
+export const mapView = (v: string): FactoryView => (v === 'run' ? 'board' : (v as FactoryView))
+
 async function readView($: EngineInterface): Promise<FactoryView> {
-  const v = await read($, view)
-  return (v as string) === 'run' ? 'board' : v
+  return mapView(await read($, view))
 }
 
 /** what the open view needs beyond the board: a run's whole record and its worker's screen, or the backlog */
@@ -545,7 +547,7 @@ export const register: Register = (on, options) => {
       read($, selected),
     ])
     // a stored view of 'run', from before the Run tab folded into Board, reads as 'board'
-    const shown = (rawShown as string) === 'run' ? 'board' : rawShown
+    const shown = mapView(rawShown as string)
     const p = { ui, act: actions($), width: e.props.bodyColumns, now }
     // only the fullscreen layout docks a pane beside the chat; herdr, like tmux, defaults to the main screen
     if (e.props.placement === 'inline' && !rt.isInlineTold) {

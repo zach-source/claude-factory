@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { mapView } from '../hooks/register'
+
 // a live, stuck run: its detail has everything runDetail must draw (goal, follows line, an edge,
 // a gate-free Steer row with retry since it's stuck, tasks, a journal entry, inbox and a pane)
 const TICK = {
@@ -313,4 +315,12 @@ test('the opened card fits inside its border at 40 columns (A7)', async ($, on) 
   expect(drawn).toContain(`"children":["${'─'.repeat(27)}"]`)
   expect(drawn).not.toMatch(/─{28,}/)
   await ui.unmount()
+})
+
+test("mapView maps a stored pre-fold 'run' to 'board', and passes every current view through unchanged (cr0.7)", async () => {
+  // register.tsx's readView() (refresh's fetch gate) and its ui.render switch both call this one
+  // helper instead of repeating the 'run' -> 'board' check: a console whose persisted view is
+  // still the legacy 'run' (from before the fold) must refresh and render as 'board' either way
+  expect(mapView('run')).toBe('board')
+  for (const v of ['board', 'backlog', 'mail', 'rigs', 'prs', 'interview']) expect(mapView(v)).toBe(v)
 })
