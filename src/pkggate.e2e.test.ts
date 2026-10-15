@@ -175,7 +175,7 @@ beforeAll(async () => {
     },
   })
   const base = upstream.url.origin
-  gate = serve({ upstream: { go: base, npm: base, pypi: base, files: base }, port: 0 })
+  gate = serve({ upstream: { go: base, npm: base, pypi: base, files: base, sumdb: base, goIndex: base }, port: 0 })
   gateBase = gate.url.origin
   // a real-process client (go/npm/pip/uv) can hit a connection reset if it is the very first inbound
   // connection right after Bun.serve returns; warm both servers up with a real fetch before any test runs

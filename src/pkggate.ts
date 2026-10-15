@@ -5,7 +5,7 @@
 // every decision here fails closed: an upstream error, a timeout, or a missing or unparseable publish time
 // is a refusal, never a pass-through. See claude-factory-ei0 and docs/remote-runner.md's package age gate.
 
-export type Upstream = { go: string; npm: string; pypi: string; files: string }
+export type Upstream = { go: string; npm: string; pypi: string; files: string; sumdb: string; goIndex: string }
 
 /**
  * one list per ecosystem, never one shared list: a shared list let an entry meant for one ecosystem (say,
@@ -731,6 +731,10 @@ export const DEFAULT_UPSTREAM: Upstream = {
   npm: 'https://registry.npmjs.org',
   pypi: 'https://pypi.org',
   files: 'https://files.pythonhosted.org',
+  // the Go first-logged check (claude-factory-8ub): proxy.golang.org answers 404 on /sumdb/sum.golang.org/*
+  // (claude-factory-1hc), so the gate calls sum.golang.org and index.golang.org directly, not through the proxy
+  sumdb: 'https://sum.golang.org',
+  goIndex: 'https://index.golang.org',
 }
 
 /** serves `makeGate`'s handler with Bun.serve; the CLI's `factory pkg-gate serve` is a thin wrapper on this */

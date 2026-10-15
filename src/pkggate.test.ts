@@ -340,7 +340,7 @@ const NOW = Date.parse('2026-10-11T00:00:00Z')
 const base = () => upstream.url.origin
 const gate = () =>
   makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
   })
 
@@ -395,7 +395,7 @@ test('@latest fallback picks the highest release, not a pseudo-version that is m
 
 test('@latest passes through when the real latest is already old enough', async () => {
   const g = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     // a year after v0.43.0 published: old enough on its own, no fallback needed
     now: () => Date.parse('2027-10-11T00:00:00Z'),
   })
@@ -420,7 +420,7 @@ test('a missing publish time is refused, never allowed through', async () => {
 
 test('a hanging upstream is refused (502) after fetchTimeoutMs, not left waiting for the server\'s own idle timeout (ei0.12)', async () => {
   const g = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
     fetchTimeoutMs: 50,
   })
@@ -446,7 +446,7 @@ test('a module version is decided once, then cached: a second request for the sa
     },
   })
   try {
-    const g = makeGate({ upstream: { go: counting.url.origin, npm: base(), pypi: base(), files: base() }, now: () => NOW })
+    const g = makeGate({ upstream: { go: counting.url.origin, npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() }, now: () => NOW })
     await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
     await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
     await g(new Request('http://gate/go/counted.example.com/mod/@v/v1.0.0.info'))
@@ -467,7 +467,7 @@ test('a non-canonical query (a branch/tag, whose .info resolves to a moving vers
     },
   })
   try {
-    const g = makeGate({ upstream: { go: moving.url.origin, npm: base(), pypi: base(), files: base() }, now: () => NOW })
+    const g = makeGate({ upstream: { go: moving.url.origin, npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() }, now: () => NOW })
     const first = await g(new Request('http://gate/go/moving.example.com/mod/@v/master.info'))
     expect(first.status).toBe(200)
     expect(await first.text()).toBe(GO_INFO_OLD)
@@ -492,7 +492,7 @@ test('an unparseable .info is never cached, so a later, parseable answer is serv
     },
   })
   try {
-    const g = makeGate({ upstream: { go: flaky.url.origin, npm: base(), pypi: base(), files: base() }, now: () => NOW })
+    const g = makeGate({ upstream: { go: flaky.url.origin, npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() }, now: () => NOW })
     const first = await g(new Request('http://gate/go/flaky.example.com/mod/@v/v1.0.0.info'))
     expect(first.status).toBe(404) // missing time: refused
     answer = '{"Version":"v1.0.0","Time":"2025-06-05T15:08:00Z"}' // same version, now with a real, old-enough Time
@@ -517,7 +517,7 @@ test('the npm packument cache evicts the oldest entry once over its cap, so a la
   })
   try {
     const g = makeGate({
-      upstream: { go: base(), npm: counting.url.origin, pypi: base(), files: base() },
+      upstream: { go: base(), npm: counting.url.origin, pypi: base(), files: base(), sumdb: base(), goIndex: base() },
       now: () => NOW,
       registryCacheMaxEntries: 2,
     })
@@ -554,7 +554,7 @@ test('a bulk npm packument request logs only the refused version, not every allo
 
 test('an allowlisted module is let through even when young', async () => {
   const g = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
     allowlist: { go: ['allowed.example.com/mod'] },
   })
@@ -565,7 +565,7 @@ test('an allowlisted module is let through even when young', async () => {
 
 test('an allowlist entry in a Go module\'s real casing matches the proxy protocol\'s !-case-encoded path (ei0.18)', async () => {
   const g = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
     allowlist: { go: ['github.com/Azure/azure-sdk-for-go'] }, // real casing, not the !azure the proxy sends
   })
@@ -575,7 +575,7 @@ test('an allowlist entry in a Go module\'s real casing matches the proxy protoco
 
 test('a Go allowlist entry already in the proxy\'s lowercase-escaped form does not match the real uppercase module (the missing ei0.18 negative, ei0.22)', async () => {
   const g = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
     allowlist: { go: ['github.com/azure/azure-sdk-for-go'] }, // lowercase "azure": the real module is "Azure"
   })
@@ -585,7 +585,7 @@ test('a Go allowlist entry already in the proxy\'s lowercase-escaped form does n
 
 test('an allowlist entry in a PyPI project\'s real casing matches its PEP 503 normalized name (ei0.18)', async () => {
   const g = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
     allowlist: { pypi: ['PyYAML'] }, // real casing, not the PEP 503 "pyyaml" fileDecision compares
   })
@@ -600,7 +600,7 @@ test('an allowlist entry for one ecosystem does not unlock the same name in anot
   // let the Go module through -- one shared list let an entry for one ecosystem unlock the same name
   // (typosquat surface) in the others
   const pypiOnly = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
     allowlist: { pypi: ['allowed.example.com/mod'] },
   })
@@ -608,7 +608,7 @@ test('an allowlist entry for one ecosystem does not unlock the same name in anot
   expect(r1.status).toBe(404)
 
   const npmOnly = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
     allowlist: { npm: ['allowed.example.com/mod'] },
   })
@@ -617,7 +617,7 @@ test('an allowlist entry for one ecosystem does not unlock the same name in anot
 
   // and the reverse: a Go entry does not allowlist the same-spelled PyPI project
   const goOnly = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
     allowlist: { go: ['pyyaml'] },
   })
@@ -795,7 +795,7 @@ test('a PyPI file url on an unconfigured (off-origin) host is refused, even thou
 test('a PyPI file url on the separate `files` upstream is fetched and served; PKG_GATE_UPSTREAM_FILES is honored, not dead (ei0.23)', async () => {
   // unlike every other test in this file, `files` is genuinely a different host than `pypi` here -- the only
   // way to tell a real fetch from it apart from one that silently never happens
-  const g = makeGate({ upstream: { go: base(), npm: base(), pypi: base(), files: filesUpstream.url.origin }, now: () => NOW })
+  const g = makeGate({ upstream: { go: base(), npm: base(), pypi: base(), files: filesUpstream.url.origin, sumdb: base(), goIndex: base() }, now: () => NOW })
   const r = await g(new Request('http://gate/pypi/files/filesproj/dist/goodfile-1.0.0.tar.gz'))
   expect(r.status).toBe(200)
   expect(await r.text()).toBe('FILEBYTES-fromfiles')
@@ -816,7 +816,7 @@ test('/healthz reports minDays and the allow/refuse/error counters since start',
 })
 
 test('makeGate throws on a non-finite or negative minDays instead of silently allowing everything (ei0.10)', () => {
-  const cfg = { upstream: { go: base(), npm: base(), pypi: base(), files: base() } }
+  const cfg = { upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() } }
   expect(() => makeGate({ ...cfg, minDays: Number('four') })).toThrow(/finite, non-negative/)
   expect(() => makeGate({ ...cfg, minDays: NaN })).toThrow(/finite, non-negative/)
   expect(() => makeGate({ ...cfg, minDays: Infinity })).toThrow(/finite, non-negative/)
@@ -843,7 +843,7 @@ test('a malformed request (invalid percent-encoding) is a plain-text refusal cou
 
 test('a malformed upstream packument (a null version entry) is a fixed-text 5xx, never echoing the exception, with one error log line (ei0.20)', async () => {
   const g = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     now: () => NOW,
   })
   const lines: string[] = []
@@ -871,7 +871,7 @@ test('a malformed upstream packument (a null version entry) is a fixed-text 5xx,
 
 test('a non-URIError thrown from the handler is a fixed-text 502, never echoing the exception, with one error log line (ei0.20)', async () => {
   const g = makeGate({
-    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    upstream: { go: base(), npm: base(), pypi: base(), files: base(), sumdb: base(), goIndex: base() },
     // a generic throw from anywhere other code calls into (here: the injected clock), not decodeURIComponent's
     // URIError, must still never reach the response body and must still count/log as an error (ei0.20)
     now: () => {
