@@ -13,7 +13,7 @@ const docsPath = join(root, 'docs/console.md')
 function tabs() {
   const out: { label: string; key: string }[] = []
   const re = /\['(\w+)', '([^']+)', '(\d)'\]/g
-  for (const m of viewsSrc.matchAll(re)) out.push({ label: m[2], key: m[3] })
+  for (const m of viewsSrc.matchAll(re)) out.push({ label: m[2]!, key: m[3]! })
   return out
 }
 
@@ -25,7 +25,7 @@ test('docs/console.md has one "## <Label> (key <n>)" heading per TABS entry, no 
   expect(existsSync(docsPath)).toBe(true)
   const text = readFileSync(docsPath, 'utf8')
   const headingRe = /^## (.+) \(key (\d)\)$/gm
-  const found = [...text.matchAll(headingRe)].map(m => ({ label: m[1], key: m[2] }))
+  const found = [...text.matchAll(headingRe)].map(m => ({ label: m[1]!, key: m[2]! }))
   const expected = tabs()
   expect(found.length).toBe(expected.length)
   for (const e of expected) expect(found).toContainEqual(e)
@@ -35,7 +35,7 @@ test('docs/console.md has one "## <Label> (key <n>)" heading per TABS entry, no 
 test('every image link in docs/console.md resolves to a file that exists', () => {
   const text = readFileSync(docsPath, 'utf8')
   const imgRe = /!\[[^\]]*\]\(([^)]+)\)/g
-  const links = [...text.matchAll(imgRe)].map(m => m[1])
+  const links = [...text.matchAll(imgRe)].map(m => m[1]!)
   expect(links.length).toBeGreaterThan(0)
   for (const link of links) expect(existsSync(join(dirname(docsPath), link))).toBe(true)
 })
