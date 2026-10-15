@@ -116,6 +116,21 @@ test('a bead-ID-shaped goal whose lookup fails (a timeout) fails the start and c
   expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
 })
 
+test('a bead-ID-shaped goal whose lookup fails (a timeout) fails the start even under a different rig\'s prefix: bd being down means create would fail too', () => {
+  reset()
+  const r = repo()
+  fakeBd('zzz') // this rig's own prefix is not "acme": the goal does not carry it
+  fakeHerdr()
+  writeFileSync(showMode, 'timeout')
+  const out = run(['start', factoryFixture(), r, 'acme-yrq'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('acme-yrq')
+  expect(out.err).toContain('nothing was created')
+  const log = readFileSync(calls, 'utf8')
+  expect(log).not.toContain('create ')
+  expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
+})
+
 test('a bead-ID-shaped goal bd genuinely answers "not found" against this rig\'s own prefix fails the start and creates nothing', () => {
   reset()
   const r = repo()
