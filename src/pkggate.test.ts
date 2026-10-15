@@ -1011,6 +1011,76 @@ test('AC11: a failed floor refresh (index.golang.org down) logs a decision:\'err
   }
 })
 
+test('claude-factory-8ub.8: a sumdb lookup escapes an uppercase prerelease in the .info body\'s Version, not just the module path', async () => {
+  // "v1.0.0-RC1" is the .info body's raw Version. The sumdb lookup key must use its Go-case-escaped form,
+  // the same way index.golang.org's Path is already escaped elsewhere (AC10). This server answers only
+  // that escaped key; the raw, unescaped form (the bug) is a lookup miss.
+  const rawVersion = 'v1.0.0-RC1'
+  const escapedVersion = escapeGoPath(rawVersion)
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        if (key === `rcversion.example.com/mod@${escapedVersion}`) return new Response('10\n')
+        if (GO_FLOOR_RECORDS[key] !== undefined) return new Response(`${GO_FLOOR_RECORDS[key]}\n`)
+        return new Response('not found', { status: 404 })
+      }
+      if (url.pathname === `/rcversion.example.com/mod/@v/${escapedVersion}.info`)
+        return new Response(`{"Version":"${rawVersion}","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      now: () => NOW,
+    })
+    const r = await g(new Request(`http://gate/go/rcversion.example.com/mod/@v/${escapedVersion}.info`))
+    expect(r.status).toBe(200)
+  } finally {
+    srv.stop(true)
+  }
+})
+
+test('claude-factory-8ub.9: @latest caches its own sumdb record, so a second @latest for the same version skips the lookup', async () => {
+  let lookupHits = 0
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+      if (url.pathname.startsWith('/lookup/')) {
+        lookupHits++
+        const key = url.pathname.slice('/lookup/'.length)
+        return new Response(`${GO_FLOOR_RECORDS[key] ?? GO_FLOOR_RECORD - 1}\n`)
+      }
+      if (url.pathname === '/latestcache.example.com/mod/@latest') return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      now: () => NOW,
+    })
+    const first = await g(new Request('http://gate/go/latestcache.example.com/mod/@latest'))
+    expect(first.status).toBe(200)
+    const hitsAfterFirst = lookupHits
+    expect(hitsAfterFirst).toBeGreaterThan(0) // the cold-start floor build plus the probe's own lookup
+    const second = await g(new Request('http://gate/go/latestcache.example.com/mod/@latest'))
+    expect(second.status).toBe(200)
+    // the second @latest reuses the cached record from the first (claude-factory-8ub.9); no new lookup
+    expect(lookupHits).toBe(hitsAfterFirst)
+  } finally {
+    srv.stop(true)
+  }
+})
+
 test('a module version is decided once, then cached: a second request for the same version makes no second upstream fetch (ei0.12)', async () => {
   let hits = 0
   const counting = Bun.serve({
