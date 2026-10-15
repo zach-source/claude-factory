@@ -589,16 +589,24 @@ async function handlePypi(cfg: Resolved, path: string, origin: string): Promise<
 export function makeGate(cfg: GateConfig): Gate {
   const resolved = resolve(cfg)
   const handler = (async (req: Request) => {
-    const url = new URL(req.url)
-    if (url.pathname === '/healthz')
-      return new Response(JSON.stringify({ ok: true, minDays: resolved.minDays, ...resolved.stats }), {
-        headers: { 'content-type': 'application/json' },
-      })
-    const path = url.pathname.replace(/^\/+/, '')
-    if (path.startsWith('go/')) return handleGo(resolved, path.slice('go/'.length))
-    if (path.startsWith('npm/')) return handleNpm(resolved, path.slice('npm/'.length), url.origin)
-    if (path.startsWith('pypi/')) return handlePypi(resolved, path.slice('pypi/'.length), url.origin)
-    return refuse(404, 'pkg-gate: not found')
+    try {
+      const url = new URL(req.url)
+      if (url.pathname === '/healthz')
+        return new Response(JSON.stringify({ ok: true, minDays: resolved.minDays, ...resolved.stats }), {
+          headers: { 'content-type': 'application/json' },
+        })
+      const path = url.pathname.replace(/^\/+/, '')
+      if (path.startsWith('go/')) return await handleGo(resolved, path.slice('go/'.length))
+      if (path.startsWith('npm/')) return await handleNpm(resolved, path.slice('npm/'.length), url.origin)
+      if (path.startsWith('pypi/')) return await handlePypi(resolved, path.slice('pypi/'.length), url.origin)
+      return refuse(404, 'pkg-gate: not found')
+    } catch (err) {
+      // a malformed request (bad percent-encoding in decodeURIComponent, say) is a client error, not a pass
+      // or a crash: an uncaught throw here would otherwise surface Bun's dev-mode HTML error page (source and
+      // stack included) straight to the caller, uncounted in `resolved.stats` (ei0.15)
+      resolved.stats.error++
+      return refuse(400, `pkg-gate: malformed request: ${(err as Error).message ?? err}`)
+    }
   }) as Gate
   handler.stats = () => ({ ...resolved.stats })
   handler.minDays = resolved.minDays

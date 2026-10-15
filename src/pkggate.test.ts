@@ -590,6 +590,23 @@ test('makeGate throws on a non-finite or negative minDays instead of silently al
   expect(() => makeGate({ ...cfg, minDays: 0 })).not.toThrow() // 0 is a legitimate (if permissive) minimum
 })
 
+test('a malformed request (invalid percent-encoding) is a plain-text refusal counted as an error, never an uncaught exception (ei0.15)', async () => {
+  const g = gate()
+  // '%A' with no second hex digit is not a valid escape: decodeURIComponent throws URIError here, which an
+  // uncaught throw inside the handler would otherwise surface as Bun's dev-mode HTML error page (with the
+  // stack and source), uncounted in cfg.stats
+  const r = await g(new Request('http://gate/pypi/simple/%E0%A4%A/'))
+  expect(r.status).toBeGreaterThanOrEqual(400)
+  expect(r.status).toBeLessThan(500)
+  const text = await r.text()
+  expect(text).toContain('pkg-gate')
+  expect(text).not.toContain('<html')
+  expect((r.headers.get('content-type') ?? '')).toContain('text/plain')
+
+  const health = await g(new Request('http://gate/healthz'))
+  expect((await health.json() as { error: number }).error).toBe(1)
+})
+
 test('PyPI upstream errors refuse rather than pass through', async () => {
   const g = gate()
   const notFound = await g(new Request('http://gate/pypi/simple/missingproj/'))

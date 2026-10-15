@@ -43,6 +43,11 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            # defense-in-depth alongside the handler's own try/catch (ei0.15): keeps Bun's dev-mode error
+            # page (source and stack included) from ever being what a request sees, even one the handler
+            # itself does not catch.
+            - name: NODE_ENV
+              value: production
             - name: PKG_GATE_MIN_DAYS
               value: '4'
             # the person's lever: exact module/package names, colon-separated, that bypass the age check.
