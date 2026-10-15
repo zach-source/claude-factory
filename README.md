@@ -39,6 +39,17 @@ In the manager session:
                                # (only you decide those) and blocked workers (you look at the pane instead)
 ```
 
+## Console
+
+`/factory` opens the console beside the chat. Keys 1-8 switch its tabs: board, run, backlog,
+mail, new run, rigs, PRs and interview. The figures are made-up demo data.
+
+![The console's eight tabs: board, run, backlog, mail, new run, rigs, PRs and interview](docs/images/console-tabs.png)
+
+The board lists the live runs, those awaiting you first, with their stations, workers and gates:
+
+![The console's board tab](docs/images/console-board.png)
+
 ## The manager drives
 
 You talk to the manager session; it runs the factory. With `autopilot` on (the default)

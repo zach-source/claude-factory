@@ -1,0 +1,105 @@
+# The package age gate (claude-factory-ei0): an in-cluster registry proxy that is the only Go/npm/PyPI
+# registry host a VM task may reach once FACTORY_AX_PKG_GATE is on (see docs/remote-runner.md, "Package
+# age gate"). It runs the same worker image as every AX task (built by hack/push-worker.sh), with its
+# ax-task-runner ENTRYPOINT overridden to run `factory pkg-gate serve` directly instead.
+#
+# Apply with the worker image substituted for ${FACTORY_AX_IMAGE} (the digest hack/push-worker.sh prints):
+#   envsubst '${FACTORY_AX_IMAGE}' < deploy/pkg-gate.yaml | kubectl apply -f -
+# Dry-run (no cluster, or before a FACTORY_AX_IMAGE is known) with the literal placeholder instead:
+#   kubectl apply --dry-run=client -f deploy/pkg-gate.yaml
+#
+# No TLS: unlike the Dolt remotesapi and a nix cache (docs/remote-runner.md, "Beads in the VM" and "Tools
+# in the VM"), the gate's own egress rule (ax.gateRule) carries no vault key, so the egress gateway's MITM
+# has nothing to decrypt-and-inject here, and HTTPS would only cost the gateway's upstream trust a new
+# entry for no benefit. FACTORY_AX_PKG_GATE=http://pkg-gate.pkg-gate.svc.cluster.local:8080.
+#
+# This namespace's own egress to the real registries (proxy.golang.org, registry.npmjs.org, pypi.org,
+# files.pythonhosted.org) is the cluster's NetworkPolicy, not a task's EgressPolicy, and not this file.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pkg-gate
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pkg-gate
+  namespace: pkg-gate
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pkg-gate
+  template:
+    metadata:
+      labels:
+        app: pkg-gate
+    spec:
+      # the gate needs no Kubernetes API access; without this the namespace's default SA token would still
+      # be mounted (mode 0644, readable by uid 65532) for nothing to use (ei0.24)
+      automountServiceAccountToken: false
+      containers:
+        - name: pkg-gate
+          image: ${FACTORY_AX_IMAGE}
+          command: ['factory', 'pkg-gate', 'serve', '--port', '8080']
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # defense-in-depth alongside the handler's own try/catch (ei0.15): keeps Bun's dev-mode error
+            # page (source and stack included) from ever being what a request sees, even one the handler
+            # itself does not catch.
+            - name: NODE_ENV
+              value: production
+            - name: PKG_GATE_MIN_DAYS
+              value: '4'
+            # the person's lever: exact module/package names, colon-separated, that bypass the age check --
+            # one list per ecosystem, never a shared one (an entry for one ecosystem must never unlock the
+            # same name in another, ei0.22). Set only here (kubectl set env / edit deployment), never from a
+            # task's env or a request. The gate refuses to start if the old shared PKG_GATE_ALLOWLIST is set.
+            - name: PKG_GATE_ALLOWLIST_GO
+              value: ''
+            - name: PKG_GATE_ALLOWLIST_NPM
+              value: ''
+            - name: PKG_GATE_ALLOWLIST_PYPI
+              value: ''
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ['ALL']
+      securityContext:
+        fsGroup: 65532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pkg-gate
+  namespace: pkg-gate
+spec:
+  selector:
+    app: pkg-gate
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
