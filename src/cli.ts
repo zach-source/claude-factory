@@ -2114,12 +2114,28 @@ async function dream() {
       `dream: ${said}`,
     )
     // a filed or renamed note keeps its counts
-    const renamed = Object.fromEntries(
+    const renamed: Record<string, string> = Object.fromEntries(
       git(MEMORY, 'diff', '-M', '--name-status', before, 'HEAD')
         .split('\n')
         .filter(l => l.startsWith('R'))
         .map(l => l.split('\t').slice(1)),
     )
+    if (process.env.FACTORY_MEMORY_TIERS !== '0') {
+      const filesBefore = memory.mdFileCount(MEMORY)
+      const tiers = memory.applyTiers(MEMORY, { now: start })
+      Object.assign(renamed, tiers.renamed)
+      git(MEMORY, 'add', '-A')
+      // its own commit, dated with the dream it followed, even when it merged and archived nothing
+      git(
+        MEMORY,
+        'commit',
+        '-q',
+        '--allow-empty',
+        `--date=@${Math.floor(start / 1000)}`,
+        '-m',
+        `compact: ${tiers.merged} merged, ${tiers.archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files`,
+      )
+    }
     memory.compact(MEMORY, renamed)
     return said
   } finally {
@@ -3308,6 +3324,9 @@ const usage = `factory — herdr software factories on xstate
   memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping
   memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
+  memory compact [--dry-run]        merge old, used short notes into LONG.md and archive stale ones now;
+                                     --dry-run only prints the plan (a dream runs this itself, after it files
+                                     the inbox, unless FACTORY_MEMORY_TIERS=0)
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
   skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
                                      once reviewed, or reject it, saying why
@@ -3491,9 +3510,30 @@ if (import.meta.main && !outboxCmd)
           if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
           memory.use(MEMORY, paths, 'helped', Date.now(), from)
           console.log(`noted: ${paths.join(', ')}`)
+        } else if (sub === 'compact') {
+          const dryRun = words.includes('--dry-run')
+          const describe = (d: memory.Decision) => ('path' in d ? d.path : `${d.a} ~ ${d.b}`)
+          if (dryRun) {
+            const { decisions } = memory.applyTiers(MEMORY, { dryRun: true })
+            console.log(
+              decisions.length
+                ? decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`).join('\n')
+                : 'nothing to merge or archive',
+            )
+          } else {
+            mkdirSync(MEMORY, { recursive: true })
+            if (!existsSync(join(MEMORY, '.git'))) git(MEMORY, 'init', '-q')
+            const filesBefore = memory.mdFileCount(MEMORY)
+            const { renamed, merged, archived } = memory.applyTiers(MEMORY)
+            git(MEMORY, 'add', '-A')
+            const message = `compact: ${merged} merged, ${archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files`
+            git(MEMORY, 'commit', '-q', '--allow-empty', '-m', message)
+            memory.compact(MEMORY, renamed)
+            console.log(message)
+          }
         } else
           fail(
-            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped [--from run/station] <note path...>',
+            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped [--from run/station] <note path...> | compact [--dry-run]',
           )
         break
       }

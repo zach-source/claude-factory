@@ -32,6 +32,7 @@ export type Note = {
   at?: string
   body: string
   tier?: Tier
+  superseded?: string // frontmatter `superseded: <path>`: this note is stale, replaced by that one
 }
 
 const MODEL = 'Xenova/bge-small-en-v1.5'
@@ -59,6 +60,7 @@ export const parse = (path: string, text: string): Note => {
     from: meta.from,
     at: meta.at,
     body,
+    superseded: meta.superseded,
   }
 }
 
@@ -69,6 +71,7 @@ export const format = (n: Omit<Note, 'path'>) =>
     ...(n.rig ? [`rig: ${n.rig}`] : []),
     ...(n.from ? [`from: ${n.from}`] : []),
     ...(n.at ? [`at: ${n.at}`] : []),
+    ...(n.superseded ? [`superseded: ${n.superseded}`] : []),
     '---',
     n.body.trim(),
     '',
@@ -500,6 +503,83 @@ export function decide(
   for (const s of sims)
     if (s.score >= SAME) decisions.push({ kind: 'dedupe', a: s.a, b: s.b, reason: `similarity ${s.score.toFixed(2)}` })
   return decisions
+}
+
+/** every .md file this store holds. It counts CORE.md and each topic's README, LONG.md and short notes. It skips .archive/. */
+export function mdFileCount(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let n = existsSync(join(dir, 'CORE.md')) ? 1 : 0
+  for (const topic of readdirSync(dir, { withFileTypes: true })) {
+    if (!topic.isDirectory() || topic.name.startsWith('.')) continue
+    n += readdirSync(join(dir, topic.name)).filter(f => f.endsWith('.md')).length
+  }
+  return n
+}
+
+/**
+ * the tiering pass that follows a dream. It gathers each short note's age and usage. It asks decide()
+ * what to merge or archive, then does it, unless dryRun is set. A merge appends the note as a LONG.md
+ * entry in its topic and removes the short file. An archive appends the note to .archive/<topic>.md and
+ * removes it. It returns a rename map (old path -> its LONG.md#id). Pass this to compact() to log it, so
+ * a helped note keeps its count.
+ */
+export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean } = {}) {
+  const now = opts.now ?? Date.now()
+  const { notes } = walk(dir)
+  const uses = usage(dir)
+  const short: ShortCandidate[] = notes
+    .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
+    .map(n => {
+      const atMs = n.at ? Date.parse(n.at) : NaN
+      const createdMs = Number.isFinite(atMs) ? atMs : now // no at: treat as just added, touch nothing yet
+      const u = uses.get(n.path)
+      const lastMs = u?.at || createdMs
+      return {
+        path: n.path,
+        topic: topicOf(n),
+        superseded: n.superseded,
+        ageDays: (now - createdMs) / DAY_MS,
+        staleDays: (now - lastMs) / DAY_MS,
+        shown: u?.shown ?? 0,
+        helped: u?.helped ?? 0,
+      }
+    })
+  const decisions = decide(short, [], [])
+  const renamed: Record<string, string> = {}
+  let merged = 0
+  let archived = 0
+  for (const d of decisions) {
+    if (d.kind !== 'merge' && d.kind !== 'archive') continue
+    const note = notes.find(n => n.path === d.path)
+    if (!note) continue
+    if (d.kind === 'merge') {
+      merged++
+      if (opts.dryRun) continue
+      const topic = topicOf(note)
+      const longFile = join(dir, topic, 'LONG.md')
+      const existing = existsSync(longFile) ? parseLong(readFileSync(longFile, 'utf8')) : []
+      const base = slug(note.summary)
+      let id = base
+      for (let i = 2; existing.some(e => e.id === id); i++) id = `${base}-${i}`
+      existing.push({ id, summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body })
+      writeFileSync(longFile, formatLong(existing))
+      rmSync(join(dir, note.path))
+      renamed[note.path] = `${topic}/LONG.md#${id}`
+    } else {
+      archived++
+      if (opts.dryRun) continue
+      mkdirSync(join(dir, '.archive'), { recursive: true })
+      const archiveFile = join(dir, '.archive', `${topicOf(note)}.md`)
+      const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
+      writeFileSync(
+        archiveFile,
+        prefix + format({ summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body }),
+      )
+      rmSync(join(dir, note.path))
+      // no rename logged: decide() never archives a helped note, so no helped count is owed here
+    }
+  }
+  return { decisions, renamed, merged, archived }
 }
 
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */

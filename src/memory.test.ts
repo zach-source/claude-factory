@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   add,
+  applyTiers,
   close,
   compact,
   CORE_BUDGET,
@@ -15,6 +16,7 @@ import {
   installSkill,
   type LongEntry,
   managerActivity,
+  mdFileCount,
   noteExists,
   outline,
   parse,
@@ -444,4 +446,87 @@ test('decide() turns a scored pair at or above SAME (0.88) into a dedupe decisio
   expect(decide([], [], sims)).toEqual([
     { kind: 'dedupe', a: 'beads/LONG.md#c', b: 'beads/LONG.md#d', reason: 'similarity 0.90' },
   ])
+})
+
+test('mdFileCount counts CORE.md and every topic README, LONG.md and short note, never .archive', () => {
+  const dir = join(tmpdir(), `memory-count-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  mkdirSync(join(dir, '.archive'), { recursive: true })
+  writeFileSync(join(dir, 'CORE.md'), '- a lesson\n')
+  writeFileSync(join(dir, 'beads', 'README.md'), format({ summary: 't', body: '' }))
+  writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'x', body: '' }))
+  writeFileSync(join(dir, '.archive', 'beads.md'), 'archived')
+  expect(mdFileCount(dir)).toBe(3)
+})
+
+test('applyTiers() merges an old, used short note into LONG.md and keeps its usage under the new id', () => {
+  const dir = join(tmpdir(), `memory-apply-merge-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const old = '2026-10-01' // 14 days before `now`
+  writeFileSync(
+    join(dir, 'beads', 'lock.md'),
+    format({ summary: 'bd init locks every repo', at: old, body: 'why and how' }),
+  )
+  writeFileSync(join(dir, 'beads', 'fresh.md'), format({ summary: 'too young to merge', at: '2026-10-14', body: '' }))
+  use(dir, ['beads/lock.md'], 'helped', now - 1000)
+
+  const { decisions, renamed, merged, archived } = applyTiers(dir, { now })
+  expect(merged).toBe(1)
+  expect(archived).toBe(0)
+  expect(decisions).toEqual([{ kind: 'merge', path: 'beads/lock.md', reason: 'shown or helped, 14 days old' }])
+  expect(renamed).toEqual({ 'beads/lock.md': 'beads/LONG.md#bd-init-locks-every-repo' })
+  expect(existsSync(join(dir, 'beads', 'lock.md'))).toBe(false)
+  const entries = parseLong(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8'))
+  expect(entries.map(e => e.summary)).toEqual(['bd init locks every repo'])
+
+  compact(dir, renamed)
+  expect(usage(dir).get('beads/LONG.md#bd-init-locks-every-repo')?.helped).toBe(1)
+})
+
+test('applyTiers() archives a never-helped, long-stale short note, and a superseded one outright', () => {
+  const dir = join(tmpdir(), `memory-apply-archive-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'stale.md'),
+    format({ summary: 'a note nobody ever needed', at: '2026-08-01', body: 'body' }),
+  )
+  writeFileSync(
+    join(dir, 'beads', 'old.md'),
+    format({ summary: 'the old way to do it', at: '2026-08-01', superseded: 'beads/new.md', body: 'body' }),
+  )
+  const { merged, archived, decisions } = applyTiers(dir, { now })
+  expect(merged).toBe(0)
+  expect(archived).toBe(2)
+  expect(decisions.map(d => d.kind)).toEqual(['archive', 'archive'])
+  expect(existsSync(join(dir, 'beads', 'stale.md'))).toBe(false)
+  expect(existsSync(join(dir, 'beads', 'old.md'))).toBe(false)
+  expect(readFileSync(join(dir, '.archive', 'beads.md'), 'utf8')).toContain('a note nobody ever needed')
+  expect(readFileSync(join(dir, '.archive', 'beads.md'), 'utf8')).toContain('the old way to do it')
+})
+
+test('applyTiers() with dryRun counts decisions but writes nothing, and a second pass is a no-op', () => {
+  const dir = join(tmpdir(), `memory-apply-dry-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'lock.md'),
+    format({ summary: 'bd init locks every repo', at: '2026-10-01', body: 'why' }),
+  )
+  use(dir, ['beads/lock.md'], 'shown', now - 1000)
+
+  const dry = applyTiers(dir, { now, dryRun: true })
+  expect(dry.merged).toBe(1)
+  expect(existsSync(join(dir, 'beads', 'lock.md'))).toBe(true) // nothing written
+  expect(existsSync(join(dir, 'beads', 'LONG.md'))).toBe(false)
+
+  const real = applyTiers(dir, { now })
+  expect(real.merged).toBe(1)
+  const again = applyTiers(dir, { now })
+  expect(again.decisions).toEqual([]) // the note is gone, so there is nothing left to merge
 })
