@@ -8,6 +8,7 @@ minor release may change the factory format, the CLI or the run state.
 
 - Docs: [docs/onboarding.md](docs/onboarding.md) takes a new developer from install to a first finished run, and then to the next steps. It is written in ASD-STE100 Simplified Technical English. README links it.
 - GitLab rigs: workers, labels, parks and VMs. A worker on a GitLab rig gets a Forge note in its brief (`forgeNote` in `src/prs.ts`) that maps `gh pr ...` to `glab mr ...`; a GitHub rig's brief is unchanged. `labelPass` lists a GitLab rig's labeled merge requests through `glab api` (`parseGitlabLabeled`), then comments, unlabels and closes with `glab mr note/update/close`. `watchPass` also wakes a station parked on GitLab merge request URLs. For an `ax` rig on GitLab host H, the egress policy replaces `PRIVATE-TOKEN` with vault key `GITLAB` and `Authorization: Basic` with `GITLAB_BASIC`, and the VM gets `GITLAB_TOKEN`, `GITLAB_HOST=H` and a second git extraHeader. The owner adds `GITLAB` and `GITLAB_BASIC` to the vault and rebuilds the worker image (`Dockerfile.worker` now installs `glab`). `factory devenv` still fetches with a GitHub header, so a private GitLab rig has no cached devenv.
+- Docs: new console screenshots, one per tab (Board wide, narrow and with one card open, Backlog, Mail, Rigs, PRs, Interview), made from demo data and shown in README's Console section, which now has a short subsection for each tab. The old `console-tabs.png` montage of the removed 8-tab layout is gone.
 
 ## 0.11.0 (2026-10-15)
 
