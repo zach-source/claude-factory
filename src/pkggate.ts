@@ -204,6 +204,33 @@ async function fetchBytes(cfg: Resolved, url: string): Promise<{ ok: true; buf: 
   }
 }
 
+/** parses `raw` as a URL, returning `null` instead of throwing -- used only to validate a fetch target
+ * before fetching it, never to recover a URL that was going to be used regardless */
+function tryParseUrl(raw: string): URL | null {
+  try {
+    return new URL(raw)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * true only when `url` is http(s) and its origin (scheme+host+port) matches one of `bases` exactly. An
+ * upstream-named fetch target (an npm `dist.tarball`, a PyPI file `url`) must never be trusted past this
+ * check: `fetch` on this runtime also follows a `file://` URL onto the gate pod's own filesystem, and an
+ * arbitrary http(s) host would make the gate fetch (and serve back) whatever a malicious or compromised
+ * upstream points it at -- an SSRF / local-file-read pivot through the one thing every gated task can reach
+ * (ei0.23). A relative PEP 691 `url` (ei0.21) already resolved against the index is always same-origin with
+ * it, so this never rejects that case.
+ */
+function isConfiguredUpstream(url: URL, bases: string[]): boolean {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  return bases.some(base => {
+    const b = tryParseUrl(base)
+    return b != null && url.protocol === b.protocol && url.host === b.host
+  })
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Go module proxy protocol (https://go.dev/ref/mod#goproxy-protocol): list, .info, .mod, .zip, @latest, sumdb.
 // A module path keeps whatever case-encoding (`!x`) it arrived with; it is only ever matched and forwarded,
@@ -500,7 +527,14 @@ async function npmTarball(cfg: Resolved, pkg: string, file: string) {
   logDecision('npm', pkg, version, timeStr ?? null, d, cfg)
   if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${pkg}@${version} ${ageText(d)}, minimum ${cfg.minDays}d`)
   const upstreamUrl = pack.parsed.versions[version]!.dist!.tarball!
-  const b = await fetchBytes(cfg, upstreamUrl)
+  // never fetch a tarball URL upstream merely named: it must be http(s) and actually on this ecosystem's
+  // configured upstream, or the packument itself could point the gate at file:// or an arbitrary host (ei0.23)
+  const target = tryParseUrl(upstreamUrl)
+  if (!target || !isConfiguredUpstream(target, [cfg.upstream.npm])) {
+    logUpstreamError('npm', pkg, 'tarball url is not http(s) on a configured upstream', cfg)
+    return refuse(502, `pkg-gate: ${pkg}/-/${file}: upstream error`)
+  }
+  const b = await fetchBytes(cfg, target.toString())
   if (!b.ok) return refuse(502, `pkg-gate: ${pkg}/-/${file}: upstream error`)
   return new Response(b.buf, { headers: { 'content-type': 'application/octet-stream' } })
 }
@@ -625,7 +659,15 @@ async function pypiFile(cfg: Resolved, project: string, path: string) {
   if (!file) return refuse(404, `pkg-gate: ${project}${path} not found`)
   const d = fileDecision(cfg, project, file)
   if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''} ${ageText(d)}, minimum ${cfg.minDays}d`)
-  const b = await fetchBytes(cfg, pypiResolvedFileUrl(cfg, project, file, isMetadata).toString())
+  const target = pypiResolvedFileUrl(cfg, project, file, isMetadata)
+  // never fetch a file URL upstream merely named (or a relative one resolved against the index, ei0.21):
+  // it must be http(s) and land on the index's own upstream or the separate files upstream, or the index
+  // itself could point the gate at file:// or an arbitrary host (ei0.23)
+  if (!isConfiguredUpstream(target, [cfg.upstream.pypi, cfg.upstream.files])) {
+    logUpstreamError('pypi', project, 'file url is not http(s) on a configured upstream', cfg)
+    return refuse(502, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''}: upstream error`)
+  }
+  const b = await fetchBytes(cfg, target.toString())
   if (!b.ok) return refuse(b.status === 404 ? 404 : 502, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''}: upstream error`)
   return new Response(b.buf)
 }

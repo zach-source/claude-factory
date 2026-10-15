@@ -127,6 +127,18 @@ const NPM_TARBALLS: Record<string, string> = {
   'ms-2.2.0.tgz': 'TARBALL-BYTES-2.2.0',
 }
 
+// a compromised (or merely malicious) upstream packument naming a tarball URL the gate must never fetch
+// verbatim: a `file://` URL (Bun's fetch reads it straight off the gate pod's filesystem) and an off-origin
+// http(s) host (SSRF from the gate pod) -- both old enough to pass the age gate, so the URL check is what's
+// actually on trial here, not a 404 from a young-version refusal (ei0.23)
+const evilNpmPackument = (version: string, tarball: string) =>
+  JSON.stringify({
+    name: 'evilnpm',
+    'dist-tags': { latest: version },
+    versions: { [version]: { name: 'evilnpm', version, dist: { tarball } } },
+    time: { created: '2020-01-01T00:00:00Z', modified: '2020-01-01T00:00:00Z', [version]: '2020-01-01T00:00:00Z' },
+  })
+
 // trimmed from a real `curl -H 'Accept: application/vnd.pypi.simple.v1+json' https://pypi.org/simple/requests/`
 // (2026-10-14): two real files (PEP 700 upload-time included), plus a synthetic young one and a synthetic
 // one with no upload-time at all, to exercise the age gate
@@ -222,8 +234,31 @@ const relprojIndex = () =>
     ],
   })
 
+// same probe as evilnpm above, for PyPI's own file `url` (ei0.23)
+const evilPypiIndex = (filename: string, url: string) =>
+  JSON.stringify({ name: filename, files: [{ filename, url, 'upload-time': '2020-01-01T00:00:00Z' }] })
+
+// proves `PKG_GATE_UPSTREAM_FILES` is actually honored, on a host distinct from every other upstream in this
+// file -- every other fixture here points `files` at the same fake server as everything else, so none of
+// them could tell a real files-upstream fetch from one that was silently ignored (ei0.23)
+const FILESPROJ_PATH = '/dist/goodfile-1.0.0.tar.gz'
+let filesUpstream: ReturnType<typeof Bun.serve>
+const filesprojIndex = (filesOrigin: string) =>
+  JSON.stringify({
+    name: 'filesproj',
+    files: [{ filename: 'goodfile-1.0.0.tar.gz', url: `${filesOrigin}${FILESPROJ_PATH}`, 'upload-time': '2020-01-01T00:00:00Z' }],
+  })
+
 let upstream: ReturnType<typeof Bun.serve>
 beforeAll(() => {
+  filesUpstream = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === FILESPROJ_PATH) return new Response('FILEBYTES-fromfiles')
+      return new Response('not found', { status: 404 })
+    },
+  })
   upstream = Bun.serve({
     port: 0,
     fetch(req) {
@@ -236,6 +271,11 @@ beforeAll(() => {
       if (tarballFile && NPM_TARBALLS[tarballFile]) return new Response(NPM_TARBALLS[tarballFile])
       if (url.pathname === '/preview-pkg')
         return new Response(PREVIEW_PACKUMENT(url.origin), { headers: { 'content-type': 'application/json' } })
+      // a malicious/compromised upstream naming a tarball the gate must refuse to fetch verbatim (ei0.23)
+      if (url.pathname === '/evilnpm-file')
+        return new Response(evilNpmPackument('1.0.0', 'file:///etc/passwd'), { headers: { 'content-type': 'application/json' } })
+      if (url.pathname === '/evilnpm-http')
+        return new Response(evilNpmPackument('1.0.0', 'http://127.0.0.1:1/secret.tgz'), { headers: { 'content-type': 'application/json' } })
       // a malformed upstream packument (a null version entry): proves a bad shape is refused as an upstream
       // error at the parse site, instead of throwing deep inside filterPackument and surfacing raw exception
       // text through the handler's catch-all (ei0.20)
@@ -257,6 +297,17 @@ beforeAll(() => {
           ? new Response(relprojIndex(), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
           : new Response('', { status: 404 })
       if (url.pathname === `/simple/relproj/${RELPROJ_RELATIVE_FILE}`) return new Response('FILEBYTES-relproj-1.0.0')
+      // same probe as evilnpm above, for PyPI's own file `url` (ei0.23)
+      if (url.pathname === '/simple/evilpypi-file/')
+        return new Response(evilPypiIndex('evil.whl', 'file:///etc/passwd'), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
+      if (url.pathname === '/simple/evilpypi-http/')
+        return new Response(evilPypiIndex('evil.tar.gz', 'http://127.0.0.1:1/secret.tar.gz'), {
+          headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
+        })
+      // the file `url` here points at `filesUpstream`, a host distinct from this server, proving PKG_GATE_UPSTREAM_FILES
+      // is honored and actually fetched from, not merely accepted and ignored (ei0.23)
+      if (url.pathname === '/simple/filesproj/')
+        return new Response(filesprojIndex(filesUpstream.url.origin), { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
       if (url.pathname === '/simple/missingproj/') return new Response('not found', { status: 404 })
       if (url.pathname === '/simple/brokenproj/') return new Response('internal error', { status: 500 })
       if (PYPI_FILES[url.pathname]) return new Response(PYPI_FILES[url.pathname])
@@ -270,7 +321,10 @@ beforeAll(() => {
     },
   })
 })
-afterAll(() => upstream.stop(true))
+afterAll(() => {
+  upstream.stop(true)
+  filesUpstream.stop(true)
+})
 
 // 2026-10-11T00:00:00Z: v0.43.0 (published 2026-10-09T15:18:32Z) is ~32.7h old, under the 4d minimum;
 // v0.26.0 (2025-06-05) is far over it
@@ -621,6 +675,22 @@ test('a re-pointed npm `latest` picks the highest release, not a prerelease that
   expect(p['dist-tags'].latest).toBe('1.0.0') // not '2.0.0-beta.1', even though it was published more recently
 })
 
+test('an npm tarball url of file:// is refused before fetch, never reading the gate pod\'s filesystem (ei0.23)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/npm/evilnpm-file/-/passwd'))
+  const body = await r.text()
+  expect(r.status).toBe(502)
+  expect(body).toContain('pkg-gate')
+  expect(body).not.toContain('root:') // would appear if /etc/passwd were actually read back
+})
+
+test('an npm tarball url on an unconfigured (off-origin) host is refused, not fetched (ei0.23)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/npm/evilnpm-http/-/secret.tgz'))
+  expect(r.status).toBe(502)
+  expect(await r.text()).toContain('pkg-gate')
+})
+
 test('npm upstream errors refuse rather than pass through', async () => {
   const g = gate()
   const notFound = await g(new Request('http://gate/npm/nope'))
@@ -696,6 +766,31 @@ test('a PEP 691 file url relative to the index (a devpi/Artifactory/Nexus mirror
   const fileResp = await g(new Request(rewrittenUrl))
   expect(fileResp.status).toBe(200)
   expect(await fileResp.text()).toBe('FILEBYTES-relproj-1.0.0')
+})
+
+test('a PyPI file url of file:// is refused before fetch, never reading the gate pod\'s filesystem (ei0.23)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/pypi/files/evilpypi-file/etc/passwd'))
+  const body = await r.text()
+  expect(r.status).toBe(502)
+  expect(body).toContain('pkg-gate')
+  expect(body).not.toContain('root:') // would appear if /etc/passwd were actually read back
+})
+
+test('a PyPI file url on an unconfigured (off-origin) host is refused, not fetched (ei0.23)', async () => {
+  const g = gate()
+  const r = await g(new Request('http://gate/pypi/files/evilpypi-http/secret.tar.gz'))
+  expect(r.status).toBe(502)
+  expect(await r.text()).toContain('pkg-gate')
+})
+
+test('a PyPI file url on the separate `files` upstream is fetched and served; PKG_GATE_UPSTREAM_FILES is honored, not dead (ei0.23)', async () => {
+  // unlike every other test in this file, `files` is genuinely a different host than `pypi` here -- the only
+  // way to tell a real fetch from it apart from one that silently never happens
+  const g = makeGate({ upstream: { go: base(), npm: base(), pypi: base(), files: filesUpstream.url.origin }, now: () => NOW })
+  const r = await g(new Request('http://gate/pypi/files/filesproj/dist/goodfile-1.0.0.tar.gz'))
+  expect(r.status).toBe(200)
+  expect(await r.text()).toBe('FILEBYTES-fromfiles')
 })
 
 test('/healthz reports minDays and the allow/refuse/error counters since start', async () => {
