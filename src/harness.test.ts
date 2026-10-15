@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { claudeCommand, command, harnessOf, LAUNCH_LINE, readMcp, writeLaunch } from './harness'
@@ -80,6 +80,11 @@ test('writeLaunch writes the pane a 0600 script holding the command, and a secon
   expect(statSync(file).mode & 0o777).toBe(0o600)
   expect(writeLaunch(dir, pane, 'echo bye')).toBe(LAUNCH_LINE)
   expect(readFileSync(file, 'utf8')).toBe('echo bye\n')
+  // a script written before this launch may carry a looser mode (an old factory version, a person's umask):
+  // writeLaunch must reset it, not just rely on the create-time mode which a pre-existing file skips
+  chmodSync(file, 0o644)
+  writeLaunch(dir, pane, 'echo third')
+  expect(statSync(file).mode & 0o777).toBe(0o600)
 })
 
 test('sourcing LAUNCH_LINE in the pane shell runs the written command byte-for-byte, even for a hostile prompt', () => {
