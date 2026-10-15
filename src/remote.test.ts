@@ -461,6 +461,25 @@ test('rig add --egress and --agent are for a runner that can take them', () => {
   })
 })
 
+test('rig add --egress warns, but still adds, when a host is a package registry a pkg-gate would strip', () => {
+  const r = repo()
+  const add = (...a: string[]) => factory(['rig', 'add', 'x', r, ...a])
+  const warned = add('--runner', 'ax', '--egress', 'pypi.org,api.openai.com=OPENAI')
+  expect(warned.code).toBe(0)
+  expect(warned.err).toContain('pypi.org is a package registry host')
+  expect(warned.err).not.toContain('api.openai.com is a package registry host')
+  const clean = add('--runner', 'ax', '--egress', 'api.openai.com=OPENAI')
+  expect(clean.code).toBe(0)
+  expect(clean.err).not.toContain('package registry host')
+})
+
+test('rig add --egress warns on a mixed-case registry host too, since parseEgress accepts any case (ei0.16)', () => {
+  const r = repo()
+  const warned = factory(['rig', 'add', 'x', r, '--runner', 'ax', '--egress', 'PyPI.org,api.openai.com=OPENAI'])
+  expect(warned.code).toBe(0)
+  expect(warned.err).toContain('PyPI.org is a package registry host')
+})
+
 test("inside a VM Claude keeps the worker's tools and prompt but none of the laptop's settings", () => {
   const flags = vmClaudeFlags({ maxContextK: 150 })
   expect(flags.slice(0, 4)).toEqual([
