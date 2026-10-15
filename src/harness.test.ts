@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { claudeCommand, command, harnessOf, readMcp } from './harness'
+import { claudeCommand, command, harnessOf, LAUNCH_LINE, readMcp, writeLaunch } from './harness'
 
 const mcp = { file: '/f/mcp.json', servers: { fx: { command: 'fx-mcp', args: ['--x'] } } }
 
@@ -63,4 +63,51 @@ test('an MCP file must be Claude-shaped, with names codex can address', () => {
   expect(() => readMcp(at('none.json', { servers: {} }))).toThrow('mcpServers')
   expect(() => readMcp(at('bad.json', { mcpServers: { 'a.b': { command: 'x' } } }))).toThrow('letters')
   expect(() => readMcp(at('both.json', { mcpServers: { a: {} } }))).toThrow('command or a url')
+})
+
+test('LAUNCH_LINE is the only text ever typed into a pane: fixed, one line, no run-specific text', () => {
+  expect(LAUNCH_LINE).not.toInclude('jk')
+  expect(LAUNCH_LINE).not.toInclude('\n')
+  expect(LAUNCH_LINE).toBe('. "$FACTORY_HOME/launch/$HERDR_PANE_ID.sh"')
+})
+
+test('writeLaunch writes the pane a 0600 script holding the command, and a second write overwrites it', () => {
+  const dir = join(tmpdir(), `launch-${process.pid}-${Date.now()}`)
+  const pane = 'wX:p1'
+  expect(writeLaunch(dir, pane, 'echo hi')).toBe(LAUNCH_LINE)
+  const file = join(dir, 'launch', `${pane}.sh`)
+  expect(readFileSync(file, 'utf8')).toBe('echo hi\n')
+  expect(statSync(file).mode & 0o777).toBe(0o600)
+  expect(writeLaunch(dir, pane, 'echo bye')).toBe(LAUNCH_LINE)
+  expect(readFileSync(file, 'utf8')).toBe('echo bye\n')
+  // a script written before this launch may carry a looser mode (an old factory version, a person's umask):
+  // writeLaunch must reset it, not just rely on the create-time mode which a pre-existing file skips
+  chmodSync(file, 0o644)
+  writeLaunch(dir, pane, 'echo third')
+  expect(statSync(file).mode & 0o777).toBe(0o600)
+})
+
+test('sourcing LAUNCH_LINE in the pane shell runs the written command byte-for-byte, even for a hostile prompt', () => {
+  const zsh = Bun.which('zsh')
+  const sh = Bun.which('sh') ?? '/bin/sh'
+  const dir = join(tmpdir(), `pane-${process.pid}-${Date.now()}`)
+  const promptDir = join(dir, 'runs', 'lifecycle-mv8khojkz6', 'prompts', 'x-jk-y')
+  mkdirSync(promptDir, { recursive: true })
+  const promptPath = join(promptDir, 'triage.md')
+  const promptText = "hostile jk ' \" $(touch pwned) `touch pwned2`\nline two"
+  writeFileSync(promptPath, promptText)
+  const fakeDir = join(tmpdir(), `fake-${process.pid}-${Date.now()}`)
+  mkdirSync(fakeDir, { recursive: true })
+  const fake = join(fakeDir, 'argv.ts')
+  writeFileSync(fake, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))')
+  const cmd = command(`bun ${fake}`, promptPath)
+  const pane = 'wX:p1'
+  writeLaunch(dir, pane, cmd)
+  for (const shell of zsh ? [zsh, sh] : [sh]) {
+    const p = Bun.spawnSync([shell, '-c', LAUNCH_LINE], {
+      env: { ...process.env, FACTORY_HOME: dir, HERDR_PANE_ID: pane },
+    })
+    expect(p.exitCode, p.stderr.toString()).toBe(0)
+    expect(JSON.parse(p.stdout.toString())).toEqual([promptText])
+  }
 })
