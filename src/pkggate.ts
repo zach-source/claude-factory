@@ -7,12 +7,19 @@
 
 export type Upstream = { go: string; npm: string; pypi: string; files: string }
 
+/**
+ * one list per ecosystem, never one shared list: a shared list let an entry meant for one ecosystem (say,
+ * an npm package) unlock the same spelling in another (a PyPI project of the same name), a typosquat
+ * surface (ei0.22).
+ */
+export type Allowlist = { go?: string[]; npm?: string[]; pypi?: string[] }
+
 export type GateConfig = {
   upstream: Upstream
   /** the minimum age, in days, a version/file must have to be served (default 4, as pkg-guard used) */
   minDays?: number
   /** module/package names let through regardless of age -- the person's lever, never settable from a request */
-  allowlist?: string[]
+  allowlist?: Allowlist
   now?: () => number
   fetch?: typeof fetch
   /** every upstream fetch aborts after this long, a timeout counted as an error, never a pass-through (default 10s) */
@@ -28,7 +35,7 @@ export type Gate = ((req: Request) => Promise<Response>) & { stats: () => Stats;
 type Resolved = {
   upstream: Upstream
   minDays: number
-  allowlist: string[]
+  allowlist: { go: string[]; npm: string[]; pypi: string[] }
   now: () => number
   fetch: typeof fetch
   fetchTimeoutMs: number
@@ -59,7 +66,7 @@ function resolve(cfg: GateConfig): Resolved {
   return {
     upstream: cfg.upstream,
     minDays,
-    allowlist: cfg.allowlist ?? [],
+    allowlist: { go: cfg.allowlist?.go ?? [], npm: cfg.allowlist?.npm ?? [], pypi: cfg.allowlist?.pypi ?? [] },
     now: cfg.now ?? (() => Date.now()),
     fetch: cfg.fetch ?? fetch,
     fetchTimeoutMs: cfg.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
@@ -251,7 +258,7 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
     cached = entry
   }
   const publishedMs = cached.time ? Date.parse(cached.time) : NaN
-  const d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+  const d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.go)
   logDecision('go', mod, cached.version ?? version, cached.time ?? null, d, cfg, quiet)
   return { ok: true as const, info: cached.info, time: cached.time, decision: d }
 }
@@ -299,7 +306,7 @@ async function goLatest(cfg: Resolved, mod: string) {
     const parsed = parseGoInfo(latest.text)
     if (parsed) {
       const publishedMs = Date.parse(parsed.time)
-      const d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+      const d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.go)
       logDecision('go', mod, parsed.version, parsed.time, d, cfg)
       if (d.decision === 'allow') return new Response(latest.text, { headers: { 'content-type': 'application/json' } })
     } else {
@@ -445,7 +452,7 @@ function filterPackument(cfg: Resolved, pkg: string, p: NpmPackument, origin: st
   for (const v of Object.keys(p.versions)) {
     const timeStr = p.time[v]
     const publishedMs = timeStr ? Date.parse(timeStr) : NaN
-    const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+    const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.npm)
     logDecision('npm', pkg, v, timeStr ?? null, d, cfg, true)
     counts[d.decision]++
     if (d.decision === 'allow') kept.add(v)
@@ -489,7 +496,7 @@ async function npmTarball(cfg: Resolved, pkg: string, file: string) {
   if (!version) return refuse(404, `pkg-gate: ${pkg}/-/${file} not found`)
   const timeStr = pack.parsed.time[version]
   const publishedMs = timeStr ? Date.parse(timeStr) : NaN
-  const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
+  const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.npm)
   logDecision('npm', pkg, version, timeStr ?? null, d, cfg)
   if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${pkg}@${version} ${ageText(d)}, minimum ${cfg.minDays}d`)
   const upstreamUrl = pack.parsed.versions[version]!.dist!.tarball!
@@ -579,7 +586,7 @@ function fileDecision(cfg: Resolved, project: string, f: PypiFile, quiet = false
   // `project` already went through pepNormalize (PEP 503: lowercase, -_. runs collapsed); normalize the
   // allowlist entries the same way, so one written in a project's real distribution name (`PyYAML`) still
   // matches (ei0.18)
-  const d = decide(project, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.map(pepNormalize))
+  const d = decide(project, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.pypi.map(pepNormalize))
   logDecision('pypi', project, f.filename, t ?? null, d, cfg, quiet)
   return d
 }

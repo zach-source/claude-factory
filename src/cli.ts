@@ -229,6 +229,25 @@ export function parsePkgGateMinDays(raw: string | undefined): number | undefined
   return n
 }
 
+/**
+ * PKG_GATE_ALLOWLIST_GO / _NPM / _PYPI, one list per ecosystem: a single shared PKG_GATE_ALLOWLIST let an
+ * entry meant for one ecosystem unlock the same spelling in the others, a typosquat surface
+ * (claude-factory-ei0.22). The old PKG_GATE_ALLOWLIST is refused outright rather than reinterpreted, so a
+ * deploy still carrying it fails loudly instead of its meaning silently changing underneath it.
+ */
+export function parsePkgGateAllowlist(env: Record<string, string | undefined>): pkggate.Allowlist | undefined {
+  if (env.PKG_GATE_ALLOWLIST)
+    fail(
+      'PKG_GATE_ALLOWLIST no longer exists (one list covered go, npm and pypi alike, so an entry for one ' +
+        'ecosystem unlocked the same name in the others). Set PKG_GATE_ALLOWLIST_GO / _NPM / _PYPI instead.',
+    )
+  const split = (raw: string | undefined) => (raw ? raw.split(':').filter(Boolean) : undefined)
+  const go = split(env.PKG_GATE_ALLOWLIST_GO)
+  const npm = split(env.PKG_GATE_ALLOWLIST_NPM)
+  const pypi = split(env.PKG_GATE_ALLOWLIST_PYPI)
+  return go || npm || pypi ? { ...(go && { go }), ...(npm && { npm }), ...(pypi && { pypi }) } : undefined
+}
+
 function herdr(...args: string[]) {
   // a leading space keeps the typed launch out of the person's shell history (zsh HIST_IGNORE_SPACE, atuin)
   if (args[0] === 'pane' && args[1] === 'run') args = [...args.slice(0, 3), ` ${args[3]}`, ...args.slice(4)]
@@ -3109,7 +3128,8 @@ const usage = `factory — herdr software factories on xstate
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
   pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
-                                     PKG_GATE_ALLOWLIST colon-separated); GET /healthz for its counters
+                                     PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
+                                     GET /healthz for its counters
   decide <run> <outcome> [note...]   the person: answer a gate station
   mail <run> <node|manager> <text...>         drop a message in a mailbox
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
@@ -3170,9 +3190,7 @@ if (import.meta.main && !queued)
           files: process.env.PKG_GATE_UPSTREAM_FILES ?? pkggate.DEFAULT_UPSTREAM.files,
         }
         const minDays = parsePkgGateMinDays(process.env.PKG_GATE_MIN_DAYS)
-        const allowlist = process.env.PKG_GATE_ALLOWLIST
-          ? process.env.PKG_GATE_ALLOWLIST.split(':').filter(Boolean)
-          : undefined
+        const allowlist = parsePkgGateAllowlist(process.env)
         const server = pkggate.serve({
           upstream,
           ...(port !== undefined && { port }),

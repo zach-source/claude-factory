@@ -14,6 +14,7 @@ import {
   needsSwap,
   nextAccount,
   servedAt,
+  parsePkgGateAllowlist,
   parsePkgGateMinDays,
   prOwner,
   loadFactory,
@@ -367,4 +368,17 @@ test('PKG_GATE_MIN_DAYS unset is undefined (the gate default), but a non-finite 
   expect(() => parsePkgGateMinDays('NaN')).toThrow(/finite, non-negative/)
   expect(() => parsePkgGateMinDays('Infinity')).toThrow(/finite, non-negative/)
   expect(() => parsePkgGateMinDays('-1')).toThrow(/finite, non-negative/)
+})
+
+test('PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI parse to one list per ecosystem, and the old shared PKG_GATE_ALLOWLIST is refused, not reinterpreted (ei0.22)', () => {
+  expect(parsePkgGateAllowlist({})).toBeUndefined()
+  expect(parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST_GO: '' })).toBeUndefined()
+  expect(parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST_GO: 'a:b', PKG_GATE_ALLOWLIST_PYPI: 'c' })).toEqual({
+    go: ['a', 'b'],
+    pypi: ['c'],
+  })
+  expect(parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST_NPM: 'left-pad' })).toEqual({ npm: ['left-pad'] })
+  // the old name silently meant "all three ecosystems": refuse to start rather than let its meaning change
+  // underneath a deploy that still sets it
+  expect(() => parsePkgGateAllowlist({ PKG_GATE_ALLOWLIST: 'left-pad' })).toThrow(/PKG_GATE_ALLOWLIST/)
 })

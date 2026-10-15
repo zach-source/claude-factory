@@ -494,7 +494,7 @@ test('an allowlisted module is let through even when young', async () => {
   const g = makeGate({
     upstream: { go: base(), npm: base(), pypi: base(), files: base() },
     now: () => NOW,
-    allowlist: ['allowed.example.com/mod'],
+    allowlist: { go: ['allowed.example.com/mod'] },
   })
   const r = await g(new Request('http://gate/go/allowed.example.com/mod/@v/v9.9.9.info'))
   expect(r.status).toBe(200)
@@ -505,22 +505,64 @@ test('an allowlist entry in a Go module\'s real casing matches the proxy protoco
   const g = makeGate({
     upstream: { go: base(), npm: base(), pypi: base(), files: base() },
     now: () => NOW,
-    allowlist: ['github.com/Azure/azure-sdk-for-go'], // real casing, not the !azure the proxy sends
+    allowlist: { go: ['github.com/Azure/azure-sdk-for-go'] }, // real casing, not the !azure the proxy sends
   })
   const r = await g(new Request('http://gate/go/github.com/!azure/azure-sdk-for-go/@v/v1.0.0.info'))
   expect(r.status).toBe(200)
+})
+
+test('a Go allowlist entry already in the proxy\'s lowercase-escaped form does not match the real uppercase module (the missing ei0.18 negative, ei0.22)', async () => {
+  const g = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    now: () => NOW,
+    allowlist: { go: ['github.com/azure/azure-sdk-for-go'] }, // lowercase "azure": the real module is "Azure"
+  })
+  const r = await g(new Request('http://gate/go/github.com/!azure/azure-sdk-for-go/@v/v1.0.0.info'))
+  expect(r.status).toBe(404) // goModuleUnescape(path) => "...Azure...", which != the lowercase entry
 })
 
 test('an allowlist entry in a PyPI project\'s real casing matches its PEP 503 normalized name (ei0.18)', async () => {
   const g = makeGate({
     upstream: { go: base(), npm: base(), pypi: base(), files: base() },
     now: () => NOW,
-    allowlist: ['PyYAML'], // real casing, not the PEP 503 "pyyaml" fileDecision compares
+    allowlist: { pypi: ['PyYAML'] }, // real casing, not the PEP 503 "pyyaml" fileDecision compares
   })
   const r = await g(new Request('http://gate/pypi/simple/PyYAML/'))
   expect(r.status).toBe(200)
   const idx = (await r.json()) as { files: { filename: string }[] }
   expect(idx.files.map(f => f.filename)).toEqual(['PyYAML-6.0.2.tar.gz'])
+})
+
+test('an allowlist entry for one ecosystem does not unlock the same name in another (ei0.22)', async () => {
+  // "allowed.example.com/mod" is the Go fixture's module name; allowlisting it for pypi/npm only must not
+  // let the Go module through -- one shared list let an entry for one ecosystem unlock the same name
+  // (typosquat surface) in the others
+  const pypiOnly = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    now: () => NOW,
+    allowlist: { pypi: ['allowed.example.com/mod'] },
+  })
+  const r1 = await pypiOnly(new Request('http://gate/go/allowed.example.com/mod/@v/v9.9.9.info'))
+  expect(r1.status).toBe(404)
+
+  const npmOnly = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    now: () => NOW,
+    allowlist: { npm: ['allowed.example.com/mod'] },
+  })
+  const r2 = await npmOnly(new Request('http://gate/go/allowed.example.com/mod/@v/v9.9.9.info'))
+  expect(r2.status).toBe(404)
+
+  // and the reverse: a Go entry does not allowlist the same-spelled PyPI project
+  const goOnly = makeGate({
+    upstream: { go: base(), npm: base(), pypi: base(), files: base() },
+    now: () => NOW,
+    allowlist: { go: ['pyyaml'] },
+  })
+  const r3 = await goOnly(new Request('http://gate/pypi/simple/pyyaml/'))
+  expect(r3.status).toBe(200) // the index itself always serves
+  const idx = (await r3.json()) as { files: { filename: string }[] }
+  expect(idx.files).toHaveLength(0) // but the young file inside it is still refused, not allowlisted
 })
 
 test('sumdb is proxied verbatim, including /supported', async () => {

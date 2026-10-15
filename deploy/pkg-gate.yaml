@@ -50,9 +50,15 @@ spec:
               value: production
             - name: PKG_GATE_MIN_DAYS
               value: '4'
-            # the person's lever: exact module/package names, colon-separated, that bypass the age check.
-            # Set only here (kubectl set env / edit deployment), never from a task's env or a request.
-            - name: PKG_GATE_ALLOWLIST
+            # the person's lever: exact module/package names, colon-separated, that bypass the age check --
+            # one list per ecosystem, never a shared one (an entry for one ecosystem must never unlock the
+            # same name in another, ei0.22). Set only here (kubectl set env / edit deployment), never from a
+            # task's env or a request. The gate refuses to start if the old shared PKG_GATE_ALLOWLIST is set.
+            - name: PKG_GATE_ALLOWLIST_GO
+              value: ''
+            - name: PKG_GATE_ALLOWLIST_NPM
+              value: ''
+            - name: PKG_GATE_ALLOWLIST_PYPI
               value: ''
           readinessProbe:
             httpGet:
