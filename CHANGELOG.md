@@ -6,7 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
-- A rig's devenv can now declare services (`devenv.nix`'s `services.postgres`, say) and get them started. `worker serve` reads the devenv's process list from `DEVENV_TASK_FILE`. It starts each process directly, never through `devenv up`, which would run `enterShell`. It waits for each process's readiness probe. When the devenv does not already set `DATABASE_URL`, `serve` sets it for the agent. The first turn's brief gets a `[factory] services: ...` line that names each process as ready or failed. `FACTORY_SERVICES=0` turns this off for one rig. `FACTORY_SERVICES_WAIT_MS` changes the readiness budget (120000 ms by default). (claude-factory-5sn)
+- A rig's devenv can now declare services (`devenv.nix`'s `services.postgres`, say) and get them started. `worker serve` reads the devenv's process list from `DEVENV_TASK_FILE`. It starts each process directly, never through `devenv up`, which would run `enterShell`. It starts each process's own `after` dependencies first, and waits on each one's readiness probe before it. It merges each process's own `env` field over the serve env, for the spawn and the probe. It builds an HTTP probe's URL from devenv's `{host,port,path,scheme}` object. When the devenv does not already set `DATABASE_URL`, `serve` sets it for the agent. The first turn's brief gets a `[factory] services: ...` line that names each process as ready or failed. `FACTORY_SERVICES=0` turns this off for one rig. `FACTORY_SERVICES_WAIT_MS` changes the readiness budget (120000 ms by default; a non-numeric or non-positive value falls back to it instead of blocking the first turn forever). (claude-factory-5sn)
 
 ## 0.12.0 (2026-10-15)
 
