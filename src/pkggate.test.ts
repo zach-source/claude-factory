@@ -800,7 +800,10 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
       const url = new URL(req.url)
       if (url.pathname === '/index') {
         indexHits++
-        if (!indexUp) return new Response('internal error', { status: 500 })
+        // a hang, not a fast 500: the gate's own fetchTimeoutMs (set below) is the only thing that ever
+        // resolves this request, so a decision that waited on it would be slow enough for the timing
+        // assertions below to catch -- a fast error response would not (claude-factory-8ub.7)
+        if (!indexUp) return new Promise<Response>(() => {})
         return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(now).toISOString()))
       }
       if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
@@ -819,9 +822,13 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
   const origLog = console.log
   console.log = (s: string) => lines.push(s)
   try {
+    // a short fetchTimeoutMs keeps this test fast, and makes a blocked decision's wait (if the fix were
+    // missing) long enough for the timing assertions below to tell it apart from an unblocked one
+    const FETCH_TIMEOUT_MS = 400
     const g = makeGate({
       upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
       now: () => now,
+      fetchTimeoutMs: FETCH_TIMEOUT_MS,
     })
     // a cold start always awaits its own refresh, so this establishes a floor while the index is up
     const m0 = lines.length
@@ -830,7 +837,8 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
     expect(first.status).toBe(200)
     expect(indexHits).toBe(1)
 
-    // the index goes down, and the clock moves past the floor's window: the next decision is due a refresh
+    // the index goes down (hangs), and the clock moves past the floor's window: the next decision is due a
+    // refresh
     indexUp = false
     now += 31 * 60_000
     const m1 = lines.length
@@ -838,9 +846,10 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
     const second = await g(new Request('http://gate/go/backoffprobe.example.com/mod/@v/v2.0.0.info'))
     const elapsed1 = Date.now() - t1
     // decided at once, with the old, still-safe floor -- not blocked on the refresh its own staleness just
-    // triggered in the background (claude-factory-8ub.7)
+    // triggered in the background (claude-factory-8ub.7). A decision that waited on the hanging index would
+    // take at least FETCH_TIMEOUT_MS to come back.
     expect(second.status).toBe(200)
-    expect(elapsed1).toBeLessThan(500)
+    expect(elapsed1).toBeLessThan(FETCH_TIMEOUT_MS / 2)
     await waitForFloorRefresh(lines, m1) // let that background refresh's own failure, and its backoff, land
 
     // two further decisions, issued once the first failure's backoff is already in force: neither starts a
@@ -849,7 +858,7 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
     const third = await g(new Request('http://gate/go/backoffprobe.example.com/mod/@v/v3.0.0.info'))
     const elapsed2 = Date.now() - t2
     expect(third.status).toBe(200)
-    expect(elapsed2).toBeLessThan(500)
+    expect(elapsed2).toBeLessThan(FETCH_TIMEOUT_MS / 2)
     const fourth = await g(new Request('http://gate/go/backoffprobe.example.com/mod/@v/v4.0.0.info'))
     expect(fourth.status).toBe(200)
 
