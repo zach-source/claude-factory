@@ -6,6 +6,11 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Console: a row's ids, badges and times keep their width and only its free text truncates, so the Backlog no longer breaks a bead's priority and id across lines (`P` then `0`, an id cut in two). Bead ids are padded so titles start in one column. A row repeats its priority only when it differs from its tier's, and a bead with none shows `–`, not `P2`. The same rule holds in the Finished, Mail, Interview, PRs and Rigs rows, and ids there are cyan as on the board.
+- Console: the status line, header and band count runs the same way, each run in one state. The status line reads `5 working (api 2, web 3) · 1 awaiting you · 1 stuck` instead of `7 running`. The header no longer subtracts a gate that is also stuck twice.
+- Console: a failed tick says `factory tick failed:` with 160 characters of its reason instead of 80, and the header shows `! stale since HH:MM` until a tick succeeds.
+- Fixed: the Backlog tab held the board's ticks. Its ~20 s `factory backlog` ran on every tick and the tick waited for it, so with the tab open the board and patrols updated about every 25 s. The tick no longer waits on tab fetches, and the backlog is listed at most every 30 s, at once when the tab opens or after a queue or start.
+
 - Docs: [docs/console.md](docs/console.md) breaks down every console tab (Board, Backlog, Mail, Rigs, PRs, Interview) with what it shows, its data source, a key/button table, and when to use it; README's Console section now links it.
 
 ## 0.10.0 (2026-10-15)
