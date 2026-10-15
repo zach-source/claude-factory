@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Docs: [docs/onboarding.md](docs/onboarding.md) takes a new developer from install to a first finished run, and then to the next steps. It is written in ASD-STE100 Simplified Technical English. README links it.
+
 ## 0.11.0 (2026-10-15)
 
 - Console: on a wide Board the runs awaiting you take a full-width band above the other three columns, so they sit on top and a gate's question and buttons have room. Each card now also shows its rig, its goal beside the bead, its try, how long ago it last reported and a usage-limit wait; the run id is shown whole where the card is wide enough. An open card has a `-` button at its top to shrink it back, besides the `close` at the bottom of its Steer row.
