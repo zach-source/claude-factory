@@ -16,7 +16,7 @@ const dir = join(tmpdir(), `start-${process.pid}`)
 const home = join(dir, 'home')
 const bin = join(dir, 'bin')
 const calls = join(dir, 'calls.log')
-const showMode = join(dir, 'show-mode') // found | notfound | timeout | query-timeout
+const showMode = join(dir, 'show-mode') // found | notfound | timeout | query-timeout | store-missing
 const claudeConfig = join(dir, 'claude-config')
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -39,7 +39,11 @@ const run = (args: string[]) => {
 /** fake bd: `config get issue_prefix` -> prefix, `show <id> --json` -> $(cat showMode), `create` -> a
  * fresh id (logged), `update --claim` -> ok. Every call is logged so a test can prove create/claim were
  * never reached. `query-timeout` reproduces bd 1.3.0's query-time failure: the *same* not-found JSON on
- * stdout as `notfound`, but stderr says "Error fetching <id>: <err>" instead of "Issue <id> not found". */
+ * stdout as `notfound`, but stderr says "Error fetching <id>: <err>" instead of "Issue <id> not found".
+ * `store-missing` reproduces bd 1.3.0's store-open failure (the shared server is up but this rig's own
+ * database is not there): empty stdout, exit 1, stderr "Error: failed to open database: database ... not
+ * found on Dolt server at ..." -- "not found" appears in that stderr too, so it must not read as a genuine
+ * not-found. */
 function fakeBd(prefix: string) {
   mkdirSync(bin, { recursive: true })
   const script = [
@@ -54,6 +58,7 @@ function fakeBd(prefix: string) {
     '      notfound) echo "Issue $2 not found" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
     '      timeout) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
     '      query-timeout) echo "Error fetching $2: dial tcp 127.0.0.1:3308: i/o timeout" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
+    '      store-missing) echo \'Error: failed to open database: database "zzz" not found on Dolt server at 127.0.0.1:3308\' >&2; exit 1;;',
     '    esac;;',
     '  create) echo new-bead-1;;',
     '  update) exit 0;;',
@@ -142,6 +147,23 @@ test('a bead-ID-shaped goal whose bd show times out mid-query (the same not-foun
   const out = run(['start', factoryFixture(), r, 'acme-yrq'])
   expect(out.code).not.toBe(0)
   expect(out.err).toContain('acme-yrq')
+  expect(out.err).toContain('nothing was created')
+  const log = readFileSync(calls, 'utf8')
+  expect(log).not.toContain('create ')
+  expect(log).not.toContain('--claim')
+  expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
+})
+
+test('a bead-ID-shaped goal whose bd show fails because this rig\'s own store is missing (stderr also says "not found", but about the database, not the issue) fails the start and creates nothing, even under another rig\'s prefix', () => {
+  reset()
+  const r = repo()
+  fakeBd('zzz') // this rig's own prefix is not "acme": the goal does not carry it
+  fakeHerdr()
+  writeFileSync(showMode, 'store-missing')
+  const out = run(['start', factoryFixture(), r, 'acme-yrq'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('acme-yrq')
+  expect(out.err).toContain('could not look up')
   expect(out.err).toContain('nothing was created')
   const log = readFileSync(calls, 'utf8')
   expect(log).not.toContain('create ')

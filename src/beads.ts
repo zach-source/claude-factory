@@ -76,8 +76,11 @@ export const beads = (repo: string, actor: string) => ({
    *
    * bd 1.3.0 prints the *same* "no issues found matching the provided IDs" JSON body on stdout, exit 1,
    * both for a genuine not-found and for a query-time failure after the store opened (e.g. a timeout) --
-   * the stdout body alone cannot tell them apart. Only stderr can: a real not-found says
-   * "Issue <id> not found"; a query-time failure says "Error fetching <id>: <err>" instead.
+   * the stdout body alone cannot tell them apart. Only stderr can: a real not-found says exactly
+   * "Issue <id> not found" (plus a "Hint:" line); a query-time failure says "Error fetching <id>: <err>"
+   * instead. A loose /not found/i match on stderr is not enough: a store-open failure (the shared server
+   * up but this rig's own database missing) also says "not found" -- "database ... not found on Dolt
+   * server at ..." -- and must throw, not read as a genuine not-found.
    */
   lookup: (id: string): Bead | null => {
     const r = bd(repo, actor, 'show', id, '--json')
@@ -86,7 +89,7 @@ export const beads = (repo: string, actor: string) => ({
       return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
     }
     if (/^Error fetching\b/m.test(r.stderr)) throw new Error(`bd show ${id}: ${r.stderr.split('\n')[0]}`)
-    if (/not found/i.test(r.stderr)) return null
+    if (/^Issue \S+ not found$/m.test(r.stderr)) return null
     throw new Error(`bd show ${id}: ${(r.stderr || r.out).split('\n')[0]}`)
   },
   /** the rig's bead-id prefix, thrown on failure instead of prefix()'s lenient "" (bd down looks the same as no prefix) */
