@@ -1306,7 +1306,12 @@ export const commitIdentity = (home: string) => {
   return {
     env:
       name && email
-        ? { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email }
+        ? {
+            GIT_AUTHOR_NAME: name,
+            GIT_AUTHOR_EMAIL: email,
+            GIT_COMMITTER_NAME: name,
+            GIT_COMMITTER_EMAIL: email,
+          }
         : {},
     rule: coauthor
       ? `\n# Commits\n\nEnd every commit message with this trailer, after a blank line:\n\nCo-authored-by: ${coauthor}\n`

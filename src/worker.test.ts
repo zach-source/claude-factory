@@ -565,7 +565,10 @@ describe('startServices', () => {
           cwd: null,
           process: {
             start: { enable: true },
-            ready: { exec: null, http: { get: { host: '127.0.0.1', path: '/', port: server.port, scheme: 'http' } } },
+            ready: {
+              exec: null,
+              http: { get: { host: '127.0.0.1', path: '/', port: server.port, scheme: 'http' } },
+            },
           },
         },
       ])

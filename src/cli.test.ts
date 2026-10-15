@@ -40,7 +40,12 @@ import {
 
 test("a factory home's sync pushes what its .gitignore lets in, and its memory to the memory branch", () => {
   const dir = mkdtempSync(join(tmpdir(), 'config-sync-'))
-  const who = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+  const who = {
+    GIT_AUTHOR_NAME: 't',
+    GIT_AUTHOR_EMAIL: 't@t',
+    GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@t',
+  }
   const sh = (cwd: string, cmd: string) => {
     const p = Bun.spawnSync(['sh', '-c', cmd], { cwd, env: { ...process.env, ...who } })
     if (p.exitCode) throw new Error(p.stderr.toString())
