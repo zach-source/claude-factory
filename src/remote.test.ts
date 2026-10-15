@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
-import { httpsRemote, overwritten, replayable, rigBeadsSync, vmClaudeFlags } from './cli'
+import { httpsRemote, overwritten, progressSig, replayable, rigBeadsSync, vmClaudeFlags } from './cli'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
 
@@ -395,9 +395,10 @@ test('an egress outage suppresses the stall guard: standing still that long alon
     egress: { since, tries: 1, last: 'upstream connect error or disconnect/reset before headers' },
   }
   cluster('Running', poll)
-  factory(['tick']) // learns the session; tail is not read until the session is known
+  factory(['tick']) // learns the session; an AX worker's tail is read from info.tail regardless (claude-factory-xq3)
   // the stall guard's own fingerprint: tail unchanged since long before STALL_MS (20 min), and already
-  // nudged once, so with no egress this would fail on this very tick (see `stalled` in src/cli.ts)
+  // nudged once, so with no egress this would fail on this very tick (see `stalled` in src/cli.ts).
+  // progressSig(tail, '', undefined) with no head/bytes in this poll: same shape as the bare tail fingerprint
   const sig = `${tail.length}${tail.slice(-300)}`
   writeFileSync(
     join(home, 'runs', 'r11', 'progress.json'),
@@ -409,6 +410,48 @@ test('an egress outage suppresses the stall guard: standing still that long alon
   const state = readFileSync(join(home, 'runs', 'r11', 'state.json'), 'utf8')
   expect(state).not.toContain('stalled: no output for')
   rmSync(join(home, 'runs', 'r11'), { recursive: true })
+})
+
+test('a committing AX worker is not called stalled even with an unchanging tail, since its VM repo head and live stream size move too (claude-factory-xq3)', () => {
+  const seq = launched('r13')
+  // one long agentic call: the tail a pre-xq3 laptop saw stayed this, unchanging, for the turn's whole length
+  const tail = 'same output, mid-turn: the brief is one long call'
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick']) // first sighting
+  // back-date progress.json to simulate 41 min stood still on the CURRENT fingerprint shape (tail, head and
+  // bytes all folded in) for the head/bytes this same poll reported, so the only thing that can reset `at` on
+  // the next tick is head or bytes actually moving -- not a sig-format mismatch (claude-factory-xq3.5, PR #19
+  // review finding 2: backdating with the old tail-only shape made the "not stalled" assertion pass even when
+  // head/bytes stayed put, since the format change alone looked like progress)
+  writeFileSync(
+    join(home, 'runs', 'r13', 'progress.json'),
+    JSON.stringify({ seq, sig: progressSig(tail, 'sha1', 100), at: Date.now() - 41 * 60_000, nudged: true }),
+  )
+  // the tail is still exactly the same, but the VM committed (head moved) and its live stream grew (bytes
+  // moved) in between: the worker was never actually quiet
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha2', bytes: 250 })
+  factory(['tick'])
+  expect(called()).not.toContain('worker prompt') // no nudge delivered
+  const state = readFileSync(join(home, 'runs', 'r13', 'state.json'), 'utf8')
+  expect(state).not.toContain('stalled: no output for') // and not failed as stalled
+  rmSync(join(home, 'runs', 'r13'), { recursive: true })
+})
+
+test('a committing AX worker IS called stalled when its tail, head and bytes all truly stand still that long (control for the test above)', () => {
+  const seq = launched('r14')
+  const tail = 'same output, mid-turn: the brief is one long call'
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick']) // first sighting
+  writeFileSync(
+    join(home, 'runs', 'r14', 'progress.json'),
+    JSON.stringify({ seq, sig: progressSig(tail, 'sha1', 100), at: Date.now() - 41 * 60_000, nudged: true }),
+  )
+  // tail, head and bytes are all exactly the same as the backdated poll: truly no progress for 41 min
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick'])
+  const state = readFileSync(join(home, 'runs', 'r14', 'state.json'), 'utf8')
+  expect(state).toContain('stalled: no output for') // failed as stalled
+  rmSync(join(home, 'runs', 'r14'), { recursive: true })
 })
 
 test('status and show still list a run whose AX server is unreachable, naming it on that run', () => {
