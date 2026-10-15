@@ -35,9 +35,11 @@ import {
   interviewAnswer,
   interviewPrompt,
   interviews,
+  line,
   mailKey,
   patrol,
   quickAnswer,
+  statusText,
   withProposals,
   type Interview,
 } from './view'
@@ -114,6 +116,8 @@ const rt = {
   patrolAt: 0,
   /** when the PRs tab last asked GitHub */
   prsAt: 0,
+  /** when the Backlog tab last listed every rig's beads */
+  backlogAt: 0,
   /** when the interview tab last swept bd for decisions */
   decisionsAt: 0,
   /** the board and rig goals the manager was last sent, and when */
@@ -131,6 +135,13 @@ async function factory($: EngineInterface, args: string[]) {
   return { isOk, out: (isOk ? r.stdout : `${r.stdout}${r.stderr}`).trim() }
 }
 
+/** a failed tick: say why in full enough to act on, and mark the board stale until a tick succeeds */
+async function tickFailed($: EngineInterface, why: string) {
+  const now = await $.clock.now()
+  $.ui.status(`factory tick failed: ${line(why, 160)}`)
+  await update($, board, b => ({ ...b, staleSince: b.staleSince ?? now }))
+}
+
 async function tick($: EngineInterface) {
   if (rt.isTicking) {
     rt.isTickWanted = true
@@ -139,7 +150,7 @@ async function tick($: EngineInterface) {
   rt.isTicking = true
   try {
     const { isOk, out } = await factory($, ['tick'])
-    if (!isOk) return $.ui.status(out.split('\n')[0]?.slice(0, 80))
+    if (!isOk) return await tickFailed($, out)
     const res = JSON.parse(out) as {
       busy?: true
       runs: FactoryRun[]
@@ -157,12 +168,10 @@ async function tick($: EngineInterface) {
     const live = res.runs.filter(isLive)
     const busy = live.filter(r => !r.gate && r.sub !== 'waiting').length
     await update($, history, h => [...h, busy].slice(-120))
-    await refresh($)
+    // not awaited: a slow tab fetch (backlog, decisions) must not hold the board's next tick
+    void refresh($)
 
-    const stuck = live.filter(r => r.sub === 'stuck').length
-    const gates = live.filter(r => r.gate).length
-    const notes = [stuck && `${stuck} stuck`, gates && `${gates} awaiting you`].filter(Boolean)
-    $.ui.status(live.length ? [`${live.length} running`, ...notes].join(', ') : undefined)
+    $.ui.status(statusText(res.runs))
     for (const r of res.runs) {
       if (r.agent === 'blocked' && rt.agents.get(r.id) !== 'blocked')
         $.ui.toast(`factory: ${r.id} ${r.node} worker is waiting on a prompt in pane ${r.pane}`)
@@ -177,7 +186,7 @@ async function tick($: EngineInterface) {
         await patrolNow($, res.halt ? [] : res.runs, res.halt ? [] : (res.rigs ?? []))
     }
   } catch (err) {
-    $.ui.status(String(err).slice(0, 80))
+    await tickFailed($, String(err))
   } finally {
     rt.isTicking = false
     if (rt.isTickWanted) {
@@ -263,6 +272,10 @@ async function refresh($: EngineInterface) {
       : undefined
     await update($, peek, () => (tail?.exitCode === 0 ? tail.stdout.trimEnd() : ''))
   } else if (shown === 'backlog') {
+    // ponytail: a bd call per rig, ~20 s, at most every 30 s while the tab is open
+    const now = await $.clock.now()
+    if (rt.backlogAt && now - rt.backlogAt < 30_000) return
+    rt.backlogAt = now
     const { isOk, out } = await factory($, ['backlog'])
     if (isOk) await update($, backlog, () => JSON.parse(out) as FactoryBacklog)
   } else if (shown === 'prs') {
@@ -321,6 +334,7 @@ async function interviewMe($: EngineInterface) {
 async function act($: EngineInterface, args: string[]) {
   const { isOk, out } = await factory($, args)
   $.ui.toast(out.split('\n').at(-1) || `${args.join(' ')}: queued`)
+  rt.backlogAt = 0 // a queue or start changes the backlog: the next tick lists it again
   void tick($)
   return isOk
 }
@@ -332,6 +346,7 @@ async function show($: EngineInterface, next: FactoryView, run?: string) {
     await update($, peek, () => '')
     await update($, draft, d => ({ ...d, target: '', mail: '' }))
   }
+  if (next === 'backlog') rt.backlogAt = 0 // opening the tab lists it now, not at the next throttle window
   await update($, view, () => next)
   // columns: the dock's width beside a fullscreen transcript; rows: its height inline above the prompt
   await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40, columns: 100 })
