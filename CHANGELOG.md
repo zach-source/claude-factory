@@ -7,7 +7,7 @@ minor release may change the factory format, the CLI or the run state.
 ## Unreleased
 
 - Fixed: `factory status`, `waiting` and `show` (the console's Run view) exited 1 on the first AX run whose server they could not reach, such as when the `ax-server` port-forward has died, listing nothing past it. That run's agent now reads `unreachable: <error>` and the rest of the listing still prints. The tick already caught this.
-- Fixed: `factory memory add` caches the summaries' vectors beside the full-text ones, so it embeds only its own summary. Embedding every summary on each add took minutes past 400 notes, and the tick that replays a VM worker's add was killed at its 120 s limit before finishing, so every tick failed with a `$.process.run` HooksError and that outbox line was retried forever.
+- Fixed: `factory memory add` caches the summaries' vectors beside the full-text ones, so it embeds only its own summary, and embeds in batches of 32. Embedding every summary in one batch on each add took over 7 minutes at 436 notes (28 s batched, 0.5 s cached), and the tick that replays a VM worker's add was killed at its 120 s limit before finishing, so every tick failed with a `$.process.run` HooksError and that outbox line was retried forever.
 
 ## 0.9.0 (2026-10-15)
 
