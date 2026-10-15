@@ -346,8 +346,12 @@ rows = [
 project,local` plus a `--settings` file that keeps only the user's hooks and environment,
   a short worker system prompt ([src/worker-system.md](src/worker-system.md)) and the tools
   workers use (MCP tools stay deferred behind ToolSearch; auto memory is off). The user's plugins, agents, skills, global CLAUDE.md and claude.ai connectors
-  cost ~40k tokens on every turn and are left out; the repo's own CLAUDE.md and settings
-  still apply. `FACTORY_LEAN=0` launches workers with the user's setup again.
+  cost ~40k tokens on every turn and are left out, except the user's `asd-ste100` plugin
+  (ASD-STE100 writing rules): it carries over alone, with its bundled skill but
+  `disableBundledSkills` on so no other bundled skill's listing rides along, so a worker
+  still writes PR bodies, commits, bead comments and reports in ASD-STE100; the repo's own
+  CLAUDE.md and settings still apply. `FACTORY_LEAN=0` launches workers with the user's setup
+  again.
 - **Usage limits**: a worker whose turn is refused for the account's usage limit (weekly or
   5-hour) is restarted on the next account: `ccswitch switch-to` moves
   every Claude on the machine to the next account in its sequence whose limit has reset, and
