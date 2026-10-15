@@ -260,6 +260,9 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
     `#!/bin/sh\necho "$*" >> ${dir}/claude.log\necho '{"type":"system","subtype":"init","session_id":"sess-1"}'\n`,
   )
   chmodSync(claude, 0o755)
+  // saved/restored (below): FACTORY_OUTBOX and FACTORY_FROM must not leak into a later test file's own
+  // subprocess calls, which inherit process.env (claude-factory-5h9.4)
+  const saved = { ...process.env }
   Object.assign(process.env, {
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
@@ -267,29 +270,32 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
     FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
     FACTORY_FROM: 'implement',
   })
+  try {
+    await worker.serve('m1', { once: true })
+    worker.prompt(Buffer.from('[factory mail from manager] yes').toString('base64'))
+    expect(worker.poll(0).status).toBe('idle')
+    await worker.serve('m1', { once: true }) // a resumed task: no second brief
+    const turns = readFileSync(join(dir, 'claude.log'), 'utf8').trim().split('\n')
+    expect(turns).toHaveLength(2)
+    expect(turns[0]).toEndWith('--model m1 the brief')
+    expect(turns[1]).toEndWith('--model m1 --resume sess-1 [factory mail from manager] yes')
+    expect(readdirSync(join(own, 'prompts'))).toEqual([])
 
-  await worker.serve('m1', { once: true })
-  worker.prompt(Buffer.from('[factory mail from manager] yes').toString('base64'))
-  expect(worker.poll(0).status).toBe('idle')
-  await worker.serve('m1', { once: true }) // a resumed task: no second brief
-  const turns = readFileSync(join(dir, 'claude.log'), 'utf8').trim().split('\n')
-  expect(turns).toHaveLength(2)
-  expect(turns[0]).toEndWith('--model m1 the brief')
-  expect(turns[1]).toEndWith('--model m1 --resume sess-1 [factory mail from manager] yes')
-  expect(readdirSync(join(own, 'prompts'))).toEqual([])
-
-  worker.queue(['report', 'r1', '1', 'ready', 'done it'])
-  worker.queue(['mail', 'r1', 'manager', 'a question'])
-  const polled = worker.poll(1)
-  expect(polled.session).toBe('sess-1')
-  expect(polled.lines.map(l => JSON.parse(l))).toEqual([
-    {
-      argv: ['mail', 'r1', 'manager', 'a question'],
-      from: 'implement',
-      at: expect.any(Number),
-    },
-  ])
-  expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
+    worker.queue(['report', 'r1', '1', 'ready', 'done it'])
+    worker.queue(['mail', 'r1', 'manager', 'a question'])
+    const polled = worker.poll(1)
+    expect(polled.session).toBe('sess-1')
+    expect(polled.lines.map(l => JSON.parse(l))).toEqual([
+      {
+        argv: ['mail', 'r1', 'manager', 'a question'],
+        from: 'implement',
+        at: expect.any(Number),
+      },
+    ])
+    expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
+  } finally {
+    process.env = saved
+  }
 })
 
 test("serve starts the devenv's processes and ends the first brief with a [factory] services note (claude-factory-5sn)", async () => {

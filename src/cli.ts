@@ -267,10 +267,14 @@ export function parsePkgGateAllowlist(
   return go || npm || pypi ? { ...(go && { go }), ...(npm && { npm }), ...(pypi && { pypi }) } : undefined
 }
 
+const HERDR = () => process.env.FACTORY_HERDR ?? 'herdr'
+/** herdr is optional. An AX-only rig, or a box with no local panes (a CI runner, say), may have none installed */
+const herdrInstalled = () => Bun.which(HERDR()) !== null
+
 function herdr(...args: string[]) {
   // a leading space keeps the typed launch out of the person's shell history (zsh HIST_IGNORE_SPACE, atuin)
   if (args[0] === 'pane' && args[1] === 'run') args = [...args.slice(0, 3), ` ${args[3]}`, ...args.slice(4)]
-  const p = Bun.spawnSync(['herdr', ...args])
+  const p = Bun.spawnSync([HERDR(), ...args])
   const out = p.stdout.toString().trim()
   if (p.exitCode !== 0) fail(`herdr ${args.slice(0, 2).join(' ')}: ${p.stderr.toString().trim() || out}`)
   return out.startsWith('{') ? JSON.parse(out).result : out
@@ -288,7 +292,7 @@ function typeLaunch(pane: string, cmd: string) {
 
 /** the pane's agent status and Claude session id, or null once the pane is gone */
 function paneInfo(pane: string): { status: string; agent?: string; session?: string } | null {
-  const p = Bun.spawnSync(['herdr', 'pane', 'get', pane])
+  const p = Bun.spawnSync([HERDR(), 'pane', 'get', pane])
   // herdr answers a missing pane on stderr
   const out = JSON.parse(p.stdout.toString() || p.stderr.toString() || '{}')
   if (out.error?.code === 'pane_not_found') return null
@@ -582,7 +586,7 @@ const herdrRunner: Runner = {
   launch: launchPane,
   info: (_run, pane) => paneInfo(pane),
   deliver: (pane, text) => (herdr('agent', 'prompt', pane, text), true),
-  close: pane => void Bun.spawnSync(['herdr', 'pane', 'close', pane]), // gone already is fine
+  close: pane => void Bun.spawnSync([HERDR(), 'pane', 'close', pane]), // gone already is fine
   phase: pane => paneInfo(pane)?.status ?? null,
 }
 
@@ -2253,7 +2257,7 @@ const SIDEBAR_TTL_MS = 5 * 60_000
 function managerWorkspace(): string | undefined {
   const id = process.env['HERDR_PANE_ID']
   if (!id) return undefined
-  const pane = JSON.parse(Bun.spawnSync(['herdr', 'pane', 'get', id]).stdout.toString() || '{}').result?.pane
+  const pane = JSON.parse(Bun.spawnSync([HERDR(), 'pane', 'get', id]).stdout.toString() || '{}').result?.pane
   const isOurs = pane?.cwd && (factoryAt(pane.cwd) ?? join(ROOT, '.factory-state')) === HOME
   return isOurs ? pane.workspace_id : undefined
 }
@@ -2262,8 +2266,10 @@ function managerWorkspace(): string | undefined {
  * tick from a pane whose directory is this factory's names the manager: a start or fork run for another
  * factory, or a background session forked from a manager, ticks from someone else's pane.
  * Only changes are reported, refreshed before the TTL, so a stopped factory's lapse.
+ * No-op with no herdr installed (an AX-only rig, or a CI box): nothing there can show a sidebar.
  */
 function showInSidebar(rows: Row[], now: number, isPatrol: boolean) {
+  if (!herdrInstalled()) return
   const { byWs, rollup } = tokens(rows)
   const file = join(HOME, 'sidebar.json')
   const was = existsSync(file)
@@ -2274,7 +2280,7 @@ function showInSidebar(rows: Row[], now: number, isPatrol: boolean) {
   const isStale = now - was.at > SIDEBAR_TTL_MS / 2
   const report = (ws: string, token: string[]) =>
     // a workspace closed since is fine: nothing to show it on
-    Bun.spawnSync(['herdr', 'workspace', 'report-metadata', ws, '--source', 'claude-factory', ...token])
+    Bun.spawnSync([HERDR(), 'workspace', 'report-metadata', ws, '--source', 'claude-factory', ...token])
   const changed = Object.entries(want).filter(([ws, text]) => isStale || was.ws[ws] !== text)
   const gone = Object.keys(was.ws).filter(ws => !(ws in want))
   for (const [ws, text] of changed)
@@ -2291,8 +2297,11 @@ type HerdrPane = {
   agent?: string | null
   agent_status?: string
 }
+// no herdr installed: no panes (an AX-only rig, or a CI box, has none to reap)
 const herdrPanes = (): HerdrPane[] =>
-  JSON.parse(Bun.spawnSync(['herdr', 'pane', 'list']).stdout.toString() || '{}').result?.panes ?? []
+  herdrInstalled()
+    ? (JSON.parse(Bun.spawnSync([HERDR(), 'pane', 'list']).stdout.toString() || '{}').result?.panes ?? [])
+    : []
 // herdr reuses workspace ids, so a run's workspace is still its own only while a pane there sits in its worktree
 const isIn = (p: HerdrPane, r: Pick<Run, 'ws' | 'worktree'>) =>
   p.workspace_id === r.ws && !!p.cwd && (p.cwd === r.worktree || p.cwd.startsWith(`${r.worktree}/`))

@@ -260,6 +260,22 @@ test("a tick replays an AX worker's report from its outbox, and the task goes wh
   rmSync(join(home, 'runs', 'r1'), { recursive: true })
 })
 
+test('a tick on an AX-only rig still runs with no herdr installed (claude-factory-5h9.4)', () => {
+  const seq = launched('r1h')
+  const report = JSON.stringify({
+    argv: ['report', 'r1h', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 1,
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+
+  // a path with no file at it: the same shape as a box that never installed herdr
+  const first = factory(['tick'], { FACTORY_HERDR: join(dir, 'no-such-herdr') })
+  expect(first.code).toBe(0)
+  expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1h', node: 'a', agent: 'idle', pane: 'ax://t' })
+  rmSync(join(home, 'runs', 'r1h'), { recursive: true })
+})
+
 test('a worker waiting on the manager is suspended, and woken by the answer before it is delivered', () => {
   launched('r2')
   const ask = JSON.stringify({ argv: ['mail', 'r2', 'manager', 'which db?'], from: 'a', at: 1 })
