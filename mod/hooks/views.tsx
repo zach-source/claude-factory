@@ -48,7 +48,6 @@ export type Actions = {
   answer: (m: FactoryMail, kind: 'approve' | 'reject' | 'reply') => void
   /** the person's answer to an interview question: one of its options, what they typed, or both */
   interview: (iv: Interview, choice?: string) => void
-  start: () => void
   jump: (pane: string) => void
   /** picks the backlog's type filter */
   backlogType: (type: string) => void
@@ -91,10 +90,9 @@ const TABS: [FactoryView, string, string][] = [
   ['run', 'Run', '2'],
   ['backlog', 'Backlog', '3'],
   ['mail', 'Mail', '4'],
-  ['new', 'New run', '5'],
-  ['rigs', 'Rigs', '6'],
-  ['prs', 'PRs', '7'],
-  ['interview', 'Interview', '8'],
+  ['rigs', 'Rigs', '5'],
+  ['prs', 'PRs', '6'],
+  ['interview', 'Interview', '7'],
 ]
 
 function rule({ ui, width }: Base, title: string, note = '') {
@@ -278,7 +276,7 @@ export function boardView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
     return (
       <Box key="board" flexDirection="column">
         <Text dimColor>No runs yet.</Text>
-        <Text dimColor>5 starts one; 3 shows the backlog each rig feeds.</Text>
+        <Text dimColor>3 shows the backlog each rig feeds; queue or start one from there.</Text>
       </Box>
     )
   return (
@@ -630,15 +628,6 @@ export function rigsView(p: Base, board: FactoryBoard) {
             </Text>
             <Box gap={1}>
               <Button key={`rigs-backlog-${g.name}`} label="backlog" onPress={() => p.act.show('backlog')} />
-              <Button
-                key={`rigs-new-${g.name}`}
-                label="new run here"
-                dimColor
-                onPress={() => {
-                  p.act.draft({ repo: g.name })
-                  p.act.show('new')
-                }}
-              />
             </Box>
           </Box>
         )
@@ -976,54 +965,9 @@ export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
   )
 }
 
-export function newView(p: Base, draft: FactoryDraft, cwd: string) {
-  const { Box, Text, Button, Input } = p.ui
-  if (!Input)
-    return (
-      <Box key="new" flexDirection="column">
-        <Text dimColor>Start runs from a terminal or desktop session.</Text>
-      </Box>
-    )
-  return (
-    <Box key="new" flexDirection="column" gap={1}>
-      <Input
-        key="new-repo"
-        label="rig or repo"
-        placeholder={cwd}
-        value={draft.repo}
-        onInput={v => p.act.draft({ repo: v })}
-        onSubmit={v => p.act.draft({ repo: v })}
-      />
-      <Input
-        key="new-factory"
-        label="factory"
-        placeholder="lifecycle (or lifecycle@station)"
-        value={draft.factory}
-        onInput={v => p.act.draft({ factory: v })}
-        onSubmit={v => p.act.draft({ factory: v })}
-      />
-      <Input
-        key="new-goal"
-        label="goal"
-        placeholder="what to build, fix or improve; or a bead id"
-        value={draft.goal}
-        onInput={v => p.act.draft({ goal: v })}
-        onSubmit={v => {
-          p.act.draft({ goal: v })
-          p.act.start()
-        }}
-      />
-      <Box gap={1}>
-        <Button key="new-start" label="start run" variant="primary" onPress={() => p.act.start()} />
-        <Text dimColor>a run gets its own worktree, branch and bead</Text>
-      </Box>
-    </Box>
-  )
-}
-
 export function footer(p: Base) {
   const { Text } = p.ui
-  return <Text dimColor>1-8 views · tab between controls · enter presses · esc back to the prompt</Text>
+  return <Text dimColor>1-7 views · tab between controls · enter presses · esc back to the prompt</Text>
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */

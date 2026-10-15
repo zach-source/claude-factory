@@ -125,12 +125,9 @@ export type FactoryPrs = {
   }[]
 }[]
 
-export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'prs' | 'new' | 'rigs' | 'interview'
+export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'prs' | 'rigs' | 'interview'
 /** what the person has typed and not sent */
 export type FactoryDraft = {
-  repo: string
-  factory: string
-  goal: string
   mail: string
   /** the station the run view's goto and fork act on */
   target: string

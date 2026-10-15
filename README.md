@@ -41,10 +41,10 @@ In the manager session:
 
 ## Console
 
-`/factory` opens the console beside the chat. Keys 1-8 switch its tabs: board, run, backlog,
-mail, new run, rigs, PRs and interview. The figures are made-up demo data.
+`/factory` opens the console beside the chat. Keys 1-7 switch its tabs: board, run, backlog,
+mail, rigs, PRs and interview. The figures are made-up demo data.
 
-![The console's eight tabs: board, run, backlog, mail, new run, rigs, PRs and interview](docs/images/console-tabs.png)
+![The console's seven tabs: board, run, backlog, mail, rigs, PRs and interview](docs/images/console-tabs.png)
 
 The board lists the live runs, those awaiting you first, with their stations, workers and gates:
 
