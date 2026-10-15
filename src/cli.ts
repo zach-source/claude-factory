@@ -491,7 +491,15 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   }
   return polled.status === 'exited'
     ? gone(`serve exited; its log: ${polled.log || '(empty)'}`)
-    : { status: polled.status, agent: 'ax', session: polled.session, tail: polled.tail, egress: polled.egress }
+    : {
+        status: polled.status,
+        agent: 'ax',
+        session: polled.session,
+        tail: polled.tail,
+        head: polled.head,
+        bytes: polled.bytes,
+        egress: polled.egress,
+      }
 }
 
 const herdrRunner: Runner = {

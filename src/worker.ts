@@ -629,16 +629,30 @@ export function poll(cursor: number) {
     session: s?.session,
     lines: lines.slice(cursor),
     tail: lastTurn(s?.session),
+    head: gitHead(),
+    bytes: streamBytes(),
     log: logTail(),
     ...(s?.egress && { egress: s.egress }),
   }
 }
 
-/** a Claude session's last assistant entry: the laptop reads a usage limit and the context size from it */
-export function lastTurn(session?: string) {
-  if (harness() !== 'claude' || !session) return undefined
-  const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  const file = join(dir, 'projects', repo().replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+/** the worker repo's HEAD, read inside the VM; '' on any error (no repo yet, no commits), never throws */
+function gitHead() {
+  const p = Bun.spawnSync(['git', '-C', repo(), 'rev-parse', 'HEAD'])
+  return p.exitCode === 0 ? p.stdout.toString().trim() : ''
+}
+
+/** the size of the harness's own live stream copy (own()/<h>.jsonl, written chunk by chunk by turn()); 0 if absent */
+function streamBytes() {
+  try {
+    return statSync(join(own(), `${harness()}.jsonl`)).size
+  } catch {
+    return 0
+  }
+}
+
+/** the last assistant entry in a Claude transcript file (its last 512 KiB); undefined when there is none */
+function lastAssistant(file: string) {
   if (!existsSync(file)) return undefined
   const size = statSync(file).size
   const buf = Buffer.alloc(Math.min(size, 512 * 1024))
@@ -649,6 +663,24 @@ export function lastTurn(session?: string) {
     .toString()
     .split('\n')
     .findLast(l => l.includes('"type":"assistant"'))
+}
+
+/**
+ * a Claude session's last assistant entry: the laptop reads a usage limit and the context size from it. The
+ * project transcript (~/.claude/projects/.../<session>.jsonl) is Claude's own, canonical copy, read first when
+ * there is a session and it exists; else (no session yet, or the project transcript is missing -- a path
+ * mismatch, or simply not written yet) this falls back to own()/claude.jsonl, the live copy turn() streams to as
+ * the current turn runs, so poll has something to read for the whole length of a turn, not just once it ends
+ * (claude-factory-xq3)
+ */
+export function lastTurn(session?: string) {
+  if (harness() !== 'claude') return undefined
+  if (session) {
+    const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+    const file = join(dir, 'projects', repo().replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+    if (existsSync(file)) return lastAssistant(file)
+  }
+  return lastAssistant(join(own(), 'claude.jsonl'))
 }
 
 export function prompt(base64: string) {

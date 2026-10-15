@@ -324,6 +324,69 @@ echo '{"type":"result","is_error":false,"result":"done"}'
   }
 })
 
+test('poll reports the worker repo head and the live stream size, both moving mid-turn (claude-factory-xq3)', async () => {
+  const own = join(dir, 'own-progress')
+  const repo = join(dir, 'repo-progress')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  for (const args of [
+    ['init', '-q', repo],
+    ['-C', repo, 'config', 'user.email', 'a@b.c'],
+    ['-C', repo, 'config', 'user.name', 'a'],
+  ])
+    Bun.spawnSync(['git', ...args])
+  writeFileSync(join(repo, 'f'), '1')
+  Bun.spawnSync(['git', '-C', repo, 'add', 'f'])
+  Bun.spawnSync(['git', '-C', repo, 'commit', '-q', '-m', 'c1'])
+  const before = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD']).stdout.toString().trim()
+  // prints its init event, commits (a stand-in for the worker's own commits mid-turn) after a short sleep,
+  // then another assistant line after a longer one, so two polls taken while it still runs see it move twice
+  const claude = join(dir, 'claude-progress')
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"p1"}'
+sleep 0.3
+git -C ${repo} commit -q --allow-empty -m c2
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+sleep 2
+echo '{"type":"result","is_error":false,"result":"done"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    const p = worker.serve('m1', { once: true })
+    await Bun.sleep(80) // before the fake's 0.3s sleep ends: no commit made yet
+    const early = worker.poll(0)
+    expect(early.head).toBe(before)
+    // poll until the commit shows (head moves) or give up after well past the fake's own schedule: a loop,
+    // not a single fixed sleep, so a loaded box's scheduling jitter cannot flake this
+    let mid = worker.poll(0)
+    const deadline = Date.now() + 5000
+    while (mid.head === before && Date.now() < deadline) {
+      await Bun.sleep(50)
+      mid = worker.poll(0)
+    }
+    expect(mid.status).toBe('working') // still mid-turn: the fake is still in its 2s sleep
+    expect(mid.head).not.toBe('')
+    expect(mid.head).not.toBe(early.head) // the commit the fake makes mid-turn shows in head
+    expect(mid.bytes ?? 0).toBeGreaterThan(early.bytes ?? 0) // the stream grew between two polls mid-turn
+    await p
+  } finally {
+    process.env = saved
+  }
+})
+
 test('serve retries a turn that ended on the egress failure, same session, backed off, until one gets through', async () => {
   const own = join(dir, 'own-egress-ok')
   const repo = join(dir, 'repo-egress-ok')
