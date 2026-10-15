@@ -946,7 +946,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 /**
  * the part of workerFlags that holds in a VM: the same tools, no user settings or project-level mods, the
  * worker system prompt (the image carries it), settings for no auto memory and a compaction backstop. Left
- * out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global CLAUDE.md to exclude.
+ * out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global CLAUDE.md to exclude,
+ * and so the asd-ste100 plugin and its STE env too (claude-factory-fxu tracks that gap). disableBundledSkills
+ * keeps Skill's bundled-skill listing (~2.2k tokens/turn) off since the VM has no skill worth it yet.
  */
 export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
   if (process.env.FACTORY_LEAN === '0') return []
@@ -955,6 +957,7 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
     env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
+    disableBundledSkills: true,
   }
   return [
     ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
@@ -1177,27 +1180,36 @@ function runTokenSwap(
  * uses), so these win. It keeps their hooks (secret guards, herdr's session hook) and environment, never
  * asks before skipping permissions, and compacts well past the handoff limit, as a backstop only.
  * The global CLAUDE.md is excluded by path too: worktrees live under the home directory, so Claude Code
- * would read ~/.claude/CLAUDE.md as an ancestor's project file
+ * would read ~/.claude/CLAUDE.md as an ancestor's project file.
+ * One plugin is the exception: asd-ste100, when the user has it on, carries over alone, so a worker
+ * still writes in ASD-STE100 without the token cost of the user's other plugins. disableBundledSkills
+ * keeps that one skill from pulling in every other bundled skill's listing too.
  */
 export const workerSettings = (
-  user: { env?: Record<string, string>; hooks?: unknown },
+  user: { env?: Record<string, string>; hooks?: unknown; enabledPlugins?: Record<string, boolean> },
   maxContextK: number,
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
-) => ({
-  claudeMdExcludes: [globalClaudeMd],
-  autoMemoryEnabled: false, // workers share the factory's memory, not the user's per-repo notes
-  env: {
-    ...user.env,
-    ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
-    ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
-  },
-  ...(user.hooks ? { hooks: user.hooks } : {}),
-  skipDangerousModePermissionPrompt: true,
-  autoCompactWindow: Math.max(100, 2 * maxContextK) * 1000,
-})
+) => {
+  const ste = Object.entries(user.enabledPlugins ?? {}).filter(([k, v]) => v && k.startsWith('asd-ste100@'))
+  return {
+    claudeMdExcludes: [globalClaudeMd],
+    autoMemoryEnabled: false, // workers share the factory's memory, not the user's per-repo notes
+    env: {
+      ...user.env,
+      ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
+      ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+    },
+    ...(user.hooks ? { hooks: user.hooks } : {}),
+    ...(ste.length ? { enabledPlugins: Object.fromEntries(ste) } : {}),
+    disableBundledSkills: true,
+    skipDangerousModePermissionPrompt: true,
+    autoCompactWindow: Math.max(100, 2 * maxContextK) * 1000,
+  }
+}
 // what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn.
 // ToolSearch keeps MCP tools deferred: without it every MCP server's tools load into every turn (~60k)
-const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch,ToolSearch'
+// Skill lets a worker run the asd-ste100 skill (workerSettings carries that one plugin over)
+export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch,ToolSearch,Skill'
 
 /** the flags that give a Claude worker its own settings, system prompt and tools; FACTORY_LEAN=0 turns them off */
 function workerFlags(def: Factory) {
