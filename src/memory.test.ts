@@ -8,6 +8,7 @@ import {
   compact,
   CORE_BUDGET,
   coreFor,
+  decide,
   format,
   formatLong,
   inboxCount,
@@ -21,6 +22,7 @@ import {
   rank,
   rejectSkill,
   same,
+  type ShortCandidate,
   skillsDir,
   skillSources,
   search,
@@ -276,4 +278,65 @@ test('a skill the dream proposes waits for the manager, who installs or rejects 
   )
   expect(() => installSkill(dir, '../x')).toThrow('no proposed skill')
   rmSync(dir, { recursive: true })
+})
+
+const short = (over: Partial<ShortCandidate> = {}): ShortCandidate => ({
+  path: 'beads/x.md',
+  topic: 'beads',
+  ageDays: 1,
+  staleDays: 1,
+  shown: 0,
+  helped: 0,
+  ...over,
+})
+
+test('decide() archives a never-helped note stale past 30 days, not at 29', () => {
+  expect(decide([short({ staleDays: 29, helped: 0 })], [])).toEqual([])
+  expect(decide([short({ staleDays: 31, helped: 0 })], [])).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'never helped, unused for 31 days' },
+  ])
+})
+
+test('decide() never archives a note that ever helped, however stale', () => {
+  expect(decide([short({ staleDays: 400, helped: 1 })], [])).toEqual([])
+})
+
+test('decide() merges a shown-or-helped note once it is 7 days old, not at 6', () => {
+  expect(decide([short({ ageDays: 6, shown: 1 })], [])).toEqual([])
+  expect(decide([short({ ageDays: 8, shown: 1 })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 8 days old' },
+  ])
+  // helped alone (never shown by a search) also qualifies
+  expect(decide([short({ ageDays: 8, shown: 0, helped: 1 })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 8 days old' },
+  ])
+  // never shown and never helped: stays short, however old
+  expect(decide([short({ ageDays: 400, shown: 0, helped: 0, staleDays: 10 })], [])).toEqual([])
+})
+
+test('decide() archives a superseded note outright, even if young and helped', () => {
+  expect(
+    decide([short({ ageDays: 1, staleDays: 1, helped: 5, superseded: 'beads/y.md' })], []),
+  ).toEqual([{ kind: 'archive', path: 'beads/x.md', reason: 'superseded by beads/y.md' }])
+})
+
+test('decide() never touches an inbox note: the dream files it first', () => {
+  expect(decide([short({ topic: 'inbox', staleDays: 400, ageDays: 400 })], [])).toEqual([])
+})
+
+test('decide() flags a long entry as a promotion candidate at 3 helps across 3 runs, not at 2 runs', () => {
+  expect(decide([], [{ path: 'beads/LONG.md#lock', helped: 3, runs: 2 }])).toEqual([])
+  expect(decide([], [{ path: 'beads/LONG.md#lock', helped: 3, runs: 3 }])).toEqual([
+    { kind: 'promote', path: 'beads/LONG.md#lock', reason: 'helped 3 times across 3 runs' },
+  ])
+})
+
+test('decide() turns a scored pair at or above SAME (0.88) into a dedupe decision', () => {
+  const sims = [
+    { a: 'beads/LONG.md#a', b: 'beads/LONG.md#b', score: 0.87 },
+    { a: 'beads/LONG.md#c', b: 'beads/LONG.md#d', score: 0.9 },
+  ]
+  expect(decide([], [], sims)).toEqual([
+    { kind: 'dedupe', a: 'beads/LONG.md#c', b: 'beads/LONG.md#d', reason: 'similarity 0.90' },
+  ])
 })

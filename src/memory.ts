@@ -347,6 +347,76 @@ export const usageLines = (dir: string) => {
     )
 }
 
+// Tiering, after each dream: a pure function picks what to merge, archive, promote or flag as a possible
+// duplicate. It reads no file and no clock. The caller gathers every input from the real store
+// (applyTiers does that). Because it is pure, a test can hit every boundary with a table and no fixture dir.
+const DAY_MS = 24 * 60 * 60 * 1000
+const MERGE_AGE_DAYS = 7 // a short note waits this long before it can merge: a fresh note may still be wrong
+const ARCHIVE_STALE_DAYS = 30 // never shown or helped in this long, and this old: a candidate to archive
+const PROMOTE_HELPED = 3 // a long entry helped at least this often...
+const PROMOTE_RUNS = 3 // ...across at least this many distinct runs, becomes a promotion candidate
+
+/** a short topic note (never inbox/*), with what decide() needs to judge it */
+export type ShortCandidate = {
+  path: string
+  topic: string
+  superseded?: string // frontmatter `superseded: <path>`: archive it outright
+  ageDays: number // since the note's own at:, else the commit that added it
+  staleDays: number // since it was last shown or helped; ageDays when it never was
+  shown: number
+  helped: number
+}
+/** a LONG.md entry, with what decide() needs to judge it */
+export type LongCandidate = { path: string; helped: number; runs: number }
+/** a pair of notes (short or long) whose summaries a caller already scored as near-duplicates */
+export type SimPair = { a: string; b: string; score: number }
+
+export type Decision =
+  | { kind: 'merge'; path: string; reason: string }
+  | { kind: 'archive'; path: string; reason: string }
+  | { kind: 'promote'; path: string; reason: string }
+  | { kind: 'dedupe'; a: string; b: string; reason: string }
+
+/** the tiering pass's plan. No fs, no clock. Every boundary (7, 30 days; 3 helps or runs) is a table test. */
+export function decide(
+  short: ShortCandidate[],
+  long: LongCandidate[],
+  sims: SimPair[] = [],
+): Decision[] {
+  const decisions: Decision[] = []
+  for (const n of short) {
+    if (n.topic === 'inbox') continue // the dream files these; decide() never touches them
+    if (n.superseded) {
+      decisions.push({ kind: 'archive', path: n.path, reason: `superseded by ${n.superseded}` })
+      continue
+    }
+    if (n.helped === 0 && n.staleDays >= ARCHIVE_STALE_DAYS) {
+      decisions.push({
+        kind: 'archive',
+        path: n.path,
+        reason: `never helped, unused for ${Math.floor(n.staleDays)} days`,
+      })
+      continue
+    }
+    if ((n.shown > 0 || n.helped > 0) && n.ageDays >= MERGE_AGE_DAYS)
+      decisions.push({
+        kind: 'merge',
+        path: n.path,
+        reason: `shown or helped, ${Math.floor(n.ageDays)} days old`,
+      })
+  }
+  for (const e of long)
+    if (e.helped >= PROMOTE_HELPED && e.runs >= PROMOTE_RUNS)
+      decisions.push({
+        kind: 'promote',
+        path: e.path,
+        reason: `helped ${e.helped} times across ${e.runs} runs`,
+      })
+  for (const s of sims)
+    if (s.score >= SAME) decisions.push({ kind: 'dedupe', a: s.a, b: s.b, reason: `similarity ${s.score.toFixed(2)}` })
+  return decisions
+}
+
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */
 export const managerDir = (dir: string) => join(dir, '.manager')
 /** the dream proposes them here (Claude Code refuses an unattended write under any .claude/) */
