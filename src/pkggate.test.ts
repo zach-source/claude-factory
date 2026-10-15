@@ -759,6 +759,9 @@ test('a malformed upstream packument (a null version entry) is a fixed-text 5xx,
   expect(text).not.toContain('evaluating')
   const errorLines = lines.map(l => JSON.parse(l)).filter(p => p.decision === 'error')
   expect(errorLines.length).toBeGreaterThanOrEqual(1)
+  // caught at parsePackument, not merely by the handler's generic catch-all (whose own log line carries no
+  // eco/name): proves the bad shape never got as far as throwing inside filterPackument
+  expect(errorLines[0]).toMatchObject({ eco: 'npm', name: 'badpkg' })
   const health = await g(new Request('http://gate/healthz'))
   expect((await health.json() as { error: number }).error).toBeGreaterThanOrEqual(1)
 })
