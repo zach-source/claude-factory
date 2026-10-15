@@ -52,7 +52,7 @@ import {
   stationOf,
   type Bead,
 } from './beads'
-import { claudeCommand, command, harnessOf, readMcp, sq } from './harness'
+import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
 import * as memory from './memory'
@@ -224,6 +224,16 @@ function herdr(...args: string[]) {
   const out = p.stdout.toString().trim()
   if (p.exitCode !== 0) fail(`herdr ${args.slice(0, 2).join(' ')}: ${p.stderr.toString().trim() || out}`)
   return out.startsWith('{') ? JSON.parse(out).result : out
+}
+
+/**
+ * types a worker's launch, resume or retype into its pane: never the command itself (its run ID,
+ * paths and prompt can hold any 2-char sequence, including zsh-vi-mode's 'jk' insert-mode escape,
+ * which cuts a typed line mid-command, claude-factory-r21). `cmd` goes to a script in the pane's own
+ * FACTORY_HOME instead, and only the fixed LAUNCH_LINE that sources it is ever typed.
+ */
+function typeLaunch(pane: string, cmd: string) {
+  herdr('pane', 'run', pane, writeLaunch(HOME, pane, cmd))
 }
 
 /** the pane's agent status and Claude session id, or null once the pane is gone */
@@ -772,7 +782,7 @@ function launchPane({ run, def, node, c, session, file }: Job) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  herdr('pane', 'run', pane, launch(run, def, node, file, session))
+  typeLaunch(pane, launch(run, def, node, file, session))
   return pane
 }
 
@@ -1373,7 +1383,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return status
     }
     herdr('pane', 'send-keys', c.pane, 'ctrl+u')
-    herdr('pane', 'run', c.pane, launch(run, def, node, resumeFile(run, node, c), c.session))
+    typeLaunch(c.pane, launch(run, def, node, resumeFile(run, node, c), c.session))
     send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
     return 'resuming'
   }
@@ -1390,7 +1400,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (step === 'enter') herdr('pane', 'send-keys', c.pane, 'Enter')
     if (step === 'retype') {
       herdr('pane', 'send-keys', c.pane, 'ctrl+u') // whatever is left on the line
-      herdr('pane', 'run', c.pane, launch(run, def, node, promptOf(run, node, c)))
+      typeLaunch(c.pane, launch(run, def, node, promptOf(run, node, c)))
     }
     if (step) send({ type: 'NUDGED', seq: c.seq })
     return step ? 'relaunching' : 'starting'
