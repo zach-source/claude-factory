@@ -29,10 +29,11 @@ const GO_INFO_BACKDATED_TIME = '2026-09-11T00:00:00Z'
 // claude-factory-8ub: the Go age gate also checks sum.golang.org's first-logged record.
 // It does this through two new upstreams (`sumdb`, `goIndex`). Every fixture in this file now points both
 // at this same fake server. `/index` answers any `since` with 9 synthetic entries, each timestamped inside
-// the requested window. So the floor comes out the same (104, see below), no matter which `now`/minDays a
-// given test uses. `/lookup/<mod>@<version>` answers with a low id (at or below the floor) for anything not
-// explicitly listed below. So every pre-existing "old enough" Go fixture in this file keeps passing,
-// without each needing its own record.
+// the requested window. `/latest` answers with a tree size (1,000,000) far above every record id this file
+// uses, so no sample is ever dropped as an outlier (claude-factory-8ub.6). So the floor comes out the same
+// (100, see below), no matter which `now`/minDays a given test uses. `/lookup/<mod>@<version>` answers with
+// a low id (at or below the floor) for anything not explicitly listed below. So every pre-existing "old
+// enough" Go fixture in this file keeps passing, without each needing its own record.
 const escapeGoPath = (s: string) => s.replace(/[A-Z]/g, c => `!${c.toLowerCase()}`)
 const GO_FLOOR_SAMPLE_VERSION = 'v1.0.0'
 const GO_FLOOR_SAMPLE_PATHS = [
@@ -48,8 +49,8 @@ const GO_FLOOR_SAMPLE_PATHS = [
   'floorsample-h.example.com/mod',
   'floorsample-i.example.com/mod',
 ]
-// ids 100..108: sorted, the lower median (what makeGate's goFloor should compute) is the 5th value, 104
-const GO_FLOOR_RECORD = 104
+// ids 100..108: makeGate's goFloor takes the minimum of these (the safe side, claude-factory-8ub.6), 100
+const GO_FLOOR_RECORD = 100
 const GO_FLOOR_RECORDS: Record<string, number> = Object.fromEntries(
   GO_FLOOR_SAMPLE_PATHS.map((p, i) => [`${escapeGoPath(p)}@${escapeGoPath(GO_FLOOR_SAMPLE_VERSION)}`, 100 + i]),
 )
@@ -70,6 +71,11 @@ function goIndexBody(sinceIso: string): string {
   const ts = new Date(sinceMs + 15 * 60_000).toISOString() // inside [since, since + 30min]
   return GO_FLOOR_SAMPLE_PATHS.map(p => JSON.stringify({ Path: p, Version: GO_FLOOR_SAMPLE_VERSION, Timestamp: ts })).join('\n') + '\n'
 }
+
+// sum.golang.org's `GET /latest` signed note (claude-factory-8ub.6): a floor refresh reads its tree size
+// before looking up any sample, and drops a sample whose own record sits at or past it. `size` far above
+// every record id a given fixture server hands out keeps that filter a no-op there.
+const sumdbLatestBody = (size: number) => `go.sum database tree\n${size}\nfakehash\n\n— sum.golang.org fakesignature\n`
 
 // a transparency-log tile is raw hash bytes, not text: this probe (00 ff 80 c3, repeated) is exactly what
 // review found UTF-8 decoding turns into 00 ef bf bd ef bf bd... when passed through fetchText (ei0.8)
@@ -388,8 +394,11 @@ beforeAll(() => {
       if (url.pathname === '/example.com/hangs/@v/v1.0.0.info') return new Promise<Response>(() => {})
       // claude-factory-8ub: index.golang.org's /index, which refreshGoFloor samples. Every `since` gets the
       // same 9 synthetic entries. Each entry's Timestamp sits inside the requested window. So the floor
-      // always comes out as GO_FLOOR_RECORD (104), no matter which test's `now`/minDays asked for it.
+      // always comes out as GO_FLOOR_RECORD (100), no matter which test's `now`/minDays asked for it.
       if (url.pathname === '/index') return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      // claude-factory-8ub.6: sum.golang.org's /latest, read before every floor refresh's lookups. 1,000,000
+      // sits far above every record id this file hands out, so the outlier filter never drops a sample here.
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       // sum.golang.org's /lookup/<mod>@<version>. A key with no fixture below defaults to GO_FLOOR_RECORD - 1
       // (at or below the floor). So every pre-existing "old enough" Go fixture in this file still passes,
       // with no record of its own.
@@ -613,6 +622,7 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
         if (!indexUp) return new Response('internal error', { status: 500 })
         return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(now).toISOString()))
       }
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
         const probeVersion = key.startsWith('floortiming.example.com/mod@') ? key.slice('floortiming.example.com/mod@'.length) : null
@@ -625,37 +635,72 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
       return new Response('not found', { status: 404 })
     },
   })
+  // claude-factory-8ub.7: a decision with a present floor no longer waits for the refresh it triggers (it
+  // decides with the old, still-safe floor right away). So each phase below drives one priming decision,
+  // then waits for that refresh's own JSON line to land before reading /healthz or moving to the next phase
+  // -- otherwise a slow refresh from one phase could still be in flight when the next phase changes the
+  // fixture under it.
+  const lines: string[] = []
+  const origLog = console.log
+  console.log = (s: string) => lines.push(s)
+  async function waitForFloorRefresh(from: number, tries = 500): Promise<void> {
+    for (let i = 0; i < tries; i++) {
+      const landed = lines.slice(from).some(l => {
+        const j = JSON.parse(l)
+        return j.eco === 'go' && (typeof j.floor === 'number' || (j.decision === 'error' && typeof j.reason === 'string' && j.reason.startsWith('sumdb floor refresh')))
+      })
+      if (landed) return
+      await new Promise(resolve => setTimeout(resolve, 2))
+    }
+    throw new Error('waitForFloorRefresh: no floor refresh landed in time')
+  }
   try {
     const g = makeGate({
       upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
       now: () => now,
     })
-    // the floor builds at 104; the probe's own record (500) outranks it, so it is refused
+    // the floor builds at 100 (a cold start always waits for it); the probe's own record (500) outranks it
     const first = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v1.0.0.info'))
     expect(first.status).toBe(404)
 
-    // a refresh is now due, but the index is down: the old floor (104) stays, so the probe is still refused
+    // a refresh is now due, but the index is down. This decision does not wait for it (claude-factory-8ub.7)
+    // -- it still gets refused, because the old floor (100) is what decides it either way
     indexUp = false
     now += 31 * 60_000
+    const m1 = lines.length
     const second = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v2.0.0.info'))
     expect(second.status).toBe(404)
+    await waitForFloorRefresh(m1) // let this failed attempt fully land before phase 3 changes the fixture
 
-    // the index comes back, with every sample now higher: the floor rises to 704, above the probe's own
-    // record (500). The same probe, under a new version so its decision does not come from cache, is now allowed
+    // the index comes back, with every sample now higher. A priming decision starts the new refresh; once
+    // it lands, the floor reads 700
     indexUp = true
     recordOffset = 600
     now += 31 * 60_000
+    const m2 = lines.length
+    await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v0.5.0.info'))
+    await waitForFloorRefresh(m2)
+    const healthzThird = await g(new Request('http://gate/healthz'))
+    expect((await (healthzThird.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(700)
+    // the probe's own record (500) is now below the floor; the same probe, under a new version so its
+    // decision does not come from cache, is allowed
     const third = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v3.0.0.info'))
     expect(third.status).toBe(200)
 
-    // the index now reports a thinner window again (recordOffset back to 0, median 104): a 4th probe
-    // version, with a record (300) between the two floors, is still allowed -- proof this refresh never
-    // dropped the floor from 704 back down to 104
+    // the index now reports a thinner window again (recordOffset back to 0, minimum 100). Once this refresh
+    // lands too, the floor must still read 700 -- proof it never dropped back down to 100
     recordOffset = 0
     now += 31 * 60_000
+    const m3 = lines.length
+    await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v0.6.0.info'))
+    await waitForFloorRefresh(m3)
+    const healthzFourth = await g(new Request('http://gate/healthz'))
+    expect((await (healthzFourth.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(700)
+    // a 4th probe version, with a record (300) between the two floors, is still allowed
     const fourth = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v4.0.0.info'))
     expect(fourth.status).toBe(200)
   } finally {
+    console.log = origLog
     srv.stop(true)
   }
 })
@@ -679,6 +724,7 @@ test('AC8: a @v/list of 20 versions, decided concurrently, causes exactly one in
         indexHits++
         return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
       }
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) return new Response(`${GO_FLOOR_RECORD - 1}\n`)
       if (url.pathname === '/concurrent20.example.com/mod/@v/list') return new Response(versions.join('\n') + '\n')
       const m = url.pathname.match(/^\/concurrent20\.example\.com\/mod\/@v\/(v[\d.]+)\.info$/)
@@ -720,6 +766,7 @@ test('AC9: index lines with bad JSON, missing fields, or a Timestamp outside the
         ]
         return new Response(lines.join('\n') + '\n')
       }
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
       if (url.pathname.startsWith('/lookup/')) return new Response('1\n')
       if (url.pathname === '/thin.example.com/mod/@v/v1.0.0.info') return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
       return new Response('not found', { status: 404 })

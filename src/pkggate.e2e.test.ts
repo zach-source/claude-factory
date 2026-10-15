@@ -128,12 +128,15 @@ beforeAll(async () => {
       // claude-factory-8ub: the gate's sumdb/goIndex upstreams point at this same fake server. /index
       // answers any `since` with 5 synthetic entries inside the requested window; /lookup/ answers every
       // key with a low record (1), so it always sits at or below the floor this builds (also 1).
+      // /latest (claude-factory-8ub.6) answers with a tree size far above every record id here, so none is
+      // ever dropped as an outlier.
       if (url.pathname === '/index') {
         const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(NOW).toISOString())
         const ts = new Date(sinceMs + 15 * 60_000).toISOString()
         const lines = Array.from({ length: 5 }, (_, i) => JSON.stringify({ Path: `floorsample-${i}.example.com/mod`, Version: 'v1.0.0', Timestamp: ts }))
         return new Response(lines.join('\n') + '\n')
       }
+      if (url.pathname === '/latest') return new Response('go.sum database tree\n1000000\nfakehash\n\n— sum.golang.org fakesignature\n')
       // the backdated probe's own record sits far above the floor (1); every other lookup defaults low (AC12)
       if (url.pathname === `/lookup/${GO_MODULE}@${GO_BACKDATED_VERSION}`) return new Response('999999\n')
       if (url.pathname.startsWith('/lookup/')) return new Response('1\n')
