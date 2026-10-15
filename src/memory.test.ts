@@ -65,6 +65,35 @@ test('a LONG.md entry keeps its id, rig, from, at and body through a write and a
   expect(formatLong(entries)).toContain('tier: long')
 })
 
+test('a LONG.md entry round-trips a from: with real-shaped commas and spaces, and a merge alias', () => {
+  const entries: LongEntry[] = [
+    {
+      id: 'bd-lock',
+      summary: 'bd init locks every repo',
+      rig: 'fabriek',
+      from: 'r1/verify, r2/implement',
+      at: '2026-10-06',
+      aliases: ['bd-lock-old'],
+      body: 'why\nhow',
+    },
+  ]
+  expect(parseLong(formatLong(entries))).toEqual(entries)
+})
+
+test('parseLong never starts an entry at a "## " line inside a body, only at one followed by an id comment', () => {
+  const entries: LongEntry[] = [
+    {
+      id: 'repo-ignores-columns',
+      summary: 'a note whose body has its own markdown headings',
+      body: 'intro\n\n## not a new entry\n\nmore text\n\n## also not one',
+    },
+    { id: 'second', summary: 'a second real entry', body: 'its own body' },
+  ]
+  const round = parseLong(formatLong(entries))
+  expect(round).toEqual(entries)
+  expect(round).toHaveLength(2)
+})
+
 test('rank() breaks a near-tie for a higher tier, but a clearly worse match still loses', () => {
   const note = (path: string, tier: Note['tier']): Note => ({ path, summary: path, body: '', tier })
   const vecs: Record<string, number[]> = {

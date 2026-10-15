@@ -81,44 +81,71 @@ export const format = (n: Omit<Note, 'path'>) =>
     '',
   ].join('\n')
 
-/** one entry inside a topic's LONG.md. A dream merges several short notes into one entry like this. */
-export type LongEntry = { id: string; summary: string; rig?: string; from?: string; at?: string; body: string }
+/**
+ * One entry inside a topic's LONG.md. A dream merges several short notes into one entry like this.
+ * `aliases` lists ids a dream merged into this one by hand (point 7 of the dream prompt). longAliasRenames()
+ * turns each alias into a rename, so the merged-away id's usage still counts toward this entry.
+ */
+export type LongEntry = {
+  id: string
+  summary: string
+  rig?: string
+  from?: string
+  at?: string
+  aliases?: string[]
+  body: string
+}
 
 const LONG_HEADER = '---\ntier: long\n---\n'
+// JSON, not `key: value` pairs split on whitespace: `from:` holds a real run id list like "r1/x, r2/y",
+// commas and all, and a bare \S+ field split lost everything after the first space (claude-factory-59r.8)
+const LONG_ID = /^<!--\s*id:\s*(\{.*\})\s*-->\s*$/
+type LongMeta = { id: string; rig?: string; from?: string; at?: string; aliases?: string[] }
+const encodeId = (e: LongEntry): string =>
+  JSON.stringify({
+    id: e.id,
+    ...(e.rig ? { rig: e.rig } : {}),
+    ...(e.from ? { from: e.from } : {}),
+    ...(e.at ? { at: e.at } : {}),
+    ...(e.aliases?.length ? { aliases: e.aliases } : {}),
+  })
+const decodeId = (line: string): LongMeta | null => {
+  const m = LONG_ID.exec(line)
+  if (!m) return null
+  try {
+    const o = JSON.parse(m[1]!)
+    return o && typeof o.id === 'string' ? o : null
+  } catch {
+    return null
+  }
+}
+
 const longEntryText = (e: LongEntry) =>
-  [
-    `## ${e.summary.replace(/\n/g, ' ')}`,
-    `<!-- id: ${e.id}${e.rig ? ` rig: ${e.rig}` : ''}${e.from ? ` from: ${e.from}` : ''}${e.at ? ` at: ${e.at}` : ''} -->`,
-    '',
-    e.body.trim(),
-    '',
-  ].join('\n')
+  [`## ${e.summary.replace(/\n/g, ' ')}`, `<!-- id: ${encodeId(e)} -->`, '', e.body.trim(), ''].join('\n')
 
 /** a topic's LONG.md, serialized: frontmatter `tier: long`, then one `## summary` + id comment per entry */
 export const formatLong = (entries: LongEntry[]) => [LONG_HEADER, ...entries.map(longEntryText)].join('\n')
 
-const LONG_ID = /^<!--\s*id:\s*(\S+)(?:\s+rig:\s*(\S+))?(?:\s+from:\s*(\S+))?(?:\s+at:\s*(\S+))?\s*-->\s*$/
-
-/** a topic's LONG.md, parsed back into its entries: parseLong(formatLong(x)) === x */
+/**
+ * A topic's LONG.md, parsed back into its entries: parseLong(formatLong(x)) equals x.
+ * An entry starts only at a `## ` line right before its id comment.
+ * A merged note's body can hold its own `## ` markdown heading.
+ * That line alone must never start a new entry (claude-factory-59r.9).
+ */
 export function parseLong(text: string): LongEntry[] {
   const body = text.startsWith(LONG_HEADER) ? text.slice(LONG_HEADER.length) : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
-  return body
-    .split(/\n(?=## )/)
-    .filter(part => part.startsWith('## '))
-    .map(part => {
-      const lines = part.split('\n')
-      const summary = lines[0]!.slice(3).trim()
-      const m = LONG_ID.exec(lines[1] ?? '')
-      const rest = (m ? lines.slice(2) : lines.slice(1)).join('\n').replace(/^\n/, '')
-      return {
-        id: m?.[1] ?? slug(summary),
-        summary,
-        rig: m?.[2],
-        from: m?.[3],
-        at: m?.[4],
-        body: rest.trim(),
-      }
-    })
+  const lines = body.split('\n')
+  const starts: number[] = []
+  for (let i = 0; i < lines.length; i++)
+    if (lines[i]!.startsWith('## ') && decodeId(lines[i + 1] ?? '')) starts.push(i)
+  return starts.map((start, idx) => {
+    const end = starts[idx + 1] ?? lines.length
+    const entryLines = lines.slice(start, end)
+    const summary = entryLines[0]!.slice(3).trim()
+    const meta = decodeId(entryLines[1]!)!
+    const rest = entryLines.slice(2).join('\n').replace(/^\n/, '')
+    return { id: meta.id, summary, rig: meta.rig, from: meta.from, at: meta.at, aliases: meta.aliases, body: rest.trim() }
+  })
 }
 
 /** every note, with its topic's README beside it: the dot folders (.git, the index, .archive) are not memory */
