@@ -122,6 +122,16 @@ beforeAll(async () => {
         return new Response(new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]), {
           headers: { 'content-type': 'application/octet-stream' },
         })
+      // claude-factory-8ub: the gate's sumdb/goIndex upstreams point at this same fake server. /index
+      // answers any `since` with 5 synthetic entries inside the requested window; /lookup/ answers every
+      // key with a low record (1), so it always sits at or below the floor this builds (also 1).
+      if (url.pathname === '/index') {
+        const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(NOW).toISOString())
+        const ts = new Date(sinceMs + 15 * 60_000).toISOString()
+        const lines = Array.from({ length: 5 }, (_, i) => JSON.stringify({ Path: `floorsample-${i}.example.com/mod`, Version: 'v1.0.0', Timestamp: ts }))
+        return new Response(lines.join('\n') + '\n')
+      }
+      if (url.pathname.startsWith('/lookup/')) return new Response('1\n')
       if (url.pathname === `/${GO_MODULE}/@v/list`) return new Response('v1.0.0\nv1.0.1\n')
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.info`)
         return new Response(JSON.stringify({ Version: 'v1.0.0', Time: OLD_TIME }), { headers: { 'content-type': 'application/json' } })
