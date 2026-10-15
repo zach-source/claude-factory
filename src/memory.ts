@@ -12,15 +12,32 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-// A factory's shared memory: what its workers learned, three levels deep so a brief stays short and a
-// search finds the rest.
-//   CORE.md              the few lessons nearly every run needs: every brief carries it whole
+// A factory's shared memory: what its workers learned, tiered so a brief stays short and a search finds
+// the rest.
+//   CORE.md              fact/behavior tier: the few lessons nearly every run needs, every brief carries it whole
 //   <topic>/README.md    what the topic covers, then its notes in order of importance: briefs list topics
-//   <topic>/<note>.md    one learning each, found by `factory memory search`
+//   <topic>/LONG.md      long tier: lessons merged from several short notes, one `## ` heading each
+//   <topic>/<note>.md    short tier: one worker's learning, found by `factory memory search`
 //   inbox/<note>.md      new notes, until the dream files them under a topic
-// The dream (`factory dream`) grooms it daily. The folder is its own git repo, so every pass can be undone.
+//   .archive/<topic>.md  notes a tiering pass dropped: stale, never helped, or marked superseded
+// The dream (`factory dream`) files the inbox and writes notes daily; `factory memory compact` (which it
+// also runs itself, unless FACTORY_MEMORY_TIERS=0) does the merge-to-long and archive pass deterministically.
+// The folder is its own git repo, so every pass can be undone.
 
-export type Note = { path: string; summary: string; rig?: string; from?: string; at?: string; body: string }
+// A note's tier: short (one worker's note, in <topic>/<slug>.md or inbox/), long (a merged lesson, in
+// <topic>/LONG.md, one entry per `## ` heading), fact (a distilled CORE.md bullet). search ranks higher
+// tiers above short notes with TIER_BONUS, because they already survived a dream's judgment.
+export type Tier = 'short' | 'long' | 'fact'
+export type Note = {
+  path: string
+  summary: string
+  rig?: string
+  from?: string
+  at?: string
+  body: string
+  tier?: Tier
+  superseded?: string // frontmatter `superseded: <path>`: this note is stale, replaced by that one
+}
 
 const MODEL = 'Xenova/bge-small-en-v1.5'
 const QUERY = 'Represent this sentence for searching relevant passages: ' // bge's retrieval instruction
@@ -47,6 +64,7 @@ export const parse = (path: string, text: string): Note => {
     from: meta.from,
     at: meta.at,
     body,
+    superseded: meta.superseded,
   }
 }
 
@@ -57,13 +75,81 @@ export const format = (n: Omit<Note, 'path'>) =>
     ...(n.rig ? [`rig: ${n.rig}`] : []),
     ...(n.from ? [`from: ${n.from}`] : []),
     ...(n.at ? [`at: ${n.at}`] : []),
+    ...(n.superseded ? [`superseded: ${n.superseded}`] : []),
     '---',
     n.body.trim(),
     '',
   ].join('\n')
 
-/** every note, with its topic's README beside it: the dot folders (.git, the index) are not memory */
-function walk(dir: string) {
+/**
+ * One entry inside a topic's LONG.md. A dream merges several short notes into one entry like this.
+ * `aliases` lists ids a dream merged into this one by hand (point 7 of the dream prompt). longAliasRenames()
+ * turns each alias into a rename, so the merged-away id's usage still counts toward this entry.
+ */
+export type LongEntry = {
+  id: string
+  summary: string
+  rig?: string
+  from?: string
+  at?: string
+  aliases?: string[]
+  body: string
+}
+
+const LONG_HEADER = '---\ntier: long\n---\n'
+// JSON, not `key: value` pairs split on whitespace: `from:` holds a real run id list like "r1/x, r2/y",
+// commas and all, and a bare \S+ field split lost everything after the first space (claude-factory-59r.8)
+const LONG_ID = /^<!--\s*id:\s*(\{.*\})\s*-->\s*$/
+type LongMeta = { id: string; rig?: string; from?: string; at?: string; aliases?: string[] }
+const encodeId = (e: LongEntry): string =>
+  JSON.stringify({
+    id: e.id,
+    ...(e.rig ? { rig: e.rig } : {}),
+    ...(e.from ? { from: e.from } : {}),
+    ...(e.at ? { at: e.at } : {}),
+    ...(e.aliases?.length ? { aliases: e.aliases } : {}),
+  })
+const decodeId = (line: string): LongMeta | null => {
+  const m = LONG_ID.exec(line)
+  if (!m) return null
+  try {
+    const o = JSON.parse(m[1]!)
+    return o && typeof o.id === 'string' ? o : null
+  } catch {
+    return null
+  }
+}
+
+const longEntryText = (e: LongEntry) =>
+  [`## ${e.summary.replace(/\n/g, ' ')}`, `<!-- id: ${encodeId(e)} -->`, '', e.body.trim(), ''].join('\n')
+
+/** a topic's LONG.md, serialized: frontmatter `tier: long`, then one `## summary` + id comment per entry */
+export const formatLong = (entries: LongEntry[]) => [LONG_HEADER, ...entries.map(longEntryText)].join('\n')
+
+/**
+ * A topic's LONG.md, parsed back into its entries: parseLong(formatLong(x)) equals x.
+ * An entry starts only at a `## ` line right before its id comment.
+ * A merged note's body can hold its own `## ` markdown heading.
+ * That line alone must never start a new entry (claude-factory-59r.9).
+ */
+export function parseLong(text: string): LongEntry[] {
+  const body = text.startsWith(LONG_HEADER) ? text.slice(LONG_HEADER.length) : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+  const lines = body.split('\n')
+  const starts: number[] = []
+  for (let i = 0; i < lines.length; i++)
+    if (lines[i]!.startsWith('## ') && decodeId(lines[i + 1] ?? '')) starts.push(i)
+  return starts.map((start, idx) => {
+    const end = starts[idx + 1] ?? lines.length
+    const entryLines = lines.slice(start, end)
+    const summary = entryLines[0]!.slice(3).trim()
+    const meta = decodeId(entryLines[1]!)!
+    const rest = entryLines.slice(2).join('\n').replace(/^\n/, '')
+    return { id: meta.id, summary, rig: meta.rig, from: meta.from, at: meta.at, aliases: meta.aliases, body: rest.trim() }
+  })
+}
+
+/** every note, with its topic's README beside it: the dot folders (.git, the index, .archive) are not memory */
+export function walk(dir: string) {
   const notes: Note[] = []
   const topics = new Map<string, Note>()
   if (!existsSync(dir)) return { notes, topics }
@@ -71,9 +157,23 @@ function walk(dir: string) {
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
     for (const f of readdirSync(join(dir, topic.name))) {
       if (!f.endsWith('.md')) continue
-      const n = parse(join(topic.name, f), readFileSync(join(dir, topic.name, f), 'utf8'))
+      const text = readFileSync(join(dir, topic.name, f), 'utf8')
+      if (f === 'LONG.md') {
+        for (const e of parseLong(text))
+          notes.push({
+            path: `${topic.name}/LONG.md#${e.id}`,
+            summary: e.summary,
+            rig: e.rig,
+            from: e.from,
+            at: e.at,
+            body: e.body,
+            tier: 'long',
+          })
+        continue
+      }
+      const n = parse(join(topic.name, f), text)
       if (f === 'README.md') topics.set(topic.name, n)
-      else notes.push(n)
+      else notes.push({ ...n, tier: 'short' })
     }
   }
   return { notes, topics }
@@ -81,6 +181,9 @@ function walk(dir: string) {
 
 export const topicOf = (n: Note) => dirname(n.path)
 const dot = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i]!, 0)
+// a higher tier already survived a dream's judgment, so it outranks a short note at a near-equal match;
+// a short note still wins a search its tier mate loses outright (see the memory-long-0.005-vs-0.02 test)
+export const TIER_BONUS: Record<Tier, number> = { short: 0, long: 0.01, fact: 0.02 }
 /** a note of another rig never comes up; a note with no rig holds everywhere */
 export const rank = (
   notes: Note[],
@@ -94,7 +197,8 @@ export const rank = (
     .map(n => {
       const own = dot(vec(n), query)
       const t = topicVec(topicOf(n))
-      return { note: n, score: t ? (1 - TOPIC_WEIGHT) * own + TOPIC_WEIGHT * dot(t, query) : own }
+      const base = t ? (1 - TOPIC_WEIGHT) * own + TOPIC_WEIGHT * dot(t, query) : own
+      return { note: n, score: base + TIER_BONUS[n.tier ?? 'short'] }
     })
     .sort((a, b) => b.score - a.score)
 
@@ -135,19 +239,91 @@ async function vectors(dir: string, all: Note[], text = textOf, name = '.index.j
   return (n: Note) => vecs[n.path]!.vec
 }
 
+/** each bullet in CORE.md, as its own fact note: path CORE.md#<8 hex of its sha1>, rig from its `## rig:` section */
+export function coreNotes(dir: string): Note[] {
+  const file = join(dir, 'CORE.md')
+  if (!existsSync(file)) return []
+  let rig: string | undefined
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .flatMap(line => {
+      const h = /^##\s+rig:\s*(\S+)/.exec(line)
+      if (h) {
+        rig = h[1]
+        return []
+      }
+      if (/^##\s/.test(line)) {
+        rig = undefined
+        return []
+      }
+      const m = /^-\s+(.*\S)\s*$/.exec(line)
+      if (!m || m[1]!.startsWith('(cut:')) return []
+      const summary = m[1]!
+      const id = createHash('sha1').update(summary).digest('hex').slice(0, 8)
+      return [{ path: `CORE.md#${id}`, summary, rig, body: summary, tier: 'fact' as const }]
+    })
+}
+
 export async function search(
   dir: string,
   query: string,
   { rig, limit = 5 }: { rig?: string; limit?: number } = {},
 ) {
   const { notes, topics } = walk(dir)
-  const vec = await vectors(dir, [...notes, ...topics.values()])
+  const all = [...notes, ...coreNotes(dir)]
+  const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])
   return close(
-    rank(notes, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig),
+    rank(all, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig),
     limit,
   )
 }
+
+/**
+ * one line of a fixed query set. `expect` is a substring of the path or the summary of the note that the
+ * search for `query` must surface: summary text survives a merge into LONG.md, where the path does not.
+ */
+export type EvalCase = { query: string; expect: string; rig?: string }
+export type EvalResult = {
+  recall: number // the fraction of cases where `expect` was somewhere in the results
+  mrr: number // the mean of 1/rank over every case; 0 for a case that missed entirely
+  misses: EvalCase[]
+}
+
+/** pure: scores a fixed query set against results already searched for, so a test needs no search() call */
+export function evalScore(cases: EvalCase[], results: string[][]): EvalResult {
+  let hits = 0
+  let rrSum = 0
+  const misses: EvalCase[] = []
+  cases.forEach((c, i) => {
+    const rank = (results[i] ?? []).findIndex(path => path.includes(c.expect))
+    if (rank < 0) {
+      misses.push(c)
+      return
+    }
+    hits++
+    rrSum += 1 / (rank + 1)
+  })
+  return { recall: cases.length ? hits / cases.length : 1, mrr: cases.length ? rrSum / cases.length : 1, misses }
+}
+
+/** runs the fixed query set against the real store and scores it: what `factory memory eval` reports */
+export async function evaluate(dir: string, cases: EvalCase[], limit = 5): Promise<EvalResult> {
+  const results: string[][] = []
+  for (const c of cases)
+    results.push((await search(dir, c.query, { rig: c.rig, limit })).map(f => `${f.note.path} ${f.note.summary}`))
+  return evalScore(cases, results)
+}
+
+/** where the fixed query set lives: committed to the memory's own git repo, so it tracks the store it tests */
+export const evalFile = (dir: string) => join(dir, '.eval.jsonl')
+export const readEvalCases = (dir: string): EvalCase[] =>
+  existsSync(evalFile(dir))
+    ? readFileSync(evalFile(dir), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line))
+    : []
 
 /** the matches, not the filler: what scores near the best and above the floor */
 export const close = <T extends { score: number }>(ranked: T[], limit: number) =>
@@ -165,6 +341,56 @@ export async function same(dir: string, note: Pick<Note, 'summary' | 'rig'>) {
     .map(n => ({ note: n, score: dot(vec(n), v!) }))
     .sort((a, b) => b.score - a.score)[0]
   return best && best.score >= SAME ? best : null
+}
+
+/**
+ * Near-duplicate long entries. Uses the same summary vectors and SAME cutoff as same(). Scores every
+ * pair within one topic and rig. No rig on either side counts as the same rig: that entry holds for
+ * every rig. The dream prompt lists the results as possible duplicates. This function merges nothing:
+ * a merge needs judgment about which id and wording survive.
+ */
+export async function longSimPairs(dir: string): Promise<SimPair[]> {
+  const { notes } = walk(dir)
+  const long = notes.filter(n => n.tier === 'long')
+  if (long.length < 2) return []
+  const vec = await vectors(dir, long, n => n.summary, '.index.json.summaries')
+  const groups = new Map<string, Note[]>()
+  for (const n of long) {
+    const key = `${topicOf(n)}::${n.rig ?? ''}`
+    groups.set(key, [...(groups.get(key) ?? []), n])
+  }
+  const pairs: SimPair[] = []
+  for (const g of groups.values())
+    for (let i = 0; i < g.length; i++)
+      for (let j = i + 1; j < g.length; j++) {
+        const score = dot(vec(g[i]!), vec(g[j]!))
+        if (score >= SAME) pairs.push({ a: g[i]!.path, b: g[j]!.path, score })
+      }
+  return pairs
+}
+
+/**
+ * decide()'s promote and dedupe candidates among the long tier, worded for the dream prompt. A path
+ * alone means little to the dream, so each line also carries its entry's summary.
+ */
+export async function tierCandidates(dir: string): Promise<{ promotions: string[]; duplicates: string[] }> {
+  const { notes } = walk(dir)
+  const long = notes.filter(n => n.tier === 'long')
+  const uses = usage(dir)
+  const summaryOf = (path: string) => long.find(n => n.path === path)?.summary ?? path
+  const candidates: LongCandidate[] = long.map(n => {
+    const u = uses.get(n.path)
+    return { path: n.path, helped: u?.helped ?? 0, runs: u?.runs ?? 0 }
+  })
+  const decisions = decide([], candidates, await longSimPairs(dir))
+  return {
+    promotions: decisions
+      .filter(d => d.kind === 'promote')
+      .map(d => `- ${d.path} (${summaryOf(d.path)}): ${d.reason}`),
+    duplicates: decisions
+      .filter(d => d.kind === 'dedupe')
+      .map(d => `- ${d.a} (${summaryOf(d.a)}) vs ${d.b} (${summaryOf(d.b)}): ${d.reason}`),
+  }
 }
 
 const slug = (s: string) =>
@@ -230,43 +456,132 @@ export const corpus = (dir: string) =>
     ...[...walk(dir).topics.values(), ...walk(dir).notes].map(n => `${n.summary}\n${n.body}`),
   ].join('\n')
 
-// how notes get used, the signal the dream orders by: a search shows a note, a worker says it helped
-export type Use = { path: string; shown: number; helped: number; at: number }
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+// a `by` field holds `<run id>/<station>`. Use only the run id as the key. Two stations of one run must
+// count as one run (claude-factory-59r.16: "r1/verify" and "r1/implement" used to count as 2 runs).
+const runKey = (by: string | undefined, at: number) => (by ? by.split('/')[0]! : day(at))
+
+// How notes get used. A search shows a note. A worker says it helped. The dream orders notes by this.
+// `runs` counts the distinct runs that helped a note (its `by`, up to the first `/`). For an older line
+// with no `by`, it counts the distinct UTC day instead. decide()'s promote threshold reads `runs`.
+export type Use = { path: string; shown: number; helped: number; at: number; runs: number }
 const usageFile = (dir: string) => join(dir, '.usage.jsonl')
 /** appended only while workers search, one short line each, so concurrent writers do not interleave */
-export const use = (dir: string, paths: string[], kind: 'shown' | 'helped', at = Date.now()) => {
+export const use = (
+  dir: string,
+  paths: string[],
+  kind: 'shown' | 'helped',
+  at = Date.now(),
+  by?: string,
+) => {
   if (paths.length)
     appendFileSync(
       usageFile(dir),
-      paths.map(path => JSON.stringify({ path, [kind]: 1, at })).join('\n') + '\n',
+      paths.map(path => JSON.stringify({ path, [kind]: 1, at, ...(by ? { by } : {}) })).join('\n') + '\n',
     )
 }
-/** each note's totals, under the name the dream gave it */
-export const tally = (lines: string[], renamed: Record<string, string> = {}) => {
-  const out = new Map<string, Use>()
+type RawTally = { path: string; shown: number; helped: number; at: number; runsBase: number; keys: Set<string> }
+/**
+ * each note's raw totals, keys kept apart from their count. compact() must persist the keys themselves,
+ * not only how many there were (claude-factory-59r.17): a folded line that kept only `runs: 2` cannot
+ * tell a later line's run id was one it already counted, so that run got counted again.
+ */
+function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<string, RawTally> {
+  const out = new Map<string, RawTally>()
   for (const line of lines.filter(Boolean)) {
-    const u: Partial<Use> & { path: string; at: number } = JSON.parse(line)
+    const u: Partial<Use> & { path: string; at: number; by?: string; keys?: string[] } = JSON.parse(line)
     const path = renamed[u.path] ?? u.path
-    const t = out.get(path) ?? { path, shown: 0, helped: 0, at: 0 }
-    out.set(path, {
-      path,
-      shown: t.shown + (u.shown ?? 0),
-      helped: t.helped + (u.helped ?? 0),
-      at: Math.max(t.at, u.at),
-    })
+    const t = out.get(path) ?? { path, shown: 0, helped: 0, at: 0, runsBase: 0, keys: new Set<string>() }
+    t.shown += u.shown ?? 0
+    t.helped += u.helped ?? 0
+    t.at = Math.max(t.at, u.at)
+    if (Array.isArray(u.keys)) for (const k of u.keys) t.keys.add(k)
+    else if (typeof u.runs === 'number') t.runsBase += u.runs // a pre-claude-factory-59r.17 folded line: no keys to recover
+    else t.keys.add(runKey(u.by, u.at))
+    out.set(path, t)
   }
   return out
 }
+/** each note's totals, under the name the dream gave it. compact() folds old lines into one with `runs` set, already counted; this adds only what is new since. */
+export const tally = (lines: string[], renamed: Record<string, string> = {}) => {
+  const result = new Map<string, Use>()
+  for (const [path, t] of tallyRaw(lines, renamed))
+    result.set(path, { path, shown: t.shown, helped: t.helped, at: t.at, runs: t.runsBase + t.keys.size })
+  return result
+}
 export const usage = (dir: string, renamed?: Record<string, string>) =>
   tally(existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : [], renamed)
-/** after a dream: one line per note left, renames followed; a removed note's counts go with it */
+
+/**
+ * A note's path: a short note's file, a LONG.md entry's `#id`, or a CORE.md bullet's `#<hash>`
+ * (claude-factory-59r.12: `CORE.md#<hash>` used to fall into the LONG.md branch below, which parsed
+ * CORE.md as if it held `## ` entries, found none, and always said no).
+ */
+export function noteExists(dir: string, path: string): boolean {
+  if (path.startsWith('CORE.md#')) return coreNotes(dir).some(n => n.path === path)
+  const i = path.indexOf('#')
+  if (i < 0) return existsSync(join(dir, path))
+  const file = join(dir, path.slice(0, i))
+  return existsSync(file) && parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))
+}
+
+const renamesFile = (dir: string) => join(dir, '.renames.jsonl')
+/** every rename a dream or a tiering pass has ever made, oldest first: old path -> its newest known path */
+function renameLog(dir: string): Record<string, string> {
+  const lines = existsSync(renamesFile(dir)) ? readFileSync(renamesFile(dir), 'utf8').split('\n') : []
+  const map: Record<string, string> = {}
+  for (const line of lines.filter(Boolean)) {
+    const r: { old: string; new: string } = JSON.parse(line)
+    map[r.old] = r.new
+  }
+  return map
+}
+/** where a note lives now, following a rename chain (a -> b -> c) to its last link */
+export function resolvePath(dir: string, path: string, extra: Record<string, string> = {}): string {
+  const map = { ...renameLog(dir), ...extra }
+  let p = path
+  for (const seen = new Set<string>(); map[p] && map[p] !== p && !seen.has(p); ) {
+    seen.add(p)
+    p = map[p]!
+  }
+  return p
+}
+/**
+ * after a dream or a tiering pass. It logs `renamed`, so a later `helped <old path>` still resolves,
+ * even over several dreams. Then it keeps one usage line per note left. It follows renames, and a
+ * removed note's counts go with it.
+ */
 export function compact(dir: string, renamed: Record<string, string>) {
-  const kept = [...usage(dir, renamed).values()].filter(u => existsSync(join(dir, u.path)))
-  writeFileSync(`${usageFile(dir)}.tmp`, kept.map(u => JSON.stringify(u) + '\n').join(''))
+  if (Object.keys(renamed).length)
+    appendFileSync(
+      renamesFile(dir),
+      Object.entries(renamed)
+        .map(([old, to]) => `${JSON.stringify({ old, new: to })}\n`)
+        .join(''),
+    )
+  const log = renameLog(dir)
+  const resolved = Object.fromEntries([...new Set(Object.keys(log))].map(k => [k, resolvePath(dir, k)]))
+  const lines = existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : []
+  const kept = [...tallyRaw(lines, resolved).values()].filter(t => noteExists(dir, t.path))
+  writeFileSync(
+    `${usageFile(dir)}.tmp`,
+    kept
+      .map(
+        t =>
+          `${JSON.stringify({
+            path: t.path,
+            shown: t.shown,
+            helped: t.helped,
+            at: t.at,
+            runs: t.runsBase + t.keys.size,
+            ...(t.keys.size ? { keys: [...t.keys] } : {}),
+          })}\n`,
+      )
+      .join(''),
+  )
   // ponytail: a search appending between the read and this rename loses its count; a lock if counts must be exact
   renameSync(`${usageFile(dir)}.tmp`, usageFile(dir))
 }
-const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 /** one line per note for the dream, the unused ones included: they are what it may drop */
 export const usageLines = (dir: string) => {
   const used = usage(dir)
@@ -279,6 +594,285 @@ export const usageLines = (dir: string) => {
         ? `- ${u.path}: helped ${u.helped}, shown ${u.shown}, last used ${day(u.at)}`
         : `- ${u.path}: never shown`,
     )
+}
+
+// Tiering, after each dream: a pure function picks what to merge, archive, promote or flag as a possible
+// duplicate. It reads no file and no clock. The caller gathers every input from the real store
+// (applyTiers does that). Because it is pure, a test can hit every boundary with a table and no fixture dir.
+const DAY_MS = 24 * 60 * 60 * 1000
+const MERGE_AGE_DAYS = 7 // a short note waits this long before it can merge: a fresh note may still be wrong
+const ARCHIVE_STALE_DAYS = 30 // never shown or helped in this long, and this old: a candidate to archive
+const PROMOTE_HELPED = 3 // a long entry helped at least this often...
+const PROMOTE_RUNS = 3 // ...across at least this many distinct runs, becomes a promotion candidate
+
+/** a short topic note (never inbox/*), with what decide() needs to judge it */
+export type ShortCandidate = {
+  path: string
+  topic: string
+  superseded?: string // frontmatter `superseded: <path>`: archive it outright
+  ageDays: number // since the note's own at:, else the commit that added it
+  staleDays: number // since it was last shown or helped; ageDays when it never was
+  shown: number
+  helped: number
+}
+/** a LONG.md entry, with what decide() needs to judge it */
+export type LongCandidate = { path: string; helped: number; runs: number }
+/** a pair of notes (short or long) whose summaries a caller already scored as near-duplicates */
+export type SimPair = { a: string; b: string; score: number }
+
+export type Decision =
+  | { kind: 'merge'; path: string; reason: string }
+  | { kind: 'archive'; path: string; reason: string }
+  | { kind: 'promote'; path: string; reason: string }
+  | { kind: 'dedupe'; a: string; b: string; reason: string }
+
+/** the tiering pass's plan. No fs, no clock. Every boundary (7, 30 days; 3 helps or runs) is a table test. */
+export function decide(
+  short: ShortCandidate[],
+  long: LongCandidate[],
+  sims: SimPair[] = [],
+): Decision[] {
+  const decisions: Decision[] = []
+  for (const n of short) {
+    if (n.topic === 'inbox') continue // the dream files these; decide() never touches them
+    if (n.superseded) {
+      decisions.push({ kind: 'archive', path: n.path, reason: `superseded by ${n.superseded}` })
+      continue
+    }
+    if (n.helped === 0 && n.staleDays >= ARCHIVE_STALE_DAYS) {
+      decisions.push({
+        kind: 'archive',
+        path: n.path,
+        reason: `never helped, unused for ${Math.floor(n.staleDays)} days`,
+      })
+      continue
+    }
+    if ((n.shown > 0 || n.helped > 0) && n.ageDays >= MERGE_AGE_DAYS)
+      decisions.push({
+        kind: 'merge',
+        path: n.path,
+        reason: `shown or helped, ${Math.floor(n.ageDays)} days old`,
+      })
+  }
+  for (const e of long)
+    if (e.helped >= PROMOTE_HELPED && e.runs >= PROMOTE_RUNS)
+      decisions.push({
+        kind: 'promote',
+        path: e.path,
+        reason: `helped ${e.helped} times across ${e.runs} runs`,
+      })
+  for (const s of sims)
+    if (s.score >= SAME) decisions.push({ kind: 'dedupe', a: s.a, b: s.b, reason: `similarity ${s.score.toFixed(2)}` })
+  return decisions
+}
+
+/**
+ * Every rename a LONG.md entry's `aliases` field implies: an alias id now resolves to its entry's own id.
+ * The dream prompt tells a dream to merge two duplicate entries by hand this way: keep the older id, add
+ * the removed id to the kept entry's aliases, then delete only the removed entry's heading and body. Pass
+ * this map to compact(). That makes the merged-away id's usage count toward the entry that absorbed it
+ * (claude-factory-59r.11). This reads straight from the files, unlike a git-detected rename. It still
+ * works even when nobody calls compact() right after the merge.
+ */
+export function longAliasRenames(dir: string): Record<string, string> {
+  const renamed: Record<string, string> = {}
+  if (!existsSync(dir)) return renamed
+  for (const topic of readdirSync(dir, { withFileTypes: true })) {
+    if (!topic.isDirectory() || topic.name.startsWith('.')) continue
+    const file = join(dir, topic.name, 'LONG.md')
+    if (!existsSync(file)) continue
+    for (const e of parseLong(readFileSync(file, 'utf8')))
+      for (const alias of e.aliases ?? []) renamed[`${topic.name}/LONG.md#${alias}`] = `${topic.name}/LONG.md#${e.id}`
+  }
+  return renamed
+}
+
+/** every .md file this store holds. It counts CORE.md and each topic's README, LONG.md and short notes. It skips .archive/. */
+export function mdFileCount(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let n = existsSync(join(dir, 'CORE.md')) ? 1 : 0
+  for (const topic of readdirSync(dir, { withFileTypes: true })) {
+    if (!topic.isDirectory() || topic.name.startsWith('.')) continue
+    n += readdirSync(join(dir, topic.name)).filter(f => f.endsWith('.md')).length
+  }
+  return n
+}
+
+/** when a note has no at:, its age since the commit that added it, so it ages like any other note
+ * (claude-factory-59r.19b: treating it as added "now" meant it could never grow stale or merge).
+ * `git log -1` gives the newest commit to touch the path. A later edit or a git mv reset the age to
+ * "now" each time one ran. `--diff-filter=A` finds only the commit(s) that added the path. git log lists
+ * newest first, so the last line is the oldest of those (claude-factory-59r.23). */
+function gitAddedMs(dir: string, path: string): number | undefined {
+  if (!existsSync(join(dir, '.git'))) return undefined
+  const out = Bun.spawnSync([
+    'git',
+    '-C',
+    dir,
+    'log',
+    '--follow',
+    '--diff-filter=A',
+    '--format=%ct',
+    '--',
+    path,
+  ])
+    .stdout.toString()
+    .trim()
+  const lines = out.split('\n').filter(Boolean)
+  const sec = Number(lines[lines.length - 1])
+  return lines.length && Number.isFinite(sec) && sec > 0 ? sec * 1000 : undefined
+}
+
+/** a merge or an archive drops <topic>/<slug>.md. A dream's own README.md may still link to it by that
+ * file name. Point the link at the note's new home instead, so the topic index never dead-links
+ * (claude-factory-59r.19a, and .22 for the archive branch, which has no new entry to link to). */
+function rewriteReadmeLink(dir: string, topic: string, shortPath: string, target: string) {
+  const readmeFile = join(dir, topic, 'README.md')
+  if (!existsSync(readmeFile)) return
+  const base = shortPath.slice(shortPath.lastIndexOf('/') + 1)
+  const text = readFileSync(readmeFile, 'utf8')
+  const updated = text.split(`(${base})`).join(`(${target})`)
+  if (updated !== text) writeFileSync(readmeFile, updated)
+}
+
+/**
+ * Find text a merge into this topic's LONG.md would lose.
+ * The lost text is non-blank text before the first recognized entry (a `## ` line right before a valid
+ * id comment). parseLong never attaches that text to any entry, so a rewrite drops it (claude-factory-59r.15).
+ * A lossless difference from canonical formatLong output loses nothing. Examples: an extra blank line, a
+ * missing trailing newline, or a different key order or spacing in the id JSON. Such a difference must not
+ * block a merge forever (claude-factory-59r.21).
+ */
+function longPreambleLoss(text: string): string {
+  const body = text.startsWith(LONG_HEADER)
+    ? text.slice(LONG_HEADER.length)
+    : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+  const lines = body.split('\n')
+  let start = lines.length
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.startsWith('## ') && decodeId(lines[i + 1] ?? '')) {
+      start = i
+      break
+    }
+  }
+  return lines.slice(0, start).join('\n').trim()
+}
+
+/**
+ * Every topic whose LONG.md a merge would damage: see longPreambleLoss(). Call this before the dream
+ * runs, so its prompt can list each one for a worker to fix by hand (claude-factory-59r.21). applyTiers()
+ * finds the same topics again, each time it tries to merge into one of them.
+ */
+export function unsafeLongTopics(dir: string): { topic: string; reason: string }[] {
+  if (!existsSync(dir)) return []
+  const out: { topic: string; reason: string }[] = []
+  for (const topic of readdirSync(dir, { withFileTypes: true })) {
+    if (!topic.isDirectory() || topic.name.startsWith('.')) continue
+    const file = join(dir, topic.name, 'LONG.md')
+    if (!existsSync(file)) continue
+    const lost = longPreambleLoss(readFileSync(file, 'utf8'))
+    if (lost)
+      out.push({
+        topic: topic.name,
+        reason: `${topic.name}/LONG.md holds text before its first entry that a merge would lose: ${clip(lost, 200)}`,
+      })
+  }
+  return out
+}
+
+/**
+ * the tiering pass that follows a dream. It gathers each short note's age and usage. It asks decide()
+ * what to merge or archive, then does it, unless dryRun is set. A merge appends the note as a LONG.md
+ * entry in its topic and removes the short file. An archive appends the note to .archive/<topic>.md and
+ * removes it. It returns a rename map (old path -> its LONG.md#id). Pass this to compact() to log it, so
+ * a helped note keeps its count. `skipped` names a topic a merge left untouched, and why.
+ */
+export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean } = {}) {
+  const now = opts.now ?? Date.now()
+  const { notes } = walk(dir)
+  const uses = usage(dir)
+  const short: ShortCandidate[] = notes
+    .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
+    .map(n => {
+      const atMs = n.at ? Date.parse(n.at) : NaN
+      const createdMs = Number.isFinite(atMs) ? atMs : gitAddedMs(dir, n.path) ?? now
+      const u = uses.get(n.path)
+      const lastMs = u?.at || createdMs
+      return {
+        path: n.path,
+        topic: topicOf(n),
+        superseded: n.superseded,
+        ageDays: (now - createdMs) / DAY_MS,
+        staleDays: (now - lastMs) / DAY_MS,
+        shown: u?.shown ?? 0,
+        helped: u?.helped ?? 0,
+      }
+    })
+  const decisions = decide(short, [], [])
+  // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
+  // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
+  // topic this pass, and try again later.
+  const unsafe = new Map(unsafeLongTopics(dir).map(u => [u.topic, u.reason]))
+  const renamed: Record<string, string> = {}
+  const skippedTopics = new Set<string>()
+  const skipped: { topic: string; reason: string }[] = []
+  let merged = 0
+  let archived = 0
+  for (const d of decisions) {
+    if (d.kind !== 'merge' && d.kind !== 'archive') continue
+    const note = notes.find(n => n.path === d.path)
+    if (!note) continue
+    if (d.kind === 'merge') {
+      const topic = topicOf(note)
+      const reason = unsafe.get(topic)
+      if (reason) {
+        if (!skippedTopics.has(topic)) {
+          skippedTopics.add(topic)
+          skipped.push({ topic, reason })
+        }
+        continue
+      }
+      const longFile = join(dir, topic, 'LONG.md')
+      const rawText = existsSync(longFile) ? readFileSync(longFile, 'utf8') : null
+      merged++
+      if (opts.dryRun) continue
+      const existing = rawText !== null ? parseLong(rawText) : []
+      // a fresh id must not collide with an id a rename log or another entry's aliases already claim
+      // for this topic: either would send its usage to the wrong entry (claude-factory-59r.18)
+      const renames = renameLog(dir)
+      const takenPrefix = `${topic}/LONG.md#`
+      const taken = new Set<string>([
+        ...existing.map(e => e.id),
+        ...existing.flatMap(e => e.aliases ?? []),
+        ...Object.keys(renames)
+          .filter(k => k.startsWith(takenPrefix))
+          .map(k => k.slice(takenPrefix.length)),
+      ])
+      const base = slug(note.summary)
+      let id = base
+      for (let i = 2; taken.has(id); i++) id = `${base}-${i}`
+      existing.push({ id, summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body })
+      writeFileSync(longFile, formatLong(existing))
+      rmSync(join(dir, note.path))
+      renamed[note.path] = `${topic}/LONG.md#${id}`
+      rewriteReadmeLink(dir, topic, note.path, `LONG.md#${id}`)
+    } else {
+      archived++
+      if (opts.dryRun) continue
+      const topic = topicOf(note)
+      mkdirSync(join(dir, '.archive'), { recursive: true })
+      const archiveFile = join(dir, '.archive', `${topic}.md`)
+      const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
+      writeFileSync(
+        archiveFile,
+        prefix + format({ summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body }),
+      )
+      rmSync(join(dir, note.path))
+      rewriteReadmeLink(dir, topic, note.path, `../.archive/${topic}.md`)
+      // no rename logged: decide() never archives a helped note, so no helped count is owed here
+    }
+  }
+  return { decisions, renamed, merged, archived, skipped }
 }
 
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */
@@ -394,12 +988,16 @@ export const dreamPrompt = (
   uses: string[],
   closed: string[],
   manager: { activity: string[]; skills: string[] } = { activity: [], skills: [] },
+  promotions: string[] = [],
+  duplicates: string[] = [],
+  unsafe: string[] = [],
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
-The structure, three levels:
-- CORE.md: the lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig; a \`## rig: <name>\` section holds what nearly every run in that rig needs, and only that rig's workers read it. Every worker re-reads it on every turn, so each part (the top, each rig section) stays under ${CORE_BUDGET} bytes, one short line per lesson (at most 200 characters: the rule, not its story; the story goes in a note). Briefs cut a part at that budget, so what is past it is lost to them: move detail into topic notes, which search finds.
+The structure, three tiers:
+- CORE.md: the fact-and-behavior tier. The lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig; a \`## rig: <name>\` section holds what nearly every run in that rig needs, and only that rig's workers read it. Every worker re-reads it on every turn, so each part (the top, each rig section) stays under ${CORE_BUDGET} bytes, one short line per lesson (at most 200 characters: the rule, not its story; the story goes in a note). Briefs cut a part at that budget, so what is past it is lost to them: move detail into topic notes, which search finds.
 - <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
-- <topic>/<note>.md: one learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
+- <topic>/LONG.md: the long tier. One merged lesson per \`## summary\` heading, followed by a comment \`<!-- id: {"id":"...", ...} -->\`. A tiering pass (\`factory memory compact\`, which runs after you finish) merges an aging, used short note in here on its own. Never change an entry's \`id\`: usage counts and renames follow it. You can still edit an entry's body, or merge two entries into one by hand (see point 7): when you do, never delete the kept id, and never remove an alias already on it.
+- <topic>/<note>.md: the short tier. One learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
 - inbox/: new notes from workers. Empty it every pass.
 A lesson that holds only while some bead is open (an owner's hold, a pending decision, a known outage) names that bead ("until fab-8aq4 closes") and never goes in CORE.md: when the bead closes, it is retired.
 A note about one bead's own status (already fixed on main, a duplicate of another, still live at HEAD) is not memory: it belongs in that bead's comments. Drop it, unless it teaches something about how to tell (how to check that a bead is already done, say).
@@ -410,6 +1008,9 @@ This pass:
 3. Read the run journal below for lessons no note holds yet: a station that failed for a reason the next worker could have avoided, a fix that worked, a review finding that recurs, a person's decision later runs should follow. Write each as a note. Skip the routine.
 4. Rewrite each touched topic's README and CORE.md so their order is by importance: what helped workers most (Usage below) first, then what holds most broadly. A note that keeps helping belongs higher, its lesson in CORE.md when it holds for every rig.
 5. Manager skills, proposed in ${skillSources(dir)} (the manager reviews each new, changed or reaped one and installs it or not; a rejection comes back to you as an inbox note): the manager is the Claude session that runs the factory for the person; Manager activity below is what it was asked and what it ran. Where it did the same multi-step work three or more times (the same sequence of commands to triage a stuck station, answer one kind of worker question, check a rig, start work), write it a skill so it need not work it out again: <name>/SKILL.md, a kebab-case name, frontmatter \`name:\` and \`description:\` (one line saying when to use it: the manager picks skills by it), then the steps with the exact commands, what to look for and what to decide. Fold what the activity shows into an existing skill rather than writing a near copy. Reap (git rm -r) a skill that no longer fits how the factory works, or that the manager has not used in 30 days and is older than that (Skill uses below). Write no skill for one-off work.
+6. Promotion candidates below: each is a LONG.md entry that several runs have found helpful several times. Write it as one short line (under 200 characters) in CORE.md: the top when every rig needs it, else that entry's rig's \`## rig:\` section. The LONG.md entry stays as that line's detail.
+7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry: keep the older id, add the removed entry's id to the kept entry's \`"aliases"\` list in its id line's JSON (so its usage count carries over; start the list if it has none), then delete the removed entry's heading, id line and body.
+8. Unsafe LONG.md files below: each holds text before its first \`## summary\` + id comment that a tiering pass cannot place in any entry, so it cannot merge a new note into that topic until you fix it. Rewrite the file by hand: either give that text its own \`## summary\` heading and an id comment, or delete it when it says nothing worth keeping.
 Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
 
 ## Manager skills (name: uses, last used: description)
@@ -420,6 +1021,15 @@ ${manager.activity.join('\n') || '(nothing new)'}
 
 ## Usage (helped: a worker said the note helped; shown: a search returned it)
 ${uses.join('\n') || '(no notes yet)'}
+
+## Promotion candidates (a LONG.md entry helped across several runs: write it into CORE.md)
+${promotions.join('\n') || '(none)'}
+
+## Possible duplicates (two LONG.md entries scoring as the same lesson: merge them)
+${duplicates.join('\n') || '(none)'}
+
+## Unsafe LONG.md files (a merge cannot write into these until you fix them by hand)
+${unsafe.join('\n') || '(none)'}
 
 ## Closed beads this memory names
 ${closed.join('\n') || '(none)'}

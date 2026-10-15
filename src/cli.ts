@@ -815,6 +815,12 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   ].join('\n')
 }
 
+// a `memory helped` with no `--from` leaves usage()'s `runs` counting UTC days, not runs, so a long
+// entry it truly helped 3 times across 3 runs can look like it helped on only 1 or 2 days
+// (claude-factory-59r.16). Each brief must tell its worker the run and station to pass.
+export const helpedHint = (run: Run, node: string) =>
+  `- When a note saved you time or a mistake, say so: ${CLI} memory helped --from ${run.id}/${node} <note path>. That is how the most useful notes rise to the top of what later workers read.`
+
 /** the memory's top two levels, and how to reach the third: search before, add what was learned */
 function remembered(run: Run, node: string) {
   const rig = rigOf(run.repo)?.name
@@ -826,7 +832,7 @@ function remembered(run: Run, node: string) {
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
     `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
     `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node}${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so. A lesson that holds only while a bead is open names it ("until <bead> closes"). What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
-    `- When a note saved you time or a mistake, say so: ${CLI} memory helped <note path>. That is how the most useful notes rise to the top of what later workers read.`,
+    helpedHint(run, node),
   ]
 }
 
@@ -2088,7 +2094,20 @@ async function dream() {
       return 'nothing new since the last dream'
     const start = Date.now()
     const before = git(MEMORY, 'rev-parse', 'HEAD')
-    const prompt = memory.dreamPrompt(MEMORY, journal, memory.usageLines(MEMORY), closedBeads(), manager)
+    const { promotions, duplicates } = await memory.tierCandidates(MEMORY)
+    // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
+    // again, each time it skips a merge into one of them
+    const unsafe = memory.unsafeLongTopics(MEMORY).map(u => `- ${u.reason}`)
+    const prompt = memory.dreamPrompt(
+      MEMORY,
+      journal,
+      memory.usageLines(MEMORY),
+      closedBeads(),
+      manager,
+      promotions,
+      duplicates,
+      unsafe,
+    )
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
       [
@@ -2113,14 +2132,39 @@ async function dream() {
       '-m',
       `dream: ${said}`,
     )
-    // a filed or renamed note keeps its counts
-    const renamed = Object.fromEntries(
-      git(MEMORY, 'diff', '-M', '--name-status', before, 'HEAD')
-        .split('\n')
-        .filter(l => l.startsWith('R'))
-        .map(l => l.split('\t').slice(1)),
-    )
+    // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
+    // through the alias it left on the entry that absorbed it (claude-factory-59r.11)
+    const renamed: Record<string, string> = {
+      ...Object.fromEntries(
+        git(MEMORY, 'diff', '-M', '--name-status', before, 'HEAD')
+          .split('\n')
+          .filter(l => l.startsWith('R'))
+          .map(l => l.split('\t').slice(1)),
+      ),
+      ...memory.longAliasRenames(MEMORY),
+    }
+    // logged before applyTiers runs: applyTiers reads usage fresh, so a note the dream renamed must
+    // already resolve to its new path, or it looks never used and risks archive (claude-factory-59r.10)
     memory.compact(MEMORY, renamed)
+    if (process.env.FACTORY_MEMORY_TIERS !== '0') {
+      const filesBefore = memory.mdFileCount(MEMORY)
+      const tiers = memory.applyTiers(MEMORY, { now: start })
+      git(MEMORY, 'add', '-A')
+      // its own commit, dated with the dream it followed, even when it merged and archived nothing
+      git(
+        MEMORY,
+        'commit',
+        '-q',
+        '--allow-empty',
+        `--date=@${Math.floor(start / 1000)}`,
+        '-m',
+        `compact: ${tiers.merged} merged, ${tiers.archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files` +
+          (tiers.skipped.length
+            ? `, ${tiers.skipped.length} topic(s) skipped: ${tiers.skipped.map(s => `${s.topic} (${s.reason})`).join('; ')}`
+            : ''),
+      )
+      memory.compact(MEMORY, tiers.renamed)
+    }
     return said
   } finally {
     release()
@@ -3307,7 +3351,12 @@ const usage = `factory — herdr software factories on xstate
   memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
   memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping
-  memory helped <note path...>       a note helped: the dream ranks notes by this
+  memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
+  memory compact [--dry-run]        merge old, used short notes into LONG.md and archive stale ones now;
+                                     --dry-run only prints the plan (a dream runs this itself, after it files
+                                     the inbox, unless FACTORY_MEMORY_TIERS=0)
+  memory eval                       search quality (recall@5, MRR) over the fixed query set in
+                                     <memory>/.eval.jsonl, and which queries missed
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
   skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
                                      once reviewed, or reject it, saying why
@@ -3478,7 +3527,7 @@ if (import.meta.main && !outboxCmd)
           const dup = isAnyway ? null : await memory.same(MEMORY, note)
           if (dup) {
             // a hit, not a new note: the copy would only crowd search results until a dream merged it
-            memory.use(MEMORY, [dup.note.path], 'helped')
+            memory.use(MEMORY, [dup.note.path], 'helped', Date.now(), from)
             console.log(
               `already noted (${dup.score.toFixed(2)}): ${join(MEMORY, dup.note.path)}\n  ${dup.note.summary}\n` +
                 `counted as helping instead. If yours adds something it lacks, add it again with --anyway.`,
@@ -3488,14 +3537,67 @@ if (import.meta.main && !outboxCmd)
             console.log(memory.add(MEMORY, { ...note, from, at }))
           }
         } else if (sub === 'helped' && words.length) {
-          const paths = words.map(w => relative(MEMORY, resolve(MEMORY, w)))
-          const bad = paths.filter(p => p.startsWith('..') || !existsSync(join(MEMORY, p)))
+          const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
+          const bad = paths.filter(p => p.startsWith('..') || !memory.noteExists(MEMORY, p))
           if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
-          memory.use(MEMORY, paths, 'helped')
+          memory.use(MEMORY, paths, 'helped', Date.now(), from)
           console.log(`noted: ${paths.join(', ')}`)
+        } else if (sub === 'compact') {
+          const dryRun = words.includes('--dry-run')
+          const describe = (d: memory.Decision) => ('path' in d ? d.path : `${d.a} ~ ${d.b}`)
+          if (dryRun) {
+            const { decisions, skipped } = memory.applyTiers(MEMORY, { dryRun: true })
+            console.log(
+              [
+                decisions.length
+                  ? decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`).join('\n')
+                  : 'nothing to merge or archive',
+                ...skipped.map(s => `skip  ${s.topic}: ${s.reason}`),
+              ].join('\n'),
+            )
+          } else {
+            // the same lock dream() holds while it runs: a live dream already writes LONG.md and the
+            // usage log, and a concurrent compact racing it can lose a rename or an archive decision
+            // (claude-factory-59r.13)
+            const release = hold('dream.lock')
+            if (!release) {
+              console.log('a dream is already running; try again once it finishes')
+              break
+            }
+            try {
+              mkdirSync(MEMORY, { recursive: true })
+              if (!existsSync(join(MEMORY, '.git'))) git(MEMORY, 'init', '-q')
+              const filesBefore = memory.mdFileCount(MEMORY)
+              const { renamed, merged, archived, skipped } = memory.applyTiers(MEMORY)
+              git(MEMORY, 'add', '-A')
+              const message =
+                `compact: ${merged} merged, ${archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files` +
+                (skipped.length
+                  ? `, ${skipped.length} topic(s) skipped: ${skipped.map(s => `${s.topic} (${s.reason})`).join('; ')}`
+                  : '')
+              git(MEMORY, 'commit', '-q', '--allow-empty', '-m', message)
+              memory.compact(MEMORY, renamed)
+              console.log(message)
+            } finally {
+              release()
+            }
+          }
+        } else if (sub === 'eval') {
+          const cases = memory.readEvalCases(MEMORY)
+          if (!cases.length)
+            fail(
+              `no fixed query set at ${memory.evalFile(MEMORY)}: one JSON line each, {"query":"...","expect":"a substring of the note's path or summary"}`,
+            )
+          const { recall, mrr, misses } = await memory.evaluate(MEMORY, cases)
+          console.log(
+            [
+              `recall@5: ${(recall * 100).toFixed(0)}%  mrr: ${mrr.toFixed(2)}  (${cases.length} queries)`,
+              ...misses.map(m => `miss: "${m.query}" expected "${m.expect}"`),
+            ].join('\n'),
+          )
         } else
           fail(
-            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped <note path...>',
+            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped [--from run/station] <note path...> | compact [--dry-run] | eval',
           )
         break
       }
