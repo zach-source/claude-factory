@@ -3438,6 +3438,8 @@ if (import.meta.main && !outboxCmd)
           npm: process.env.PKG_GATE_UPSTREAM_NPM ?? pkggate.DEFAULT_UPSTREAM.npm,
           pypi: process.env.PKG_GATE_UPSTREAM_PYPI ?? pkggate.DEFAULT_UPSTREAM.pypi,
           files: process.env.PKG_GATE_UPSTREAM_FILES ?? pkggate.DEFAULT_UPSTREAM.files,
+          sumdb: process.env.PKG_GATE_UPSTREAM_SUMDB ?? pkggate.DEFAULT_UPSTREAM.sumdb,
+          goIndex: process.env.PKG_GATE_UPSTREAM_GO_INDEX ?? pkggate.DEFAULT_UPSTREAM.goIndex,
         }
         const minDays = parsePkgGateMinDays(process.env.PKG_GATE_MIN_DAYS)
         const allowlist = parsePkgGateAllowlist(process.env)
