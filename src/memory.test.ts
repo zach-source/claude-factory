@@ -9,6 +9,7 @@ import {
   compact,
   CORE_BUDGET,
   coreFor,
+  coreNotes,
   decide,
   dreamPrompt,
   type EvalCase,
@@ -277,6 +278,24 @@ test('compact() keeps a LONG.md entry\'s usage under its #id, and drops it only 
   expect(noteExists(dir, 'beads/LONG.md#gone')).toBe(false)
   compact(dir, {})
   expect(usage(dir).get('beads/LONG.md#lock')?.helped).toBe(1)
+})
+
+test('noteExists and compact() know a CORE.md#<hash> fact note, and drop it once its bullet is gone (claude-factory-59r.12)', () => {
+  const dir = join(tmpdir(), `memory-core-usage-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'CORE.md'), '- always search the memory before you start a station\n')
+  const [bullet] = coreNotes(dir)
+  expect(noteExists(dir, bullet!.path)).toBe(true)
+  expect(noteExists(dir, 'CORE.md#deadbeef')).toBe(false)
+
+  use(dir, [bullet!.path], 'helped')
+  compact(dir, {})
+  expect(usage(dir).get(bullet!.path)?.helped).toBe(1) // kept: the bullet is still there
+
+  writeFileSync(join(dir, 'CORE.md'), '- a different lesson entirely\n')
+  compact(dir, {})
+  expect(usage(dir).has(bullet!.path)).toBe(false) // dropped: that bullet is gone
 })
 
 test('compact() logs a rename so a later `helped <old path>` still resolves, even through a chain', () => {

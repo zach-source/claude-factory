@@ -499,8 +499,13 @@ export const tally = (lines: string[], renamed: Record<string, string> = {}) => 
 export const usage = (dir: string, renamed?: Record<string, string>) =>
   tally(existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : [], renamed)
 
-/** a note's path, inside its topic's LONG.md when it has a `#id` suffix */
+/**
+ * A note's path: a short note's file, a LONG.md entry's `#id`, or a CORE.md bullet's `#<hash>`
+ * (claude-factory-59r.12: `CORE.md#<hash>` used to fall into the LONG.md branch below, which parsed
+ * CORE.md as if it held `## ` entries, found none, and always said no).
+ */
 export function noteExists(dir: string, path: string): boolean {
+  if (path.startsWith('CORE.md#')) return coreNotes(dir).some(n => n.path === path)
   const i = path.indexOf('#')
   if (i < 0) return existsSync(join(dir, path))
   const file = join(dir, path.slice(0, i))
