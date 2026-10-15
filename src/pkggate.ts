@@ -51,8 +51,11 @@ type Resolved = {
   goInfoCache: Map<string, { info: string; version?: string; time?: string; record?: number }>
   /** goFloor holds a floor on the sum.golang.org record id. A version counts as old enough only when its
    * own record id is at or below this floor. The floor estimates the sum.golang.org tree size at
-   * now-minDays, always on the safe side (never above the true size). It stays `null` until the first
-   * successful refresh, and it never decreases (claude-factory-8ub). */
+   * now-minDays. It stays `null` until the first successful refresh, and it never decreases
+   * (claude-factory-8ub). The estimate can run high: an attacker who controls every sampled index entry
+   * and logs each one in sum.golang.org right before a refresh can push the floor near `now`, and the
+   * never-decreases rule then keeps it there until the pod restarts (claude-factory-56j, a residual gap,
+   * not fixed here). */
   goFloor: { record: number; at: number } | null
   /** goFloorRefreshing holds the one in-flight floor refresh. Every decision that needs a refresh shares
    * this promise, so concurrent decisions trigger at most one index.golang.org request
@@ -62,9 +65,9 @@ type Resolved = {
    * has been none yet) succeeded; doubles on each further failure, up to GO_FLOOR_BACKOFF_MAX_MS
    * (claude-factory-8ub.7) */
   goFloorBackoffMs: number
-  /** no new floor refresh starts before this time; a stale-but-present floor is still safe to decide with
-   * (it is below the true value), so a decision never waits on it -- only a refresh attempt itself is
-   * throttled (claude-factory-8ub.7) */
+  /** no new floor refresh starts before this time. A stale-but-present floor is at or below a fresh floor
+   * built from the same samples, so a decision never waits on a refresh -- the backoff only throttles the
+   * refresh attempt itself (claude-factory-8ub.7) */
   goFloorNextRetryAt: number
 }
 
@@ -389,10 +392,12 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
  * It drops any sample whose own record sits at or past that size: it was logged no earlier than this
  * refresh's own lookups, so it is no evidence of what sum.golang.org had logged well before now
  * (claude-factory-8ub.6).
- * It takes the minimum of the remaining ids as the new floor -- the safe side, since every one of them is a
- * record sum.golang.org already held before this refresh began.
+ * It takes the minimum of the remaining ids as the new floor: every one of them is a record sum.golang.org
+ * already held before this refresh began (claude-factory-56j names the residual gap this estimate still
+ * leaves: an attacker who controls every sampled index entry and logs each one in sum.golang.org right
+ * before the refresh still passes this check).
  * A failed fetch, or fewer than `GO_FLOOR_MIN_SAMPLES` answers left after the drop, leaves the existing
- * floor in place: an old floor is still safe, since it only refuses more than a fresh one would. Either way,
+ * floor in place, so a down upstream never blocks every decision behind a refresh. Either way,
  * exactly one JSON line goes to stdout: `{eco:'go', floor, at, samples}` on success, `{eco:'go',
  * decision:'error', reason}` on failure -- the same audit trail `/healthz`'s `goFloor` field summarizes as
  * current state (claude-factory-8ub).
@@ -433,8 +438,8 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
  *
  * A `null` floor (a cold start) is not safe to decide with at all, so the one caller that finds it `null`
  * waits for the in-flight refresh, if a stale check just started one.
- * A stale-but-present floor is still safe (it is at or below the true value), so every other caller decides
- * with it immediately and never waits on the refresh (claude-factory-8ub.7).
+ * A stale-but-present floor is at or below a fresh floor built from the same samples, so every other
+ * caller decides with it immediately and never waits on the refresh (claude-factory-8ub.7).
  *
  * Every caller that needs a refresh shares the one in-flight promise, so a burst of decisions (a `@v/list`
  * of 20 versions, say) causes at most one index.golang.org request (claude-factory-8ub).
