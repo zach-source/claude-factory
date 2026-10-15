@@ -354,6 +354,16 @@ test('progress restarts when the fingerprint or the worker changes', () => {
   expect(progressNow({ ...p, nudged: true }, 2, 'a', 500).nudged).toBe(false)
 })
 
+test('the worker system prompt names a mktemp -d scratch dir and restores a mutation with git checkout', () => {
+  const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
+  expect(text).toContain('mktemp -d')
+  expect(text).toContain('/tmp_')
+  expect(text).toContain('2>/dev/null')
+  expect(text).toContain('git checkout -- <file>')
+  expect(text).toContain('git status --short')
+  expect(text.length).toBeLessThan(3600)
+})
+
 test('a rig with no goal and no ready beads is idle', () => {
   expect(idle({}, 0)).toBe(true)
   expect(idle({ goal: 'v2' }, 0)).toBe(false) // the manager steers it
