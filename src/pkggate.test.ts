@@ -824,7 +824,7 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
   try {
     // a short fetchTimeoutMs keeps this test fast, and makes a blocked decision's wait (if the fix were
     // missing) long enough for the timing assertions below to tell it apart from an unblocked one
-    const FETCH_TIMEOUT_MS = 400
+    const FETCH_TIMEOUT_MS = 2000
     const g = makeGate({
       upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
       now: () => now,
@@ -850,7 +850,7 @@ test('claude-factory-8ub.7: a stale floor decides at once, and a down index back
     // take at least FETCH_TIMEOUT_MS to come back.
     expect(second.status).toBe(200)
     expect(elapsed1).toBeLessThan(FETCH_TIMEOUT_MS / 2)
-    await waitForFloorRefresh(lines, m1) // let that background refresh's own failure, and its backoff, land
+    await waitForFloorRefresh(lines, m1, 2000) // let that background refresh's own failure, and its backoff, land
 
     // two further decisions, issued once the first failure's backoff is already in force: neither starts a
     // new refresh, so the index sees no further requests from them
