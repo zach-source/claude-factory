@@ -149,8 +149,6 @@ const routes: Record<string, Route> = {
     status: 200,
     body: '{"Version":"v1.2.0","Time":"2026-10-10T12:00:00Z"}',
   },
-  '/sumdb/sum.golang.org/supported': { status: 200, body: '' },
-  '/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0': { status: 200, body: 'fakehash\n' },
   '/nope': { status: 404, body: '{"error":"Not found"}' },
   '/boom500': { status: 500, body: 'internal error' },
 
@@ -488,8 +486,6 @@ beforeAll(() => {
       if (url.pathname === '/simple/missingproj/') return new Response('not found', { status: 404 })
       if (url.pathname === '/simple/brokenproj/') return new Response('internal error', { status: 500 })
       if (PYPI_FILES[url.pathname]) return new Response(PYPI_FILES[url.pathname])
-      if (url.pathname === '/sumdb/sum.golang.org/tile/8/0/000')
-        return new Response(SUMDB_TILE_BYTES, { headers: { 'content-type': 'application/octet-stream' } })
       // never responds: proves a hanging upstream is refused by the gate's own timeout, not left to hang (ei0.12)
       if (url.pathname === '/example.com/hangs/@v/v1.0.0.info') return new Promise<Response>(() => {})
       // claude-factory-8ub: index.golang.org's /index, which refreshGoFloor samples. Every `since` gets the
@@ -1566,20 +1562,202 @@ test('an allowlist entry for one ecosystem does not unlock the same name in anot
   expect(idx.files).toHaveLength(0) // but the young file inside it is still refused, not allowlisted
 })
 
-test('sumdb is proxied verbatim, including /supported', async () => {
-  const g = gate()
-  const supported = await g(new Request('http://gate/go/sumdb/sum.golang.org/supported'))
-  expect(supported.status).toBe(200)
-  const lookup = await g(new Request('http://gate/go/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0'))
-  expect(lookup.status).toBe(200)
-  expect(await lookup.text()).toBe('fakehash\n')
+// claude-factory-1hc: proxy.golang.org answers 404 on every /sumdb/sum.golang.org/* path (measured
+// 2026-10-15).
+//
+// So the client-facing /go/sumdb/* passthrough must fetch from cfg.upstream.sumdb, never cfg.upstream.go.
+//
+// Each test below runs its own fake go server and fake sumdb server. `gate()`'s shared fixture points `go`
+// and `sumdb` at the same server, which would hide a hit on the wrong one.
+const fakeProxyGo = (hits: { n: number }) =>
+  Bun.serve({
+    port: 0,
+    fetch(req) {
+      // the real proxy.golang.org's shape: it 404s every /sumdb/ path
+      if (new URL(req.url).pathname.startsWith('/sumdb/')) hits.n++
+      return new Response('not found', { status: 404 })
+    },
+  })
+
+test('claude-factory-1hc AC1: GET /go/sumdb/sum.golang.org/supported is 200 with zero fetch to either upstream (sum.golang.org itself 404s /supported)', async () => {
+  const goHits = { n: 0 }
+  const sumdbHits = { n: 0 }
+  const fakeGo = fakeProxyGo(goHits)
+  const fakeSumdb = Bun.serve({
+    port: 0,
+    fetch() {
+      sumdbHits.n++
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: {
+        go: fakeGo.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: fakeSumdb.url.origin,
+        goIndex: base(),
+      },
+      now: () => NOW,
+    })
+    const r = await g(new Request('http://gate/go/sumdb/sum.golang.org/supported'))
+    expect(r.status).toBe(200)
+    expect(goHits.n).toBe(0)
+    expect(sumdbHits.n).toBe(0)
+  } finally {
+    fakeGo.stop(true)
+    fakeSumdb.stop(true)
+  }
 })
 
-test('sumdb passes a binary tile through byte-identical, not UTF-8-mangled (ei0.8)', async () => {
-  const g = gate()
-  const r = await g(new Request('http://gate/go/sumdb/sum.golang.org/tile/8/0/000'))
-  expect(r.status).toBe(200)
-  expect(new Uint8Array(await r.arrayBuffer())).toEqual(SUMDB_TILE_BYTES)
+test('claude-factory-1hc AC2: /go/sumdb/sum.golang.org/latest and /lookup/... fetch from upstream.sumdb, never upstream.go (red at f7ca2ce: 502)', async () => {
+  const goHits = { n: 0 }
+  const fakeGo = fakeProxyGo(goHits)
+  const sumdbHitPaths: string[] = []
+  const fakeSumdb = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      sumdbHitPaths.push(url.pathname)
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+      if (url.pathname === '/lookup/golang.org/x/text@v0.26.0') return new Response('fakehash\n')
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: {
+        go: fakeGo.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: fakeSumdb.url.origin,
+        goIndex: base(),
+      },
+      now: () => NOW,
+    })
+    const latest = await g(new Request('http://gate/go/sumdb/sum.golang.org/latest'))
+    expect(latest.status).toBe(200)
+    expect(await latest.text()).toBe(sumdbLatestBody(1_000_000))
+    const lookup = await g(
+      new Request('http://gate/go/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.26.0'),
+    )
+    expect(lookup.status).toBe(200)
+    expect(await lookup.text()).toBe('fakehash\n')
+    expect(sumdbHitPaths).toEqual(['/latest', '/lookup/golang.org/x/text@v0.26.0'])
+    expect(goHits.n).toBe(0)
+  } finally {
+    fakeGo.stop(true)
+    fakeSumdb.stop(true)
+  }
+})
+
+test('claude-factory-1hc AC3: sumdb passes a binary tile through byte-identical, not UTF-8-mangled (ei0.8), fetched from upstream.sumdb', async () => {
+  const fakeSumdb = Bun.serve({
+    port: 0,
+    fetch(req) {
+      if (new URL(req.url).pathname === '/tile/8/0/000')
+        return new Response(SUMDB_TILE_BYTES, { headers: { 'content-type': 'application/octet-stream' } })
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: {
+        go: base(),
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: fakeSumdb.url.origin,
+        goIndex: base(),
+      },
+      now: () => NOW,
+    })
+    const r = await g(new Request('http://gate/go/sumdb/sum.golang.org/tile/8/0/000'))
+    expect(r.status).toBe(200)
+    expect(new Uint8Array(await r.arrayBuffer())).toEqual(SUMDB_TILE_BYTES)
+  } finally {
+    fakeSumdb.stop(true)
+  }
+})
+
+test('claude-factory-1hc AC4: an unknown db name or sub-path under /go/sumdb/ is refused 404 with zero upstream fetch', async () => {
+  const goHits = { n: 0 }
+  const fakeGo = fakeProxyGo(goHits)
+  const sumdbHits = { n: 0 }
+  const fakeSumdb = Bun.serve({
+    port: 0,
+    fetch() {
+      sumdbHits.n++
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: {
+        go: fakeGo.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: fakeSumdb.url.origin,
+        goIndex: base(),
+      },
+      now: () => NOW,
+    })
+    const otherDb = await g(new Request('http://gate/go/sumdb/sum.golang.google.cn/latest'))
+    expect(otherDb.status).toBe(404)
+    const unknownSub = await g(new Request('http://gate/go/sumdb/sum.golang.org/foo'))
+    expect(unknownSub.status).toBe(404)
+    expect(goHits.n).toBe(0)
+    expect(sumdbHits.n).toBe(0)
+  } finally {
+    fakeGo.stop(true)
+    fakeSumdb.stop(true)
+  }
+})
+
+test('claude-factory-1hc AC5: a sumdb redirect to a second host is refused 502 with zero hits on that host; a sumdb 500 is also refused 502', async () => {
+  const secondHits = { n: 0 }
+  const second = Bun.serve({
+    port: 0,
+    fetch() {
+      secondHits.n++
+      return new Response('should never be reached')
+    },
+  })
+  const fakeSumdb = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/latest')
+        return new Response(null, { status: 302, headers: { location: `${second.url.origin}/latest` } })
+      if (url.pathname === '/lookup/boom@v1.0.0') return new Response('internal error', { status: 500 })
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: {
+        go: base(),
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: fakeSumdb.url.origin,
+        goIndex: base(),
+      },
+      now: () => NOW,
+    })
+    const redirected = await g(new Request('http://gate/go/sumdb/sum.golang.org/latest'))
+    expect(redirected.status).toBe(502)
+    expect(secondHits.n).toBe(0)
+    const serverError = await g(new Request('http://gate/go/sumdb/sum.golang.org/lookup/boom@v1.0.0'))
+    expect(serverError.status).toBe(502)
+  } finally {
+    second.stop(true)
+    fakeSumdb.stop(true)
+  }
 })
 
 test('an npm packument drops the young version, re-points latest, and rewrites tarball URLs to the gate', async () => {

@@ -163,26 +163,52 @@ if (ZIP) {
 
 // one fake upstream answering all three ecosystems, keyed by the fixtures actually built above
 let upstream: ReturnType<typeof Bun.serve>
+
+// claude-factory-1hc: a fake sumdb server, apart from `upstream` (the fake go proxy).
+//
+// It proves the real socket test below routes to cfg.upstream.sumdb, not to a server that answers only
+// because the fixture points go and sumdb at the same origin.
+let sumdbUpstream: ReturnType<typeof Bun.serve>
+let sumdbSupportedHits = 0
 let gate: ReturnType<typeof serve>
 let gateBase: string
 beforeAll(async () => {
-  upstream = Bun.serve({
+  sumdbUpstream = Bun.serve({
     port: 0,
     fetch(req) {
       const url = new URL(req.url)
+      // sum.golang.org itself has no /supported path; it answers 404 there too. The gate must answer
+      // /supported itself with zero fetch (claude-factory-1hc), so a hit here would be a regression.
+      if (url.pathname === '/supported') {
+        sumdbSupportedHits++
+        return new Response('not found', { status: 404 })
+      }
       // a transparency-log tile is raw hash bytes (binary, not text): proves the gate's /go/sumdb/ passthrough
       // survives a real Bun.serve HTTP socket round-trip byte-identical, not just the in-process handler call
       // pkggate.test.ts already covers (ei0.8; go's real GOSUMDB default needs a signed tree this fake sumdb
       // can't produce, so the `go mod download` test below still runs with GOSUMDB=off)
-      if (url.pathname === '/sumdb/sum.golang.org/tile/8/0/000')
+      if (url.pathname === '/tile/8/0/000')
         return new Response(new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]), {
           headers: { 'content-type': 'application/octet-stream' },
         })
-      // claude-factory-8ub: the gate's sumdb/goIndex upstreams point at this same fake server. /index
-      // answers any `since` with 5 synthetic entries inside the requested window; /lookup/ answers every
-      // key with a low record (1), so it always sits at or below the floor this builds (also 1).
-      // /latest (claude-factory-8ub.6) answers with a tree size far above every record id here, so none is
-      // ever dropped as an outlier.
+      // claude-factory-8ub: the gate's sumdb upstream points at this server. /lookup/ answers every key
+      // with a low record (1), so it always sits at or below the floor this builds (also 1). /latest
+      // (claude-factory-8ub.6) answers with a tree size far above every record id here, so none is ever
+      // dropped as an outlier.
+      if (url.pathname === '/latest')
+        return new Response('go.sum database tree\n1000000\nfakehash\n\n— sum.golang.org fakesignature\n')
+      // the backdated probe's own record sits far above the floor (1); every other lookup defaults low (AC12)
+      if (url.pathname === `/lookup/${GO_MODULE}@${GO_BACKDATED_VERSION}`) return new Response('999999\n')
+      if (url.pathname.startsWith('/lookup/')) return new Response('1\n')
+      return new Response('not found', { status: 404 })
+    },
+  })
+  upstream = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      // claude-factory-8ub: the gate's goIndex upstream points at this fake server. /index answers any
+      // `since` with 5 synthetic entries inside the requested window.
       if (url.pathname === '/index') {
         const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(NOW).toISOString())
         const ts = new Date(sinceMs + 15 * 60_000).toISOString()
@@ -191,11 +217,6 @@ beforeAll(async () => {
         )
         return new Response(lines.join('\n') + '\n')
       }
-      if (url.pathname === '/latest')
-        return new Response('go.sum database tree\n1000000\nfakehash\n\n— sum.golang.org fakesignature\n')
-      // the backdated probe's own record sits far above the floor (1); every other lookup defaults low (AC12)
-      if (url.pathname === `/lookup/${GO_MODULE}@${GO_BACKDATED_VERSION}`) return new Response('999999\n')
-      if (url.pathname.startsWith('/lookup/')) return new Response('1\n')
       if (url.pathname === `/${GO_MODULE}/@v/list`) return new Response('v1.0.0\nv1.0.1\n')
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.info`)
         return new Response(JSON.stringify({ Version: 'v1.0.0', Time: OLD_TIME }), {
@@ -276,27 +297,37 @@ beforeAll(async () => {
     },
   })
   const base = upstream.url.origin
+  const sumdbBase = sumdbUpstream.url.origin
   gate = serve({
-    upstream: { go: base, npm: base, pypi: base, files: base, sumdb: base, goIndex: base },
+    upstream: { go: base, npm: base, pypi: base, files: base, sumdb: sumdbBase, goIndex: base },
     port: 0,
   })
   gateBase = gate.url.origin
   // a real-process client (go/npm/pip/uv) can hit a connection reset if it is the very first inbound
-  // connection right after Bun.serve returns; warm both servers up with a real fetch before any test runs
+  // connection right after Bun.serve returns; warm up every server with a real fetch before any test runs
   await fetch(`${gateBase}/healthz`)
   await fetch(`${base}/`).catch(() => {})
+  await fetch(`${sumdbBase}/`).catch(() => {})
 })
 afterAll(() => {
   upstream.stop(true)
+  sumdbUpstream.stop(true)
   gate.stop(true)
 })
 
-test("a binary sumdb tile passes through serve()'s real HTTP socket byte-identical (ei0.8)", async () => {
+test("a binary sumdb tile passes through serve()'s real HTTP socket byte-identical (ei0.8), fetched from the distinct sumdb fake", async () => {
   const r = await fetch(`${gateBase}/go/sumdb/sum.golang.org/tile/8/0/000`)
   expect(r.status).toBe(200)
   expect(new Uint8Array(await r.arrayBuffer())).toEqual(
     new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]),
   )
+})
+
+test('claude-factory-1hc AC6: GET /go/sumdb/sum.golang.org/supported is 200 over the real socket, with zero hit on the sumdb fake (it 404s /supported)', async () => {
+  const before = sumdbSupportedHits
+  const r = await fetch(`${gateBase}/go/sumdb/sum.golang.org/supported`)
+  expect(r.status).toBe(200)
+  expect(sumdbSupportedHits).toBe(before)
 })
 
 test("AC12: a backdated version (.info old enough, record above the floor) is refused through serve()'s real socket; an old one with a low record still serves (claude-factory-8ub)", async () => {

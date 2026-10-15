@@ -726,13 +726,33 @@ async function goLatest(cfg: Resolved, mod: string) {
 
 async function handleGo(cfg: Resolved, path: string): Promise<Response> {
   if (path.startsWith('sumdb/')) {
+    // proxy.golang.org answers 404 on every /sumdb/sum.golang.org/* path (claude-factory-1hc).
+    //
+    // So this passthrough fetches from cfg.upstream.sumdb (sum.golang.org directly), never cfg.upstream.go.
+    // This gate fronts only one db, 'sum.golang.org'. It refuses any other path with zero upstream fetch.
+
+    const dbPrefix = 'sumdb/sum.golang.org/'
+    if (!path.startsWith(dbPrefix)) return refuse(404, 'pkg-gate: not found')
+    const sub = path.slice(dbPrefix.length)
+
+    // sum.golang.org itself has no /supported path; it answers 404 there.
+    //
+    // The go command reads /supported to pick the proxy path over a direct sumdb fetch. A gated rig's
+    // egress strips sum.golang.org. So this gate must answer /supported itself, with no upstream fetch
+    // (claude-factory-1hc).
+
+    if (sub === 'supported') return new Response('', { status: 200 })
+    if (!/^(latest|lookup\/.+|tile\/.+)$/.test(sub)) return refuse(404, 'pkg-gate: not found')
     // bytes, never text: /tile/ bodies are raw transparency-log hash data, and go's default GOSUMDB (via
     // the proxy's /sumdb/ passthrough) fetches them -- decoding as UTF-8 and re-encoding (the old fetchText
     // + `new Response(text)`) corrupts any byte above 0x7f, which fails checksum verification (ei0.8)
     let upstream: Response
     try {
-      upstream = await cfg.fetch(`${cfg.upstream.go}/${path}`, {
+      // redirect: 'manual' blocks a sumdb redirect to an attacker-chosen host. A 3xx reply fails `.ok` and
+      // gets the same refusal as any other non-2xx reply, below.
+      upstream = await cfg.fetch(`${cfg.upstream.sumdb}/${sub}`, {
         signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
+        redirect: 'manual',
       })
     } catch {
       return refuse(502, 'pkg-gate: sumdb upstream error')
@@ -1158,8 +1178,10 @@ export const DEFAULT_UPSTREAM: Upstream = {
   npm: 'https://registry.npmjs.org',
   pypi: 'https://pypi.org',
   files: 'https://files.pythonhosted.org',
-  // the Go first-logged check (claude-factory-8ub): proxy.golang.org answers 404 on /sumdb/sum.golang.org/*
-  // (claude-factory-1hc), so the gate calls sum.golang.org and index.golang.org directly, not through the proxy
+  // proxy.golang.org answers 404 on every /sumdb/sum.golang.org/* path (claude-factory-1hc). So the gate
+  // calls sum.golang.org and index.golang.org directly, not through the proxy. This upstream serves two
+  // jobs: the Go first-logged check (claude-factory-8ub) and the client-facing /go/sumdb/* passthrough
+  // (handleGo, claude-factory-1hc).
   sumdb: 'https://sum.golang.org',
   goIndex: 'https://index.golang.org',
 }
