@@ -17,6 +17,9 @@ export type GateConfig = {
   fetch?: typeof fetch
   /** every upstream fetch aborts after this long, a timeout counted as an error, never a pass-through (default 10s) */
   fetchTimeoutMs?: number
+  /** caps on the npm/PyPI packument/index cache and the Go .info cache, so neither grows without bound (ei0.13) */
+  registryCacheMaxEntries?: number
+  goInfoCacheMaxEntries?: number
 }
 
 export type Stats = { allow: number; refuse: number; error: number }
@@ -29,6 +32,8 @@ type Resolved = {
   now: () => number
   fetch: typeof fetch
   fetchTimeoutMs: number
+  registryCacheMaxEntries: number
+  goInfoCacheMaxEntries: number
   stats: Stats
   /** the npm packument / PyPI index a tarball or file request reads its entry's time from, short TTL */
   npmCache: Map<string, { parsed: NpmPackument; expiresAt: number }>
@@ -41,6 +46,9 @@ const REGISTRY_CACHE_MS = 60_000
 const DEFAULT_FETCH_TIMEOUT_MS = 10_000
 /** how many versions' .info the Go list/@latest fallback paths fetch in parallel (ei0.12) */
 const GO_LIST_CONCURRENCY = 8
+/** packuments/indexes are multi-MB; .info entries are tiny but there can be many more of them (ei0.13) */
+const DEFAULT_REGISTRY_CACHE_MAX_ENTRIES = 200
+const DEFAULT_GO_INFO_CACHE_MAX_ENTRIES = 20_000
 
 function resolve(cfg: GateConfig): Resolved {
   const minDays = cfg.minDays ?? 4
@@ -55,6 +63,8 @@ function resolve(cfg: GateConfig): Resolved {
     now: cfg.now ?? (() => Date.now()),
     fetch: cfg.fetch ?? fetch,
     fetchTimeoutMs: cfg.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
+    registryCacheMaxEntries: cfg.registryCacheMaxEntries ?? DEFAULT_REGISTRY_CACHE_MAX_ENTRIES,
+    goInfoCacheMaxEntries: cfg.goInfoCacheMaxEntries ?? DEFAULT_GO_INFO_CACHE_MAX_ENTRIES,
     stats: { allow: 0, refuse: 0, error: 0 },
     npmCache: new Map(),
     pypiCache: new Map(),
@@ -73,6 +83,18 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results
 }
 
+/**
+ * evicts the oldest entries (`Map` iterates in insertion order) once a cache passes `maxEntries`, so a
+ * long-running process's memory does not grow without bound against the Deployment's 512Mi limit (ei0.13)
+ */
+function evictOverCap<K, V>(map: Map<K, V>, maxEntries: number) {
+  while (map.size > maxEntries) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
+}
+
 type Decision = { decision: 'allow' | 'refuse' | 'error'; reason: string; ageH: number | null }
 
 /** allowlisted, or old enough; a missing or unparseable time is a refusal, same as one still too young */
@@ -84,9 +106,23 @@ function decide(name: string, publishedMs: number | null, now: number, minDays: 
   return { decision: 'allow', reason: 'old enough', ageH }
 }
 
-/** one JSON line per decision on stdout: no auth headers or query strings, ever */
-function logDecision(eco: string, name: string, version: string | undefined, published: string | null, d: Decision, cfg: Resolved) {
+/**
+ * one JSON line per decision on stdout: no auth headers or query strings, ever. `quiet` still counts an
+ * `allow` toward `cfg.stats` but does not print it -- a list/index request calls this once per version or
+ * file, and printing every allow alongside a bulk summary line would be thousands of lines for one request
+ * (ei0.13); a refusal or error always prints, since that is the one line audit needs.
+ */
+function logDecision(
+  eco: string,
+  name: string,
+  version: string | undefined,
+  published: string | null,
+  d: Decision,
+  cfg: Resolved,
+  quiet = false,
+) {
   cfg.stats[d.decision]++
+  if (quiet && d.decision === 'allow') return
   console.log(
     JSON.stringify({
       eco,
@@ -98,6 +134,12 @@ function logDecision(eco: string, name: string, version: string | undefined, pub
       reason: d.reason,
     }),
   )
+}
+
+/** one line per bulk request (a Go @v/list, @latest fallback, npm packument or PyPI simple index), counting
+ * every version/file decided -- in place of the per-allow lines `logDecision(..., quiet)` suppressed */
+function logSummary(eco: string, name: string, counts: { allow: number; refuse: number; error: number }) {
+  console.log(JSON.stringify({ eco, name, summary: true, ...counts }))
 }
 
 // a minimal semver reader, just enough to tell a release from a prerelease/pseudo-version and to rank
@@ -166,24 +208,26 @@ function parseGoInfo(text: string): { version: string; time: string } | null {
  * always refused with no decision possible; JSON that is missing or unparseable is a decision of its own
  * (`decide` with no publish time), refused the same as a version that is simply too young
  */
-async function goDecideVersion(cfg: Resolved, mod: string, version: string) {
+async function goDecideVersion(cfg: Resolved, mod: string, version: string, quiet = false) {
   // `.info` never changes once a version is published, so a successful fetch is cached forever: goList and
-  // goLatest's fallback no longer refetch the same mod@version on every request (ei0.12)
+  // goLatest's fallback no longer refetch the same mod@version on every request (ei0.12). The cache itself is
+  // bounded (ei0.13): over cap, the oldest entry is evicted to make room.
   const key = `${mod}@${version}`
   let cached = cfg.goInfoCache.get(key)
   if (!cached) {
     const r = await fetchText(cfg, `${cfg.upstream.go}/${mod}/@v/${version}.info`)
     if (!r.ok) {
-      logDecision('go', mod, version, null, { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null }, cfg)
+      logDecision('go', mod, version, null, { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null }, cfg, quiet)
       return { ok: false as const }
     }
     const parsed = parseGoInfo(r.text)
     cached = { info: r.text, version: parsed?.version, time: parsed?.time }
     cfg.goInfoCache.set(key, cached)
+    evictOverCap(cfg.goInfoCache, cfg.goInfoCacheMaxEntries)
   }
   const publishedMs = cached.time ? Date.parse(cached.time) : NaN
   const d = decide(mod, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
-  logDecision('go', mod, cached.version ?? version, cached.time ?? null, d, cfg)
+  logDecision('go', mod, cached.version ?? version, cached.time ?? null, d, cfg, quiet)
   return { ok: true as const, info: cached.info, time: cached.time, decision: d }
 }
 
@@ -201,6 +245,13 @@ async function goVersion(cfg: Resolved, mod: string, version: string, ext: 'info
   return new Response(b.buf, { headers: { 'content-type': ext === 'zip' ? 'application/zip' : 'text/plain; charset=utf-8' } })
 }
 
+/** tallies a batch of goDecideVersion results for one summary line (ei0.13); an upstream fetch failure counts as `error` */
+function tallyGo(decisions: Awaited<ReturnType<typeof goDecideVersion>>[]) {
+  const counts = { allow: 0, refuse: 0, error: 0 }
+  for (const d of decisions) counts[d.ok ? d.decision.decision : 'error']++
+  return counts
+}
+
 async function goList(cfg: Resolved, mod: string) {
   const r = await fetchText(cfg, `${cfg.upstream.go}/${mod}/@v/list`)
   if (!r.ok) return refuse(502, `pkg-gate: ${mod}: upstream error`)
@@ -209,9 +260,11 @@ async function goList(cfg: Resolved, mod: string) {
     .map(s => s.trim())
     .filter(Boolean)
   // one `.info` per version, up to GO_LIST_CONCURRENCY in flight at once, instead of serially: a module with
-  // hundreds of versions no longer takes minutes to list (ei0.12)
-  const decisions = await mapLimit(versions, GO_LIST_CONCURRENCY, v => goDecideVersion(cfg, mod, v))
+  // hundreds of versions no longer takes minutes to list (ei0.12). `quiet`: a refusal/error still logs its own
+  // line, but an allow is counted, not printed -- one summary line covers the whole list instead (ei0.13)
+  const decisions = await mapLimit(versions, GO_LIST_CONCURRENCY, v => goDecideVersion(cfg, mod, v, true))
   const kept = versions.filter((_, i) => decisions[i]!.ok && decisions[i]!.decision.decision === 'allow')
+  logSummary('go', mod, tallyGo(decisions))
   return new Response(kept.length ? kept.join('\n') + '\n' : '', { headers: { 'content-type': 'text/plain' } })
 }
 
@@ -235,7 +288,8 @@ async function goLatest(cfg: Resolved, mod: string) {
     .split('\n')
     .map(s => s.trim())
     .filter(Boolean)
-  const decisions = await mapLimit(versions, GO_LIST_CONCURRENCY, v => goDecideVersion(cfg, mod, v))
+  const decisions = await mapLimit(versions, GO_LIST_CONCURRENCY, v => goDecideVersion(cfg, mod, v, true))
+  logSummary('go', mod, tallyGo(decisions))
   const candidates: { version: string; time: string }[] = []
   versions.forEach((v, i) => {
     const d = decisions[i]!
@@ -323,7 +377,10 @@ function parsePackument(text: string): NpmPackument | null {
 /** the upstream packument, cached a short while so a tarball request need not refetch it per file */
 async function fetchPackument(cfg: Resolved, pkg: string) {
   const cached = cfg.npmCache.get(pkg)
-  if (cached && cached.expiresAt > Date.now()) return { ok: true as const, parsed: cached.parsed }
+  if (cached) {
+    if (cached.expiresAt > Date.now()) return { ok: true as const, parsed: cached.parsed }
+    cfg.npmCache.delete(pkg) // expired: evict rather than leave it to grow the map forever (ei0.13)
+  }
   try {
     const r = await cfg.fetch(`${cfg.upstream.npm}/${npmUpstreamName(pkg)}`, {
       headers: { accept: 'application/json' },
@@ -333,6 +390,7 @@ async function fetchPackument(cfg: Resolved, pkg: string) {
     const parsed = parsePackument(await r.text())
     if (!parsed) return { ok: false as const, status: 0 }
     cfg.npmCache.set(pkg, { parsed, expiresAt: Date.now() + REGISTRY_CACHE_MS })
+    evictOverCap(cfg.npmCache, cfg.registryCacheMaxEntries)
     return { ok: true as const, parsed }
   } catch {
     return { ok: false as const, status: 0 }
@@ -345,13 +403,18 @@ function npmTarballFile(tarball: string) {
 
 function filterPackument(cfg: Resolved, pkg: string, p: NpmPackument, origin: string): NpmPackument {
   const kept = new Set<string>()
+  // quiet: a refusal still logs its own line, but an allow is only counted -- one summary line covers the
+  // whole packument instead of one line per version (ei0.13)
+  const counts = { allow: 0, refuse: 0, error: 0 }
   for (const v of Object.keys(p.versions)) {
     const timeStr = p.time[v]
     const publishedMs = timeStr ? Date.parse(timeStr) : NaN
     const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
-    logDecision('npm', pkg, v, timeStr ?? null, d, cfg)
+    logDecision('npm', pkg, v, timeStr ?? null, d, cfg, true)
+    counts[d.decision]++
     if (d.decision === 'allow') kept.add(v)
   }
+  logSummary('npm', pkg, counts)
   const versions: Record<string, NpmVersion> = {}
   const time: Record<string, string> = {}
   for (const [k, v] of Object.entries(p.time)) if (k === 'created' || k === 'modified' || kept.has(k)) time[k] = v
@@ -428,7 +491,10 @@ function parsePypiIndex(text: string): PypiIndex | null {
 /** the upstream simple index for a (PEP 503 normalized) project, cached a short while */
 async function fetchPypiIndex(cfg: Resolved, project: string) {
   const cached = cfg.pypiCache.get(project)
-  if (cached && cached.expiresAt > Date.now()) return { ok: true as const, parsed: cached.parsed }
+  if (cached) {
+    if (cached.expiresAt > Date.now()) return { ok: true as const, parsed: cached.parsed }
+    cfg.pypiCache.delete(project) // expired: evict rather than leave it to grow the map forever (ei0.13)
+  }
   try {
     const r = await cfg.fetch(`${cfg.upstream.pypi}/simple/${project}/`, {
       headers: { accept: 'application/vnd.pypi.simple.v1+json' },
@@ -438,26 +504,34 @@ async function fetchPypiIndex(cfg: Resolved, project: string) {
     const parsed = parsePypiIndex(await r.text())
     if (!parsed) return { ok: false as const, status: 0 }
     cfg.pypiCache.set(project, { parsed, expiresAt: Date.now() + REGISTRY_CACHE_MS })
+    evictOverCap(cfg.pypiCache, cfg.registryCacheMaxEntries)
     return { ok: true as const, parsed }
   } catch {
     return { ok: false as const, status: 0 }
   }
 }
 
-function fileDecision(cfg: Resolved, project: string, f: PypiFile) {
+function fileDecision(cfg: Resolved, project: string, f: PypiFile, quiet = false) {
   const t = f['upload-time']
   const publishedMs = t ? Date.parse(t) : NaN
   const d = decide(project, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
-  logDecision('pypi', project, f.filename, t ?? null, d, cfg)
+  logDecision('pypi', project, f.filename, t ?? null, d, cfg, quiet)
   return d
 }
 
 async function pypiSimple(cfg: Resolved, project: string, origin: string) {
   const idx = await fetchPypiIndex(cfg, project)
   if (!idx.ok) return refuse(idx.status === 404 ? 404 : 502, `pkg-gate: ${project}: upstream error`)
+  // quiet: a refusal still logs its own line, an allow is only counted -- one summary line per index request (ei0.13)
+  const counts = { allow: 0, refuse: 0, error: 0 }
   const files = idx.parsed.files
-    .filter(f => fileDecision(cfg, project, f).decision === 'allow')
+    .filter(f => {
+      const d = fileDecision(cfg, project, f, true)
+      counts[d.decision]++
+      return d.decision === 'allow'
+    })
     .map(f => ({ ...f, url: `${origin}/pypi/files/${project}${new URL(f.url).pathname}` }))
+  logSummary('pypi', project, counts)
   return new Response(JSON.stringify({ ...idx.parsed, files }), {
     headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
   })

@@ -341,6 +341,55 @@ test('a module version is decided once, then cached: a second request for the sa
   }
 })
 
+test('the npm packument cache evicts the oldest entry once over its cap, so a later request for it refetches (ei0.13)', async () => {
+  const hits: Record<string, number> = {}
+  const counting = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const name = new URL(req.url).pathname.replace(/^\//, '')
+      hits[name] = (hits[name] ?? 0) + 1
+      return new Response(JSON.stringify({ name, 'dist-tags': {}, versions: {}, time: {} }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+  try {
+    const g = makeGate({
+      upstream: { go: base(), npm: counting.url.origin, pypi: base(), files: base() },
+      now: () => NOW,
+      registryCacheMaxEntries: 2,
+    })
+    await g(new Request('http://gate/npm/pkg-a'))
+    await g(new Request('http://gate/npm/pkg-b'))
+    await g(new Request('http://gate/npm/pkg-c')) // the cache is now over its cap of 2: pkg-a (oldest) is evicted
+    await g(new Request('http://gate/npm/pkg-a')) // refetched, since it was evicted
+    expect(hits['pkg-a']).toBe(2)
+    expect(hits['pkg-b']).toBe(1)
+    expect(hits['pkg-c']).toBe(1)
+  } finally {
+    counting.stop(true)
+  }
+})
+
+test('a bulk npm packument request logs only the refused version, not every allowed one, plus one summary line (ei0.13)', async () => {
+  const g = gate()
+  const lines: string[] = []
+  const orig = console.log
+  console.log = (s: string) => lines.push(s)
+  try {
+    await g(new Request('http://gate/npm/@types%2fms'))
+  } finally {
+    console.log = orig
+  }
+  const npmLines = lines.map(l => JSON.parse(l)).filter(p => p.eco === 'npm')
+  // @types/ms (fixture above) has 2 allowed versions (0.7.34, 2.1.0) and 1 refused (2.2.0, too young)
+  expect(npmLines.filter(p => p.decision === 'allow')).toHaveLength(0)
+  expect(npmLines.filter(p => p.decision === 'refuse')).toHaveLength(1)
+  const summaries = npmLines.filter(p => p.summary)
+  expect(summaries).toHaveLength(1)
+  expect(summaries[0]).toMatchObject({ allow: 2, refuse: 1, error: 0 })
+})
+
 test('an allowlisted module is let through even when young', async () => {
   const g = makeGate({
     upstream: { go: base(), npm: base(), pypi: base(), files: base() },
