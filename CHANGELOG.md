@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: `factory status`, `waiting` and `show` (the console's Run view) exited 1 on the first AX run whose server they could not reach, such as when the `ax-server` port-forward has died, listing nothing past it. That run's agent now reads `unreachable: <error>` and the rest of the listing still prints. The tick already caught this.
 ## 0.9.0 (2026-10-15)
 
 - The console's New run tab is gone: runs are started from the manager session or Backlog's `queue`/`start`, which this tab never fed into, and its only other caller was the Rigs tab's now-removed 'new run here' button. Rigs, PRs and Interview move down to hotkeys 5, 6 and 7.
