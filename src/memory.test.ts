@@ -654,6 +654,125 @@ test("longAliasRenames turns a LONG.md entry's aliases into renames, so a dream'
   expect(usage(dir).has('beads/LONG.md#b')).toBe(false)
 })
 
+test('applyTiers() skips a topic whose LONG.md parseLong cannot rebuild byte for byte, and keeps the short note (claude-factory-59r.15)', () => {
+  const dir = join(tmpdir(), `memory-apply-unsafe-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  // prose before the first "## "+id pair: parseLong drops it, so formatLong(parseLong(text)) !== text
+  const unsafe =
+    '---\ntier: long\n---\n' +
+    'A body that helped, written before any entry heading.\n\n' +
+    '## kept entry\n<!-- id: {"id":"kept-entry"} -->\n\nkept body\n'
+  writeFileSync(join(dir, 'beads', 'LONG.md'), unsafe)
+  writeFileSync(
+    join(dir, 'beads', 'new.md'),
+    format({ summary: 'bd init locks every repo', at: '2026-10-01', body: 'why' }),
+  )
+  use(dir, ['beads/new.md'], 'helped', now - 1000)
+
+  const { merged, renamed, skipped } = applyTiers(dir, { now })
+  expect(merged).toBe(0)
+  expect(renamed).toEqual({})
+  expect(skipped).toEqual([{ topic: 'beads', reason: expect.stringContaining('LONG.md') }])
+  expect(existsSync(join(dir, 'beads', 'new.md'))).toBe(true) // kept, not merged away
+  expect(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).toBe(unsafe) // untouched
+})
+
+test("applyTiers() picks a new LONG.md id that is not already an alias or an old id in the rename log (claude-factory-59r.18)", () => {
+  const dir = join(tmpdir(), `memory-apply-id-collision-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  // another entry already claims the slug "bd-init-locks-every-repo" as an alias
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([
+      { id: 'other', summary: 'another lesson entirely', aliases: ['bd-init-locks-every-repo'], body: 'x' },
+    ]),
+  )
+  writeFileSync(
+    join(dir, 'beads', 'new.md'),
+    format({ summary: 'bd init locks every repo', at: '2026-10-01', body: 'why' }),
+  )
+  use(dir, ['beads/new.md'], 'helped', now - 1000)
+
+  const { renamed } = applyTiers(dir, { now })
+  expect(renamed).toEqual({ 'beads/new.md': 'beads/LONG.md#bd-init-locks-every-repo-2' })
+})
+
+test('applyTiers() rewrites a short note\'s markdown link in its topic README to the LONG.md entry it became (claude-factory-59r.19a)', () => {
+  const dir = join(tmpdir(), `memory-apply-readme-link-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'new.md'),
+    format({ summary: 'bd init locks every repo', at: '2026-10-01', body: 'why' }),
+  )
+  writeFileSync(
+    join(dir, 'beads', 'README.md'),
+    format({ summary: 'topic readme', body: '- [bd-init-locks-every-repo](new.md): bd init locks every repo' }),
+  )
+  use(dir, ['beads/new.md'], 'helped', now - 1000)
+
+  applyTiers(dir, { now })
+  expect(readFileSync(join(dir, 'beads', 'README.md'), 'utf8')).toContain(
+    '[bd-init-locks-every-repo](LONG.md#bd-init-locks-every-repo)',
+  )
+  expect(readFileSync(join(dir, 'beads', 'README.md'), 'utf8')).not.toContain('(new.md)')
+})
+
+test('applyTiers() ages a note with no at: from the commit that added it, not from now (claude-factory-59r.19b)', () => {
+  const dir = join(tmpdir(), `memory-apply-no-at-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'old.md'), format({ summary: 'a note with no at', body: 'never helped' }))
+  Bun.spawnSync(['git', '-C', dir, 'init', '-q'])
+  Bun.spawnSync(['git', '-C', dir, 'add', '-A'])
+  Bun.spawnSync(
+    ['git', '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
+    {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: '2026-08-01T00:00:00',
+        GIT_COMMITTER_DATE: '2026-08-01T00:00:00',
+      },
+    },
+  )
+  const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_STALE_DAYS (30)
+
+  const { decisions, archived } = applyTiers(dir, { now })
+  expect(archived).toBe(1)
+  expect(decisions).toEqual([
+    { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never helped') },
+  ])
+})
+
+test('tally keys a run by its id before the slash, so two stations of one run count as one run, not two (claude-factory-59r.16)', () => {
+  const at = Date.parse('2026-10-06T12:00:00Z')
+  const lines = [
+    JSON.stringify({ path: 'a.md', helped: 1, at, by: 'run1/verify' }),
+    JSON.stringify({ path: 'a.md', helped: 1, at: at + 1000, by: 'run1/implement' }), // same run, another station
+    JSON.stringify({ path: 'a.md', helped: 1, at: at + 2000, by: 'run2/implement' }),
+  ]
+  expect(tally(lines).get('a.md')).toEqual({ path: 'a.md', shown: 0, helped: 3, at: at + 2000, runs: 2 })
+})
+
+test('compact() keeps the run ids its own fold already counted, so a later line for the same run does not count again (claude-factory-59r.17)', () => {
+  const dir = join(tmpdir(), `memory-compact-keys-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'a.md'), format({ summary: 'a short note', body: 'body' }))
+  const t0 = Date.parse('2026-10-06T12:00:00Z')
+  use(dir, ['beads/a.md'], 'helped', t0, 'run1/verify')
+  compact(dir, {}) // folds the usage file to one line; it must keep 'run1', not just runs: 1
+  use(dir, ['beads/a.md'], 'helped', t0 + 1000, 'run1/implement') // same run, another station
+  expect(usage(dir).get('beads/a.md')?.runs).toBe(1) // still one run, not two
+  use(dir, ['beads/a.md'], 'helped', t0 + 2000, 'run2/verify') // a genuinely new run
+  expect(usage(dir).get('beads/a.md')?.runs).toBe(2)
+})
+
 test('evalScore: recall and MRR over results already searched for, and the misses it names', () => {
   const cases: EvalCase[] = [
     { query: 'why is bd slow', expect: 'beads/lock.md' },

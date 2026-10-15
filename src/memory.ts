@@ -457,10 +457,13 @@ export const corpus = (dir: string) =>
   ].join('\n')
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+// a `by` field holds `<run id>/<station>`. Use only the run id as the key. Two stations of one run must
+// count as one run (claude-factory-59r.16: "r1/verify" and "r1/implement" used to count as 2 runs).
+const runKey = (by: string | undefined, at: number) => (by ? by.split('/')[0]! : day(at))
 
 // How notes get used. A search shows a note. A worker says it helped. The dream orders notes by this.
-// `runs` counts the distinct runs or stations that helped a note (its `by`). For an older line with no
-// `by`, it counts the distinct UTC day instead. decide()'s promote threshold reads `runs`.
+// `runs` counts the distinct runs that helped a note (its `by`, up to the first `/`). For an older line
+// with no `by`, it counts the distinct UTC day instead. decide()'s promote threshold reads `runs`.
 export type Use = { path: string; shown: number; helped: number; at: number; runs: number }
 const usageFile = (dir: string) => join(dir, '.usage.jsonl')
 /** appended only while workers search, one short line each, so concurrent writers do not interleave */
@@ -477,22 +480,32 @@ export const use = (
       paths.map(path => JSON.stringify({ path, [kind]: 1, at, ...(by ? { by } : {}) })).join('\n') + '\n',
     )
 }
-/** each note's totals, under the name the dream gave it. compact() folds old lines into one with `runs` set, already counted; this adds only what is new since. */
-export const tally = (lines: string[], renamed: Record<string, string> = {}) => {
-  const out = new Map<string, { path: string; shown: number; helped: number; at: number; runsBase: number; keys: Set<string> }>()
+type RawTally = { path: string; shown: number; helped: number; at: number; runsBase: number; keys: Set<string> }
+/**
+ * each note's raw totals, keys kept apart from their count. compact() must persist the keys themselves,
+ * not only how many there were (claude-factory-59r.17): a folded line that kept only `runs: 2` cannot
+ * tell a later line's run id was one it already counted, so that run got counted again.
+ */
+function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<string, RawTally> {
+  const out = new Map<string, RawTally>()
   for (const line of lines.filter(Boolean)) {
-    const u: Partial<Use> & { path: string; at: number; by?: string } = JSON.parse(line)
+    const u: Partial<Use> & { path: string; at: number; by?: string; keys?: string[] } = JSON.parse(line)
     const path = renamed[u.path] ?? u.path
     const t = out.get(path) ?? { path, shown: 0, helped: 0, at: 0, runsBase: 0, keys: new Set<string>() }
     t.shown += u.shown ?? 0
     t.helped += u.helped ?? 0
     t.at = Math.max(t.at, u.at)
-    if (typeof u.runs === 'number') t.runsBase += u.runs
-    else t.keys.add(u.by ?? day(u.at))
+    if (Array.isArray(u.keys)) for (const k of u.keys) t.keys.add(k)
+    else if (typeof u.runs === 'number') t.runsBase += u.runs // a pre-claude-factory-59r.17 folded line: no keys to recover
+    else t.keys.add(runKey(u.by, u.at))
     out.set(path, t)
   }
+  return out
+}
+/** each note's totals, under the name the dream gave it. compact() folds old lines into one with `runs` set, already counted; this adds only what is new since. */
+export const tally = (lines: string[], renamed: Record<string, string> = {}) => {
   const result = new Map<string, Use>()
-  for (const [path, t] of out)
+  for (const [path, t] of tallyRaw(lines, renamed))
     result.set(path, { path, shown: t.shown, helped: t.helped, at: t.at, runs: t.runsBase + t.keys.size })
   return result
 }
@@ -548,8 +561,24 @@ export function compact(dir: string, renamed: Record<string, string>) {
     )
   const log = renameLog(dir)
   const resolved = Object.fromEntries([...new Set(Object.keys(log))].map(k => [k, resolvePath(dir, k)]))
-  const kept = [...usage(dir, resolved).values()].filter(u => noteExists(dir, u.path))
-  writeFileSync(`${usageFile(dir)}.tmp`, kept.map(u => JSON.stringify(u) + '\n').join(''))
+  const lines = existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : []
+  const kept = [...tallyRaw(lines, resolved).values()].filter(t => noteExists(dir, t.path))
+  writeFileSync(
+    `${usageFile(dir)}.tmp`,
+    kept
+      .map(
+        t =>
+          `${JSON.stringify({
+            path: t.path,
+            shown: t.shown,
+            helped: t.helped,
+            at: t.at,
+            runs: t.runsBase + t.keys.size,
+            ...(t.keys.size ? { keys: [...t.keys] } : {}),
+          })}\n`,
+      )
+      .join(''),
+  )
   // ponytail: a search appending between the read and this rename loses its count; a lock if counts must be exact
   renameSync(`${usageFile(dir)}.tmp`, usageFile(dir))
 }
@@ -669,12 +698,32 @@ export function mdFileCount(dir: string): number {
   return n
 }
 
+/** when a note has no at:, its age since the commit that added it, so it ages like any other note
+ * (claude-factory-59r.19b: treating it as added "now" meant it could never grow stale or merge) */
+function gitAddedMs(dir: string, path: string): number | undefined {
+  if (!existsSync(join(dir, '.git'))) return undefined
+  const out = Bun.spawnSync(['git', '-C', dir, 'log', '-1', '--format=%ct', '--', path]).stdout.toString().trim()
+  const sec = Number(out)
+  return out && Number.isFinite(sec) && sec > 0 ? sec * 1000 : undefined
+}
+
+/** a merge drops <topic>/<slug>.md; a dream's own README.md may still link to it by that file name.
+ * Point the link at the entry's new home instead, so the topic index never dead-links (claude-factory-59r.19a) */
+function rewriteReadmeLink(dir: string, topic: string, shortPath: string, id: string) {
+  const readmeFile = join(dir, topic, 'README.md')
+  if (!existsSync(readmeFile)) return
+  const base = shortPath.slice(shortPath.lastIndexOf('/') + 1)
+  const text = readFileSync(readmeFile, 'utf8')
+  const updated = text.split(`(${base})`).join(`(LONG.md#${id})`)
+  if (updated !== text) writeFileSync(readmeFile, updated)
+}
+
 /**
  * the tiering pass that follows a dream. It gathers each short note's age and usage. It asks decide()
  * what to merge or archive, then does it, unless dryRun is set. A merge appends the note as a LONG.md
  * entry in its topic and removes the short file. An archive appends the note to .archive/<topic>.md and
  * removes it. It returns a rename map (old path -> its LONG.md#id). Pass this to compact() to log it, so
- * a helped note keeps its count.
+ * a helped note keeps its count. `skipped` names a topic a merge left untouched, and why.
  */
 export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean } = {}) {
   const now = opts.now ?? Date.now()
@@ -684,7 +733,7 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
     .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
     .map(n => {
       const atMs = n.at ? Date.parse(n.at) : NaN
-      const createdMs = Number.isFinite(atMs) ? atMs : now // no at: treat as just added, touch nothing yet
+      const createdMs = Number.isFinite(atMs) ? atMs : gitAddedMs(dir, n.path) ?? now
       const u = uses.get(n.path)
       const lastMs = u?.at || createdMs
       return {
@@ -699,6 +748,8 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
     })
   const decisions = decide(short, [], [])
   const renamed: Record<string, string> = {}
+  const unsafeTopics = new Set<string>()
+  const skipped: { topic: string; reason: string }[] = []
   let merged = 0
   let archived = 0
   for (const d of decisions) {
@@ -706,18 +757,44 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
     const note = notes.find(n => n.path === d.path)
     if (!note) continue
     if (d.kind === 'merge') {
-      merged++
-      if (opts.dryRun) continue
       const topic = topicOf(note)
       const longFile = join(dir, topic, 'LONG.md')
-      const existing = existsSync(longFile) ? parseLong(readFileSync(longFile, 'utf8')) : []
+      const rawText = existsSync(longFile) ? readFileSync(longFile, 'utf8') : null
+      // a LONG.md parseLong cannot rebuild byte for byte holds text outside any entry (a dream's own
+      // prose, or an entry with broken id JSON): merging into it with formatLong would delete that text
+      // (claude-factory-59r.15). Skip the whole topic this pass; the short note stays, to try again later.
+      if (rawText !== null && formatLong(parseLong(rawText)) !== rawText) {
+        if (!unsafeTopics.has(topic)) {
+          unsafeTopics.add(topic)
+          skipped.push({
+            topic,
+            reason: `${topic}/LONG.md holds text parseLong cannot rebuild byte for byte; merge skipped so nothing is lost`,
+          })
+        }
+        continue
+      }
+      merged++
+      if (opts.dryRun) continue
+      const existing = rawText !== null ? parseLong(rawText) : []
+      // a fresh id must not collide with an id a rename log or another entry's aliases already claim
+      // for this topic: either would send its usage to the wrong entry (claude-factory-59r.18)
+      const renames = renameLog(dir)
+      const takenPrefix = `${topic}/LONG.md#`
+      const taken = new Set<string>([
+        ...existing.map(e => e.id),
+        ...existing.flatMap(e => e.aliases ?? []),
+        ...Object.keys(renames)
+          .filter(k => k.startsWith(takenPrefix))
+          .map(k => k.slice(takenPrefix.length)),
+      ])
       const base = slug(note.summary)
       let id = base
-      for (let i = 2; existing.some(e => e.id === id); i++) id = `${base}-${i}`
+      for (let i = 2; taken.has(id); i++) id = `${base}-${i}`
       existing.push({ id, summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body })
       writeFileSync(longFile, formatLong(existing))
       rmSync(join(dir, note.path))
       renamed[note.path] = `${topic}/LONG.md#${id}`
+      rewriteReadmeLink(dir, topic, note.path, id)
     } else {
       archived++
       if (opts.dryRun) continue
@@ -732,7 +809,7 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
       // no rename logged: decide() never archives a helped note, so no helped count is owed here
     }
   }
-  return { decisions, renamed, merged, archived }
+  return { decisions, renamed, merged, archived, skipped }
 }
 
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */
