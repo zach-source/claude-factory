@@ -151,11 +151,69 @@ test('the opened card runs goto, fork, retry, abort and mail with the run id and
 
   await ui.press({ key: 'jumpto-r1' })
   await clock.settle()
+  expect(ran.some(a => a.join(',') === ['herdr', 'agent', 'focus', 'p1'].join(','))).toBe(true)
 
   await ui.press({ key: 'kill-r1' })
   await clock.settle()
   const abort = ran.find(a => a.includes('abort'))
   expect(abort?.slice(-2)).toEqual(['abort', 'r1'])
+  await ui.unmount()
+})
+
+const TWO_LIVE_TICK = {
+  manager: [],
+  rigs: [{ name: 'api', repo: '/w/api', factory: 'lifecycle' }],
+  runs: [
+    { id: 'r1', rig: 'api', bead: 'api-7', node: 'implement', sub: 'stuck', since: 10, goal: 'ship the thing', pane: 'p1' },
+    { id: 'r3', rig: 'api', bead: 'api-9', node: 'verify', sub: 'working', since: 10, goal: 'ship another thing', pane: 'p3' },
+  ],
+}
+const DETAIL3 = {
+  ...DETAIL,
+  id: 'r3',
+  bead: 'api-9',
+  node: 'verify',
+  sub: 'working',
+  pane: 'p3',
+  goal: 'ship another thing',
+  run: { ...DETAIL.run, id: 'r3', goal: 'ship another thing', bead: 'api-9', branch: 'factory/r3', worktree: '/w/r3' },
+  stations: [{ id: 'verify', gate: false, next: [{ outcome: 'green', to: 'release' }] }],
+}
+
+test('opening a second card closes the first: only one card is open at a time (A3)', async ($, on) => {
+  const ran: string[][] = []
+  const clock = mock.clock(on)
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+    on(event, () => ({ value: undefined }) as never)
+  on('process.run', ($: any, e: any) => {
+    ran.push([...e.argv])
+    if (e.argv.includes('tick')) return { value: { exitCode: 0, stdout: JSON.stringify(TWO_LIVE_TICK), stderr: '' } as never }
+    if (e.argv.includes('show'))
+      return {
+        value: { exitCode: 0, stdout: JSON.stringify(e.argv.includes('r3') ? DETAIL3 : DETAIL), stderr: '' } as never,
+      }
+    if (e.argv.includes('pane') && e.argv.includes('read'))
+      return { value: { exitCode: 0, stdout: 'last pane line', stderr: '' } as never }
+    return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+  })
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'board' } as never)
+  const ui = await mountUi($)
+
+  await ui.press({ key: 'open-r1' })
+  await clock.settle()
+  let drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('"key":"close-r1"')
+  expect(drawn).toContain('"key":"open-r3"')
+
+  await ui.press({ key: 'open-r3' })
+  await clock.settle()
+  drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('"key":"close-r3"')
+  expect(drawn).toContain('"key":"open-r1"')
+  expect(drawn).not.toContain('"key":"close-r1"')
   await ui.unmount()
 })
 
