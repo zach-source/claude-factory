@@ -315,3 +315,9 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     process.env.PATH = path
   }
 })
+
+test('a blocked labeled child named only by its dotted id is not listed as a run of its own', () => {
+  const kid = bead('ap-3.1', { status: 'blocked', labels: ['factory'], blocked_by: ['ap-4'] })
+  const out = backlogOf([], [], [kid], [kid, bead('ap-3', { status: 'open' }), bead('ap-4', { status: 'open' })])
+  expect(out.queued.map(b => b.id)).toEqual([])
+})

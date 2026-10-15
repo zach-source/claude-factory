@@ -94,7 +94,7 @@ export function backlogOf(
     x => !x.assignee && (x.status === undefined || ['open', 'blocked'].includes(x.status)),
   )
   const heads = new Set(dispatchable(ready, new Set(), 50).map(x => x.id))
-  const queuedWaiting = waiting.filter(x => !x.parent && x.labels?.includes(LABEL))
+  const queuedWaiting = waiting.filter(x => !parentOf(x) && x.labels?.includes(LABEL))
   for (const x of queuedWaiting) heads.add(x.id)
   // a queued bead's children ride in its run: listed under it, never started on their own
   const isQueued = (x: Bead) => heads.has(x.id) || (!x.assignee && heads.has(parentOf(x) ?? ''))
