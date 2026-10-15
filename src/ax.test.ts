@@ -174,7 +174,9 @@ test("a task's phase is read from ax get, and a deleted task has none", () => {
   expect(ax.phase('t')).toBe('Suspended')
 })
 
-test('poll and prompt go through ax ssh, the prompt base64 so ax cannot take it for its flags', () => {
+const AS_WORKER = ['setpriv', '--reuid=worker', '--regid=worker', '--init-groups', 'env', 'HOME=/home/worker', 'USER=worker']
+
+test('poll, prompt and put run as the worker user over ax ssh, the prompt base64 so ax cannot take it for its flags', () => {
   writeFileSync(
     join(dir, 'ssh'),
     JSON.stringify({
@@ -189,10 +191,52 @@ test('poll and prompt go through ax ssh, the prompt base64 so ax cannot take it 
     lines: ['{"argv":["mail"]}'],
   })
   ax.prompt('t', '-a sneaky')
+  expect(ax.put('t', 'brief.md', 0, 1, 'aGVsbG8=')).toEqual({ ok: true })
   expect(logged()).toEqual([
-    '-a factory ssh t -- factory worker poll 4',
-    `-a factory ssh t -- factory worker prompt ${Buffer.from('-a sneaky').toString('base64')}`,
+    `-a factory ssh t -- ${AS_WORKER.join(' ')} factory worker poll 4`,
+    `-a factory ssh t -- ${AS_WORKER.join(' ')} factory worker prompt ${Buffer.from('-a sneaky').toString('base64')}`,
+    `-a factory ssh t -- ${AS_WORKER.join(' ')} factory worker put brief.md 0 1 aGVsbG8=`,
   ])
+})
+
+test('FACTORY_AX_CAPABILITIES empty keeps poll, prompt and put as the bare root command, for a VM where serve stayed root', () => {
+  process.env.FACTORY_AX_CAPABILITIES = ''
+  try {
+    writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'idle', lines: [] }))
+    ax.poll('t', 0)
+    ax.prompt('t', 'hi')
+    ax.put('t', 'brief.md', 0, 1, 'aGVsbG8=')
+    expect(logged()).toEqual([
+      '-a factory ssh t -- factory worker poll 0',
+      `-a factory ssh t -- factory worker prompt ${Buffer.from('hi').toString('base64')}`,
+      '-a factory ssh t -- factory worker put brief.md 0 1 aGVsbG8=',
+    ])
+  } finally {
+    delete process.env.FACTORY_AX_CAPABILITIES
+  }
+})
+
+test('a put that fails over ax ssh returns {ok: false} with ax\'s stderr, instead of a bare boolean', () => {
+  const failer = join(dir, 'ax-failput')
+  writeFileSync(
+    failer,
+    `#!/bin/sh
+echo "$*" >> ${calls}
+echo 'EACCES: permission denied, mkdir /workspace/w/.factory-worker/put' >&2
+exit 1
+`,
+  )
+  chmodSync(failer, 0o755)
+  const saved = process.env.FACTORY_AX
+  process.env.FACTORY_AX = failer
+  try {
+    expect(ax.put('t', 'brief.md', 0, 1, 'aGVsbG8=')).toEqual({
+      ok: false,
+      err: 'EACCES: permission denied, mkdir /workspace/w/.factory-worker/put',
+    })
+  } finally {
+    process.env.FACTORY_AX = saved
+  }
 })
 
 test('the worker briefs once, runs queued prompts in the same session, and queues its reports', async () => {
@@ -238,6 +282,157 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
     },
   ])
   expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
+})
+
+test('serve retries a turn that ended on the egress failure, same session, backed off, until one gets through', async () => {
+  const own = join(dir, 'own-egress-ok')
+  const repo = join(dir, 'repo-egress-ok')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const log = join(dir, 'claude-egress-ok.log')
+  const counter = join(dir, 'claude-egress-ok.count')
+  const claude = join(dir, 'claude-egress-ok')
+  // fails its first 2 calls (an init event, then the egress signature), then an init plus a success;
+  // the 2nd call sleeps so the test can poll mid-retry, well after the 1st call already named the
+  // session but before turnWithRetry has returned it
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+n=$(( $(cat ${counter} 2>/dev/null || echo 0) + 1 ))
+echo "$n" > ${counter}
+echo "$*" >> ${log}
+echo '{"type":"system","subtype":"init","session_id":"s1"}'
+if [ "$n" -eq 2 ]; then sleep 1; fi
+if [ "$n" -le 2 ]; then
+  echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect error or disconnect/reset before headers: remote connection failure"}'
+else
+  echo '{"type":"result","is_error":false,"result":"done"}'
+fi
+`,
+  )
+  chmodSync(claude, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    FACTORY_EGRESS_WAIT_MS: '1',
+    FACTORY_EGRESS_BUDGET_MS: '5000',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    const p = worker.serve('m1', { once: true })
+    await Bun.sleep(400) // well after the 1st call (fast) names s1, during the 2nd call's 1s sleep
+    expect(worker.poll(0).session).toBe('s1') // the retried turn's session, not the stale outer one
+    await p
+    const turns = readFileSync(log, 'utf8').trim().split('\n')
+    expect(turns).toHaveLength(3)
+    expect(turns[0]).toEndWith('--model m1 the brief')
+    expect(turns[1]).toEndWith(`--model m1 --resume s1 ${worker.EGRESS_RETRY_PROMPT}`)
+    expect(turns[2]).toEndWith(`--model m1 --resume s1 ${worker.EGRESS_RETRY_PROMPT}`)
+    expect(worker.poll(0)).toMatchObject({ status: 'idle', session: 's1' })
+    expect(worker.poll(0).egress).toBeUndefined() // the turn that got through cleared it
+    const retries = readFileSync(join(own, 'serve.log'), 'utf8').match(/egress failure, retry/g) ?? []
+    expect(retries).toHaveLength(2)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('serve gives up retrying at its budget, leaving the outage visible to poll, and goes idle', async () => {
+  const own = join(dir, 'own-egress-stuck')
+  const repo = join(dir, 'repo-egress-stuck')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const log = join(dir, 'claude-egress-stuck.log')
+  const claude = join(dir, 'claude-egress-stuck')
+  // never gets a session: the egress gateway refuses before Claude even starts a conversation
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+echo "$*" >> ${log}
+echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect error or disconnect/reset before headers: remote connection failure"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    FACTORY_EGRESS_WAIT_MS: '1',
+    FACTORY_EGRESS_BUDGET_MS: '50',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    await worker.serve('m1', { once: true })
+    const turns = readFileSync(log, 'utf8').trim().split('\n')
+    expect(turns.length).toBeGreaterThan(1) // it tried more than once before giving up
+    for (const t of turns) expect(t).toEndWith('--model m1 the brief') // no session: reruns the brief every time
+    const polled = worker.poll(0)
+    expect(polled.status).toBe('idle')
+    expect(polled.session).toBeUndefined()
+    expect(polled.egress?.tries).toBeGreaterThanOrEqual(1)
+    expect(polled.egress?.last).toContain('upstream connect error')
+  } finally {
+    process.env = saved
+  }
+})
+
+test("an outage's budget and since survive a restart and a turn change: a queued prompt gets exactly one more try, then idle", async () => {
+  const own = join(dir, 'own-egress-carry')
+  const repo = join(dir, 'repo-egress-carry')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const log = join(dir, 'claude-egress-carry.log')
+  const claude = join(dir, 'claude-egress-carry')
+  // still refuses every call: only the already-spent budget, not this call's own, decides when to give up
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+echo "$*" >> ${log}
+echo '{"type":"system","subtype":"init","session_id":"s1"}'
+echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect error or disconnect/reset before headers: remote connection failure"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    FACTORY_EGRESS_WAIT_MS: '1',
+    FACTORY_EGRESS_BUDGET_MS: '5000',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  // a prior session already past its egress budget, and a queued prompt (the manager's reply) waiting on it
+  const since = Date.now() - 6000
+  writeFileSync(
+    join(own, 'state.json'),
+    JSON.stringify({ status: 'idle', session: 's1', pid: process.pid, egress: { since, tries: 3, last: 'old' } }),
+  )
+  worker.prompt(Buffer.from('a reply').toString('base64'))
+  try {
+    await worker.serve('m1', { once: true })
+    const turns = readFileSync(log, 'utf8').trim().split('\n')
+    expect(turns).toHaveLength(1) // the already-spent budget stops it after exactly one more try
+    expect(turns[0]).toEndWith('--model m1 --resume s1 a reply') // the queued prompt itself, not a retry prompt
+    const polled = worker.poll(0)
+    expect(polled.status).toBe('idle')
+    expect(polled.session).toBe('s1')
+    expect(polled.egress?.since).toBe(since) // carried over, not reset to this call's own start
+    expect(polled.egress?.tries).toBe(4) // 3 before the restart, plus this one try
+  } finally {
+    process.env = saved
+  }
 })
 
 test("a rig's shared Dolt remote is what the VM's beads clone from, with only a placeholder password", () => {
@@ -657,6 +852,56 @@ test('a file sent in parts appears whole once its last part is in, in any order,
   } finally {
     process.env.FACTORY_WORKER_DIR = saved
   }
+})
+
+test("egressFailure finds the egress gateway's known signature in a Claude result and ignores other refusals", () => {
+  const resultLine = (is_error: boolean, result: string) =>
+    JSON.stringify({ type: 'result', is_error, result })
+  const egressText =
+    'API Error: 503 upstream connect error or disconnect/reset before headers. reset reason: remote connection failure, transport failure reason: TLS_error: ' +
+    'X'.repeat(400) +
+    ' CERTIFICATE_VERIFY_FAILED'
+  const out = [
+    '{"type":"system","subtype":"init","session_id":"s1"}',
+    resultLine(true, egressText),
+  ].join('\n')
+  const hit = worker.egressFailure('claude', out, '')
+  expect(hit).not.toBeNull()
+  expect(hit!.length).toBeLessThanOrEqual(300)
+  expect(hit).toStartWith('API Error: 503 upstream connect error')
+
+  const success = [
+    '{"type":"system","subtype":"init","session_id":"s1"}',
+    resultLine(false, 'all done'),
+  ].join('\n')
+  expect(worker.egressFailure('claude', success, '')).toBeNull()
+
+  const rateLimited = resultLine(true, 'rate_limit_error: Number of request tokens has exceeded your limit')
+  expect(worker.egressFailure('claude', rateLimited, '')).toBeNull()
+
+  const overloaded = resultLine(
+    true,
+    'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+  )
+  expect(worker.egressFailure('claude', overloaded, '')).toBeNull()
+
+  const otherError = resultLine(true, 'API Error: 400 invalid_request_error: bad input')
+  expect(worker.egressFailure('claude', otherError, '')).toBeNull()
+})
+
+test('egressFailure for codex and pi scans the last 4000 chars of stdout+stderr', () => {
+  const tail = `connecting...\n${'x'.repeat(4100)}upstream connect error or disconnect/reset before headers: remote connection failure`
+  const hit = worker.egressFailure('codex', tail, '')
+  expect(hit).not.toBeNull()
+  expect(hit!.length).toBeLessThanOrEqual(300)
+  expect(worker.egressFailure('pi', 'a clean run', 'no trouble here')).toBeNull()
+  // the signature outside the last 4000 chars of out+err never matches
+  const farAway = `upstream connect error or disconnect/reset before headers\n${'y'.repeat(5000)}`
+  expect(worker.egressFailure('codex', farAway, '')).toBeNull()
+  // the signature followed by more than 300 chars of other output: the match itself comes back,
+  // not whatever the 4000-char window happens to end on
+  const farAfter = `upstream connect error or disconnect/reset before headers: boom\n${'z'.repeat(400)}`
+  expect(worker.egressFailure('codex', farAfter, '')).toContain('upstream connect error')
 })
 
 test("envtest's kube-apiserver runs through a wrapper that advertises 127.0.0.1, the VM's address being link-local", async () => {

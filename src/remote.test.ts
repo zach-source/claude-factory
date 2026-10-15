@@ -66,8 +66,8 @@ test("inside a VM, a worker's report and mail wait in the outbox instead of touc
 })
 
 const def: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'do a', next: { ready: 'done' } } } }
-/** a run as the tick that launched its task left it: working at a, its worker ax://t; returns the worker's seq */
-function launched(id: string, policy = true) {
+/** a run as the tick that launched its task left it: working at a, its worker ax://<task>; returns the worker's seq */
+function launched(id: string, policy = true, task = 't') {
   const runDir = join(home, 'runs', id)
   const worktree = join(dir, 'wt')
   mkdirSync(runDir, { recursive: true })
@@ -87,8 +87,8 @@ function launched(id: string, policy = true) {
   const actor = createActor(compile(def)).start()
   actor.send({ type: 'TICK', at: Date.now() })
   const seq = actor.getSnapshot().context.seq
-  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: Date.now() })
-  writeFileSync(join(runDir, 't.json'), JSON.stringify({ node: 'a', seq, policy }))
+  actor.send({ type: 'SPAWNED', seq, pane: `ax://${task}`, at: Date.now() })
+  writeFileSync(join(runDir, `${task}.json`), JSON.stringify({ node: 'a', seq, policy }))
   writeFileSync(
     join(runDir, 'state.json'),
     JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
@@ -112,7 +112,32 @@ esac
   chmodSync(join(dir, 'ax'), 0o755)
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
+// the default FACTORY_AX_CAPABILITIES (SETUID,SETGID,CHOWN): every `ax ssh` command runs as the worker user
+const AS_WORKER = 'setpriv --reuid=worker --regid=worker --init-groups env HOME=/home/worker USER=worker'
 const inbox = (id: string) => readFileSync(join(home, 'runs', id, 'inbox.jsonl'), 'utf8')
+/** the fake cluster, but a distinct poll per task (ax://<task>): lets two runs' workers disagree at once */
+function clusterByTask(phase: string, pollByTask: Record<string, object>) {
+  rmSync(calls, { force: true })
+  for (const [task, poll] of Object.entries(pollByTask)) writeFileSync(join(dir, `ssh-${task}`), JSON.stringify(poll))
+  const cases = Object.keys(pollByTask)
+    .map(task => `    ${task}) cat ${dir}/ssh-${task} ;;`)
+    .join('\n')
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3" in
+  get) printf 'status:\\n  phase: ${phase}\\n' ;;
+  ssh)
+    case "$4" in
+${cases}
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+}
 
 test("a tick replays an AX worker's report from its outbox, and the task goes when the station ends", () => {
   const seq = launched('r1')
@@ -124,7 +149,7 @@ test("a tick replays an AX worker's report from its outbox, and the task goes wh
   expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1', node: 'a', agent: 'idle', pane: 'ax://t' })
   expect(readFileSync(join(home, 'runs', 'r1', 't.cursor'), 'utf8')).toBe('1')
   expect(inbox('r1')).toContain('"outcome":"ready"')
-  expect(called()).toContain('-a factory ssh t -- factory worker poll 0')
+  expect(called()).toContain(`-a factory ssh t -- ${AS_WORKER} factory worker poll 0`)
 
   const second = factory(['tick'])
   expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1', node: 'done' })
@@ -152,7 +177,7 @@ test('a worker waiting on the manager is suspended, and woken by the answer befo
   cluster('Running', { status: 'idle', lines: [] })
   factory(['tick'])
   const text = Buffer.from('[factory mail from manager] postgres').toString('base64')
-  expect(called()).toContain(`-a factory ssh t -- factory worker prompt ${text}`)
+  expect(called()).toContain(`-a factory ssh t -- ${AS_WORKER} factory worker prompt ${text}`)
   rmSync(join(home, 'runs', 'r2'), { recursive: true })
 })
 
@@ -189,14 +214,69 @@ test('files too big for the env (the brief) go to the VM over ssh in parts once 
   writeFileSync(join(home, 'runs', 'r6', 't.beads.jsonl.gz'), Bun.gzipSync('{"id":"x-1"}'))
   cluster('Running', { status: 'working', lines: [] })
   factory(['tick'])
-  expect(called()).toContain('ssh t -- factory worker put brief.md 0 3 ')
-  expect(called()).toContain('ssh t -- factory worker put brief.md 2 3 ')
-  expect(called()).toContain('ssh t -- factory worker put beads.jsonl.gz 0 1 ')
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put brief.md 0 3 `)
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put brief.md 2 3 `)
+  expect(called()).toContain(`ssh t -- ${AS_WORKER} factory worker put beads.jsonl.gz 0 1 `)
   expect(JSON.parse(readFileSync(side, 'utf8')).put).toEqual([])
   cluster('Running', { status: 'working', lines: [] })
   factory(['tick'])
   expect(called()).not.toContain('worker put')
   rmSync(join(home, 'runs', 'r6'), { recursive: true })
+})
+
+test('a put that fails over ax ssh leaves the station pending inside its 5 min grace, then fails the attempt with the ax error', () => {
+  launched('r7')
+  const side = join(home, 'runs', 'r7', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['brief.md'] }),
+  )
+  writeFileSync(join(home, 'runs', 'r7', 't.brief.md'), 'hello')
+  rmSync(calls, { force: true })
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put"*) echo 'EACCES: permission denied, mkdir /workspace/w/.factory-worker/put' >&2; exit 1 ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+
+  const first = factory(['tick'])
+  const row1 = JSON.parse(first.out).runs.find((r: { id: string }) => r.id === 'r7')
+  expect(row1).toMatchObject({ agent: 'pending' }) // inside the grace: the station is still working
+  const afterFirst = JSON.parse(readFileSync(side, 'utf8'))
+  expect(afterFirst.putError).toContain('EACCES')
+  expect(afterFirst.put).toEqual(['brief.md']) // not cleared: the put never landed
+  expect(typeof afterFirst.putFailedAt).toBe('number')
+
+  // backdate the first failure past the 5 min grace, as if this had been failing a while
+  writeFileSync(side, JSON.stringify({ ...afterFirst, putFailedAt: Date.now() - 6 * 60_000 }))
+  const second = factory(['tick'])
+  const row2 = JSON.parse(second.out).runs.find((r: { id: string }) => r.id === 'r7')
+  expect(row2.agent).toBe('failed')
+  expect(row2.error).toContain('EACCES')
+  rmSync(join(home, 'runs', 'r7'), { recursive: true })
+})
+
+test("a task gone because serve exited fails the attempt with serve's log, not just \"was closed\"", () => {
+  launched('r8')
+  cluster('Running', { status: 'exited', log: 'serve died: Error: the laptop never sent brief.md', lines: [] })
+  const out = factory(['tick'])
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toContain('serve died: Error: the laptop never sent brief.md')
+  expect(existsSync(join(home, 'runs', 'r8', 't.gone'))).toBe(true)
+  rmSync(join(home, 'runs', 'r8'), { recursive: true })
 })
 
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
@@ -232,6 +312,103 @@ test('a VM worker refused for the usage limit is held until the reset, not nudge
   ) // the manager is told
   expect(called()).not.toContain('worker prompt')
   rmSync(join(home, 'runs', 'r5'), { recursive: true })
+})
+
+test('an egress outage mails the manager once, spends no idle nudge while serve retries, and fails named once it gives up', () => {
+  launched('r7')
+  const since = Date.now() - 120_000
+  const egress = (tries: number) => ({
+    since,
+    tries,
+    last: 'upstream connect error or disconnect/reset before headers: remote connection failure',
+  })
+  cluster('Running', { status: 'working', session: 's1', lines: [], egress: egress(1) })
+  factory(['tick']) // learns the session, sees the outage: mails the manager once
+  expect(called()).not.toContain('worker prompt')
+
+  cluster('Running', { status: 'working', session: 's1', lines: [], egress: egress(2) }) // same outage (same since)
+  factory(['tick'])
+  expect(called()).not.toContain('worker prompt')
+  const afterTwo = readFileSync(join(home, 'runs', 'r7', 'state.json'), 'utf8')
+  const mails = afterTwo.match(/egress gateway is refusing/g) ?? []
+  expect(mails).toHaveLength(1) // not a second mail for the same outage
+
+  cluster('Running', { status: 'idle', session: 's1', lines: [], egress: egress(5) }) // serve gave up
+  const failed = factory(['tick'])
+  expect(JSON.parse(failed.out).runs[0]).toMatchObject({ id: 'r7' })
+  expect(called()).not.toContain('worker prompt') // no nudge spent on a known cause
+  const state = readFileSync(join(home, 'runs', 'r7', 'state.json'), 'utf8')
+  expect(state).toContain('egress gateway: model API unreachable since')
+  expect(state).toContain('(5 retries)')
+  rmSync(join(home, 'runs', 'r7'), { recursive: true })
+})
+
+test('a single retry is pluralized in the egress FAIL reason, like the mail already is', () => {
+  launched('r12')
+  cluster('Running', {
+    status: 'idle',
+    session: 's1',
+    lines: [],
+    egress: { since: Date.now() - 1_000, tries: 1, last: 'upstream connect error or disconnect/reset before headers' },
+  })
+  factory(['tick'])
+  const state = readFileSync(join(home, 'runs', 'r12', 'state.json'), 'utf8')
+  expect(state).toContain('(1 retry)')
+  expect(state).not.toContain('(1 retries)')
+  rmSync(join(home, 'runs', 'r12'), { recursive: true })
+})
+
+test('two runs in the same egress outage each get their own mail, not a shared dedup file', () => {
+  launched('r8', true, 't1')
+  launched('r9', true, 't2')
+  const egress = (since: number) => ({
+    since,
+    tries: 1,
+    last: 'upstream connect error or disconnect/reset before headers: remote connection failure',
+  })
+  const pollByTask = {
+    t1: { status: 'working', session: 's1', lines: [], egress: egress(Date.now() - 60_000) },
+    t2: { status: 'working', session: 's2', lines: [], egress: egress(Date.now() - 30_000) },
+  }
+  clusterByTask('Running', pollByTask)
+  factory(['tick']) // both outages are new: one mail each
+  clusterByTask('Running', pollByTask) // unchanged: the same two outages, a second tick
+  factory(['tick'])
+  const mailsIn = (id: string) =>
+    (readFileSync(join(home, 'runs', id, 'state.json'), 'utf8').match(/egress gateway is refusing/g) ?? [])
+      .length
+  expect(mailsIn('r8')).toBe(1) // not a second mail for the same outage
+  expect(mailsIn('r9')).toBe(1) // r9's own outage, not blocked or duplicated by r8's
+  rmSync(join(home, 'runs', 'r8'), { recursive: true })
+  rmSync(join(home, 'runs', 'r9'), { recursive: true })
+})
+
+test('an egress outage suppresses the stall guard: standing still that long alone is not nudged or failed', () => {
+  const seq = launched('r11')
+  const tail = 'same output, never changes while serve retries the turn itself'
+  const since = Date.now() - 60_000
+  const poll = {
+    status: 'working',
+    session: 's1',
+    lines: [],
+    tail,
+    egress: { since, tries: 1, last: 'upstream connect error or disconnect/reset before headers' },
+  }
+  cluster('Running', poll)
+  factory(['tick']) // learns the session; tail is not read until the session is known
+  // the stall guard's own fingerprint: tail unchanged since long before STALL_MS (20 min), and already
+  // nudged once, so with no egress this would fail on this very tick (see `stalled` in src/cli.ts)
+  const sig = `${tail.length}${tail.slice(-300)}`
+  writeFileSync(
+    join(home, 'runs', 'r11', 'progress.json'),
+    JSON.stringify({ seq, sig, at: Date.now() - 41 * 60_000, nudged: true }),
+  )
+  cluster('Running', poll) // the same outage, still working, tail still unchanged
+  factory(['tick'])
+  expect(called()).not.toContain('worker prompt') // no nudge, no fail delivered to the worker
+  const state = readFileSync(join(home, 'runs', 'r11', 'state.json'), 'utf8')
+  expect(state).not.toContain('stalled: no output for')
+  rmSync(join(home, 'runs', 'r11'), { recursive: true })
 })
 
 test("a worker's address picks its runner: a bare pane id is herdr's, `<name>://` is that runner's", () => {

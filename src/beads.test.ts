@@ -58,6 +58,58 @@ test('a heartbeat bd cannot make keeps the claim: lost only to a named other ass
   }
 })
 
+test('human and owned: bd null means no human beads, and owned keeps unassigned beads carrying owner decisions', () => {
+  const bin = join(tmpdir(), `fake-bd-human-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const script = [
+    '#!/bin/sh',
+    'case "$1 $2" in',
+    '"human list") echo "$HUMAN_JSON";;',
+    '"ready --json") echo "$READY_JSON";;',
+    '*) echo unexpected "$*" >&2; exit 1;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    process.env.HUMAN_JSON = 'null'
+    expect(b.human()).toEqual([])
+    process.env.HUMAN_JSON = '[{"id":"fx-1","title":"t"}]'
+    expect(b.human()).toEqual([{ id: 'fx-1', title: 't' }])
+
+    process.env.READY_JSON = JSON.stringify([
+      bead('fx-2', { metadata: { owner_decisions: {} } }),
+      bead('fx-3', { metadata: { owner_decisions: {} }, assignee: 'someone' }),
+      bead('fx-4'),
+    ])
+    expect(b.owned().map(x => x.id)).toEqual(['fx-2'])
+  } finally {
+    process.env.PATH = path
+    delete process.env.HUMAN_JSON
+    delete process.env.READY_JSON
+  }
+})
+
+test('respond answers a human-flagged bead through bd human respond', () => {
+  const bin = join(tmpdir(), `fake-bd-respond-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho "$*" >> ${log}\n`)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/person')
+    b.respond('fx-7', 'go with postgres')
+    expect(readFileSync(log, 'utf8').trim()).toBe('human respond fx-7 -r go with postgres --actor factory/person')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
 test('a rejected bead stays open, out of the queue, saying who rejected it, when and why; queuing takes it back', () => {
   const bin = join(tmpdir(), `fake-bd-reject-${process.pid}`)
   mkdirSync(bin, { recursive: true })

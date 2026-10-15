@@ -28,7 +28,9 @@ const stateFile = () => join(own(), 'state.json')
 const serveLog = () => join(own(), 'serve.log')
 const logTail = () => (existsSync(serveLog()) ? readFileSync(serveLog(), 'utf8').slice(-2000) : '')
 
-type State = { status: 'working' | 'idle'; session?: string; pid: number }
+/** an egress-gateway outage serve is retrying a turn through (egressFailure): see docs/remote-runner.md */
+export type Egress = { since: number; tries: number; last: string }
+type State = { status: 'working' | 'idle'; session?: string; pid: number; egress?: Egress }
 const state = (): State | null =>
   existsSync(stateFile()) ? JSON.parse(readFileSync(stateFile(), 'utf8')) : null
 const save = (s: State) => writeFileSync(stateFile(), JSON.stringify(s))
@@ -182,7 +184,46 @@ export function sessionIn(h: Harness, out: string) {
   if (h === 'codex') return out.match(/"type":"thread\.started"[^\n]*?"thread_id":"([^"]+)"/)?.[1]
 }
 
-/** one turn of the station's agent; returns its session id, given the one before */
+/**
+ * Envoy's local reply for a failed upstream connect on the dynamic forward proxy to api.anthropic.com (see
+ * docs/remote-runner.md): ate-system/atenet-egress denies every new connection while agent-vault's credential
+ * is stale, then keeps failing some of them (its auto_san_validation) until a rollout restart, sometimes not
+ * even then. Only this exact Envoy text counts: a generic 5xx or a rate-limit refusal is Claude's own, which it
+ * already retries, so matching it here would mask a real API failure instead of the gateway's
+ */
+const EGRESS_SIGNATURE = /upstream connect error or disconnect\/reset before headers/i
+
+/**
+ * the egress gateway's signature in a finished turn's output, clipped to 300 chars; null for a success, a
+ * usage-limit or overload refusal, or any other error. Claude's headless stream ends in one `result` line,
+ * `is_error` true or false; codex and pi have no fixed shape, so their last 4000 chars of stdout+stderr are
+ * searched instead
+ */
+export function egressFailure(h: Harness, out: string, err: string): string | null {
+  if (h === 'claude') {
+    for (const line of out.split('\n').reverse()) {
+      if (!line.includes('"type":"result"')) continue
+      try {
+        const e = JSON.parse(line)
+        if (e.type !== 'result') continue
+        if (!e.is_error) return null
+        const text = String(e.result ?? '')
+        return EGRESS_SIGNATURE.test(text) ? text.slice(0, 300) : null
+      } catch {
+        // the first line of a cut stream
+      }
+    }
+    return null
+  }
+  const text = `${out}${err}`.slice(-4000)
+  if (!EGRESS_SIGNATURE.test(text)) return null
+  // the matching line, not whatever the 4000-char window happens to end on: the signature can sit
+  // well before the window's tail, with unrelated agent output after it
+  const line = text.split('\n').findLast(l => EGRESS_SIGNATURE.test(l))
+  return (line ?? text).slice(0, 300)
+}
+
+/** one turn of the station's agent: its session id, given the one before, and the egress gateway's failure, if it was that */
 async function turn(text: string, model?: string, session?: string) {
   const h = harness()
   // pi has no output to read an id from: it takes one on first use
@@ -196,16 +237,66 @@ async function turn(text: string, model?: string, session?: string) {
   })
   // env spelled out: Bun's default is the env at startup, without what setup() added
   const p = Bun.spawn(argv, { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'pipe' })
-  const err = new Response(p.stderr).text()
+  const errP = new Response(p.stderr).text()
   const out = await new Response(p.stdout).text()
+  const err = await errP
   const code = await p.exited
-  if (code !== 0 || (await err))
+  if (code !== 0 || err) appendFileSync(serveLog(), `${new Date().toISOString()} ${h} exited ${code}: ${err.slice(-4000)}\n`)
+  appendFileSync(join(own(), `${h}.jsonl`), out)
+  return { session: h === 'pi' ? id : (sessionIn(h, out) ?? session), egress: egressFailure(h, out, err) }
+}
+
+/** sent instead of the queued prompt (or the brief again, with no session yet) on a retry: see turnWithRetry */
+export const EGRESS_RETRY_PROMPT =
+  'The last turn failed on the egress gateway refusing a new connection to the model API (see above). Try again.'
+
+const egressWaitMs = () => Number(process.env.FACTORY_EGRESS_WAIT_MS ?? 30_000)
+const egressBudgetMs = () => Number(process.env.FACTORY_EGRESS_BUDGET_MS ?? 30 * 60_000)
+
+/**
+ * one turn, retried in place while it ends on the egress gateway's known failure: the same session (once
+ * there is one) and the continuation prompt, else the brief again; backoff doubles from FACTORY_EGRESS_WAIT_MS
+ * (default 30s), capped at 10x that (5 min at the default), for up to FACTORY_EGRESS_BUDGET_MS (default 30
+ * min) counted from the outage's own start (`initial`, serveTurns' own `egress`), not this call's: a turn
+ * that gives up still has its queued prompt replaced by the manager's reply (see reconcile's TIME_UP warn),
+ * and the outage is almost always still open when that reply's turn starts, so the budget has to span every
+ * call it takes, not restart counting from zero each time. `onEgress` is given the session each call learns,
+ * too (not just the egress state), so a crash or restart mid-retry resumes the session already opened, rather
+ * than silently losing it and re-briefing. It records the outage for poll as it goes, and clears it once a
+ * turn gets through
+ */
+async function turnWithRetry(
+  text: string,
+  model: string | undefined,
+  session: string | undefined,
+  onEgress: (e: Egress | undefined, session?: string) => void,
+  initial?: Egress,
+) {
+  const waitMs = egressWaitMs()
+  const budgetMs = egressBudgetMs()
+  const capMs = waitMs * 10
+  let cur = session
+  let prompt = text
+  let tries = initial?.tries ?? 0
+  let since = initial?.since ?? 0
+  for (;;) {
+    const r = await turn(prompt, model, cur)
+    cur = r.session
+    if (!r.egress) {
+      onEgress(undefined, cur)
+      return cur
+    }
+    tries++
+    since ||= Date.now()
+    onEgress({ since, tries, last: r.egress }, cur)
     appendFileSync(
       serveLog(),
-      `${new Date().toISOString()} ${h} exited ${code}: ${(await err).slice(-4000)}\n`,
+      `${new Date().toISOString()} egress failure, retry ${tries}: ${r.egress.slice(0, 200)}\n`,
     )
-  appendFileSync(join(own(), `${h}.jsonl`), out)
-  return h === 'pi' ? id : (sessionIn(h, out) ?? session)
+    if (Date.now() - since >= budgetMs) return cur
+    await Bun.sleep(Math.min(waitMs * 2 ** (tries - 1), capMs))
+    prompt = cur ? EGRESS_RETRY_PROMPT : text
+  }
 }
 
 function sh(cmd: string[], cwd?: string) {
@@ -448,18 +539,29 @@ export async function serve(model?: string, o: { idleMs?: number; once?: boolean
 
 async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) {
   mkdirSync(prompts(), { recursive: true })
+  // read once: a save below with no egress field would otherwise wipe out an outage a crash or
+  // suspend left in progress, resetting its budget on every restart instead of carrying it through
+  const prior = state()
   // working from the start: until the first turn there is no state, which poll would read as exited
-  save({ status: 'working', session: state()?.session, pid: process.pid })
+  save({ status: 'working', session: prior?.session, pid: process.pid, egress: prior?.egress })
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
-  let session = state()?.session
-  const set = (status: State['status']) => save({ status, session, pid: process.pid })
+  let session = prior?.session
+  let egress: Egress | undefined = prior?.egress
+  const set = (status: State['status']) => save({ status, session, pid: process.pid, egress })
+  // cur: the session the retried turn itself just learned, which may be ahead of the outer `session`
+  // (not yet assigned, since turnWithRetry hasn't returned) while an outage is still being retried
+  const onEgress = (e: Egress | undefined, cur?: string) => {
+    egress = e
+    if (cur) session = cur
+    set('working')
+  }
   if (!session) {
     // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
-    session = await turn(brief, model)
+    session = await turnWithRetry(brief, model, undefined, onEgress, egress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
@@ -471,8 +573,8 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     }
     set('working')
     const file = join(prompts(), next)
-    session = await turn(readFileSync(file, 'utf8'), model, session)
-    rmSync(file) // after the turn: a prompt cut off by a crash runs again
+    session = await turnWithRetry(readFileSync(file, 'utf8'), model, session, onEgress, egress)
+    rmSync(file) // after the turn (retried in place through an egress outage): a prompt cut off by a crash runs again
   }
 }
 
@@ -486,6 +588,7 @@ export function poll(cursor: number) {
     lines: lines.slice(cursor),
     tail: lastTurn(s?.session),
     log: logTail(),
+    ...(s?.egress && { egress: s.egress }),
   }
 }
 
