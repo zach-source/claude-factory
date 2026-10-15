@@ -147,6 +147,9 @@ export function walk(dir: string) {
 
 export const topicOf = (n: Note) => dirname(n.path)
 const dot = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i]!, 0)
+// a higher tier already survived a dream's judgment, so it outranks a short note at a near-equal match;
+// a short note still wins a search its tier mate loses outright (see the memory-long-0.005-vs-0.02 test)
+export const TIER_BONUS: Record<Tier, number> = { short: 0, long: 0.01, fact: 0.02 }
 /** a note of another rig never comes up; a note with no rig holds everywhere */
 export const rank = (
   notes: Note[],
@@ -160,7 +163,8 @@ export const rank = (
     .map(n => {
       const own = dot(vec(n), query)
       const t = topicVec(topicOf(n))
-      return { note: n, score: t ? (1 - TOPIC_WEIGHT) * own + TOPIC_WEIGHT * dot(t, query) : own }
+      const base = t ? (1 - TOPIC_WEIGHT) * own + TOPIC_WEIGHT * dot(t, query) : own
+      return { note: n, score: base + TIER_BONUS[n.tier ?? 'short'] }
     })
     .sort((a, b) => b.score - a.score)
 
@@ -201,16 +205,42 @@ async function vectors(dir: string, all: Note[], text = textOf, name = '.index.j
   return (n: Note) => vecs[n.path]!.vec
 }
 
+/** each bullet in CORE.md, as its own fact note: path CORE.md#<8 hex of its sha1>, rig from its `## rig:` section */
+export function coreNotes(dir: string): Note[] {
+  const file = join(dir, 'CORE.md')
+  if (!existsSync(file)) return []
+  let rig: string | undefined
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .flatMap(line => {
+      const h = /^##\s+rig:\s*(\S+)/.exec(line)
+      if (h) {
+        rig = h[1]
+        return []
+      }
+      if (/^##\s/.test(line)) {
+        rig = undefined
+        return []
+      }
+      const m = /^-\s+(.*\S)\s*$/.exec(line)
+      if (!m || m[1]!.startsWith('(cut:')) return []
+      const summary = m[1]!
+      const id = createHash('sha1').update(summary).digest('hex').slice(0, 8)
+      return [{ path: `CORE.md#${id}`, summary, rig, body: summary, tier: 'fact' as const }]
+    })
+}
+
 export async function search(
   dir: string,
   query: string,
   { rig, limit = 5 }: { rig?: string; limit?: number } = {},
 ) {
   const { notes, topics } = walk(dir)
-  const vec = await vectors(dir, [...notes, ...topics.values()])
+  const all = [...notes, ...coreNotes(dir)]
+  const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])
   return close(
-    rank(notes, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig),
+    rank(all, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig),
     limit,
   )
 }

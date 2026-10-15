@@ -57,6 +57,47 @@ test('a LONG.md entry keeps its id, rig, from, at and body through a write and a
   expect(formatLong(entries)).toContain('tier: long')
 })
 
+test('rank() breaks a near-tie for a higher tier, but a clearly worse match still loses', () => {
+  const note = (path: string, tier: Note['tier']): Note => ({ path, summary: path, body: '', tier })
+  const vecs: Record<string, number[]> = {
+    'beads/short.md': [1, 0], // own score 1 exactly (normalized query [1,0])
+    'beads/long-close.md': [0.995, Math.sqrt(1 - 0.995 ** 2)], // 0.005 below short, within the 0.01 bonus
+    'beads/long-far.md': [0.97, Math.sqrt(1 - 0.97 ** 2)], // 0.02-ish below short, past the 0.01 bonus
+  }
+  const found = rank(
+    [note('beads/short.md', 'short'), note('beads/long-close.md', 'long')],
+    n => vecs[n.path]!,
+    () => undefined,
+    [1, 0],
+  )
+  expect(found.map(f => f.note.path)).toEqual(['beads/long-close.md', 'beads/short.md'])
+
+  const stillLoses = rank(
+    [note('beads/short.md', 'short'), note('beads/long-far.md', 'long')],
+    n => vecs[n.path]!,
+    () => undefined,
+    [1, 0],
+  )
+  expect(stillLoses.map(f => f.note.path)).toEqual(['beads/short.md', 'beads/long-far.md'])
+})
+
+test('search indexes CORE.md bullets as fact notes, scoped to their rig section', async () => {
+  const dir = join(tmpdir(), `memory-core-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'CORE.md'),
+    ['- always search the memory before you start a station', '## rig: fabriek', '- use uv run --frozen, never bare pip'].join('\n'),
+  )
+  const [top] = await search(dir, 'how do I run python commands in this rig?', { rig: 'fabriek' })
+  expect(top!.note.path).toMatch(/^CORE\.md#[0-9a-f]{8}$/)
+  expect(top!.note.summary).toContain('uv run --frozen')
+  expect(top!.note.tier).toBe('fact')
+  // another rig never sees fabriek's CORE bullet
+  const other = await search(dir, 'how do I run python commands in this rig?', { rig: 'web' })
+  expect(other.some(f => f.note.summary.includes('uv run --frozen'))).toBe(false)
+}, 60_000)
+
 test('walk() turns each LONG.md entry into one note, skips .archive, and outline counts entries', () => {
   const dir = join(tmpdir(), `memory-long-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
