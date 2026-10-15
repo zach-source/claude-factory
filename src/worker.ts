@@ -700,12 +700,14 @@ function httpGetUrl(g: DevenvHttpGet): string {
  * If the entry has readyExec, bash runs its script with a 4s timeout, as devenv does for its probe.
  * The given env already merges the process's own env over the serve env (claude-factory-5sn.7).
  *
- * If the process entry has readyHttp, waitReady builds its URL from the {host,port,path,scheme} object, then
- * fetches that URL (claude-factory-5sn.5). A URL string there made fetch() throw.
- * So every HTTP-probed service used to fail after the whole wait time.
+ * If the process entry has readyHttp, waitReady builds the URL from the {host,port,path,scheme} object.
+ * It fetches the URL with a 4s timeout (claude-factory-5sn.5, claude-factory-iap). A URL string there
+ * made fetch() throw, so each HTTP-probed service used to fail at the end of the full wait time. Without
+ * its own timeout, a connection that opens but never answers can also hold one fetch call past waitMs.
  *
- * If the process entry has neither readyExec nor readyHttp, waitReady counts the process ready after 2s.
- * waitReady never throws. A failed probe, for example a bad script or a refused connection, counts as not ready yet.
+ * If the process entry has neither readyExec nor readyHttp, waitReady counts the process ready at 2s.
+ * waitReady does not throw. A failed probe counts as not ready yet. Causes include a bad script, a
+ * refused connection and a probe timeout.
  */
 async function waitReady(
   p: DevenvProcess,
@@ -718,19 +720,19 @@ async function waitReady(
   exited.then(code => (exitCode = code))
   for (;;) {
     if (exitCode !== undefined) return { ok: false, detail: `exit ${exitCode}` }
-    const elapsed = Date.now() - startedAt
     let ready = false
     try {
       if (p.readyExec) {
         ready = Bun.spawnSync(['bash', '-c', p.readyExec], { cwd: p.cwd ?? repo(), env, timeout: 4000 }).exitCode === 0
       } else if (p.readyHttp) {
-        ready = (await fetch(httpGetUrl(p.readyHttp))).ok
+        ready = (await fetch(httpGetUrl(p.readyHttp), { signal: AbortSignal.timeout(4000) })).ok
       } else {
-        ready = elapsed >= 2000
+        ready = Date.now() - startedAt >= 2000
       }
     } catch {
       ready = false
     }
+    const elapsed = Date.now() - startedAt
     if (ready) return { ok: true, detail: `ready in ${Math.round(elapsed / 1000)}s` }
     if (elapsed >= waitMs) return { ok: false, detail: `not ready after ${Math.round(elapsed / 1000)}s` }
     await Bun.sleep(1000)
