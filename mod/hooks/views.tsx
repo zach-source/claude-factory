@@ -42,6 +42,8 @@ export type Actions = {
   /** runs a factory CLI command, toasts its answer and ticks */
   cli: (...args: string[]) => void
   show: (view: FactoryView, run?: string) => void
+  /** opens a run's card in place on the board (an id), or closes whichever card is open (null) */
+  select: (run: string | null) => void
   draft: (patch: Partial<FactoryDraft>) => void
   decide: (run: string, outcome: string) => void
   /** the person's quick answer to a worker's mail: approve, reject, or what they typed */
@@ -87,12 +89,11 @@ const edgeText = (e: FactoryEdge) =>
 
 const TABS: [FactoryView, string, string][] = [
   ['board', 'Board', '1'],
-  ['run', 'Run', '2'],
-  ['backlog', 'Backlog', '3'],
-  ['mail', 'Mail', '4'],
-  ['rigs', 'Rigs', '5'],
-  ['prs', 'PRs', '6'],
-  ['interview', 'Interview', '7'],
+  ['backlog', 'Backlog', '2'],
+  ['mail', 'Mail', '3'],
+  ['rigs', 'Rigs', '4'],
+  ['prs', 'PRs', '5'],
+  ['interview', 'Interview', '6'],
 ]
 
 function rule({ ui, width }: Base, title: string, note = '') {
@@ -216,131 +217,26 @@ export function header(p: Base, board: FactoryBoard, history: number[], view: Fa
   )
 }
 
-function card(p: Base, r: FactoryRun, draft: FactoryDraft) {
-  const { Box, Text, Button } = p.ui
-  const s = standing(r, p.now)
-  const timer = r.sub === 'working' && r.since && !r.gate ? ` · ${dur(p.now - r.since)}` : ''
-  const tries = r.attempt && r.attempt > 1 ? ` · try ${r.attempt}/${r.attempts}` : ''
-  return (
-    <Box key={`card-${r.id}`} flexDirection="column" borderStyle="round" borderColor={s.color} paddingX={1}>
-      <Box justifyContent="space-between">
-        <Text wrap="truncate-end">
-          <Text color="magenta">{r.rig ? `${r.rig}  ` : ''}</Text>
-          <Text bold>{r.id}</Text>
-          <Text color="cyan">{r.bead ? `  ${r.bead}` : ''}</Text>
-        </Text>
-        <Text color={s.color}>
-          {r.node} · {s.word}
-          {tries}
-          {timer}
-        </Text>
-      </Box>
-      {r.goal && <Text wrap="truncate-end">{line(r.goal, 300)}</Text>}
-      {trail(p, r)}
-      {r.last && (
-        <Text dimColor wrap="truncate-end">
-          └ {r.last.node} {r.last.outcome}: {line(r.last.summary, 300)}
-        </Text>
-      )}
-      {r.error && (
-        <Text color="red" wrap="truncate-end">
-          ! {line(r.error, 300)}
-        </Text>
-      )}
-      {r.gate && gate(p, r, draft)}
-      <Box gap={1}>
-        <Button key={`open-${r.id}`} label="open" onPress={() => p.act.show('run', r.id)} />
-        {r.pane && (
-          <Button key={`jump-${r.id}`} label="jump to worker" dimColor onPress={() => p.act.jump(r.pane!)} />
-        )}
-        {r.sub === 'stuck' && (
-          <Button
-            key={`retry-${r.id}`}
-            label="retry"
-            variant="primary"
-            onPress={() => p.act.cli('retry', r.id)}
-          />
-        )}
-        <Button key={`abort-${r.id}`} label="abort" dimColor onPress={() => p.act.cli('abort', r.id)} />
-      </Box>
-    </Box>
-  )
-}
-
-export function boardView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
-  const { Box, Text, Button } = p.ui
-  const live = board.runs.filter(isLive).sort((a, b) => urgency(a) - urgency(b))
-  // newest first; the rest stay until `factory rm`
-  const over = board.runs.filter(r => !isLive(r)).sort((a, b) => (b.last?.at ?? 0) - (a.last?.at ?? 0))
-  if (!board.runs.length)
-    return (
-      <Box key="board" flexDirection="column">
-        <Text dimColor>No runs yet.</Text>
-        <Text dimColor>3 shows the backlog each rig feeds; queue or start one from there.</Text>
-      </Box>
-    )
-  return (
-    <Box key="board" flexDirection="column">
-      {live.map(r => card(p, r, draft))}
-      {over.length > 0 && (
-        <Box gap={1}>
-          {rule({ ...p, width: p.width - 8 }, 'Finished', String(over.length))}
-          <Button
-            key="finished-toggle"
-            label={draft.isFinishedShown ? 'hide' : 'show'}
-            dimColor
-            onPress={() => p.act.draft({ isFinishedShown: !draft.isFinishedShown })}
-          />
-        </Box>
-      )}
-      {draft.isFinishedShown && over.length > 10 && (
-        <Text dimColor>the last 10 of {String(over.length)}</Text>
-      )}
-      {(draft.isFinishedShown ? over.slice(0, 10) : []).map(r => (
-        <Box key={`over-${r.id}`} gap={1}>
-          <Text color={standing(r, p.now).color}>{r.node === 'done' ? '✓' : r.node ? '✗' : '!'}</Text>
-          <Text bold>{r.id}</Text>
-          <Text dimColor wrap="truncate-end">
-            {r.error
-              ? line(r.error, 120)
-              : r.last
-                ? `${r.last.node} ${r.last.outcome}: ${line(r.last.summary, 120)}`
-                : ''}
-          </Text>
-          <Button key={`view-${r.id}`} label="open" dimColor onPress={() => p.act.show('run', r.id)} />
-          <Button key={`rm-${r.id}`} label="remove" dimColor onPress={() => p.act.cli('rm', r.id)} />
-        </Box>
-      ))}
-    </Box>
-  )
-}
-
-export function runView(p: Base, d: FactoryDetail | null, peek: string, draft: FactoryDraft) {
+/** everything the old Run tab drew for one run, now inside its card: the full goal, the follows
+ * line, the edges out of its current station, the error and gate, Steer (mail, station, goto,
+ * fork, retry, jump, abort), Tasks, Journal and the Worker peek. `close` (hotkey b) replaces the
+ * old tab's `back`, collapsing the card instead of switching tabs. */
+function runDetail(p: Base, d: FactoryDetail | null, peek: string, draft: FactoryDraft, id: string) {
   const { Box, Text, Button, Code, Input, Select } = p.ui
-  if (!d)
+  if (!d || d.id !== id)
     return (
-      <Box key="run" flexDirection="column">
-        <Text dimColor>No run open: press open on a card in the board (1).</Text>
+      <Box key={`detail-${id}`} flexDirection="column">
+        <Text dimColor>loading…</Text>
+        <Button key={`close-${id}`} label="close" hotkey="b" dimColor onPress={() => p.act.select(null)} />
       </Box>
     )
-  const s = standing(d, p.now)
   const here = d.stations.find(x => x.id === d.node)
   const tasks = d.tasks ?? []
   const closed = tasks.filter(t => t.status === 'closed').length
   const stations = d.stations.map(x => ({ value: x.id, label: x.gate ? `${x.id} (gate)` : x.id }))
   const target = draft.target || d.node || d.start
   return (
-    <Box key="run" flexDirection="column">
-      <Box justifyContent="space-between">
-        <Text>
-          <Text bold>{d.id}</Text>
-          <Text color="cyan">{d.bead ? `  ${d.bead}` : ''}</Text>
-        </Text>
-        <Text color={s.color}>
-          {d.node} · {s.word}
-          {d.attempt && d.attempt > 1 ? ` · try ${d.attempt}/${d.attempts}` : ''}
-        </Text>
-      </Box>
+    <Box key={`detail-${id}`} flexDirection="column">
       <Text wrap="wrap">
         {d.run.goal.length > 1200
           ? `${d.run.goal.slice(0, 1200)}… (the rest: bd show ${d.run.bead ?? d.id})`
@@ -417,7 +313,7 @@ export function runView(p: Base, d: FactoryDetail | null, peek: string, draft: F
           />
         )}
         <Button key={`kill-${d.id}`} label="abort" dimColor onPress={() => p.act.cli('abort', d.id)} />
-        <Button key="back" label="back" hotkey="b" dimColor onPress={() => p.act.show('board')} />
+        <Button key={`close-${d.id}`} label="close" hotkey="b" dimColor onPress={() => p.act.select(null)} />
       </Box>
 
       {d.tasks && rule(p, 'Tasks', `${closed}/${tasks.length} closed`)}
@@ -462,8 +358,136 @@ export function runView(p: Base, d: FactoryDetail | null, peek: string, draft: F
         </Text>
       )}
 
-      {rule(p, 'Worker', d.pane ? `${d.pane} · ${s.word}` : d.isWorking ? 'starting' : 'none now')}
+      {rule(p, 'Worker', d.pane ? `${d.pane} · ${standing(d, p.now).word}` : d.isWorking ? 'starting' : 'none now')}
       {peek ? <Code source={peek} wrap="truncate-end" /> : <Text dimColor>No worker output to show.</Text>}
+    </Box>
+  )
+}
+
+/** a board row; `isOpen` swaps its collapsed goal/trail/buttons for the full `runDetail`, with
+ * the border's padding taken off the detail's width (A7) */
+function card(
+  p: Base,
+  r: FactoryRun,
+  draft: FactoryDraft,
+  isOpen: boolean,
+  detail: FactoryDetail | null,
+  peek: string,
+) {
+  const { Box, Text, Button } = p.ui
+  const s = standing(r, p.now)
+  const timer = r.sub === 'working' && r.since && !r.gate ? ` · ${dur(p.now - r.since)}` : ''
+  const tries = r.attempt && r.attempt > 1 ? ` · try ${r.attempt}/${r.attempts}` : ''
+  return (
+    <Box key={`card-${r.id}`} flexDirection="column" borderStyle="round" borderColor={s.color} paddingX={1}>
+      <Box justifyContent="space-between">
+        <Text wrap="truncate-end">
+          <Text color="magenta">{r.rig ? `${r.rig}  ` : ''}</Text>
+          <Text bold>{r.id}</Text>
+          <Text color="cyan">{r.bead ? `  ${r.bead}` : ''}</Text>
+        </Text>
+        <Text color={s.color}>
+          {r.node} · {s.word}
+          {tries}
+          {timer}
+        </Text>
+      </Box>
+      {!isOpen && r.goal && <Text wrap="truncate-end">{line(r.goal, 300)}</Text>}
+      {!isOpen && trail(p, r)}
+      {!isOpen && r.last && (
+        <Text dimColor wrap="truncate-end">
+          └ {r.last.node} {r.last.outcome}: {line(r.last.summary, 300)}
+        </Text>
+      )}
+      {!isOpen && r.error && (
+        <Text color="red" wrap="truncate-end">
+          ! {line(r.error, 300)}
+        </Text>
+      )}
+      {!isOpen && r.gate && gate(p, r, draft)}
+      {!isOpen && (
+        <Box gap={1}>
+          <Button key={`open-${r.id}`} label="open" onPress={() => p.act.select(r.id)} />
+          {r.pane && (
+            <Button key={`jump-${r.id}`} label="jump to worker" dimColor onPress={() => p.act.jump(r.pane!)} />
+          )}
+          {r.sub === 'stuck' && (
+            <Button
+              key={`retry-${r.id}`}
+              label="retry"
+              variant="primary"
+              onPress={() => p.act.cli('retry', r.id)}
+            />
+          )}
+          <Button key={`abort-${r.id}`} label="abort" dimColor onPress={() => p.act.cli('abort', r.id)} />
+        </Box>
+      )}
+      {isOpen && runDetail({ ...p, width: Math.max(1, p.width - 4) }, detail, peek, draft, r.id)}
+    </Box>
+  )
+}
+
+export function boardView(
+  p: Base,
+  board: FactoryBoard,
+  draft: FactoryDraft,
+  selected: string | null,
+  detail: FactoryDetail | null,
+  peek: string,
+) {
+  const { Box, Text, Button } = p.ui
+  const live = board.runs.filter(isLive).sort((a, b) => urgency(a) - urgency(b))
+  // newest first; the rest stay until `factory rm`
+  const over = board.runs.filter(r => !isLive(r)).sort((a, b) => (b.last?.at ?? 0) - (a.last?.at ?? 0))
+  if (!board.runs.length)
+    return (
+      <Box key="board" flexDirection="column">
+        <Text dimColor>No runs yet.</Text>
+        <Text dimColor>2 shows the backlog each rig feeds; queue or start one from there.</Text>
+      </Box>
+    )
+  const liveIds = new Set(live.map(r => r.id))
+  // a selected run that isn't live (finished, or opened from elsewhere and since finished) still
+  // opens above the Finished rule, even while that list stays collapsed (A5)
+  const openOver: FactoryRun | undefined =
+    selected && !liveIds.has(selected)
+      ? over.find(r => r.id === selected) ?? (detail?.id === selected ? detail : { id: selected })
+      : undefined
+  return (
+    <Box key="board" flexDirection="column">
+      {live.map(r => card(p, r, draft, r.id === selected, detail, peek))}
+      {openOver && card(p, openOver, draft, true, detail, peek)}
+      {over.length > 0 && (
+        <Box gap={1}>
+          {rule({ ...p, width: p.width - 8 }, 'Finished', String(over.length))}
+          <Button
+            key="finished-toggle"
+            label={draft.isFinishedShown ? 'hide' : 'show'}
+            dimColor
+            onPress={() => p.act.draft({ isFinishedShown: !draft.isFinishedShown })}
+          />
+        </Box>
+      )}
+      {draft.isFinishedShown && over.length > 10 && (
+        <Text dimColor>the last 10 of {String(over.length)}</Text>
+      )}
+      {(draft.isFinishedShown ? over.slice(0, 10) : [])
+        .filter(r => r.id !== selected)
+        .map(r => (
+          <Box key={`over-${r.id}`} gap={1}>
+            <Text color={standing(r, p.now).color}>{r.node === 'done' ? '✓' : r.node ? '✗' : '!'}</Text>
+            <Text bold>{r.id}</Text>
+            <Text dimColor wrap="truncate-end">
+              {r.error
+                ? line(r.error, 120)
+                : r.last
+                  ? `${r.last.node} ${r.last.outcome}: ${line(r.last.summary, 120)}`
+                  : ''}
+            </Text>
+            <Button key={`view-${r.id}`} label="open" dimColor onPress={() => p.act.select(r.id)} />
+            <Button key={`rm-${r.id}`} label="remove" dimColor onPress={() => p.act.cli('rm', r.id)} />
+          </Box>
+        ))}
     </Box>
   )
 }
@@ -637,7 +661,7 @@ export function rigsView(p: Base, board: FactoryBoard) {
         <Box key={`rigs-loose-${r.id}`} gap={1}>
           <Text bold>{r.id}</Text>
           <Text color={standing(r, p.now).color}>{r.node}</Text>
-          <Button key={`rigs-open-${r.id}`} label="open" dimColor onPress={() => p.act.show('run', r.id)} />
+          <Button key={`rigs-open-${r.id}`} label="open" dimColor onPress={() => p.act.select(r.id)} />
         </Box>
       ))}
     </Box>
@@ -726,7 +750,7 @@ export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
               key={`mail-open-${m.run}-${m.at}`}
               label="open run"
               dimColor
-              onPress={() => p.act.show('run', m.run)}
+              onPress={() => p.act.select(m.run)}
             />
           </Box>
           <Text wrap="wrap">{line(m.text, 800)}</Text>
@@ -802,7 +826,7 @@ export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft,
                     key={`iv-open-${iv.key}`}
                     label="open run"
                     dimColor
-                    onPress={() => p.act.show('run', iv.run!)}
+                    onPress={() => p.act.select(iv.run!)}
                   />
                 )}
               </Box>
@@ -925,7 +949,7 @@ export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
                         label={`${live_.gate ? 'decide' : live_.node} ›`}
                         dimColor={!live_.gate}
                         variant={live_.gate ? 'primary' : undefined}
-                        onPress={() => p.act.show('run', r.run)}
+                        onPress={() => p.act.select(r.run)}
                       />
                     ) : (
                       <Text dimColor>run ended</Text>
@@ -967,7 +991,7 @@ export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
 
 export function footer(p: Base) {
   const { Text } = p.ui
-  return <Text dimColor>1-7 views · tab between controls · enter presses · esc back to the prompt</Text>
+  return <Text dimColor>1-6 views · tab between controls · enter presses · esc back to the prompt</Text>
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */

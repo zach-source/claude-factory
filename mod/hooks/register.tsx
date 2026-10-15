@@ -27,7 +27,6 @@ import {
   isLive,
   mailView,
   prsView,
-  runView,
   type Actions,
   type UI,
 } from './views'
@@ -71,7 +70,7 @@ const draft = atom(
     answered: {},
   } as FactoryDraft,
 )
-const VIEWS = new Set<string>(['board', 'run', 'backlog', 'mail', 'prs', 'rigs', 'interview'])
+const VIEWS = new Set<string>(['board', 'backlog', 'mail', 'prs', 'rigs', 'interview'])
 
 const manual = (cli: string) => `## Software factory manager
 You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
@@ -239,10 +238,18 @@ async function ensureTicking($: EngineInterface) {
   void tick($)
 }
 
+/** a stored view of 'run', from before the Run tab folded into Board, reads as 'board'; the one
+ * place both `readView` (refresh's fetch gate) and the render switch map it, so they can't drift */
+export const mapView = (v: string): FactoryView => (v === 'run' ? 'board' : (v as FactoryView))
+
+async function readView($: EngineInterface): Promise<FactoryView> {
+  return mapView(await read($, view))
+}
+
 /** what the open view needs beyond the board: a run's whole record and its worker's screen, or the backlog */
 async function refresh($: EngineInterface) {
-  const shown = await read($, view)
-  if (shown === 'run') {
+  const shown = await readView($)
+  if (shown === 'board') {
     const id = await read($, selected)
     if (!id) return
     const { isOk, out } = await factory($, ['show', id])
@@ -329,6 +336,18 @@ async function show($: EngineInterface, next: FactoryView, run?: string) {
   // columns: the dock's width beside a fullscreen transcript; rows: its height inline above the prompt
   await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40, columns: 100 })
   await refresh($)
+}
+
+/** opens a run's card in place on the board, or (run === null) closes whichever card is open */
+async function select($: EngineInterface, run: string | null) {
+  if (run === null) {
+    await update($, selected, () => null)
+    await update($, detail, () => null)
+    await update($, peek, () => '')
+    await update($, draft, d => ({ ...d, target: '', mail: '' }))
+    return
+  }
+  await show($, 'board', run)
 }
 
 /** a gate answered with the note the person typed for it, which then clears */
@@ -450,6 +469,7 @@ function actions($: EngineInterface): Actions {
   return {
     cli: (...args) => void act($, args),
     show: (next, run) => void show($, next, run),
+    select: run => void select($, run),
     backlogType: t => void update($, backlogType, () => t),
     draft: patch => void update($, draft, d => ({ ...d, ...patch })),
     decide: (run, outcome) => void decide($, run, outcome),
@@ -477,9 +497,10 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'factory' }, async ($, e) => {
     await ensureTicking($) // a hot reload drops the timer
     const args = e.args.trim().split(/\s+/).filter(Boolean)
-    // `/factory`, `/factory backlog`, `/factory run <id>`: the console at that view
-    if (!args.length || VIEWS.has(args[0]!)) {
-      await show($, (args[0] as FactoryView | undefined) ?? 'board', args[1])
+    // `/factory`, `/factory backlog`, `/factory run <id>` (an alias for the board with <id> open)
+    const requested = args[0] === 'run' ? 'board' : args[0]
+    if (!args.length || (requested && VIEWS.has(requested))) {
+      await show($, (requested as FactoryView | undefined) ?? 'board', args[1])
       return { text: 'Factory console opened.' }
     }
     const { out } = await factory($, args)
@@ -511,7 +532,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, shown, d, tail, bl, bt, pr, samples, dr, dec, now] = await Promise.all([
+    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
@@ -523,7 +544,10 @@ export const register: Register = (on, options) => {
       read($, draft),
       read($, decisions),
       $.clock.now(),
+      read($, selected),
     ])
+    // a stored view of 'run', from before the Run tab folded into Board, reads as 'board'
+    const shown = mapView(rawShown as string)
     const p = { ui, act: actions($), width: e.props.bodyColumns, now }
     // only the fullscreen layout docks a pane beside the chat; herdr, like tmux, defaults to the main screen
     if (e.props.placement === 'inline' && !rt.isInlineTold) {
@@ -533,19 +557,17 @@ export const register: Register = (on, options) => {
       )
     }
     const body =
-      shown === 'run'
-        ? runView(p, d, tail, dr)
-        : shown === 'backlog'
-          ? backlogView(p, bl, bt)
-          : shown === 'mail'
-            ? mailView(p, b, dr)
-            : shown === 'prs'
-              ? prsView(p, pr, b)
-              : shown === 'rigs'
-                ? rigsView(p, b)
-                : shown === 'interview'
-                  ? interviewView(p, b, dr, dec)
-                  : boardView(p, b, dr)
+      shown === 'backlog'
+        ? backlogView(p, bl, bt)
+        : shown === 'mail'
+          ? mailView(p, b, dr)
+          : shown === 'prs'
+            ? prsView(p, pr, b)
+            : shown === 'rigs'
+              ? rigsView(p, b)
+              : shown === 'interview'
+                ? interviewView(p, b, dr, dec)
+                : boardView(p, b, dr, sel, d, tail)
     return (
       <Box flexDirection="column">
         {header(p, b, samples, shown)}

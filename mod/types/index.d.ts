@@ -125,7 +125,7 @@ export type FactoryPrs = {
   }[]
 }[]
 
-export type FactoryView = 'board' | 'run' | 'backlog' | 'mail' | 'prs' | 'rigs' | 'interview'
+export type FactoryView = 'board' | 'backlog' | 'mail' | 'prs' | 'rigs' | 'interview'
 /** what the person has typed and not sent */
 export type FactoryDraft = {
   mail: string
