@@ -314,6 +314,9 @@ export const launch = (l: Launch) => {
       ...(process.env.FACTORY_AX_PKG_GATE.startsWith('http://') && {
         PIP_TRUSTED_HOST: new URL(process.env.FACTORY_AX_PKG_GATE).hostname,
         UV_INSECURE_HOST: new URL(process.env.FACTORY_AX_PKG_GATE).hostname,
+        // yarn berry refuses to even try an http:// registry (npmRegistryServer) unless its host is on this
+        // whitelist, same reason pip and uv need their own overrides above (ei0.19)
+        YARN_UNSAFE_HTTP_WHITELIST: new URL(process.env.FACTORY_AX_PKG_GATE).hostname,
       }),
     }),
   }

@@ -796,6 +796,8 @@ test('a launched task carries the registry env only when FACTORY_AX_PKG_GATE is 
       UV_INDEX_URL: 'http://pkg-gate.pkg-gate.svc:8080/pypi/simple',
       PIP_TRUSTED_HOST: 'pkg-gate.pkg-gate.svc',
       UV_INSECURE_HOST: 'pkg-gate.pkg-gate.svc',
+      // yarn berry refuses an http:// registry outright unless its host is on this whitelist (ei0.19)
+      YARN_UNSAFE_HTTP_WHITELIST: 'pkg-gate.pkg-gate.svc',
     })
   } finally {
     delete process.env.FACTORY_AX_PKG_GATE
@@ -807,6 +809,7 @@ test('a launched task carries the registry env only when FACTORY_AX_PKG_GATE is 
     const env = envOf()
     expect(env.GOPROXY).toBe('https://pkg-gate.example.com/go')
     expect(env.PIP_TRUSTED_HOST).toBeUndefined() // https needs no trusted-host override
+    expect(env.YARN_UNSAFE_HTTP_WHITELIST).toBeUndefined() // https needs no unsafe-http whitelist either
   } finally {
     delete process.env.FACTORY_AX_PKG_GATE
   }
