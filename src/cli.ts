@@ -3351,11 +3351,16 @@ const queued = outboxCmd && outboxOk === null
 if (queued) {
   // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
   // report that went without them would end the VM, and its writes with it
-  if (cmd === 'report' && !worker.syncBeads()) {
-    console.error(
-      'refused: your bd changes were not shared (bd dolt pull && bd dolt push failed); fix that, then report again',
-    )
-    process.exit(1)
+  if (cmd === 'report') {
+    const sync = worker.syncBeads()
+    if (!sync.ok) {
+      console.error(
+        `refused: your bd changes were not shared (bd dolt ${sync.step} failed: ${sync.error}); run bd ` +
+          `dolt pull && bd dolt push to see the full error; if it fails again, factory mail ${args[0]} ` +
+          `manager with that error and do not report until the manager answers`,
+      )
+      process.exit(1)
+    }
   }
   worker.queue([cmd!, ...args])
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
