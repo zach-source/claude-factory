@@ -51,7 +51,8 @@ export const dispatchable = (ready: Bead[], linked: Set<string>, room: number) =
 function bd(repo: string, actor: string, ...args: string[]) {
   const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo, env: process.env })
   const out = p.stdout.toString().trim()
-  return { isOk: p.exitCode === 0, out, err: p.stderr.toString().trim() || out }
+  const stderr = p.stderr.toString().trim()
+  return { isOk: p.exitCode === 0, out, err: stderr || out, stderr }
 }
 const must = (r: ReturnType<typeof bd>, what: string) => {
   if (!r.isOk) throw new Error(`bd ${what}: ${r.err.split('\n')[0]}`)
@@ -68,6 +69,31 @@ export const beads = (repo: string, actor: string) => ({
     const parsed = r.isOk ? JSON.parse(r.out) : null
     return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
   },
+  /**
+   * null only for bd's own "not found" (a real answer); any other failure (a timeout, bd down) throws
+   * instead of being indistinguishable from a 404. For a goal that is shaped like one of this rig's own
+   * bead ids, a failed lookup must never fall through to creating a bead titled with the id itself.
+   *
+   * bd 1.3.0 prints the *same* "no issues found matching the provided IDs" JSON body on stdout, exit 1,
+   * both for a genuine not-found and for a query-time failure after the store opened (e.g. a timeout) --
+   * the stdout body alone cannot tell them apart. Only stderr can: a real not-found says exactly
+   * "Issue <id> not found" (plus a "Hint:" line); a query-time failure says "Error fetching <id>: <err>"
+   * instead. A loose /not found/i match on stderr is not enough: a store-open failure (the shared server
+   * up but this rig's own database missing) also says "not found" -- "database ... not found on Dolt
+   * server at ..." -- and must throw, not read as a genuine not-found.
+   */
+  lookup: (id: string): Bead | null => {
+    const r = bd(repo, actor, 'show', id, '--json')
+    if (r.isOk) {
+      const parsed = JSON.parse(r.out)
+      return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
+    }
+    if (/^Error fetching\b/m.test(r.stderr)) throw new Error(`bd show ${id}: ${r.stderr.split('\n')[0]}`)
+    if (/^Issue \S+ not found$/m.test(r.stderr)) return null
+    throw new Error(`bd show ${id}: ${(r.stderr || r.out).split('\n')[0]}`)
+  },
+  /** the rig's bead-id prefix, thrown on failure instead of prefix()'s lenient "" (bd down looks the same as no prefix) */
+  prefixStrict: () => must(bd(repo, actor, 'config', 'get', 'issue_prefix'), 'config get issue_prefix'),
   ready: (): Bead[] =>
     JSON.parse(must(bd(repo, actor, 'ready', '--label', LABEL, '--json', '-n', '50'), 'ready')),
   /** ready work nobody has handed to the factory yet: what a person prioritizes, children with their parents */
@@ -105,8 +131,46 @@ export const beads = (repo: string, actor: string) => ({
     ),
   /** atomic: false when someone else holds it */
   claim: (id: string) => bd(repo, actor, 'update', id, '--claim').isOk,
-  create: (title: string, description: string, ...extra: string[]) =>
-    must(bd(repo, actor, 'create', title, '-d', description, '-l', LABEL, '--silent', ...extra), 'create'),
+  /**
+   * a create bd itself may have lost the answer to (a timeout after the write landed): tags the attempt
+   * with a token in its metadata, so a failure is checked against that token before any retry, instead of
+   * risking a silent duplicate. One retry only: a second failure's caller re-runs by hand.
+   */
+  create: (title: string, description: string, ...extra: string[]) => {
+    const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+    const attempt = () =>
+      bd(
+        repo,
+        actor,
+        'create',
+        title,
+        '-d',
+        description,
+        '-l',
+        LABEL,
+        '--silent',
+        '--metadata',
+        `{"factory_create":"${token}"}`,
+        ...extra,
+      )
+    const landed = (afterErr: string) => {
+      const r = bd(repo, actor, 'list', '--all', '--metadata-field', `factory_create=${token}`, '--json', '-n', '2')
+      if (!r.isOk)
+        throw new Error(
+          `bd create: ${afterErr}; it may have landed: bd list --all --metadata-field factory_create=${token}`,
+        )
+      return (JSON.parse(r.out) as Bead[])[0]?.id
+    }
+    let r = attempt()
+    if (r.isOk) return r.out
+    let found = landed(r.err.split('\n')[0] ?? '')
+    if (found) return found
+    r = attempt() // absent: one retry, same token, then give up
+    if (r.isOk) return r.out
+    found = landed(r.err.split('\n')[0] ?? '')
+    if (found) return found
+    throw new Error(`bd create: ${r.err.split('\n')[0]}`)
+  },
   /**
    * keeps the claim's lease alive, taking it back if a reaper reclaimed it. Lost only when the bead
    * names another assignee: bd being unreachable (a shared server's maintenance lock) throws instead
