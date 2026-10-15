@@ -3538,15 +3538,27 @@ if (import.meta.main && !outboxCmd)
                 : 'nothing to merge or archive',
             )
           } else {
-            mkdirSync(MEMORY, { recursive: true })
-            if (!existsSync(join(MEMORY, '.git'))) git(MEMORY, 'init', '-q')
-            const filesBefore = memory.mdFileCount(MEMORY)
-            const { renamed, merged, archived } = memory.applyTiers(MEMORY)
-            git(MEMORY, 'add', '-A')
-            const message = `compact: ${merged} merged, ${archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files`
-            git(MEMORY, 'commit', '-q', '--allow-empty', '-m', message)
-            memory.compact(MEMORY, renamed)
-            console.log(message)
+            // the same lock dream() holds while it runs: a live dream already writes LONG.md and the
+            // usage log, and a concurrent compact racing it can lose a rename or an archive decision
+            // (claude-factory-59r.13)
+            const release = hold('dream.lock')
+            if (!release) {
+              console.log('a dream is already running; try again once it finishes')
+              break
+            }
+            try {
+              mkdirSync(MEMORY, { recursive: true })
+              if (!existsSync(join(MEMORY, '.git'))) git(MEMORY, 'init', '-q')
+              const filesBefore = memory.mdFileCount(MEMORY)
+              const { renamed, merged, archived } = memory.applyTiers(MEMORY)
+              git(MEMORY, 'add', '-A')
+              const message = `compact: ${merged} merged, ${archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files`
+              git(MEMORY, 'commit', '-q', '--allow-empty', '-m', message)
+              memory.compact(MEMORY, renamed)
+              console.log(message)
+            } finally {
+              release()
+            }
           }
         } else if (sub === 'eval') {
           const cases = memory.readEvalCases(MEMORY)
