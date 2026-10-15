@@ -284,6 +284,46 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
 })
 
+test('poll learns the session as soon as the init event streams, not only once a long turn exits (claude-factory-xq3)', async () => {
+  const own = join(dir, 'own-midturn')
+  const repo = join(dir, 'repo-midturn')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  // prints its init event, then sits for a second (a stand-in for a long agentic turn) before finishing
+  const claude = join(dir, 'claude-midturn')
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+echo '{"type":"system","subtype":"init","session_id":"mid-1"}'
+sleep 1
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+echo '{"type":"result","is_error":false,"result":"done"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    const p = worker.serve('m1', { once: true })
+    await Bun.sleep(400) // well after the init event streams, well before the 1s sleep ends
+    const mid = worker.poll(0)
+    expect(mid.session).toBe('mid-1') // learned while the turn is still running, not after it exits
+    expect(mid.status).toBe('working')
+    await p
+    expect(worker.poll(0).status).toBe('idle')
+  } finally {
+    process.env = saved
+  }
+})
+
 test('serve retries a turn that ended on the egress failure, same session, backed off, until one gets through', async () => {
   const own = join(dir, 'own-egress-ok')
   const repo = join(dir, 'repo-egress-ok')
