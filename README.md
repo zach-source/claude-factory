@@ -43,21 +43,82 @@ In the manager session:
 
 ## Console
 
-`/factory` opens the console beside the chat. Keys 1-6 switch its tabs: board, backlog, mail,
-rigs, PRs and interview. The figures are made-up demo data.
+`/factory` opens the console next to the chat. Keys 1 to 6 switch the tabs: Board, Backlog, Mail,
+Rigs, PRs and Interview. Press `tab` to move between controls. Press `enter` to press the
+focused control. Press `esc` to go back to the prompt. The pictures show made-up demo data.
 
-![The console's six tabs: board, backlog, mail, rigs, PRs and interview](docs/images/console-tabs.png)
+See [docs/console.md](docs/console.md) for the details of each tab: what it shows, its
+keys and buttons, and when to use it.
 
-The board lays the live runs out by state, oldest first: what awaits you in a full-width band on
-top, then stuck, working and waiting side by side (stacked as sections when the console is
-narrower than 120 columns). Gates are
-answered on their card; pressing open on a card expands the run with its full goal, Steer, Tasks,
-Journal and worker peek, so a look at one run is never a tab switch and back:
+### Board (key 1)
 
-![The console's board tab](docs/images/console-board.png)
+![The Board tab: runs by state, with the runs that await you on top](docs/images/console-board.png)
 
-See [docs/console.md](docs/console.md) for a breakdown of every tab: what it shows, its keys
-and buttons, and when to use it.
+The Board shows the live runs by state, oldest first. The runs that await you are in a
+full-width band at the top. The stuck, working and waiting runs are in three columns below it.
+A gate shows its question and its outcome buttons on its card. Decide the gate there. You can
+add a note for the next station.
+
+When the console is less than 120 columns wide, the groups stack as sections:
+
+![The Board tab in a narrow console: the groups stack as sections](docs/images/console-board-narrow.png)
+
+### Board: an open card
+
+![The Board tab with one card open: the run detail](docs/images/console-board-open.png)
+
+Press `open` on a card to see the run detail. The card shows the full goal, the Steer controls,
+the Tasks, the Journal and a peek at the worker pane. Use Steer to mail the worker, to go to a
+station, to fork at a station, to retry, to jump to the worker or to abort the run. Press `-` to
+shrink the card.
+
+### Backlog (key 2)
+
+![The Backlog tab: the bead tree of each rig](docs/images/console-backlog.png)
+
+The Backlog shows the beads of each rig as a tree. Each rig has one rule with its busy count and
+the counts of queued and waiting beads. A parent bead shows `[done/total]` for its children.
+Press `▸` to show the children and `▾` to hide them. The `⛔` mark shows a bead that an open bead
+holds back, with the id of the blocker. Use the type buttons to filter the beads. Press `queue` to
+queue a bead. Press `start now` to start a run on it.
+
+### Mail (key 3)
+
+![The Mail tab: messages between the manager and the workers](docs/images/console-mail.png)
+
+The Mail tab lists the last 50 messages between the manager and the workers. Two sub-tabs divide
+the list: not answered and answered. Press `approve` or `reject`, or type feedback and press
+`send feedback`, to answer a message. If the run is at a gate, the newest message shows the
+outcome buttons of the gate. Press `open run` to see the run on the Board.
+
+### Rigs (key 4)
+
+![The Rigs tab: the capacity and the runs of each rig](docs/images/console-rigs.png)
+
+The Rigs tab shows each rig with a capacity bar, which is its busy count against its cap. It
+also shows the sweeps and the goal of the rig, and the number of runs at each station. It shows
+which runs await you, which are stuck, and how many are finished or aborted. Press `backlog` to
+see only the beads of that rig on the Backlog tab.
+
+### PRs (key 5)
+
+![The PRs tab: the pull requests and merge requests of each run](docs/images/console-prs.png)
+
+The PRs tab lists the pull requests and merge requests that each run touches. The tab shows
+GitHub pull requests and GitLab merge requests. It groups them by rig and then by run. Each
+entry shows the repo and number, the state, the checks, the role and the title. The data comes
+from `factory prs` and refreshes not more than one time in 60 seconds. Press the station button, or
+`decide ›` for a gate, to open the run on the Board.
+
+### Interview (key 6)
+
+![The Interview tab: the questions that only you can answer](docs/images/console-interview.png)
+
+The Interview tab is one list of the questions that only you can answer. It collects the gates,
+the parked and stuck runs, the workers that wait on a prompt, and the bd decisions of all rigs.
+Press `Interview me` to sweep the rigs. After that, the manager proposes options for the bare items.
+Press an option or type an answer, then press `send answer`. The answered items move to the
+second sub-tab.
 
 ## The manager drives
 

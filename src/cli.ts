@@ -76,10 +76,15 @@ import {
   asPrsFile,
   buildPrs,
   DEFAULT_BUDGET,
+  forgeNote,
   forgeOf,
+  gitlabForge,
+  mrsIn,
+  parseGitlabLabeled,
   parseRemote,
   sameFile,
   spawnGh,
+  spawnGlab,
   type ForgeKind,
   type PrsFile,
   type RunMeta,
@@ -300,6 +305,8 @@ type TaskSide = {
   node: string
   seq: number
   egress?: ax.Egress[]
+  /** the rig origin's host when it is GitLab, for the egress policy's rule */
+  gitlabHost?: string
   policy: boolean
   put?: string[]
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
@@ -471,7 +478,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
-    if (!ax.createPolicy(task, side.egress)) return { status: 'pending', agent: 'ax' }
+    if (!ax.createPolicy(task, side.egress, side.gitlabHost)) return { status: 'pending', agent: 'ax' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
   // what is too big for the task's env goes over ssh, in parts, and serve waits for it
@@ -734,6 +741,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   // a fresh worker is told what earlier ones already committed, so it builds on it rather than redoing it
   const committed = run.base ? git(run.worktree, 'log', '--oneline', '-n', '30', `${run.base}..HEAD`) : ''
   const prior = node === def.start ? priorWork(run) : ''
+  const origin = originRef(run.repo)
   return [
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
@@ -741,6 +749,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     ...(def.rules ? ['', '## House rules', def.rules.trim()] : []),
     '',
     ...remembered(run, node),
+    ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
     '',
     '## Goal',
     run.goal,
@@ -936,6 +945,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
   const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
   const name = ax.taskName(run.id, c.seq)
+  const origin = originRef(run.repo)
+  const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
     `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
@@ -974,6 +985,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     harness: harness!,
     provider: ax.providerOf(agent),
     claudeFlags: harness === 'claude' ? vmClaudeFlags(def) : undefined,
+    gitlabHost,
     env: {
       ...env,
       ...rig?.env,
@@ -996,7 +1008,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     node,
     seq: c.seq,
     egress: rig?.egress,
-    policy: ax.createPolicy(name, rig?.egress),
+    ...(gitlabHost && { gitlabHost }),
+    policy: ax.createPolicy(name, rig?.egress, gitlabHost),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
@@ -2643,8 +2656,11 @@ export const reworkGoal = (pr: LabeledPr) =>
   `Pull request #${pr.number} (${pr.url}) is stuck, ${asksOf(pr)}. Branch ${pr.headRefName}, base ${pr.baseRefName}.`
 /** the live run a pull request belongs to: its branch is the run's, or the run's reports link it */
 export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: string; log: Entry[] }[]) =>
-  live.find(r => pr.headRefName === `factory/${r.id}` || r.log.some(e => prsIn(e.summary).includes(pr.url)))
-    ?.id
+  live.find(
+    r =>
+      pr.headRefName === `factory/${r.id}` ||
+      r.log.some(e => [...prsIn(e.summary), ...mrsIn(e.summary)].includes(pr.url)),
+  )?.id
 
 /**
  * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
@@ -2664,28 +2680,59 @@ async function labelPass() {
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
     .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log }))
   for (const rig of rigs()) {
-    const gh = (...args: string[]) => {
-      const p = Bun.spawnSync(['gh', ...args], { cwd: rig.repo, timeout: 60_000 })
+    const cli = (bin: string, args: string[]) => {
+      const p = Bun.spawnSync([bin, ...args], { cwd: rig.repo, timeout: 60_000 })
       if (p.exitCode !== 0)
-        throw new Error(`gh ${args[0]} ${args[1]}: ${p.stderr.toString().trim().split('\n')[0]}`)
+        throw new Error(`${bin} ${args[0]} ${args[1]}: ${p.stderr.toString().trim().split('\n')[0]}`)
       return p.stdout.toString()
     }
+    const gh = (...args: string[]) => cli('gh', args)
+    const origin = originRef(rig.repo)
+    // the same four calls on either forge
+    const forge =
+      origin?.forge === 'gitlab'
+        ? {
+            // GitLab's label filter ANDs, so it lists once a label; REST because `mr list` lacks the project ids
+            list: (): LabeledPr[] => {
+              const project = encodeURIComponent(`${origin.owner}/${origin.repo}`)
+              const found = [CLOSE_LABEL, ...REWORK_LABELS].flatMap(label =>
+                parseGitlabLabeled(
+                  cli('glab', [
+                    'api',
+                    '--hostname',
+                    origin.host,
+                    `projects/${project}/merge_requests?state=opened&per_page=100&labels=${encodeURIComponent(label)}`,
+                  ]),
+                ),
+              )
+              return found.filter((pr, i) => found.findIndex(o => o.url === pr.url) === i)
+            },
+            comment: (pr: LabeledPr, body: string) =>
+              cli('glab', ['mr', 'note', String(pr.number), '-m', body]),
+            unlabel: (pr: LabeledPr, labels: string[]) =>
+              cli('glab', ['mr', 'update', String(pr.number), '--unlabel', labels.join(',')]),
+            close: (pr: LabeledPr, body: string) => {
+              cli('glab', ['mr', 'note', String(pr.number), '-m', body])
+              cli('glab', ['mr', 'close', String(pr.number)])
+            },
+          }
+        : {
+            list: (): LabeledPr[] => {
+              const search = `label:${[CLOSE_LABEL, ...REWORK_LABELS].join(',')}` // a comma is OR in GitHub search
+              return JSON.parse(gh('pr', 'list', '--state', 'open', '--search', search, '--json', fields))
+            },
+            comment: (pr: LabeledPr, body: string) => gh('pr', 'comment', String(pr.number), '--body', body),
+            unlabel: (pr: LabeledPr, labels: string[]) =>
+              gh('pr', 'edit', String(pr.number), '--remove-label', labels.join(',')),
+            close: (pr: LabeledPr, body: string) => gh('pr', 'close', String(pr.number), '--comment', body),
+          }
     try {
-      const search = `label:${[CLOSE_LABEL, ...REWORK_LABELS].join(',')}` // a comma is OR in GitHub search
-      const labeled: LabeledPr[] = JSON.parse(
-        gh('pr', 'list', '--state', 'open', '--search', search, '--json', fields),
-      )
+      const labeled = forge.list()
       for (const pr of labeled) {
         const action = labelAction(pr)
         const runId = prOwner(pr, live)
         if (action === 'close') {
-          gh(
-            'pr',
-            'close',
-            String(pr.number),
-            '--comment',
-            `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`,
-          )
+          forge.close(pr, `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`)
           if (runId) post(runId, { type: 'ABORT' })
           console.log(`${new Date().toISOString()} closed ${pr.url}${runId ? ` (run ${runId})` : ''}`)
         } else if (action === 'fork') {
@@ -2697,26 +2744,14 @@ async function labelPass() {
           const node = live.find(r => r.id === runId)!.node
           const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
           post(runId, { type: 'MAIL', from: 'factory', to: node, text })
-          gh('pr', 'edit', String(pr.number), '--remove-label', reworkLabels(pr).join(','))
-          gh(
-            'pr',
-            'comment',
-            String(pr.number),
-            '--body',
-            `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`,
-          )
+          forge.unlabel(pr, reworkLabels(pr))
+          forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
         } else if (action === 'rework' && room(rig, busy) > 0) {
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
           busy.push(rig.name)
-          gh('pr', 'edit', String(pr.number), '--remove-label', reworkLabels(pr).join(','))
-          gh(
-            'pr',
-            'comment',
-            String(pr.number),
-            '--body',
-            `claude-factory run \`${run.id}\` is reworking this.`,
-          )
+          forge.unlabel(pr, reworkLabels(pr))
+          forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
         }
       }
@@ -2759,7 +2794,7 @@ async function watchPass() {
       const [node, sub] = where(value)
       if (sub !== 'waiting' || !isParked(c, node)) continue
       const parked = c.log.at(-1)!
-      const prs = prsIn(parked.summary).flatMap(url => {
+      const ghPrs = prsIn(parked.summary).flatMap(url => {
         const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state,updatedAt'], {
           cwd: run.repo,
           timeout: 60_000,
@@ -2767,6 +2802,14 @@ async function watchPass() {
         // gh down or the PR gone: the park's own timer still wakes it
         return p.exitCode === 0 ? [{ url, ...JSON.parse(p.stdout.toString()) }] : []
       })
+      // a GitLab merge request is viewed the way `factory prs` does; glab down or it gone: same timer
+      const mrs = await Promise.all(
+        mrsIn(parked.summary).map(async url => {
+          const v = await gitlabForge(spawnGlab).view(url, run.repo)
+          return 'viewed' in v ? [{ url, state: v.viewed.state, updatedAt: v.viewed.updatedAt }] : []
+        }),
+      )
+      const prs = [...ghPrs, ...mrs.flat()]
       // the plain park this report would have had, had it linked nothing
       const plainMin = parkDelayMin(
         { ...c, log: c.log.slice(0, -1) },
@@ -3308,11 +3351,16 @@ const queued = outboxCmd && outboxOk === null
 if (queued) {
   // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
   // report that went without them would end the VM, and its writes with it
-  if (cmd === 'report' && !worker.syncBeads()) {
-    console.error(
-      'refused: your bd changes were not shared (bd dolt pull && bd dolt push failed); fix that, then report again',
-    )
-    process.exit(1)
+  if (cmd === 'report') {
+    const sync = worker.syncBeads()
+    if (!sync.ok) {
+      console.error(
+        `refused: your bd changes were not shared (bd dolt ${sync.step} failed: ${sync.error}); run bd ` +
+          `dolt pull && bd dolt push to see the full error; if it fails again, factory mail ${args[0]} ` +
+          `manager with that error and do not report until the manager answers`,
+      )
+      process.exit(1)
+    }
   }
   worker.queue([cmd!, ...args])
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)

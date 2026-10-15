@@ -912,7 +912,16 @@ test('buildPrs: an exhausted overall deadline stops spending new gh calls past i
 
 // ---- GitLab merge requests ----
 
-import { forgeOf, mrsIn, parseGitlabList, parseGitlabSearch, parseGitlabView, parseRemote } from './prs'
+import {
+  forgeNote,
+  forgeOf,
+  mrsIn,
+  parseGitlabLabeled,
+  parseGitlabList,
+  parseGitlabSearch,
+  parseGitlabView,
+  parseRemote,
+} from './prs'
 
 const MR_URL = 'https://gitlab.example.com/group/sub/project/-/merge_requests/12'
 
@@ -1088,4 +1097,38 @@ test('buildPrs: a GitLab rig lists, searches and views merge requests through gl
     errorStreak: 1,
     error: '404 Not Found',
   })
+})
+
+test('parseGitlabLabeled gives labelPass the fields gh pr list does', () => {
+  const mr = {
+    iid: 7,
+    web_url: MR_URL,
+    source_branch: 'feat/x',
+    target_branch: 'main',
+    source_project_id: 5,
+    target_project_id: 5,
+    labels: ['rework', 'bug'],
+  }
+  expect(parseGitlabLabeled(JSON.stringify([mr, { ...mr, iid: 8, source_project_id: 9 }]))).toEqual([
+    {
+      number: 7,
+      url: MR_URL,
+      headRefName: 'feat/x',
+      baseRefName: 'main',
+      isCrossRepository: false,
+      labels: [{ name: 'rework' }, { name: 'bug' }],
+    },
+    expect.objectContaining({ number: 8, isCrossRepository: true }),
+  ])
+  expect(parseGitlabLabeled(JSON.stringify([{ ...mr, labels: undefined }]))[0]!.labels).toEqual([])
+  expect(parseGitlabLabeled('not json')).toEqual([])
+  expect(parseGitlabLabeled(JSON.stringify([{ title: 'no iid' }]))).toEqual([])
+})
+
+test('forgeNote tells a GitLab worker the glab equivalents, and a GitHub worker nothing', () => {
+  const note = forgeNote('gitlab.example.com').join('\n')
+  expect(note).toContain('GitLab at gitlab.example.com')
+  for (const gl of ['glab mr create', 'glab mr note', 'glab mr approve', 'glab ci status', 'glab api'])
+    expect(note).toContain(gl)
+  expect(forgeNote()).toEqual([])
 })
