@@ -56,6 +56,7 @@ import {
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
+import * as selfupdate from './selfupdate'
 import * as memory from './memory'
 import * as ax from './ax'
 import type { Egress } from './ax'
@@ -2279,6 +2280,60 @@ const kickDream = () => {
   }).unref()
 }
 
+const SELF_UPDATE_MS = Number(process.env.FACTORY_SELF_UPDATE_MS) || 5 * 60_000
+/**
+ * Fast-forwards this checkout to origin/main. It does this at most every FACTORY_SELF_UPDATE_MS.
+ * This way, a merge to main goes live here with no manual `git pull` (claude-factory-5h9.8).
+ *
+ * The update itself runs under 'tick.lock', the same lock tick() takes. A concurrent tick() sees
+ * the lock held. That tick() then reports busy, and waits until the update finishes. This way,
+ * no tick runs mid-merge against a half-updated checkout.
+ */
+const kickSelfUpdate = () => {
+  // FACTORY_SELF_UPDATE=0 is a full no-op here, not a recorded refusal: it never spawns, so it
+  // never writes self-update.json and never mails anyone. (A direct `factory self-update` still
+  // checks the same switch itself, and reports the refusal to whoever ran it.)
+  if (process.env.FACTORY_SELF_UPDATE === '0') return
+  const stamp = join(HOME, 'self-update.stamp')
+  const lastAt = existsSync(stamp) ? statSync(stamp).mtimeMs : undefined
+  if (isHeld('tick.lock') || !selfupdate.isDue(lastAt, Date.now(), SELF_UPDATE_MS)) return
+  writeFileSync(stamp, '')
+  spawnChild(CLI, ['self-update'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
+const selfUpdateFile = () => join(HOME, 'self-update.json')
+/** does the actual fast-forward; see kickSelfUpdate's note on why it takes 'tick.lock' */
+function runSelfUpdate(): selfupdate.State | null {
+  const release = hold('tick.lock')
+  if (!release) return null // a tick, or another self-update, is already running: the next kick tries again
+  try {
+    const state = selfupdate.selfUpdate(ROOT, { enabled: process.env.FACTORY_SELF_UPDATE !== '0' })
+    writeJson(selfUpdateFile(), state)
+    return state
+  } finally {
+    release()
+  }
+}
+
+/** the manager hears once of each real outcome: an update, or a new refusal reason; a no-op stays quiet */
+function selfUpdateMail(now: number): (Mail & { run: string })[] {
+  if (!existsSync(selfUpdateFile())) return []
+  const state = readJson<selfupdate.State>(selfUpdateFile())
+  if (state.ok && state.from === state.to) return [] // already up to date: nothing worth a mail
+  const mailedFile = join(HOME, 'self-update-mailed.json')
+  const last = existsSync(mailedFile) ? readJson<string>(mailedFile) : ''
+  if (state.why === last) return []
+  writeJson(mailedFile, state.why)
+  const text = state.ok
+    ? `factory self-update: ${state.why} (${ROOT})`
+    : `factory self-update did not update ${ROOT}: ${state.why}`
+  return [{ run: 'factory', from: 'factory', text, at: now }]
+}
+
 const CONFIG_SYNC_MS = 10 * 60_000
 // what a home's .gitignore lets in (its config: rigs.json) to its branch, and the memory to the memory branch
 export const CONFIG_SYNC = `git remote get-url origin >/dev/null 2>&1 || exit 0
@@ -2413,6 +2468,7 @@ async function tick(isPatrol = false) {
       }
     }
     out.manager.push(...skillMail(now))
+    out.manager.push(...selfUpdateMail(now))
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
     out.runs.push(
       ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
@@ -2430,6 +2486,7 @@ async function tick(isPatrol = false) {
       if (!halted()) kickDream()
       kickDevenv()
       kickConfigSync()
+      kickSelfUpdate()
     }
   }
 }
@@ -3690,6 +3747,11 @@ if (import.meta.main && !outboxCmd)
           ).join('\n'),
         )
         break
+      case 'self-update': {
+        const state = runSelfUpdate()
+        console.log(state ? JSON.stringify(state) : 'a tick, or another self-update, is already running')
+        break
+      }
       case 'skills': {
         const [verb, name, ...why] = args
         if (!verb) console.log(JSON.stringify(memory.pendingSkills(MEMORY), null, 2))

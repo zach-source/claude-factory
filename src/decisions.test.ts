@@ -15,7 +15,10 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 const factory = (args: string[], env: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
-    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, ...env },
+    // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
+    // would refuse and mail the manager a new "branch is ..., not main" reason, landing in
+    // `home` on a later tick and inflating manager-mail assertions (claude-factory-5h9.8)
+    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...env },
   })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
 }

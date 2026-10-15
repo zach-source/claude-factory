@@ -31,6 +31,10 @@ const run = (args: string[]) => {
       // no project is ever trusted here, so the first tick stops at "awaiting trust" instead of
       // reaching a real pane
       CLAUDE_CONFIG_DIR: claudeConfig,
+      // this dev worktree's own branch is never 'main', so a real self-update kick would refuse
+      // and mail the manager "branch is ..., not main" -- a distinct, new refusal reason that
+      // would land in `home` on a later tick and inflate manager-mail assertions (claude-factory-5h9.8)
+      FACTORY_SELF_UPDATE: '0',
     },
   })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
