@@ -44,7 +44,7 @@ An open card adds these controls, under a `Steer` rule:
 | A mail input | Send a message into the worker's current session. This input shows only while the run is working and is not at a gate. |
 | A station select | Pick a target station for `go to` or `fork at`. |
 | `go to <station>` / `restart <station>` | Move the run to the picked station. The label reads `restart` when the picked station is the run's current one. |
-| `fork at <target>` | Start a new run at the picked station, as a copy of this one. |
+| `fork at <target>` | Start another run at the picked station, as a copy of this one. |
 | `retry` | Retry a stuck run. |
 | `jump to worker` (`j`) | Jump to the run's pane. |
 | `abort` | Abort the run. |
