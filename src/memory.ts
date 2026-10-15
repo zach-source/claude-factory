@@ -104,7 +104,11 @@ async function embed(texts: string[]) {
   // loaded on first use only: every other command, the tick above all, never pays for the model
   const { pipeline } = await import('@huggingface/transformers')
   embedder ??= (await pipeline('feature-extraction', MODEL, { dtype: 'q8' })) as unknown as typeof embedder
-  return (await embedder!(texts, { pooling: 'cls', normalize: true })).tolist()
+  // in batches: one batch of hundreds of 512-token texts took GBs and minutes, 32 at a time ~3 s each
+  const out: number[][] = []
+  for (let i = 0; i < texts.length; i += 32)
+    out.push(...(await embedder!(texts.slice(i, i + 32), { pooling: 'cls', normalize: true })).tolist())
+  return out
 }
 
 type Index = { model: string; vecs: Record<string, { hash: string; vec: number[] }> }
@@ -112,16 +116,16 @@ const textOf = (n: Note) => `${n.summary}\n${n.body}`.slice(0, 2000) // bge read
 const hashOf = (text: string) => createHash('sha1').update(text).digest('hex')
 
 /** the notes' vectors, embedding only what changed since the last search */
-async function vectors(dir: string, all: Note[]) {
-  const file = join(dir, '.index.json')
+async function vectors(dir: string, all: Note[], text = textOf, name = '.index.json') {
+  const file = join(dir, name)
   const old: Index = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { model: MODEL, vecs: {} }
   const prev = old.model === MODEL ? old.vecs : {}
-  const stale = all.filter(n => prev[n.path]?.hash !== hashOf(textOf(n)))
-  const fresh = await embed(stale.map(textOf))
+  const stale = all.filter(n => prev[n.path]?.hash !== hashOf(text(n)))
+  const fresh = await embed(stale.map(text))
   const vecs = Object.fromEntries(
     all.map(n => {
       const i = stale.indexOf(n)
-      return [n.path, i < 0 ? prev[n.path]! : { hash: hashOf(textOf(n)), vec: fresh[i]! }]
+      return [n.path, i < 0 ? prev[n.path]! : { hash: hashOf(text(n)), vec: fresh[i]! }]
     }),
   )
   if (stale.length || Object.keys(prev).length !== all.length) {
@@ -151,11 +155,15 @@ export const close = <T extends { score: number }>(ranked: T[], limit: number) =
 
 /** the note that already says this, if one does: the same lesson, by a worker who did not search first */
 export async function same(dir: string, note: Pick<Note, 'summary' | 'rig'>) {
-  const mine = walk(dir).notes.filter(n => !n.rig || !note.rig || n.rig === note.rig)
-  // ponytail: every summary embedded on each add, ~1 s per few hundred notes; cache them beside the
-  // full-text vectors if the memory grows past that
-  const [v, ...vs] = await embed([note.summary, ...mine.map(n => n.summary)])
-  const best = mine.map((n, i) => ({ note: n, score: dot(vs[i]!, v!) })).sort((a, b) => b.score - a.score)[0]
+  const { notes } = walk(dir)
+  // cached like the full-text vectors: embedding every summary on each add took minutes past 400 notes,
+  // and the tick that replays a VM worker's add was killed before it finished, every tick
+  const vec = await vectors(dir, notes, n => n.summary, '.index.json.summaries')
+  const [v] = await embed([note.summary])
+  const best = notes
+    .filter(n => !n.rig || !note.rig || n.rig === note.rig)
+    .map(n => ({ note: n, score: dot(vec(n), v!) }))
+    .sort((a, b) => b.score - a.score)[0]
   return best && best.score >= SAME ? best : null
 }
 
