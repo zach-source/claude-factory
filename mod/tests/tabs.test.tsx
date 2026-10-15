@@ -20,7 +20,7 @@ async function mountBoard($: any, on: any) {
   await $.command.run({ command: 'factory', args: 'board' } as never)
 }
 
-test('the tab bar is Board..Interview on contiguous hotkeys 1-7, with exactly those 7 tabs', async ($, on) => {
+test('the tab bar is Board..Interview on contiguous hotkeys 1-6, with exactly those 6 tabs and no Run tab', async ($, on) => {
   await mountBoard($, on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
@@ -33,20 +33,20 @@ test('the tab bar is Board..Interview on contiguous hotkeys 1-7, with exactly th
     })
     const drawn = JSON.stringify(await ui.drawn())
     expect(drawn).not.toContain('"key":"tab-new"')
+    expect(drawn).not.toContain('"key":"tab-run"')
     for (const [label, key] of [
       ['Board', '1'],
-      ['Run', '2'],
-      ['Backlog', '3'],
-      ['Mail', '4'],
-      ['Rigs', '5'],
-      ['PRs', '6'],
-      ['Interview', '7'],
+      ['Backlog', '2'],
+      ['Mail', '3'],
+      ['Rigs', '4'],
+      ['PRs', '5'],
+      ['Interview', '6'],
     ])
       expect(drawn).toContain(`"label":"${label}","hotkey":"${key}"`)
-    // exactly 7 tab buttons: no leftover 8th tab
-    expect((drawn.match(/"key":"tab-/g) ?? []).length).toBe(7)
-    expect(drawn).toContain('1-7 views')
-    expect(drawn).not.toContain('1-8 views')
+    // exactly 6 tab buttons: Run folded into Board
+    expect((drawn.match(/"key":"tab-/g) ?? []).length).toBe(6)
+    expect(drawn).toContain('1-6 views')
+    expect(drawn).not.toContain('1-7 views')
     await ui.unmount()
   }
 })
