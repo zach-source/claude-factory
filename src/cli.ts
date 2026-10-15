@@ -18,6 +18,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { spawn as spawnChild } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
@@ -311,6 +312,28 @@ const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`
 /** how long a failing put is retried before the attempt fails: a VM still waking fails ssh for a tick or two */
 const PUT_GRACE_MS = 5 * 60_000
 
+const hashLine = (line: string) => createHash('sha256').update(line).digest('hex')
+const seenFile = (run: Run, task: string) => join(runDir(run.id), `${task}.seen`)
+/** how many times each outbox line (by content) has already been replayed here, and how many lines were
+ * missing (edited away after replay) as of the last time that was told to the worker. Migrates a task still
+ * on the old line-count `<task>.cursor` (absent `.seen`) by treating its first `min(cursor, len)` lines, as
+ * polled right now, as already replayed -- the only cursor value that file ever held -- then stops touching
+ * it; leaving it on disk is harmless (claude-factory-4x1) */
+function loadSeen(run: Run, task: string, lines: string[]): { seen: Record<string, number>; missing: number } {
+  const file = seenFile(run, task)
+  if (existsSync(file)) return readJson(file)
+  const legacy = join(runDir(run.id), `${task}.cursor`)
+  const n = existsSync(legacy) ? Number(readFileSync(legacy, 'utf8')) : 0
+  const seen: Record<string, number> = {}
+  for (const line of lines.slice(0, Math.min(n, lines.length))) {
+    const h = hashLine(line)
+    seen[h] = (seen[h] ?? 0) + 1
+  }
+  const state = { seen, missing: 0 }
+  writeJson(file, state)
+  return state
+}
+
 /**
  * the factory command a VM worker's outbox line may run here, as its station: a report on its own attempt,
  * mail on its own run, memory add. null for anything else (decide, goto, start...): the VM's agent writes the
@@ -474,10 +497,16 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     side!.putError = undefined
     writeJson(sideFile(run, task), side)
   }
-  const cursorFile = join(runDir(run.id), `${task}.cursor`)
-  let cursor = existsSync(cursorFile) ? Number(readFileSync(cursorFile, 'utf8')) : 0
-  const polled = ax.poll(task, cursor)
+  // always ask for everything: which lines are already replayed lives here, keyed by content (see `loadSeen`
+  // below), not as a line count the VM slices by -- a worker that edits outbox.jsonl (claude-factory-4x1)
+  // would otherwise push later real lines below a stale count and hide them forever
+  const polled = ax.poll(task, 0)
+  const seen = loadSeen(run, task, polled.lines)
+  const occurs: Record<string, number> = {}
   for (const line of polled.lines) {
+    const h = hashLine(line)
+    occurs[h] = (occurs[h] ?? 0) + 1
+    if (occurs[h] <= (seen.seen[h] ?? 0)) continue // this occurrence of this line already replayed
     const argv = outboxArgv(line)
     const cmd = side && argv && replayable(argv, side, run.id)
     // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
@@ -498,7 +527,28 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       // from where this VM was told to push, which a rig changed since does not move
       if (run.bead) syncRigBeads(run, 'pull', side?.beadsRemote)
     }
-    writeFileSync(cursorFile, String(++cursor))
+    seen.seen[h] = (seen.seen[h] ?? 0) + 1
+    writeJson(seenFile(run, task), seen)
+  }
+  // a line this laptop already counted as replayed, now missing from the outbox: the worker edited it after
+  // the fact (claude-factory-4x1). Told once per increase, not every tick the edit stays
+  let missing = 0
+  let consumed = 0
+  for (const [h, n] of Object.entries(seen.seen)) {
+    consumed += n
+    missing += Math.max(0, n - (occurs[h] ?? 0))
+  }
+  if (missing > seen.missing) {
+    appendFileSync(
+      join(runDir(run.id), `${task}.outbox-edited`),
+      `${new Date().toISOString()} missing ${missing} of ${consumed} consumed lines\n`,
+    )
+    ax.prompt(
+      task,
+      `[factory] outbox.jsonl is append-only: nothing already written to it may be edited or deleted, even to retract a probe`,
+    )
+    seen.missing = missing
+    writeJson(seenFile(run, task), seen)
   }
   return polled.status === 'exited'
     ? gone(`serve exited; its log: ${polled.log || '(empty)'}`)
@@ -3241,10 +3291,20 @@ or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
 // inside an AX task the run lives on the laptop: what a worker reports, mails or learns waits in the outbox
-const queued =
+const outboxCmd =
   import.meta.main &&
   !!process.env.FACTORY_OUTBOX &&
   (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && args[0] === 'add'))
+// `--help`/`-h` and malformed args never reach the outbox: before this, `report --help` queued a fake report
+// indistinguishable from a real one (claude-factory-4x1)
+const outboxOk = outboxCmd ? worker.outboxUsage(cmd!, args) : null
+if (outboxOk === 'help')
+  console.log(worker.OUTBOX_USAGE[cmd === 'memory' ? 'memory' : cmd === 'mail' ? 'mail' : 'report'])
+else if (outboxOk) {
+  console.error(outboxOk)
+  process.exit(1)
+}
+const queued = outboxCmd && outboxOk === null
 if (queued) {
   // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
   // report that went without them would end the VM, and its writes with it
@@ -3258,7 +3318,7 @@ if (queued) {
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
-if (import.meta.main && !queued)
+if (import.meta.main && !outboxCmd)
   try {
     switch (cmd) {
       case 'worker': {
