@@ -92,16 +92,27 @@ test('patrol wakes the manager for mail, a newly blocked worker, or a heartbeat 
   expect(patrol([blocked], [], new Set(first.keys), false)).toBeNull() // reported once per worker
 })
 
-test('patrol sends the board only when it changed, and caps each message', () => {
+test('patrol skips a due heartbeat with an unchanged board, but still caps a long message', () => {
   const working = { id: 'r1', node: 'implement', sub: 'working', goal: 'Add /health', since: 1 }
   const beat = patrol([working], [], new Set(), true)!
-  expect(beat.board).toContain('- r1 at implement/working')
-  const again = patrol([working], [], new Set(), true, [], beat.board)!
-  expect(again.text).toContain('Board and rig goals: unchanged')
-  expect(again.text).not.toContain('Add /health')
-  expect(patrol([{ ...working, node: 'verify' }], [], new Set(), true, [], beat.board)!.text).toContain(
+  expect(beat.sig).toContain('- r1 at implement/working')
+  // the board repeats the last one sent, and there is no other news: skip the heartbeat
+  expect(patrol([working], [], new Set(), true, [], beat.sig)).toBeNull()
+  // the board changed: wake with the new state, not the 'unchanged' line
+  expect(patrol([{ ...working, node: 'verify' }], [], new Set(), true, [], beat.sig)!.text).toContain(
     'r1 at verify',
   )
+  // mail wakes the manager even when the board is unchanged; the text says so instead of repeating it
+  const mail = patrol(
+    [working],
+    [{ run: 'r1', from: 'plan', text: 'Redis OK?', at: 2 }],
+    new Set(),
+    true,
+    [],
+    beat.sig,
+  )!
+  expect(mail.text).toContain('Board and rig goals: unchanged')
+  expect(mail.text).not.toContain('Add /health')
   const long = patrol(
     [working],
     [{ run: 'r1', from: 'plan', text: 'x'.repeat(5000), at: 2 }],
@@ -109,6 +120,50 @@ test('patrol sends the board only when it changed, and caps each message', () =>
     false,
   )!
   expect(long.text.length).toBeLessThan(600)
+})
+
+test('patrol skips a heartbeat when only time facts moved, but wakes on any real change', () => {
+  const rig = { name: 'fab', repo: '/r/fab', factory: 'lifecycle', maxRuns: 2, goal: 'finish the features' }
+  const run = (o: object = {}) => ({
+    id: 'r1',
+    node: 'implement',
+    sub: 'working',
+    goal: 'Add /health',
+    rig: 'fab',
+    attempt: 1,
+    attempts: 2,
+    inMin: 10,
+    quietMin: 10,
+    ...o,
+  })
+  const beat = patrol([run()], [], new Set(), true, [rig])!
+
+  // inMin and the quiet bucket moving (both stay >= 10) change nothing a person needs to see
+  expect(patrol([run({ inMin: 20, quietMin: 20 })], [], new Set(), true, [rig], beat.sig)).toBeNull()
+  // a node change, an attempt change, and a gate each wake with the full board
+  expect(patrol([run({ node: 'verify' })], [], new Set(), true, [rig], beat.sig)).not.toBeNull()
+  expect(patrol([run({ attempt: 2 })], [], new Set(), true, [rig], beat.sig)).not.toBeNull()
+  expect(
+    patrol([run({ gate: { question: 'ship?', outcomes: ['yes'] } })], [], new Set(), true, [rig], beat.sig),
+  ).not.toBeNull()
+  // a rig busy change (a second run joins) wakes too
+  expect(patrol([run(), run({ id: 'r2' })], [], new Set(), true, [rig], beat.sig)).not.toBeNull()
+  // lastSig undefined always wakes a due heartbeat with the whole board
+  expect(patrol([run()], [], new Set(), true, [rig])).not.toBeNull()
+  // mail still wakes even with an equal sig, but says the board is unchanged
+  const mail = patrol(
+    [run()],
+    [{ run: 'r1', from: 'plan', text: 'Redis OK?', at: 2 }],
+    new Set(),
+    true,
+    [rig],
+    beat.sig,
+  )!
+  expect(mail.text).toContain('Board and rig goals: unchanged')
+
+  // quietMin moving from absent to present wakes once, on its own
+  const quiet = patrol([run({ quietMin: undefined })], [], new Set(), true, [rig])!
+  expect(patrol([run({ quietMin: 10 })], [], new Set(), true, [rig], quiet.sig)).not.toBeNull()
 })
 
 test("patrol keeps the manager working toward a rig's goal while the rig has room", () => {

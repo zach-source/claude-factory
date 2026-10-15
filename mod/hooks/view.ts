@@ -267,12 +267,19 @@ export function rigStats(rig: Pick<FactoryRig, 'name' | 'maxRuns'>, runs: readon
 /** minutes as a floor to 10, so the board repeats until a run's facts really move */
 const tens = (min: number) => `${Math.floor(min / 10) * 10}+ min`
 
-/** what a patrol says of a working run beside its station: the attempt, how long, how quiet, a paused runner */
-export function runFacts(r: Pick<FactoryRun, 'attempt' | 'attempts' | 'inMin' | 'quietMin' | 'limitUntil'>) {
+/**
+ * What a patrol says of a working run beside its station: the attempt, how long, how quiet, a paused
+ * runner. With `sig` true, it drops the elapsed-time facts (time in station, and the quiet minute count)
+ * so two patrols that differ only by elapsed time compare equal; it keeps that a run is quiet at all.
+ */
+export function runFacts(
+  r: Pick<FactoryRun, 'attempt' | 'attempts' | 'inMin' | 'quietMin' | 'limitUntil'>,
+  sig = false,
+) {
   return [
     r.attempt && r.attempts && `attempt ${r.attempt}/${r.attempts}`,
-    r.inMin !== undefined && r.inMin >= 10 && `${tens(r.inMin)} in station`,
-    r.quietMin !== undefined && r.quietMin >= 10 && `quiet ${tens(r.quietMin)}`,
+    !sig && r.inMin !== undefined && r.inMin >= 10 && `${tens(r.inMin)} in station`,
+    r.quietMin !== undefined && r.quietMin >= 10 && (sig ? 'quiet' : `quiet ${tens(r.quietMin)}`),
     r.limitUntil && `runner paused by its usage limit until ${clockOf(r.limitUntil)}`,
   ]
     .filter(Boolean)
@@ -281,11 +288,16 @@ export function runFacts(r: Pick<FactoryRun, 'attempt' | 'attempts' | 'inMin' | 
 }
 
 /**
- * The manager's loop: what to wake this session's model with, or null when nothing calls for it.
- * New mail and newly blocked workers wake it at once; `isDue` adds a heartbeat while any worker runs
- * or a rig with a goal has room for more runs. `keys` are the blocked workers this patrol reports,
- * for the caller to remember in `seen`. The board and rig goals are sent only when they differ from
- * `lastBoard`, the `board` an earlier patrol returned: every patrol stays in the manager's context.
+ * The manager's loop. This builds the message to wake this session's model with. It returns null
+ * when nothing calls for a wake. New mail and a newly blocked worker wake it at once. `isDue` adds
+ * a heartbeat while a worker runs, or a rig with a goal has room for more runs. `keys` lists the
+ * blocked workers this patrol reports. The caller must add them to `seen`.
+ *
+ * The board and rig goals go out in full only when their `sig` differs from `lastSig`. `lastSig`
+ * is the `sig` an earlier patrol returned. `sig` drops time-elapsed facts: time in station, and
+ * the quiet minute count. A worker that keeps running, with no other change, does not change `sig`.
+ * Take this case: no mail, no new blocked worker, no new idle rig, and `sig` equal to `lastSig`.
+ * In this case the heartbeat wakes nobody. It does not send a shrunk 'unchanged' message.
  */
 export function patrol(
   runs: readonly FactoryRun[],
@@ -293,7 +305,7 @@ export function patrol(
   seen: ReadonlySet<string>,
   isDue: boolean,
   rigs: readonly FactoryRig[] = [],
-  lastBoard?: string,
+  lastSig?: string,
 ) {
   const live = runs.filter(isRunLive)
   const blocked = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
@@ -303,35 +315,42 @@ export function patrol(
   const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
   // ponytail: told once per rig for the session; a rig that idles again later waits for a restart or other news
   const idle = runs.filter(r => r.idle && !seen.has(idleKey(r)))
-  if (!mail.length && !blocked.length && !idle.length && !(isDue && (isWorking || hasRoom))) return null
+  const noNews = !mail.length && !blocked.length && !idle.length
+  if (noNews && !(isDue && (isWorking || hasRoom))) return null
+
+  const rows = (facts: (r: FactoryRun) => string) =>
+    live.map(
+      r =>
+        `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : facts(r)}: ${line(r.goal ?? '', 100)}`,
+    )
+  const goalLines = goals.length
+    ? [
+        `Rig goals: with room, give each rig the next work toward its goal.\n${goals
+          .map(g => `- ${g.name}, busy ${busy(g)}${g.maxRuns ? `/${g.maxRuns}` : ''}: ${g.goal}`)
+          .join('\n')}`,
+      ]
+    : []
+  const board = rows(r => runFacts(r))
+  const sigRows = rows(r => runFacts(r, true))
+  const state = [board.length ? `Board:\n${board.join('\n')}` : 'Board: no runs.', ...goalLines].join('\n')
+  const sig = [sigRows.length ? `Board:\n${sigRows.join('\n')}` : 'Board: no runs.', ...goalLines].join('\n')
+  // a due heartbeat with nothing else to say, whose board and rig goals repeat the last patrol, wakes nobody
+  if (noNews && sig === lastSig) return null
+
   const news = [
     // the whole report is a `factory show` away; a parked station's can run to pages
     ...mail.map(m => `- ${m.run} / ${m.from}: ${line(m.text, 300)}`),
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
     ...idle.map(r => `- rig ${r.rig}: idle, ${r.idle}. Set it a goal or queue beads for it.`),
   ]
-  const board = live.map(
-    r =>
-      `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : runFacts(r)}: ${line(r.goal ?? '', 100)}`,
-  )
-  const state = [
-    board.length ? `Board:\n${board.join('\n')}` : 'Board: no runs.',
-    ...(goals.length
-      ? [
-          `Rig goals: with room, give each rig the next work toward its goal.\n${goals
-            .map(g => `- ${g.name}, busy ${busy(g)}${g.maxRuns ? `/${g.maxRuns}` : ''}: ${g.goal}`)
-            .join('\n')}`,
-        ]
-      : []),
-  ].join('\n')
   const text = [
     '[factory] patrol',
     news.length
       ? `New:\n${news.join('\n')}`
       : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
-    state === lastBoard ? 'Board and rig goals: unchanged since the last patrol.' : state,
+    sig === lastSig ? 'Board and rig goals: unchanged since the last patrol.' : state,
   ].join('\n')
-  return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state }
+  return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state, sig }
 }
 
 /** what an open pull request waits on, worst first: conflicts, failing checks, a review, then the merge */
