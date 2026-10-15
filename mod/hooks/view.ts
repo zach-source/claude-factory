@@ -19,12 +19,21 @@ export function track(trail: readonly string[], current: string): Stop[] {
 /** the bead types the backlog filters by, after `all` */
 export const BEAD_TYPES = ['bug', 'feature', 'task', 'epic', 'chore']
 
+/** one drawn backlog row: `connector` is the tree prefix of a child, `kids` how many children are listed */
+export type TierRow = { bead: FactoryBead; depth: number; connector: string; kids: number; isOpen: boolean }
+
 /**
  * A backlog list as priority tiers, highest first (no priority last), each bead followed by its
- * children. A type keeps the beads of that type and their children; a child whose parent is not in
- * the list stands at its own tier. `limit` stops adding whole families once that many rows are drawn.
+ * children when `open` holds it (all of them when `open` is unset). A type keeps the beads of that type
+ * and their children; a child whose parent is not in the list stands at its own tier. `limit` stops
+ * adding whole families once that many rows are drawn; `more` counts the families left out.
  */
-export function tiers(beads: readonly FactoryBead[], type = 'all', limit = Infinity) {
+export function tiers(
+  beads: readonly FactoryBead[],
+  type = 'all',
+  limit = Infinity,
+  open?: ReadonlySet<string>,
+) {
   const shown = type === 'all' ? new Set(beads.map(b => b.id)) : new Set<string>()
   if (type !== 'all') {
     const hit = new Set(beads.filter(b => b.type === type).map(b => b.id))
@@ -33,23 +42,47 @@ export function tiers(beads: readonly FactoryBead[], type = 'all', limit = Infin
   const list = beads.filter(b => shown.has(b.id))
   const ids = new Set(list.map(b => b.id))
   const kidsOf = (id: string) => list.filter(b => b.parent === id)
-  const family = (b: FactoryBead, depth: number): { bead: FactoryBead; depth: number }[] => [
-    { bead: b, depth },
-    ...kidsOf(b.id).flatMap(k => family(k, depth + 1)),
-  ]
-  const out: { tier: string; priority?: number; rows: { bead: FactoryBead; depth: number }[] }[] = []
+  const family = (b: FactoryBead, depth: number, connector: string): TierRow[] => {
+    const kids = kidsOf(b.id)
+    const isOpen = open === undefined || open.has(b.id)
+    return [
+      { bead: b, depth, connector, kids: kids.length, isOpen },
+      ...(isOpen
+        ? kids.flatMap((k, i) =>
+            family(k, depth + 1, `${'  '.repeat(depth + 1)}${i === kids.length - 1 ? '└─' : '├─'} `),
+          )
+        : []),
+    ]
+  }
+  const out: { tier: string; priority?: number; rows: TierRow[] }[] = []
   let drawn = 0
+  let more = 0
   const roots = list.filter(b => !b.parent || !ids.has(b.parent))
   for (const p of [0, 1, 2, 3, 4, undefined]) {
-    const rows: { bead: FactoryBead; depth: number }[] = []
+    const rows: TierRow[] = []
     // ponytail: a priority outside 0-4 is not drawn; bd allows only those
-    for (const b of roots.filter(r => r.priority === p))
-      if (drawn + rows.length < limit) rows.push(...family(b, 0))
+    for (const b of roots.filter(r => r.priority === p)) {
+      if (drawn + rows.length < limit) rows.push(...family(b, 0, ''))
+      else more++
+    }
     drawn += rows.length
     if (rows.length) out.push({ tier: p === undefined ? 'no priority' : `P${p}`, priority: p, rows })
   }
-  return { tiers: out, total: list.length, drawn }
+  return { tiers: out, total: list.length, drawn, more }
 }
+
+/** `[done/total]` of a parent's children, '' for a bead without any */
+export const progress = (b: FactoryBead) => (b.children ? `[${b.children.done}/${b.children.total}]` : '')
+
+/** the first open blocker, `+n` for more: what a row's ⛔ says */
+export const blockers = (b: FactoryBead) =>
+  b.blockedBy?.length
+    ? `⛔ ${b.blockedBy[0]}${b.blockedBy.length > 1 ? ` +${b.blockedBy.length - 1}` : ''}`
+    : ''
+
+/** the open list with `id` flipped */
+export const toggled = (open: readonly string[] = [], id: string) =>
+  open.includes(id) ? open.filter(x => x !== id) : [...open, id]
 
 const BLOCKS = '▁▂▃▄▅▆▇█'
 

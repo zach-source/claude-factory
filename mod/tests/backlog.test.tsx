@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { tiers } from '../hooks/view'
+import { blockers, progress, tiers, toggled } from '../hooks/view'
 
 const BEADS = [
   { id: 'a-1', title: 'big work', priority: 1, type: 'epic' },
@@ -19,6 +19,35 @@ test('tiers order by priority, nest children under their parent and keep orphans
     ['a-1.2', 1],
   ])
   expect(t.tiers[2]!.rows.map(r => r.bead.id)).toEqual(['a-4'])
+})
+
+test('children are drawn only under an open parent, with a connector, the last one closing the branch', () => {
+  const rows = (open: string[]) =>
+    tiers(BEADS, 'all', Infinity, new Set(open)).tiers.flatMap(g =>
+      g.rows.map(r => [r.bead.id, r.connector, r.kids, r.isOpen]),
+    )
+  expect(rows([]).filter(r => r[0] === 'a-1')).toEqual([['a-1', '', 2, false]])
+  expect(rows([]).map(r => r[0])).not.toContain('a-1.1')
+  expect(rows(['a-1']).filter(r => String(r[0]).startsWith('a-1'))).toEqual([
+    ['a-1', '', 2, true],
+    ['a-1.1', '  ├─ ', 0, false],
+    ['a-1.2', '  └─ ', 0, false],
+  ])
+})
+
+test('a collapsed family is one row against the limit, and the families left out are counted', () => {
+  const t = tiers(BEADS, 'all', 1, new Set())
+  expect([t.drawn, t.more]).toEqual([1, 3])
+})
+
+test('progress, blockers and toggling read plainly', () => {
+  expect(progress({ id: 'a', title: 't', children: { done: 2, total: 4 } })).toBe('[2/4]')
+  expect(progress({ id: 'a', title: 't' })).toBe('')
+  expect(blockers({ id: 'a', title: 't', blockedBy: ['a-9'] })).toBe('⛔ a-9')
+  expect(blockers({ id: 'a', title: 't', blockedBy: ['a-9', 'a-8', 'a-7'] })).toBe('⛔ a-9 +2')
+  expect(blockers({ id: 'a', title: 't', blockedBy: [] })).toBe('')
+  expect(toggled(undefined, 'a')).toEqual(['a'])
+  expect(toggled(['a', 'b'], 'a')).toEqual(['b'])
 })
 
 test('a type filter keeps its beads, an epic with its children, and a child alone at its own tier', () => {
@@ -49,7 +78,18 @@ test('the backlog tab draws the picked type with a child nested under its parent
     argv.includes('tick')
       ? { manager: [], rigs: [], runs: [] }
       : argv.includes('backlog')
-        ? [{ name: 'api', repo: '/w/api', factory: 'lifecycle', busy: 0, queued: [], unqueued: BEADS }]
+        ? [
+            {
+              name: 'api',
+              repo: '/w/api',
+              factory: 'lifecycle',
+              busy: 1,
+              maxRuns: 2,
+              goal: 'ship it',
+              queued: [],
+              unqueued: BEADS.map(b => (b.id === 'a-1' ? { ...b, children: { done: 1, total: 3 } } : b)),
+            },
+          ]
         : ''
   on('process.run', ($, e) => ({
     value: { exitCode: 0, stdout: JSON.stringify(out(e.argv)), stderr: '' } as never,
@@ -71,8 +111,18 @@ test('the backlog tab draws the picked type with a child nested under its parent
   await clock.settle()
   const drawn = JSON.stringify(await ui.drawn())
   expect(drawn).toContain('big work')
-  expect(drawn).toContain('first step')
   expect(drawn).not.toContain('crash')
-  expect(drawn).toContain('"paddingLeft":2')
+  // one rule a rig, no goal; the parent says how far its children are and starts collapsed
+  expect(drawn).toContain('busy 1/2')
+  expect(drawn).toContain('0 queued')
+  expect(drawn).toContain('[1/3]')
+  expect(drawn).not.toContain('ship it')
+  expect(drawn).not.toContain('first step')
+  await ui.press({ key: 'toggle-a-1' })
+  await clock.settle()
+  const opened = JSON.stringify(await ui.drawn())
+  expect(opened).toContain('first step')
+  expect(opened).toContain('  ├─ a-1.1')
+  expect(opened).toContain('  └─ a-1.2')
   await ui.unmount()
 })

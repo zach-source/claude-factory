@@ -121,3 +121,45 @@ test('a failing tick says why in the status line and marks the board stale until
   expect(JSON.stringify(await ui.drawn())).not.toContain('stale since')
   await ui.unmount()
 })
+
+test("a rig's backlog button opens the Backlog on that rig, and all rigs clears it", async ($, on) => {
+  const clock = mock.clock(on)
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+    on(event, () => ({ value: undefined }) as never)
+  const rig = (name: string) => ({
+    name,
+    repo: `/w/${name}`,
+    factory: 'lifecycle',
+    busy: 0,
+    queued: [],
+    unqueued: [{ id: `${name}-1`, title: `work in ${name}`, priority: 2 }],
+  })
+  const out = (argv: readonly string[]) =>
+    argv.includes('tick') ? TICK : argv.includes('backlog') ? ['api', 'deploys', 'docs'].map(rig) : ''
+  on('process.run', ($, e) => ({
+    value: { exitCode: 0, stdout: JSON.stringify(out(e.argv)), stderr: '' } as never,
+  }))
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'rigs' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+  await ui.press({ key: 'rigs-backlog-deploys' })
+  await clock.settle()
+  const one = JSON.stringify(await ui.drawn())
+  expect(one).toContain('work in deploys')
+  expect(one).not.toContain('work in api')
+  await ui.press({ key: 'backlog-all-rigs' })
+  await clock.settle()
+  const all = JSON.stringify(await ui.drawn())
+  expect(all).toContain('work in deploys')
+  expect(all).toContain('work in api')
+  await ui.unmount()
+})

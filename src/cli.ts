@@ -44,12 +44,12 @@ import {
 } from './machine'
 import {
   actorOf,
+  backlogOf,
   beads,
   dispatchable,
   goalOf,
   hasBeads,
   isOwned,
-  parentOf,
   stationOf,
   type Bead,
 } from './beads'
@@ -2976,23 +2976,8 @@ async function backlog() {
     const w = { ...rig, busy: busy.filter(b => b === rig.name).length }
     try {
       const b = beads(rig.repo, 'factory')
-      const slim = (x: Bead) => ({
-        id: x.id,
-        title: x.title,
-        priority: x.priority,
-        type: x.issue_type,
-        labels: x.labels,
-        parent: parentOf(x),
-      })
-      const ready = b.ready()
-      const queued = dispatchable(ready, new Set(), 50)
-      const heads = new Set(queued.map(x => x.id))
-      return {
-        ...w,
-        // a queued bead's ready children ride in its run: listed under it, never started on their own
-        queued: [...queued, ...ready.filter(x => !x.assignee && heads.has(parentOf(x) ?? ''))].map(slim),
-        unqueued: b.unqueued().map(slim),
-      }
+      // three listings a rig, whatever its size: ready, blocked and every bead (child counts)
+      return { ...w, ...backlogOf(b.ready(), b.unqueued(), b.blocked(), b.every()) }
     } catch (err) {
       return { ...w, queued: [], unqueued: [], error: (err as Error).message }
     }
