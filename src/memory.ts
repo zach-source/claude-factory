@@ -104,7 +104,11 @@ async function embed(texts: string[]) {
   // loaded on first use only: every other command, the tick above all, never pays for the model
   const { pipeline } = await import('@huggingface/transformers')
   embedder ??= (await pipeline('feature-extraction', MODEL, { dtype: 'q8' })) as unknown as typeof embedder
-  return (await embedder!(texts, { pooling: 'cls', normalize: true })).tolist()
+  // in batches: one batch of hundreds of 512-token texts took GBs and minutes, 32 at a time ~3 s each
+  const out: number[][] = []
+  for (let i = 0; i < texts.length; i += 32)
+    out.push(...(await embedder!(texts.slice(i, i + 32), { pooling: 'cls', normalize: true })).tolist())
+  return out
 }
 
 type Index = { model: string; vecs: Record<string, { hash: string; vec: number[] }> }
