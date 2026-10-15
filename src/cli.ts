@@ -389,7 +389,11 @@ export function overwritten(out: string) {
   })
 }
 
-function syncRigBeads(run: Run, way: 'push' | 'pull', r = rigOf(run.repo)?.beadsRemote) {
+function syncRigBeads(
+  run: Pick<Run, 'repo' | 'worktree'>,
+  way: 'push' | 'pull',
+  r = rigOf(run.repo)?.beadsRemote,
+) {
   const show = r ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
   // the server's own user; its password, if it has one, as bd takes it
@@ -402,6 +406,15 @@ function syncRigBeads(run: Run, way: 'push' | 'pull', r = rigOf(run.repo)?.beads
         beads(run.repo, 'factory').comment(id, text)
       } catch {} // the issue the VM deleted: nothing to comment on
   return p
+}
+
+/** dispatch's sync for a rig whose remote needs its user: `bd sync` would pull and push as the server's own */
+function syncAsRemoteUser(rig: Rig) {
+  for (const way of ['pull', 'push'] as const) {
+    const p = syncRigBeads({ repo: rig.repo, worktree: rig.repo }, way, rig.beadsRemote)
+    if (p.exitCode !== 0)
+      throw new Error(`beads ${way}: ${`${p.stderr}`.trim().split('\n').at(-1) || 'failed'}`)
+  }
 }
 
 /**
@@ -2443,7 +2456,8 @@ async function dispatch() {
       if (existsSync(join(rig.repo, '.beads')) && Date.now() - (synced[rig.repo]?.at ?? 0) > SYNC_MS) {
         synced[rig.repo] = { at: Date.now() } // a failing sync retries next interval, not every pass
         try {
-          b.sync()
+          if (rig.beadsRemote) syncAsRemoteUser(rig)
+          else b.sync()
         } catch (err) {
           synced[rig.repo]!.error = (err as Error).message
         }
