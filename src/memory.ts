@@ -632,6 +632,27 @@ export function decide(
   return decisions
 }
 
+/**
+ * Every rename a LONG.md entry's `aliases` field implies: an alias id now resolves to its entry's own id.
+ * The dream prompt tells a dream to merge two duplicate entries by hand this way: keep the older id, add
+ * the removed id to the kept entry's aliases, then delete only the removed entry's heading and body. Pass
+ * this map to compact(). That makes the merged-away id's usage count toward the entry that absorbed it
+ * (claude-factory-59r.11). This reads straight from the files, unlike a git-detected rename. It still
+ * works even when nobody calls compact() right after the merge.
+ */
+export function longAliasRenames(dir: string): Record<string, string> {
+  const renamed: Record<string, string> = {}
+  if (!existsSync(dir)) return renamed
+  for (const topic of readdirSync(dir, { withFileTypes: true })) {
+    if (!topic.isDirectory() || topic.name.startsWith('.')) continue
+    const file = join(dir, topic.name, 'LONG.md')
+    if (!existsSync(file)) continue
+    for (const e of parseLong(readFileSync(file, 'utf8')))
+      for (const alias of e.aliases ?? []) renamed[`${topic.name}/LONG.md#${alias}`] = `${topic.name}/LONG.md#${e.id}`
+  }
+  return renamed
+}
+
 /** every .md file this store holds. It counts CORE.md and each topic's README, LONG.md and short notes. It skips .archive/. */
 export function mdFileCount(dir: string): number {
   if (!existsSync(dir)) return 0
@@ -829,7 +850,7 @@ export const dreamPrompt = (
 The structure, three tiers:
 - CORE.md: the fact-and-behavior tier. The lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig; a \`## rig: <name>\` section holds what nearly every run in that rig needs, and only that rig's workers read it. Every worker re-reads it on every turn, so each part (the top, each rig section) stays under ${CORE_BUDGET} bytes, one short line per lesson (at most 200 characters: the rule, not its story; the story goes in a note). Briefs cut a part at that budget, so what is past it is lost to them: move detail into topic notes, which search finds.
 - <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
-- <topic>/LONG.md: the long tier. One merged lesson per \`## summary\` heading, followed by a comment \`<!-- id: ... -->\`. A tiering pass (\`factory memory compact\`, which runs after you finish) merges an aging, used short note in here on its own. Never change an entry's id line: usage counts and renames follow it. You can still edit an entry's body, or merge two entries into one by hand, but keep the id you keep unchanged.
+- <topic>/LONG.md: the long tier. One merged lesson per \`## summary\` heading, followed by a comment \`<!-- id: {"id":"...", ...} -->\`. A tiering pass (\`factory memory compact\`, which runs after you finish) merges an aging, used short note in here on its own. Never change an entry's \`id\`: usage counts and renames follow it. You can still edit an entry's body, or merge two entries into one by hand (see point 7): when you do, never delete the kept id, and never remove an alias already on it.
 - <topic>/<note>.md: the short tier. One learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
 - inbox/: new notes from workers. Empty it every pass.
 A lesson that holds only while some bead is open (an owner's hold, a pending decision, a known outage) names that bead ("until fab-8aq4 closes") and never goes in CORE.md: when the bead closes, it is retired.
@@ -842,7 +863,7 @@ This pass:
 4. Rewrite each touched topic's README and CORE.md so their order is by importance: what helped workers most (Usage below) first, then what holds most broadly. A note that keeps helping belongs higher, its lesson in CORE.md when it holds for every rig.
 5. Manager skills, proposed in ${skillSources(dir)} (the manager reviews each new, changed or reaped one and installs it or not; a rejection comes back to you as an inbox note): the manager is the Claude session that runs the factory for the person; Manager activity below is what it was asked and what it ran. Where it did the same multi-step work three or more times (the same sequence of commands to triage a stuck station, answer one kind of worker question, check a rig, start work), write it a skill so it need not work it out again: <name>/SKILL.md, a kebab-case name, frontmatter \`name:\` and \`description:\` (one line saying when to use it: the manager picks skills by it), then the steps with the exact commands, what to look for and what to decide. Fold what the activity shows into an existing skill rather than writing a near copy. Reap (git rm -r) a skill that no longer fits how the factory works, or that the manager has not used in 30 days and is older than that (Skill uses below). Write no skill for one-off work.
 6. Promotion candidates below: each is a LONG.md entry that several runs have found helpful several times. Write it as one short line (under 200 characters) in CORE.md: the top when every rig needs it, else that entry's rig's \`## rig:\` section. The LONG.md entry stays as that line's detail.
-7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry, keep the older id, and delete the other entry's block.
+7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry: keep the older id, add the removed entry's id to the kept entry's \`"aliases"\` list in its id line's JSON (so its usage count carries over; start the list if it has none), then delete the removed entry's heading, id line and body.
 Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
 
 ## Manager skills (name: uses, last used: description)

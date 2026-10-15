@@ -2122,17 +2122,23 @@ async function dream() {
       '-m',
       `dream: ${said}`,
     )
-    // a filed or renamed note keeps its counts
-    const renamed: Record<string, string> = Object.fromEntries(
-      git(MEMORY, 'diff', '-M', '--name-status', before, 'HEAD')
-        .split('\n')
-        .filter(l => l.startsWith('R'))
-        .map(l => l.split('\t').slice(1)),
-    )
+    // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
+    // through the alias it left on the entry that absorbed it (claude-factory-59r.11)
+    const renamed: Record<string, string> = {
+      ...Object.fromEntries(
+        git(MEMORY, 'diff', '-M', '--name-status', before, 'HEAD')
+          .split('\n')
+          .filter(l => l.startsWith('R'))
+          .map(l => l.split('\t').slice(1)),
+      ),
+      ...memory.longAliasRenames(MEMORY),
+    }
+    // logged before applyTiers runs: applyTiers reads usage fresh, so a note the dream renamed must
+    // already resolve to its new path, or it looks never used and risks archive (claude-factory-59r.10)
+    memory.compact(MEMORY, renamed)
     if (process.env.FACTORY_MEMORY_TIERS !== '0') {
       const filesBefore = memory.mdFileCount(MEMORY)
       const tiers = memory.applyTiers(MEMORY, { now: start })
-      Object.assign(renamed, tiers.renamed)
       git(MEMORY, 'add', '-A')
       // its own commit, dated with the dream it followed, even when it merged and archived nothing
       git(
@@ -2144,8 +2150,8 @@ async function dream() {
         '-m',
         `compact: ${tiers.merged} merged, ${tiers.archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files`,
       )
+      memory.compact(MEMORY, tiers.renamed)
     }
-    memory.compact(MEMORY, renamed)
     return said
   } finally {
     release()

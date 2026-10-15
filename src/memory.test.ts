@@ -19,6 +19,7 @@ import {
   inboxCount,
   installSkill,
   type LongEntry,
+  longAliasRenames,
   longSimPairs,
   managerActivity,
   mdFileCount,
@@ -566,6 +567,52 @@ test('applyTiers() with dryRun counts decisions but writes nothing, and a second
   expect(again.decisions).toEqual([]) // the note is gone, so there is nothing left to merge
 })
 
+test("applyTiers must run after the dream's own renames are compacted, or a just-filed helped note looks unused and is wrongly archived", () => {
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  // wrong order: applyTiers reads usage before anyone logs the dream's own file move (claude-factory-59r.10)
+  {
+    const dir = join(tmpdir(), `memory-order-wrong-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(join(dir, 'beads'), { recursive: true })
+    use(dir, ['inbox/x.md'], 'helped', now - 1000) // helped under its pre-dream path
+    // the dream filed it under beads/ already, keeping the note's own old at: date
+    writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'bd init locks every repo', at: '2026-08-01', body: 'why' }))
+    const { archived, merged } = applyTiers(dir, { now })
+    expect(archived).toBe(1) // usage is still keyed to inbox/x.md: this note looks never helped
+    expect(merged).toBe(0)
+  }
+  // right order: compact(renamed) first, so usage already resolves to the note's new path
+  {
+    const dir = join(tmpdir(), `memory-order-right-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(join(dir, 'beads'), { recursive: true })
+    use(dir, ['inbox/x.md'], 'helped', now - 1000)
+    writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'bd init locks every repo', at: '2026-08-01', body: 'why' }))
+    compact(dir, { 'inbox/x.md': 'beads/x.md' })
+    const { archived, merged } = applyTiers(dir, { now })
+    expect(archived).toBe(0)
+    expect(merged).toBe(1) // helped, so merged into LONG.md instead of archived
+  }
+})
+
+test("longAliasRenames turns a LONG.md entry's aliases into renames, so a dream's hand merge keeps the removed id's usage (claude-factory-59r.11)", () => {
+  const dir = join(tmpdir(), `memory-aliasrenames-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  mkdirSync(join(dir, 'ci'), { recursive: true })
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([{ id: 'a', summary: 'kept entry', aliases: ['b'], body: 'merged body' }]),
+  )
+  writeFileSync(join(dir, 'ci', 'LONG.md'), formatLong([{ id: 'x', summary: 'another topic, no aliases', body: 'body' }]))
+  expect(longAliasRenames(dir)).toEqual({ 'beads/LONG.md#b': 'beads/LONG.md#a' })
+
+  use(dir, ['beads/LONG.md#b'], 'helped')
+  compact(dir, longAliasRenames(dir))
+  expect(usage(dir).get('beads/LONG.md#a')?.helped).toBe(1)
+  expect(usage(dir).has('beads/LONG.md#b')).toBe(false)
+})
+
 test('evalScore: recall and MRR over results already searched for, and the misses it names', () => {
   const cases: EvalCase[] = [
     { query: 'why is bd slow', expect: 'beads/lock.md' },
@@ -603,7 +650,8 @@ test('evaluate() runs the fixed query set against a real store through search()'
 test("dreamPrompt names the long tier and the id rule, and adds the promotion and duplicate sections", () => {
   const empty = dreamPrompt('/tmp/memory', [], [], [])
   expect(empty).toContain('LONG.md')
-  expect(empty).toContain("Never change an entry's id line")
+  expect(empty).toContain("Never change an entry's `id`")
+  expect(empty).toContain('aliases')
   expect(empty).toContain('## Promotion candidates')
   expect(empty).toContain('## Possible duplicates')
   expect(empty).toContain('(none)')
