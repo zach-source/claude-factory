@@ -403,7 +403,7 @@ function runDetail(p: Base, d: FactoryDetail | null, peek: string, draft: Factor
 
 /** an open board card: the run's full `runDetail`, with the border's padding taken off its width (A7) */
 function card(p: Base, r: FactoryRun, draft: FactoryDraft, detail: FactoryDetail | null, peek: string) {
-  const { Box, Text } = p.ui
+  const { Box, Text, Button } = p.ui
   const s = standing(r, p.now)
   const timer = r.sub === 'working' && r.since && !r.gate ? ` · ${dur(p.now - r.since)}` : ''
   const tries = r.attempt && r.attempt > 1 ? ` · try ${r.attempt}/${r.attempts}` : ''
@@ -415,11 +415,15 @@ function card(p: Base, r: FactoryRun, draft: FactoryDraft, detail: FactoryDetail
           <Text bold>{r.id}</Text>
           <Text color="cyan">{r.bead ? `  ${r.bead}` : ''}</Text>
         </Text>
-        <Text color={s.color}>
-          {r.node} · {s.word}
-          {tries}
-          {timer}
-        </Text>
+        <Box gap={1} flexShrink={0}>
+          <Text color={s.color}>
+            {r.node} · {s.word}
+            {tries}
+            {timer}
+          </Text>
+          {/* shrinks it back to its tile; the Steer row's close sits at the bottom of a long card */}
+          <Button key={`shrink-${r.id}`} label="-" dimColor onPress={() => p.act.select(null)} />
+        </Box>
       </Box>
       {runDetail({ ...p, width: Math.max(1, p.width - 4) }, detail, peek, draft, r.id)}
     </Box>
@@ -450,13 +454,25 @@ function stationTime(r: FactoryRun, now: number) {
   return [r.node, time].filter(Boolean).join(' ')
 }
 
+/** the station and its time, then what else a glance should catch: the try, the last report's age, a usage limit */
+function tileFacts(r: FactoryRun, now: number) {
+  return [
+    stationTime(r, now),
+    r.attempt && r.attempt > 1 ? `try ${r.attempt}/${r.attempts}` : '',
+    r.last ? `reported ${dur(now - r.last.at)} ago` : '',
+    r.limitUntil && r.limitUntil > now ? `limit until ${clockOf(r.limitUntil)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
 /** the one line of why: the gate's question, what stuck it, or where the run last got to */
 function why(r: FactoryRun) {
   const last = r.last ? line(r.last.summary, 120) : ''
   if (r.gate) return line(r.gate.question, 120)
   if (stateOf(r) === 'stuck')
     return r.error ? line(r.error, 120) : r.agent === 'blocked' ? 'worker blocked' : last
-  return `${r.attempt && r.attempt > 1 ? `try ${r.attempt}/${r.attempts} ` : ''}${last}`.trim()
+  return last
 }
 
 /** a compact board card `w` cells wide; a gate stays answerable here, its question and buttons in place of the why line */
@@ -466,12 +482,16 @@ function tile(p: Base, r: FactoryRun, draft: FactoryDraft, w: number, isOpen: bo
   return (
     <Box key={`tile-${r.id}`} flexDirection="column" width={w} marginBottom={1}>
       <Box gap={1}>
-        {cell(q, `tile-id-${r.id}`, shortId(r.id), { color: 'cyan' })}
+        {cell(q, `tile-id-${r.id}`, w >= 60 ? r.id : shortId(r.id), { color: 'cyan' })}
+        {r.rig && rest(q, `tile-rig-${r.id}`, r.rig, { color: 'magenta' })}
         {/* the open card below carries the close button */}
         {!isOpen && <Button key={`open-${r.id}`} label="open" onPress={() => p.act.select(r.id)} />}
       </Box>
-      {cell(q, `tile-bead-${r.id}`, r.bead ?? '', { color: 'magenta', width: w })}
-      {cell(q, `tile-at-${r.id}`, stationTime(r, p.now), { width: w })}
+      <Box gap={1}>
+        {r.bead && cell(q, `tile-bead-${r.id}`, r.bead, { color: 'cyan' })}
+        {rest(q, `tile-goal-${r.id}`, r.goal ? line(r.goal, 200) : '')}
+      </Box>
+      {cell(q, `tile-at-${r.id}`, tileFacts(r, p.now), { width: w })}
       {r.gate ? gate(q, r, draft) : cell(q, `tile-why-${r.id}`, why(r), { dimColor: true, width: w })}
     </Box>
   )
@@ -496,23 +516,33 @@ function lanes(
           {g.runs.map(r => (r.id === selected ? expanded(r) : tile(p, r, draft, p.width, false)))}
         </Box>
       ))
-  const w = Math.floor((p.width - 3) / 4)
+  // what needs the person goes first and full width, where a gate's question and buttons have room
+  const [gates, ...cols] = groups
+  const w = Math.floor((p.width - 2) / 3)
   return (
-    <Box key="lanes" gap={1}>
-      {groups.map(g => (
-        <Box key={`lane-${g.state}`} flexDirection="column" width={w}>
-          {cell(p, `lane-head-${g.state}`, `${COLUMNS[g.state].title} (${g.runs.length})`, {
-            color: COLUMNS[g.state].color,
-            width: w,
-          })}
-          <Text dimColor>{'─'.repeat(w)}</Text>
-          {g.runs.length ? (
-            g.runs.map(r => tile(p, r, draft, w, r.id === selected))
-          ) : (
-            <Text dimColor>none</Text>
-          )}
+    <Box key="lanes-wide" flexDirection="column">
+      {gates!.runs.length > 0 && (
+        <Box key={`lane-${gates!.state}`} flexDirection="column">
+          {rule(p, COLUMNS.gates.title, String(gates!.runs.length))}
+          {gates!.runs.map(r => tile(p, r, draft, p.width, r.id === selected))}
         </Box>
-      ))}
+      )}
+      <Box key="lanes" gap={1}>
+        {cols.map(g => (
+          <Box key={`lane-${g.state}`} flexDirection="column" width={w}>
+            {cell(p, `lane-head-${g.state}`, `${COLUMNS[g.state].title} (${g.runs.length})`, {
+              color: COLUMNS[g.state].color,
+              width: w,
+            })}
+            <Text dimColor>{'─'.repeat(w)}</Text>
+            {g.runs.length ? (
+              g.runs.map(r => tile(p, r, draft, w, r.id === selected))
+            ) : (
+              <Text dimColor>none</Text>
+            )}
+          </Box>
+        ))}
+      </Box>
     </Box>
   )
 }
