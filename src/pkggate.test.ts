@@ -77,6 +77,22 @@ function goIndexBody(sinceIso: string): string {
 // every record id a given fixture server hands out keeps that filter a no-op there.
 const sumdbLatestBody = (size: number) => `go.sum database tree\n${size}\nfakehash\n\n— sum.golang.org fakesignature\n`
 
+// claude-factory-8ub.7: a decision with a present floor does not wait for the refresh it triggers. It
+// decides at once, with the old, still-safe floor. A test that needs the refresh's own result (its
+// /healthz value, or its log line) must wait for that refresh's JSON line first. `lines` is a
+// `console.log` capture the caller owns.
+async function waitForFloorRefresh(lines: string[], from: number, tries = 500): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    const landed = lines.slice(from).some(l => {
+      const j = JSON.parse(l)
+      return j.eco === 'go' && (typeof j.floor === 'number' || (j.decision === 'error' && typeof j.reason === 'string' && j.reason.startsWith('sumdb floor refresh')))
+    })
+    if (landed) return
+    await new Promise(resolve => setTimeout(resolve, 2))
+  }
+  throw new Error('waitForFloorRefresh: no floor refresh landed in time')
+}
+
 // a transparency-log tile is raw hash bytes, not text: this probe (00 ff 80 c3, repeated) is exactly what
 // review found UTF-8 decoding turns into 00 ef bf bd ef bf bd... when passed through fetchText (ei0.8)
 const SUMDB_TILE_BYTES = new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3])
@@ -643,17 +659,6 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
   const lines: string[] = []
   const origLog = console.log
   console.log = (s: string) => lines.push(s)
-  async function waitForFloorRefresh(from: number, tries = 500): Promise<void> {
-    for (let i = 0; i < tries; i++) {
-      const landed = lines.slice(from).some(l => {
-        const j = JSON.parse(l)
-        return j.eco === 'go' && (typeof j.floor === 'number' || (j.decision === 'error' && typeof j.reason === 'string' && j.reason.startsWith('sumdb floor refresh')))
-      })
-      if (landed) return
-      await new Promise(resolve => setTimeout(resolve, 2))
-    }
-    throw new Error('waitForFloorRefresh: no floor refresh landed in time')
-  }
   try {
     const g = makeGate({
       upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
@@ -670,7 +675,7 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     const m1 = lines.length
     const second = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v2.0.0.info'))
     expect(second.status).toBe(404)
-    await waitForFloorRefresh(m1) // let this failed attempt fully land before phase 3 changes the fixture
+    await waitForFloorRefresh(lines, m1) // let this failed attempt fully land before phase 3 changes the fixture
 
     // the index comes back, with every sample now higher. A priming decision starts the new refresh; once
     // it lands, the floor reads 700
@@ -679,7 +684,7 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     now += 31 * 60_000
     const m2 = lines.length
     await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v0.5.0.info'))
-    await waitForFloorRefresh(m2)
+    await waitForFloorRefresh(lines, m2)
     const healthzThird = await g(new Request('http://gate/healthz'))
     expect((await (healthzThird.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(700)
     // the probe's own record (500) is now below the floor; the same probe, under a new version so its
@@ -693,12 +698,164 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     now += 31 * 60_000
     const m3 = lines.length
     await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v0.6.0.info'))
-    await waitForFloorRefresh(m3)
+    await waitForFloorRefresh(lines, m3)
     const healthzFourth = await g(new Request('http://gate/healthz'))
     expect((await (healthzFourth.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(700)
     // a 4th probe version, with a record (300) between the two floors, is still allowed
     const fourth = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v4.0.0.info'))
     expect(fourth.status).toBe(200)
+  } finally {
+    console.log = origLog
+    srv.stop(true)
+  }
+})
+
+test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
+  // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
+  // records differ by phase (below), to prove the floor cannot be poisoned upward.
+  const POISON_PATHS = Array.from({ length: 9 }, (_, i) => `poisonfloor-${String.fromCharCode(97 + i)}.example.com/mod`)
+  const POISON_VERSION = 'v1.0.0'
+  // phase 'honest': every sample sits far below sum.golang.org's tree size (1,000,000), so none is dropped,
+  // and the floor comes out as their minimum, 50.
+  const HONEST_IDS = [50, 51, 52, 53, 54, 55, 56, 57, 58]
+  // phase 'poison': the tree size drops to 200 (as if read right after an attacker's own flood of lookups
+  // grew it). 4 samples (60-63) still sit below it; the other 5 (250-290) do not -- they were logged no
+  // earlier than this very refresh's own lookup traffic, so the fix drops them. Only 4 honest samples are
+  // left, below GO_FLOOR_MIN_SAMPLES (5): this refresh must fail and keep the OLD floor, not jump toward 250.
+  const POISON_IDS = [60, 61, 62, 63, 250, 260, 270, 280, 290]
+  let phase: 'honest' | 'poison' = 'honest'
+  let now = NOW
+  // a probe module, separate from the sample paths, so its own decisions never feed the floor it is judged
+  // against. Each version gets its own fixed record, so each decision is a fresh one (not goInfoCache's
+  // forever cache of a prior version).
+  const PROBE_RECORDS: Record<string, number> = { 'v1.0.0': 10, 'v2.0.0': 10, 'v3.0.0': 150 }
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') {
+        const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(now).toISOString())
+        const ts = new Date(sinceMs + 15 * 60_000).toISOString()
+        return new Response(POISON_PATHS.map(p => JSON.stringify({ Path: p, Version: POISON_VERSION, Timestamp: ts })).join('\n') + '\n')
+      }
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(phase === 'honest' ? 1_000_000 : 200))
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        const probePrefix = 'poisonprobe.example.com/mod@'
+        if (key.startsWith(probePrefix)) return new Response(`${PROBE_RECORDS[key.slice(probePrefix.length)] ?? 10}\n`)
+        const idx = POISON_PATHS.findIndex(p => key === `${escapeGoPath(p)}@${escapeGoPath(POISON_VERSION)}`)
+        const id = idx >= 0 ? (phase === 'honest' ? HONEST_IDS[idx] : POISON_IDS[idx]) : 999_999
+        return new Response(`${id}\n`)
+      }
+      const m = url.pathname.match(/^\/poisonprobe\.example\.com\/mod\/@v\/(v[\d.]+)\.info$/)
+      if (m) return new Response(`{"Version":"${m[1]}","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  const lines: string[] = []
+  const origLog = console.log
+  console.log = (s: string) => lines.push(s)
+  try {
+    const g = makeGate({
+      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      now: () => now,
+    })
+    // the honest phase establishes a floor of 50 (the minimum of 50..58); the probe's own record (10) sits
+    // below it, so it is allowed
+    const m0 = lines.length
+    const first = await g(new Request('http://gate/go/poisonprobe.example.com/mod/@v/v1.0.0.info'))
+    await waitForFloorRefresh(lines, m0)
+    expect(first.status).toBe(200)
+    const healthzHonest = await g(new Request('http://gate/healthz'))
+    expect((await (healthzHonest.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(50)
+
+    // the poison phase: a priming decision triggers a background refresh; wait for it to land, then check
+    // the floor never jumped toward the poisoned ids (250-290) -- it failed instead, and kept 50
+    phase = 'poison'
+    now += 31 * 60_000
+    const m1 = lines.length
+    await g(new Request('http://gate/go/poisonprobe.example.com/mod/@v/v2.0.0.info'))
+    await waitForFloorRefresh(lines, m1)
+    const healthzPoison = await g(new Request('http://gate/healthz'))
+    expect((await (healthzPoison.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record).toBe(50)
+
+    // decisive proof: a version whose own record (150) sits strictly between the honest floor (50) and the
+    // poisoned peak (290) is still refused. A floor that had jumped to 250 (the old median+ratchet behavior)
+    // would wrongly allow this one.
+    const third = await g(new Request('http://gate/go/poisonprobe.example.com/mod/@v/v3.0.0.info'))
+    expect(third.status).toBe(404)
+  } finally {
+    console.log = origLog
+    srv.stop(true)
+  }
+})
+
+test('claude-factory-8ub.7: a stale floor decides at once, and a down index backs off instead of retrying every decision', async () => {
+  let indexHits = 0
+  let now = NOW
+  let indexUp = true
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') {
+        indexHits++
+        if (!indexUp) return new Response('internal error', { status: 500 })
+        return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(now).toISOString()))
+      }
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        return new Response(`${GO_FLOOR_RECORDS[key] ?? GO_FLOOR_RECORD - 1}\n`)
+      }
+      if (url.pathname === '/backoffprobe.example.com/mod/@v/v1.0.0.info') return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/backoffprobe.example.com/mod/@v/v2.0.0.info') return new Response(`{"Version":"v2.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/backoffprobe.example.com/mod/@v/v3.0.0.info') return new Response(`{"Version":"v3.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      if (url.pathname === '/backoffprobe.example.com/mod/@v/v4.0.0.info') return new Response(`{"Version":"v4.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  const lines: string[] = []
+  const origLog = console.log
+  console.log = (s: string) => lines.push(s)
+  try {
+    const g = makeGate({
+      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      now: () => now,
+    })
+    // a cold start always awaits its own refresh, so this establishes a floor while the index is up
+    const m0 = lines.length
+    const first = await g(new Request('http://gate/go/backoffprobe.example.com/mod/@v/v1.0.0.info'))
+    await waitForFloorRefresh(lines, m0)
+    expect(first.status).toBe(200)
+    expect(indexHits).toBe(1)
+
+    // the index goes down, and the clock moves past the floor's window: the next decision is due a refresh
+    indexUp = false
+    now += 31 * 60_000
+    const m1 = lines.length
+    const t1 = Date.now()
+    const second = await g(new Request('http://gate/go/backoffprobe.example.com/mod/@v/v2.0.0.info'))
+    const elapsed1 = Date.now() - t1
+    // decided at once, with the old, still-safe floor -- not blocked on the refresh its own staleness just
+    // triggered in the background (claude-factory-8ub.7)
+    expect(second.status).toBe(200)
+    expect(elapsed1).toBeLessThan(500)
+    await waitForFloorRefresh(lines, m1) // let that background refresh's own failure, and its backoff, land
+
+    // two further decisions, issued once the first failure's backoff is already in force: neither starts a
+    // new refresh, so the index sees no further requests from them
+    const t2 = Date.now()
+    const third = await g(new Request('http://gate/go/backoffprobe.example.com/mod/@v/v3.0.0.info'))
+    const elapsed2 = Date.now() - t2
+    expect(third.status).toBe(200)
+    expect(elapsed2).toBeLessThan(500)
+    const fourth = await g(new Request('http://gate/go/backoffprobe.example.com/mod/@v/v4.0.0.info'))
+    expect(fourth.status).toBe(200)
+
+    // 1 for the initial floor build, 1 for the failed retry that set the backoff; the backoff suppressed
+    // every retry after that
+    expect(indexHits).toBe(2)
   } finally {
     console.log = origLog
     srv.stop(true)
