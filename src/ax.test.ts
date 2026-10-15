@@ -284,6 +284,61 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
 })
 
+test("serve starts the devenv's processes and ends the first brief with a [factory] services note (claude-factory-5sn)", async () => {
+  const own = join(dir, 'own-svc')
+  const repo = join(dir, 'repo-svc')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  // records every arg, null-separated, since the brief now carries embedded newlines (the services note)
+  const argsFile = join(dir, 'claude-svc-args')
+  const claude = join(dir, 'claude-svc')
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+for a in "$@"; do printf '%s\\0' "$a" >> ${argsFile}; done
+echo '{"type":"system","subtype":"init","session_id":"sess-svc"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  const tasksFile = join(dir, 'tasks-svc.json')
+  writeFileSync(
+    tasksFile,
+    JSON.stringify([
+      {
+        name: 'devenv:processes:postgres',
+        type: 'process',
+        command: `exec sleep 5`,
+        cwd: null,
+        process: { start: { enable: true }, ready: { exec: 'exit 0' } },
+      },
+    ]),
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    DEVENV_TASK_FILE: tasksFile,
+    PGHOST: '127.0.0.1',
+    PGPORT: '5432',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    await worker.serve('m1', { once: true })
+    const args = readFileSync(argsFile, 'utf8').split('\0').filter(Boolean)
+    const prompt = args.at(-1)!
+    expect(prompt).toStartWith('the brief\n\n[factory] services: ready: postgres.')
+    expect(prompt).toContain('DATABASE_URL is set.')
+    expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('services: postgres ready in')
+    expect(existsSync(join(own, 'services', 'postgres.log'))).toBe(true)
+  } finally {
+    process.env = saved
+  }
+})
+
 test('poll learns the session as soon as the init event streams, not only once a long turn exits (claude-factory-xq3)', async () => {
   const own = join(dir, 'own-midturn')
   const repo = join(dir, 'repo-midturn')
