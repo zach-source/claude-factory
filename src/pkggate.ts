@@ -328,6 +328,11 @@ function parseGoIndexLine(line: string): GoIndexLine | null {
   }
 }
 
+/** one JSON line per floor refresh attempt, success or failure -- never a URL, same rule as `logDecision` */
+function logGoFloorRefreshError(reason: string) {
+  console.log(JSON.stringify({ eco: 'go', decision: 'error', reason: `sumdb floor refresh: ${reason}` }))
+}
+
 /**
  * refreshes `cfg.goFloor` from index.golang.org.
  * It samples up to `GO_FLOOR_SAMPLE_LIMIT` entries first seen in the window ending at `now - minDays`.
@@ -336,13 +341,15 @@ function parseGoIndexLine(line: string): GoIndexLine | null {
  * The median, not the minimum, stops one re-logged old version in the sample from dragging the floor near
  * zero (claude-factory-8ub).
  * A failed fetch, or fewer than `GO_FLOOR_MIN_SAMPLES` answers, leaves the existing floor in place: an old
- * floor is still safe, since it only refuses more than a fresh one would.
+ * floor is still safe, since it only refuses more than a fresh one would. Either way, exactly one JSON line
+ * goes to stdout: `{eco:'go', floor, at, samples}` on success, `{eco:'go', decision:'error', reason}` on
+ * failure -- the same audit trail `/healthz`'s `goFloor` field summarizes as current state (claude-factory-8ub).
  */
 async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const t0 = cfg.now() - cfg.minDays * 24 * 3_600_000
   const sinceMs = t0 - GO_FLOOR_WINDOW_MS
   const r = await fetchText(cfg, `${cfg.upstream.goIndex}/index?since=${encodeURIComponent(new Date(sinceMs).toISOString())}&limit=2000`)
-  if (!r.ok) return
+  if (!r.ok) return logGoFloorRefreshError(`index.golang.org ${r.status || 'timeout'}`)
   const entries = r.text
     .split('\n')
     .map(parseGoIndexLine)
@@ -357,10 +364,12 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     const looked = await goSumdbRecord(cfg, goModuleEscape(e.Path), goModuleEscape(e.Version))
     if (looked.ok) ids.push(looked.record)
   })
-  if (ids.length < GO_FLOOR_MIN_SAMPLES) return
+  if (ids.length < GO_FLOOR_MIN_SAMPLES)
+    return logGoFloorRefreshError(`only ${ids.length} of ${sample.length} sampled versions answered, need ${GO_FLOOR_MIN_SAMPLES}`)
   ids.sort((a, b) => a - b)
   const median = lowerMedian(ids)
   cfg.goFloor = { record: cfg.goFloor ? Math.max(cfg.goFloor.record, median) : median, at: t0 }
+  console.log(JSON.stringify({ eco: 'go', floor: cfg.goFloor.record, at: new Date(cfg.goFloor.at).toISOString(), samples: ids.length }))
 }
 
 /**
@@ -875,9 +884,17 @@ export function makeGate(cfg: GateConfig): Gate {
     try {
       const url = new URL(req.url)
       if (url.pathname === '/healthz')
-        return new Response(JSON.stringify({ ok: true, minDays: resolved.minDays, ...resolved.stats }), {
-          headers: { 'content-type': 'application/json' },
-        })
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            minDays: resolved.minDays,
+            // null until the first successful refresh (claude-factory-8ub); see refreshGoFloor's log line
+            // for why a refresh did or did not change this
+            goFloor: resolved.goFloor ? { record: resolved.goFloor.record, at: new Date(resolved.goFloor.at).toISOString() } : null,
+            ...resolved.stats,
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        )
       const path = url.pathname.replace(/^\/+/, '')
       if (path.startsWith('go/')) return await handleGo(resolved, path.slice('go/'.length))
       if (path.startsWith('npm/')) return await handleNpm(resolved, path.slice('npm/'.length), url.origin)

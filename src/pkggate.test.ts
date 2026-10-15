@@ -746,6 +746,58 @@ test('AC10: a floor refresh looks up a sampled module under the Path case-encodi
   expect(goLookupHits['github.com/Azure/floorsample@v1.0.0']).toBeUndefined()
 })
 
+test('AC11: /healthz shows the sumdb goFloor as null, then {record, at}; a successful refresh logs one line naming no URL', async () => {
+  const lines: string[] = []
+  const orig = console.log
+  console.log = (s: string) => lines.push(s)
+  try {
+    const g = gate() // a fresh gate: its own goFloor starts null
+    const before = await g(new Request('http://gate/healthz'))
+    expect((await before.json() as { goFloor: unknown }).goFloor).toBeNull()
+
+    await g(new Request('http://gate/go/golang.org/x/text/@v/v0.26.0.info')) // allow: forces the first refresh
+
+    const after = await g(new Request('http://gate/healthz'))
+    expect((await after.json() as { goFloor: unknown }).goFloor).toEqual({ record: GO_FLOOR_RECORD, at: '2026-10-07T00:00:00.000Z' })
+
+    const parsed = lines.map(l => JSON.parse(l))
+    const floorLine = parsed.find(l => l.eco === 'go' && typeof l.floor === 'number')
+    expect(floorLine).toMatchObject({ eco: 'go', floor: GO_FLOOR_RECORD, at: '2026-10-07T00:00:00.000Z', samples: 9 })
+    for (const l of lines) expect(l).not.toContain('http')
+  } finally {
+    console.log = orig
+  }
+})
+
+test('AC11: a failed floor refresh (index.golang.org down) logs a decision:\'error\' line naming no URL', async () => {
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') return new Response('internal error', { status: 500 })
+      if (url.pathname === '/healthzfail.example.com/mod/@v/v1.0.0.info') return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  const lines: string[] = []
+  const orig = console.log
+  console.log = (s: string) => lines.push(s)
+  try {
+    const g = makeGate({
+      upstream: { go: srv.url.origin, npm: base(), pypi: base(), files: base(), sumdb: srv.url.origin, goIndex: srv.url.origin },
+      now: () => NOW,
+    })
+    await g(new Request('http://gate/go/healthzfail.example.com/mod/@v/v1.0.0.info'))
+    const parsed = lines.map(l => JSON.parse(l))
+    const errLine = parsed.find(l => l.decision === 'error' && typeof l.reason === 'string' && l.reason.startsWith('sumdb floor refresh'))
+    expect(errLine).toBeDefined()
+    for (const l of lines) expect(l).not.toContain('http')
+  } finally {
+    console.log = orig
+    srv.stop(true)
+  }
+})
+
 test('a module version is decided once, then cached: a second request for the same version makes no second upstream fetch (ei0.12)', async () => {
   let hits = 0
   const counting = Bun.serve({
@@ -1115,18 +1167,26 @@ test('a PyPI file url on the separate `files` upstream is fetched and served; PK
   expect(await r.text()).toBe('FILEBYTES-fromfiles')
 })
 
-test('/healthz reports minDays and the allow/refuse/error counters since start', async () => {
+test('/healthz reports minDays, the allow/refuse/error counters since start, and the sumdb goFloor (claude-factory-8ub)', async () => {
   const g = gate()
   const before = await g(new Request('http://gate/healthz'))
   expect(before.status).toBe(200)
-  expect(await before.json()).toEqual({ ok: true, minDays: 4, allow: 0, refuse: 0, error: 0 })
+  expect(await before.json()).toEqual({ ok: true, minDays: 4, goFloor: null, allow: 0, refuse: 0, error: 0 })
 
-  await g(new Request('http://gate/go/golang.org/x/text/@v/v0.26.0.info')) // allow
+  await g(new Request('http://gate/go/golang.org/x/text/@v/v0.26.0.info')) // allow: also builds the floor
   await g(new Request('http://gate/go/golang.org/x/text/@v/v0.43.0.info')) // refuse
   await g(new Request('http://gate/go/example.com/bad500/@v/v1.0.0.info')) // error
 
   const after = await g(new Request('http://gate/healthz'))
-  expect(await after.json()).toEqual({ ok: true, minDays: 4, allow: 1, refuse: 1, error: 1 })
+  // minDays:4 at NOW (2026-10-11T00:00:00Z): the floor's window ends at now-4d
+  expect(await after.json()).toEqual({
+    ok: true,
+    minDays: 4,
+    goFloor: { record: GO_FLOOR_RECORD, at: '2026-10-07T00:00:00.000Z' },
+    allow: 1,
+    refuse: 1,
+    error: 1,
+  })
 })
 
 test('makeGate throws on a non-finite or negative minDays instead of silently allowing everything (ei0.10)', () => {
