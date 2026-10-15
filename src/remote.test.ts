@@ -548,12 +548,14 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     '--setting-sources',
     'project,local',
   ])
+  expect(flags[1]!.split(',')).toContain('Skill') // mv9: so it can load the asd-ste100 skill
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings).toEqual({
     autoMemoryEnabled: false,
     env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: 300_000,
+    disableBundledSkills: true, // mv9: Skill alone would add ~2.2k tokens/turn of bundled-skill listings
   })
   expect(flags.at(-1)).toBe('/opt/factory/src/worker-system.md')
 })
