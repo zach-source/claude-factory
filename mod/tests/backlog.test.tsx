@@ -1,6 +1,10 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { blockers, progress, tiers, toggled } from '../hooks/view'
 
+// raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
+// this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
+const SLOW = { timeoutMs: 30_000 }
+
 const BEADS = [
   { id: 'a-1', title: 'big work', priority: 1, type: 'epic' },
   { id: 'a-2', title: 'crash', priority: 0, type: 'bug' },
@@ -69,7 +73,7 @@ test('the row limit counts a parent with its children and never splits them', ()
   expect(tiers(BEADS, 'all', 2).drawn).toBe(4)
 })
 
-test('the backlog tab draws the picked type with a child nested under its parent', async ($, on) => {
+test('the backlog tab draws the picked type with a child nested under its parent', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)

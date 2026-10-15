@@ -1,5 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+// raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
+// this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
+const SLOW = { timeoutMs: 30_000 }
+
 // what `factory tick` printed: the rigs and their runs as the console gets them
 const TICK = {
   manager: [],
@@ -20,7 +24,7 @@ async function mountBoard($: any, on: any) {
   await $.command.run({ command: 'factory', args: 'board' } as never)
 }
 
-test('the tab bar is Board..Interview on contiguous hotkeys 1-6, with exactly those 6 tabs and no Run tab', async ($, on) => {
+test('the tab bar is Board..Interview on contiguous hotkeys 1-6, with exactly those 6 tabs and no Run tab', SLOW, async ($, on) => {
   await mountBoard($, on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
@@ -51,7 +55,7 @@ test('the tab bar is Board..Interview on contiguous hotkeys 1-6, with exactly th
   }
 })
 
-test("the rigs tab has no 'new run here' button, and still has 'backlog'", async ($, on) => {
+test("the rigs tab has no 'new run here' button, and still has 'backlog'", SLOW, async ($, on) => {
   await mountBoard($, on)
   await $.command.run({ command: 'factory', args: 'rigs' } as never)
   for (const surface of ['terminal', 'desktop'] as const) {

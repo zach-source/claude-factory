@@ -3,6 +3,10 @@ import { expect, mock, test } from 'claude-code/testing'
 import { mapView } from '../hooks/register'
 import { byState, shortId } from '../hooks/view'
 
+// raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
+// this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
+const SLOW = { timeoutMs: 30_000 }
+
 // a live, stuck run: its detail has everything runDetail must draw (goal, follows line, an edge,
 // a gate-free Steer row with retry since it's stuck, tasks, a journal entry, inbox and a pane)
 const TICK = {
@@ -78,7 +82,7 @@ async function mountUi($: any, bodyColumns = 100) {
   })
 }
 
-test('open expands a card in place with the full run detail; close collapses it back (A2/A3)', async ($, on) => {
+test('open expands a card in place with the full run detail; close collapses it back (A2/A3)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mountFake($, on, ran)
   await $.command.run({ command: 'factory', args: 'status' } as never)
@@ -121,7 +125,7 @@ test('open expands a card in place with the full run detail; close collapses it 
   await ui.unmount()
 })
 
-test('the opened card runs goto, fork, retry, abort and mail with the run id and station (A2 Steer)', async ($, on) => {
+test('the opened card runs goto, fork, retry, abort and mail with the run id and station (A2 Steer)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mountFake($, on, ran)
   await $.command.run({ command: 'factory', args: 'status' } as never)
@@ -183,7 +187,7 @@ const DETAIL3 = {
   stations: [{ id: 'verify', gate: false, next: [{ outcome: 'green', to: 'release' }] }],
 }
 
-test('opening a second card closes the first: only one card is open at a time (A3)', async ($, on) => {
+test('opening a second card closes the first: only one card is open at a time (A3)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -220,7 +224,7 @@ test('opening a second card closes the first: only one card is open at a time (A
   await ui.unmount()
 })
 
-test('`/factory run <id>` still opens the board with that run expanded (A6)', async ($, on) => {
+test('`/factory run <id>` still opens the board with that run expanded (A6)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mountFake($, on, ran)
   await $.command.run({ command: 'factory', args: 'status' } as never)
@@ -255,7 +259,7 @@ const DONE_DETAIL = {
   isWorking: false,
 }
 
-test('a selected finished run stays open above the Finished rule even while the finished list is hidden (A5)', async ($, on) => {
+test('a selected finished run stays open above the Finished rule even while the finished list is hidden (A5)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mountFake($, on, ran, { tick: DONE_TICK, show: DONE_DETAIL, peek: '' })
   await $.command.run({ command: 'factory', args: 'status' } as never)
@@ -273,7 +277,7 @@ test('a selected finished run stays open above the Finished rule even while the 
   await ui.unmount()
 })
 
-test('a selected run with no detail yet shows loading, not a crash (A5)', async ($, on) => {
+test('a selected run with no detail yet shows loading, not a crash (A5)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -297,7 +301,7 @@ test('a selected run with no detail yet shows loading, not a crash (A5)', async 
   await ui.unmount()
 })
 
-test('the opened card fits inside its border at 40 columns (A7)', async ($, on) => {
+test('the opened card fits inside its border at 40 columns (A7)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mountFake($, on, ran)
   await $.command.run({ command: 'factory', args: 'status' } as never)
@@ -374,7 +378,7 @@ async function mountStates($: any, on: any, columns: number, ran: string[][] = [
   return { clock, ui: await mountUi($, columns) }
 }
 
-test('wide, what awaits the person is a full-width band on top, then three columns by state, each oldest first (kanban)', async ($, on) => {
+test('wide, what awaits the person is a full-width band on top, then three columns by state, each oldest first (kanban)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const { clock, ui } = await mountStates($, on, 140, ran)
   const drawn = JSON.stringify(await ui.drawn())
@@ -407,7 +411,7 @@ test('wide, what awaits the person is a full-width band on top, then three colum
   await ui.unmount()
 })
 
-test('wide, an empty column says none, no band shows with nothing awaiting, and an opened card shows below and shrinks with - (kanban)', async ($, on) => {
+test('wide, an empty column says none, no band shows with nothing awaiting, and an opened card shows below and shrinks with - (kanban)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mountFake($, on, ran)
   await $.command.run({ command: 'factory', args: 'status' } as never)
@@ -434,7 +438,7 @@ test('wide, an empty column says none, no band shows with nothing awaiting, and 
   await ui.unmount()
 })
 
-test('narrow, the same groups stack as sections, empty ones omitted, and the open card replaces its tile (kanban)', async ($, on) => {
+test('narrow, the same groups stack as sections, empty ones omitted, and the open card replaces its tile (kanban)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const { clock, ui } = await mountStates($, on, 90, ran)
   let drawn = JSON.stringify(await ui.drawn())
@@ -455,7 +459,7 @@ test('narrow, the same groups stack as sections, empty ones omitted, and the ope
   await ui.unmount()
 })
 
-test('stacked, a state with no live run has no section (kanban)', async ($, on) => {
+test('stacked, a state with no live run has no section (kanban)', SLOW, async ($, on) => {
   const ran: string[][] = []
   const clock = mountFake($, on, ran)
   await $.command.run({ command: 'factory', args: 'status' } as never)

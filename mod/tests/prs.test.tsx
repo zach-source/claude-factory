@@ -1,5 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+// raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
+// this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
+const SLOW = { timeoutMs: 30_000 }
+
 // what `factory prs` printed: the per-run PR records the console gets them, AC1's shape
 const PR = (over: Partial<Record<string, unknown>> = {}) => ({
   url: 'https://github.com/acme/widget/pull/551',
@@ -91,7 +95,7 @@ const MANY_RIG = Array.from({ length: 30 }, (_, i) => ({
   prs: [PR({ url: `https://github.com/acme/widget/pull/${600 + i}`, number: 600 + i })],
 }))
 
-test('the PRs tab groups by rig then run, shows each PR with its state, role and checks, and "also named:" for mentions', async ($, on) => {
+test('the PRs tab groups by rig then run, shows each PR with its state, role and checks, and "also named:" for mentions', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
@@ -149,7 +153,7 @@ test('the PRs tab groups by rig then run, shows each PR with its state, role and
   await ui.unmount()
 })
 
-test('the PRs tab lists live runs first, then at most 25 ended runs newest-first, then "+N earlier runs"', async ($, on) => {
+test('the PRs tab lists live runs first, then at most 25 ended runs newest-first, then "+N earlier runs"', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
