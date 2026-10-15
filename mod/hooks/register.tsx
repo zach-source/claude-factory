@@ -573,7 +573,7 @@ export const register: Register = (on, options) => {
     }
     const body =
       shown === 'backlog'
-        ? backlogView(p, bl, bt)
+        ? backlogView(p, bl, bt, dr)
         : shown === 'mail'
           ? mailView(p, b, dr)
           : shown === 'prs'

@@ -18,6 +18,8 @@ export type Bead = {
   priority?: number
   issue_type?: string
   metadata?: Record<string, unknown>
+  /** `bd blocked` only: the beads whose open work holds this one back */
+  blocked_by?: string[]
 }
 
 export const LABEL = 'factory'
@@ -43,6 +45,68 @@ export const stationOf = (b: Bead) =>
 /** a bead's parent: bd's parent-child edge, else the id's own `<parent>.<n>` */
 export const parentOf = (b: Bead) =>
   b.parent ?? (/\.\d+$/.test(b.id) ? b.id.replace(/\.\d+$/, '') : undefined)
+
+/** a bead as the Backlog tab draws it, with the tree around it */
+export type SlimBead = {
+  id: string
+  title: string
+  priority?: number
+  type?: string
+  labels?: string[]
+  parent?: string
+  /** its children closed and in all, counting the ones no longer listed */
+  children?: { done: number; total: number }
+  /** the open beads it waits on */
+  blockedBy?: string[]
+}
+
+/**
+ * The Backlog's two lists from one rig's bd listings (ready, blocked, every bead), no call per bead.
+ * A blocked bead is listed too, marked with its open blockers: labeled, or a child of a queued one, it
+ * waits in the queue; otherwise it waits for a person. Claimed and deferred beads are not backlog.
+ */
+export function backlogOf(
+  ready: Bead[],
+  unqueued: Bead[],
+  blocked: Bead[],
+  all: Bead[],
+): { queued: SlimBead[]; unqueued: SlimBead[] } {
+  const counts = new Map<string, { done: number; total: number }>()
+  for (const x of all) {
+    const p = parentOf(x)
+    if (p) {
+      const c = counts.get(p) ?? { done: 0, total: 0 }
+      counts.set(p, { done: c.done + (x.status === 'closed' ? 1 : 0), total: c.total + 1 })
+    }
+  }
+  const isOpen = new Set(all.filter(x => x.status !== 'closed').map(x => x.id))
+  const slim = (x: Bead): SlimBead => ({
+    id: x.id,
+    title: x.title,
+    priority: x.priority,
+    type: x.issue_type,
+    labels: x.labels,
+    parent: parentOf(x),
+    children: counts.get(x.id),
+    blockedBy: x.blocked_by?.filter(id => isOpen.has(id)),
+  })
+  const waiting = blocked.filter(
+    x => !x.assignee && (x.status === undefined || ['open', 'blocked'].includes(x.status)),
+  )
+  const heads = new Set(dispatchable(ready, new Set(), 50).map(x => x.id))
+  const queuedWaiting = waiting.filter(x => !x.parent && x.labels?.includes(LABEL))
+  for (const x of queuedWaiting) heads.add(x.id)
+  // a queued bead's children ride in its run: listed under it, never started on their own
+  const isQueued = (x: Bead) => heads.has(x.id) || (!x.assignee && heads.has(parentOf(x) ?? ''))
+  const inQueue = [...ready, ...waiting].filter(isQueued)
+  const queuedIds = new Set(inQueue.map(x => x.id))
+  return {
+    queued: inQueue.map(slim),
+    unqueued: [...unqueued, ...waiting.filter(x => !queuedIds.has(x.id) && !x.labels?.includes(LABEL))].map(
+      slim,
+    ),
+  }
+}
 
 /** unowned top-level work only: a child is a task of some run's plan (children inherit the label) */
 export const dispatchable = (ready: Bead[], linked: Set<string>, room: number) =>
@@ -101,6 +165,16 @@ export const beads = (repo: string, actor: string) => ({
     (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '100'), 'ready')) as Bead[]).filter(
       b => !b.assignee && !b.labels?.includes(LABEL),
     ),
+  /** open work held back by an open bead, each with `blocked_by`; bd prints null when none */
+  blocked: (): Bead[] => {
+    const out = must(bd(repo, actor, 'blocked', '--json'), 'blocked')
+    return out === 'null' ? [] : JSON.parse(out)
+  },
+  /** every bead, closed too, without the free text: one listing for the Backlog's child counts */
+  every: (): Bead[] => {
+    const out = must(bd(repo, actor, 'list', '--all', '--brief', '--json', '-n', '0'), 'list')
+    return out === 'null' ? [] : JSON.parse(out)
+  },
   /** beads flagged for a human decision (`bd human`): bd prints null, not [], when none are */
   human: (): Bead[] => {
     const out = must(bd(repo, actor, 'human', 'list', '--json'), 'human list')

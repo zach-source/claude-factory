@@ -86,6 +86,10 @@ export type FactoryBead = {
   labels?: string[]
   /** the bead it is a child of */
   parent?: string
+  /** its children closed and in all, counting the ones no longer listed */
+  children?: { done: number; total: number }
+  /** the open beads it waits on */
+  blockedBy?: string[]
 }
 export type FactoryBacklog = (FactoryRig & {
   /** its runs holding a worker now */
@@ -159,6 +163,10 @@ export type FactoryDraft = {
   mailTab?: 'open' | 'answered'
   /** the board lists finished runs */
   isFinishedShown?: boolean
+  /** the Backlog's parents whose children are shown (collapsed by default) */
+  backlogOpen?: string[]
+  /** the one rig the Backlog shows; all of them when unset */
+  backlogRig?: string
 }
 
 /** `factory decisions`' shape (src/cli.ts decisionsList): each rig's open bd decisions, or what stopped

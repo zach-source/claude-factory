@@ -20,6 +20,7 @@ import {
   bar,
   beadInterviews,
   byState,
+  blockers,
   clockOf,
   counts,
   dur,
@@ -30,7 +31,9 @@ import {
   mailTabs,
   prName,
   prState,
+  progress,
   tiers,
+  toggled,
   rigStats,
   shortId,
   sparkline,
@@ -38,6 +41,7 @@ import {
   track,
   withProposals,
   type Interview,
+  type TierRow,
 } from './view'
 
 /** what every surface the console draws on has; mobile has no Input or Select */
@@ -589,28 +593,36 @@ export function boardView(
 function beadRow(
   p: Base,
   repo: { repo: string; factory: string },
-  b: FactoryBead,
+  x: TierRow,
   isQueued: boolean,
-  row: { depth: number; tier?: number; idWidth: number },
+  row: { tier?: number; idWidth: number; progWidth: number; open: readonly string[] },
 ) {
-  const { Box, Text, Button } = p.ui
-  const { depth } = row
+  const { Box, Button } = p.ui
+  const b = x.bead
   // the tier heading says the priority; a row repeats it only when it differs (a child of another priority)
   const badge = b.priority === row.tier ? '' : b.priority === undefined ? '–' : `P${b.priority}`
+  const blocker = blockers(b)
   return (
-    <Box key={`bead-${b.id}`} gap={1} paddingLeft={depth * 2}>
+    <Box key={`bead-${b.id}`} gap={1}>
       {cell(p, `prio-${b.id}`, badge, {
         width: 2,
         color: b.priority !== undefined && b.priority <= 1 ? 'red' : undefined,
         dimColor: b.priority === undefined || b.priority > 1,
       })}
-      {cell(p, `id-${b.id}`, b.id, { color: 'cyan', width: row.idWidth - depth * 2 })}
-      <Box flexGrow={1} flexShrink={1} minWidth={0}>
-        <Text wrap="truncate-end">
-          {b.title}
-          <Text dimColor>{b.type ? `  ${b.type}` : ''}</Text>
-        </Text>
-      </Box>
+      {cell(p, `id-${b.id}`, `${x.connector}${b.id}`, { color: 'cyan', width: row.idWidth })}
+      {rest(p, `title-${b.id}`, `${b.title}${b.type ? `  ${b.type}` : ''}`)}
+      {blocker && cell(p, `blocked-${b.id}`, blocker, { color: 'red' })}
+      {row.progWidth > 0 && cell(p, `prog-${b.id}`, progress(b), { dimColor: true, width: row.progWidth })}
+      {x.kids > 0 ? (
+        <Button
+          key={`toggle-${b.id}`}
+          label={x.isOpen ? '▾' : '▸'}
+          plain
+          onPress={() => p.act.draft({ backlogOpen: toggled(row.open, b.id) })}
+        />
+      ) : (
+        cell(p, `toggle-${b.id}`, ' ', { width: 1 })
+      )}
       {!isQueued && !b.parent && (
         <Button key={`queue-${b.id}`} label="queue" onPress={() => p.act.cli('queue', repo.repo, b.id)} />
       )}
@@ -631,26 +643,29 @@ function beadList(
   list: FactoryBead[],
   type: string,
   isQueued: boolean,
+  open: readonly string[],
   limit?: number,
 ) {
   const { Box, Text } = p.ui
-  const t = tiers(list, type, limit)
-  // ids padded to the widest, indent included, so every title in the list starts in one column
-  const idWidth = Math.max(0, ...t.tiers.flatMap(g => g.rows.map(x => x.depth * 2 + x.bead.id.length)))
+  const t = tiers(list, type, limit, new Set(open))
+  const rows = t.tiers.flatMap(g => g.rows)
+  // ids padded to the widest, connector included, so every title in the list starts in one column
+  const idWidth = Math.max(0, ...rows.map(x => x.connector.length + x.bead.id.length))
+  const progWidth = Math.max(0, ...rows.map(x => progress(x.bead).length))
   return (
     <Box key={`list-${r.name}-${isQueued}`} flexDirection="column">
       {t.tiers.map(g => (
         <Box key={`tier-${r.name}-${isQueued}-${g.tier}`} flexDirection="column">
           <Text dimColor> {g.tier}</Text>
-          {g.rows.map(x => beadRow(p, r, x.bead, isQueued, { depth: x.depth, tier: g.priority, idWidth }))}
+          {g.rows.map(x => beadRow(p, r, x, isQueued, { tier: g.priority, idWidth, progWidth, open }))}
         </Box>
       ))}
-      {t.drawn < t.total && <Text dimColor> + {String(t.total - t.drawn)} more</Text>}
+      {t.more > 0 && <Text dimColor> + {String(t.more)} more</Text>}
     </Box>
   )
 }
 
-export function backlogView(p: Base, backlog: FactoryBacklog, type = 'all') {
+export function backlogView(p: Base, backlog: FactoryBacklog, type = 'all', draft: FactoryDraft) {
   const { Box, Text, Button } = p.ui
   if (!backlog.length)
     return (
@@ -660,6 +675,8 @@ export function backlogView(p: Base, backlog: FactoryBacklog, type = 'all') {
         </Text>
       </Box>
     )
+  const open = draft.backlogOpen ?? []
+  const rigs = draft.backlogRig ? backlog.filter(r => r.name === draft.backlogRig) : backlog
   return (
     <Box key="backlog" flexDirection="column">
       <Box gap={1} marginBottom={1}>
@@ -673,21 +690,28 @@ export function backlogView(p: Base, backlog: FactoryBacklog, type = 'all') {
             onPress={() => p.act.backlogType(t)}
           />
         ))}
+        {draft.backlogRig && (
+          <Button
+            key="backlog-all-rigs"
+            label="all rigs"
+            onPress={() => p.act.draft({ backlogRig: undefined })}
+          />
+        )}
       </Box>
-      {backlog.map(r => (
+      {rigs.length === 0 && <Text dimColor>No rig named {draft.backlogRig}.</Text>}
+      {rigs.map(r => (
         <Box key={`rig-${r.name}`} flexDirection="column" marginBottom={1}>
           {rule(
             p,
             r.name,
-            `${shortPath(r.repo)} · ${shortPath(r.factory)} · busy ${r.busy}${r.maxRuns ? `/${r.maxRuns}` : ''}`,
+            `· busy ${r.busy}${r.maxRuns ? `/${r.maxRuns}` : ''} · ${r.queued.length} queued · ${r.unqueued.length} waiting`,
           )}
-          {r.goal && <Text wrap="wrap">◎ {r.goal}</Text>}
           {r.error && <Text color="red">! {r.error}</Text>}
           <Text color="green">will start ({String(tiers(r.queued, type).total)})</Text>
           {r.queued.length === 0 && <Text dimColor> nothing queued</Text>}
-          {beadList(p, r, r.queued, type, true)}
+          {beadList(p, r, r.queued, type, true, open)}
           <Text color="yellow">waiting for you to queue ({String(tiers(r.unqueued, type).total)})</Text>
-          {beadList(p, r, r.unqueued, type, false, 15)}
+          {beadList(p, r, r.unqueued, type, false, open, 15)}
         </Box>
       ))}
     </Box>
@@ -749,7 +773,14 @@ export function rigsView(p: Base, board: FactoryBoard) {
               {s.aborted ? ` · aborted ${s.aborted}` : ''}
             </Text>
             <Box gap={1}>
-              <Button key={`rigs-backlog-${g.name}`} label="backlog" onPress={() => p.act.show('backlog')} />
+              <Button
+                key={`rigs-backlog-${g.name}`}
+                label="backlog"
+                onPress={() => {
+                  p.act.draft({ backlogRig: g.name })
+                  p.act.show('backlog')
+                }}
+              />
             </Box>
           </Box>
         )
