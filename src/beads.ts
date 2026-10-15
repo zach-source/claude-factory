@@ -68,6 +68,23 @@ export const beads = (repo: string, actor: string) => ({
     const parsed = r.isOk ? JSON.parse(r.out) : null
     return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
   },
+  /**
+   * null only for bd's own "not found" (a real answer); any other failure (a timeout, bd down) throws
+   * instead of being indistinguishable from a 404. For a goal that is shaped like one of this rig's own
+   * bead ids, a failed lookup must never fall through to creating a bead titled with the id itself.
+   */
+  lookup: (id: string): Bead | null => {
+    const r = bd(repo, actor, 'show', id, '--json')
+    if (r.isOk) {
+      const parsed = JSON.parse(r.out)
+      return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
+    }
+    const body = r.out.startsWith('{') ? JSON.parse(r.out) : null
+    if (body?.error) return null // bd's own "not found" JSON body: a real answer, not a lookup failure
+    throw new Error(`bd show ${id}: ${r.err.split('\n')[0]}`)
+  },
+  /** the rig's bead-id prefix, thrown on failure instead of prefix()'s lenient "" (bd down looks the same as no prefix) */
+  prefixStrict: () => must(bd(repo, actor, 'config', 'get', 'issue_prefix'), 'config get issue_prefix'),
   ready: (): Bead[] =>
     JSON.parse(must(bd(repo, actor, 'ready', '--label', LABEL, '--json', '-n', '50'), 'ready')),
   /** ready work nobody has handed to the factory yet: what a person prioritizes, children with their parents */
@@ -105,8 +122,46 @@ export const beads = (repo: string, actor: string) => ({
     ),
   /** atomic: false when someone else holds it */
   claim: (id: string) => bd(repo, actor, 'update', id, '--claim').isOk,
-  create: (title: string, description: string, ...extra: string[]) =>
-    must(bd(repo, actor, 'create', title, '-d', description, '-l', LABEL, '--silent', ...extra), 'create'),
+  /**
+   * a create bd itself may have lost the answer to (a timeout after the write landed): tags the attempt
+   * with a token in its metadata, so a failure is checked against that token before any retry, instead of
+   * risking a silent duplicate. One retry only: a second failure's caller re-runs by hand.
+   */
+  create: (title: string, description: string, ...extra: string[]) => {
+    const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+    const attempt = () =>
+      bd(
+        repo,
+        actor,
+        'create',
+        title,
+        '-d',
+        description,
+        '-l',
+        LABEL,
+        '--silent',
+        '--metadata',
+        `{"factory_create":"${token}"}`,
+        ...extra,
+      )
+    const landed = (afterErr: string) => {
+      const r = bd(repo, actor, 'list', '--all', '--metadata-field', `factory_create=${token}`, '--json', '-n', '2')
+      if (!r.isOk)
+        throw new Error(
+          `bd create: ${afterErr}; it may have landed: bd list --all --metadata-field factory_create=${token}`,
+        )
+      return (JSON.parse(r.out) as Bead[])[0]?.id
+    }
+    let r = attempt()
+    if (r.isOk) return r.out
+    let found = landed(r.err.split('\n')[0] ?? '')
+    if (found) return found
+    r = attempt() // absent: one retry, same token, then give up
+    if (r.isOk) return r.out
+    found = landed(r.err.split('\n')[0] ?? '')
+    if (found) return found
+    throw new Error(`bd create: ${r.err.split('\n')[0]}`)
+  },
   /**
    * keeps the claim's lease alive, taking it back if a reaper reclaimed it. Lost only when the bead
    * names another assignee: bd being unreachable (a shared server's maintenance lock) throws instead
