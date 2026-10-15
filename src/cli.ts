@@ -1619,7 +1619,13 @@ function agentOf(def: Factory, value: unknown, c: Ctx) {
   const [node, sub] = where(value)
   if (sub === 'waiting') return `waits until ${clock(c.wakeAt)}`
   if (sub === 'working' && def.nodes[node]?.gate) return 'awaiting decision'
-  return c.pane ? (runnerOf(c.pane).phase?.(c.pane) ?? null) : undefined
+  if (!c.pane) return undefined
+  try {
+    return runnerOf(c.pane).phase?.(c.pane) ?? null
+  } catch (err) {
+    // a runner it cannot reach (an AX server whose port-forward died) is this run's trouble, not the listing's
+    return `unreachable: ${clip((err as Error).message, 160)}`
+  }
 }
 
 function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | null, error?: string): Row {

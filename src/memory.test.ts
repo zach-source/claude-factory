@@ -145,6 +145,8 @@ test('adding what a note already says finds that note', async () => {
     rig: 'fabriek',
   })
   expect(dup?.note.summary).toContain('CHANGELOG')
+  // the summaries' vectors are cached, so the next add embeds only its own
+  expect(existsSync(join(dir, '.index.json.summaries'))).toBe(true)
   expect(await same(dir, { summary: 'the dashboard CSP is default-src self', rig: 'fabriek' })).toBeNull()
   // another rig's note is not this rig's lesson
   expect(

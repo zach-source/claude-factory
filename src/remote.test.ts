@@ -454,6 +454,23 @@ test('a committing AX worker IS called stalled when its tail, head and bytes all
   rmSync(join(home, 'runs', 'r14'), { recursive: true })
 })
 
+test('status and show still list a run whose AX server is unreachable, naming it on that run', () => {
+  launched('r30')
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo 'dial tcp 127.0.0.1:8080: connect: connection refused' >&2
+exit 1
+`,
+  )
+  for (const args of [['status'], ['show', 'r30']]) {
+    const r = factory(args)
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('unreachable')
+  }
+  rmSync(join(home, 'runs', 'r30'), { recursive: true })
+})
+
 test("a worker's address picks its runner: a bare pane id is herdr's, `<name>://` is that runner's", () => {
   expect(runnerOf('w1-2').name).toBe('herdr')
   expect(runnerOf('wA6:p1').name).toBe('herdr')
