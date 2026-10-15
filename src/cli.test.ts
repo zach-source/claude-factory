@@ -30,6 +30,7 @@ import {
   swapUntil,
   watchWake,
   workerSettings,
+  WORKER_TOOLS,
   room,
   withoutFleet,
 } from './cli'
@@ -308,6 +309,31 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   expect(workerSettings({}, 30).autoCompactWindow).toBe(100_000) // Claude Code's floor
 })
 
+// mv9: a worker still gets no plugin but asd-ste100 -- its skill and SessionStart STE brief are lean
+// enough to carry, and the plugin brings the writing rule instead of a copy of its text
+test('a worker gets the asd-ste100 plugin alone, with bundled skills off, so it writes in ASD-STE100', () => {
+  const user = {
+    env: { STE_VOCAB_PATH: '/v', STE_JEV_URL: 'https://j' },
+    enabledPlugins: {
+      'asd-ste100@agent-marketplace': true,
+      'code-quality@agent-marketplace': true,
+      'warp@claude-code-warp': true,
+    },
+  }
+  const w = workerSettings(user, 200)
+  expect(w.enabledPlugins).toEqual({ 'asd-ste100@agent-marketplace': true })
+  expect(w.disableBundledSkills).toBe(true)
+  expect(w.env).toMatchObject({ STE_VOCAB_PATH: '/v', STE_JEV_URL: 'https://j' })
+  // no enabledPlugins key at all when the user has none, or asd-ste100 is off
+  expect('enabledPlugins' in workerSettings({ enabledPlugins: { p: true } }, 200)).toBe(false)
+  expect('enabledPlugins' in workerSettings({ enabledPlugins: { 'asd-ste100@m': false } }, 200)).toBe(false)
+  expect('enabledPlugins' in workerSettings({}, 200)).toBe(false)
+})
+
+test('WORKER_TOOLS carries Skill, so a worker can load the asd-ste100 skill', () => {
+  expect(WORKER_TOOLS.split(',')).toContain('Skill')
+})
+
 test("a usage limit is read from the transcript's last turn, and the next account is one whose limit has reset", () => {
   const turn = (extra: object) =>
     JSON.stringify({ type: 'assistant', timestamp: '2026-10-11T12:00:00.000Z', message: {}, ...extra })
@@ -396,6 +422,15 @@ test('the worker system prompt names a mktemp -d scratch dir and restores a muta
   expect(text).toContain('2>/dev/null')
   expect(text).toContain('git checkout -- <file>')
   expect(text).toContain('git status --short')
+  expect(text.length).toBeLessThan(3600)
+})
+
+// mv9: tells a worker to write in ASD-STE100 and to load the plugin's skill before long text, without
+// copying the plugin's own rules into this file (that text would drift from the plugin)
+test('the worker system prompt tells a worker to write in ASD-STE100 and load the asd-ste100 skill first', () => {
+  const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
+  expect(text).toContain('ASD-STE100')
+  expect(text).toContain('asd-ste100 skill')
   expect(text.length).toBeLessThan(3600)
 })
 
