@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: `claude plugin test mod` has no `--timeout` flag, so each test used the kit's fixed 5000 ms limit. At a shared-host load average over 100, some async tests (the ones that call `$` or `on`) failed with `Error: timed out after 5000 ms`, with no code change. This happened in `mod/tests/prs.test.tsx`, `rigs.test.tsx` and 5 other test files: `backlog.test.tsx`, `board.test.tsx`, `gate.test.ts`, `interview.test.tsx` and `tabs.test.tsx`. These 7 files' 30 async tests now pass `{ timeoutMs: 30_000 }` as the kit's `test()` second argument. (claude-factory-abm)
 - Fixed: a worker's cleanup command (`rm -rf`) and a `cd <dir> && ...` chain outside the worktree triggered Claude Code's own permission prompt. Nobody answers this prompt. An unattended worker waited up to 2 minutes, then got denied. `worker.excludeScratch()` (`src/worker.ts`) now adds `.scratch/` to `<git-common-dir>/info/exclude`. It adds the line only once, and keeps any existing lines. `createRun` (`src/cli.ts`) calls it right after `herdr worktree create`. The AX clone (`src/worker.ts`) calls it right after `git clone`. `src/worker-system.md` now tells a worker to keep scratch state in `.scratch/` inside the worktree. It tells the worker never to chain `cd` with another command, and never to run `rm -rf`. It tells the worker to use `git -C`, `go -C` or an absolute path instead. It tells the worker to make a fresh `.scratch/<new-name>` in place of a cleanup. (claude-factory-9wu)
 
 ## 0.12.0 (2026-10-15)
