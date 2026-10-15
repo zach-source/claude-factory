@@ -35,7 +35,7 @@ test("a rig's devenv is rebuilt when its devenv files or the worker image change
   writeFileSync(join(origin, 'devenv.lock'), '{"v":2}\n')
   git(origin, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', 'lock')
   expect(isDue(stamp, cacheKey(remoteDevenv(clone).blobs, 'img@1'))).toBe(true)
-})
+}, 30_000) // real git init, commit and clone: about 17 git spawns
 
 test('the devenv builds at the path the VM clones to, since its derivations depend on it', () => {
   expect(DOCKERFILE).toContain('mkdir -p /workspace/w/repo && cd /workspace/w/repo')

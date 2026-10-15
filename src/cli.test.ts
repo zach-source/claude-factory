@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import {
+  CONFIG_SYNC,
   deadline,
   haltStep,
   helpedHint,
@@ -32,9 +33,35 @@ import {
   watchWake,
   workerSettings,
   WORKER_TOOLS,
+  commitIdentity,
   room,
   withoutFleet,
 } from './cli'
+
+test("a factory home's sync pushes what its .gitignore lets in, and its memory to the memory branch", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'config-sync-'))
+  const who = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+  const sh = (cwd: string, cmd: string) => {
+    const p = Bun.spawnSync(['sh', '-c', cmd], { cwd, env: { ...process.env, ...who } })
+    if (p.exitCode) throw new Error(p.stderr.toString())
+    return p.stdout.toString().trim()
+  }
+  const home = join(dir, 'home')
+  mkdirSync(join(home, 'runs'), { recursive: true })
+  mkdirSync(join(home, 'memory'))
+  sh(dir, 'git init -q --bare origin.git')
+  writeFileSync(join(home, '.gitignore'), '/*\n!/.gitignore\n!/rigs.json\n')
+  writeFileSync(join(home, 'rigs.json'), '[]')
+  writeFileSync(join(home, 'runs', 'r.json'), '{}')
+  writeFileSync(join(home, 'memory', 'note.md'), 'a note')
+  sh(home, `git init -q && git remote add origin ${join(dir, 'origin.git')}`)
+  sh(join(home, 'memory'), 'git init -q && git add -A && git commit -qm m')
+  sh(home, CONFIG_SYNC)
+  const origin = join(dir, 'origin.git')
+  const branch = sh(home, 'git branch --show-current')
+  expect(sh(origin, `git ls-tree --name-only ${branch}`).split('\n')).toEqual(['.gitignore', 'rigs.json'])
+  expect(sh(origin, 'git ls-tree --name-only memory')).toBe('note.md')
+})
 
 test("the factory's Claudes load every mod but herdr-fleet", () => {
   expect(withoutFleet('/m/herdr-fleet').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
@@ -335,6 +362,26 @@ test('WORKER_TOOLS carries Skill, so a worker can load the asd-ste100 skill', ()
   expect(WORKER_TOOLS.split(',')).toContain('Skill')
 })
 
+test("workers commit as the factory home's own git identity, crediting factory.coauthor", () => {
+  const home = mkdtempSync(join(tmpdir(), 'factory-id-'))
+  expect(commitIdentity(home)).toEqual({ env: {}, rule: '' }) // not a repo: the rig's own config
+  Bun.spawnSync(['git', 'init', '-q', home])
+  for (const [k, v] of Object.entries({
+    'user.name': 'gen-ai factory',
+    'user.email': 'factory@x.invalid',
+    'factory.coauthor': 'Pat <pat@x.com>',
+  }))
+    Bun.spawnSync(['git', '-C', home, 'config', k, v])
+  const id = commitIdentity(home)
+  expect(id.env).toEqual({
+    GIT_AUTHOR_NAME: 'gen-ai factory',
+    GIT_AUTHOR_EMAIL: 'factory@x.invalid',
+    GIT_COMMITTER_NAME: 'gen-ai factory',
+    GIT_COMMITTER_EMAIL: 'factory@x.invalid',
+  })
+  expect(id.rule).toContain('Co-authored-by: Pat <pat@x.com>')
+})
+
 test("a usage limit is read from the transcript's last turn, and the next account is one whose limit has reset", () => {
   const turn = (extra: object) =>
     JSON.stringify({ type: 'assistant', timestamp: '2026-10-11T12:00:00.000Z', message: {}, ...extra })
@@ -416,9 +463,16 @@ test('progressSig stays empty, and so stall-exempt, when only head is set (a loc
   expect(progressSig('', 'sha1', undefined)).toBe('')
 })
 
-test('the worker system prompt names a mktemp -d scratch dir and restores a mutation with git checkout', () => {
+// claude-factory-9wu: Claude Code stops cd+rm-outside-worktree chains for an approval nobody answers, so a
+// worker's scratch dir must stay inside the worktree (.scratch/, which excludeScratch() git-ignores) and a
+// worker must never chain cd with rm -rf; git -C/go -C replace the cd.
+test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, and restores a mutation with git checkout', () => {
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
-  expect(text).toContain('mktemp -d')
+  expect(text).toContain('.scratch/')
+  expect(text).toContain('git -C')
+  expect(text).toContain('go -C')
+  expect(text).toContain('rm -rf')
+  expect(text).not.toContain('mktemp -d')
   expect(text).toContain('/tmp_')
   expect(text).toContain('2>/dev/null')
   expect(text).toContain('git checkout -- <file>')

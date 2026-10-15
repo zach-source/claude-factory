@@ -544,6 +544,278 @@ export function loadDevenv() {
   if (process.env.PATH !== basePath) process.env.PATH = `${process.env.PATH}:${basePath}`
 }
 
+/** devenv 2.2.2's process.ready.http.get value. It is an object, never a URL string (claude-factory-5sn.5). */
+export type DevenvHttpGet = { host: string; port: number; path: string; scheme: string }
+
+/** One process that a devenv declares in services.* or processes.*. It is read from DEVENV_TASK_FILE. */
+export type DevenvProcess = {
+  name: string
+  command: string
+  cwd?: string
+  readyExec?: string
+  readyHttp?: DevenvHttpGet
+  /** the task names (stripped and de-suffixed in orderByAfter) this process's own 'after' list names */
+  after: string[]
+  /** processes.<name>.env: devenv puts it on the task itself, never in the command script (claude-factory-5sn.7) */
+  env: Record<string, string>
+}
+
+/**
+ * This function reads a devenv's processes from DEVENV_TASK_FILE. That is devenv 2.2.2's tasks.json file.
+ * The plan verified this path in claude-factory-5sn plan#1. A devenv's processes are its services.* and
+ * processes.* options.
+ *
+ * This function returns each entry named 'devenv:processes:<name>'. Each entry's type must be 'process'.
+ * Each entry's process.start.enable must not be false.
+ *
+ * Devenv's oneshots, for example devenv:enterShell and devenv:files, are never processes. They never appear here.
+ *
+ * This function returns no processes for a missing file, or one it cannot parse. It raises no error for
+ * either case. This leaves an old devenv, with no DEVENV_TASK_FILE, unaffected. It also leaves a rig with no
+ * processes declared unaffected.
+ */
+type DevenvTask = {
+  name: string
+  type: string
+  command?: string
+  cwd?: string
+  after?: string[]
+  env?: Record<string, string>
+  process?: {
+    start?: { enable?: boolean }
+    ready?: { exec?: string | null; http?: { get?: DevenvHttpGet | null } } | null
+  }
+}
+
+export function devenvProcesses(file: string): DevenvProcess[] {
+  if (!existsSync(file)) return []
+  let tasks: unknown
+  try {
+    tasks = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return []
+  }
+  if (!Array.isArray(tasks)) return []
+  return (tasks as DevenvTask[])
+    .filter(t => t?.type === 'process' && typeof t.command === 'string' && t.process?.start?.enable !== false)
+    .map(t => ({
+      name: t.name.replace(/^devenv:processes:/, ''),
+      command: t.command!,
+      cwd: t.cwd,
+      readyExec: t.process?.ready?.exec ?? undefined,
+      readyHttp: t.process?.ready?.http?.get ?? undefined,
+      after: t.after ?? [],
+      env: t.env ?? {},
+    }))
+}
+
+/**
+ * This function reorders a devenv's processes (claude-factory-5sn.6).
+ * Each process's own 'after' list names its dependencies.
+ * This function starts, and waits on, each dependency before the process that names it.
+ * tasks.json lists processes by name, not by dependency.
+ * Without this function, a dependent process can start before the process it depends on, and then stay failed.
+ *
+ * An 'after' entry names a task, such as 'devenv:processes:web' or 'devenv:processes:web@ready'.
+ * This function strips the prefix and any '@suffix'.
+ * It then matches the result against the other processes in this same list.
+ * An entry that names a task outside this list, such as an oneshot or a disabled process, is not a dependency here.
+ * Only a process in this list ever starts.
+ * This function never loops forever on a cycle: it skips a process it is already placing, and does not revisit it.
+ */
+export function orderByAfter(procs: DevenvProcess[]): DevenvProcess[] {
+  const byName = new Map(procs.map(p => [p.name, p]))
+  const depsOf = (p: DevenvProcess) =>
+    p.after
+      .map(a => a.replace(/^devenv:processes:/, '').replace(/@\w+$/, ''))
+      .filter(name => name !== p.name && byName.has(name))
+  const ordered: DevenvProcess[] = []
+  const placed = new Set<string>()
+  const visiting = new Set<string>()
+  const visit = (p: DevenvProcess) => {
+    if (placed.has(p.name) || visiting.has(p.name)) return
+    visiting.add(p.name)
+    for (const dep of depsOf(p)) visit(byName.get(dep)!)
+    visiting.delete(p.name)
+    placed.add(p.name)
+    ordered.push(p)
+  }
+  for (const p of procs) visit(p)
+  return ordered
+}
+
+/**
+ * This function returns the agent's DATABASE_URL. See A2 of claude-factory-5sn's plan.
+ * If the devenv sets DATABASE_URL, this function returns that value.
+ * Otherwise, this function builds the URL from PGHOST and PGPORT.
+ * devenv's services.postgres sets PGHOST and PGPORT. It does not set DATABASE_URL.
+ * This was verified in plan#1 against devenv 2.2.2.
+ *
+ * If PGHOST starts with '/', it is a Unix socket directory. It is not a host.
+ * Postgres takes that directory as a url-encoded ?host=<dir> query parameter in the connection URL.
+ *
+ * If PGHOST is not set, this function returns undefined.
+ * This happens when no services.* ran. It also happens when the service is not Postgres.
+ */
+export function databaseUrl(env: Record<string, string | undefined>): string | undefined {
+  if (env.DATABASE_URL) return env.DATABASE_URL
+  const host = env.PGHOST
+  if (!host) return undefined
+  const port = env.PGPORT
+  if (host.startsWith('/')) {
+    const params = new URLSearchParams({ host })
+    if (port) params.set('port', port)
+    return `postgresql:///postgres?${params.toString()}`
+  }
+  return port ? `postgresql://${host}:${port}/postgres` : `postgresql://${host}/postgres`
+}
+
+/** The directory where serve writes the log of each process: own()/services/<name>.log */
+const servicesDir = () => join(own(), 'services')
+
+/**
+ * How long startServices waits for one process to answer its ready probe.
+ * The default value is 120000ms (120s).
+ * This function falls back to the default value for a bad FACTORY_SERVICES_WAIT_MS (claude-factory-5sn.8).
+ * A bad value is a value that is not a positive, finite number, for example 'abc'.
+ * A bad value such as 'abc' gives NaN.
+ * A check of elapsed time against NaN is never true.
+ * So a service that never turns ready blocks the first turn forever, unless this function falls back.
+ */
+export const servicesWaitMs = () => {
+  const n = Number(process.env.FACTORY_SERVICES_WAIT_MS ?? 120_000)
+  return Number.isFinite(n) && n > 0 ? n : 120_000
+}
+
+/** One devenv process that startServices tries to start. Its result is ready, or failed. A failed result gives the reason and the log file. */
+export type ServiceResult = { name: string; ok: boolean; log: string; detail: string }
+
+/** This function builds the URL waitReady fetches from devenv's ready.http.get object (claude-factory-5sn.5). */
+function httpGetUrl(g: DevenvHttpGet): string {
+  return `${g.scheme}://${g.host}:${g.port}${g.path}`
+}
+
+/**
+ * waitReady probes one running process until it answers ready, exits, or the wait time ends.
+ * If the entry has readyExec, bash runs its script with a 4s timeout, as devenv does for its probe.
+ * The given env already merges the process's own env over the serve env (claude-factory-5sn.7).
+ *
+ * If the process entry has readyHttp, waitReady builds the URL from the {host,port,path,scheme} object.
+ * It fetches the URL with a 4s timeout (claude-factory-5sn.5, claude-factory-iap). A URL string there
+ * made fetch() throw, so each HTTP-probed service used to fail at the end of the full wait time. Without
+ * its own timeout, a connection that opens but never answers can also hold one fetch call past waitMs.
+ *
+ * If the process entry has neither readyExec nor readyHttp, waitReady counts the process ready at 2s.
+ * waitReady does not throw. A failed probe counts as not ready yet. Causes include a bad script, a
+ * refused connection and a probe timeout.
+ */
+async function waitReady(
+  p: DevenvProcess,
+  exited: Promise<number>,
+  startedAt: number,
+  waitMs: number,
+  env: Record<string, string | undefined>,
+): Promise<{ ok: boolean; detail: string }> {
+  let exitCode: number | undefined
+  exited.then(code => (exitCode = code))
+  for (;;) {
+    if (exitCode !== undefined) return { ok: false, detail: `exit ${exitCode}` }
+    let ready = false
+    try {
+      if (p.readyExec) {
+        ready = Bun.spawnSync(['bash', '-c', p.readyExec], { cwd: p.cwd ?? repo(), env, timeout: 4000 }).exitCode === 0
+      } else if (p.readyHttp) {
+        ready = (await fetch(httpGetUrl(p.readyHttp), { signal: AbortSignal.timeout(4000) })).ok
+      } else {
+        ready = Date.now() - startedAt >= 2000
+      }
+    } catch {
+      ready = false
+    }
+    const elapsed = Date.now() - startedAt
+    if (ready) return { ok: true, detail: `ready in ${Math.round(elapsed / 1000)}s` }
+    if (elapsed >= waitMs) return { ok: false, detail: `not ready after ${Math.round(elapsed / 1000)}s` }
+    await Bun.sleep(1000)
+  }
+}
+
+/**
+ * startServices starts every process that the repo's devenv declares (services.* and processes.*), before the
+ * agent's first turn.
+ * startServices reads DEVENV_TASK_FILE. loadDevenv() already put it in process.env.
+ * startServices starts the processes in orderByAfter's order, so a process starts only once each process in
+ * its own 'after' list already answers ready (claude-factory-5sn.6).
+ *
+ * startServices runs each process's own command directly. It never runs `devenv up` or `devenv shell`, so no
+ * oneshot (devenv:enterShell, say) runs here.
+ * It spawns each process, and probes its readiness, with the serve process's own env merged with the
+ * process's own 'env' field from the task (claude-factory-5sn.7).
+ *
+ * startServices sends the stdout and stderr of each process to its own log under servicesDir(). It never sends
+ * them to serve's own output. A daemonized child must not keep a pipe to this process open past a suspend.
+ * startServices spawns each child unref'd, so serve does not wait for it.
+ * The child keeps running after this function returns.
+ *
+ * If FACTORY_SERVICES is '0', startServices changes nothing.
+ * It also changes nothing when the devenv has no DEVENV_TASK_FILE (an old devenv, or none cached), or when it
+ * declares no process.
+ * In these cases, no process starts, and startServices does not change process.env.
+ *
+ * After startServices tries every process, it sets DATABASE_URL on process.env from PGHOST/PGPORT.
+ * It does not set DATABASE_URL when the devenv itself sets it, or when process.env has neither PGHOST nor PGPORT.
+ */
+export async function startServices(): Promise<ServiceResult[]> {
+  if (process.env.FACTORY_SERVICES === '0') return []
+  const file = process.env.DEVENV_TASK_FILE
+  if (!file) return []
+  const procs = orderByAfter(devenvProcesses(file))
+  if (!procs.length) return []
+  const waitMs = servicesWaitMs()
+  mkdirSync(servicesDir(), { recursive: true })
+  const results: ServiceResult[] = []
+  for (const p of procs) {
+    const log = join(servicesDir(), `${p.name}.log`)
+    const startedAt = Date.now()
+    const fd = openSync(log, 'a')
+    const env = { ...process.env, ...p.env }
+    let sub: ReturnType<typeof Bun.spawn>
+    try {
+      sub = Bun.spawn(['bash', '-c', p.command], { cwd: p.cwd ?? repo(), env, stdin: 'ignore', stdout: fd, stderr: fd })
+    } finally {
+      closeSync(fd)
+    }
+    sub.unref()
+    const r = await waitReady(p, sub.exited, startedAt, waitMs, env)
+    const line = r.ok ? `services: ${p.name} ${r.detail}` : `services: ${p.name} failed: ${r.detail}, see ${log}`
+    appendFileSync(serveLog(), `${new Date().toISOString()} ${line}\n`)
+    results.push({ name: p.name, ok: r.ok, log, detail: r.detail })
+  }
+  if (!process.env.DATABASE_URL) {
+    const url = databaseUrl(process.env)
+    if (url) process.env.DATABASE_URL = url
+  }
+  return results
+}
+
+/**
+ * servicesNote builds the [factory] note from the results of startServices.
+ * servicesNote adds the note to the brief of the first turn only.
+ * A resumed VM restarts the processes, but it is never briefed again.
+ *
+ * When startServices starts nothing (A7), servicesNote returns an empty string.
+ * This means no note, the same as when the devenv declares no services.
+ */
+export function servicesNote(results: ServiceResult[], env: Record<string, string | undefined>): string {
+  if (!results.length) return ''
+  const ready = results.filter(r => r.ok).map(r => r.name)
+  const failed = results.filter(r => !r.ok)
+  const parts: string[] = []
+  if (ready.length) parts.push(`ready: ${ready.join(', ')}`)
+  if (failed.length) parts.push(`failed: ${failed.map(f => `${f.name} (${f.detail}, see ${f.log})`).join('; ')}`)
+  const dbLine = env.DATABASE_URL ? ' DATABASE_URL is set.' : ''
+  return `\n\n[factory] services: ${parts.join('; ')}.${dbLine}`
+}
+
 /** the VM has no /etc/hosts, so localhost does not resolve (a test's local API server, say) */
 function localhost() {
   if (!existsSync('/etc/hosts') || !/^127\.0\.0\.1\s+localhost\b/m.test(readFileSync('/etc/hosts', 'utf8')))
@@ -589,6 +861,24 @@ function asWorker() {
 }
 
 /**
+ * makes git ignore a worker's `.scratch/` dir, with no commit, in any rig repo (claude-factory-9wu). It adds
+ * one line to the shared info/exclude file (`git rev-parse --git-common-dir`), so every worktree of the repo
+ * shares it. It writes the line once: a line already there, from an earlier call or another worktree, stops
+ * a second write. Outside a git repo (a test fixture with no .git), it does nothing.
+ */
+export function excludeScratch(dir: string) {
+  const p = Bun.spawnSync(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (p.exitCode !== 0) return
+  const common = p.stdout.toString().trim()
+  const infoDir = join(common, 'info')
+  mkdirSync(infoDir, { recursive: true })
+  const file = join(infoDir, 'exclude')
+  const text = existsSync(file) ? readFileSync(file, 'utf8') : ''
+  if (text.split('\n').some(line => line.trim() === '.scratch/')) return
+  writeFileSync(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.scratch/\n`)
+}
+
+/**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
@@ -625,7 +915,10 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   for (let i = 0; i < tries; i++) {
     rmSync(repo(), { recursive: true, force: true })
     const r = sh(['git', 'clone', '--branch', process.env.FACTORY_BRANCH ?? 'main', remote, repo()])
-    if (r.ok) return
+    if (r.ok) {
+      excludeScratch(repo())
+      return
+    }
     err = r.err
     await Bun.sleep(waitMs)
   }
@@ -656,6 +949,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
+  const services = await startServices()
   let session = prior?.session
   let egress: Egress | undefined = prior?.egress
   const set = (status: State['status']) => save({ status, session, pid: process.pid, egress })
@@ -677,7 +971,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
-    session = await turnWithRetry(brief, model, undefined, onEgress, onSession, egress)
+    session = await turnWithRetry(brief + servicesNote(services, process.env), model, undefined, onEgress, onSession, egress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]

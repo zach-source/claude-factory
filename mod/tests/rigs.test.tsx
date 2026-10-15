@@ -1,5 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+// raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
+// this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
+const SLOW = { timeoutMs: 30_000 }
+
 // what `factory tick` printed: the rigs and their runs as the console gets them
 const TICK = {
   manager: [],
@@ -26,7 +30,7 @@ const TICK = {
   ],
 }
 
-test('the rigs tab draws each rig with its live stations, gates and stuck runs, past its cap too', async ($, on) => {
+test('the rigs tab draws each rig with its live stations, gates and stuck runs, past its cap too', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
@@ -54,7 +58,7 @@ test('the rigs tab draws each rig with its live stations, gates and stuck runs, 
   }
 })
 
-test('a tick that logs to stderr, as a reaped pane does, still parses', async ($, on) => {
+test('a tick that logs to stderr, as a reaped pane does, still parses', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const status: unknown[] = []
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -76,7 +80,7 @@ test('a tick that logs to stderr, as a reaped pane does, still parses', async ($
   expect(JSON.stringify(status)).not.toContain('SyntaxError')
 })
 
-test('a failing tick says why in the status line and marks the board stale until one succeeds', async ($, on) => {
+test('a failing tick says why in the status line and marks the board stale until one succeeds', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const status: unknown[] = []
   let isFailing = true
@@ -122,7 +126,7 @@ test('a failing tick says why in the status line and marks the board stale until
   await ui.unmount()
 })
 
-test("a rig's backlog button opens the Backlog on that rig, and all rigs clears it", async ($, on) => {
+test("a rig's backlog button opens the Backlog on that rig, and all rigs clears it", SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)

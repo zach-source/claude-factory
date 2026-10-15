@@ -960,6 +960,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     ...(rig?.env?.FACTORY_NIX_CACHE && existsSync(join(run.worktree, 'devenv.nix'))
       ? [
           `- The repo's devenv.nix environment is loaded for you when its cache holds it (then DEVENV_ROOT is set): its tools are on PATH and its variables set, so use them directly. Do not run devenv shell or devenv test, whose enterShell runs the repo's git hooks for minutes; without DEVENV_ROOT, use nix shell as below.`,
+          `- If the devenv declares a process or a service (such as services.postgres), it already started before your first turn; DATABASE_URL is set when one applies. See this brief's own [factory] services: line for what ran. Do not run devenv up, initdb or pg_ctl yourself. Logs are at .factory-worker/services/<name>.log.`,
         ]
       : []),
     ...(rig?.env?.FACTORY_KUBE_SERVER
@@ -1283,6 +1284,25 @@ export const workerSettings = (
     autoCompactWindow: Math.max(100, 2 * maxContextK) * 1000,
   }
 }
+/**
+ * who workers commit as: the factory home's own git identity (`git -C <home> config user.name`, user.email),
+ * not whoever cloned its rigs; `factory.coauthor` ("Name <email>") is credited in a Co-authored-by trailer.
+ * Neither set (a home that is not its own git repo): workers commit as the rig's git config says
+ */
+export const commitIdentity = (home: string) => {
+  const get = (key: string) =>
+    Bun.spawnSync(['git', '-C', home, 'config', '--local', '--get', key]).stdout.toString().trim()
+  const [name, email, coauthor] = ['user.name', 'user.email', 'factory.coauthor'].map(get)
+  return {
+    env:
+      name && email
+        ? { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email }
+        : {},
+    rule: coauthor
+      ? `\n# Commits\n\nEnd every commit message with this trailer, after a blank line:\n\nCo-authored-by: ${coauthor}\n`
+      : '',
+  }
+}
 // what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn.
 // ToolSearch keeps MCP tools deferred: without it every MCP server's tools load into every turn (~60k)
 // Skill lets a worker run the asd-ste100 skill (workerSettings carries that one plugin over)
@@ -1298,8 +1318,11 @@ function workerFlags(def: Factory) {
     // no user settings: nothing to carry over
   }
   const file = join(HOME, 'worker-settings.json')
-  writeJson(file, workerSettings(user, def.maxContextK ?? 200))
-  const prompt = join(ROOT, 'src', 'worker-system.md')
+  const settings = workerSettings(user, def.maxContextK ?? 200)
+  const id = commitIdentity(HOME)
+  writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
+  const prompt = join(HOME, 'worker-system.md')
+  writeFileSync(prompt, readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') + id.rule)
   // --tools first: it takes every word up to the next flag, so last it would swallow the prompt
   return ` --tools ${WORKER_TOOLS} --setting-sources project,local --settings ${sq(file)} --system-prompt-file ${sq(prompt)}`
 }
@@ -2234,6 +2257,25 @@ const kickDream = () => {
   }).unref()
 }
 
+const CONFIG_SYNC_MS = 10 * 60_000
+// what a home's .gitignore lets in (its config: rigs.json) to its branch, and the memory to the memory branch
+export const CONFIG_SYNC = `git remote get-url origin >/dev/null 2>&1 || exit 0
+git add -A && { git diff --cached --quiet || git commit -qm 'factory: sync config'; }
+timeout 120 git push -q origin HEAD
+[ -d memory/.git ] && timeout 120 git -C memory push -q "$(git remote get-url origin)" HEAD:refs/heads/memory`
+
+/**
+ * every 10 minutes, a factory home that is a git repo with an origin pushes its config, so the factory can
+ * be rebuilt from its repo: `git init` the home, a .gitignore that lets in only the config, and an origin
+ */
+const kickConfigSync = () => {
+  const stamp = join(HOME, 'config.stamp')
+  if (!existsSync(join(HOME, '.git'))) return
+  if (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < CONFIG_SYNC_MS) return
+  writeFileSync(stamp, '') // a failed push waits for the next window, rather than retrying every tick
+  spawnChild('sh', ['-c', CONFIG_SYNC], { cwd: HOME, detached: true, stdio: 'ignore' }).unref()
+}
+
 const SIDEBAR_TTL_MS = 5 * 60_000
 /** the workspace of the pane this runs in, when that pane sits in this factory's directory */
 function managerWorkspace(): string | undefined {
@@ -2360,6 +2402,7 @@ async function tick(isPatrol = false) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
       kickDevenv()
+      kickConfigSync()
     }
   }
 }
@@ -2425,6 +2468,7 @@ async function createRun(
   )
   const ws: string = created.workspace.workspace_id
   const worktree: string = created.worktree.path
+  worker.excludeScratch(worktree) // claude-factory-9wu: .scratch/ stays untracked, with no commit, in this repo
   const source = from ? from.run.factory : factorySource(spec, worktree)
   // pinned resolved, as data: a base it extends may change after the run starts
   const pinned = join(runDir(id), 'factory.json')

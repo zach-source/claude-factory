@@ -1,10 +1,14 @@
 import { expect, test } from 'claude-code/testing'
 
+// raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
+// this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
+const SLOW = { timeoutMs: 30_000 }
+
 const DECIDE = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
 const ANSWER = '/repo/bin/factory decisions answer api api-7 "use postgres"'
 const START_OWNED = '/repo/bin/factory start lifecycle api api-9 --owned'
 
-test('the model decides a gate only after the person confirms it', async ($, on) => {
+test('the model decides a gate only after the person confirms it', SLOW, async ($, on) => {
   let answer = 'Deny'
   let asked = 0
   let ran = 0
@@ -33,10 +37,7 @@ test('the model decides a gate only after the person confirms it', async ($, on)
   expect(ran).toBe(2)
 })
 
-test('the model answers a bd decision or starts an owner-only bead only after the person confirms it', async (
-  $,
-  on,
-) => {
+test('the model answers a bd decision or starts an owner-only bead only after the person confirms it', SLOW, async ($, on) => {
   let answer = 'Deny'
   let asked = 0
   let ran = 0
@@ -75,7 +76,7 @@ test('the model answers a bd decision or starts an owner-only bead only after th
   expect(ran).toBe(3)
 })
 
-test('a line continuation or a quoted newline still gates the command', async ($, on) => {
+test('a line continuation or a quoted newline still gates the command', SLOW, async ($, on) => {
   let asked = 0
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
     asked += 1

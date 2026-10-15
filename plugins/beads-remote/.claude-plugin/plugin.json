@@ -1,0 +1,8 @@
+{
+  "name": "beads-remote",
+  "version": "0.1.0",
+  "description": "Sync a repo's beads (bd) through its git remote on any host: GitLab, GitHub or any git.",
+  "author": {
+    "name": "ztaylor"
+  }
+}
