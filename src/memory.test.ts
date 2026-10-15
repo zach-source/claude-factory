@@ -10,6 +10,9 @@ import {
   CORE_BUDGET,
   coreFor,
   decide,
+  type EvalCase,
+  evalScore,
+  evaluate,
   format,
   formatLong,
   inboxCount,
@@ -530,3 +533,37 @@ test('applyTiers() with dryRun counts decisions but writes nothing, and a second
   const again = applyTiers(dir, { now })
   expect(again.decisions).toEqual([]) // the note is gone, so there is nothing left to merge
 })
+
+test('evalScore: recall and MRR over results already searched for, and the misses it names', () => {
+  const cases: EvalCase[] = [
+    { query: 'why is bd slow', expect: 'beads/lock.md' },
+    { query: 'how to deploy', expect: 'deploy/roll.md' },
+    { query: 'nothing matches this', expect: 'ci/flaky.md' },
+  ]
+  const results = [
+    ['other/x.md', 'beads/lock.md', 'other/y.md'], // found at rank 2
+    ['deploy/roll.md', 'other/z.md'], // found at rank 1
+    ['other/a.md', 'other/b.md'], // missed
+  ]
+  const r = evalScore(cases, results)
+  expect(r.recall).toBeCloseTo(2 / 3, 5)
+  expect(r.mrr).toBeCloseTo((1 / 2 + 1 / 1 + 0) / 3, 5)
+  expect(r.misses).toEqual([{ query: 'nothing matches this', expect: 'ci/flaky.md' }])
+})
+
+test('evalScore on an empty case list scores perfectly, by convention, and names no misses', () => {
+  expect(evalScore([], [])).toEqual({ recall: 1, mrr: 1, misses: [] })
+})
+
+test('evaluate() runs the fixed query set against a real store through search()', async () => {
+  const dir = join(tmpdir(), `memory-eval-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  add(dir, { summary: 'bd init on the shared Dolt server takes a lock that stalls every repo', body: '' })
+  add(dir, { summary: 'kubectl rollout status confirms a deploy finished', body: '' })
+  const r = await evaluate(dir, [
+    { query: 'why is the issue tracker frozen for all projects?', expect: 'stalls' },
+    { query: 'did the rollout finish?', expect: 'deploy finished' },
+  ])
+  expect(r.recall).toBe(1)
+  expect(r.misses).toEqual([])
+}, 60_000)

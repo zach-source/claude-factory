@@ -3327,6 +3327,8 @@ const usage = `factory — herdr software factories on xstate
   memory compact [--dry-run]        merge old, used short notes into LONG.md and archive stale ones now;
                                      --dry-run only prints the plan (a dream runs this itself, after it files
                                      the inbox, unless FACTORY_MEMORY_TIERS=0)
+  memory eval                       search quality (recall@5, MRR) over the fixed query set in
+                                     <memory>/.eval.jsonl, and which queries missed
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
   skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
                                      once reviewed, or reject it, saying why
@@ -3531,9 +3533,22 @@ if (import.meta.main && !outboxCmd)
             memory.compact(MEMORY, renamed)
             console.log(message)
           }
+        } else if (sub === 'eval') {
+          const cases = memory.readEvalCases(MEMORY)
+          if (!cases.length)
+            fail(
+              `no fixed query set at ${memory.evalFile(MEMORY)}: one JSON line each, {"query":"...","expect":"a substring of the note's path or summary"}`,
+            )
+          const { recall, mrr, misses } = await memory.evaluate(MEMORY, cases)
+          console.log(
+            [
+              `recall@5: ${(recall * 100).toFixed(0)}%  mrr: ${mrr.toFixed(2)}  (${cases.length} queries)`,
+              ...misses.map(m => `miss: "${m.query}" expected "${m.expect}"`),
+            ].join('\n'),
+          )
         } else
           fail(
-            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped [--from run/station] <note path...> | compact [--dry-run]',
+            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped [--from run/station] <note path...> | compact [--dry-run] | eval',
           )
         break
       }

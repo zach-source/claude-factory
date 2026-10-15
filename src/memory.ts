@@ -248,6 +248,52 @@ export async function search(
   )
 }
 
+/**
+ * one line of a fixed query set. `expect` is a substring of the path or the summary of the note that the
+ * search for `query` must surface: summary text survives a merge into LONG.md, where the path does not.
+ */
+export type EvalCase = { query: string; expect: string; rig?: string }
+export type EvalResult = {
+  recall: number // the fraction of cases where `expect` was somewhere in the results
+  mrr: number // the mean of 1/rank over every case; 0 for a case that missed entirely
+  misses: EvalCase[]
+}
+
+/** pure: scores a fixed query set against results already searched for, so a test needs no search() call */
+export function evalScore(cases: EvalCase[], results: string[][]): EvalResult {
+  let hits = 0
+  let rrSum = 0
+  const misses: EvalCase[] = []
+  cases.forEach((c, i) => {
+    const rank = (results[i] ?? []).findIndex(path => path.includes(c.expect))
+    if (rank < 0) {
+      misses.push(c)
+      return
+    }
+    hits++
+    rrSum += 1 / (rank + 1)
+  })
+  return { recall: cases.length ? hits / cases.length : 1, mrr: cases.length ? rrSum / cases.length : 1, misses }
+}
+
+/** runs the fixed query set against the real store and scores it: what `factory memory eval` reports */
+export async function evaluate(dir: string, cases: EvalCase[], limit = 5): Promise<EvalResult> {
+  const results: string[][] = []
+  for (const c of cases)
+    results.push((await search(dir, c.query, { rig: c.rig, limit })).map(f => `${f.note.path} ${f.note.summary}`))
+  return evalScore(cases, results)
+}
+
+/** where the fixed query set lives: committed to the memory's own git repo, so it tracks the store it tests */
+export const evalFile = (dir: string) => join(dir, '.eval.jsonl')
+export const readEvalCases = (dir: string): EvalCase[] =>
+  existsSync(evalFile(dir))
+    ? readFileSync(evalFile(dir), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line))
+    : []
+
 /** the matches, not the filler: what scores near the best and above the floor */
 export const close = <T extends { score: number }>(ranked: T[], limit: number) =>
   ranked.filter(r => r.score >= Math.max(FLOOR, (ranked[0]?.score ?? 0) - SPREAD)).slice(0, limit)
