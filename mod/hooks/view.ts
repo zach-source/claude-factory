@@ -112,6 +112,26 @@ export function counts(runs: FactoryRun[]) {
   return n
 }
 
+/** the board's columns, in the order a person should look: what needs them first, then trouble, work, timers */
+export const BOARD_STATES = ['gates', 'stuck', 'working', 'waiting'] as const
+
+/** the live runs split by `stateOf` (so the board agrees with `counts`), each column oldest first; a run with no `since` sorts last */
+export function byState(runs: readonly FactoryRun[]) {
+  const age = (r: FactoryRun) => r.since ?? Infinity
+  return BOARD_STATES.map(state => ({
+    state,
+    runs: runs
+      .filter(r => isLive(r) && stateOf(r) === state)
+      .sort((a, b) => (age(a) === age(b) ? 0 : age(a) < age(b) ? -1 : 1)),
+  }))
+}
+
+/** a run id short enough for a column: the part after the factory's prefix, cut to its first and last 4 */
+export function shortId(id: string) {
+  const tail = id.slice(id.lastIndexOf('-') + 1) || id
+  return tail.length <= 9 ? tail : `${tail.slice(0, 4)}…${tail.slice(-4)}`
+}
+
 /** the status line: "3 working (api 2, web 1) · 1 awaiting you · 1 stuck", nothing when no run is live */
 export function statusText(runs: FactoryRun[]) {
   const n = counts(runs)
