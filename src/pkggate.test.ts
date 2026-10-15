@@ -602,6 +602,9 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
   let now = NOW
   let indexUp = true
   let recordOffset = 0
+  // each version of the probe module carries its own fixed sum.golang.org record, so each call is a fresh
+  // decision (never served from goInfoCache's forever cache), but still proves which floor was in force
+  const probeRecords: Record<string, number> = { 'v1.0.0': 500, 'v2.0.0': 500, 'v3.0.0': 500, 'v4.0.0': 300 }
   const srv = Bun.serve({
     port: 0,
     fetch(req) {
@@ -612,7 +615,8 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
       }
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
-        if (key.startsWith('floortiming.example.com/mod@')) return new Response('500\n')
+        const probeVersion = key.startsWith('floortiming.example.com/mod@') ? key.slice('floortiming.example.com/mod@'.length) : null
+        if (probeVersion && probeRecords[probeVersion] !== undefined) return new Response(`${probeRecords[probeVersion]}\n`)
         const sample = GO_FLOOR_RECORDS[key]
         return new Response(`${(sample ?? GO_FLOOR_RECORD - 1) + recordOffset}\n`)
       }
@@ -643,6 +647,14 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     now += 31 * 60_000
     const third = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v3.0.0.info'))
     expect(third.status).toBe(200)
+
+    // the index now reports a thinner window again (recordOffset back to 0, median 104): a 4th probe
+    // version, with a record (300) between the two floors, is still allowed -- proof this refresh never
+    // dropped the floor from 704 back down to 104
+    recordOffset = 0
+    now += 31 * 60_000
+    const fourth = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v4.0.0.info'))
+    expect(fourth.status).toBe(200)
   } finally {
     srv.stop(true)
   }
