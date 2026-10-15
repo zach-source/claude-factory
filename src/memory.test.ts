@@ -9,11 +9,14 @@ import {
   CORE_BUDGET,
   coreFor,
   format,
+  formatLong,
   inboxCount,
   installSkill,
+  type LongEntry,
   managerActivity,
   outline,
   parse,
+  parseLong,
   pendingSkills,
   rank,
   rejectSkill,
@@ -24,6 +27,7 @@ import {
   usage,
   usageLines,
   use,
+  walk,
   type Note,
 } from './memory'
 
@@ -37,6 +41,45 @@ test('a note keeps its summary, rig and provenance through a write and a read', 
   }
   expect(parse('beads/x.md', format(note))).toEqual({ path: 'beads/x.md', ...note })
   expect(parse('inbox/y.md', 'no frontmatter\nmore').summary).toBe('no frontmatter')
+})
+
+test('a LONG.md entry keeps its id, rig, from, at and body through a write and a read', () => {
+  const entries: LongEntry[] = [
+    { id: 'bd-lock', summary: 'bd init locks every repo', rig: 'fabriek', from: 'r1/verify', at: '2026-10-06', body: 'why\nhow' },
+    { id: 'no-meta', summary: 'a plain entry with no rig, from or at', body: 'just a body' },
+  ]
+  expect(parseLong(formatLong(entries))).toEqual(entries)
+  expect(formatLong(entries)).toContain('tier: long')
+})
+
+test('walk() turns each LONG.md entry into one note, skips .archive, and outline counts entries', () => {
+  const dir = join(tmpdir(), `memory-long-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  mkdirSync(join(dir, '.archive'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'README.md'), format({ summary: 'bd topic', body: '' }))
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([
+      { id: 'lock', summary: 'bd init locks every repo', body: 'merged lesson one' },
+      { id: 'dolt', summary: 'the dolt server is shared', rig: 'fabriek', body: 'merged lesson two' },
+    ]),
+  )
+  writeFileSync(join(dir, 'beads', 'fresh.md'), format({ summary: 'a fresh short note', body: '' }))
+  writeFileSync(join(dir, '.archive', 'beads.md'), 'archived text nobody should ever walk')
+  const { notes } = walk(dir)
+  expect(notes.map(n => n.path).sort()).toEqual([
+    'beads/LONG.md#dolt',
+    'beads/LONG.md#lock',
+    'beads/fresh.md',
+  ])
+  const long = notes.find(n => n.path === 'beads/LONG.md#lock')!
+  expect(long.tier).toBe('long')
+  expect(long.summary).toBe('bd init locks every repo')
+  expect(long.body).toBe('merged lesson one')
+  const short = notes.find(n => n.path === 'beads/fresh.md')!
+  expect(short.tier).toBe('short')
+  expect(outline(dir).topics).toEqual(['- beads (3): bd topic'])
 })
 
 test("search ranks by the note and its topic, and never shows another rig's notes", () => {

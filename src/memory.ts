@@ -20,7 +20,19 @@ import { dirname, join } from 'node:path'
 //   inbox/<note>.md      new notes, until the dream files them under a topic
 // The dream (`factory dream`) grooms it daily. The folder is its own git repo, so every pass can be undone.
 
-export type Note = { path: string; summary: string; rig?: string; from?: string; at?: string; body: string }
+// A note's tier: short (one worker's note, in <topic>/<slug>.md or inbox/), long (a merged lesson, in
+// <topic>/LONG.md, one entry per `## ` heading), fact (a distilled CORE.md bullet). search ranks higher
+// tiers above short notes with TIER_BONUS, because they already survived a dream's judgment.
+export type Tier = 'short' | 'long' | 'fact'
+export type Note = {
+  path: string
+  summary: string
+  rig?: string
+  from?: string
+  at?: string
+  body: string
+  tier?: Tier
+}
 
 const MODEL = 'Xenova/bge-small-en-v1.5'
 const QUERY = 'Represent this sentence for searching relevant passages: ' // bge's retrieval instruction
@@ -62,8 +74,48 @@ export const format = (n: Omit<Note, 'path'>) =>
     '',
   ].join('\n')
 
-/** every note, with its topic's README beside it: the dot folders (.git, the index) are not memory */
-function walk(dir: string) {
+/** one entry inside a topic's LONG.md. A dream merges several short notes into one entry like this. */
+export type LongEntry = { id: string; summary: string; rig?: string; from?: string; at?: string; body: string }
+
+const LONG_HEADER = '---\ntier: long\n---\n'
+const longEntryText = (e: LongEntry) =>
+  [
+    `## ${e.summary.replace(/\n/g, ' ')}`,
+    `<!-- id: ${e.id}${e.rig ? ` rig: ${e.rig}` : ''}${e.from ? ` from: ${e.from}` : ''}${e.at ? ` at: ${e.at}` : ''} -->`,
+    '',
+    e.body.trim(),
+    '',
+  ].join('\n')
+
+/** a topic's LONG.md, serialized: frontmatter `tier: long`, then one `## summary` + id comment per entry */
+export const formatLong = (entries: LongEntry[]) => [LONG_HEADER, ...entries.map(longEntryText)].join('\n')
+
+const LONG_ID = /^<!--\s*id:\s*(\S+)(?:\s+rig:\s*(\S+))?(?:\s+from:\s*(\S+))?(?:\s+at:\s*(\S+))?\s*-->\s*$/
+
+/** a topic's LONG.md, parsed back into its entries: parseLong(formatLong(x)) === x */
+export function parseLong(text: string): LongEntry[] {
+  const body = text.startsWith(LONG_HEADER) ? text.slice(LONG_HEADER.length) : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+  return body
+    .split(/\n(?=## )/)
+    .filter(part => part.startsWith('## '))
+    .map(part => {
+      const lines = part.split('\n')
+      const summary = lines[0]!.slice(3).trim()
+      const m = LONG_ID.exec(lines[1] ?? '')
+      const rest = (m ? lines.slice(2) : lines.slice(1)).join('\n').replace(/^\n/, '')
+      return {
+        id: m?.[1] ?? slug(summary),
+        summary,
+        rig: m?.[2],
+        from: m?.[3],
+        at: m?.[4],
+        body: rest.trim(),
+      }
+    })
+}
+
+/** every note, with its topic's README beside it: the dot folders (.git, the index, .archive) are not memory */
+export function walk(dir: string) {
   const notes: Note[] = []
   const topics = new Map<string, Note>()
   if (!existsSync(dir)) return { notes, topics }
@@ -71,9 +123,23 @@ function walk(dir: string) {
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
     for (const f of readdirSync(join(dir, topic.name))) {
       if (!f.endsWith('.md')) continue
-      const n = parse(join(topic.name, f), readFileSync(join(dir, topic.name, f), 'utf8'))
+      const text = readFileSync(join(dir, topic.name, f), 'utf8')
+      if (f === 'LONG.md') {
+        for (const e of parseLong(text))
+          notes.push({
+            path: `${topic.name}/LONG.md#${e.id}`,
+            summary: e.summary,
+            rig: e.rig,
+            from: e.from,
+            at: e.at,
+            body: e.body,
+            tier: 'long',
+          })
+        continue
+      }
+      const n = parse(join(topic.name, f), text)
       if (f === 'README.md') topics.set(topic.name, n)
-      else notes.push(n)
+      else notes.push({ ...n, tier: 'short' })
     }
   }
   return { notes, topics }
