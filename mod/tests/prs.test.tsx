@@ -46,6 +46,15 @@ const PRS = [
         state: 'CLOSED',
         isDraft: true,
       }),
+      // a GitLab merge request: carries `forge`, so the tab names it repo!n rather than repo#n
+      PR({
+        url: 'https://gitlab.example.com/group/sub/project/-/merge_requests/7',
+        repo: 'group/sub/project',
+        number: 7,
+        forge: 'gitlab',
+        title: 'Merge request on GitLab',
+        state: 'OPEN',
+      }),
     ],
   },
   {
@@ -134,6 +143,7 @@ test('the PRs tab groups by rig then run, shows each PR with its state, role and
   expect(drawn).toContain('552')
   expect(drawn).toContain('draft')
   // the mentioned PR (#550, draft) is on its own dim line, not among the "own" rows
+  expect(drawn).toContain('group/sub/project!7')
   expect(drawn).toContain('also named:')
   expect(drawn).toContain('550')
   await ui.unmount()

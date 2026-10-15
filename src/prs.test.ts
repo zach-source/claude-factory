@@ -909,3 +909,183 @@ test('buildPrs: an exhausted overall deadline stops spending new gh calls past i
   expect(listCalls).toHaveLength(1) // repo "two"'s branch list never ran: the deadline hit first
   expect(calls.some(c => c[0] === 'search')).toBe(false) // the search loop never got a turn either
 })
+
+// ---- GitLab merge requests ----
+
+import { forgeOf, mrsIn, parseGitlabList, parseGitlabSearch, parseGitlabView, parseRemote } from './prs'
+
+const MR_URL = 'https://gitlab.example.com/group/sub/project/-/merge_requests/12'
+
+test('prRef parses a GitLab merge request URL keeping the full project path, and leaves GitHub as it was', () => {
+  expect(prRef(MR_URL)).toEqual({ repo: 'group/sub/project', number: 12, forge: 'gitlab' })
+  expect(prRef('https://gitlab.com/group/project/-/merge_requests/3')).toEqual({
+    repo: 'group/project',
+    number: 3,
+    forge: 'gitlab',
+  })
+  expect(prRef('https://gitlab.example.com/group/project/-/issues/3')).toBeNull()
+  expect(prRef('https://github.com/acme/widget/-/merge_requests/3')).toBeNull() // github.com is never GitLab
+  expect(prRef('https://github.com/acme/widget/pull/551')).toEqual({ repo: 'acme/widget', number: 551 }) // no forge key
+})
+
+test('mrsIn finds merge request URLs in a text, once each, and ignores pull requests', () => {
+  expect(mrsIn(`see ${MR_URL}, again ${MR_URL}; and https://github.com/acme/widget/pull/5`)).toEqual([MR_URL])
+})
+
+test('foldMentions and foldFound give a merge request record its forge, a pull request none', () => {
+  const [mr] = foldMentions([], [{ url: MR_URL, station: 'implement', at: 1, source: 'report' }])
+  expect(mr).toMatchObject({ repo: 'group/sub/project', number: 12, forge: 'gitlab' })
+  const [pr] = foldFound([], [{ url: 'https://github.com/acme/widget/pull/5', at: 1, source: 'branch' }])
+  expect('forge' in pr!).toBe(false)
+})
+
+test('parseRemote reads https, ssh:// and scp-style remotes, and forgeOf tells the forge from the host', () => {
+  expect(parseRemote('https://gitlab.example.com/group/sub/project.git')).toEqual({
+    host: 'gitlab.example.com',
+    path: 'group/sub/project',
+  })
+  expect(parseRemote('git@gitlab.example.com:group/project.git')).toEqual({
+    host: 'gitlab.example.com',
+    path: 'group/project',
+  })
+  expect(parseRemote('ssh://git@git.example.com:2222/group/project')).toEqual({
+    host: 'git.example.com',
+    path: 'group/project',
+  })
+  expect(parseRemote('not a remote')).toBeNull()
+  expect(forgeOf('github.com')).toBe('github')
+  expect(forgeOf('gitlab.com')).toBe('gitlab')
+  expect(forgeOf('gitlab.example.com')).toBe('gitlab')
+  expect(forgeOf('git.example.com')).toBeNull() // not named for GitLab, and glab does not know it
+  expect(forgeOf('git.example.com', h => h === 'git.example.com')).toBe('gitlab') // glab does
+})
+
+const MR = {
+  title: 'Add the thing',
+  state: 'opened',
+  draft: false,
+  updated_at: '2026-10-12T09:00:00Z',
+  source_branch: `factory/${RUN_ID}`,
+  description: 'for ex-12.3',
+  detailed_merge_status: 'mergeable',
+  head_pipeline: { status: 'success' },
+}
+
+test('parseGitlabView maps state, draft, approvals, pipeline and merge status onto the PR fields', () => {
+  const v = parseGitlabView(JSON.stringify(MR), JSON.stringify({ approved: true, approvals_left: 0 }))
+  expect(v).toEqual({
+    title: 'Add the thing',
+    state: 'OPEN',
+    isDraft: false,
+    reviewDecision: 'APPROVED',
+    mergeStateStatus: 'CLEAN',
+    checks: { pass: 1, fail: 0, pending: 0 },
+    updatedAt: '2026-10-12T09:00:00Z',
+    headRefName: `factory/${RUN_ID}`,
+    body: 'for ex-12.3',
+  })
+  const view = (over: object, approvals = '') =>
+    parseGitlabView(JSON.stringify({ ...MR, ...over }), approvals)!
+  expect(view({ state: 'merged' }).state).toBe('MERGED')
+  expect(view({ state: 'closed' }).state).toBe('CLOSED')
+  expect(view({ draft: true }).isDraft).toBe(true)
+  expect(view({}, JSON.stringify({ approved: false, approvals_left: 2 })).reviewDecision).toBe(
+    'REVIEW_REQUIRED',
+  )
+  expect(view({}, 'not json').reviewDecision).toBe('') // a failed approvals call leaves it blank
+  expect(view({ detailed_merge_status: 'requested_changes' }).reviewDecision).toBe('CHANGES_REQUESTED')
+  expect(view({ detailed_merge_status: 'conflict' }).mergeStateStatus).toBe('DIRTY')
+  expect(view({ detailed_merge_status: 'need_rebase' }).mergeStateStatus).toBe('BEHIND')
+  expect(view({ detailed_merge_status: 'not_approved' }).mergeStateStatus).toBe('BLOCKED')
+  expect(view({ detailed_merge_status: 'checking' }).mergeStateStatus).toBe('UNKNOWN')
+  expect(view({ detailed_merge_status: 'ci_must_pass', head_pipeline: { status: 'failed' } })).toMatchObject({
+    mergeStateStatus: 'UNSTABLE',
+    checks: { pass: 0, fail: 1, pending: 0 },
+  })
+  expect(view({ head_pipeline: { status: 'running' } }).checks).toEqual({ pass: 0, fail: 0, pending: 1 })
+  expect(view({ head_pipeline: null }).checks).toEqual({ pass: 0, fail: 0, pending: 0 })
+  expect(parseGitlabView('nope')).toBeNull()
+})
+
+test('parseGitlabList and parseGitlabSearch read a project listing, the search keeping its time window', () => {
+  const out = JSON.stringify([
+    { web_url: MR_URL, source_branch: 'factory/x', created_at: '2026-10-12T08:49:00Z' },
+    { web_url: `${MR_URL}0`, source_branch: 'other', created_at: '2026-10-11T00:00:00Z' },
+  ])
+  expect(parseGitlabList(out)).toEqual([
+    { url: MR_URL, headRefName: 'factory/x' },
+    { url: `${MR_URL}0`, headRefName: 'other' },
+  ])
+  expect(parseGitlabList('nope')).toEqual([])
+  expect(parseGitlabSearch(out, 1791791066107, 1791819735929, 5)).toEqual([
+    { url: MR_URL, at: 5, source: 'search' },
+  ])
+})
+
+test('buildPrs: a GitLab rig lists, searches and views merge requests through glab, never gh', async () => {
+  const now = 2_000_000_000
+  const ghCalls: string[][] = []
+  const gh = fakeGh([], ghCalls)
+  const glabCalls: string[][] = []
+  const other = 'https://gitlab.example.com/group/other/-/merge_requests/4'
+  const api = 'api --hostname gitlab.example.com projects/'
+  const glab = fakeGh(
+    [
+      {
+        when: `${api}group%2Fsub%2Fproject/merge_requests?state=all&order_by`,
+        reply: {
+          code: 0,
+          out: JSON.stringify([{ web_url: MR_URL, source_branch: `factory/${RUN_ID}` }]),
+          err: '',
+        },
+      },
+      {
+        when: `${api}group%2Fsub%2Fproject/merge_requests?state=all&in=title`,
+        reply: {
+          code: 0,
+          out: JSON.stringify([{ web_url: other, created_at: '2026-10-12T09:00:00Z' }]),
+          err: '',
+        },
+      },
+      {
+        when: `${api}group%2Fsub%2Fproject/merge_requests/12/approvals`,
+        reply: { code: 0, out: JSON.stringify({ approved: true, approvals_left: 0 }), err: '' },
+      },
+      {
+        when: `${api}group%2Fsub%2Fproject/merge_requests/12`,
+        reply: { code: 0, out: JSON.stringify(MR), err: '' },
+      },
+      { when: `${api}group%2Fother/merge_requests/4`, reply: { code: 1, out: '', err: '404 Not Found' } },
+    ],
+    glabCalls,
+  )
+  const r = run({
+    runRepo: 'group/sub/project',
+    owner: 'group/sub',
+    forge: 'gitlab',
+    host: 'gitlab.example.com',
+  })
+  // the first call lists and searches, so both MRs exist; the second views them
+  const first = await buildPrs([r], IS_STATION, gh, now, DEFAULT_BUDGET, Date.now, 60_000, glab)
+  const again = { ...r, file: first.files.get(RUN_ID)! }
+  const second = await buildPrs([again], IS_STATION, gh, now + 1, DEFAULT_BUDGET, Date.now, 60_000, glab)
+  expect(ghCalls).toEqual([])
+  const prs = second.rows[0]!.prs
+  expect(prs.find(p => p.url === MR_URL)).toMatchObject({
+    forge: 'gitlab',
+    repo: 'group/sub/project',
+    state: 'OPEN',
+    reviewDecision: 'APPROVED',
+    mergeStateStatus: 'CLEAN',
+    checks: { pass: 1, fail: 0, pending: 0 },
+    ownHead: true,
+    role: 'code',
+  })
+  // a search hit in another project is kept, and its failed view is that MR's own error
+  expect(prs.find(p => p.url === other)).toMatchObject({
+    forge: 'gitlab',
+    repo: 'group/other',
+    errorStreak: 1,
+    error: '404 Not Found',
+  })
+})

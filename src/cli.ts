@@ -71,7 +71,18 @@ import {
   type RunRecord,
   type Session,
 } from './metrics'
-import { asPrsFile, buildPrs, DEFAULT_BUDGET, sameFile, spawnGh, type PrsFile, type RunMeta } from './prs'
+import {
+  asPrsFile,
+  buildPrs,
+  DEFAULT_BUDGET,
+  forgeOf,
+  parseRemote,
+  sameFile,
+  spawnGh,
+  type ForgeKind,
+  type PrsFile,
+  type RunMeta,
+} from './prs'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -2938,14 +2949,27 @@ async function backlog() {
   })
 }
 
-/** a repo's origin remote, split into the GitHub owner and owner/name: `gh search prs --owner` and the
- * run's own repo for role()'s `sameRepo`. undefined when there is no origin (not a GitHub remote, or none) */
-function originRef(repoPath: string): { owner: string; repo: string } | undefined {
+/** a repo's origin remote, split into the owner and name: `gh search prs --owner` and the run's own repo
+ * for role()'s `sameRepo`. On GitLab the owner is the namespace (group/sub) and the name the project.
+ * undefined when there is no origin (neither a GitHub nor a GitLab remote, or none) */
+function originRef(
+  repoPath: string,
+): { owner: string; repo: string; forge: ForgeKind; host: string } | undefined {
   const p = Bun.spawnSync(['git', '-C', repoPath, 'remote', 'get-url', 'origin'])
   if (p.exitCode !== 0) return undefined
-  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(p.stdout.toString().trim())
-  return m ? { owner: m[1]!, repo: m[2]! } : undefined
+  const url = p.stdout.toString().trim()
+  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(url)
+  if (m) return { owner: m[1]!, repo: m[2]!, forge: 'github', host: 'github.com' }
+  const remote = parseRemote(url)
+  if (!remote || forgeOf(remote.host, glabKnows) !== 'gitlab') return undefined
+  const parts = remote.path.split('/')
+  if (parts.length < 2) return undefined
+  return { owner: parts.slice(0, -1).join('/'), repo: parts.at(-1)!, forge: 'gitlab', host: remote.host }
 }
+
+/** whether `glab` is signed in to a host: how a self-hosted GitLab without "gitlab" in its name is told */
+const glabKnows = (host: string) =>
+  Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
 
 const prsFile = (id: string) => join(runDir(id), 'prs.json')
 
@@ -3013,6 +3037,8 @@ async function prs() {
         repoDir: run.repo,
         runRepo: ref ? `${ref.owner}/${ref.repo}` : run.repo,
         owner: ref?.owner ?? '',
+        forge: ref?.forge,
+        host: ref?.host,
         log: c.log,
         mail,
         file,

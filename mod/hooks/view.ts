@@ -331,6 +331,10 @@ export function prState(
   return { ...prNeed(pr), checks }
 }
 
+/** a PR's short name for the PRs tab: `repo#n` on GitHub, GitLab's `repo!n` for a merge request */
+export const prName = (pr: Pick<FactoryPrs[number]['prs'][number], 'repo' | 'number' | 'forge'>) =>
+  `${pr.repo}${pr.forge === 'gitlab' ? '!' : '#'}${pr.number}`
+
 /** one question the factory puts to the person: a run stuck or parked, a gate, a blocked worker, or a bd decision */
 export type Interview = {
   key: string
