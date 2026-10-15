@@ -129,7 +129,8 @@ const rt = {
 }
 
 async function factory($: EngineInterface, args: string[]) {
-  const r = await $.process.run([rt.cli, ...args], { timeoutMs: 120_000 })
+  // ponytail: the API's 10-minute ceiling; a tick over 13 runs on slow EFS took 137s, past the old 120s
+  const r = await $.process.run([rt.cli, ...args], { timeoutMs: 600_000 })
   const isOk = r.exitCode === 0
   // stderr carries logs (a tick's reaped panes, its children's warnings): mixed into the JSON, it broke the parse
   return { isOk, out: (isOk ? r.stdout : `${r.stdout}${r.stderr}`).trim() }
