@@ -120,16 +120,29 @@ export function setupBeads() {
 }
 
 /**
- * the VM's bd writes back to GitHub, where the laptop pulls them: pull (merging what the laptop or another
- * worker pushed since) and push, again when another push won the race. false when it never went through
+ * syncBeads sends the VM's bd writes to GitHub, where the laptop pulls them. It pulls first, then pushes.
+ * This merges in writes from the laptop or a different worker. It tries again if a different push wins the
+ * race. It returns false if the writes do not reach GitHub.
+ *
+ * The laptop and this VM can edit the same row on the same day. Then a pull can fail with a merge conflict.
+ * This function tries the pull again, with the ours strategy. The ours strategy keeps the VM's own writes,
+ * since the VM did the work it is about to report. The laptop's own pull function, pullResolving in
+ * src/cli.ts, uses the same rule in reverse. A pull that fails for another reason still fails the same way
+ * after the second try.
  */
 export function syncBeads({ tries = 3 } = {}) {
   if (!process.env.BEADS_DIR) return true
   const bd = process.env.FACTORY_BD ?? 'bd'
   for (let i = 0; i < tries; i++) {
-    const run = (args: string[]) =>
-      Bun.spawnSync([bd, ...args], { env: bdEnv(), stderr: 'pipe' }).exitCode === 0
-    if (run(['dolt', 'pull']) && run(['dolt', 'push'])) return true
+    const spawn = (args: string[]) => Bun.spawnSync([bd, ...args], { env: bdEnv(), stderr: 'pipe' })
+    let pulled = spawn(['dolt', 'pull'])
+    if (pulled.exitCode !== 0) {
+      const conflict = pulled.stderr.toString().includes('conflict')
+      pulled = spawn(['dolt', 'pull', '--strategy', 'ours'])
+      if (pulled.exitCode === 0 && conflict)
+        console.error('bd sync: your bd changes and upstream changed the same rows; your version was kept')
+    }
+    if (pulled.exitCode === 0 && spawn(['dolt', 'push']).exitCode === 0) return true
   }
   return false
 }

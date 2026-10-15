@@ -1050,3 +1050,74 @@ test("envtest's kube-apiserver runs through a wrapper that advertises 127.0.0.1,
   )
   expect(run({ KUBEBUILDER_ASSETS: join(d, 'none') }).exitCode).toBe(127)
 })
+
+test.skipIf(!Bun.which('bd'))(
+  "syncBeads recovers a real bd merge conflict in dependencies: the VM's own type on the shared row wins",
+  () => {
+    const bd = Bun.which('bd')!
+    const t = mkdtempSync(join(tmpdir(), 'bd-sync-'))
+    const remote = join(t, 'remote')
+    const a = join(t, 'a')
+    const b = join(t, 'b')
+    for (const d of [remote, a, b]) mkdirSync(d, { recursive: true })
+    const bdEnv = { ...process.env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' }
+    const sh = (cwd: string, ...args: string[]) => {
+      const p = Bun.spawnSync(args, { cwd, env: bdEnv })
+      if (p.exitCode !== 0) throw new Error(`${args.join(' ')}: ${p.stderr.toString()}`)
+      return p.stdout.toString()
+    }
+
+    // store a: the first embedded store, with the shared file:// remote and two issues linked by a dep
+    sh(a, 'git', 'init', '-q', '.')
+    sh(a, bd, 'init', '-p', 'x', '--non-interactive')
+    sh(a, bd, 'dolt', 'remote', 'add', 'origin', `file://${remote}`)
+    sh(a, bd, 'create', '--id', 'x-1', '--title', 't1', '-d', 'd', '-t', 'task', '-p', '2')
+    sh(a, bd, 'create', '--id', 'x-2', '--title', 't2', '-d', 'd', '-t', 'task', '-p', '2')
+    sh(a, bd, 'dep', 'add', 'x-2', 'x-1', '-t', 'related')
+    sh(a, bd, 'dolt', 'push')
+
+    // store b: a clone of the same remote, as the VM's beads directory is (setupBeads, src/worker.ts:94)
+    sh(b, 'git', 'init', '-q', '.')
+    mkdirSync(join(b, '.beads'), { recursive: true })
+    writeFileSync(join(b, '.beads', 'config.yaml'), `sync.remote: "file://${remote}"\n`)
+    sh(b, bd, 'bootstrap', '-y')
+
+    // a changes the dep's type and pushes; b changes the same dep's type, unaware of a's push
+    sh(a, bd, 'dep', 'remove', 'x-2', 'x-1')
+    sh(a, bd, 'dep', 'add', 'x-2', 'x-1', '-t', 'discovered-from')
+    sh(a, bd, 'dolt', 'push')
+    sh(b, bd, 'dep', 'remove', 'x-2', 'x-1')
+    sh(b, bd, 'dep', 'add', 'x-2', 'x-1', '-t', 'blocks')
+
+    // b's next plain pull would hit the same conflict giv6 saw; syncBeads must get past it and push
+    const was = {
+      BEADS_DIR: process.env.BEADS_DIR,
+      FACTORY_BD: process.env.FACTORY_BD,
+      BEADS_DOLT_SHARED_SERVER: process.env.BEADS_DOLT_SHARED_SERVER,
+      BD_NON_INTERACTIVE: process.env.BD_NON_INTERACTIVE,
+    }
+    Object.assign(process.env, {
+      BEADS_DIR: join(b, '.beads'),
+      FACTORY_BD: bd,
+      BEADS_DOLT_SHARED_SERVER: '0',
+      BD_NON_INTERACTIVE: '1',
+    })
+    let ok: boolean
+    try {
+      ok = worker.syncBeads()
+    } finally {
+      for (const [k, v] of Object.entries(was)) {
+        if (v === undefined) delete (process.env as Record<string, string | undefined>)[k]
+        else process.env[k] = v
+      }
+    }
+    expect(ok).toBe(true)
+
+    // the remote now holds store b's type: a's next pull sees it, not its own discovered-from
+    sh(a, bd, 'dolt', 'pull')
+    const dep = sh(a, bd, 'dep', 'list', 'x-2')
+    rmSync(t, { recursive: true, force: true })
+    expect(dep).toContain('via blocks')
+  },
+  30000,
+)
