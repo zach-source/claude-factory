@@ -1,5 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+// raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
+// this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
+const SLOW = { timeoutMs: 30_000 }
+
 // a run parked on the person, its worker's question and options in its blocked report
 const TICK = {
   manager: [],
@@ -22,7 +26,7 @@ const TICK = {
   ],
 }
 
-test('the interview tab asks a parked run its question and mails the chosen answer to its station', async ($, on) => {
+test('the interview tab asks a parked run its question and mails the chosen answer to its station', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const ran: string[][] = []
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -98,7 +102,7 @@ const DECISIONS = {
   proposals: {},
 }
 
-test("'Interview me' sweeps bd into the open list; answering a bead calls decisions answer; a gate decides directly", async ($, on) => {
+test("'Interview me' sweeps bd into the open list; answering a bead calls decisions answer; a gate decides directly", SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const ran: string[][] = []
   // a decided gate's run really would come back from a live tick with no gate: the fake backend mirrors that
@@ -164,7 +168,7 @@ test("'Interview me' sweeps bd into the open list; answering a bead calls decisi
   await ui.unmount()
 })
 
-test("the interview tab shows a rig's own bd error, and a failed sweep itself as a status line", async ($, on) => {
+test("the interview tab shows a rig's own bd error, and a failed sweep itself as a status line", SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const status: unknown[] = []
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -224,7 +228,7 @@ const OWNED_DECISIONS = {
   proposals: {},
 }
 
-test("an owner-only bead's 'not now' only comments through decisions answer, never starts it", async ($, on) => {
+test("an owner-only bead's 'not now' only comments through decisions answer, never starts it", SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const ran: string[][] = []
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -264,7 +268,7 @@ test("an owner-only bead's 'not now' only comments through decisions answer, nev
   await ui.unmount()
 })
 
-test("an owner-only bead's 'start now' also runs factory start with the rig's factory", async ($, on) => {
+test("an owner-only bead's 'start now' also runs factory start with the rig's factory", SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const ran: string[][] = []
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -311,7 +315,7 @@ test("an owner-only bead's 'start now' also runs factory start with the rig's fa
   await ui.unmount()
 })
 
-test("an owner-only bead's 'start now' stays open when the start fails, instead of vanishing unstarted", async ($, on) => {
+test("an owner-only bead's 'start now' stays open when the start fails, instead of vanishing unstarted", SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const ran: string[][] = []
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
@@ -365,7 +369,7 @@ const DECISIONS_WITH_PROPOSAL = {
   proposals: { 'iv:s1@5': { question: 'How should it go on?', options: ['retry it', 'escalate to the person'], at: 9 } },
 }
 
-test("the sweep merges the manager's proposed options into a bare item already open from the tick", async ($, on) => {
+test("the sweep merges the manager's proposed options into a bare item already open from the tick", SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
