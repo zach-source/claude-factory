@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
-import { httpsRemote, overwritten, replayable, rigBeadsSync, vmClaudeFlags } from './cli'
+import { httpsRemote, overwritten, progressSig, replayable, rigBeadsSync, vmClaudeFlags } from './cli'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
 
@@ -418,11 +418,14 @@ test('a committing AX worker is not called stalled even with an unchanging tail,
   const tail = 'same output, mid-turn: the brief is one long call'
   cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
   factory(['tick']) // first sighting
-  // back-date progress.json to simulate 41 min stood still on the OLD fingerprint (tail alone, no head/bytes:
-  // what a pre-fix laptop, or this same laptop before the worker had committed anything, would have recorded)
+  // back-date progress.json to simulate 41 min stood still on the CURRENT fingerprint shape (tail, head and
+  // bytes all folded in) for the head/bytes this same poll reported, so the only thing that can reset `at` on
+  // the next tick is head or bytes actually moving -- not a sig-format mismatch (claude-factory-xq3.5, PR #19
+  // review finding 2: backdating with the old tail-only shape made the "not stalled" assertion pass even when
+  // head/bytes stayed put, since the format change alone looked like progress)
   writeFileSync(
     join(home, 'runs', 'r13', 'progress.json'),
-    JSON.stringify({ seq, sig: `${tail.length}${tail.slice(-300)}`, at: Date.now() - 41 * 60_000, nudged: true }),
+    JSON.stringify({ seq, sig: progressSig(tail, 'sha1', 100), at: Date.now() - 41 * 60_000, nudged: true }),
   )
   // the tail is still exactly the same, but the VM committed (head moved) and its live stream grew (bytes
   // moved) in between: the worker was never actually quiet
@@ -432,6 +435,23 @@ test('a committing AX worker is not called stalled even with an unchanging tail,
   const state = readFileSync(join(home, 'runs', 'r13', 'state.json'), 'utf8')
   expect(state).not.toContain('stalled: no output for') // and not failed as stalled
   rmSync(join(home, 'runs', 'r13'), { recursive: true })
+})
+
+test('a committing AX worker IS called stalled when its tail, head and bytes all truly stand still that long (control for the test above)', () => {
+  const seq = launched('r14')
+  const tail = 'same output, mid-turn: the brief is one long call'
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick']) // first sighting
+  writeFileSync(
+    join(home, 'runs', 'r14', 'progress.json'),
+    JSON.stringify({ seq, sig: progressSig(tail, 'sha1', 100), at: Date.now() - 41 * 60_000, nudged: true }),
+  )
+  // tail, head and bytes are all exactly the same as the backdated poll: truly no progress for 41 min
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick'])
+  const state = readFileSync(join(home, 'runs', 'r14', 'state.json'), 'utf8')
+  expect(state).toContain('stalled: no output for') // failed as stalled
+  rmSync(join(home, 'runs', 'r14'), { recursive: true })
 })
 
 test("a worker's address picks its runner: a bare pane id is herdr's, `<name>://` is that runner's", () => {
