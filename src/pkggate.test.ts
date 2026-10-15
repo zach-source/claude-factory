@@ -325,7 +325,7 @@ test('a module version is decided once, then cached: a second request for the sa
       const url = new URL(req.url)
       if (url.pathname === '/counted.example.com/mod/@v/v1.0.0.info') {
         hits++
-        return new Response(GO_INFO_OLD)
+        return new Response('{"Version":"v1.0.0","Time":"2025-06-05T15:08:00Z"}')
       }
       return new Response('not found', { status: 404 })
     },
@@ -338,6 +338,53 @@ test('a module version is decided once, then cached: a second request for the sa
     expect(hits).toBe(1)
   } finally {
     counting.stop(true)
+  }
+})
+
+test('a non-canonical query (a branch/tag, whose .info resolves to a moving version) is never cached under the query key (ei0.14)', async () => {
+  let answer = GO_INFO_OLD // Version v0.26.0, old enough
+  const moving = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/moving.example.com/mod/@v/master.info') return new Response(answer)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({ upstream: { go: moving.url.origin, npm: base(), pypi: base(), files: base() }, now: () => NOW })
+    const first = await g(new Request('http://gate/go/moving.example.com/mod/@v/master.info'))
+    expect(first.status).toBe(200)
+    expect(await first.text()).toBe(GO_INFO_OLD)
+    // upstream's `master` has since moved to a too-young version; a cached entry keyed on the literal
+    // query "master" would still serve the old, stale answer forever instead of refetching
+    answer = GO_INFO_YOUNG
+    const second = await g(new Request('http://gate/go/moving.example.com/mod/@v/master.info'))
+    expect(second.status).toBe(404) // now too young: proves it was refetched, not served from a stale cache
+  } finally {
+    moving.stop(true)
+  }
+})
+
+test('an unparseable .info is never cached, so a later, parseable answer is served (ei0.14)', async () => {
+  let answer = '{"Version":"v1.0.0"}' // no Time: unparseable per parseGoInfo
+  const flaky = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/flaky.example.com/mod/@v/v1.0.0.info') return new Response(answer)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const g = makeGate({ upstream: { go: flaky.url.origin, npm: base(), pypi: base(), files: base() }, now: () => NOW })
+    const first = await g(new Request('http://gate/go/flaky.example.com/mod/@v/v1.0.0.info'))
+    expect(first.status).toBe(404) // missing time: refused
+    answer = '{"Version":"v1.0.0","Time":"2025-06-05T15:08:00Z"}' // same version, now with a real, old-enough Time
+    const second = await g(new Request('http://gate/go/flaky.example.com/mod/@v/v1.0.0.info'))
+    expect(second.status).toBe(200) // proves the unparseable first answer was never cached
+  } finally {
+    flaky.stop(true)
   }
 })
 

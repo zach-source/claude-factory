@@ -221,9 +221,16 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
       return { ok: false as const }
     }
     const parsed = parseGoInfo(r.text)
-    cached = { info: r.text, version: parsed?.version, time: parsed?.time }
-    cfg.goInfoCache.set(key, cached)
-    evictOverCap(cfg.goInfoCache, cfg.goInfoCacheMaxEntries)
+    const entry = { info: r.text, version: parsed?.version, time: parsed?.time }
+    // only a canonical, immutable answer is cacheable: the query resolved to itself (an exact version's own
+    // .info never changes) and parsed. A branch/tag query (@v/master.info) can resolve to a different, moving
+    // version upstream, and an unparseable 200 is no decision at all -- caching either forever under the
+    // query's own key would pin a stale or broken answer in place (ei0.14)
+    if (parsed && parsed.version === version) {
+      cfg.goInfoCache.set(key, entry)
+      evictOverCap(cfg.goInfoCache, cfg.goInfoCacheMaxEntries)
+    }
+    cached = entry
   }
   const publishedMs = cached.time ? Date.parse(cached.time) : NaN
   const d = decide(mod, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist)
