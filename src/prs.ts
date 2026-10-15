@@ -309,7 +309,12 @@ export function needsView(
 }
 
 export type RunInfo = { run: string; ended: boolean; bead?: string; at: number }
-export type SearchState = { searchedAt?: number; searchedFinal?: boolean; searchErrorStreak?: number; searchErroredAt?: number }
+export type SearchState = {
+  searchedAt?: number
+  searchedFinal?: boolean
+  searchErrorStreak?: number
+  searchErroredAt?: number
+}
 const LIVE_SEARCH_MS = 10 * 60_000
 
 /** whether a run's bead is due another `gh search prs`: never without a bead; once more after a run ends
@@ -516,6 +521,39 @@ function mergeStatusOf(mr: Json, failing: boolean): string {
   return 'BLOCKED'
 }
 
+/** a label-filtered MR listing (`GET projects/:id/merge_requests?labels=`) in the shape `gh pr list --json
+ * number,url,headRefName,baseRefName,isCrossRepository,labels` gives labelPass */
+export function parseGitlabLabeled(out: string) {
+  const mrs = asJson(out)
+  if (!Array.isArray(mrs)) return []
+  return (mrs as Json[])
+    .filter(m => typeof m.iid === 'number' && str(m.web_url))
+    .map(m => ({
+      number: m.iid as number,
+      url: str(m.web_url),
+      headRefName: str(m.source_branch),
+      baseRefName: str(m.target_branch),
+      isCrossRepository: m.source_project_id !== m.target_project_id,
+      labels: (Array.isArray(m.labels) ? (m.labels as unknown[]).map(str) : []).map(name => ({ name })),
+    }))
+}
+
+/** the brief lines for a worker on a GitLab rig, whose station prompts say `gh pr`; none for any other forge */
+export const forgeNote = (gitlabHost?: string): string[] =>
+  gitlabHost
+    ? [
+        '',
+        '## Forge',
+        `This repo's forge is GitLab at ${gitlabHost}. Where your instructions say \`gh pr <x>\` or "pull request", use \`glab\` on merge requests (\`gh\` does not work here):`,
+        '- gh pr create -> glab mr create',
+        '- gh pr view <n> --comments -> glab mr view <n> --comments',
+        '- gh pr comment -> glab mr note <n> -m "<text>"',
+        '- gh pr review --comment -> glab mr note <n> -m "<text>"; --approve -> glab mr approve <n>',
+        '- gh pr checks -> glab ci status',
+        '- gh api repos/... -> glab api projects/:id/...',
+      ]
+    : []
+
 /** an MR (`GET projects/:id/merge_requests/:iid`) and its approvals (`.../approvals`, optional: a failed
  * or missing answer leaves the review decision blank rather than failing the view) mapped onto `Viewed` */
 export function parseGitlabView(mrOut: string, approvalsOut = ''): Viewed | null {
@@ -632,7 +670,7 @@ export type BuildResult = {
 const VIEW_TIMEOUT_MS = 30_000
 
 /** what `buildPrs` needs from a forge: the calls that list, search and view, and how to read each answer */
-type Forge = {
+export type Forge = {
   list(r: RunMeta): Promise<GhResult>
   parseList(out: string): { url: string; headRefName: string }[]
   search(r: RunMeta): Promise<GhResult>
@@ -669,7 +707,7 @@ const githubForge = (gh: Gh): Forge => ({
 })
 
 /** `glab api` rather than `glab mr`: one REST shape for every host, and the approvals only the API has */
-const gitlabForge = (glab: Gh): Forge => {
+export const gitlabForge = (glab: Gh): Forge => {
   const api = (host: string | undefined, path: string, cwd: string) =>
     glab(['api', ...(host ? ['--hostname', host] : []), path], timed(cwd))
   const project = (path: string) => `projects/${encodeURIComponent(path)}/merge_requests`
