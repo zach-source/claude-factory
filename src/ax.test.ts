@@ -289,13 +289,14 @@ test('poll learns the session as soon as the init event streams, not only once a
   const repo = join(dir, 'repo-midturn')
   mkdirSync(own, { recursive: true })
   mkdirSync(repo, { recursive: true })
-  // prints its init event, then sits for a second (a stand-in for a long agentic turn) before finishing
+  // prints its init event, then sits for a few seconds (a stand-in for a long agentic turn) before finishing;
+  // long enough that the poll loop below has margin against a loaded box's scheduling jitter
   const claude = join(dir, 'claude-midturn')
   writeFileSync(
     claude,
     `#!/bin/sh
 echo '{"type":"system","subtype":"init","session_id":"mid-1"}'
-sleep 1
+sleep 3
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
 echo '{"type":"result","is_error":false,"result":"done"}'
 `,
@@ -313,10 +314,16 @@ echo '{"type":"result","is_error":false,"result":"done"}'
   delete process.env.FACTORY_CA
   try {
     const p = worker.serve('m1', { once: true })
-    await Bun.sleep(400) // well after the init event streams, well before the 1s sleep ends
-    const mid = worker.poll(0)
+    // poll until the session shows (the init event streamed) or give up after well past the fake's own
+    // schedule: a loop, not a single fixed sleep, so a loaded box's scheduling jitter cannot flake this
+    let mid = worker.poll(0)
+    const deadline = Date.now() + 2500
+    while (!mid.session && Date.now() < deadline) {
+      await Bun.sleep(50)
+      mid = worker.poll(0)
+    }
     expect(mid.session).toBe('mid-1') // learned while the turn is still running, not after it exits
-    expect(mid.status).toBe('working')
+    expect(mid.status).toBe('working') // still mid-turn: the fake is still in its 3s sleep
     await p
     expect(worker.poll(0).status).toBe('idle')
   } finally {
