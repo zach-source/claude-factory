@@ -2288,7 +2288,29 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
 function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk = false } = {}) {
   if (!hasBeads(repo)) return { goal }
   const b = beads(repo, 'factory')
-  const named = /^[a-z][\w-]*-[\w.]+$/i.test(goal.trim()) ? b.show(goal.trim()) : null
+  const trimmed = goal.trim()
+  const looksLikeId = /^[a-z][\w-]*-[\w.]+$/i.test(trimmed)
+  let named: Bead | null = null
+  if (looksLikeId) {
+    try {
+      named = b.lookup(trimmed)
+    } catch (err) {
+      fail(`could not look up bead ${trimmed} in ${repo}: ${(err as Error).message}; nothing was created`)
+    }
+    // not found: a goal shaped like this rig's own bead ids must never become a new bead titled with the
+    // id text itself (claude-factory-5q3) -- a lookup failure above already failed the start; this is a
+    // genuine "not found", so only refuse when the id would actually belong to this rig
+    if (!named) {
+      let prefix = ''
+      try {
+        prefix = b.prefixStrict()
+      } catch (err) {
+        fail(`could not look up bead ${trimmed} in ${repo}: ${(err as Error).message}; nothing was created`)
+      }
+      if (trimmed.toLowerCase().startsWith(`${prefix.toLowerCase()}-`))
+        fail(`no bead ${trimmed} in ${repo}; nothing was created`)
+    }
+  }
   if (named) {
     if (isOwned(named) && !isOwnerOk)
       fail(
