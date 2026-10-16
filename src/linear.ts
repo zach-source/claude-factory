@@ -61,21 +61,23 @@ export type RoutableRig = { name: string; linear?: LinearRouting }
  * Routes one Linear issue to at most one opted-in rig (claude-factory-b6c.18). `bd` has no such
  * filter itself, so the loop decides this in its own code, before it asks `bd` to pull anything.
  *
- * Rule 1 (always on, no config): a project name that starts with `[<rig-name>]` routes to the
- * opted-in rig of that exact name. No such rig: the issue falls through to rule 2.
+ * Rule 1 (always on, no config): a project name shaped `[<name>] ...` routes to the opted-in rig
+ * named `<name>`. This rule is final (claude-factory-b6c.23): a bracket that names no opted-in rig
+ * (for example a project of another team, or a typo) routes to no rig. It never falls through to
+ * rule 2, even when some opted-in rig's own `projects` or `labels` list would otherwise match. The
+ * bracket is the person's own routing choice; a rule-2 match on the same issue is not.
  *
- * Rule 2: a project name, or a label, that is in some opted-in rig's own `projects` or `labels`
- * list (`rig add --linear-projects`/`--linear-labels`) routes to that rig. The first opted-in rig,
- * in `rigs` order, that matches wins.
+ * Rule 2 (only when the project name holds no `[...]` prefix at all): a project name, or a label,
+ * that is in some opted-in rig's own `projects` or `labels` list (`rig add
+ * --linear-projects`/`--linear-labels`) routes to that rig. The first opted-in rig, in `rigs`
+ * order, that matches wins.
  *
  * No rule matches: the function returns `undefined`. The issue lands in no rig.
  */
 export function routeLinearIssue(issue: LinearIssue, rigs: RoutableRig[]): string | undefined {
   const opted = rigs.filter((r): r is RoutableRig & { linear: LinearRouting } => !!r.linear?.team?.length)
-  if (issue.project) {
-    const byName = opted.find(r => issue.project!.startsWith(`[${r.name}]`))
-    if (byName) return byName.name
-  }
+  const bracket = issue.project?.match(/^\[([^[\]]+)\]/)
+  if (bracket) return opted.find(r => r.name === bracket[1])?.name
   for (const r of opted) {
     if (issue.project && r.linear.projects?.includes(issue.project)) return r.name
     if (issue.labels.some(l => r.linear.labels?.includes(l))) return r.name
@@ -154,8 +156,17 @@ const connectHeaders = (creds: ConnectCreds): Record<string, string> => ({
   'CF-Access-Client-Secret': creds.cfSecret,
 })
 
+/** The limit on every Linear-related fetch: the secret broker, and the Linear API itself
+ * (claude-factory-b6c.22). `linearPass` holds `beads.lock` while it awaits one rig's pull, so a
+ * broker or Linear endpoint that accepts a connection and never answers would stall every rig's
+ * dispatch and label pass with no bound. */
+const FETCH_TIMEOUT_MS = 30_000
+
 async function connectGet(creds: ConnectCreds, path: string): Promise<unknown> {
-  const res = await fetch(`${creds.host}${path}`, { headers: connectHeaders(creds) })
+  const res = await fetch(`${creds.host}${path}`, {
+    headers: connectHeaders(creds),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  })
   if (!res.ok) throw new Error(`secret broker request failed: ${res.status}`)
   return res.json()
 }
@@ -205,48 +216,72 @@ export async function resolveLinearApiKey(creds: ConnectCreds, cache: ConnectCac
   return field.value
 }
 
-const LINEAR_ENV_KEYS = ['LINEAR_API_KEY', 'LINEAR_OAUTH_CLIENT_ID', 'LINEAR_OAUTH_CLIENT_SECRET']
+const LINEAR_ENV_KEYS = [
+  'LINEAR_API_KEY',
+  'LINEAR_OAUTH_CLIENT_ID',
+  'LINEAR_OAUTH_CLIENT_SECRET',
+  'LINEAR_TEAM_ID',
+  'LINEAR_TEAM_IDS',
+]
 
 /**
- * This function makes the environment for the command `bd linear sync`.
- * It puts the resolved key only in one environment variable, `LINEAR_API_KEY`.
- * It does not put the key on disk, in the command-line arguments, or in a bead.
+ * This function makes the environment for the command `bd linear pull`.
+ * It puts the resolved key in one environment variable, `LINEAR_API_KEY`.
+ * It puts the rig's team ids in `LINEAR_TEAM_IDS`, comma-joined.
+ * `bd linear pull` needs a configured team, even to pull named refs: with no `bd config
+ * linear.team_id(s)` and no team env var, it fails `no Linear team ID configured`
+ * (claude-factory-b6c.20).
+ * It does not put the key or the team ids on disk, in the command-line arguments, or in a bead.
  *
- * This environment can still carry `LINEAR_API_KEY`, `LINEAR_OAUTH_CLIENT_ID`, or
- * `LINEAR_OAUTH_CLIENT_SECRET` from an earlier operation.
- * This function removes each of these three variables first.
+ * This environment can still carry `LINEAR_API_KEY`, `LINEAR_OAUTH_CLIENT_ID`,
+ * `LINEAR_OAUTH_CLIENT_SECRET`, `LINEAR_TEAM_ID`, or `LINEAR_TEAM_IDS` from an earlier operation.
+ * This function removes each of these five variables first.
  * This stops a stale OAuth pair from outranking the key this function sets: `bd` prefers OAuth over
- * `LINEAR_API_KEY`.
+ * `LINEAR_API_KEY`. It also stops a stale team id from outranking the rig's own team ids.
  */
 export function syncEnv(
   apiKey: string,
+  teams: string[],
   base: NodeJS.ProcessEnv = process.env,
 ): Record<string, string | undefined> {
   const stripped = Object.fromEntries(Object.entries(base).filter(([k]) => !LINEAR_ENV_KEYS.includes(k)))
-  return { ...stripped, LINEAR_API_KEY: apiKey }
+  return { ...stripped, LINEAR_API_KEY: apiKey, LINEAR_TEAM_IDS: teams.join(',') }
 }
 
-/** This is the argv for `bd linear pull <ref...>`. It names the exact issues to pull, by their
- * Linear URL (`routeLinearIssue`'s caller passes only the refs it has routed to this rig). It must
- * not include `--push` or the key: `bd linear pull` has no such flag. */
+/** This is the argv for `bd linear pull <ref...>`.
+ * Each ref is a Linear identifier, for example `STI-123`, never the issue's URL.
+ * `bd` matches a ref against `issue.Identifier` exactly, so a URL never matches (claude-factory-b6c.19).
+ * `routeLinearIssue`'s caller passes only the refs it has routed to this rig.
+ * This argv must not include `--push` or the key: `bd linear pull` has no such flag. */
 export const pullArgs = (refs: string[]): string[] => ['linear', 'pull', ...refs, '--json']
 
 export type SyncOutcome = { pulled: number; created: number; updated: number } | { error: string }
 
 /**
- * `bd linear pull <ref...> --json` (bd 1.3.0) returns one of two shapes.
+ * `bd linear pull <ref...> --json` (bd 1.3.0) returns one of three shapes.
  *
- * The first shape is a pull that ran. It has a `stats` object with the fields `pulled`,
- * `created`, `updated`, and more.
+ * The first shape is a pull that ran clean. It has a `stats` object with the fields `pulled`,
+ * `created`, `updated`, `skipped`, `errors`, and more. `skipped` and `errors` are both 0.
  *
- * The second shape is an engine error. It has an `error` field and a nonzero exit code.
+ * The second shape is a pull that ran, but could not pull every ref. `bd` counts a ref it could
+ * not find (for example, a URL instead of an identifier) in `stats.skipped`, and a ref whose fetch
+ * failed in `stats.errors`. It prints a `Warning: ...` line on stderr for each one, but still exits
+ * 0. This function treats `skipped > 0` or `errors > 0` as a failure too (claude-factory-b6c.21): a
+ * silent `pulled 0` would hide a routing or auth bug that imports nothing.
  *
- * A nonzero exit code that has neither shape is also an error. `stderr` is optional: when stdout
- * has no usable detail, the error message falls back to stderr's first line, so a crash with empty
- * stdout still names what failed.
+ * The third shape is an engine error. It has an `error` field and a nonzero exit code.
+ *
+ * A nonzero exit code that has none of these shapes is also an error. `stderr` is optional: when
+ * stdout has no usable detail, the error message falls back to stderr's first line, so a crash with
+ * empty stdout still names what failed.
  */
 export function parseSync(stdout: string, exitCode: number, stderr = ''): SyncOutcome {
   const errDetail = () => stderr.trim().split('\n')[0]
+  const warnLine = () =>
+    stderr
+      .split('\n')
+      .find(l => l.trim().startsWith('Warning'))
+      ?.trim()
   let json: unknown
   try {
     json = JSON.parse(stdout)
@@ -267,6 +302,10 @@ export function parseSync(stdout: string, exitCode: number, stderr = ''): SyncOu
         : `bd linear pull exited ${exitCode}`,
     }
   const s = (j?.stats as Record<string, number>) ?? {}
+  const skipped = s.skipped ?? 0
+  const errors = s.errors ?? 0
+  if (skipped > 0 || errors > 0)
+    return { error: warnLine() ?? `bd linear pull: skipped ${skipped}, errors ${errors}` }
   return { pulled: s.pulled ?? 0, created: s.created ?? 0, updated: s.updated ?? 0 }
 }
 
@@ -275,44 +314,60 @@ const LINEAR_API_URL = () => process.env.LINEAR_API_URL || 'https://api.linear.a
 const ISSUES_QUERY = `
   query Issues($filter: IssueFilter!, $first: Int!, $after: String) {
     issues(first: $first, after: $after, filter: $filter) {
-      nodes { url project { name } labels { nodes { name } } }
+      nodes { identifier updatedAt project { name } labels { nodes { name } } }
       pageInfo { hasNextPage endCursor }
     }
   }
 `
 
-/** One Linear issue, as the loop lists it: its URL (the exact ref `bd linear pull` takes), its
- * project name, if any, and its label names. */
-export type LinearIssueRef = LinearIssue & { ref: string }
+/** One Linear issue, as the loop lists it: its identifier (for example `STI-123`, the exact ref
+ * `bd linear pull` takes: `bd` matches a pull ref against `issue.Identifier` exactly, so a URL or
+ * any other form never matches, claude-factory-b6c.19), its project name, if any, its label
+ * names, and its `updatedAt` (an ISO-8601 string, used to pull only changed issues, claude-factory-b6c.24). */
+export type LinearIssueRef = LinearIssue & { ref: string; updatedAt: string }
 
 type IssuesPage = {
   data?: {
     issues?: {
-      nodes: { url: string; project?: { name: string } | null; labels?: { nodes: { name: string }[] } }[]
+      nodes: {
+        identifier: string
+        updatedAt: string
+        project?: { name: string } | null
+        labels?: { nodes: { name: string }[] }
+      }[]
       pageInfo: { hasNextPage: boolean; endCursor: string }
     }
   }
   errors?: { message: string }[]
 }
 
+/** What `fetchLinearIssues` found: the issues themselves, and whether it stopped at the 50-page
+ * cap with more pages still unread (claude-factory-b6c.24). A caller must not treat `truncated:
+ * true` as a complete listing: the unrouted count, and the incremental `updatedAt` cutoff, both
+ * undercount when some of a team's issues never reached this list. */
+export type LinearIssuesPage = { issues: LinearIssueRef[]; truncated: boolean }
+
 /**
- * Lists every issue of the given Linear team(s): its URL, its project name, and its label names.
- * This is a read: it never creates, updates, or closes a Linear issue.
+ * Lists every issue of the given Linear team(s): its identifier, its `updatedAt`, its project
+ * name, if any, and its label names. This is a read: it never creates, updates, or closes a
+ * Linear issue.
  *
  * `bd` has no project or label filter on a pull (claude-factory-b6c.18), so the loop lists issues
  * itself, routes each one in its own code (`routeLinearIssue`), then asks `bd` to pull only the
  * routed refs. `endpoint` defaults to Linear's own API; a test overrides it with a fake server.
  *
  * This stops after 50 pages (5,000 issues at 100 per page), a safety bound against a malformed
- * response that never reports its last page.
+ * response that never reports its last page. When the team genuinely has more, the result's
+ * `truncated` is `true` instead of a silent drop (claude-factory-b6c.24).
  */
 export async function fetchLinearIssues(
   apiKey: string,
   teamIds: string[],
   endpoint: string = LINEAR_API_URL(),
-): Promise<LinearIssueRef[]> {
+): Promise<LinearIssuesPage> {
   const issues: LinearIssueRef[] = []
   let after: string | undefined
+  let truncated = false
   for (let page = 0; page < 50; page++) {
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -321,6 +376,7 @@ export async function fetchLinearIssues(
         query: ISSUES_QUERY,
         variables: { filter: { team: { id: { in: teamIds } } }, first: 100, after },
       }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
     if (!res.ok) throw new Error(`Linear API request failed: ${res.status}`)
     const json = (await res.json()) as IssuesPage
@@ -328,11 +384,17 @@ export async function fetchLinearIssues(
     const page_ = json.data?.issues
     if (!page_) throw new Error('Linear API: no issues in response')
     for (const n of page_.nodes)
-      issues.push({ ref: n.url, project: n.project?.name, labels: n.labels?.nodes.map(l => l.name) ?? [] })
+      issues.push({
+        ref: n.identifier,
+        updatedAt: n.updatedAt,
+        project: n.project?.name,
+        labels: n.labels?.nodes.map(l => l.name) ?? [],
+      })
     if (!page_.pageInfo.hasNextPage) break
     after = page_.pageInfo.endCursor
+    if (page === 49) truncated = true
   }
-  return issues
+  return { issues, truncated }
 }
 
 const TOKEN_SHAPE = /lin_(api|oauth)_\S+/g

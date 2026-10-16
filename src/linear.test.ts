@@ -33,17 +33,12 @@ test('parseLinearList splits a comma list and trims each name, and refuses an em
   expect(() => parseLinearList(' , ')).toThrow()
 })
 
-test('pullArgs is "linear pull <ref...> --json", never --push or the key', () => {
-  const args = pullArgs(['https://linear.app/x/issue/A-1', 'https://linear.app/x/issue/A-2'])
-  expect(args).toEqual([
-    'linear',
-    'pull',
-    'https://linear.app/x/issue/A-1',
-    'https://linear.app/x/issue/A-2',
-    '--json',
-  ])
+test('pullArgs is "linear pull <ref...> --json", by identifier, never --push, a URL, or the key', () => {
+  const args = pullArgs(['STI-1', 'STI-2'])
+  expect(args).toEqual(['linear', 'pull', 'STI-1', 'STI-2', '--json'])
   expect(args).not.toContain('--push')
   expect(args.join(' ')).not.toMatch(/lin_/)
+  expect(args.join(' ')).not.toContain('://')
 })
 
 test('routeLinearIssue rule 1: a project named "[<rig-name>] ..." routes to that rig, with no other config', () => {
@@ -78,6 +73,13 @@ test('routeLinearIssue: the first opted-in rig, in order, wins a rule-2 tie', ()
 test('routeLinearIssue returns undefined with no match, and ignores a rig not opted in', () => {
   const rigs = [{ name: 'acme', linear: { team: ['t'], projects: ['Infra Catalog'] } }, { name: 'other' }]
   expect(routeLinearIssue({ project: 'Nowhere', labels: [] }, rigs)).toBeUndefined()
+})
+
+test('routeLinearIssue: a "[x] ..." project with no opted-in rig named x is final, never falls through to rule 2 (claude-factory-b6c.23)', () => {
+  const rigs = [{ name: 'acme', linear: { team: ['t'], labels: ['Area/auth'] } }]
+  // the bracket names no opted-in rig ("other"), and the issue also carries a label that rule 2
+  // would otherwise route to acme. Rule 1 must still win, as "no rig": the issue stays unrouted.
+  expect(routeLinearIssue({ project: '[other] auth work', labels: ['Area/auth'] }, rigs)).toBeUndefined()
 })
 
 // A fake secret-broker server.
@@ -217,23 +219,28 @@ test('resolveLinearApiKey fails with a generic message, naming neither the vault
   }
 })
 
-test('syncEnv sets only LINEAR_API_KEY, dropping every inherited LINEAR_* first', () => {
+test('syncEnv sets LINEAR_API_KEY and LINEAR_TEAM_IDS, dropping every inherited LINEAR_* first (claude-factory-b6c.20)', () => {
   const base = {
     LINEAR_API_KEY: 'stale',
     LINEAR_OAUTH_CLIENT_ID: 'stale-id',
     LINEAR_OAUTH_CLIENT_SECRET: 'stale-secret',
+    LINEAR_TEAM_ID: 'stale-team',
+    LINEAR_TEAM_IDS: 'stale-team-1,stale-team-2',
     PATH: process.env.PATH,
   }
-  const env = syncEnv('test-key-123', base)
+  const env = syncEnv('test-key-123', ['team-1', 'team-2'], base)
   expect(env.LINEAR_API_KEY).toBe('test-key-123')
+  expect(env.LINEAR_TEAM_IDS).toBe('team-1,team-2')
   expect(env.LINEAR_OAUTH_CLIENT_ID).toBeUndefined()
   expect(env.LINEAR_OAUTH_CLIENT_SECRET).toBeUndefined()
+  expect(env.LINEAR_TEAM_ID).toBeUndefined()
   expect(env.PATH).toBe(process.env.PATH)
 })
 
 // A fake Linear GraphQL endpoint, in-process (safe here: nothing in this test uses Bun.spawnSync,
-// so this process keeps serving its own event loop between requests).
-function fakeLinearApi(pages: { ref: string; project?: string; labels: string[] }[][]) {
+// so this process keeps serving its own event loop between requests). `pages` with more entries
+// than `fetchLinearIssues`'s own 50-page cap lets a test force a truncated listing.
+function fakeLinearApi(pages: { ref: string; updatedAt?: string; project?: string; labels: string[] }[][]) {
   const requests: { authorization: string | null; variables: Record<string, unknown> }[] = []
   let call = 0
   const server = Bun.serve({
@@ -247,7 +254,8 @@ function fakeLinearApi(pages: { ref: string; project?: string; labels: string[] 
         data: {
           issues: {
             nodes: page.map(i => ({
-              url: i.ref,
+              identifier: i.ref,
+              updatedAt: i.updatedAt ?? '2026-01-01T00:00:00.000Z',
               project: i.project ? { name: i.project } : null,
               labels: { nodes: i.labels.map(name => ({ name })) },
             })),
@@ -262,19 +270,32 @@ function fakeLinearApi(pages: { ref: string; project?: string; labels: string[] 
 
 test('fetchLinearIssues sends the raw key as the Authorization header (no Bearer prefix) and follows pageInfo across pages', async () => {
   const fake = fakeLinearApi([
-    [{ ref: 'https://linear.app/x/issue/A-1', project: '[acme] p', labels: [] }],
-    [{ ref: 'https://linear.app/x/issue/A-2', labels: ['Area/x'] }],
+    [{ ref: 'A-1', updatedAt: '2026-01-01T00:00:00.000Z', project: '[acme] p', labels: [] }],
+    [{ ref: 'A-2', updatedAt: '2026-01-02T00:00:00.000Z', labels: ['Area/x'] }],
   ])
   try {
-    const issues = await fetchLinearIssues('test-key', ['team-1'], fake.url)
+    const { issues, truncated } = await fetchLinearIssues('test-key', ['team-1'], fake.url)
     expect(issues).toEqual([
-      { ref: 'https://linear.app/x/issue/A-1', project: '[acme] p', labels: [] },
-      { ref: 'https://linear.app/x/issue/A-2', project: undefined, labels: ['Area/x'] },
+      { ref: 'A-1', updatedAt: '2026-01-01T00:00:00.000Z', project: '[acme] p', labels: [] },
+      { ref: 'A-2', updatedAt: '2026-01-02T00:00:00.000Z', project: undefined, labels: ['Area/x'] },
     ])
+    expect(truncated).toBe(false)
     expect(fake.requests).toHaveLength(2)
     expect(fake.requests[0]!.authorization).toBe('test-key')
     expect(fake.requests[0]!.authorization).not.toContain('Bearer')
     expect((fake.requests[1]!.variables as { after?: string }).after).toBe('c1')
+  } finally {
+    fake.stop()
+  }
+})
+
+test('fetchLinearIssues reports truncated when a team has more than 50 pages (claude-factory-b6c.24)', async () => {
+  const pages = Array.from({ length: 51 }, (_, i) => [{ ref: `A-${i}`, labels: [] }])
+  const fake = fakeLinearApi(pages)
+  try {
+    const { issues, truncated } = await fetchLinearIssues('test-key', ['team-1'], fake.url)
+    expect(truncated).toBe(true)
+    expect(issues).toHaveLength(50) // the cap: it reads exactly 50 pages, never the 51st
   } finally {
     fake.stop()
   }
@@ -290,6 +311,22 @@ test('parseSync reads a real pull and an engine error, the two shapes "bd linear
   expect(parseSync('{"error":"dial tcp 127.0.0.1:3308: i/o timeout"}', 1)).toEqual({
     error: 'dial tcp 127.0.0.1:3308: i/o timeout',
   })
+})
+
+test('parseSync treats a pull with skipped or errored refs as a failure, even on exit 0 (claude-factory-b6c.21)', () => {
+  expect(
+    parseSync(
+      '{"stats":{"pulled":0,"pushed":0,"created":0,"updated":0,"skipped":2,"errors":0,"conflicts":0},"warnings":["issue not found"],"is_fresh":true,"skipped":false}',
+      0,
+      'Warning: issue not found: X-9\nWarning: issue not found: X-10',
+    ),
+  ).toEqual({ error: 'Warning: issue not found: X-9' })
+  expect(
+    parseSync(
+      '{"stats":{"pulled":1,"pushed":0,"created":1,"updated":0,"skipped":0,"errors":1,"conflicts":0},"warnings":[],"is_fresh":true,"skipped":false}',
+      0,
+    ),
+  ).toEqual({ error: 'bd linear pull: skipped 0, errors 1' }) // no stderr Warning line: falls back to a count
 })
 
 test('parseSync treats a nonzero exit with no parseable error field as an error too', () => {
@@ -382,10 +419,12 @@ async function fakeConnectProcess(opts: { vaultTitle?: string; key?: string } = 
 
 /**
  * A fake Linear GraphQL endpoint, run as its own process via `bun -e`. See the note above.
- * It re-reads `issuesFile` (JSON, an array of `{ref, project?, labels}`) on every request, so a
- * test can change the fixture between `factory(...)` calls. It always answers one page
- * (`hasNextPage: false`) and ignores the query's team filter: `routeLinearIssue` is already unit
- * tested above, so these end-to-end tests only need to exercise the wiring.
+ * It re-reads `issuesFile` (JSON, an array of `{ref, updatedAt?, project?, labels}`) on every
+ * request, so a test can change the fixture between `factory(...)` calls. It always answers one
+ * page (`hasNextPage: false`) and ignores the query's team filter: `routeLinearIssue` is already
+ * unit tested above, so these end-to-end tests only need to exercise the wiring. `updatedAt`
+ * defaults to a fixed past date, old enough that the incremental cutoff (claude-factory-b6c.24)
+ * excludes it once a rig has one good pull on record; a test that needs a fresh issue sets its own.
  */
 async function fakeLinearProcess(issuesFile: string) {
   const script = `
@@ -399,7 +438,8 @@ async function fakeLinearProcess(issuesFile: string) {
           data: {
             issues: {
               nodes: issues.map(i => ({
-                url: i.ref,
+                identifier: i.ref,
+                updatedAt: i.updatedAt ?? '2026-01-01T00:00:00.000Z',
                 project: i.project ? { name: i.project } : null,
                 labels: { nodes: (i.labels ?? []).map(name => ({ name })) },
               })),
@@ -436,7 +476,7 @@ const repoB = join(cdir, 'repo-b')
 // the default fixture (one issue, project "[a]"): rule 1 routes it to a rig named "a" with no
 // other config, so every pre-existing test below keeps working with only its `writeRigs` call
 // changed from `linear: [TEAM]` to `linear: { team: [TEAM] }`.
-const DEFAULT_REF = 'https://linear.app/x/issue/A-1'
+const DEFAULT_REF = 'A-1'
 const defaultIssues = () => [{ ref: DEFAULT_REF, project: '[a]', labels: [] }]
 
 const connect = await fakeConnectProcess({ key: 'test-key-123' })
@@ -475,7 +515,14 @@ const noConnectEnv = { OP_CONNECT_TOKEN: '', CF_ACCESS_CLIENT_ID: '', CF_ACCESS_
 
 /**
  * This is the fake bd. It answers each call this way:
- * - `linear pull`: from $mode (pulled, or error).
+ * - `linear pull`, with no `LINEAR_TEAM_IDS` (and no `LINEAR_TEAM_ID`) set: exits 1, "no Linear
+ *   team ID configured" (the real bd 1.3.0 message, claude-factory-b6c.20).
+ * - `linear pull <ref...>`, with the team env set: a ref that is not shaped `<KEY>-<n>` (for
+ *   example a URL) counts in `stats.skipped`, exits 0, with a `Warning: issue not found` line on
+ *   stderr for each one (claude-factory-b6c.19, claude-factory-b6c.21). With every ref shaped
+ *   `<KEY>-<n>`, it answers from $mode instead: `pulled` (a clean pull), `skipped` (every ref
+ *   valid, but bd still counts 2 as skipped, exit 0: a partial failure with no bad ref), or
+ *   `error` (an engine error, exit 1).
  * - `list`, turn 1: `[{"id":"acme-old"}]`. No bead carries the label yet.
  * - `list`, turn 2 on: adds `acme-new`. The strip step then has one new id to act on.
  * - `list`, a turn named in $listFailTurns (comma-joined): exits 1, names the turn in stderr.
@@ -483,19 +530,43 @@ const noConnectEnv = { OP_CONNECT_TOKEN: '', CF_ACCESS_CLIENT_ID: '', CF_ACCESS_
  * - `ready`: `[{"id":"acme-new"}]` when $readyFlag exists (acme-new really still carries the label,
  *   as a pull would leave it), else `[]`. Used only by dispatch() tests (claude-factory-b6c.16).
  * - `children`: `[]`, always (no bead here has one).
- * Every call logs one line: its argv, its cwd, and the three LINEAR_* env vars it saw (empty when unset).
+ * Every call logs one line: its argv, its cwd, and the LINEAR_* env vars it saw (empty when unset).
  */
 function fakeBd() {
   mkdirSync(bin, { recursive: true })
   const script = [
     '#!/bin/sh',
-    `echo "ARGV|$*|CWD|$(pwd)|KEY|${'$'}{LINEAR_API_KEY}|OAUTHID|${'$'}{LINEAR_OAUTH_CLIENT_ID}|OAUTHSECRET|${'$'}{LINEAR_OAUTH_CLIENT_SECRET}" >> ${calls}`,
+    `echo "ARGV|$*|CWD|$(pwd)|KEY|${'$'}{LINEAR_API_KEY}|OAUTHID|${'$'}{LINEAR_OAUTH_CLIENT_ID}|OAUTHSECRET|${'$'}{LINEAR_OAUTH_CLIENT_SECRET}|TEAMIDS|${'$'}{LINEAR_TEAM_IDS}" >> ${calls}`,
     'case "$1" in',
     '  linear)',
-    `    m=$(cat ${mode} 2>/dev/null || echo pulled)`,
-    '    case "$m" in',
-    '      pulled) printf \'%s\' \'{"stats":{"pulled":2,"pushed":0,"created":1,"updated":1,"skipped":0,"errors":0,"conflicts":0},"warnings":[],"is_fresh":true,"skipped":false}\';;',
-    '      error) echo "dial tcp 127.0.0.1:3308: i/o timeout, key test-key-123" >&2; printf \'%s\' \'{"error":"dial tcp 127.0.0.1:3308: i/o timeout, key test-key-123"}\'; exit 1;;',
+    '    case "$2" in',
+    '      pull)',
+    `        if [ -z "${'$'}{LINEAR_TEAM_IDS}${'$'}{LINEAR_TEAM_ID}" ]; then`,
+    '          echo "no Linear team ID configured" >&2',
+    '          printf \'%s\' \'{"error":"no Linear team ID configured"}\'',
+    '          exit 1',
+    '        fi',
+    '        shift 2',
+    '        bad=0',
+    '        for a in "$@"; do',
+    '          [ "$a" = "--json" ] && continue',
+    '          case "$a" in',
+    '            */*) bad=$((bad + 1));;',
+    '            *) echo "$a" | grep -Eq \'^[A-Za-z0-9]+-[0-9]+$\' || bad=$((bad + 1));;',
+    '          esac',
+    '        done',
+    '        if [ "$bad" -gt 0 ]; then',
+    '          echo "Warning: issue not found" >&2',
+    '          printf \'{"stats":{"pulled":0,"pushed":0,"created":0,"updated":0,"skipped":%s,"errors":0,"conflicts":0},"warnings":["issue not found"],"is_fresh":true,"skipped":false}\' "$bad"',
+    '          exit 0',
+    '        fi',
+    `        m=$(cat ${mode} 2>/dev/null || echo pulled)`,
+    '        case "$m" in',
+    '          pulled) printf \'%s\' \'{"stats":{"pulled":2,"pushed":0,"created":1,"updated":1,"skipped":0,"errors":0,"conflicts":0},"warnings":[],"is_fresh":true,"skipped":false}\';;',
+    '          skipped) echo "Warning: issue not found: X-9" >&2; printf \'%s\' \'{"stats":{"pulled":0,"pushed":0,"created":0,"updated":0,"skipped":2,"errors":0,"conflicts":0},"warnings":["issue not found"],"is_fresh":true,"skipped":false}\';;',
+    '          error) echo "dial tcp 127.0.0.1:3308: i/o timeout, key test-key-123" >&2; printf \'%s\' \'{"error":"dial tcp 127.0.0.1:3308: i/o timeout, key test-key-123"}\'; exit 1;;',
+    '        esac;;',
+    '      *) exit 0;;',
     '    esac;;',
     '  list)',
     `    n=$(cat ${listTurn} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${listTurn}`,
@@ -542,10 +613,11 @@ const callLines = () =>
 const argvOf = (line: string) => line.split('|')[1]!
 const cwdOf = (line: string) => line.split('|')[3]!
 const keyOf = (line: string) => line.split('|')[5]!
+const teamIdsOf = (line: string) => line.split('|')[11]!
 
 beforeEach(reset)
 
-test("linearPass pulls each opted-in rig's routed issues only, never --push, cwd the rig repo", () => {
+test("linearPass pulls each opted-in rig's routed issues only, by identifier, never --push, cwd the rig repo", () => {
   writeRigs([
     { name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } },
     { name: 'b', repo: repoB, factory: 'lifecycle' }, // not opted in: no Linear call at all
@@ -556,8 +628,18 @@ test("linearPass pulls each opted-in rig's routed issues only, never --push, cwd
   expect(pullCalls).toHaveLength(1)
   expect(argvOf(pullCalls[0]!)).toBe(`linear pull ${DEFAULT_REF} --json`)
   expect(argvOf(pullCalls[0]!)).not.toContain('--push')
+  expect(argvOf(pullCalls[0]!)).not.toContain('://') // a Linear identifier, never a URL (claude-factory-b6c.19)
   expect(cwdOf(pullCalls[0]!)).toEndWith('/repo-a')
   expect(callLines().some(l => cwdOf(l).endsWith('/repo-b'))).toBe(false)
+})
+
+test("bd gets the rig's own team ids by LINEAR_TEAM_IDS, dropping an inherited stale value (claude-factory-b6c.20)", () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
+  const out = factory(['linear'], { LINEAR_TEAM_IDS: 'stale-team-id' })
+  expect(out.code).toBe(0)
+  const pullCall = callLines().find(l => argvOf(l).startsWith('linear pull'))!
+  expect(teamIdsOf(pullCall)).toBe(TEAM)
+  expect(teamIdsOf(pullCall)).not.toContain('stale-team-id')
 })
 
 test('the key reaches bd only by env, on the pull call; list/label calls carry no key at all', () => {
@@ -661,10 +743,7 @@ test('a post-pull listing that still fails after one retry keeps the pre-pull be
 
 test('a rig with no routed issues pulls nothing, calls bd not at all, and records the unrouted count', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
-  writeFileSync(
-    linearIssuesFile,
-    JSON.stringify([{ ref: 'https://linear.app/x/issue/A-9', project: '[nowhere]', labels: [] }]),
-  )
+  writeFileSync(linearIssuesFile, JSON.stringify([{ ref: 'A-9', project: '[nowhere]', labels: [] }]))
   factory(['linear'])
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
   expect(state.a.pulled).toBe(0)
@@ -686,10 +765,10 @@ test('the loop routes each issue to at most one opted-in rig, by bracket prefix 
   writeFileSync(
     linearIssuesFile,
     JSON.stringify([
-      { ref: 'https://linear.app/x/issue/A-1', project: '[acme] bracket rule', labels: [] }, // rule 1 -> acme
-      { ref: 'https://linear.app/x/issue/A-2', project: 'Infra Catalog', labels: [] }, // rule 2 project -> acme
-      { ref: 'https://linear.app/x/issue/A-3', labels: ['Area/widget'] }, // rule 2 label -> widget
-      { ref: 'https://linear.app/x/issue/A-4', project: 'Nowhere', labels: [] }, // unrouted
+      { ref: 'A-1', project: '[acme] bracket rule', labels: [] }, // rule 1 -> acme
+      { ref: 'A-2', project: 'Infra Catalog', labels: [] }, // rule 2 project -> acme
+      { ref: 'A-3', labels: ['Area/widget'] }, // rule 2 label -> widget
+      { ref: 'A-4', project: 'Nowhere', labels: [] }, // unrouted
     ]),
   )
   factory(['linear', '--force'])
@@ -697,10 +776,8 @@ test('the loop routes each issue to at most one opted-in rig, by bracket prefix 
   const widgetPull = callLines().find(
     l => cwdOf(l).endsWith('/repo-b') && argvOf(l).startsWith('linear pull'),
   )!
-  expect(argvOf(acmePull)).toBe(
-    'linear pull https://linear.app/x/issue/A-1 https://linear.app/x/issue/A-2 --json',
-  )
-  expect(argvOf(widgetPull)).toBe('linear pull https://linear.app/x/issue/A-3 --json')
+  expect(argvOf(acmePull)).toBe('linear pull A-1 A-2 --json')
+  expect(argvOf(widgetPull)).toBe('linear pull A-3 --json')
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
   expect(state.acme.unrouted).toBe(1)
   expect(state.widget.unrouted).toBe(1)

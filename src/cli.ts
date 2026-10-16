@@ -2688,7 +2688,12 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
  * `bd` has no project or label filter of its own (claude-factory-b6c.18). This function filters instead,
  * before it calls `bd`.
  * An issue with no matching rig counts toward `unrouted`. The loop never pulls it anywhere.
- * It fetches the key from the secret broker and passes it to `bd` by env only.
+ * It fetches the key from the secret broker, and passes the key and the rig's team ids to `bd` by
+ * env only (claude-factory-b6c.20).
+ * Among this rig's routed issues, it sends `bd` only the ones Linear's own `updatedAt` marks as
+ * changed since this rig's last good pull, unless `force` is set or this is the rig's first pass
+ * (claude-factory-b6c.24). `unrouted` still counts every unmatched issue of the full listing, with
+ * no time cutoff.
  *
  * `bd` copies each Linear label to the bead that it maps. A new bead, or an updated bead, can have the
  * `factory` label as soon as the pull writes it. This function removes that label again. A person, not a
@@ -2712,27 +2717,32 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
  *
  * This function writes `state[rig.name]`. It never throws, so one rig's failure does not stop the others.
  */
-async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
+async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, force: boolean) {
   const at = Date.now()
   const prior = state[rig.name]
   const retry = prior?.unstripped ?? []
   const baseline = prior?.baseline
+  // the time cutoff below only skips re-sending an unchanged issue to `bd`; it never narrows the
+  // unrouted count or the label-strip check (claude-factory-b6c.24). `--force`, and a rig's first
+  // pass (no prior good pull), read every routed issue.
+  const since = force ? undefined : prior?.lastGoodAt
   let secrets: string[] = []
   try {
     const creds = resolveConnectCreds()
     secrets = [creds.token, creds.cfId, creds.cfSecret]
     const apiKey = await resolveLinearApiKey(creds, linearConnectCache)
     secrets.push(apiKey)
-    const issues = await fetchLinearIssues(apiKey, rig.linear!.team)
+    const { issues, truncated } = await fetchLinearIssues(apiKey, rig.linear!.team)
     const allRigs = rigs()
     let unrouted = 0
     const mine: string[] = []
     for (const issue of issues) {
       const dest = routeLinearIssue(issue, allRigs)
-      if (dest === rig.name) mine.push(issue.ref)
-      else if (dest === undefined) unrouted++
+      if (dest === rig.name) {
+        if (!since || Date.parse(issue.updatedAt) > since) mine.push(issue.ref)
+      } else if (dest === undefined) unrouted++
     }
-    const env = syncEnv(apiKey)
+    const env = syncEnv(apiKey, rig.linear!.team)
     const needsCheck = mine.length > 0 || retry.length > 0 || !!baseline
     const beforeIds = baseline ?? (needsCheck ? linearLabeled(rig.repo).map(b => b.id) : [])
     const before = new Set(beforeIds)
@@ -2771,6 +2781,8 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
         error: redact(outcome.error, secrets),
         ...(strip.unstripped.length && { unstripped: strip.unstripped }),
         ...(nextBaseline && { baseline: nextBaseline }),
+        ...(prior?.lastGoodAt && { lastGoodAt: prior.lastGoodAt }), // a failed pull must not move this
+        ...(truncated && { truncated }),
       }
       return
     }
@@ -2781,9 +2793,11 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
       created: outcome.created,
       updated: outcome.updated,
       stripped: strip.stripped,
+      lastGoodAt: at,
       ...(strip.unstripped.length && { unstripped: strip.unstripped }),
       ...(nextBaseline && { baseline: nextBaseline }),
       ...(listErr && { error: redact(`label list after the pull: ${listErr}`, secrets) }),
+      ...(truncated && { truncated }),
     }
   } catch (err) {
     state[rig.name] = {
@@ -2791,6 +2805,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
       error: clip(redact((err as Error).message, secrets), 200),
       ...(retry.length && { unstripped: retry }),
       ...(baseline && { baseline }), // nothing resolved this attempt: carry the open baseline forward
+      ...(prior?.lastGoodAt && { lastGoodAt: prior.lastGoodAt }), // a failed attempt must not move this
     }
   }
 }
@@ -2865,14 +2880,15 @@ async function linearPass(names: string[] = [], force = false) {
     const prior = state[rig.name]
     const due = linearDue(prior, force)
     if (!due && !linearRecovering(prior)) continue
-    if (due) await linearSyncOne(rig, state)
+    if (due) await linearSyncOne(rig, state, force)
     else linearRecoverOne(rig, state)
     const s = state[rig.name]!
     const left = s.unstripped?.length ? `, ${s.unstripped.length} still labeled, retried next pass` : ''
+    const trunc = s.truncated ? ', list truncated at the 50-page cap' : ''
     lines.push(
       s.error
         ? `${rig.name}: error, ${s.error}${left}`
-        : `${rig.name}: pulled ${s.pulled ?? 0}, created ${s.created ?? 0}, updated ${s.updated ?? 0}, stripped ${s.stripped ?? 0} factory label(s), unrouted ${s.unrouted ?? 0}${left}`,
+        : `${rig.name}: pulled ${s.pulled ?? 0}, created ${s.created ?? 0}, updated ${s.updated ?? 0}, stripped ${s.stripped ?? 0} factory label(s), unrouted ${s.unrouted ?? 0}${left}${trunc}`,
     )
   }
   if (lines.length) writeJson(linearSyncFile(), state)
@@ -3086,6 +3102,17 @@ export type LinearSyncState = {
    * The function clears this field the next time the listing succeeds.
    */
   baseline?: string[]
+  /**
+   * The time (`Date.now()`) of this rig's last pull that reached `bd` with no error, or that had
+   * nothing due to pull. The next pass only sends `bd` a routed issue whose Linear `updatedAt` is
+   * newer than this, so a pass does not re-send hundreds of unchanged issues (claude-factory-b6c.24).
+   * A failed pass does not move this forward: the next pass must still cover the gap.
+   * `--force`, and a rig's first pass, read every routed issue regardless of this field.
+   */
+  lastGoodAt?: number
+  /** this pass's Linear issue listing stopped at the 50-page cap, so `unrouted` and the
+   * `updatedAt` cutoff above may undercount the team's real issues (claude-factory-b6c.24) */
+  truncated?: boolean
   error?: string
 }
 export const linearSyncFile = () => join(HOME, 'linear-sync.json')
@@ -3095,9 +3122,10 @@ function linearSyncLine(name: string): string {
   const s = readJson<Record<string, LinearSyncState>>(linearSyncFile())[name]
   if (!s) return ''
   const age = `${Math.round((Date.now() - s.at) / 60_000)}m ago`
+  const trunc = s.truncated ? ', list truncated at 50 pages' : ''
   return s.error
     ? ` (error ${age}: ${s.error})`
-    : ` (pulled ${s.pulled ?? 0}, unrouted ${s.unrouted ?? 0}, ${age})`
+    : ` (pulled ${s.pulled ?? 0}, unrouted ${s.unrouted ?? 0}, ${age}${trunc})`
 }
 const linearToldFile = () => join(HOME, 'linear-told.json')
 /**
