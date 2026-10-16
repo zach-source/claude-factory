@@ -190,8 +190,10 @@ factory rig add ax ~/repos/ax --person-only-context acme
 ```
 
 A worker's PreToolUse hook refuses a `kubectl`, `ko` or `helm` command that changes state at a
-named context. The hook fails closed. It also refuses a command with no `--context` flag,
-because the worker does not know its current context.
+named context. The hook fails closed. It refuses a command with no `--context` flag, because
+the worker does not know its current context. The hook matches context and cluster names only.
+It cannot resolve a shell expansion. So it also refuses a `--context` or a kubectl `--cluster`
+value that is not a literal name, such as `$CTX` or a backtick.
 
 A worker's brief carries this rule too, in the Rig goal section. The worker reports blocked
 with the exact command, instead of running it. The guard does not cover a person's own

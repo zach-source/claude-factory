@@ -120,6 +120,23 @@ const DENY_LIVE = [
   'helm --kube-apiserver u upgrade r c',
   // claude-factory-25z.7: --dry-run=none still mutates.
   'kubectl --context acme create -f x --dry-run=none',
+  // claude-factory-25z.8: kubectl/ko/helm take the LAST repeated flag, not the first.
+  'kubectl --context other --context acme apply -f x',
+  'kubectl --context acme apply -f x --dry-run=client --dry-run=none',
+  'kubectl --context=acme run x --image=i -- --dry-run=client',
+  'helm --kube-context other --kube-context acme upgrade r c',
+  'ko apply --context other --context acme -f x',
+  // claude-factory-25z.9: a $variable or backtick context value is unknown (fail closed), and a
+  // --cluster override in the list denies too, even when --context names a different context.
+  'CTX=acme; kubectl --context "$CTX" apply -f x',
+  'kubectl --context other --cluster acme apply -f x',
+  // claude-factory-25z.10: sh/bash -c detection must find a flag cluster, not only a bare -c.
+  'bash -lc "kubectl --context acme apply -f x"',
+  'sh -ec "kubectl --context acme apply -f x"',
+  // claude-factory-25z.11: kubectl auth reconcile and certificate approve/deny mutate too.
+  'kubectl --context acme auth reconcile -f r.yaml',
+  'kubectl --context acme certificate approve csr1',
+  'kubectl --context acme certificate deny csr1',
 ]
 
 const ALLOW_LIVE = [
@@ -131,6 +148,12 @@ const ALLOW_LIVE = [
   // claude-factory-25z.7: --dry-run=client|server exempts every mutating verb, not only apply.
   'kubectl create secret generic s --dry-run=client -o yaml',
   'kubectl --context acme delete pod x --dry-run=server',
+  // claude-factory-25z.11: `auth can-i` reads, it does not mutate.
+  'kubectl --context acme auth can-i get pods',
+  // claude-factory-25z.8: the LAST --context wins, and it names no listed context here.
+  'kubectl --context acme apply -f x --context kind-kind',
+  // claude-factory-25z.9: an unlisted --cluster does not deny an unlisted --context.
+  'kubectl --context other --cluster kind-kind apply -f x',
 ]
 
 test.each(DENY_LIVE)('denyReason denies a live-apply command %j with personOnly acme', cmd => {

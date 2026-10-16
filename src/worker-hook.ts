@@ -36,8 +36,9 @@ export const REASON =
 export const LIVE_REASON =
   'The factory denies this command: in this rig only a person changes the live kube contexts. ' +
   'A kubectl, ko or helm command that mutates state there is refused, including one that names no ' +
-  '--context (fail closed: the current context is unknown here). Do not retry this command. ' +
-  'Report blocked: "parked, waiting on: <the exact command>".'
+  '--context, or a --context or --cluster whose value is not a literal name (fail closed: the ' +
+  'current context is unknown here). This guard matches context and cluster names only. ' +
+  'Do not retry this command. Report blocked: "parked, waiting on: <the exact command>".'
 
 // wrapper commands whose own name we skip to find the command they run
 const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
@@ -272,17 +273,48 @@ const KUBECTL_MUTATING_VERBS = new Set([
   'debug',
 ])
 const KUBECTL_ROLLOUT_MUTATING = new Set(['restart', 'undo', 'pause', 'resume'])
+// claude-factory-25z.11: `auth can-i` only reads; `auth reconcile` writes RBAC objects.
+const KUBECTL_AUTH_MUTATING = new Set(['reconcile'])
+const KUBECTL_CERTIFICATE_MUTATING = new Set(['approve', 'deny'])
 const KO_MUTATING_VERBS = new Set(['apply', 'create', 'delete', 'run'])
 const HELM_MUTATING_VERBS = new Set(['install', 'upgrade', 'uninstall', 'delete', 'rollback'])
 
-/** the value of the first flag in `names` found in `words`, in its `--flag value` or `--flag=value` form */
+/**
+ * Finds the value of the LAST flag in `names` in `words`. A flag can take the `--flag value`
+ * form or the `--flag=value` form.
+ * claude-factory-25z.8: kubectl, ko and helm all use the last copy of a repeated flag, not the
+ * first.
+ * This function stops at a literal `--`. A word after `--` is an operand, or an argument to the
+ * command kubectl runs (for example `kubectl run x -- --dry-run=client`). It is never a kubectl
+ * flag.
+ */
 function flagValue(words: string[], names: Set<string>): string | undefined {
+  let result: string | undefined
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (names.has(w)) return words[i + 1]
-    for (const n of names) if (w.startsWith(`${n}=`)) return w.slice(n.length + 1)
+    if (w === '--') break
+    if (names.has(w)) {
+      result = words[i + 1]
+      continue
+    }
+    for (const n of names) {
+      if (w.startsWith(`${n}=`)) {
+        result = w.slice(n.length + 1)
+        break
+      }
+    }
   }
-  return undefined
+  return result
+}
+
+/**
+ * True when a flag value is not a literal name. A `$` marks a shell expansion. A backtick marks
+ * command substitution.
+ * claude-factory-25z.9: the hook matches context and cluster names only. It cannot resolve a
+ * shell expansion, so it treats that value as unknown and fails closed.
+ */
+function unknownFlagValue(v: string): boolean {
+  return v.includes('$') || v.includes('`')
 }
 
 /**
@@ -309,6 +341,24 @@ function firstVerbIndex(words: string[], valueFlags: Set<string>): { index: numb
   return { index: -1, uncertain }
 }
 
+/**
+ * Index of a short-flag cluster that holds `c` (for example `-c`, `-lc`, `-ec`), used to find the
+ * `-c "script"` argument of a `sh`, `bash`, `zsh` or `dash` call.
+ * claude-factory-25z.10: `bash -lc "..."` and `sh -ec "..."` bundle other short flags with `c`.
+ * A plain `cmd.indexOf('-c')` misses them, which also hides an `rm -rf` or a live-apply command
+ * inside the quoted script from both guards.
+ * Skips a long flag (`--context`) and stops at a literal `--`. Returns -1 when no cluster matches.
+ */
+function shCFlagIndex(words: string[]): number {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--') return -1
+    if (w.startsWith('--')) continue
+    if (w.startsWith('-') && w.length > 1 && /c/.test(w.slice(1))) return i
+  }
+  return -1
+}
+
 /** true when some word in `words`, before a literal `--` separator (if any), is in `verbs`. */
 function hasMutatingWordBeforeDashDash(words: string[], verbs: Set<string>): boolean {
   for (const w of words) {
@@ -316,6 +366,15 @@ function hasMutatingWordBeforeDashDash(words: string[], verbs: Set<string>): boo
     if (verbs.has(w)) return true
   }
   return false
+}
+
+/**
+ * True when `ctx` names a context this hook must deny: it is missing, it is an unresolved shell
+ * expansion (claude-factory-25z.9), or it is in `personOnly`.
+ * A missing `ctx` fails closed: this function does not then know the current context.
+ */
+function contextDenied(ctx: string | undefined, personOnly: string[]): boolean {
+  return ctx === undefined || unknownFlagValue(ctx) || personOnly.includes(ctx)
 }
 
 /**
@@ -338,11 +397,17 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
         ? false
         : verb === 'rollout'
           ? !!sub && KUBECTL_ROLLOUT_MUTATING.has(sub)
-          : KUBECTL_MUTATING_VERBS.has(verb)
+          : verb === 'auth'
+            ? !!sub && KUBECTL_AUTH_MUTATING.has(sub)
+            : verb === 'certificate'
+              ? !!sub && KUBECTL_CERTIFICATE_MUTATING.has(sub)
+              : KUBECTL_MUTATING_VERBS.has(verb)
     if (!mutating && uncertain) {
       mutating =
         hasMutatingWordBeforeDashDash(tail, KUBECTL_MUTATING_VERBS) ||
-        hasMutatingWordBeforeDashDash(tail, KUBECTL_ROLLOUT_MUTATING)
+        hasMutatingWordBeforeDashDash(tail, KUBECTL_ROLLOUT_MUTATING) ||
+        hasMutatingWordBeforeDashDash(tail, KUBECTL_AUTH_MUTATING) ||
+        hasMutatingWordBeforeDashDash(tail, KUBECTL_CERTIFICATE_MUTATING)
     }
     if (!mutating) return false
     // claude-factory-25z.7: --dry-run=client|server exempts every mutating kubectl verb, not only
@@ -350,7 +415,10 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
     const dryRun = flagValue(cmd, new Set(['--dry-run']))
     if (dryRun === 'client' || dryRun === 'server') return false
     const ctx = flagValue(cmd, new Set(['--context']))
-    return ctx === undefined || personOnly.includes(ctx)
+    if (contextDenied(ctx, personOnly)) return true
+    // claude-factory-25z.9: --cluster overrides which cluster a named context talks to.
+    const cluster = flagValue(cmd, new Set(['--cluster']))
+    return cluster !== undefined && (unknownFlagValue(cluster) || personOnly.includes(cluster))
   }
   if (b === 'ko') {
     const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS)
@@ -358,7 +426,7 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, KO_MUTATING_VERBS)
     if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--context']))
-    return ctx === undefined || personOnly.includes(ctx)
+    return contextDenied(ctx, personOnly)
   }
   if (b === 'helm') {
     const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS)
@@ -366,7 +434,7 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, HELM_MUTATING_VERBS)
     if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--kube-context']))
-    return ctx === undefined || personOnly.includes(ctx)
+    return contextDenied(ctx, personOnly)
   }
   return false
 }
@@ -393,7 +461,7 @@ export function denyReason(command: string, root?: string, personOnly?: string[]
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'sh' || b === 'bash' || b === 'zsh' || b === 'dash') {
-      const ci = cmd.indexOf('-c')
+      const ci = shCFlagIndex(cmd)
       if (ci >= 0 && cmd[ci + 1] !== undefined) {
         const r = denyReason(cmd[ci + 1]!, root, personOnly)
         if (r) return r
