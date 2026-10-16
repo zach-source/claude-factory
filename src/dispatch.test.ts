@@ -394,3 +394,55 @@ test('a second pass adds 0 new comments for a bead a live run already holds', ()
   const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
   expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
 })
+
+/** run.json + state.json for an ended (aborted) run that still names `bead`. Unlike `liveRun`, the
+ * run's node here is `'aborted'`, so dispatch's `linked` map drops it and the bead looks unowned.
+ * Only the candidate loop's own scan for a run with this bead (cli.ts, `runBranches`) can still find
+ * it, through the PR's head branch. */
+function endedRun(id: string, bead: string) {
+  const f = join(pdir, 'mini.json')
+  if (!existsSync(f)) writeFileSync(f, JSON.stringify(MINI))
+  const actor = createActor(compile(MINI)).start()
+  actor.send({ type: 'ABORT', at: Date.now() })
+  const d = join(phome, 'runs', id)
+  mkdirSync(d, { recursive: true })
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id,
+      factory: f,
+      repo: 'n/a',
+      goal: 'g',
+      ws: 'ws1',
+      worktree: 'n/a',
+      branch: 'b',
+      bead,
+    }),
+  )
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+}
+
+const mergedPrByHead = (title: string, headRefName: string) =>
+  JSON.stringify([
+    {
+      number: 57,
+      url: 'https://github.com/acme/widget/pull/57',
+      title,
+      headRefName,
+      mergeCommit: { oid: 'deadbeef' },
+    },
+  ])
+
+// claude-factory-6as.6: a merged PR can close a bead's work with no bead id in its title, when the PR
+// is the ended run's own branch (`factory/<runId>`). dispatch's runBranches scan must still catch
+// this, by matching the PR's `headRefName` against the ended run's branch, not its title.
+test('a merged PR matching only by an ended run’s head branch (no bead id in the title) still rejects (claude-factory-6as.6)', () => {
+  precheckReset()
+  endedRun('ended-run', 'acme-1')
+  const out = pfactory(['beads'], { GH_JSON: mergedPrByHead('fix: tidy up the thing', 'factory/ended-run') })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toEqual(['ended-run']) // no new run started for acme-1
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(calls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
+})
