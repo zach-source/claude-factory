@@ -28,7 +28,7 @@ minor release may change the factory format, the CLI or the run state.
   - `factory metrics` (`src/metrics.ts`) now prints the triage reject rate and how many of
     those rejects say the work was already done (`ALREADY_DONE`), plus how many runs the
     pre-check skipped, by kind, from `HOME/precheck.jsonl`: `triage rejects R of V (D
-    already done); dispatch skipped S (merged-pr M, live-run L)`.
+    already done); dispatch skipped S (merged-pr M, live-run L), gh fail-open F`.
 - Deploy no longer starts a worker against an unmerged pull request. (claude-factory-960)
   - Cause: a run reached `deploy` as soon as release reported, so a worker always launched
     even when the pull request was still open. The worker then found nothing to do and
