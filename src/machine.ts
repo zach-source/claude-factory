@@ -38,6 +38,12 @@ export type Node = {
    * laptop (its kubectl, its network, production) stays on herdr when the rig sends its workers to VMs
    */
   runner?: string
+  /**
+   * No worker starts here while the arriving report names a pull or merge request. The run parks
+   * instead, the same way a worker's own blocked report does. The watch wakes it on a merge, a close, or
+   * any later activity. `validate` refuses this field on a gate: a gate has no worker to hold back.
+   */
+  awaitsPr?: true
 }
 
 export type Factory = {
@@ -168,6 +174,7 @@ export function validate(def: Factory): Factory {
         !Object.keys(node.next ?? {}).length && `${id}: has no outcomes`,
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
         node.gate && node.runner && `${id}: a gate has no worker, so no runner`,
+        node.gate && node.awaitsPr && `${id}: a gate has no worker, so nothing to hold back`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
@@ -234,14 +241,34 @@ export const repeatQuestion = (node: string, reason: string) =>
 export const prsIn = (text: string) => [
   ...new Set(text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g) ?? []),
 ]
+/** every GitLab merge request URL in a text; `prsIn` stays GitHub-only because the park watch behind it
+ * runs `gh pr view` (prs.ts re-exports this, since its glab-shaped IO lives there) */
+export const mrsIn = (text: string) => [
+  ...new Set(
+    text.match(
+      /https:\/\/(?!github\.com\/)[\w.-]+(?::\d+)?\/(?:[\w.-]+\/)+[\w.-]+\/-\/merge_requests\/\d+/g,
+    ) ?? [],
+  ),
+]
 /** how long a station that waits on pull requests parks: the watch wakes it sooner, so this only backstops it */
 export const WATCHED_PARK_MIN = 480
 
-/** how long a station parks: parkMin, doubled for each blocked report it already made in a row, at most 8h */
+/** a pre-launch park: an `awaitsPr` station's arrival named a pull or merge request before any worker of
+ * this visit ran, so it holds its own attempt-0 slot in the log instead of a real worker's blocked report */
+export const isPrWait = (e?: Entry) => e?.outcome === 'blocked' && e?.attempt === 0
+
+/** the log entry an awaitsPr park's arrival gets, instead of a worker ever starting */
+export const prWaitSummary = (urls: string[]) =>
+  `no worker yet: waiting for ${urls.join(', ')} to merge, close or change`
+
+/** how long a station parks: parkMin, doubled for each blocked report it already made in a row, at most 8h.
+ * A pre-launch park (`isPrWait`) spent no worker, so this skips it rather than counting it. */
 export const parkDelayMin = (c: Ctx, node: string, parkMin: number) => {
   let n = 0
-  for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node && c.log[i]?.outcome === 'blocked'; i--)
-    n++
+  for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node; i--) {
+    if (c.log[i]?.outcome !== 'blocked') break
+    if (!isPrWait(c.log[i])) n++
+  }
   return Math.min(parkMin * 2 ** n, Math.max(parkMin, 480))
 }
 
@@ -374,9 +401,25 @@ export function compile(def: Factory) {
                 actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
                   const { summary, at } = event as Extract<Ev, { type: 'DONE' }>
                   const log = [...context.log, { node: id, attempt: context.attempt, outcome, summary, at }]
-                  const to = edgeTo(edge) === 'done' ? 'manager' : edgeTo(edge)
+                  const toId = edgeTo(edge)
+                  const to = toId === 'done' ? 'manager' : toId
                   const mail = post(context.mail, to, { from: id, text: summary, at })
                   const delay = delayOf(edge)
+                  // an awaitsPr station holds its worker back when the report names a pull or merge
+                  // request. It parks like a worker's own blocked report. It spends no attempt.
+                  const urls =
+                    !delay && def.nodes[toId]?.awaitsPr ? [...prsIn(summary), ...mrsIn(summary)] : []
+                  if (urls.length) {
+                    const reason = prWaitSummary(urls)
+                    const wakeAt = at + WATCHED_PARK_MIN * 60_000
+                    const text = `${toId} is parked, waiting on: ${reason}. It checks again when one of its pull requests changes, at the latest ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
+                    return {
+                      log: [...log, { node: toId, attempt: 0, outcome: 'blocked', summary: reason, at }],
+                      mail: post(mail, 'manager', { from: toId, text, at }),
+                      pane: null,
+                      wakeAt,
+                    }
+                  }
                   // the wait already bounds the rate, so a cadence loop refills its budget instead of being held
                   // the worker has reported: its pane goes now, not when a timed wait ends
                   return delay
