@@ -1,4 +1,6 @@
 import { expect, test } from 'bun:test'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   denyReason,
@@ -378,10 +380,16 @@ const DENY_MERGE = [
   'gh pr \\\nmerge 5',
   'gh repo sync',
   'gh api -X PUT repos/o/r/pulls/5/merge',
+  'gh api -XPUT repos/o/r/pulls/5/merge', // claude-factory-zl5.7: an attached short flag, curl style
   'gh api repos/o/r/merges -f base=main',
   "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'",
   "gh api graphql -F query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
   "gh api graphql -f query='mutation { mergeBranch(input: {}) { clientMutationId } }'",
+  // claude-factory-zl5.6: --raw-field=/--field= (attached) and -f<x>=/-F<x>= (attached, no space)
+  "gh api graphql --raw-field=query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+  "gh api graphql --field=query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'",
+  "gh api graphql -fquery='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+  "gh api graphql -Fquery='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'",
 ]
 
 test.each(DENY_MERGE)('denyReason denies %j', cmd => {
@@ -432,6 +440,8 @@ const READY_COMMANDS = [
   'gh pr ready 5',
   'gh pr ready',
   'gh api graphql -f query=\'mutation { markPullRequestReadyForReview(input: {id: "x"}) { clientMutationId } }\'',
+  // claude-factory-zl5.6: the same attached-field gap applies to markPullRequestReadyForReview
+  'gh api graphql -fquery=\'mutation { markPullRequestReadyForReview(input: {id: "x"}) { clientMutationId } }\'',
   'sudo gh pr ready 5',
   "bash -lc 'gh pr ready 5'",
 ]
@@ -618,4 +628,142 @@ test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, a push t
   })
   const withoutArgv = await run(input)
   expect(withoutArgv).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+// claude-factory-zl5.10: a REST or GraphQL call can write a ref or a file through the API. This
+// can commit to, or delete, a protected branch with no `git push` word on the command line.
+// `git -c alias.<name>=push` is the same trick for plain `git push`: it runs `push` under a
+// different name.
+const DENY_API_PUSH = [
+  'gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc123',
+  'gh api -X DELETE repos/o/r/git/refs/heads/main',
+  'gh api repos/o/r/git/refs -f ref=refs/heads/main -f sha=abc123', // POST (has data, no -X): create ref
+  'gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=YQ== -f branch=main',
+  'gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=YQ==', // no branch field: fails closed
+  "gh api graphql -f query='mutation { createCommitOnBranch(input: {}) { clientMutationId } }'",
+  "gh api graphql -f query='mutation { updateRef(input: {}) { clientMutationId } }'",
+  "gh api graphql -f query='mutation { updateRefs(input: {}) { clientMutationId } }'",
+  "gh api graphql -f query='mutation { deleteRef(input: {}) { clientMutationId } }'",
+  'git -c alias.p=push p origin main',
+  "git -c alias.p='push --force' p origin main",
+]
+
+test.each(DENY_API_PUSH)('denyReason denies %j', cmd => {
+  expect(denyReason(cmd)).toBe(PUSH_REASON)
+})
+
+const ALLOW_API_PUSH = [
+  'gh api repos/o/r/git/refs/heads/main', // GET: read-only
+  'gh api -X PATCH repos/o/r/git/refs/heads/factory/x -f sha=abc123', // not a protected branch
+  'gh api repos/o/r/contents/a.txt', // GET: read-only
+  'gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=YQ== -f branch=factory/x',
+  "gh api graphql -f query='query { viewer { login } }'",
+  'git -c user.name=push commit -m x', // not an alias.* key
+  'git -c alias.p=pushups p', // the alias value is not "push" or "push "
+]
+
+test.each(ALLOW_API_PUSH)('denyReason allows %j', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+// claude-factory-zl5.9: main() wires gate.headOf and gate.originHead through real `git
+// symbolic-ref` calls. A reviewer set both to return undefined by hand, and the 328 tests at the
+// time still passed: this end-to-end test runs the hook against a real scratch git repo instead.
+test('run as `bun src/worker-hook.ts`, on a real repo on main a bare git push denies (claude-factory-zl5.9)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-push-main-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: 'git push' } })
+  const denied = await run(input, env)
+  expect(denied.code).toBe(0)
+  expect(JSON.parse(denied.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+}, 10_000)
+
+test('run as `bun src/worker-hook.ts`, with origin/HEAD set to develop a push to develop denies, off main and master (claude-factory-zl5.9)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-push-originhead-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'feature', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  // claude-factory-zl5.9: a real clone sets refs/remotes/origin/HEAD; this writes the same ref by
+  // hand, with no real remote, so the test needs no network and no second repo.
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop'])
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  const denyInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: dir,
+    tool_input: { command: 'git push origin develop' },
+  })
+  const denied = await run(denyInput, env)
+  expect(denied.code).toBe(0)
+  expect(JSON.parse(denied.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+  // the current branch, "feature", is still not protected: the originHead wiring must not over-deny
+  const allowInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: dir,
+    tool_input: { command: 'git push origin feature' },
+  })
+  const allowed = await run(allowInput, env)
+  expect(allowed).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+// claude-factory-zl5.8: main() wires gate.readFile to a real, capped file read, resolved against
+// the tool call's own cwd (`i.cwd`). A query=@file this guard can read is scanned for real; one it
+// cannot read still fails closed (denies).
+test('run as `bun src/worker-hook.ts`, gh api graphql -f query=@file reads the real file at the tool call cwd (claude-factory-zl5.8)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-graphql-file-'))
+  writeFileSync(
+    join(dir, 'm.graphql'),
+    'mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }',
+  )
+  writeFileSync(join(dir, 'q.graphql'), 'query { viewer { login } }')
+  const denyInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: dir,
+    tool_input: { command: 'gh api graphql -f query=@m.graphql' },
+  })
+  const denied = await run(denyInput)
+  expect(denied.code).toBe(0)
+  expect(JSON.parse(denied.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: MERGE_REASON,
+    },
+  })
+  const allowInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: dir,
+    tool_input: { command: 'gh api graphql -f query=@q.graphql' },
+  })
+  const allowed = await run(allowInput)
+  expect(allowed).toEqual({ out: '', code: 0 })
+  // a file this guard cannot read (it does not exist) still fails closed
+  const missingInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: dir,
+    tool_input: { command: 'gh api graphql -f query=@missing.graphql' },
+  })
+  const missingDenied = await run(missingInput)
+  expect(missingDenied.code).toBe(0)
+  expect(JSON.parse(missingDenied.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: MERGE_REASON,
+    },
+  })
 }, 10_000)
