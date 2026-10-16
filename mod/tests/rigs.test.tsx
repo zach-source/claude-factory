@@ -207,25 +207,21 @@ test(
 )
 
 test(
-  'the rigs tab draws a rig named like an Object.prototype member, and a malshaped plan, with no crash (claude-factory-dun.18)',
+  'the rigs tab draws a rig named like an Object.prototype member with no crash, even with a valid plan that never mentions it (claude-factory-dun.18)',
   SLOW,
   async ($, on) => {
     const clock = mock.clock(on)
     const files = new Map<string, string>()
-    // "constructor" names a rig the plan never mentions (`plan.rigs['constructor']` would
-    // otherwise resolve through the prototype chain, not read as absent); "api" names a rig
-    // whose own plan entry is malshaped (no `items`/`findings` arrays). Neither must crash the
-    // Rigs tab or draw a "Next up" line.
+    // A plain `plan.rigs['constructor']` lookup on a JSON-parsed plain object resolves through
+    // the prototype chain to `Object.prototype.constructor`, not `undefined`, when the plan
+    // itself is otherwise well-shaped and never mentions this rig.
     const tick = {
       ...TICK,
-      rigs: [
-        { name: 'constructor', repo: '/w/ctor', factory: 'lifecycle', maxRuns: 1, goal: 'ship it' },
-        { name: 'api', repo: '/w/api', factory: 'lifecycle', maxRuns: 5, goal: 'ship it' },
-      ],
+      rigs: [{ name: 'constructor', repo: '/w/ctor', factory: 'lifecycle', maxRuns: 1, goal: 'ship it' }],
       runs: [],
     }
     planMocks(on, files, tick)
-    files.set('/home/acme/plan.json', JSON.stringify({ at: 0, rigs: { api: {} }, proposals: [] }))
+    files.set('/home/acme/plan.json', JSON.stringify({ at: 0, rigs: {}, proposals: [] }))
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -240,6 +236,38 @@ test(
     })
     const drawn = JSON.stringify(await ui.drawn())
     expect(drawn).toContain('constructor')
+    expect(drawn).not.toContain('Next up:')
+    await ui.unmount()
+  },
+)
+
+test(
+  'the rigs tab draws a rig whose own plan entry is malshaped with no crash: the whole plan reads as absent (claude-factory-dun.18)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const tick = {
+      ...TICK,
+      rigs: [{ name: 'api', repo: '/w/api', factory: 'lifecycle', maxRuns: 5, goal: 'ship it' }],
+      runs: [],
+    }
+    planMocks(on, files, tick)
+    // "api"'s own entry has no items/findings arrays: isValidPlan rejects the whole file.
+    files.set('/home/acme/plan.json', JSON.stringify({ at: 0, rigs: { api: {} }, proposals: [] }))
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'rigs' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
     expect(drawn).toContain('api')
     expect(drawn).not.toContain('Next up:')
     await ui.unmount()
