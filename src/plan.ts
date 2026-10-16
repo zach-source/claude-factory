@@ -109,6 +109,7 @@ export function orderByPlan(candidates: Bead[], rigPlan: { items: PlanItem[] } |
 }
 
 const isClosed = (b: Pick<Bead, 'status'>) => b.status === 'closed'
+const isDeferred = (b: Pick<Bead, 'status'>) => b.status === 'deferred'
 const tsOf = (iso?: string) => {
   if (!iso) return undefined
   const t = new Date(iso).getTime()
@@ -163,6 +164,7 @@ export function findings(
 
   for (const epic of every) {
     if (isClosed(epic)) continue // the epic itself must still be open for either finding
+    if (isDeferred(epic)) continue // a person already set this epic aside: not a finding (claude-factory-dun.14)
     const kids = childrenOf(every, epic.id)
     if (!kids.length) continue
     const openKids = kids.filter(k => !isClosed(k))
@@ -177,6 +179,10 @@ export function findings(
         })
       continue
     }
+    // open but deferred children are also a person's own decision, not neglect: an epic whose
+    // open children are all deferred is not starved (claude-factory-dun.14)
+    const activeKids = openKids.filter(k => !isDeferred(k))
+    if (!activeKids.length) continue
     const progress = kids.flatMap(k =>
       [tsOf(k.closed_at), tsOf(k.started_at)].filter((t): t is number => t !== undefined),
     )

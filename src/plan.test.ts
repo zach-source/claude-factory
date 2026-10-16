@@ -183,6 +183,31 @@ test('findings: a closed epic never fires either finding', () => {
   expect(findings('acme', undefined, every, [], now)).toEqual([])
 })
 
+// ---- findings: a person's own defer decision is not a finding (claude-factory-dun.14) ----
+
+test('findings: a deferred epic at 0/5 for 25h never fires, even with lower-priority work shipped', () => {
+  const now = 1_000 * HOUR
+  const createdAt = now - 25 * HOUR
+  const every: Bead[] = [
+    bead('r-6', { status: 'deferred', priority: 1, created_at: iso(createdAt) }),
+    ...Array.from({ length: 5 }, (_, i) => bead(`r-6.${i}`, { status: 'open', parent: 'r-6' })),
+    bead('r-9', { status: 'closed', priority: 2, closed_at: iso(now - 1 * HOUR) }),
+  ]
+  expect(findings('acme', undefined, every, [], now)).toEqual([])
+})
+
+test('findings: an epic at 25h whose only open children are deferred is not starved', () => {
+  const now = 1_000 * HOUR
+  const createdAt = now - 25 * HOUR
+  const every: Bead[] = [
+    bead('r-7', { status: 'open', priority: 1, created_at: iso(createdAt) }),
+    bead('r-7.0', { status: 'deferred', parent: 'r-7' }),
+    bead('r-7.1', { status: 'deferred', parent: 'r-7' }),
+    bead('r-9', { status: 'closed', priority: 2, closed_at: iso(now - 1 * HOUR) }),
+  ]
+  expect(findings('acme', undefined, every, [], now)).toEqual([])
+})
+
 // ---- findings: goal-no-beads ----
 
 test('findings: a goal with no open leaf bead at all is flagged, even with an open epic shell', () => {

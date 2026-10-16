@@ -3523,8 +3523,9 @@ function rigFacts(
     const t = new Date(iso).getTime()
     return Number.isFinite(t) ? t : undefined
   }
+  // a deferred epic is a person's own decision: the pm must not flag it as a gap (claude-factory-dun.14)
   const epics = every
-    .filter(e => !isClosed(e) && childrenOf(e.id).length > 0)
+    .filter(e => !isClosed(e) && e.status !== 'deferred' && childrenOf(e.id).length > 0)
     .map(e => {
       const kids = childrenOf(e.id)
       const progress = kids.flatMap(k =>

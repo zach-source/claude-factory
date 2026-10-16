@@ -321,6 +321,46 @@ test('plan facts drops every candidate for a rig with an open Linear baseline di
   expect(candidateIdsOf()).toEqual([])
 })
 
+/** fake bd for the epics list: `list --all` answers an open epic (`e-1`, one open child) and a
+ * deferred epic (`e-2`, one open child). `ready` answers no candidates. */
+function fakeBdForEpics() {
+  mkdirSync(bin, { recursive: true })
+  const every = JSON.stringify([
+    { id: 'e-1', title: 'live epic', status: 'open' },
+    { id: 'e-1.0', title: 'child', status: 'open' },
+    { id: 'e-2', title: 'set aside', status: 'deferred' },
+    { id: 'e-2.0', title: 'child', status: 'open' },
+  ])
+  const script = [
+    '#!/bin/sh',
+    'case "$1" in',
+    `  list) printf '%s' '${every}';;`,
+    "  ready) printf '%s' '[]';;",
+    "  children) printf '%s' '[]';;",
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+}
+
+test("plan facts' epics list skips a deferred epic (claude-factory-dun.14)", () => {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(claudeConfig, { recursive: true })
+  writeFileSync(join(claudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(home, { recursive: true })
+  mkdirSync(join(repo, '.beads'), { recursive: true })
+  fakeBdForEpics()
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo, factory: 'lifecycle', goal: 'ship' }]),
+  )
+  const out = factory(['plan', 'facts'])
+  expect(out.code).toBe(0)
+  const epicIds = (JSON.parse(readFileSync(factsFile(), 'utf8')).a.epics as { id: string }[]).map(e => e.id)
+  expect(epicIds).toEqual(['e-1'])
+})
+
 test('plan show prints the plan as text, or says there is none', () => {
   reset()
   const none = factory(['plan', 'show'])
