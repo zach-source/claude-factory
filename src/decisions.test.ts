@@ -1,7 +1,7 @@
 // `factory decisions`, end to end through bin/factory: every rig's open bd decisions, answering one, and the
 // manager's proposed options for an item that has none. A fake `bd` on PATH stands in for the real CLI.
 import { afterAll, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -122,4 +122,104 @@ test('decisions propose refuses a gate key and a malformed one, a worker, and ot
   expect(factory(['decisions', 'propose', 'bd:api:api-1', 'Which DB?', 'pg | mysql']).code).toBe(0)
   const out = JSON.parse(factory(['decisions']).out)
   expect(out.proposals['bd:api:api-1']).toMatchObject({ question: 'Which DB?', options: ['pg', 'mysql'] })
+})
+
+test('decisions propose keeps a value at its limit, refuses one over it naming the field and the limit, and leaves decisions.json unchanged', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', '[]')
+  const decisionsFile = join(home, 'decisions.json')
+  const snapshot = () => (existsSync(decisionsFile) ? readFileSync(decisionsFile, 'utf8') : undefined)
+
+  // at the limit: 160-char question, 200-char context, 4 options, 40-char label, 100-char effect, 1 recommended
+  const q160 = `${'q'.repeat(159)}?` // 160 chars
+  const c200 = 'c'.repeat(200)
+  const label40 = 'x'.repeat(40)
+  const effect100 = 'y'.repeat(100)
+  const atLimit = factory([
+    'decisions',
+    'propose',
+    'bd:api:api-1',
+    q160,
+    `${label40}: ${effect100} (recommended) | b | c | d`,
+    '--context',
+    c200,
+  ])
+  expect(atLimit.code).toBe(0)
+  const stored = JSON.parse(factory(['decisions']).out).proposals['bd:api:api-1']
+  expect(stored.question).toBe(q160)
+  expect(stored.context).toBe(c200)
+  expect(stored.options).toHaveLength(4)
+
+  // one over the limit, each refused on its own, decisions.json unchanged by the refusal
+  const before = snapshot()
+  const overQuestion = factory(['decisions', 'propose', 'bd:api:api-1', `${q160}!`, 'a | b'])
+  expect(overQuestion.code).not.toBe(0)
+  expect(overQuestion.err).toContain('question')
+  expect(overQuestion.err).toContain('161')
+  expect(overQuestion.err).toContain('160')
+  expect(snapshot()).toBe(before)
+
+  const overContext = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b', '--context', `${c200}!`])
+  expect(overContext.code).not.toBe(0)
+  expect(overContext.err).toContain('context')
+  expect(snapshot()).toBe(before)
+
+  const oneOption = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a'])
+  expect(oneOption.code).not.toBe(0)
+  expect(oneOption.err).toContain('at least two')
+  expect(snapshot()).toBe(before)
+
+  const fiveOptions = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b | c | d | e'])
+  expect(fiveOptions.code).not.toBe(0)
+  expect(fiveOptions.err).toContain('5 options')
+  expect(fiveOptions.err).toContain('4')
+  expect(snapshot()).toBe(before)
+
+  const overLabel = factory(['decisions', 'propose', 'bd:api:api-1', 'q', `${label40}z: e | b`])
+  expect(overLabel.code).not.toBe(0)
+  expect(overLabel.err).toContain('label')
+  expect(overLabel.err).toContain('41')
+  expect(overLabel.err).toContain('40')
+  expect(snapshot()).toBe(before)
+
+  const overEffect = factory(['decisions', 'propose', 'bd:api:api-1', 'q', `a: ${effect100}z | b`])
+  expect(overEffect.code).not.toBe(0)
+  expect(overEffect.err).toContain('effect')
+  expect(overEffect.err).toContain('101')
+  expect(overEffect.err).toContain('100')
+  expect(snapshot()).toBe(before)
+
+  const twoRecommended = factory([
+    'decisions',
+    'propose',
+    'bd:api:api-1',
+    'q',
+    'a: x (recommended) | b: y (recommended)',
+  ])
+  expect(twoRecommended.code).not.toBe(0)
+  expect(twoRecommended.err).toContain('2 options marked recommended')
+  expect(snapshot()).toBe(before)
+})
+
+test('decisions propose --context round-trips into `factory decisions` output', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', '[]')
+  const withContext = factory([
+    'decisions',
+    'propose',
+    'bd:api:api-1',
+    'Which DB?',
+    'pg: smaller ops burden | mysql: team knows it already (recommended)',
+    '--context',
+    'The service has no DB yet.',
+  ])
+  expect(withContext.code).toBe(0)
+  const out = JSON.parse(factory(['decisions']).out)
+  expect(out.proposals['bd:api:api-1']).toMatchObject({
+    question: 'Which DB?',
+    context: 'The service has no DB yet.',
+    options: ['pg: smaller ops burden', 'mysql: team knows it already (recommended)'],
+  })
 })
