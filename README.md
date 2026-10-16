@@ -349,6 +349,8 @@ memory/
   a merge into that topic). A lesson that holds only while a bead is open names it;
   the dream is told which named beads have closed and retires what waited on them. The memory is its own git repo, committed before and
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
+  Each commit also carries that step's `.usage.jsonl` (per-note counts) and `.renames.jsonl`
+  (old path to new path). compact() writes both files before the commit. The repo stays clean right after.
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
   `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
   topic's `LONG.md` once the note is 7 days old and was shown or helped at least once, and
