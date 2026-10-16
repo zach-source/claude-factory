@@ -6,6 +6,15 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Added: a rig can name kube contexts that only a person can change live. Use
+  `factory rig add <rig> <repo> --person-only-context <context>` (repeat the flag for more
+  than one context). The worker `PreToolUse` hook (`src/worker-hook.ts`) now refuses a
+  `kubectl`, `ko` or `helm` command that mutates state at one of those contexts. It also
+  refuses a mutating command with no named `--context` (fail closed). `ruleLines` adds a
+  line under a worker's "## Rig goal" section that names the contexts and the park text, so
+  the rule reaches the brief, not only a memory note. A rig with the list gets its own
+  `worker-settings-<rig>.json`; a rig with no list keeps the shared file.
+  (claude-factory-25z)
 - Fixed: the worker `PreToolUse` hook in `src/worker-hook.ts` (claude-factory-cr6)
   denied only `rm -r`/`rm -rf` and a `cd`+`rm` chain. A worker can still run a plain
   `rm` on a `$variable` path or a glob, or on a path outside the worktree. One such
