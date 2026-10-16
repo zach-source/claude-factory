@@ -635,17 +635,22 @@ function priorWork(run: Run) {
   return p.exitCode === 0 ? p.stdout.toString().trim() : ''
 }
 
-// every call here commits to the memory store, not a rig: a box with no git identity configured
-// (a fresh CI runner, a fresh VM) must still be able to run `factory memory compact` and `dream`.
-// The env only sets what the caller has not already set, so a real identity still wins.
-const MEMORY_GIT_IDENTITY = {
-  GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'factory',
-  GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || 'factory@localhost',
-  GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || 'factory',
-  GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || 'factory@localhost',
+// Every call here commits to the memory store, not a rig.
+// `factory memory compact` and `dream` must still work on a box with no git identity set, for
+// example a fresh CI runner or a fresh VM.
+// Each call first checks with `git var GIT_AUTHOR_IDENT`.
+// An env var, a repo, a global config or a system config that already names an identity wins.
+// The fallback applies only when none of them name one.
+const MEMORY_GIT_IDENTITY_FALLBACK = {
+  GIT_AUTHOR_NAME: 'factory',
+  GIT_AUTHOR_EMAIL: 'factory@localhost',
+  GIT_COMMITTER_NAME: 'factory',
+  GIT_COMMITTER_EMAIL: 'factory@localhost',
 }
 function git(cwd: string, ...args: string[]) {
-  const p = Bun.spawnSync(['git', '-C', cwd, ...args], { env: { ...process.env, ...MEMORY_GIT_IDENTITY } })
+  const probe = Bun.spawnSync(['git', '-C', cwd, 'var', 'GIT_AUTHOR_IDENT'], { env: process.env })
+  const env = probe.exitCode === 0 ? process.env : { ...process.env, ...MEMORY_GIT_IDENTITY_FALLBACK }
+  const p = Bun.spawnSync(['git', '-C', cwd, ...args], { env })
   return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
 }
 
