@@ -450,6 +450,42 @@ export function patrolsText(log: readonly FactoryPatrolLogEntry[]) {
     .join('\n')
 }
 
+/** the pm's own interval. The pm must plan again once a plan reaches this age, even with no other
+ * news (mirrors `PLAN_FRESH_MS`, src/plan.ts and this file's own `PLAN_FRESH_MS`). */
+const PM_INTERVAL_MS = 60 * 60_000
+/** A run going from live to not live wakes the pm again. It waits this long first (the debounce
+ * window), so several runs that finish together cost one pm turn, not one each. */
+const PM_DEBOUNCE_MS = 5 * 60_000
+
+/**
+ * Pure cadence for the pm subagent (claude-factory-dun.5). This is a hidden `factory:pm` subagent.
+ * It ranks each rig's next work on its own timer, never every patrol. register.tsx's `pmNow` calls
+ * this function each tick. It passes the plan's own freshness (`hasPlan`, from a fresh
+ * `readPlan($)` call, never from `pmAt`). A mock clock in every mod test starts at 0; this is the
+ * same trap `patrolStartedAt`'s own comment in register.tsx already documents. It also passes
+ * whether a live run just went not-live (`liveDropped`).
+ *
+ * `due` is true in three cases: there is no plan yet; `now - pmAt` is at least `PM_INTERVAL_MS`
+ * (60 min old, so stale); or a run dropped (`liveDropped`), or an earlier drop is still pending
+ * (`wanted`), and `now - pmAt` is at least `PM_DEBOUNCE_MS` (5 min since the last pm turn).
+ *
+ * The returned `wanted` carries a drop forward through the debounce window. It is `false` once
+ * `due` is true, since the caller is about to act on it. Otherwise the drop stays pending
+ * (`liveDropped || wanted`), so a check before the debounce window ends does not lose it.
+ */
+export function pmDue(
+  now: number,
+  pmAt: number,
+  hasPlan: boolean,
+  liveDropped: boolean,
+  wanted: boolean,
+): { due: boolean; wanted: boolean } {
+  const stale = !hasPlan || now - pmAt >= PM_INTERVAL_MS
+  const afterDebounce = (liveDropped || wanted) && now - pmAt >= PM_DEBOUNCE_MS
+  const due = stale || afterDebounce
+  return { due, wanted: due ? false : liveDropped || wanted }
+}
+
 /** what an open pull request waits on, worst first: conflicts, failing checks, a review, then the merge */
 export function prNeed(pr: Pick<FactoryPrs[number]['prs'][number], 'reviewDecision' | 'mergeStateStatus'>) {
   if (pr.mergeStateStatus === 'DIRTY') return { word: 'conflicts', color: 'red' }
