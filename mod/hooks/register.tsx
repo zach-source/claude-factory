@@ -445,7 +445,16 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
     replies: { ...d.replies, [iv.key]: '' },
     interviewed: [
       ...(d.interviewed ?? []),
-      { key: iv.key, run: iv.run, node: iv.node, rig: iv.rig, bead: iv.bead, question: iv.question, answer: given, at },
+      {
+        key: iv.key,
+        run: iv.run,
+        node: iv.node,
+        rig: iv.rig,
+        bead: iv.bead,
+        question: iv.question,
+        answer: given,
+        at,
+      },
     ].slice(-100),
   }))
 }

@@ -19,7 +19,10 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
   const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
-    env: { ...laptop, FACTORY_HOME: home, FACTORY_AX: join(dir, 'ax'), ...env },
+    // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
+    // would refuse and mail the manager a new "branch is ..., not main" reason, landing in
+    // `home` on a later tick and inflating manager-mail assertions (claude-factory-5h9.8)
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_AX: join(dir, 'ax'), FACTORY_SELF_UPDATE: '0', ...env },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
@@ -69,7 +72,12 @@ test('inside a VM, `report`/`mail`/`memory add --help`|`-h` print usage and exit
   mkdirSync(dir, { recursive: true })
   const outbox = join(dir, 'outbox-help.jsonl')
   const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
-  for (const args of [['report', '--help'], ['report', '-h'], ['mail', '--help'], ['memory', 'add', '--help']]) {
+  for (const args of [
+    ['report', '--help'],
+    ['report', '-h'],
+    ['mail', '--help'],
+    ['memory', 'add', '--help'],
+  ]) {
     const r = factory(args, env)
     expect(r.code).toBe(0)
     expect(r.out).toContain('usage: factory')
@@ -177,7 +185,8 @@ const inbox = (id: string) => readFileSync(join(home, 'runs', id, 'inbox.jsonl')
 /** the fake cluster, but a distinct poll per task (ax://<task>): lets two runs' workers disagree at once */
 function clusterByTask(phase: string, pollByTask: Record<string, object>) {
   rmSync(calls, { force: true })
-  for (const [task, poll] of Object.entries(pollByTask)) writeFileSync(join(dir, `ssh-${task}`), JSON.stringify(poll))
+  for (const [task, poll] of Object.entries(pollByTask))
+    writeFileSync(join(dir, `ssh-${task}`), JSON.stringify(poll))
   const cases = Object.keys(pollByTask)
     .map(task => `    ${task}) cat ${dir}/ssh-${task} ;;`)
     .join('\n')
@@ -252,6 +261,79 @@ test("a tick replays an AX worker's report from its outbox, and the task goes wh
   expect(called()).toContain('-a factory delete task t')
   expect(called()).toContain('-a factory delete workspace t')
   rmSync(join(home, 'runs', 'r1'), { recursive: true })
+})
+
+test('a tick on an AX-only rig still runs with no herdr installed (claude-factory-5h9.4)', () => {
+  const seq = launched('r1h')
+  const report = JSON.stringify({
+    argv: ['report', 'r1h', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 1,
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+
+  // a path with no file at it: the same shape as a box that never installed herdr
+  const first = factory(['tick'], { FACTORY_HERDR: join(dir, 'no-such-herdr') })
+  expect(first.code).toBe(0)
+  expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1h', node: 'a', agent: 'idle', pane: 'ax://t' })
+  rmSync(join(home, 'runs', 'r1h'), { recursive: true })
+})
+
+test('reap() closes a finished run\'s workspace through FACTORY_HERDR, not a literal "herdr" (claude-factory-5h9.12)', () => {
+  const seq = launched('r1x')
+  const report = JSON.stringify({
+    argv: ['report', 'r1x', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 1,
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+  factory(['tick']) // 'a' goes idle: the report is replayed
+  const second = factory(['tick']) // the station ends: the run is over
+  expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1x', node: 'done' })
+
+  // This fake binary is herdr-shaped, but its name is not "herdr". A call to the literal
+  // string `Bun.spawnSync(['herdr', ...])` finds nothing on PATH. It throws instead of
+  // running. Its `pane list` answer names a pane in this finished run's own workspace and
+  // worktree. launched() always uses ws 'w1' and worktree join(dir, 'wt'). reap() then has
+  // one workspace to close. The test also sets a minimal PATH built from this box's own
+  // bun/git/dirname/realpath (so it works on any OS), with no herdr in it. This proves the
+  // fix calls FACTORY_HERDR. It rules out a PATH lookup of "herdr" that happens to succeed,
+  // as it does on a box where herdr is installed.
+  const worktree = join(dir, 'wt') // the fixed worktree launched() always uses
+  const fakeHerdr = join(dir, 'fakeherdr')
+  const herdrCalls = join(dir, 'herdr-calls.log')
+  rmSync(herdrCalls, { force: true })
+  writeFileSync(
+    fakeHerdr,
+    `#!/bin/sh
+echo "$*" >> ${herdrCalls}
+case "$1 $2" in
+  "pane list") printf '{"result":{"panes":[{"pane_id":"p1","workspace_id":"w1","cwd":"${worktree}"}]}}\\n' ;;
+  *) echo '{}' ;;
+esac
+`,
+  )
+  chmodSync(fakeHerdr, 0o755)
+  const minBin = join(dir, 'minbin')
+  mkdirSync(minBin, { recursive: true })
+  // bin/factory's shebang needs dirname and realpath; cli.ts itself needs bun on PATH. Symlink
+  // this box's own copies, so the test works on any OS, without picking up herdr from the same
+  // directory those tools happen to live in.
+  for (const bin of ['bun', 'git', 'dirname', 'realpath']) {
+    const real = Bun.which(bin)
+    if (real) Bun.spawnSync(['ln', '-sf', real, join(minBin, bin)])
+  }
+  expect(Bun.which('herdr', { PATH: minBin })).toBeNull()
+
+  try {
+    const third = factory(['tick'], { FACTORY_HERDR: fakeHerdr, PATH: minBin })
+    expect(third.code).toBe(0) // a crash on the literal 'herdr' call would exit non-zero (or throw before exit)
+    const herdrCallLog = existsSync(herdrCalls) ? readFileSync(herdrCalls, 'utf8') : ''
+    expect(herdrCallLog).toContain('pane list')
+    expect(herdrCallLog).toContain('workspace close w1')
+  } finally {
+    rmSync(join(home, 'runs', 'r1x'), { recursive: true, force: true })
+  }
 })
 
 test('a worker waiting on the manager is suspended, and woken by the answer before it is delivered', () => {
@@ -406,10 +488,7 @@ test('files too big for the env (the brief) go to the VM over ssh in parts once 
 test('a put that fails over ax ssh leaves the station pending inside its 5 min grace, then fails the attempt with the ax error', () => {
   launched('r7')
   const side = join(home, 'runs', 'r7', 't.json')
-  writeFileSync(
-    side,
-    JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['brief.md'] }),
-  )
+  writeFileSync(side, JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['brief.md'] }))
   writeFileSync(join(home, 'runs', 'r7', 't.brief.md'), 'hello')
   rmSync(calls, { force: true })
   writeFileSync(
@@ -447,9 +526,13 @@ esac
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
 })
 
-test("a task gone because serve exited fails the attempt with serve's log, not just \"was closed\"", () => {
+test('a task gone because serve exited fails the attempt with serve\'s log, not just "was closed"', () => {
   launched('r8')
-  cluster('Running', { status: 'exited', log: 'serve died: Error: the laptop never sent brief.md', lines: [] })
+  cluster('Running', {
+    status: 'exited',
+    log: 'serve died: Error: the laptop never sent brief.md',
+    lines: [],
+  })
   const out = factory(['tick'])
   const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8')
   expect(row.agent).toBe('gone')
@@ -528,7 +611,11 @@ test('a single retry is pluralized in the egress FAIL reason, like the mail alre
     status: 'idle',
     session: 's1',
     lines: [],
-    egress: { since: Date.now() - 1_000, tries: 1, last: 'upstream connect error or disconnect/reset before headers' },
+    egress: {
+      since: Date.now() - 1_000,
+      tries: 1,
+      last: 'upstream connect error or disconnect/reset before headers',
+    },
   })
   factory(['tick'])
   const state = readFileSync(join(home, 'runs', 'r12', 'state.json'), 'utf8')
@@ -714,7 +801,16 @@ test('rig add --egress warns, but still adds, when a host is a package registry 
 
 test('rig add --egress warns on a mixed-case registry host too, since parseEgress accepts any case (ei0.16)', () => {
   const r = repo()
-  const warned = factory(['rig', 'add', 'x', r, '--runner', 'ax', '--egress', 'PyPI.org,api.openai.com=OPENAI'])
+  const warned = factory([
+    'rig',
+    'add',
+    'x',
+    r,
+    '--runner',
+    'ax',
+    '--egress',
+    'PyPI.org,api.openai.com=OPENAI',
+  ])
   expect(warned.code).toBe(0)
   expect(warned.err).toContain('PyPI.org is a package registry host')
 })

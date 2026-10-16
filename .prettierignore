@@ -1,0 +1,10 @@
+node_modules/
+bun.lock
+.scratch/
+.specify/
+.beads/
+mod/.claude-plugin/types/
+mod/.claude-plugin/plugin.json
+*.md
+specs/
+deploy/

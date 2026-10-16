@@ -395,7 +395,11 @@ function runDetail(p: Base, d: FactoryDetail | null, peek: string, draft: Factor
         </Text>
       )}
 
-      {rule(p, 'Worker', d.pane ? `${d.pane} · ${standing(d, p.now).word}` : d.isWorking ? 'starting' : 'none now')}
+      {rule(
+        p,
+        'Worker',
+        d.pane ? `${d.pane} · ${standing(d, p.now).word}` : d.isWorking ? 'starting' : 'none now',
+      )}
       {peek ? <Code source={peek} wrap="truncate-end" /> : <Text dimColor>No worker output to show.</Text>}
     </Box>
   )
@@ -571,7 +575,7 @@ export function boardView(
   // opens above the Finished rule, even while that list stays collapsed (A5)
   const openOver: FactoryRun | undefined =
     selected && !open
-      ? over.find(r => r.id === selected) ?? (detail?.id === selected ? detail : { id: selected })
+      ? (over.find(r => r.id === selected) ?? (detail?.id === selected ? detail : { id: selected }))
       : undefined
   const expanded = (r: FactoryRun) => card(p, r, draft, detail, peek)
   return (
@@ -927,7 +931,12 @@ export function mailView(p: Base, board: FactoryBoard, draft: FactoryDraft) {
 }
 
 /** questions for the person from runs that hit a problem only they can settle, and the answers they gave */
-export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft, decisions: FactoryDecisions) {
+export function interviewView(
+  p: Base,
+  board: FactoryBoard,
+  draft: FactoryDraft,
+  decisions: FactoryDecisions,
+) {
   const { Box, Text, Button, Input } = p.ui
   const answered = Object.fromEntries((draft.interviewed ?? []).map(d => [d.key, d.answer]))
   const open = withProposals(
@@ -1013,7 +1022,9 @@ export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft,
                     <Input
                       key={`iv-reply-${iv.key}`}
                       placeholder={
-                        iv.options.length ? 'pick an option, add a note, or answer in your words' : 'your answer'
+                        iv.options.length
+                          ? 'pick an option, add a note, or answer in your words'
+                          : 'your answer'
                       }
                       value={typed}
                       onInput={v => p.act.draft({ replies: { ...draft.replies, [iv.key]: v } })}
@@ -1033,7 +1044,11 @@ export function interviewView(p: Base, board: FactoryBoard, draft: FactoryDraft,
                       />
                     ))}
                     {typed.trim() && (
-                      <Button key={`iv-send-${iv.key}`} label="send answer" onPress={() => p.act.interview(iv)} />
+                      <Button
+                        key={`iv-send-${iv.key}`}
+                        label="send answer"
+                        onPress={() => p.act.interview(iv)}
+                      />
                     )}
                     {iv.run && (
                       <Button

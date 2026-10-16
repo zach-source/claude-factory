@@ -15,7 +15,10 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 const factory = (args: string[], env: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
-    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, ...env },
+    // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
+    // would refuse and mail the manager a new "branch is ..., not main" reason, landing in
+    // `home` on a later tick and inflating manager-mail assertions (claude-factory-5h9.8)
+    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...env },
   })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
 }
@@ -50,7 +53,9 @@ test("decisions lists every rig's human-flagged and owner-only beads, one rig's 
   const ok = rig('ok')
   const broken = rig('broken')
   fakeBd(
-    JSON.stringify([{ id: 'ok-1', title: 'Which DB?', description: 'Question: Which DB?\nOptions: pg | mysql' }]),
+    JSON.stringify([
+      { id: 'ok-1', title: 'Which DB?', description: 'Question: Which DB?\nOptions: pg | mysql' },
+    ]),
     JSON.stringify([{ id: 'ok-2', title: 'A pilot', metadata: { owner_decisions: {} } }]),
   )
   const out = JSON.parse(factory(['decisions']).out)
@@ -61,7 +66,7 @@ test("decisions lists every rig's human-flagged and owner-only beads, one rig's 
   // break only the second rig's bd: its own error, the first rig still listed. A marker file, not $PWD: tmpdir()
   // and the cwd bd actually sees can differ by a macOS /private symlink
   writeFileSync(join(broken, 'BROKEN'), '')
-  writeFileSync(join(bin, 'bd'), '#!/bin/sh\nif [ -f ./BROKEN ]; then echo boom >&2; exit 1; fi\necho \'[]\'\n')
+  writeFileSync(join(bin, 'bd'), "#!/bin/sh\nif [ -f ./BROKEN ]; then echo boom >&2; exit 1; fi\necho '[]'\n")
   chmodSync(join(bin, 'bd'), 0o755)
   const mixed = JSON.parse(factory(['decisions']).out)
   const okRow = mixed.rigs.find((r: { rig: string }) => r.rig === 'ok')
@@ -78,7 +83,9 @@ test('decisions answer responds to a human-flagged bead, comments on an owner-on
   fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
   const answered = factory(['decisions', 'answer', 'api', 'api-1', 'go', 'with', 'postgres'])
   expect(answered.code).toBe(0)
-  expect(readFileSync(calls, 'utf8').trim()).toBe('human respond api-1 -r go with postgres --actor factory/person')
+  expect(readFileSync(calls, 'utf8').trim()).toBe(
+    'human respond api-1 -r go with postgres --actor factory/person',
+  )
 
   rmSync(calls, { force: true })
   fakeBd('null', JSON.stringify([{ id: 'api-2', title: 't', metadata: { owner_decisions: {} } }]))
@@ -106,7 +113,9 @@ test('decisions propose refuses a gate key and a malformed one, a worker, and ot
   expect(malformed.code).not.toBe(0)
   expect(malformed.err).toContain('malformed')
 
-  const refused = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b'], { FACTORY_FROM: 'implement' })
+  const refused = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b'], {
+    FACTORY_FROM: 'implement',
+  })
   expect(refused.code).not.toBe(0)
   expect(refused.err).toContain('a worker cannot propose')
 

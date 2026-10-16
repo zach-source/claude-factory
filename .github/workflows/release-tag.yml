@@ -1,0 +1,159 @@
+name: release-tag
+
+# A person merges a pull request for a release that release.yml opens (branch release/vX.Y.Z,
+# claude-factory-5h9.7). The merge makes a push to main. This workflow starts on that push.
+#
+# This workflow adds a tag to the HEAD of main and makes a GitHub release.
+# It adds the tag only when the version in package.json has no "v<version>" tag at this time.
+# A release always changes the version. So each other push to main, one that does not change the
+# version, does nothing here. No hand edits are necessary.
+#
+# This workflow starts on `push`, not on `pull_request: types: [closed]`.
+#
+# The keyless signing certificate from gitsign has a Fulcio SAN. The SAN comes from the OIDC
+# job_workflow_ref of the job.
+# For a pull_request workflow run, this ref ends with "@refs/pull/N/merge". It never ends with
+# "@refs/heads/main".
+#
+# A verify pinned to the branch did not pass on all releases. It did not pass right after the tag
+# push. A retry was not possible. A rerun refused "tag exists" (claude-factory-5h9.14).
+#
+# A push workflow run has the real "refs/heads/main" as its ref. So the same verify succeeds.
+#
+# This workflow signs the tag with gitsign. gitsign is the keyless signer from Sigstore.
+# The job has the id-token: write permission. This permission lets gitsign get a short-lived
+# OIDC token from the GitHub token service.
+#
+# The step below sets GITSIGN_TOKEN_PROVIDER=github-actions. gitsign sends that token to Fulcio.
+# Fulcio gives gitsign a one-time signing certificate.
+#
+# The secrets of this public repo hold no long-lived signing key. docs/releasing.md shows this
+# decision and the verify command.
+on:
+  push:
+    branches: [main]
+
+# Two pushes to main close together would start two runs of this job at once. Both can read the
+# same version and race to make the same tag. A shared group queues the second run instead
+# (cancel-in-progress: false): a release in progress must finish, not get cancelled mid-tag.
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.13'
+
+      - name: read the released version and refuse a drift
+        id: version
+        run: |
+          set -e
+          pkg_version="$(jq -r .version package.json)"
+          plugin_version="$(jq -r .version mod/.claude-plugin/plugin.json)"
+          if [ "$pkg_version" != "$plugin_version" ]; then
+            echo "package.json is $pkg_version but mod/.claude-plugin/plugin.json is $plugin_version; refusing" >&2
+            exit 1
+          fi
+          echo "version=$pkg_version" >> "$GITHUB_OUTPUT"
+
+      - name: check what this version already has, tag and release apart
+        # claude-factory-5h9.19: an earlier run can push the tag, then fail before it publishes
+        # the release. Causes: a network blip, or a bad `gh` call.
+        # A rerun that skips on "tag exists" alone would then never publish.
+        # So this step checks the tag and the release on their own.
+        # tag_exists gates the tag steps. skip gates the whole job.
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null 2>&1; then
+            echo "tag v$VERSION already exists"
+            tag_exists=1
+          else
+            tag_exists=0
+          fi
+          if gh release view "v$VERSION" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "release v$VERSION already exists"
+            release_exists=1
+          else
+            release_exists=0
+          fi
+          echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
+          if [ "$tag_exists" = "1" ] && [ "$release_exists" = "1" ]; then
+            echo "both the tag and the release for v$VERSION exist; this push is not a release merge, nothing to do"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: refuse a commit merged after the cut, with its bullets still under Unreleased
+        # A commit can land on main after the release PR's cut, before the release PR itself
+        # merges. Its own CHANGELOG bullet stays under "## Unreleased", so the release notes
+        # below (read from the already-cut "## X.Y.Z (...)" section) would miss it
+        # (claude-factory-5h9.11). This step runs before the tag, so a refusal here makes no
+        # tag and no release for this version (claude-factory-5h9.20). The code stays on main;
+        # it ships only once a later release cuts the still-open Unreleased section.
+        if: steps.check.outputs.skip == '0' && steps.check.outputs.tag_exists == '0'
+        run: bun src/release.ts check-no-late-unreleased
+
+      - name: install gitsign 0.17.1
+        # Pinned release binary, checked by its published sha256 (checksums.txt on the v0.17.1
+        # GitHub release). gitsign has no GitHub Action of its own.
+        if: steps.check.outputs.skip == '0' && steps.check.outputs.tag_exists == '0'
+        run: |
+          set -e
+          curl -sSL -o gitsign https://github.com/sigstore/gitsign/releases/download/v0.17.1/gitsign_0.17.1_linux_amd64
+          echo "69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae  gitsign" | sha256sum -c -
+          chmod +x gitsign
+          sudo mv gitsign /usr/local/bin/gitsign
+
+      - name: sign the tag
+        if: steps.check.outputs.skip == '0' && steps.check.outputs.tag_exists == '0'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GITSIGN_TOKEN_PROVIDER: github-actions
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config gpg.format x509
+          git config gpg.x509.program gitsign
+          git tag -s -m "release v$VERSION" "v$VERSION"
+
+      - name: verify the signature, then push the tag
+        if: steps.check.outputs.skip == '0' && steps.check.outputs.tag_exists == '0'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+          gitsign verify-tag "v$VERSION" \
+            --certificate-identity="https://github.com/${{ github.repository }}/.github/workflows/release-tag.yml@refs/heads/main" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+          git push origin "v$VERSION"
+
+      - name: publish the GitHub release from the moved CHANGELOG section
+        # Runs even on a rerun that finds the tag already pushed (tag_exists == '1'): only
+        # "skip" (both tag and release already exist) stops this step.
+        if: steps.check.outputs.skip == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+          bun install --frozen-lockfile
+          bun src/release.ts notes "$VERSION" > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" --verify-tag --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"

@@ -11,7 +11,9 @@ const dir = join(tmpdir(), `memory-add-dup-from-${process.pid}`)
 const home = join(dir, 'home')
 
 const run = (args: string[]) => {
-  const p = Bun.spawnSync([CLI, ...args], { env: { ...process.env, FACTORY_HOME: home } })
+  // the laptop's environment: no worker variables another test file left in this process
+  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const p = Bun.spawnSync([CLI, ...args], { env: { ...laptop, FACTORY_HOME: home } })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
 }
 

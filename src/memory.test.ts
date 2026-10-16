@@ -60,7 +60,14 @@ test('a note keeps its summary, rig and provenance through a write and a read', 
 
 test('a LONG.md entry keeps its id, rig, from, at and body through a write and a read', () => {
   const entries: LongEntry[] = [
-    { id: 'bd-lock', summary: 'bd init locks every repo', rig: 'fabriek', from: 'r1/verify', at: '2026-10-06', body: 'why\nhow' },
+    {
+      id: 'bd-lock',
+      summary: 'bd init locks every repo',
+      rig: 'fabriek',
+      from: 'r1/verify',
+      at: '2026-10-06',
+      body: 'why\nhow',
+    },
     { id: 'no-meta', summary: 'a plain entry with no rig, from or at', body: 'just a body' },
   ]
   expect(parseLong(formatLong(entries))).toEqual(entries)
@@ -148,7 +155,11 @@ test('search indexes CORE.md bullets as fact notes, scoped to their rig section'
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'CORE.md'),
-    ['- always search the memory before you start a station', '## rig: fabriek', '- use uv run --frozen, never bare pip'].join('\n'),
+    [
+      '- always search the memory before you start a station',
+      '## rig: fabriek',
+      '- use uv run --frozen, never bare pip',
+    ].join('\n'),
   )
   const [top] = await search(dir, 'how do I run python commands in this rig?', { rig: 'fabriek' })
   expect(top!.note.path).toMatch(/^CORE\.md#[0-9a-f]{8}$/)
@@ -287,7 +298,7 @@ test('tally counts runs by distinct `by`, or by distinct UTC day for an older li
   expect(tally(folded).get('c.md')).toEqual({ path: 'c.md', shown: 5, helped: 3, at: at + 2000, runs: 3 })
 })
 
-test('compact() keeps a LONG.md entry\'s usage under its #id, and drops it only when the id is gone', () => {
+test("compact() keeps a LONG.md entry's usage under its #id, and drops it only when the id is gone", () => {
   const dir = join(tmpdir(), `memory-long-usage-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(dir, 'beads'), { recursive: true })
@@ -499,9 +510,9 @@ test('decide() merges a shown-or-helped note once it is 7 days old, not at 6', (
 })
 
 test('decide() archives a superseded note outright, even if young and helped', () => {
-  expect(
-    decide([short({ ageDays: 1, staleDays: 1, helped: 5, superseded: 'beads/y.md' })], []),
-  ).toEqual([{ kind: 'archive', path: 'beads/x.md', reason: 'superseded by beads/y.md' }])
+  expect(decide([short({ ageDays: 1, staleDays: 1, helped: 5, superseded: 'beads/y.md' })], [])).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'superseded by beads/y.md' },
+  ])
 })
 
 test('decide() never touches an inbox note: the dream files it first', () => {
@@ -547,13 +558,18 @@ test('applyTiers() merges an old, used short note into LONG.md and keeps its usa
     join(dir, 'beads', 'lock.md'),
     format({ summary: 'bd init locks every repo', at: old, body: 'why and how' }),
   )
-  writeFileSync(join(dir, 'beads', 'fresh.md'), format({ summary: 'too young to merge', at: '2026-10-14', body: '' }))
+  writeFileSync(
+    join(dir, 'beads', 'fresh.md'),
+    format({ summary: 'too young to merge', at: '2026-10-14', body: '' }),
+  )
   use(dir, ['beads/lock.md'], 'helped', now - 1000)
 
   const { decisions, renamed, merged, archived } = applyTiers(dir, { now })
   expect(merged).toBe(1)
   expect(archived).toBe(0)
-  expect(decisions).toEqual([{ kind: 'merge', path: 'beads/lock.md', reason: 'shown or helped, 14 days old' }])
+  expect(decisions).toEqual([
+    { kind: 'merge', path: 'beads/lock.md', reason: 'shown or helped, 14 days old' },
+  ])
   expect(renamed).toEqual({ 'beads/lock.md': 'beads/LONG.md#bd-init-locks-every-repo' })
   expect(existsSync(join(dir, 'beads', 'lock.md'))).toBe(false)
   const entries = parseLong(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8'))
@@ -617,7 +633,10 @@ test("applyTiers must run after the dream's own renames are compacted, or a just
     mkdirSync(join(dir, 'beads'), { recursive: true })
     use(dir, ['inbox/x.md'], 'helped', now - 1000) // helped under its pre-dream path
     // the dream filed it under beads/ already, keeping the note's own old at: date
-    writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'bd init locks every repo', at: '2026-08-01', body: 'why' }))
+    writeFileSync(
+      join(dir, 'beads', 'x.md'),
+      format({ summary: 'bd init locks every repo', at: '2026-08-01', body: 'why' }),
+    )
     const { archived, merged } = applyTiers(dir, { now })
     expect(archived).toBe(1) // usage is still keyed to inbox/x.md: this note looks never helped
     expect(merged).toBe(0)
@@ -628,7 +647,10 @@ test("applyTiers must run after the dream's own renames are compacted, or a just
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(join(dir, 'beads'), { recursive: true })
     use(dir, ['inbox/x.md'], 'helped', now - 1000)
-    writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'bd init locks every repo', at: '2026-08-01', body: 'why' }))
+    writeFileSync(
+      join(dir, 'beads', 'x.md'),
+      format({ summary: 'bd init locks every repo', at: '2026-08-01', body: 'why' }),
+    )
     compact(dir, { 'inbox/x.md': 'beads/x.md' })
     const { archived, merged } = applyTiers(dir, { now })
     expect(archived).toBe(0)
@@ -645,7 +667,10 @@ test("longAliasRenames turns a LONG.md entry's aliases into renames, so a dream'
     join(dir, 'beads', 'LONG.md'),
     formatLong([{ id: 'a', summary: 'kept entry', aliases: ['b'], body: 'merged body' }]),
   )
-  writeFileSync(join(dir, 'ci', 'LONG.md'), formatLong([{ id: 'x', summary: 'another topic, no aliases', body: 'body' }]))
+  writeFileSync(
+    join(dir, 'ci', 'LONG.md'),
+    formatLong([{ id: 'x', summary: 'another topic, no aliases', body: 'body' }]),
+  )
   expect(longAliasRenames(dir)).toEqual({ 'beads/LONG.md#b': 'beads/LONG.md#a' })
 
   use(dir, ['beads/LONG.md#b'], 'helped')
@@ -707,7 +732,9 @@ test('applyTiers() merges into a LONG.md that differs from canonical formatLong 
     expect([why, skipped]).toEqual([why, []])
     expect([why, renamed]).toEqual([why, { 'beads/new.md': 'beads/LONG.md#bd-init-locks-every-repo' }])
     // the entry the file already held survives the rewrite, body and all
-    expect(parseLong(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).map(e => e.id)).toContain('kept-entry')
+    expect(parseLong(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).map(e => e.id)).toContain(
+      'kept-entry',
+    )
   }
 })
 
@@ -715,7 +742,7 @@ function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 }
 
-test("applyTiers() picks a new LONG.md id that is not already an alias or an old id in the rename log (claude-factory-59r.18)", () => {
+test('applyTiers() picks a new LONG.md id that is not already an alias or an old id in the rename log (claude-factory-59r.18)', () => {
   const dir = join(tmpdir(), `memory-apply-id-collision-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(dir, 'beads'), { recursive: true })
@@ -759,7 +786,7 @@ test('applyTiers() picks a new LONG.md id that avoids a renameLog key with no cu
   expect(renamed).toEqual({ 'beads/new.md': 'beads/LONG.md#bd-init-locks-every-repo-2' })
 })
 
-test('applyTiers() rewrites a short note\'s markdown link in its topic README to the LONG.md entry it became (claude-factory-59r.19a)', () => {
+test("applyTiers() rewrites a short note's markdown link in its topic README to the LONG.md entry it became (claude-factory-59r.19a)", () => {
   const dir = join(tmpdir(), `memory-apply-readme-link-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(dir, 'beads'), { recursive: true })
@@ -770,7 +797,10 @@ test('applyTiers() rewrites a short note\'s markdown link in its topic README to
   )
   writeFileSync(
     join(dir, 'beads', 'README.md'),
-    format({ summary: 'topic readme', body: '- [bd-init-locks-every-repo](new.md): bd init locks every repo' }),
+    format({
+      summary: 'topic readme',
+      body: '- [bd-init-locks-every-repo](new.md): bd init locks every repo',
+    }),
   )
   use(dir, ['beads/new.md'], 'helped', now - 1000)
 
@@ -781,7 +811,7 @@ test('applyTiers() rewrites a short note\'s markdown link in its topic README to
   expect(readFileSync(join(dir, 'beads', 'README.md'), 'utf8')).not.toContain('(new.md)')
 })
 
-test('applyTiers() rewrites an archived note\'s README link, not just a merged one (claude-factory-59r.22)', () => {
+test("applyTiers() rewrites an archived note's README link, not just a merged one (claude-factory-59r.22)", () => {
   const dir = join(tmpdir(), `memory-apply-archive-readme-link-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(dir, 'beads'), { recursive: true })
@@ -795,7 +825,11 @@ test('applyTiers() rewrites an archived note\'s README link, not just a merged o
   Bun.spawnSync(
     ['git', '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
     {
-      env: { ...process.env, GIT_AUTHOR_DATE: '2026-08-01T00:00:00', GIT_COMMITTER_DATE: '2026-08-01T00:00:00' },
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: '2026-08-01T00:00:00',
+        GIT_COMMITTER_DATE: '2026-08-01T00:00:00',
+      },
     },
   )
   const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_STALE_DAYS (30)
@@ -839,9 +873,12 @@ test('applyTiers() ages a note with no at: from the commit that added it, not th
   mkdirSync(join(dir, 'beads'), { recursive: true })
   const commit = (msg: string, date: string) => {
     Bun.spawnSync(['git', '-C', dir, 'add', '-A'])
-    Bun.spawnSync(['git', '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', msg], {
-      env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
-    })
+    Bun.spawnSync(
+      ['git', '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', msg],
+      {
+        env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+      },
+    )
   }
   writeFileSync(join(dir, 'beads', 'old.md'), format({ summary: 'a note with no at', body: 'first body' }))
   Bun.spawnSync(['git', '-C', dir, 'init', '-q'])
@@ -916,7 +953,7 @@ test('evaluate() runs the fixed query set against a real store through search()'
   expect(r.misses).toEqual([])
 }, 60_000)
 
-test("dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate and unsafe sections", () => {
+test('dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate and unsafe sections', () => {
   const empty = dreamPrompt('/tmp/memory', [], [], [])
   expect(empty).toContain('LONG.md')
   expect(empty).toContain("Never change an entry's `id`")
@@ -947,28 +984,59 @@ test('longSimPairs finds a near-duplicate pair of LONG.md entries in the same to
   mkdirSync(join(dir, 'beads'), { recursive: true })
   mkdirSync(join(dir, 'ci'), { recursive: true })
   const entries: LongEntry[] = [
-    { id: 'a', summary: 'bd init on the shared Dolt server locks every repo', rig: 'claude-factory', body: 'why' },
-    { id: 'b', summary: 'bd init takes a lock on the shared Dolt server, blocking every repo', rig: 'claude-factory', body: 'why, reworded' },
-    { id: 'c', summary: 'kubectl rollout status confirms a deploy finished', rig: 'claude-factory', body: 'unrelated' },
-    { id: 'd', summary: 'bd init on the shared Dolt server locks every repo', rig: 'sluis', body: 'same words, another rig' },
+    {
+      id: 'a',
+      summary: 'bd init on the shared Dolt server locks every repo',
+      rig: 'claude-factory',
+      body: 'why',
+    },
+    {
+      id: 'b',
+      summary: 'bd init takes a lock on the shared Dolt server, blocking every repo',
+      rig: 'claude-factory',
+      body: 'why, reworded',
+    },
+    {
+      id: 'c',
+      summary: 'kubectl rollout status confirms a deploy finished',
+      rig: 'claude-factory',
+      body: 'unrelated',
+    },
+    {
+      id: 'd',
+      summary: 'bd init on the shared Dolt server locks every repo',
+      rig: 'sluis',
+      body: 'same words, another rig',
+    },
   ]
   writeFileSync(join(dir, 'beads', 'LONG.md'), formatLong(entries))
   writeFileSync(
     join(dir, 'ci', 'LONG.md'),
-    formatLong([{ id: 'e', summary: 'bd init on the shared Dolt server locks every repo', rig: 'claude-factory', body: 'same words, another topic' }]),
+    formatLong([
+      {
+        id: 'e',
+        summary: 'bd init on the shared Dolt server locks every repo',
+        rig: 'claude-factory',
+        body: 'same words, another topic',
+      },
+    ]),
   )
 
   const pairs = await longSimPairs(dir)
   expect(pairs.every(p => p.score >= 0.88)).toBe(true)
   expect(
     pairs.some(
-      p => (p.a === 'beads/LONG.md#a' && p.b === 'beads/LONG.md#b') || (p.a === 'beads/LONG.md#b' && p.b === 'beads/LONG.md#a'),
+      p =>
+        (p.a === 'beads/LONG.md#a' && p.b === 'beads/LONG.md#b') ||
+        (p.a === 'beads/LONG.md#b' && p.b === 'beads/LONG.md#a'),
     ),
   ).toBe(true)
   // c (a different lesson) pairs with nothing
   expect(pairs.some(p => p.a.includes('#c') || p.b.includes('#c'))).toBe(false)
   // d (another rig) and e (another topic) never pair with a, even with identical wording
-  expect(pairs.some(p => p.a.includes('#d') || p.b.includes('#d') || p.a.includes('#e') || p.b.includes('#e'))).toBe(false)
+  expect(
+    pairs.some(p => p.a.includes('#d') || p.b.includes('#d') || p.a.includes('#e') || p.b.includes('#e')),
+  ).toBe(false)
 }, 60_000)
 
 test('tierCandidates composes decide(), longSimPairs() and usage() into dream-prompt lines for promotion and dedupe', async () => {
@@ -978,9 +1046,19 @@ test('tierCandidates composes decide(), longSimPairs() and usage() into dream-pr
   writeFileSync(
     join(dir, 'beads', 'LONG.md'),
     formatLong([
-      { id: 'lock', summary: 'bd init on the shared Dolt server locks every repo', rig: 'claude-factory', body: 'why' },
+      {
+        id: 'lock',
+        summary: 'bd init on the shared Dolt server locks every repo',
+        rig: 'claude-factory',
+        body: 'why',
+      },
       { id: 'x', summary: 'a note that only helped once', rig: 'claude-factory', body: 'body x' },
-      { id: 'y', summary: 'a note that only helped once, in other words', rig: 'claude-factory', body: 'body y' },
+      {
+        id: 'y',
+        summary: 'a note that only helped once, in other words',
+        rig: 'claude-factory',
+        body: 'body y',
+      },
     ]),
   )
   const now = Date.parse('2026-10-15T00:00:00Z')
