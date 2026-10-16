@@ -6,6 +6,39 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A worker can never merge or push its own default branch. Only a person's merge, through
+  auto-merge, can ship a pull request. (claude-factory-zl5)
+  - Cause: the owner's ruleset decision (2026-10-16) lets GitHub merge a pull request on
+    green through auto-merge. But admin bypass on the ruleset also lets a worker's own
+    `gh pr merge` or push skip review. `ax-aw1` found two pull requests that merged before
+    their own review ran.
+  - Fix: `implement` now opens the draft pull request (`factories/lifecycle.ts`). `review`
+    opens one only as a fallback, when none exists yet. Only `release` marks a pull request
+    ready for review, and only `release` may run `gh pr merge`.
+  - The worker `PreToolUse` hook (`src/worker-hook.ts`) denies these commands at every other
+    station: `gh pr merge` (plain, `--auto`, `--admin`, or wrapped in `sudo`, `env`,
+    `timeout`, `watch`, `bash -lc`, or `eval`); `gh pr ready`; and the GraphQL
+    `enablePullRequestAutoMerge` and `markPullRequestReadyForReview` mutations. The hook
+    finds a mutation by name in `-f`/`-F`/`--field=`/`--raw-field=` text, or in an
+    `@file`/`--input` payload.
+  - The hook also denies `git push` to a protected branch, and a REST or GraphQL API write
+    to one. A write is `PATCH`/`DELETE .../git/refs/heads/<branch>`,
+    `PUT`/`POST`/`DELETE .../contents/<path>`, `createCommitOnBranch`, `updateRef(s)`,
+    `deleteRef`, or `git -c alias.<x>=push`. A protected branch is `main`, `master`, a rig's
+    own `protectedBranches` list, or its `origin/HEAD` target. The hook reads `origin/HEAD`
+    live from the worktree, and denies the push when that read fails.
+  - Added: `factory rig add <rig> <repo> --protected-branch <name>` (repeat the flag for
+    more than one branch). Use it for a rig whose default branch is not `main` or `master`,
+    for example `factory rig add ax ~/repos/ax --protected-branch acme-deploy`. A rig with
+    the list gets its own `worker-settings-<rig>.json` file, the same pattern the
+    `--person-only-context` flag already uses.
+  - `rollback` keeps its existing, narrower right to push straight to the default branch.
+    No other station gets one.
+  - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
+    non-`main` default branch stays unprotected until a person adds it with
+    `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
+    only after a person rebuilds and pushes its worker image (`hack/push-worker.sh`).
+
 - Dispatch now checks a ready bead before it starts a run for it, and skips a bead a merged
   pull request or a live run already covers. (claude-factory-6as)
   - Cause: a 3-day review (2026-10-13 to 16) found 40 of 319 triage visits (12.5%) were
