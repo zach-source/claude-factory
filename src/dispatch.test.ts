@@ -252,11 +252,25 @@ test("a plan.json whose rig entry has no 'items'/'findings' arrays reads as no p
   expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
 })
 
-test("a plan.json whose rig entry has a null finding reads as no plan, not a throw (claude-factory-dun.20)", () => {
+test("a plan.json with a null finding reads as no plan, not a throw: dispatch keeps bd order, not the plan's own ranking (claude-factory-dun.20)", () => {
   resetTwo(2, 2)
   writeFileSync(
     join(home, 'plan.json'),
-    JSON.stringify({ at: Date.now(), rigs: { a: { items: [], findings: [null] } }, proposals: [] }),
+    JSON.stringify({
+      at: Date.now(),
+      // ranks acme-2 first: were this plan accepted, dispatch would start acme-2 instead
+      // (claude-factory-dun.3's own test proves that). A null finding must reject the whole plan.
+      rigs: {
+        a: {
+          items: [
+            { id: 'acme-2', title: 'acme-2', priority: 0, why: '' },
+            { id: 'acme-1', title: 'acme-1', priority: 0, why: '' },
+          ],
+          findings: [null],
+        },
+      },
+      proposals: [],
+    }),
   )
   const out = factory(['beads'])
   expect(out.code).toBe(0)
