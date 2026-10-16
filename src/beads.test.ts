@@ -329,3 +329,75 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     process.env.PATH = path
   }
 })
+
+test('hasMetadata reads the metadata-field listing, true only when bd answers a non-empty array', () => {
+  const bin = join(tmpdir(), `fake-bd-hasmeta-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const mode = join(bin, 'mode')
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1 $2" in',
+    '"list --all")',
+    '  case "$(cat ' + mode + ')" in',
+    '    hit) printf \'%s\' \'[{"id":"fx-9"}]\'; exit 0;;',
+    "    miss) printf '%s' 'null'; exit 0;;",
+    '    fail) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
+    '  esac;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+
+    writeFileSync(mode, 'hit')
+    writeFileSync(log, '')
+    expect(b.hasMetadata('pm_finding', 'starved-epic:a:fx-1')).toBe(true)
+    expect(readFileSync(log, 'utf8').trim()).toBe(
+      'list --all --metadata-field pm_finding=starved-epic:a:fx-1 --json -n 2 --actor factory',
+    )
+
+    writeFileSync(mode, 'miss')
+    expect(b.hasMetadata('pm_finding', 'starved-epic:a:fx-1')).toBe(false)
+
+    writeFileSync(mode, 'fail')
+    expect(() => b.hasMetadata('pm_finding', 'starved-epic:a:fx-1')).toThrow(/bd list --metadata-field/)
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('fileFinding creates with the pm_finding metadata and no factory label; human adds the human label', () => {
+  const bin = join(tmpdir(), `fake-bd-filefinding-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const script = ['#!/bin/sh', `echo "$*" >> ${log}`, 'case "$1" in', '  create) echo new-1;;', 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+
+    writeFileSync(log, '')
+    expect(b.fileFinding('t', 'd', 'epic-done-open:a:fx-1')).toBe('new-1')
+    const unlabeled = readFileSync(log, 'utf8').trim()
+    expect(unlabeled).toBe('create t -d d --metadata {"pm_finding":"epic-done-open:a:fx-1"} --actor factory')
+    expect(unlabeled).not.toContain('-l factory')
+    expect(unlabeled).not.toContain('-l human')
+
+    writeFileSync(log, '')
+    b.fileFinding('t2', 'd2', 'starved-epic:a:fx-2', { human: true })
+    expect(readFileSync(log, 'utf8').trim()).toBe(
+      'create t2 -d d2 --metadata {"pm_finding":"starved-epic:a:fx-2"} -l human --actor factory',
+    )
+  } finally {
+    process.env.PATH = path
+  }
+})
