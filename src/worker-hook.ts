@@ -1,17 +1,21 @@
 /**
- * This is a Claude Code PreToolUse hook for Bash.
- * It denies `rm -r` and `rm -rf`, in any spelling or wrapper.
- * It also denies a chain of commands that holds both a `cd` and an `rm`.
- * It gives a reason immediately. The worker reads the reason and continues.
+ * This PreToolUse hook for Bash denies `rm -r` and `rm -rf` in all spellings or wrappers.
+ * It denies a chain of commands that holds a `cd` command and an `rm` command.
+ * It denies an `rm` command with a target that holds a `$variable` expansion or a glob.
+ * It denies an `rm` command with a target that resolves to a path external to the worktree root (claude-factory-99d).
+ * It gives the reason at once, and the worker reads it and goes on.
  * The worker does not wait 2 minutes for Claude Code's own permission prompt.
  *
  * The prompt-only fix of claude-factory-9wu (src/worker-system.md) was not enough.
- * Two workers stopped at the prompt after PR #38 merged: lifecycle-mva1ki70a9 and lifecycle-mva7smkfhf.
+ * After PR #38 merged, two workers stopped at the prompt: lifecycle-mva1ki70a9 and lifecycle-mva7smkfhf.
+ * A later worker (lifecycle-mvaf3xiato) stopped the same way on `rm -i "$X"/*`.
+ * The -r/-rf check alone did not catch a variable or glob target with no recursive flag.
  *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
- * claude-factory-9wu rejected another design as a safety regression: a hook that approves `rm -rf`.
- * If a parse error occurs, the hook fails open. It prints nothing. Claude Code's own prompt stays the backstop.
+ * claude-factory-9wu rejected another design: a hook that approves `rm -rf`, which is a safety regression.
+ * If a parse error occurs, the hook fails open and prints nothing.
+ * Claude Code's own prompt stays the backstop.
  */
 
 import { resolve as resolvePath } from 'node:path'
