@@ -54,6 +54,24 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: `src/devenv.test.ts`'s isDue cache-key test spawns about 18 real git processes (init, commit, clone, fetch). At a shared-host load average of 40 it took 5.1-6.7s, past bun's default 5000 ms per-test timeout. The test now passes `30_000` as `test()`'s third argument, the same pattern `src/remote.test.ts` uses for its own real-git test. (claude-factory-fpf)
 - Fixed: `waitReady`'s http ready probe (`src/worker.ts`) called `fetch()` with no signal. A probed port can accept the connection, then never answer. This can block one `fetch` call past `FACTORY_SERVICES_WAIT_MS`. The first turn then waited longer than its documented budget. The http probe now passes `signal: AbortSignal.timeout(4000)`, the same 4s budget the exec probe already had. The wait loop now reads elapsed time after each probe, not before it. A timed-out probe now counts at once, not on the next 1s tick. (claude-factory-iap)
 - Fixed: the pkg-gate's `/go/sumdb/*` passthrough (`handleGo` in `src/pkggate.ts`) forwarded every request to `cfg.upstream.go` (`proxy.golang.org`), a host that no longer serves `/sumdb/`. Any non-2xx became a hard 502, and a gated Go task with the default `GOSUMDB` can verify no module: the egress policy strips `sum.golang.org` from a gated task, so it cannot fall back there either. The gate now answers `/supported` itself, with no upstream fetch, and forwards `latest`, `lookup/*` and `tile/*` to `cfg.upstream.sumdb` (`sum.golang.org`) with `redirect: 'manual'`. Any other db name or sub-path gets a 404, with no fetch. (claude-factory-1hc)
+- Fixed: two deploy stations did live steps that the rig's goal reserved for the
+  person. `ax-768` pushed images and ran `kubectl apply` on the live cluster.
+  `claude-factory-5h9` made a GitHub ruleset and changed a repository setting. The
+  root cause: no worker brief carried the rig goal. A station had no way to see
+  which steps to skip. `ruleLines(def, rigGoal)` (`src/cli.ts`) now adds this goal to
+  every worker's brief, in a new "## Rig goal" section right after "## House
+  rules", when the rig has a goal. A run with no rig, or a rig with no goal, gets
+  the same brief as before. `factories/lifecycle.ts` and `factories/release.ts`
+  each add one house rule. It marks these steps owner-only: a hand-run change to a
+  live system (`kubectl apply`/`patch`/`scale`/`delete`/`rollout restart`, `helm`
+  or `terraform apply`); an image push to a production registry; a
+  branch-protection or ruleset change; a repository or organization setting; or a
+  credential, secret or token change. A station runs an owner-only step only when
+  the run's bead or the manager's factory mail says the person approved that exact
+  step. Otherwise, the station does every other step, then reports blocked with
+  "parked, waiting on: \<the owner step and the exact command\>". The lifecycle
+  deploy prompt and the release rollout prompt each add a line: a merge approves
+  the change it carries, not an owner-only step. (claude-factory-9gx)
 
 ## 0.12.0 (2026-10-15)
 
