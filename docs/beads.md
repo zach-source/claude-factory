@@ -231,10 +231,16 @@ The factory does these 3 steps every 20 minutes for each rig with the loop on:
 1. Fetch a fresh key from the secret broker. List the issues of the rig's team from the Linear
    API with that key. This call is read-only. It never changes a Linear issue.
 
-   Keep only the routed issues of this rig that Linear's own `updatedAt` marks as changed since
-   the last good pull of the rig.
+   Find the rig's last good pull. Move the cutoff back 5 minutes from that time.
+   Keep only the routed issues of this rig that Linear's own `updatedAt` marks as changed
+   since the cutoff.
 
-   Exception: with `--force` or on the first pass of a rig, read every routed issue.
+   The 5-minute buffer covers clock drift. The factory's own clock and Linear's clock can
+   differ. Without the buffer, the cutoff can skip an issue for good. Linear can mark that
+   issue as updated shortly before the last good pull.
+
+   Exception: `--force`, or the first pass of a rig, skips the cutoff. Each reads every
+   routed issue.
 
    The listing stops after 50 pages (5,000 issues). When a team has more, `factory rig list` and
    the console show `list truncated at the 50-page cap`. Treat the unrouted count and the

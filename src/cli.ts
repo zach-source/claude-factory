@@ -2616,6 +2616,10 @@ async function sweep() {
 }
 
 const LINEAR_MS = 20 * 60_000 // how often an opted-in rig's Linear issues are pulled
+// how far behind `lastGoodAt` the incremental cutoff looks (claude-factory-b6c.26): this process's
+// clock and Linear's own clock can drift; a buffer this wide stops the cutoff from skipping an issue
+// Linear marks as updated shortly before the last good pull.
+const LINEAR_SKEW_MS = 5 * 60_000
 // Caches only the secret broker's vault and item ids, for this process's life. It never caches the
 // Linear API key itself.
 const linearConnectCache: ConnectCache = {}
@@ -2690,10 +2694,16 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
  * An issue with no matching rig counts toward `unrouted`. The loop never pulls it anywhere.
  * It fetches the key from the secret broker, and passes the key and the rig's team ids to `bd` by
  * env only (claude-factory-b6c.20).
+ *
  * Among this rig's routed issues, it sends `bd` only the ones Linear's own `updatedAt` marks as
- * changed since this rig's last good pull, unless `force` is set or this is the rig's first pass
- * (claude-factory-b6c.24). `unrouted` still counts every unmatched issue of the full listing, with
- * no time cutoff.
+ * changed. The cutoff is `LINEAR_SKEW_MS` before this rig's last good pull (claude-factory-b6c.24).
+ * `force`, or the rig's first pass, skip the cutoff and send every routed issue.
+ *
+ * `LINEAR_SKEW_MS` covers clock drift between this process and Linear's own clock. Without this
+ * buffer, the cutoff can skip an issue for good when Linear marks it as updated shortly before the
+ * last good pull (claude-factory-b6c.26).
+ *
+ * `unrouted` counts every unmatched issue of the full listing. The time cutoff does not affect it.
  *
  * `bd` copies each Linear label to the bead that it maps. A new bead, or an updated bead, can have the
  * `factory` label as soon as the pull writes it. This function removes that label again. A person, not a
@@ -2722,10 +2732,13 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
   const prior = state[rig.name]
   const retry = prior?.unstripped ?? []
   const baseline = prior?.baseline
-  // the time cutoff below only skips re-sending an unchanged issue to `bd`; it never narrows the
-  // unrouted count or the label-strip check (claude-factory-b6c.24). `--force`, and a rig's first
-  // pass (no prior good pull), read every routed issue.
-  const since = force ? undefined : prior?.lastGoodAt
+  // the time cutoff below only skips re-sending an unchanged issue to `bd`. It never narrows the
+  // unrouted count or the label-strip check (claude-factory-b6c.24).
+  // `--force`, and a rig's first pass (no prior good pull), skip the cutoff and read every routed
+  // issue.
+  // `LINEAR_SKEW_MS` moves the cutoff back from `lastGoodAt`. This covers clock drift between this
+  // process and Linear's own clock, so the cutoff does not skip an issue for good (claude-factory-b6c.26).
+  const since = force || !prior?.lastGoodAt ? undefined : prior.lastGoodAt - LINEAR_SKEW_MS
   let secrets: string[] = []
   try {
     const creds = resolveConnectCreds()

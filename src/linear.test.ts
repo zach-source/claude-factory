@@ -1033,3 +1033,58 @@ test("a second due pass sends bd only issues changed since the rig's last good p
   factory(['linear']) // due again; the fixture's issue (updatedAt 2026-01-01) predates lastGoodAt
   expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1) // still just the first
 })
+
+test("a second due pass pulls an issue Linear marks as changed after the rig's last good pull, naming only that issue (claude-factory-b6c.25)", () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
+  factory(['linear']) // first pass: no prior lastGoodAt yet, so it pulls the fixture's one issue
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1)
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  const lastGoodAt = state.a.lastGoodAt
+  expect(lastGoodAt).toBeTruthy()
+
+  // backdate state.a.at so the pull is due again, with no --force: --force would bypass the
+  // incremental cutoff entirely, which would hide the bug this test checks.
+  state.a.at = Date.now() - 20 * 60_000 - 1000
+  writeFileSync(join(home, 'linear-sync.json'), JSON.stringify(state))
+
+  // a second issue, changed well after the rig's last good pull. The first issue's fixture
+  // (updatedAt 2026-01-01) still predates lastGoodAt, so it must not appear in the new pull call.
+  writeFileSync(
+    linearIssuesFile,
+    JSON.stringify([
+      ...defaultIssues(),
+      { ref: 'A-2', project: '[a]', labels: [], updatedAt: new Date(lastGoodAt + 60_000).toISOString() },
+    ]),
+  )
+
+  factory(['linear'])
+  const pullCalls = callLines().filter(l => argvOf(l).startsWith('linear pull'))
+  expect(pullCalls).toHaveLength(2) // the first pass's call, plus exactly one new call
+  expect(argvOf(pullCalls[1]!)).toBe('linear pull A-2 --json') // only the changed issue, never A-1 again
+})
+
+test('the incremental cutoff looks 5 minutes behind the last good pull, so clock drift does not skip an issue updated just before it (claude-factory-b6c.26)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
+  factory(['linear']) // first pass: no prior lastGoodAt yet, so it pulls the fixture's one issue
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1)
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  const lastGoodAt = state.a.lastGoodAt
+  expect(lastGoodAt).toBeTruthy()
+
+  state.a.at = Date.now() - 20 * 60_000 - 1000
+  writeFileSync(join(home, 'linear-sync.json'), JSON.stringify(state))
+
+  // an issue Linear's own clock marks as updated 2 minutes before this rig's last good pull: inside
+  // the 5-minute skew buffer, so the cutoff must still count it as changed.
+  writeFileSync(
+    linearIssuesFile,
+    JSON.stringify([
+      { ref: 'A-2', project: '[a]', labels: [], updatedAt: new Date(lastGoodAt - 2 * 60_000).toISOString() },
+    ]),
+  )
+
+  factory(['linear'])
+  const pullCalls = callLines().filter(l => argvOf(l).startsWith('linear pull'))
+  expect(pullCalls).toHaveLength(2) // the first pass's call, plus exactly one new call
+  expect(argvOf(pullCalls[1]!)).toBe('linear pull A-2 --json')
+})
