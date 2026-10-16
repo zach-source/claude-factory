@@ -1,13 +1,18 @@
-// src/linear.ts's pure helpers: config shape, argv, env and output parsing, redaction. No process spawned
-// here except the config's own command (a real `sh -c`, never bd), which the fakes below keep fast and
-// deterministic. The end-to-end loop through a fake `bd` on PATH is in linear.test.ts's CLI tests.
+// src/linear.ts's pure helpers: team ids, secret-broker credentials, argv, env and output parsing,
+// redaction. The broker tests run a fake broker HTTP server (Bun.serve), never a real one. The
+// end-to-end loop through a fake `bd` on PATH is in this file's CLI tests, further down.
 import { expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { parseLinearTeams, parseSync, readLinearConfig, redact, syncArgs, syncEnv } from './linear'
-
-const dir = join(tmpdir(), `linear-unit-${process.pid}`)
+import {
+  type ConnectCache,
+  CONNECT_SETUP_HELP,
+  parseLinearTeams,
+  parseSync,
+  redact,
+  resolveConnectCreds,
+  resolveLinearApiKey,
+  syncArgs,
+  syncEnv,
+} from './linear'
 
 test('parseLinearTeams accepts one or more UUIDs, and refuses anything else, naming it', () => {
   const id1 = '04114abf-ddb7-4a6f-bb47-814fd2c44373'
@@ -38,93 +43,155 @@ test('syncArgs joins several team ids with a comma', () => {
   expect(syncArgs(['a', 'b'])).toContain('a,b')
 })
 
-test('readLinearConfig refuses a missing file, naming the docs', () => {
-  expect(() => readLinearConfig(join(dir, 'absent.json'))).toThrow('see docs/beads.md')
-})
-
-test('readLinearConfig reads an apiKey command, or a clientId/clientSecret pair', () => {
-  mkdirSync(dir, { recursive: true })
-  const apiKeyFile = join(dir, 'apikey.json')
-  writeFileSync(apiKeyFile, JSON.stringify({ apiKey: 'op read op://vault/item/key' }))
-  expect(readLinearConfig(apiKeyFile)).toEqual({ apiKey: 'op read op://vault/item/key' })
-  const oauthFile = join(dir, 'oauth.json')
-  writeFileSync(
-    oauthFile,
-    JSON.stringify({ clientId: 'op read op://v/i/id', clientSecret: 'op read op://v/i/s' }),
-  )
-  expect(readLinearConfig(oauthFile)).toEqual({
-    clientId: 'op read op://v/i/id',
-    clientSecret: 'op read op://v/i/s',
+// A fake secret-broker server.
+// It answers the 3 real broker routes the loop calls.
+// It records every request's headers and path.
+// A test can check them. The test needs no real broker.
+function fakeConnect(
+  opts: { vaultTitle?: string; itemTitle?: string; fieldLabel?: string; key?: string } = {},
+) {
+  const {
+    vaultTitle = 'test-vault',
+    itemTitle = 'LinearBotsApiKey',
+    fieldLabel = 'credential',
+    key = 'lin_api_FAKEKEY',
+  } = opts
+  const requests: { path: string; headers: Record<string, string> }[] = []
+  const server = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      requests.push({
+        path: url.pathname + url.search,
+        headers: {
+          'x-op-token': req.headers.get('x-op-token') ?? '',
+          'cf-access-client-id': req.headers.get('cf-access-client-id') ?? '',
+          'cf-access-client-secret': req.headers.get('cf-access-client-secret') ?? '',
+        },
+      })
+      if (url.pathname === '/v1/vaults') return Response.json([{ id: 'vault-1', name: vaultTitle }])
+      if (url.pathname === '/v1/vaults/vault-1/items')
+        return url.search.includes(encodeURIComponent(itemTitle).replace(/%20/g, '+')) ||
+          url.search.includes(itemTitle)
+          ? Response.json([{ id: 'item-1', title: itemTitle }])
+          : Response.json([])
+      if (url.pathname === '/v1/vaults/vault-1/items/item-1')
+        return Response.json({ fields: [{ label: fieldLabel, value: key }] })
+      return new Response('not found', { status: 404 })
+    },
   })
-  rmSync(dir, { recursive: true, force: true })
-})
-
-test('readLinearConfig refuses a literal key or secret, and the message does not echo it', () => {
-  mkdirSync(dir, { recursive: true })
-  const file = join(dir, 'literal.json')
-  writeFileSync(file, JSON.stringify({ apiKey: 'lin_api_fixtureNOTREAL' }))
-  expect(() => readLinearConfig(file)).toThrow(/command/)
-  try {
-    readLinearConfig(file)
-    throw new Error('did not throw')
-  } catch (err) {
-    expect((err as Error).message).not.toContain('lin_api_fixtureNOTREAL')
+  return {
+    url: server.url.toString().replace(/\/$/, ''),
+    vault: vaultTitle,
+    requests,
+    stop: () => server.stop(true),
   }
-  writeFileSync(file, JSON.stringify({ clientId: 'x', clientSecret: 'lin_oauth_zzz' }))
-  expect(() => readLinearConfig(file)).toThrow(/command/)
-  rmSync(dir, { recursive: true, force: true })
+}
+
+test('resolveConnectCreds reads all 5 values from the environment, with no default host or vault', () => {
+  const creds = resolveConnectCreds({
+    OP_CONNECT_HOST: 'https://example.invalid',
+    OP_CONNECT_VAULT: 'test-vault',
+    OP_CONNECT_TOKEN: 'tok',
+    CF_ACCESS_CLIENT_ID: 'cfid',
+    CF_ACCESS_CLIENT_SECRET: 'cfsecret',
+  })
+  expect(creds).toEqual({
+    host: 'https://example.invalid',
+    vault: 'test-vault',
+    token: 'tok',
+    cfId: 'cfid',
+    cfSecret: 'cfsecret',
+  })
 })
 
-test('readLinearConfig refuses invalid JSON, and the message does not echo an unquoted literal key', () => {
-  mkdirSync(dir, { recursive: true })
-  const file = join(dir, 'malformed.json')
-  // invalid JSON: the value needs quotes. Bun's own parse error names this literal text; bd 1.3.0 never
-  // writes malformed JSON, but a person can paste an unquoted key by hand.
-  writeFileSync(file, '{"apiKey": lin_api_fixtureNOTREAL}')
-  expect(() => readLinearConfig(file)).toThrow('invalid JSON')
+test('resolveConnectCreds fails with the setup message when OP_CONNECT_HOST or OP_CONNECT_VAULT is missing, even with the 3 header values set', () => {
+  const headers = { OP_CONNECT_TOKEN: 'tok', CF_ACCESS_CLIENT_ID: 'i', CF_ACCESS_CLIENT_SECRET: 's' }
+  expect(() => resolveConnectCreds({ ...headers, OP_CONNECT_VAULT: 'test-vault' })).toThrow(
+    CONNECT_SETUP_HELP,
+  )
+  expect(() => resolveConnectCreds({ ...headers, OP_CONNECT_HOST: 'https://example.invalid' })).toThrow(
+    CONNECT_SETUP_HELP,
+  )
+})
+
+test('resolveConnectCreds with none of the 3 header values set fails with the setup message, no interactive op', () => {
+  // FACTORY_NO_KEYCHAIN=1 skips the real Keychain lookup. A dev machine, or this factory's own, can
+  // hold a real "claude-factory" Keychain entry (the person's one-time setup); this test must never
+  // read it, so a real token can never reach this test's own output on a failed assertion.
+  expect(() =>
+    resolveConnectCreds({
+      OP_CONNECT_HOST: 'https://example.invalid',
+      OP_CONNECT_VAULT: 'test-vault',
+      FACTORY_NO_KEYCHAIN: '1',
+    }),
+  ).toThrow(CONNECT_SETUP_HELP)
+})
+
+test('resolveLinearApiKey sends all 3 headers on every request, and finds the vault, item and field by name', async () => {
+  const fake = fakeConnect()
   try {
-    readLinearConfig(file)
-    throw new Error('did not throw')
-  } catch (err) {
-    expect((err as Error).message).not.toContain('lin_api_fixtureNOTREAL')
+    const creds = { host: fake.url, vault: fake.vault, token: 'tok', cfId: 'cfid', cfSecret: 'cfsecret' }
+    const key = await resolveLinearApiKey(creds)
+    expect(key).toBe('lin_api_FAKEKEY')
+    expect(fake.requests.length).toBeGreaterThanOrEqual(3) // vaults, items, item
+    for (const r of fake.requests)
+      expect(r.headers).toEqual({
+        'x-op-token': 'tok',
+        'cf-access-client-id': 'cfid',
+        'cf-access-client-secret': 'cfsecret',
+      })
+  } finally {
+    fake.stop()
   }
-  rmSync(dir, { recursive: true, force: true })
 })
 
-test('readLinearConfig refuses a file with neither shape', () => {
-  mkdirSync(dir, { recursive: true })
-  const file = join(dir, 'bad.json')
-  writeFileSync(file, JSON.stringify({ nope: 1 }))
-  expect(() => readLinearConfig(file)).toThrow('apiKey')
-  rmSync(dir, { recursive: true, force: true })
+test('resolveLinearApiKey caches the vault and item id, not the key: a second call makes 1 request, not 3', async () => {
+  const fake = fakeConnect()
+  try {
+    const creds = { host: fake.url, vault: fake.vault, token: 'tok', cfId: 'cfid', cfSecret: 'cfsecret' }
+    const cache: ConnectCache = {}
+    await resolveLinearApiKey(creds, cache)
+    const after1 = fake.requests.length
+    await resolveLinearApiKey(creds, cache)
+    expect(fake.requests.length).toBe(after1 + 1) // only the item fetch: vault and item id came from cache
+    expect(cache).toEqual({ vaultId: 'vault-1', itemId: 'item-1' })
+  } finally {
+    fake.stop()
+  }
 })
 
-test('syncEnv runs the apiKey command and sets LINEAR_API_KEY, dropping every inherited LINEAR_* first', () => {
+test('resolveLinearApiKey fails with a generic message, naming neither the vault nor its own title, when the vault is not found', async () => {
+  const fake = fakeConnect({ vaultTitle: 'some-other-vault' })
+  try {
+    const creds = { host: fake.url, vault: 'test-vault', token: 'tok', cfId: 'cfid', cfSecret: 'cfsecret' }
+    await expect(resolveLinearApiKey(creds)).rejects.toThrow(
+      'secret broker: the configured vault was not found',
+    )
+    try {
+      await resolveLinearApiKey(creds)
+      throw new Error('did not throw')
+    } catch (err) {
+      expect((err as Error).message).not.toContain('test-vault')
+      expect((err as Error).message).not.toContain('some-other-vault')
+    }
+  } finally {
+    fake.stop()
+  }
+})
+
+test('syncEnv sets only LINEAR_API_KEY, dropping every inherited LINEAR_* first', () => {
   const base = {
     LINEAR_API_KEY: 'stale',
     LINEAR_OAUTH_CLIENT_ID: 'stale-id',
     LINEAR_OAUTH_CLIENT_SECRET: 'stale-secret',
     PATH: process.env.PATH,
   }
-  const env = syncEnv({ apiKey: 'printf test-key-123' }, base)
+  const env = syncEnv('test-key-123', base)
   expect(env.LINEAR_API_KEY).toBe('test-key-123')
   expect(env.LINEAR_OAUTH_CLIENT_ID).toBeUndefined()
   expect(env.LINEAR_OAUTH_CLIENT_SECRET).toBeUndefined()
   expect(env.PATH).toBe(process.env.PATH)
-})
-
-test('syncEnv runs both OAuth commands and sets the client id and secret, never LINEAR_API_KEY', () => {
-  const env = syncEnv(
-    { clientId: 'printf cid-1', clientSecret: 'printf csecret-1' },
-    { LINEAR_API_KEY: 'stale' },
-  )
-  expect(env.LINEAR_OAUTH_CLIENT_ID).toBe('cid-1')
-  expect(env.LINEAR_OAUTH_CLIENT_SECRET).toBe('csecret-1')
-  expect(env.LINEAR_API_KEY).toBeUndefined()
-})
-
-test('syncEnv throws when the command fails, naming no value', () => {
-  expect(() => syncEnv({ apiKey: 'sh -c "exit 7"' }, {})).toThrow()
 })
 
 test('parseSync reads a fresh skip, a real pull, and an engine error, the three shapes bd 1.3.0 prints', () => {
@@ -187,10 +254,51 @@ test('redact strips control characters, like an ANSI escape, from the text (secu
   expect(out).toContain('BOOM')
 })
 
-// The loop end to end through `bin/factory linear`, with a fake `bd` on PATH that logs every call's
-// argv, cwd and LINEAR_* env, so the real loop (src/cli.ts's linearPass) is proven, not a mock of it.
+// These tests run the loop end to end, through `bin/factory linear`.
+// A fake `bd` on PATH logs every call's argv, cwd and LINEAR_* env.
+// So these tests check the real loop (src/cli.ts's linearPass), not a mock of it.
+//
+// `factory(...)` below runs the CLI with `Bun.spawnSync`. This call blocks the test file's own
+// event loop until the child exits. `fakeConnect` (an in-process `Bun.serve`, used above for the
+// pure unit tests) would deadlock here. The reason: the spawned `factory` process sends a
+// `fetch` call back to this process. This process must run its event loop to answer that call.
+// But `Bun.spawnSync` has already blocked that loop. `fakeConnectProcess` below avoids this. It
+// runs the broker in its own OS process, so the broker keeps answering requests while
+// `Bun.spawnSync` blocks this process.
 import { afterAll, beforeEach } from 'bun:test'
-import { chmodSync, existsSync, readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+/** The broker fake from `fakeConnect`, run as its own process via `bun -e`. See the note above. */
+async function fakeConnectProcess(opts: { vaultTitle?: string; key?: string } = {}) {
+  const { vaultTitle = 'test-vault', key = 'lin_api_FAKEKEY' } = opts
+  const script = `
+    const vaultTitle = ${JSON.stringify(vaultTitle)}
+    const itemTitle = 'LinearBotsApiKey'
+    const key = ${JSON.stringify(key)}
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url)
+        if (url.pathname === '/v1/vaults') return Response.json([{ id: 'vault-1', name: vaultTitle }])
+        if (url.pathname === '/v1/vaults/vault-1/items')
+          return url.search.includes(itemTitle) || url.search.includes(encodeURIComponent(itemTitle))
+            ? Response.json([{ id: 'item-1', title: itemTitle }])
+            : Response.json([])
+        if (url.pathname === '/v1/vaults/vault-1/items/item-1')
+          return Response.json({ fields: [{ label: 'credential', value: key }] })
+        return new Response('not found', { status: 404 })
+      },
+    })
+    console.log(server.port)
+    await new Promise(() => {}) // stay alive until killed
+  `
+  const proc = Bun.spawn(['bun', '-e', script], { stdout: 'pipe', stderr: 'pipe' })
+  const { value } = await proc.stdout.getReader().read()
+  const port = new TextDecoder().decode(value).trim()
+  return { url: `http://127.0.0.1:${port}`, vault: vaultTitle, stop: () => proc.kill() }
+}
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const cdir = join(tmpdir(), `linear-cli-${process.pid}`)
@@ -207,15 +315,36 @@ const TEAM = '04114abf-ddb7-4a6f-bb47-814fd2c44373'
 const repoA = join(cdir, 'repo-a')
 const repoB = join(cdir, 'repo-b')
 
-afterAll(() => rmSync(cdir, { recursive: true, force: true }))
+const connect = await fakeConnectProcess({ key: 'test-key-123' })
+afterAll(() => {
+  rmSync(cdir, { recursive: true, force: true })
+  connect.stop()
+})
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
-    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...env },
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_SELF_UPDATE: '0',
+      // FACTORY_NO_KEYCHAIN=1: this spawned `factory` process must never read the real macOS
+      // Keychain. This machine, or any dev machine, can hold a real "claude-factory" Keychain entry
+      // (the person's one-time setup); a real token must never reach these tests, or their output.
+      FACTORY_NO_KEYCHAIN: '1',
+      OP_CONNECT_HOST: connect.url,
+      OP_CONNECT_VAULT: connect.vault,
+      OP_CONNECT_TOKEN: 'tok',
+      CF_ACCESS_CLIENT_ID: 'cfid',
+      CF_ACCESS_CLIENT_SECRET: 'cfsecret',
+      ...env,
+    },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
+/** the args for a `factory(...)` call that has none of the 3 header env values set */
+const noConnectEnv = { OP_CONNECT_TOKEN: '', CF_ACCESS_CLIENT_ID: '', CF_ACCESS_CLIENT_SECRET: '' }
 
 /**
  * This is the fake bd. It answers each call this way:
@@ -272,8 +401,6 @@ function writeRigs(rigsList: unknown[]) {
   writeFileSync(join(home, 'rigs.json'), JSON.stringify(rigsList))
 }
 
-const linearJson = (cfg: unknown) => writeFileSync(join(home, 'linear.json'), JSON.stringify(cfg))
-
 function reset() {
   rmSync(cdir, { recursive: true, force: true })
   mkdirSync(home, { recursive: true })
@@ -296,7 +423,6 @@ test('linearPass runs pull-if-stale for every opted-in rig only, never --push, c
     { name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] },
     { name: 'b', repo: repoB, factory: 'lifecycle' }, // not opted in: no Linear call at all
   ])
-  linearJson({ apiKey: 'printf test-key-123' })
   const out = factory(['linear'])
   expect(out.code).toBe(0)
   const syncCalls = callLines().filter(l => argvOf(l).startsWith('linear sync'))
@@ -309,7 +435,6 @@ test('linearPass runs pull-if-stale for every opted-in rig only, never --push, c
 
 test('the key reaches bd only by env, on the sync call; list/label calls carry no key at all', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   factory(['linear'])
   const syncCall = callLines().find(l => argvOf(l).startsWith('linear sync'))!
   expect(keyOf(syncCall)).toBe('test-key-123')
@@ -319,7 +444,6 @@ test('the key reaches bd only by env, on the sync call; list/label calls carry n
 
 test('a rig syncs at most once per 20 min; --force syncs again right away', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   factory(['linear'])
   expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
   factory(['linear']) // too soon: no second call
@@ -330,19 +454,16 @@ test('a rig syncs at most once per 20 min; --force syncs again right away', () =
 
 test('after a pull, only the bead newly labeled factory loses the label; one already labeled keeps it', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   factory(['linear'])
   const removes = callLines().filter(l => argvOf(l).startsWith('label remove'))
   expect(removes).toHaveLength(1)
   expect(argvOf(removes[0]!)).toBe('label remove acme-new factory')
 })
 
-test('linear sync never runs for a rig with no linear.json: it errors "no linear.json", and bd is never called', () => {
+test('linear sync never runs for a rig with no secret-broker credentials: it errors with the setup message, and bd is never called (claude-factory-b6c.17)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  // no linear.json written
-  const out = factory(['linear'])
-  expect(out.out).toContain('no')
-  expect(out.out).toContain('linear.json')
+  const out = factory(['linear'], noConnectEnv) // no env, and this worker's Keychain has no entry either
+  expect(out.out).toContain('secret-broker credentials')
   expect(out.out).toContain('docs/beads.md')
   expect(callLines()).toHaveLength(0)
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
@@ -351,7 +472,6 @@ test('linear sync never runs for a rig with no linear.json: it errors "no linear
 
 test('a sync error is recorded redacted (no secret value) and clipped, in linear-sync.json', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   writeFileSync(mode, 'error')
   factory(['linear'])
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
@@ -362,7 +482,6 @@ test('a sync error is recorded redacted (no secret value) and clipped, in linear
 
 test('a sync error still strips a bead the pull newly labeled before it erred (claude-factory-b6c.8)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   writeFileSync(mode, 'error')
   factory(['linear'])
   const removes = callLines().filter(l => argvOf(l).startsWith('label remove'))
@@ -375,7 +494,6 @@ test('a sync error still strips a bead the pull newly labeled before it erred (c
 
 test('a bead whose label remove fails is queued and retried first next pass (claude-factory-b6c.9)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   writeFileSync(failLabel, 'acme-new')
   factory(['linear'])
   let state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
@@ -393,7 +511,6 @@ test('a bead whose label remove fails is queued and retried first next pass (cla
 
 test('a post-pull listing that still fails after one retry keeps the pre-pull before-set as a baseline; the next pass strips the bead it missed (security#1.13)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   // turn 1 is the pre-pull before-list. Turns 2 and 3 are the post-pull listing's first try and its one
   // retry: both fail. The pass cannot confirm acme-new as newly labeled, so it must not strip it, and it
   // must not drop the fact that it still owes that check.
@@ -417,7 +534,6 @@ test('a post-pull listing that still fails after one retry keeps the pre-pull be
 
 test('a fresh skip is recorded, with no label strip (nothing new to strip)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   writeFileSync(mode, 'fresh')
   factory(['linear'])
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
@@ -498,7 +614,6 @@ test('a failing rig mails the manager once; the same error again mails nothing m
 
 test('factory beads runs the Linear pass too, not only factory linear (claude-factory-b6c.11)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   factory(['beads'])
   expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
@@ -507,7 +622,6 @@ test('factory beads runs the Linear pass too, not only factory linear (claude-fa
 
 test("factory linear holds beads.lock, so it never races a tick's beadsPass (claude-factory-b6c.10)", () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   blockBeadsKick() // simulates a live beadsPass already holding the lock
   const out = factory(['linear'])
   expect(out.code).not.toBe(0)
@@ -517,7 +631,6 @@ test("factory linear holds beads.lock, so it never races a tick's beadsPass (cla
 
 test('factory linear fails naming an unknown rig, and a rig not opted into the loop, writing nothing (claude-factory-b6c.12)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle' }]) // no --linear: not opted in
-  linearJson({ apiKey: 'printf test-key-123' })
 
   const unknown = factory(['linear', 'nope'])
   expect(unknown.code).not.toBe(0)
@@ -533,7 +646,6 @@ test('factory linear fails naming an unknown rig, and a rig not opted into the l
 
 test('factory linear fails, naming why, when the factory is halted (claude-factory-b6c.12)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   writeFileSync(
     join(home, 'halt.json'),
     JSON.stringify({ state: 'stopping', at: Date.now(), told: {}, closed: {} }),
@@ -551,7 +663,6 @@ test('factory linear fails, naming why, when the factory is halted (claude-facto
 
 test('dispatch does not start a run while a post-pull listing leaves the baseline open (claude-factory-b6c.16)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   writeFileSync(readyFlag, '1') // acme-new is really labeled `factory`, as the pull left it
   // turn 1 is the pre-pull before-list; turns 2 and 3 are the post-pull listing and its one retry: both
   // fail, so the pass cannot learn that acme-new is newly labeled and must not treat it as confirmed safe
@@ -577,7 +688,6 @@ test('dispatch does not start a run while a post-pull listing leaves the baselin
 
 test('dispatch does not start a run on a bead a label remove failed on (claude-factory-b6c.16)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  linearJson({ apiKey: 'printf test-key-123' })
   writeFileSync(readyFlag, '1')
   writeFileSync(failLabel, 'acme-new')
   const out = factory(['beads'])

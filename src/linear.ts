@@ -4,14 +4,15 @@
 // The loop uses the bd command `bd linear sync --pull-if-stale`.
 // The loop must not use `--push`.
 //
-// The loop reads the API key, or the client ID and secret of an OAuth app, from the environment when it runs.
-// The loop gets this value from a shell command that is set in `$FACTORY_HOME/linear.json`.
-//
-// The command is like the `token` command in devenv.json. For example, it can be an `op read` command.
-// The loop must keep the value off disk, out of the command-line arguments, out of a log, out of a bead,
+// The loop gets the Linear API key on demand from a secret-broker REST service (claude-factory-b6c.17,
+// the person's decision of 2026-10-16). It never asks for an interactive approval.
+// The loop must keep the key off disk, out of the command-line arguments, out of a log, out of a bead,
 // and out of git.
-import { existsSync, readFileSync } from 'node:fs'
-
+//
+// This repo is public. The broker's host, and the vault name it reads, name real private
+// infrastructure, so this file never hardcodes them: every run reads them from its own environment or
+// Keychain, set up once, by hand, outside git (see docs/beads.md). The item name "LinearBotsApiKey" and
+// the field name "credential" are not infrastructure names, so they stay as constants below.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** The argument of `--linear <team_id[,team_id]>`: one or more Linear team UUIDs. */
 export function parseLinearTeams(spec: string): string[] {
@@ -25,78 +26,147 @@ export function parseLinearTeams(spec: string): string[] {
   return ids
 }
 
-/** `$FACTORY_HOME/linear.json` holds a command that prints the API key, or two commands that print an
- * OAuth app's client ID and client secret. It must not hold the literal value. Each run that reads a
- * value checks that the value does not have the shape of a Linear key. */
-export type LinearConfig = { apiKey: string } | { clientId: string; clientSecret: string }
+const ITEM_TITLE = 'LinearBotsApiKey'
+const FIELD_LABEL = 'credential'
 
-const LITERAL = /^(lin_api_|lin_oauth_)/
-function asCommand(name: string, value: unknown): string {
-  if (typeof value !== 'string' || !value.trim())
-    throw new Error(`linear.json: "${name}" must be a non-empty command string`)
-  if (LITERAL.test(value.trim()))
-    throw new Error(`linear.json: "${name}" looks like a literal Linear key, not a command that prints one`)
-  return value
+/** The one-time setup the person runs, once, so the loop never needs an interactive `op` call again.
+ * This text names only the setup command, never a value. */
+export const CONNECT_SETUP_HELP =
+  'no secret-broker credentials for Linear: run the one-time setup in docs/beads.md (section Linear)'
+
+/** The values every Connect request needs: the broker's own host and vault, and the 3 headers that
+ * authenticate to it. Cloudflare Access strips a plain `Authorization` header, and the broker's proxy
+ * remaps `X-OP-Token`, so the loop sends all 3 as their own headers. None of these 5 values is ever a
+ * constant in this file: the host and vault name real private infrastructure, and the 3 headers are
+ * secrets. */
+export type ConnectCreds = { host: string; vault: string; token: string; cfId: string; cfSecret: string }
+
+/**
+ * Reads one macOS Keychain generic password, service `claude-factory`.
+ * Returns `undefined` on any failure: a missing entry, a locked keychain, or no `security` command at
+ * all (every non-macOS host, including this factory's own Linux CI runner). Never logs the value.
+ */
+function keychainRead(account: string): string | undefined {
+  try {
+    const p = Bun.spawnSync(
+      ['security', 'find-generic-password', '-s', 'claude-factory', '-a', account, '-w'],
+      { stdout: 'pipe', stderr: 'pipe', timeout: 10_000 },
+    )
+    if (p.exitCode !== 0) return undefined
+    const out = p.stdout.toString().replace(/\r?\n+$/, '')
+    return out || undefined
+  } catch {
+    return undefined
+  }
 }
 
-export function readLinearConfig(file: string): LinearConfig {
-  if (!existsSync(file)) throw new Error(`no ${file}: see docs/beads.md`)
-  let cfg: unknown
-  try {
-    cfg = JSON.parse(readFileSync(file, 'utf8'))
-  } catch {
-    // Bun's own parse error echoes the bad text (for example an unquoted `lin_api_...` token). Throw a
-    // fixed message instead: this error can reach linear-sync.json, mail, `rig list`, and the console.
-    throw new Error(`${file}: invalid JSON`)
+/**
+ * Resolves the 5 Connect values: the broker's host and vault name, and 3 header values.
+ *
+ * It checks two sources, in this order:
+ * 1. The environment: `OP_CONNECT_HOST`, `OP_CONNECT_VAULT`, `OP_CONNECT_TOKEN`,
+ *    `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`.
+ * 2. The macOS Keychain, service `claude-factory`, for the 3 header values only: accounts
+ *    `op-connect-token`, `cf-access-client-id`, `cf-access-client-secret`. The host and vault name have
+ *    no Keychain fallback: they are not secrets, but they are private, so each run's own environment
+ *    must set them (see docs/beads.md).
+ *
+ * `FACTORY_NO_KEYCHAIN=1` skips the Keychain lookup, reading the environment only. A test sets this, so
+ * it never shells out to the real `security` command. A real Keychain entry on the same machine as a
+ * test run can hold a live credential; this flag keeps that value out of a test's own output (for
+ * example an assertion failure that prints the whole return value).
+ *
+ * When a value is missing from every source it has, this function throws `CONNECT_SETUP_HELP`. It
+ * never falls back to an interactive `op` call.
+ */
+export function resolveConnectCreds(env: NodeJS.ProcessEnv = process.env): ConnectCreds {
+  const host = env.OP_CONNECT_HOST
+  const vault = env.OP_CONNECT_VAULT
+  const noKeychain = env.FACTORY_NO_KEYCHAIN === '1'
+  const token = env.OP_CONNECT_TOKEN || (noKeychain ? undefined : keychainRead('op-connect-token'))
+  const cfId = env.CF_ACCESS_CLIENT_ID || (noKeychain ? undefined : keychainRead('cf-access-client-id'))
+  const cfSecret =
+    env.CF_ACCESS_CLIENT_SECRET || (noKeychain ? undefined : keychainRead('cf-access-client-secret'))
+  if (!host || !vault || !token || !cfId || !cfSecret) throw new Error(CONNECT_SETUP_HELP)
+  return { host, vault, token, cfId, cfSecret }
+}
+
+const connectHeaders = (creds: ConnectCreds): Record<string, string> => ({
+  'X-OP-Token': creds.token,
+  'CF-Access-Client-Id': creds.cfId,
+  'CF-Access-Client-Secret': creds.cfSecret,
+})
+
+async function connectGet(creds: ConnectCreds, path: string): Promise<unknown> {
+  const res = await fetch(`${creds.host}${path}`, { headers: connectHeaders(creds) })
+  if (!res.ok) throw new Error(`secret broker request failed: ${res.status}`)
+  return res.json()
+}
+
+/** The vault and item id, cached across calls in the same process. The loop caches only these ids,
+ * never the key itself. */
+export type ConnectCache = { vaultId?: string; itemId?: string }
+
+// Error text below never echoes `creds.vault` or `ITEM_TITLE`: that would put a private name into a
+// log, a bead, or mail. Each message is fixed, generic text instead.
+async function resolveIds(
+  creds: ConnectCreds,
+  cache: ConnectCache,
+): Promise<{ vaultId: string; itemId: string }> {
+  if (!cache.vaultId) {
+    const vaults = (await connectGet(creds, '/v1/vaults')) as { id: string; name?: string; title?: string }[]
+    const vault = vaults.find(v => (v.name ?? v.title) === creds.vault)
+    if (!vault) throw new Error('secret broker: the configured vault was not found')
+    cache.vaultId = vault.id
   }
-  const c = cfg as Record<string, unknown> | null
-  if (c && typeof c === 'object' && 'apiKey' in c) return { apiKey: asCommand('apiKey', c.apiKey) }
-  if (c && typeof c === 'object' && ('clientId' in c || 'clientSecret' in c))
-    return {
-      clientId: asCommand('clientId', c.clientId),
-      clientSecret: asCommand('clientSecret', c.clientSecret),
-    }
-  throw new Error(
-    `${file}: needs "apiKey", or "clientId" and "clientSecret", each a command that prints the value`,
-  )
+  if (!cache.itemId) {
+    const filter = encodeURIComponent(`title eq "${ITEM_TITLE}"`)
+    const items = (await connectGet(creds, `/v1/vaults/${cache.vaultId}/items?filter=${filter}`)) as {
+      id: string
+    }[]
+    const item = items[0]
+    if (!item) throw new Error('secret broker: the Linear key item was not found in the configured vault')
+    cache.itemId = item.id
+  }
+  return { vaultId: cache.vaultId, itemId: cache.itemId }
+}
+
+/**
+ * Fetches the Linear API key from the configured secret broker.
+ * It reads the item named "LinearBotsApiKey", field "credential", from the configured vault.
+ * This function holds the key in memory only.
+ * The caller must give the key to `bd` as the `LINEAR_API_KEY` env value.
+ * The caller must never write the key to disk, a log, a bead, or the journal.
+ */
+export async function resolveLinearApiKey(creds: ConnectCreds, cache: ConnectCache = {}): Promise<string> {
+  const { vaultId, itemId } = await resolveIds(creds, cache)
+  const item = (await connectGet(creds, `/v1/vaults/${vaultId}/items/${itemId}`)) as {
+    fields?: { label?: string; value?: string }[]
+  }
+  const field = item.fields?.find(f => f.label === FIELD_LABEL)
+  if (!field?.value) throw new Error('secret broker: the Linear key item has no "credential" field')
+  return field.value
 }
 
 const LINEAR_ENV_KEYS = ['LINEAR_API_KEY', 'LINEAR_OAUTH_CLIENT_ID', 'LINEAR_OAUTH_CLIENT_SECRET']
 
-/** This function runs a `linear.json` command (like the `token` command in devenv.json). It returns the
- * trimmed output. It must not log the output. */
-function resolve(cmd: string): string {
-  const p = Bun.spawnSync(['sh', '-c', cmd], { stdout: 'pipe', stderr: 'pipe', timeout: 30_000 })
-  if (p.exitCode !== 0)
-    throw new Error(`linear.json command failed: ${p.stderr.toString().trim().split('\n')[0] || 'no output'}`)
-  const out = p.stdout.toString().trim()
-  if (!out) throw new Error('linear.json command printed nothing')
-  return out
-}
-
 /**
  * This function makes the environment for the command `bd linear sync`.
- * It puts the resolved key, or the OAuth pair, only in environment variables.
- * It does not put them on disk, in the command-line arguments, or in a bead.
+ * It puts the resolved key only in one environment variable, `LINEAR_API_KEY`.
+ * It does not put the key on disk, in the command-line arguments, or in a bead.
  *
- * `LINEAR_API_KEY`, `LINEAR_OAUTH_CLIENT_ID`, or `LINEAR_OAUTH_CLIENT_SECRET` from a previous operation
- * can stay in this environment.
- * The function removes each of these three variables first.
- * Then it adds the new value from the rig's own `linear.json`.
- * No OAuth pair from a previous operation can override this value.
+ * This environment can still carry `LINEAR_API_KEY`, `LINEAR_OAUTH_CLIENT_ID`, or
+ * `LINEAR_OAUTH_CLIENT_SECRET` from an earlier operation.
+ * This function removes each of these three variables first.
+ * This stops a stale OAuth pair from outranking the key this function sets: `bd` prefers OAuth over
+ * `LINEAR_API_KEY`.
  */
 export function syncEnv(
-  cfg: LinearConfig,
+  apiKey: string,
   base: NodeJS.ProcessEnv = process.env,
 ): Record<string, string | undefined> {
   const stripped = Object.fromEntries(Object.entries(base).filter(([k]) => !LINEAR_ENV_KEYS.includes(k)))
-  return 'apiKey' in cfg
-    ? { ...stripped, LINEAR_API_KEY: resolve(cfg.apiKey) }
-    : {
-        ...stripped,
-        LINEAR_OAUTH_CLIENT_ID: resolve(cfg.clientId),
-        LINEAR_OAUTH_CLIENT_SECRET: resolve(cfg.clientSecret),
-      }
+  return { ...stripped, LINEAR_API_KEY: apiKey }
 }
 
 /** This is the argv for `bd linear sync --pull-if-stale ...`. It pulls only, for the opted-in team IDs.

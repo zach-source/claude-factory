@@ -128,26 +128,54 @@ Linear.
 
 ### Turn it on
 
-1. Find the Linear team's id. The id is a UUID. If a rig already syncs with Linear by hand,
-   run `bd config get linear.team_id` to get the id.
-2. Store the Linear API key, or the client id and secret of an OAuth app, in a secret manager.
-   Write a command that prints the value. Put the command in `$FACTORY_HOME/linear.json`:
+1. Find the Linear team's id. The id is a UUID.
+   If a rig already syncs with Linear by hand, run `bd config get linear.team_id` to get the id.
+2. Give the factory a secret broker (claude-factory-b6c.17): a REST service with a `/v1/vaults`
+   API, behind Cloudflare Access. Do this once per machine. After this setup, the loop reads
+   the Linear API key on demand, with no approval step at each sync.
 
-   ```json
-   { "apiKey": "op read op://vault/linear/api-key" }
+   The factory ships no default host or vault. Both name private infrastructure. This doc does
+   not name them either. Set both yourself, per machine, in the factory's own environment:
+
+   ```sh
+   export OP_CONNECT_HOST="https://your-connect-server"      # the broker's own URL
+   export OP_CONNECT_VAULT="your-vault-name"                 # the vault that holds the Linear key
    ```
 
-   For an OAuth app, use this format:
+   Next, store the broker's 3 header values in the macOS Keychain. Do this once, with one
+   interactive approval. Use service `claude-factory`:
 
-   ```json
-   { "clientId": "op read op://vault/linear/client-id", "clientSecret": "op read op://vault/linear/client-secret" }
+   ```sh
+   for a in "op-connect-token:op://<vault>/<item>/credential" \
+            "cf-access-client-id:op://<vault>/<item>/client_id" \
+            "cf-access-client-secret:op://<vault>/<item>/client_secret"; do
+     security add-generic-password -U -s claude-factory -a "${a%%:*}" -w "$(op read "${a#*:}")"
+   done
    ```
 
-   This file holds a command. It never holds the value itself.
+   Replace `<vault>` and `<item>` above with the vault and item that hold the broker's own
+   token and its Cloudflare Access client id and secret. This is a different vault and item
+   than the one `OP_CONNECT_VAULT` names: that one holds the Linear key itself.
 
-   If a value starts with `lin_api_` or `lin_oauth_`, the factory does not accept it. That value is a literal key, not a command.
+   This command stores 3 values in the Keychain: accounts `op-connect-token`,
+   `cf-access-client-id`, and `cf-access-client-secret`. The loop reads them from there on
+   every pull. It never asks for an interactive `op` or Touch ID approval again.
 
-   The factory never writes to `linear.json`. It never runs `bd config set` with the key.
+   On a machine with no Keychain (for example CI), set the same 3 values as environment
+   variables instead: `OP_CONNECT_TOKEN`, `CF_ACCESS_CLIENT_ID`, and `CF_ACCESS_CLIENT_SECRET`.
+   The loop checks the environment first.
+
+   The loop fetches the Linear API key itself from the broker named by `OP_CONNECT_HOST`. It
+   reads the vault named by `OP_CONNECT_VAULT`. In that vault, it reads item
+   `LinearBotsApiKey`, field `credential`.
+
+   The loop holds the key in memory only, for one pull. It caches only the vault id and the
+   item id. It never caches the key. It never writes the key to disk.
+
+   A rig's pull can fail two ways: the environment lacks `OP_CONNECT_HOST` or
+   `OP_CONNECT_VAULT`, or neither the environment nor the Keychain has all 3 header values.
+   Either way, the error message names this setup step. The loop never falls back to an
+   interactive `op` call.
 
 3. Add the team to the rig:
 
@@ -164,7 +192,7 @@ Linear.
 Every 20 minutes, the factory runs `bd linear sync --pull-if-stale --threshold 15m --team
 <ids> --json` in the rig's repo. It does this for each rig that has the loop on.
 
-The factory passes the key, or the OAuth pair, through the environment only. It never puts the key on the command line, on disk, or in a bead.
+The factory fetches a fresh key from the secret broker before each sync. It passes the key through the environment only, as `LINEAR_API_KEY`. It never puts the key on the command line, on disk, or in a bead.
 
 To run the sync now, use `factory linear [rig...] --force`. With no rig names, the command runs the sync for all rigs with the loop on. With rig names, it runs the sync only for those rigs.
 

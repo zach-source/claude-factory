@@ -61,13 +61,14 @@ import * as memory from './memory'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import {
+  type ConnectCache,
   parseLinearTeams,
   parseSync,
-  readLinearConfig,
   redact,
+  resolveConnectCreds,
+  resolveLinearApiKey,
   syncArgs,
   syncEnv,
-  type LinearConfig,
 } from './linear'
 import * as worker from './worker'
 import * as pkggate from './pkggate'
@@ -2082,7 +2083,7 @@ async function beadsPass() {
         // removed mid-pass
       }
     }
-    linearPass()
+    await linearPass()
     await dispatch()
     await labelPass()
     await watchPass()
@@ -2610,7 +2611,9 @@ async function sweep() {
 }
 
 const LINEAR_MS = 20 * 60_000 // how often an opted-in rig's Linear issues are pulled
-const linearConfigFile = () => join(HOME, 'linear.json')
+// Caches only the secret broker's vault and item ids, for this process's life. It never caches the
+// Linear API key itself.
+const linearConnectCache: ConnectCache = {}
 /** a rig's Linear pull is due: never tried, forced, or LINEAR_MS since the last attempt (whether it erred) */
 const linearDue = (state: LinearSyncState | undefined, force: boolean) =>
   force || !state || Date.now() - state.at >= LINEAR_MS
@@ -2675,7 +2678,7 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
 /**
  * This function makes one rig's Linear pull.
  * It runs `bd linear sync --pull-if-stale`, never `--push`.
- * It passes the key, or the OAuth pair, by env only.
+ * It fetches the key from the secret broker and passes it to `bd` by env only.
  *
  * `bd` copies each Linear label to the bead that it maps. A new bead, or an updated bead, can have the
  * `factory` label as soon as the pull writes it. This function removes that label again. A person, not a
@@ -2698,18 +2701,18 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
  *
  * This function writes `state[rig.name]`. It never throws, so one rig's failure does not stop the others.
  */
-function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
+async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
   const at = Date.now()
   const prior = state[rig.name]
   const retry = prior?.unstripped ?? []
   const baseline = prior?.baseline
   let secrets: string[] = []
   try {
-    const cfg = readLinearConfig(linearConfigFile())
-    const env = syncEnv(cfg)
-    secrets = [env.LINEAR_API_KEY, env.LINEAR_OAUTH_CLIENT_ID, env.LINEAR_OAUTH_CLIENT_SECRET].filter(
-      (s): s is string => !!s,
-    )
+    const creds = resolveConnectCreds()
+    secrets = [creds.token, creds.cfId, creds.cfSecret]
+    const apiKey = await resolveLinearApiKey(creds, linearConnectCache)
+    secrets.push(apiKey)
+    const env = syncEnv(apiKey)
     const beforeIds = baseline ?? linearLabeled(rig.repo).map(b => b.id)
     const before = new Set(beforeIds)
     const p = Bun.spawnSync(['bd', ...syncArgs(rig.linear!)], { cwd: rig.repo, env, timeout: 120_000 })
@@ -2834,7 +2837,7 @@ function linearRecoverOne(rig: Rig, state: Record<string, LinearSyncState>) {
  * 20 minutes. Dispatch (below) blocks that rig until the retry resolves it. So the retry must not wait
  * on the pull timer (claude-factory-b6c.16).
  */
-function linearPass(names: string[] = [], force = false) {
+async function linearPass(names: string[] = [], force = false) {
   if (halted()) return []
   const chosen = rigs().filter(r => r.linear?.length && (!names.length || names.includes(r.name)))
   if (!chosen.length) return []
@@ -2846,7 +2849,7 @@ function linearPass(names: string[] = [], force = false) {
     const prior = state[rig.name]
     const due = linearDue(prior, force)
     if (!due && !linearRecovering(prior)) continue
-    if (due) linearSyncOne(rig, state)
+    if (due) await linearSyncOne(rig, state)
     else linearRecoverOne(rig, state)
     const s = state[rig.name]!
     const left = s.unstripped?.length ? `, ${s.unstripped.length} still labeled, retried next pass` : ''
@@ -4213,7 +4216,7 @@ if (import.meta.main && !outboxCmd)
         }
         const release = hold('beads.lock') ?? fail('factory linear: beads.lock is held; try again shortly')
         try {
-          console.log(linearPass(names, args.includes('--force')).join('\n'))
+          console.log((await linearPass(names, args.includes('--force'))).join('\n'))
         } finally {
           release()
         }
