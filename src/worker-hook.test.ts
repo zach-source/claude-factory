@@ -306,21 +306,21 @@ test('denyReason denies a 33-level stacked eval command with personOnly set too 
 // claude-factory-25z.20: the .17 fix made the scan linear. But a command of n eval words, then n
 // bare kubectl words, then a real apply still costs about n^3. A command built to be about 26 KB
 // can push that scan past the 10 s PreToolUse hook timeout. A timed-out hook runs the command
-// unchecked. So denyReason now denies a command longer than 8192 bytes outright, before any
+// unchecked. So denyReason now denies a command longer than 8192 characters outright, before any
 // scan, when personOnly is set.
 const LONG_COMMAND_8192 = 'x'.repeat(8192)
 const LONG_COMMAND_8193 = 'x'.repeat(8193)
 
-test('denyReason denies a command over 8192 bytes outright when personOnly is set (claude-factory-25z.20)', () => {
+test('denyReason denies a command over 8192 characters outright when personOnly is set (claude-factory-25z.20)', () => {
   expect(denyReason(LONG_COMMAND_8193, undefined, ACME)).toBe(LONG_COMMAND_REASON)
 })
 
-test('denyReason keeps today’s behavior for a command over 8192 bytes when personOnly is empty or absent (claude-factory-25z.20)', () => {
+test('denyReason keeps today’s behavior for a command over 8192 characters when personOnly is empty or absent (claude-factory-25z.20)', () => {
   expect(denyReason(LONG_COMMAND_8193)).toBeUndefined()
   expect(denyReason(LONG_COMMAND_8193, undefined, [])).toBeUndefined()
 })
 
-test('denyReason gives a normal verdict for a command at exactly 8192 bytes, personOnly set (claude-factory-25z.20)', () => {
+test('denyReason gives a normal verdict for a command at exactly 8192 characters, personOnly set (claude-factory-25z.20)', () => {
   expect(denyReason(LONG_COMMAND_8192, undefined, ACME)).toBeUndefined()
 })
 

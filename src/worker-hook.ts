@@ -45,7 +45,7 @@ export const LIVE_REASON =
 const MAX_COMMAND_LENGTH = 8192
 
 export const LONG_COMMAND_REASON =
-  'The factory denies this command: it is longer than 8192 bytes, and this rig checks commands ' +
+  'The factory denies this command: it is longer than 8192 characters, and this rig checks commands ' +
   'against a person-only kube context. A command this long can make that check too slow. ' +
   'Split this command into shorter commands and run them one at a time. Do not retry this exact command.'
 
