@@ -31,6 +31,14 @@ const DENY = [
   // claude-factory-25z.19: bash reads `-x` as its own xtrace option, not as the script. The
   // guard must still find the script after it.
   "bash -c -x 'rm -rf /tmp/x'",
+  // claude-factory-25z.23: a backslash right before a real newline is a POSIX line continuation.
+  // The shell drops both characters. The text keeps the same two words, "rm" and "-rf", the same
+  // as a plain `rm -rf x`.
+  'rm \\\n-rf x',
+  // claude-factory-25z.23: this one already denied before the fix, by luck: the embedded newline
+  // stayed inside the word, but the recursive-flag regex still matched the `r` in it. It must stay
+  // denied after the fix too, when the newline is gone and the word is the plain `-rf`.
+  'rm -\\\nrf x',
 ]
 
 // a $variable or glob target, any rm flags (or none): claude-factory-99d.1
@@ -59,6 +67,10 @@ const ALLOW = [
   'mkdir -p .scratch/x-2',
   'rm -- -r',
   '',
+  // claude-factory-25z.23: a plain backslash-newline joins two words with no `rm` risk in them.
+  'echo a\\\nb',
+  // claude-factory-25z.23: a backslash-newline inside a quoted argument stays allowed too.
+  'git commit -m "a\\\nb"',
 ]
 
 // stay allowed even though they mention $ or a glob char, because none is an rm operand: claude-factory-99d.1
@@ -180,6 +192,15 @@ const DENY_LIVE = [
   "bash -c -O extglob 'kubectl --context acme apply -f x'",
   "bash -c -- 'kubectl --context acme apply -f x'",
   "sh -c -- 'kubectl --context acme apply -f x'",
+  // claude-factory-25z.23: a backslash right before a real newline is a POSIX line continuation.
+  // The shell drops both characters and joins the text around them into one word, so this is the
+  // same command as a plain `kubectl --context acme apply -f x`.
+  'kub\\\nectl --context acme apply -f x',
+  'kubectl \\\n --context acme apply -f x',
+  'kubectl --context acme \\\napply -f x',
+  'helm \\\n --kube-context acme upgrade r c',
+  // the same line continuation inside a double-quoted `bash -c` script.
+  'bash -c "kubectl \\\n--context acme apply -f x"',
 ]
 
 const ALLOW_LIVE = [

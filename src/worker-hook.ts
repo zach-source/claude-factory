@@ -60,11 +60,18 @@ function baseWord(w: string): string {
 }
 
 /**
- * Splits a command string into segments (shell words), on &&, ||, ;, |, &, a newline, ( ), $( and a
- * backtick, honoring single quotes (literal), double quotes (backslash escapes \\ \" \$ \` and a
- * newline) and a backslash escape outside quotes. A segment stays one shell word per space; a quoted
- * span with spaces inside stays one word, so a quoted argument such as "rm -rf x" is never split into
- * separate rm/-rf/x words.
+ * Splits a command string into segments (shell words).
+ * It splits on &&, ||, ;, |, &, a newline, ( ), $( and a backtick.
+ * It keeps a single-quoted span literal.
+ * It reads a backslash escape (\\ \" \$ \`) inside a double-quoted span.
+ * It reads a backslash escape outside quotes too.
+ * A segment keeps one shell word per space.
+ * A quoted span with spaces inside stays one word, so a quoted argument such as "rm -rf x" never
+ * splits into separate rm/-rf/x words.
+ *
+ * A backslash right before a real newline is a POSIX line continuation, inside double quotes or
+ * outside them. Both characters drop and the text around them joins into one word, the same as a
+ * real shell. This never ends a word. It never keeps a literal newline.
  */
 function segments(cmd: string): string[][] {
   const segs: string[][] = []
@@ -92,7 +99,10 @@ function segments(cmd: string): string[][] {
     }
     if (quote === '"') {
       if (c === '"') quote = null
-      else if (c === '\\' && '"\\$`\n'.includes(cmd[i + 1] ?? '')) word += cmd[++i]
+      // a backslash-newline is a POSIX line continuation even inside double quotes: the shell
+      // removes both characters and joins the surrounding text, it does not keep a literal newline.
+      else if (c === '\\' && cmd[i + 1] === '\n') i++
+      else if (c === '\\' && '"\\$`'.includes(cmd[i + 1] ?? '')) word += cmd[++i]
       else word += c
       hasWord = true
       continue
@@ -103,6 +113,13 @@ function segments(cmd: string): string[][] {
       continue
     }
     if (c === '\\' && i + 1 < cmd.length) {
+      // a backslash-newline outside quotes is a POSIX line continuation: the shell removes both
+      // characters and joins the text around them into one word. It does not end the word and it
+      // does not keep a literal newline.
+      if (cmd[i + 1] === '\n') {
+        i++
+        continue
+      }
       word += cmd[++i]
       hasWord = true
       continue
