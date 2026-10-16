@@ -90,19 +90,24 @@ import {
   type Session,
 } from './metrics'
 import {
+  alreadyDone,
   asPrsFile,
   buildPrs,
   DEFAULT_BUDGET,
+  evidenceLine,
   forgeNote,
   forgeOf,
   gitlabForge,
   mrsIn,
   parseGitlabLabeled,
+  parseMergedPrs,
   parseRemote,
   sameFile,
   spawnGh,
   spawnGlab,
   type ForgeKind,
+  type Gh,
+  type MergedPr,
   type PrsFile,
   type RunMeta,
 } from './prs'
@@ -3355,6 +3360,93 @@ function linearExcluded(): { ids: Set<string>; rigs: Set<string> } {
   return { ids, rigs }
 }
 
+// claude-factory-6as: dispatch's pre-check.
+// A 3-day review found 30 of 319 triage visits (9.4%) already done.
+// A merged PR did the work before triage ever saw the bead. Each one cost a run and a worktree.
+// This code checks a ready bead against the rig's merged pull requests, right before dispatch starts it.
+const PRECHECK_TIMEOUT_MS = 15_000
+const precheckFile = () => join(HOME, 'precheck.jsonl')
+/** one line per pre-check hit or fail-open, for `factory metrics` and a soak trail independent of bd */
+const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) =>
+  durable(precheckFile(), `${JSON.stringify({ at: Date.now(), rig, bead, kind, evidence })}\n`, 'a')
+
+/** `gh pr list --state merged --search <id> ...`, plus `--head <branch>` for up to 3 local run
+ * branches of this bead (a PR that closed the bead's own run but never named it in its title) */
+async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh): Promise<MergedPr[]> {
+  const fields = 'number,url,title,headRefName,mergeCommit'
+  const search = await gh(['pr', 'list', '--state', 'merged', '--search', id, '--json', fields, '-L', '30'], {
+    cwd: repo,
+    timeout: PRECHECK_TIMEOUT_MS,
+  })
+  if (search.code !== 0) throw new Error(clip(search.err.trim().split('\n')[0] || 'gh pr list failed', 200))
+  const found = parseMergedPrs(search.out)
+  for (const branch of branches.slice(0, 3)) {
+    const byHead = await gh(['pr', 'list', '--state', 'merged', '--head', branch, '--json', fields], {
+      cwd: repo,
+      timeout: PRECHECK_TIMEOUT_MS,
+    })
+    if (byHead.code !== 0)
+      throw new Error(clip(byHead.err.trim().split('\n')[0] || 'gh pr list --head failed', 200))
+    found.push(...parseMergedPrs(byHead.out))
+  }
+  return found
+}
+
+/**
+ * claude-factory-6as: check if a merged PR already proves `bead`'s work is done.
+ * If it does, dispatch must reject the bead instead of starting a run for it.
+ *
+ * This makes no gh call at all in four cases:
+ * - `FACTORY_PRECHECK=0`
+ * - a person already overrode a prior reject (`rejected_by` metadata still names dispatch after a
+ *   requeue)
+ * - the id does not look like a bead id
+ * - the rig's repo is not on GitHub
+ *
+ * A gh failure or timeout fails open: the run starts, and the caller gets one dispatch.json row that
+ * shows it.
+ */
+async function precheckSkip(
+  rig: Pick<Rig, 'name' | 'repo'>,
+  bead: Bead,
+  b: ReturnType<typeof beads>,
+  runBranches: string[],
+  gh: Gh,
+): Promise<{ skip: boolean; error?: string }> {
+  if (process.env.FACTORY_PRECHECK === '0') return { skip: false }
+  if (bead.metadata?.rejected_by === 'dispatch') return { skip: false }
+  if (!/^[\w.-]+$/.test(bead.id)) return { skip: false }
+  if (originRef(rig.repo)?.forge !== 'github') return { skip: false }
+  let merged: MergedPr[]
+  try {
+    merged = await mergedPrsFor(rig.repo, bead.id, runBranches, gh)
+  } catch (err) {
+    const error = `pre-check skipped: ${(err as Error).message}`
+    logPrecheck(rig.name, bead.id, 'skip', error)
+    return { skip: false, error }
+  }
+  const children = b.children(bead.id)
+  const hit = alreadyDone(bead.id, merged, {
+    childIds: children.map(c => c.id),
+    allChildrenClosed: children.length > 0 && children.every(c => c.status === 'closed'),
+    runBranches,
+  })
+  if (!hit) return { skip: false }
+  const evidence = evidenceLine(hit.pr, rig.name, bead.id)
+  try {
+    b.reject(bead.id, 'dispatch', evidence)
+  } catch {
+    return { skip: true } // not landed: skip only this pass, with no comment; the next pass retries
+  }
+  logPrecheck(rig.name, bead.id, hit.kind, evidence)
+  try {
+    b.comment(bead.id, evidence)
+  } catch {
+    // the reject already landed; a bead with no comment still shows rejected, evidence in its metadata
+  }
+  return { skip: true }
+}
+
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
   if (halted() || !rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS))
@@ -3409,6 +3501,19 @@ async function dispatch() {
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
         if (room(rig, busy, undefined, held) <= 0) break
+        const runBranches = runIds()
+          .filter(id => {
+            try {
+              return loadRun(id).bead === bead.id
+            } catch {
+              return false
+            }
+          })
+          .slice(0, 3)
+          .map(id => `factory/${id}`)
+        const { skip, error } = await precheckSkip(rig, bead, b, runBranches, spawnGh)
+        if (error) errors.push({ id: bead.id, error })
+        if (skip) continue
         let run, def
         try {
           ;({ run, def } = await createTracked(rig.factory, preview.name, rig.repo, goalOf(bead), bead.id))
