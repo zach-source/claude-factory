@@ -1006,6 +1006,29 @@ export function managerActivity(lines: string[], since: number) {
   return { activity: activity.sort((a, b) => a.at - b.at).map(a => a.line), used }
 }
 
+/**
+ * `<home>/patrol-log.jsonl` lines turned into dream activity: one line per action a patrol took, plus
+ * one for its report, for entries after `since`. This function skips a bad JSON line; it does not throw
+ * (claude-factory-72v.6).
+ */
+export function patrolActivity(lines: string[], since: number): string[] {
+  const out: { at: number; line: string }[] = []
+  for (const raw of lines) {
+    if (!raw.trim()) continue
+    let e: { at?: number; actions?: string[]; report?: string }
+    try {
+      e = JSON.parse(raw)
+    } catch {
+      continue
+    }
+    if (!e.at || e.at <= since) continue
+    const hm = new Date(e.at).toISOString().slice(0, 16).replace('T', ' ')
+    for (const action of e.actions ?? []) out.push({ at: e.at, line: `- ${hm} patrol: ${clip(action, 200)}` })
+    if (e.report?.trim()) out.push({ at: e.at, line: `- ${hm} patrol report: ${clip(e.report, 300)}` })
+  }
+  return out.sort((a, b) => a.at - b.at).map(o => o.line)
+}
+
 export const dreamPrompt = (
   dir: string,
   journal: string[],

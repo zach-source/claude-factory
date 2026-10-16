@@ -2148,11 +2148,16 @@ function managerSince(since: number) {
     return existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []
   })
   const { activity, used } = memory.managerActivity(lines, since)
+  const patrolFile = join(HOME, 'patrol-log.jsonl')
+  const patrolLines = existsSync(patrolFile) ? readFileSync(patrolFile, 'utf8').split('\n') : []
+  // merged by sorting the already-formatted lines: both share the `- YYYY-MM-DD HH:mm ` prefix, which
+  // sorts the same as the timestamp it carries (claude-factory-72v.6)
+  const merged = [...activity, ...memory.patrolActivity(patrolLines, since)].sort()
   const skills = memory.skills(MEMORY).map(s => {
     const u = used.get(s.name)
     return `- ${s.name}: ${u ? `${u.n}, last ${new Date(u.last).toISOString().slice(0, 10)}` : 'never used'}: ${s.description}`
   })
-  return { activity: activity.slice(-400), skills } // ponytail: the newest 400 lines; a day's patrols fit
+  return { activity: merged.slice(-400), skills } // ponytail: the newest 400 lines; a day's patrols fit
 }
 
 /** the manager hears once of each set of skill proposals waiting on its review: the next patrol takes it */
