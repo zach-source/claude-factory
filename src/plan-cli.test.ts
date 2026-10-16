@@ -235,6 +235,17 @@ test('malformed JSON in plan-facts.json refuses: exit 1, plan.json untouched', (
   expect(existsSync(planJson())).toBe(false)
 })
 
+test('plan set prints a JSON summary on stdout: rigs, items, findings, and filed across every rig', () => {
+  reset()
+  writeFacts()
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath)
+  const out = factory(['plan', 'set', answerPath])
+  expect(out.code).toBe(0)
+  const summary = JSON.parse(out.out.trim())
+  expect(summary).toEqual({ rigs: 1, items: 2, findings: 3, filed: 3 }) // 3 findings + 1 proposal, capped at 3
+})
+
 test('plan show prints the plan as text, or says there is none', () => {
   reset()
   const none = factory(['plan', 'show'])

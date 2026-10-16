@@ -3667,6 +3667,7 @@ function planSetCmd(answerPath?: string) {
   // every validation above must pass before anything is written: a refusal never touches plan.json
   writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: cleanProposals } satisfies plan.Plan)
 
+  let filedTotal = 0
   for (const name of rigNames) {
     const rig = rigs().find(r => r.name === name)
     if (!rig || !hasBeads(rig.repo)) continue
@@ -3698,8 +3699,18 @@ function planSetCmd(answerPath?: string) {
         console.error(`factory plan set: ${name}: could not file ${item.key}: ${(err as Error).message}`)
       }
     }
+    filedTotal += filed
   }
-  console.log(`plan.json written, ${Object.keys(rigsPlan).length} rig(s)`)
+  const itemsTotal = Object.values(rigsPlan).reduce((n, rp) => n + rp.items.length, 0)
+  const findingsTotal = Object.values(rigsPlan).reduce((n, rp) => n + rp.findings.length, 0)
+  console.log(
+    JSON.stringify({
+      rigs: Object.keys(rigsPlan).length,
+      items: itemsTotal,
+      findings: findingsTotal,
+      filed: filedTotal,
+    }),
+  )
 }
 
 /** `factory plan` (or `plan show`): the plan as text, for a person or `/factory plan` */
