@@ -482,6 +482,7 @@ const DENY_PUSH = [
   'git push origin +main',
   'git push -f origin main',
   'git push origin :main',
+  'git push origin main:',
   'git push origin --delete main',
   'git push --all origin',
   'git push --branches origin',
