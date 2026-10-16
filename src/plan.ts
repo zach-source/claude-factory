@@ -39,7 +39,13 @@ export const hashOf = (s: string) => createHash('sha256').update(s).digest('hex'
  * human-labeled bead every hour, up to 3 per rig per turn (claude-factory-dun.19).
  *
  * A proposal that names no bead (a rig- or goal-wide change) still keys on a hash of `change` and
- * `why`, since there is no bead id to key on instead. */
+ * `why`, since there is no bead id to key on instead.
+ *
+ * Trade-off (claude-factory-dun.22): `hasMetadata` (src/beads.ts) checks this key with `bd list
+ * --all`. This command also matches a closed bead. So, once a person answers or closes one
+ * proposal filed on bead X, `plan set` drops every later proposal on X, for good, even a
+ * different change. This is by design. It stops hourly spam. A later reader must not read it as
+ * a bug. */
 export function proposalKey(rig: string, p: Pick<Proposal, 'bead' | 'change' | 'why'>): string {
   return p.bead ? `proposal:${rig}:${p.bead}` : `proposal:${rig}:${hashOf(`${p.change}\n${p.why}`)}`
 }
