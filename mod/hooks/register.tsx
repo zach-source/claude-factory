@@ -597,6 +597,19 @@ export const register: Register = (on, options) => {
       argumentHint: '[start|status|decide|rig|queue|mail|poke|retry|goto|fork|abort|rm ...]',
     })
     await ensureTicking($)
+    // re-registered on every session.start (a hot reload included): the engine replaces the name, never duplicates it
+    await $.agent
+      .register({
+        name: 'patrol',
+        description:
+          "The factory manager's hidden patrol: answers worker mail, works stuck stations, and starts backlog work, on its own timer.",
+        prompt: PATROL(rt.cli),
+        tools: ['Bash', 'Read', 'Grep', 'Glob'],
+        model: 'sonnet',
+        maxTurns: 40,
+        omitClaudeMd: true,
+      })
+      .catch(() => {})
     return next(e)
   })
 
@@ -624,6 +637,30 @@ export const register: Register = (on, options) => {
     if (!gated) return next(pinned)
     const choice = await $.ui.ask(gated.question, ['Allow', 'Deny']).catch(() => 'Deny')
     return choice === 'Allow' ? next(pinned) : { deny: gated.deny }
+  })
+
+  // hides PATROL_TYPE from the model's own agent listing and from `subagent_type`: only this plugin's own
+  // `$.agent.spawn` of PATROL_TYPE starts it; `agent.offer` never governs that spawn
+  on('agent.offer', { agent: PATROL_TYPE }, () => ({ isOffered: false }))
+
+  // clears patrolNow's one-at-a-time guard once the subagent's own turn ends, win or not. A watchdog in
+  // patrolNow also clears it, for a turn that never completes.
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId && e.agentId === rt.patrolId) {
+      rt.isPatrolling = false
+      rt.patrolId = undefined
+    }
+    return next(e)
+  })
+
+  // defense only: the probe behind claude-factory-72v found that a plugin's own `$.agent.spawn` queues
+  // no task-notification turn (unlike the model's own background Agent call). This must not fire.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'task-notification') {
+      const id = e.text.match(/<task-id>([^<]+)<\/task-id>/)?.[1]
+      if (id && rt.patrolIds.includes(id)) return { drop: "a patrol subagent's own task-notification" }
+    }
+    return next(e)
   })
 
   on('prompt.compose', async ($, e, next) => {
