@@ -252,6 +252,18 @@ test("a plan.json whose rig entry has no 'items'/'findings' arrays reads as no p
   expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
 })
 
+test("a plan.json whose rig entry has a null finding reads as no plan, not a throw (claude-factory-dun.20)", () => {
+  resetTwo(2, 2)
+  writeFileSync(
+    join(home, 'plan.json'),
+    JSON.stringify({ at: Date.now(), rigs: { a: { items: [], findings: [null] } }, proposals: [] }),
+  )
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1') // bd order: the malformed plan changed nothing
+  expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
+})
+
 test("a rig named like an Object.prototype member and absent from a valid plan's rigs still falls back to bd order (claude-factory-dun.18)", () => {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(claudeConfig, { recursive: true })

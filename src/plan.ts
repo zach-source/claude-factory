@@ -99,21 +99,21 @@ export function rankPlan(answer: AnswerItem[], candidates: Bead[]): PlanItem[] {
     }))
 }
 
-/**
- * This function sets the candidate order for `dispatch()`.
- * It returns the candidates unchanged when `rigPlan` is absent.
- * A plan is absent when there is no plan, or when it is stale.
- * The caller uses `isFresh` to decide that before it calls this function.
+/** Checks the shape of one finding. `kind`, `key` and `text` must each be a string.
  *
- * Otherwise, the function uses the same sort key as `rankPlan`.
- * It sorts the live candidate list, not the plan's own top 10.
- * A candidate that the plan ranked goes first inside its own priority band, in the plan's order.
- *
- * Every other candidate keeps its own (bd) order after them.
- * A planned P2 never passes a real P1, because priority always sorts first.
- */
+ * A hand-edited or truncated `plan.json` can leave a finding as `null`, or as some other shape.
+ * `isValidRigPlan` once checked only that `findings` is an array, and so passed `findings:
+ * [null]`. `planShowText`, `planSection` (mod/hooks/view.ts) and `rigsView` (mod/hooks/views.tsx)
+ * then read `f.key` and `f.text` on `null`, and threw (claude-factory-dun.20). */
+function isValidFinding(x: unknown): x is Finding {
+  if (!x || typeof x !== 'object') return false
+  const o = x as Record<string, unknown>
+  return typeof o.kind === 'string' && typeof o.key === 'string' && typeof o.text === 'string'
+}
+
 /** Checks the shape of one rig's plan. `items` and `findings` must both be arrays. Each item must
- * have a string `id`, a string `title`, a string `why` and a finite `priority`.
+ * have a string `id`, a string `title`, a string `why` and a finite `priority`. Each finding must
+ * pass `isValidFinding`.
  *
  * A hand-edited or truncated `plan.json` can leave a rig entry as `{}` or some other shape.
  * Without this check, `orderByPlan` and `planShowText` (`factory plan`) throw on
@@ -135,7 +135,8 @@ export function isValidRigPlan(x: unknown): x is RigPlan {
         typeof (it as Partial<PlanItem>).why === 'string' &&
         Number.isFinite((it as Partial<PlanItem>).priority),
     ) &&
-    Array.isArray(o.findings)
+    Array.isArray(o.findings) &&
+    o.findings.every(isValidFinding)
   )
 }
 
@@ -153,6 +154,19 @@ export function rigPlanOf(p: Plan | undefined, name: string): RigPlan | undefine
   return p.rigs[name]
 }
 
+/**
+ * This function sets the candidate order for `dispatch()`.
+ * It returns the candidates unchanged when `rigPlan` is absent.
+ * A plan is absent when there is no plan, or when it is stale.
+ * The caller uses `isFresh` to decide that before it calls this function.
+ *
+ * Otherwise, the function uses the same sort key as `rankPlan`.
+ * It sorts the live candidate list, not the plan's own top 10.
+ * A candidate that the plan ranked goes first inside its own priority band, in the plan's order.
+ *
+ * Every other candidate keeps its own (bd) order after them.
+ * A planned P2 never passes a real P1, because priority always sorts first.
+ */
 export function orderByPlan(candidates: Bead[], rigPlan: { items: PlanItem[] } | undefined): Bead[] {
   if (!rigPlan) return candidates
   const rank = new Map(rigPlan.items.map((it, i) => [it.id, i]))

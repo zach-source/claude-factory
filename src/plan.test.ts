@@ -94,10 +94,18 @@ test('isValidRigPlan: a well-shaped rig plan passes; an item missing a field or 
   expect(isValidRigPlan({ items: [{ id: 'a-1', title: 't', priority: 1, why: 'w' }], findings: [] })).toBe(
     true,
   )
+  expect(
+    isValidRigPlan({
+      items: [],
+      findings: [{ kind: 'starved-epic', rig: 'acme', key: 'k', text: 't' }],
+    }),
+  ).toBe(true)
   expect(isValidRigPlan({})).toBe(false) // no items/findings at all (claude-factory-dun.18)
   expect(isValidRigPlan({ items: [], findings: undefined })).toBe(false)
   expect(isValidRigPlan({ items: 'nope', findings: [] })).toBe(false)
   expect(isValidRigPlan({ items: [{ id: 'a-1', title: 't', why: 'w' }], findings: [] })).toBe(false) // priority missing
+  expect(isValidRigPlan({ items: [], findings: [null] })).toBe(false) // claude-factory-dun.20
+  expect(isValidRigPlan({ items: [], findings: [{ kind: 'starved-epic', key: 'k' }] })).toBe(false) // text missing
   expect(isValidRigPlan(null)).toBe(false)
   expect(isValidRigPlan([])).toBe(false)
 })

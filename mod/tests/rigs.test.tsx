@@ -275,6 +275,43 @@ test(
 )
 
 test(
+  'the rigs tab draws a rig whose plan entry has a null finding with no crash: the whole plan reads as absent (claude-factory-dun.20)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const tick = {
+      ...TICK,
+      rigs: [{ name: 'api', repo: '/w/api', factory: 'lifecycle', maxRuns: 5, goal: 'ship it' }],
+      runs: [],
+    }
+    planMocks(on, files, tick)
+    // "api"'s own entry has a well-shaped items array but a null finding: isValidPlan rejects
+    // the whole file (claude-factory-dun.20).
+    files.set(
+      '/home/acme/plan.json',
+      JSON.stringify({ at: 0, rigs: { api: { items: [], findings: [null] } }, proposals: [] }),
+    )
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'rigs' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('api')
+    expect(drawn).not.toContain('Next up:')
+    await ui.unmount()
+  },
+)
+
+test(
   "the pane header and the band say how fresh the pm's plan is, and call it stale past 2 hours",
   SLOW,
   async ($, on) => {

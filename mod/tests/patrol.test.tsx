@@ -1246,7 +1246,7 @@ test(
       spawns.push(e as never)
       return { model: 'sonnet', agentId: `patrol-${spawns.length}` } as never
     })
-    agentListMock(on, ['patrol-1', 'patrol-2', 'patrol-3'])
+    agentListMock(on, ['patrol-1', 'patrol-2', 'patrol-3', 'patrol-4'])
     on('prompt.submit', ($, e) => ({ text: e.text }) as never)
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
 
@@ -1314,6 +1314,27 @@ test(
       reason: 'answer',
       turnId: 't3',
       agentId: 'patrol-3',
+    } as never)
+
+    // a well-formed JSON file, with a well-shaped items array but a null finding: `isValidPlan`
+    // (view.ts) rejects the whole plan the same way, instead of letting a later `f.key`/`f.text`
+    // read throw (claude-factory-dun.20).
+    files.set(
+      '/home/factory/plan.json',
+      JSON.stringify({ at: 10_000, rigs: { api: { items: [], findings: [null] } }, proposals: [] }),
+    )
+    queued = [mail(4)]
+    await clock.advance(5_000)
+    expect(spawns).toHaveLength(4)
+    expect(spawns[3]!.prompt).not.toContain('Plan (from the pm,')
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't4',
+      agentId: 'patrol-4',
     } as never)
   },
 )

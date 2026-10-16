@@ -4,6 +4,7 @@ import type {
   FactoryMail,
   FactoryPatrolLogEntry,
   FactoryPlan,
+  FactoryPlanFinding,
   FactoryPlanItem,
   FactoryPrs,
   FactoryRig,
@@ -309,9 +310,22 @@ function isPlanFresh(plan: FactoryPlan | null | undefined, now: number): boolean
   return now - plan.at < PLAN_FRESH_MS
 }
 
+/** Checks the shape of one finding (mirrors `isValidFinding`, src/plan.ts: kept separate since mod
+ * code cannot import from src). `kind`, `key` and `text` must each be a string.
+ *
+ * `isValidRigPlan` once checked only that `findings` is an array, and so passed `findings:
+ * [null]`. `planSection` below and `rigsView` (mod/hooks/views.tsx) then read `f.key` and `f.text`
+ * on `null`, and threw (claude-factory-dun.20). */
+function isValidFinding(x: unknown): x is FactoryPlanFinding {
+  if (!x || typeof x !== 'object') return false
+  const o = x as Record<string, unknown>
+  return typeof o.kind === 'string' && typeof o.key === 'string' && typeof o.text === 'string'
+}
+
 /** Checks the shape of one rig's plan (mirrors `isValidRigPlan`, src/plan.ts: kept separate since
  * mod code cannot import from src). `items` and `findings` must both be arrays. Each item must
- * have a string `id`, a string `title`, a string `why` and a finite `priority`.
+ * have a string `id`, a string `title`, a string `why` and a finite `priority`. Each finding must
+ * pass `isValidFinding`.
  *
  * `readPlan` (register.tsx) calls `isValidPlan` below on the whole file before this function
  * ever runs, so by the time a caller here sees a `FactoryPlan`, every rig entry already passed
@@ -330,7 +344,8 @@ function isValidRigPlan(x: unknown): x is FactoryRigPlan {
         typeof (it as Partial<FactoryPlanItem>).why === 'string' &&
         Number.isFinite((it as Partial<FactoryPlanItem>).priority),
     ) &&
-    Array.isArray(o.findings)
+    Array.isArray(o.findings) &&
+    o.findings.every(isValidFinding)
   )
 }
 

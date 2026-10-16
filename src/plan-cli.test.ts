@@ -445,3 +445,14 @@ test('plan show reports a rig entry with no items/findings arrays, instead of th
   expect(out.code).toBe(0)
   expect(out.out).toContain('plan.json: missing or malformed')
 })
+
+test('plan show reports a rig entry with a null finding, instead of throwing (claude-factory-dun.20)', () => {
+  reset()
+  writeFileSync(
+    planJson(),
+    JSON.stringify({ at: Date.now(), rigs: { a: { items: [], findings: [null] } }, proposals: [] }),
+  )
+  const out = factory(['plan'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain('plan.json: missing or malformed')
+})
