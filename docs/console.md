@@ -138,6 +138,11 @@ how many have finished or aborted.
 A rig with no live runs says so. Runs that belong to no rig get their own list, "outside
 any rig".
 
+A rig can opt into the [Linear pull loop](beads.md#linear) with `rig add ... --linear <team id>`.
+Such a rig shows one more line. After a pull, the line is dim: "linear · pulled N · \<age\> ago".
+When the last pull failed, the line is red: "linear: \<error\>". A rig with no `--linear` team
+shows no line.
+
 Use Rigs to see how full each rig is and whether any of its runs need you.
 
 ## PRs (key 5)
