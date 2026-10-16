@@ -58,8 +58,12 @@ const PATROL_TYPE = 'factory:patrol'
 const PATROL_HOLD_MS = 5 * 60_000
 /** matches a patrol's own Bash command that acts on a run: recorded for the patrol log */
 const PATROL_VERB = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|queue|start)\b/
-/** matches a main-chat Bash command that acts on one run, its id the 2nd capture group */
-const TOUCH_RE = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|decide)\s+(\S+)/
+/** Matches a main-chat Bash command that acts on one run. The 2nd capture group holds the run id.
+ * `touchedTargets` below uses `matchAll` with this pattern to find every match in a compound
+ * command (`&&`, `;`), not only the first (claude-factory-72v.20). `matchAll` needs the `g` flag
+ * set here. `String.prototype.matchAll` clones the pattern on each call, so reuse of this one
+ * `RegExp` object across calls is safe. */
+const TOUCH_RE = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|decide)\s+(\S+)/g
 /** patrol-log.jsonl keeps at most this many lines, oldest dropped first */
 const PATROL_LOG_CAP = 50
 /** how many of the newest log entries a fresh patrol's own prompt carries, and `/factory patrols` prints */
@@ -658,6 +662,16 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
   return null
 }
 
+/** Every run id a Bash command names with a run-acting verb (`mail`, `poke`, `retry`, `goto`,
+ * `fork`, `abort`, `rm`, `decide`), not only the first. A compound command (`a && b`, `a; b`)
+ * strings more than one of these together. claude-factory-72v.20: the old code read only the
+ * first match (`normalized.match(TOUCH_RE)?.[2]`), so a benign command first in the string hid a
+ * held run from the patrol's own deny, and a person's own compound command held only its first
+ * run, leaving the rest open to the next patrol. */
+function touchedTargets(normalized: string): string[] {
+  return [...normalized.matchAll(TOUCH_RE)].map(m => m[2]!)
+}
+
 function actions($: EngineInterface): Actions {
   return {
     cli: (...args) => void act($, args),
@@ -749,8 +763,18 @@ export const register: Register = (on, options) => {
       rt.patrolId = e.agentId
       rt.patrolIds = [...rt.patrolIds, e.agentId].slice(-20)
     }
-    // the model's shell cd's into rigs to read them: its factory commands still work this factory
-    const pinned = rt.home ? { ...e, command: `export FACTORY_HOME='${rt.home}'\n${e.command}` } : e
+    // the model's shell cd's into rigs to read them: its factory commands still work this factory.
+    // claude-factory-72v.19: a subagent's prefix also carries FACTORY_PATROL=1. This is a second,
+    // CLI-side layer behind the gated-command regex deny below. A command can obfuscate the gated
+    // verb (a backslash inside it, a quoted argument). That can defeat the regex and still run a
+    // clean verb against the CLI. src/cli.ts refuses `decide`, `decisions answer`, `decisions
+    // propose` and an owner-only `start` whenever this var is set. It already refuses these the
+    // same way for a worker's FACTORY_FROM. One residual stays out of scope here: a command that
+    // both unsets this var and obfuscates the text still gets through. Fixing that needs the CLI
+    // to know the caller's identity on its own.
+    const prefix =
+      (e.agentId ? 'export FACTORY_PATROL=1\n' : '') + (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '')
+    const pinned = prefix ? { ...e, command: `${prefix}${e.command}` } : e
     const gated = gatedCommand(e.command)
     // gatedCommand's own normalize, repeated here so TOUCH_RE and PATROL_VERB see the same text
     // (a line continuation or a quoted newline must not hide a run-acting command from either)
@@ -758,33 +782,46 @@ export const register: Register = (on, options) => {
 
     // [SECURITY] a subagent gets no dialog, since nobody is there to answer one. This denies a
     // gated command outright, for every subagent. The run-touched hold below, and the patrol-log
-    // recording, differ: the person can run their own subagent on a run the main chat just
-    // touched (claude-factory-72v.16 keeps the hold off that case). Both checks match only this
-    // running patrol's own agentId (claude-factory-72v.9), never any other e.agentId.
+    // recording, differ. The person can run their own subagent on a run the main chat just
+    // touched (claude-factory-72v.16 keeps the hold off that case). So both match only a patrol's
+    // own agentId, never any other subagent's. claude-factory-72v.21: that used to mean only the
+    // *current* rt.patrolId. The watchdog can free a patrol that still runs late under its own
+    // agentId. Once a new patrol replaced rt.patrolId, the old check dropped that late one, so it
+    // could still act on a run the fresh hold was meant to cover. rt.patrolIds remembers every
+    // patrol id this session has confirmed (claude-factory-72v.9/.17), current or old. Matching
+    // membership there, not only equality with the current id, closes that gap. The action log
+    // stays scoped to the current id only: an old patrol's late action is not this patrol's report.
     if (e.agentId) {
       if (gated) return { deny: `${gated.deny} A patrol never decides this: leave it for the person.` }
-      if (e.agentId === rt.patrolId) {
+      if (rt.patrolIds.includes(e.agentId)) {
         // claude-factory-72v.14: the prompt already leaves a held run's mail out, but that alone
         // did not stop the patrol's own Bash call from acting on a held run directly. This denies
-        // it too, the same hold PATROL_HOLD_MS already gives the main chat.
-        const target = normalized.match(TOUCH_RE)?.[2]
-        if (target) {
+        // it too, the same hold PATROL_HOLD_MS already gives the main chat. claude-factory-72v.20:
+        // a compound command (`a && b`) can name more than one run; every target is checked, not
+        // only the first.
+        const now = await $.clock.now()
+        for (const target of touchedTargets(normalized)) {
           const at = rt.touched.get(target)
-          if (at !== undefined && (await $.clock.now()) - at < PATROL_HOLD_MS)
+          if (at !== undefined && now - at < PATROL_HOLD_MS)
             return {
               deny: `${target} was touched by the person in the last few minutes: a patrol must not act on it now.`,
             }
         }
-        if (PATROL_VERB.test(normalized))
+        if (e.agentId === rt.patrolId && PATROL_VERB.test(normalized))
           rt.patrolActions = [...rt.patrolActions, line(e.command, 200)].slice(-50)
       }
       return next(pinned)
     }
 
     // the main chat: a factory command that acts on one run holds that run out of the next
-    // patrol for PATROL_HOLD_MS, so the person and a patrol never act on the same run at once
-    const touched = normalized.match(TOUCH_RE)?.[2]
-    if (touched) rt.touched.set(touched, await $.clock.now())
+    // patrol for PATROL_HOLD_MS, so the person and a patrol never act on the same run at once.
+    // claude-factory-72v.20: a compound command can touch more than one run; every target is held,
+    // not only the first.
+    const touchedHere = touchedTargets(normalized)
+    if (touchedHere.length) {
+      const touchedNow = await $.clock.now()
+      for (const target of touchedHere) rt.touched.set(target, touchedNow)
+    }
 
     // a gate, a bd decision answer and an owner-only start are the person's call: the model may run
     // any of them only after they confirm it here, since it has no other way to intercept the manager's

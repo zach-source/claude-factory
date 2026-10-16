@@ -19,7 +19,12 @@ minor release may change the factory format, the CLI or the run state.
   line to `<home>/patrol-log.jsonl` (capped at 50 lines), shown by a new `/factory patrols`
   command and folded into the dream's manager-activity digest (`memory.patrolActivity` in
   `src/memory.ts`). The pane header and the band above the prompt show how long ago the last
-  patrol ran. Owner decisions still surface through the existing decisions/interview queue.
+  patrol ran. Owner decisions still surface through the existing decisions/interview queue. A
+  subagent's Bash prefix also carries `FACTORY_PATROL=1`, next to `FACTORY_HOME`; `src/cli.ts`
+  refuses `decide`, `decisions answer`, `decisions propose` and an owner-only `start` whenever
+  it is set, a second layer behind the hook's own regex deny. The run-touched hold and its deny
+  now read every run id a compound Bash command names (`matchAll`, not only the first match),
+  and the hold also covers an older patrol the watchdog freed but which still runs late.
   (claude-factory-72v)
 - Added: a Linear pull loop (claude-factory-b6c). A rig opts in with `factory rig add
   ... --linear <team_id[,team_id]>` (or a `rigs.json` `linear.team` field, plus optional

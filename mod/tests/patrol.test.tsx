@@ -1040,3 +1040,169 @@ test(
     await clock.settle()
   },
 )
+
+test(
+  "[SECURITY] a subagent's Bash command is pinned with FACTORY_PATROL=1, a 2nd CLI-side layer behind the regex deny; the main chat's own command carries no such var (claude-factory-72v.19)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const commands: string[] = []
+    let queued: readonly unknown[] = [mail(1)]
+    baseMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('agent.spawn', () => ({ model: 'sonnet' }) as never)
+    agentListMock(on, ['patrol-19'])
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on('tool.call', { tool: 'Bash' }, ($, e) => {
+      commands.push(e.command)
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    await $.tool.call({
+      tool: 'Bash',
+      command: 'factory mail r20 implement "ok"',
+      agentId: 'patrol-19',
+    } as never)
+    expect(commands.at(-1)).toContain('export FACTORY_PATROL=1')
+
+    await $.tool.call({ tool: 'Bash', command: 'factory mail r20 implement "ok"' } as never)
+    expect(commands.at(-1)).not.toContain('FACTORY_PATROL')
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-19',
+    } as never)
+    await clock.settle()
+  },
+)
+
+test(
+  "[SECURITY] a compound Bash command naming more than one run holds every target, and the patrol's own compound command is denied when any one of them is held (claude-factory-72v.20)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    let ran = 0
+    let queued: readonly unknown[] = [mail(1)]
+    baseMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('agent.spawn', () => ({ model: 'sonnet' }) as never)
+    agentListMock(on, ['patrol-20'])
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    // the main chat's own compound command names two runs: both are held, not only the first
+    await $.tool.call({
+      tool: 'Bash',
+      command: 'factory mail r21a implement "a" && factory mail r21b implement "b"',
+    } as never)
+    expect(ran).toBe(1)
+
+    // a patrol's own compound command puts a benign target first and a held run second: denied
+    const denied = await $.tool.call({
+      tool: 'Bash',
+      command: 'factory poke r21c && factory poke r21b',
+      agentId: 'patrol-20',
+    } as never)
+    expect(denied.deny).toContain('r21b')
+    expect(denied.deny).toContain('touched by the person')
+    expect(ran).toBe(1) // not run
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-20',
+    } as never)
+    await clock.settle()
+  },
+)
+
+test(
+  "[SECURITY] a patrol the watchdog freed, still running late, is held off a run the next patrol's own hold covers too (claude-factory-72v.21)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    let ran = 0
+    let queued: readonly unknown[] = [mail(1)]
+    baseMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('agent.spawn', () => ({ model: 'sonnet' }) as never)
+    // both the old, watchdog-freed patrol and the fresh one it was replaced by are real patrols
+    agentListMock(on, ['patrol-21-old', 'patrol-21-new'])
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+
+    // the old patrol starts and calls Bash once, adopting rt.patrolId
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.tool.call({ tool: 'Bash', command: 'factory status', agentId: 'patrol-21-old' } as never)
+    expect(ran).toBe(1)
+
+    // the watchdog frees it past 15 minutes, with no turn.complete: it is still running late
+    await clock.advance(16 * 60_000)
+    queued = [mail(2)]
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    // the new patrol calls Bash once too, adopting rt.patrolId as its own
+    await $.tool.call({ tool: 'Bash', command: 'factory status', agentId: 'patrol-21-new' } as never)
+    expect(ran).toBe(2)
+
+    // the main chat touches r22 directly: this holds it for PATROL_HOLD_MS
+    await $.tool.call({ tool: 'Bash', command: 'factory mail r22 implement "steer"' } as never)
+    expect(ran).toBe(3)
+
+    // the old, freed-but-still-running patrol's late command on that same held run is denied too,
+    // even though rt.patrolId now names the new patrol, not this one
+    const denied = await $.tool.call({
+      tool: 'Bash',
+      command: 'factory poke r22',
+      agentId: 'patrol-21-old',
+    } as never)
+    expect(denied.deny).toContain('touched by the person')
+    expect(ran).toBe(3) // not run
+
+    // leave no patrol running, so a later test in this file is not blocked by it
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-21-new',
+    } as never)
+    await clock.settle()
+  },
+)

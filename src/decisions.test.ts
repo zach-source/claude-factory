@@ -95,6 +95,12 @@ test('decisions answer responds to a human-flagged bead, comments on an owner-on
   const refused = factory(['decisions', 'answer', 'api', 'api-2', 'nope'], { FACTORY_FROM: 'implement' })
   expect(refused.code).not.toBe(0)
   expect(refused.err).toContain('a worker cannot answer')
+
+  // claude-factory-72v.19: FACTORY_PATROL is the mod's own marker for a patrol subagent's Bash
+  // call, a 2nd CLI-side layer behind the mod's regex deny (which an obfuscated command can defeat)
+  const refusedPatrol = factory(['decisions', 'answer', 'api', 'api-2', 'nope'], { FACTORY_PATROL: '1' })
+  expect(refusedPatrol.code).not.toBe(0)
+  expect(refusedPatrol.err).toContain('a patrol cannot answer')
 })
 
 test('decisions propose refuses a gate key and a malformed one, a worker, and otherwise stores options decisions shows back', () => {
@@ -119,9 +125,30 @@ test('decisions propose refuses a gate key and a malformed one, a worker, and ot
   expect(refused.code).not.toBe(0)
   expect(refused.err).toContain('a worker cannot propose')
 
+  // claude-factory-72v.19: same 2nd CLI-side layer as decisions answer's own FACTORY_PATROL check
+  const refusedPatrol = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b'], {
+    FACTORY_PATROL: '1',
+  })
+  expect(refusedPatrol.code).not.toBe(0)
+  expect(refusedPatrol.err).toContain('a patrol cannot propose')
+
   expect(factory(['decisions', 'propose', 'bd:api:api-1', 'Which DB?', 'pg | mysql']).code).toBe(0)
   const out = JSON.parse(factory(['decisions']).out)
   expect(out.proposals['bd:api:api-1']).toMatchObject({ question: 'Which DB?', options: ['pg', 'mysql'] })
+})
+
+test('decide refuses a worker and a patrol before it ever looks up the run (claude-factory-72v.19)', () => {
+  rmSync(dir, { recursive: true, force: true })
+  fakeBd('null', '[]')
+  const worker = factory(['decide', 'r1', 'approve'], { FACTORY_FROM: 'implement' })
+  expect(worker.code).not.toBe(0)
+  expect(worker.err).toContain('a worker cannot decide')
+
+  // claude-factory-72v.19: a patrol subagent's own Bash call carries FACTORY_PATROL=1, a 2nd
+  // CLI-side layer behind the mod's regex deny for this same command
+  const patrol = factory(['decide', 'r1', 'approve'], { FACTORY_PATROL: '1' })
+  expect(patrol.code).not.toBe(0)
+  expect(patrol.err).toContain('a patrol cannot decide')
 })
 
 test('decisions propose keeps a value at its limit, refuses one over it naming the field and the limit, and leaves decisions.json unchanged', () => {

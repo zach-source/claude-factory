@@ -3051,6 +3051,14 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
       fail(
         `${named.id} carries its owner's decisions (metadata.owner_decisions): it is theirs to hand out. Start it only when the person names it, with --owned`,
       )
+    // claude-factory-72v.19: a second, CLI-side layer behind the mod's own Bash-hook regex deny
+    // (gatedCommand, in mod/hooks/register.tsx), which an obfuscated command (a backslash inside
+    // the verb, a quoted argument) can defeat. FACTORY_PATROL is set only on a patrol subagent's
+    // own pinned Bash prefix, never on the main chat's: this refuses the patrol even when it got
+    // here with --owned on a bead that really is owned, the same as the FACTORY_FROM refusals
+    // below for a worker.
+    if (isOwned(named) && process.env.FACTORY_PATROL)
+      fail(`${named.id} carries its owner's decisions: a patrol cannot start it, even with --owned`)
     const open = openChildren(b, named.id)
     if (open.length)
       fail(
@@ -3887,6 +3895,9 @@ function decisionsList() {
 function decisionsAnswer(rigName: string, id: string, text: string) {
   if (process.env.FACTORY_FROM)
     fail("a worker cannot answer the person's decisions: mail the manager instead")
+  // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above, behind
+  // the mod's own regex deny for this command.
+  if (process.env.FACTORY_PATROL) fail("a patrol cannot answer the person's decisions: leave it for them")
   const b = beads(repoOf(rigName), 'factory/person')
   if (b.human().some(x => x.id === id)) b.respond(id, text)
   else b.comment(id, text)
@@ -3931,6 +3942,9 @@ function parseOption(raw: string): { label: string; effect?: string; recommended
 function decisionsPropose(key: string, question: string, optionsLine: string, context?: string) {
   if (process.env.FACTORY_FROM)
     fail("a worker cannot propose the person's decisions: mail the manager instead")
+  // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above. Only the
+  // manager's own interview round proposes decisions; a patrol never does.
+  if (process.env.FACTORY_PATROL) fail("a patrol cannot propose the person's decisions: leave it for them")
   if (/^gate:/.test(key)) fail('a gate is decided by the person, never proposed options')
   if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
   if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
@@ -4513,6 +4527,9 @@ if (import.meta.main && !outboxCmd)
         const [id, outcome, ...note] = args
         // ponytail: an env check, not a lock: it stops a worker deciding by habit, not one set on it
         if (process.env.FACTORY_FROM) fail('a worker cannot decide a gate: mail the manager instead')
+        // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above,
+        // behind the mod's own regex deny for this command.
+        if (process.env.FACTORY_PATROL) fail('a patrol cannot decide a gate: leave it for the person')
         const { run, value, c } = current(id)
         const [node, sub] = where(value)
         const n = (await loadFactory(run.factory)).nodes[node]
