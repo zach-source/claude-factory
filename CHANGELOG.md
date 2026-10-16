@@ -6,6 +6,33 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Added: `factory gc [--days N] [--dry-run]`. For a done or aborted run older
+  than `N` days (`FACTORY_GC_DAYS`, default 7), it removes the run's
+  `prompts/`, its `f-*.brief.md` briefs and its `*.before-*`/`*.pre-*` backups.
+  It keeps `run.json`, `state.json`, the journal, `inbox` and `prs.json`.
+  (claude-factory-503.1)
+  - It also removes a launch script under `HOME/launch/` once a strict read of
+    live `herdr` panes shows no pane still uses it. A failed or missing
+    `herdr` read skips launch-script removal for that pass, so it never
+    deletes a script that may still be in use.
+  - `--dry-run` only prints file counts and bytes for each kind (prompts,
+    briefs, backups, launch scripts), and a total. It deletes nothing.
+  - `tick()` now starts one `factory gc` pass at most once an hour
+    (`FACTORY_GC_MS`). `FACTORY_GC=0` turns this off. This follows the same
+    pattern as the existing `dream`, `config-sync` and `self-update` passes.
+  - `gc` can remove `prompts/` from a done or aborted run. A later goto on
+    that run can revive it. `spawn()` and `resumeFile()` (`src/cli.ts`) now run
+    `mkdir` on the `prompts/` directory before they write into it, so a
+    revived run can start a worker. `sessionsOf()` now reads the union of the
+    run's `prompts.list` file and a rebuilt `prompts/` directory, so a revived
+    run keeps its old station names.
+  - A second `gc` pass after such a revive now writes `prompts.list` as the
+    union of its old contents and the current `prompts/` listing. Before this
+    fix, the second pass overwrote the list, and lost the names the first
+    pass had kept.
+  - `gcPass()` now skips one unreadable run directory. It names the directory
+    on stderr and continues the rest of the pass, instead of failing the
+    whole pass.
 - Deploy no longer starts a worker against an unmerged pull request. (claude-factory-960)
   - Cause: a run reached `deploy` as soon as release reported, so a worker always launched
     even when the pull request was still open. The worker then found nothing to do and
