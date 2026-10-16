@@ -180,3 +180,66 @@ test('two runs parked on the same pull request share one gh view this pass (AC6)
   const watchJson = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
   expect(watchJson.viewed).toBe(1)
 })
+
+// kickWatch (src/cli.ts) is the only caller of a watch pass since watchPass left beadsPass
+// (claude-factory-960.7): `factory tick` must spawn it at most once a minute, never while the factory
+// is halted, and never while another watch pass still holds watch.lock. These drive `factory tick`
+// itself, not `factory watch`, since kickWatch is tick's own gate before it ever spawns that process.
+async function waitForWatch(since = 0, tries = 300): Promise<unknown> {
+  const file = join(home, 'watch.json')
+  for (let i = 0; i < tries; i++) {
+    if (existsSync(file)) {
+      const j = JSON.parse(readFileSync(file, 'utf8'))
+      if (j.at > since) return j
+    }
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error('waitForWatch: no watch pass landed in time')
+}
+
+test('tick spawns one watch pass, then none while still inside that pass’s minute (claude-factory-960.7)', async () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  writeFileSync(prState, JSON.stringify({ state: 'OPEN', updatedAt: iso(3 * 60_000) }))
+  parkedRun('r1', repo(), f)
+  expect(existsSync(join(home, 'watch.json'))).toBe(false)
+  factory(['tick'])
+  const first = (await waitForWatch()) as { at: number }
+  expect(ghCallCount()).toHaveLength(1)
+  factory(['tick']) // immediately after: well inside the same minute, so this must spawn nothing
+  await new Promise(resolve => setTimeout(resolve, 150)) // time for a wrongly-spawned pass to land
+  expect(ghCallCount()).toHaveLength(1) // still one gh call, not two
+  const second = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
+  expect(second.at).toBe(first.at) // the file is untouched since the first pass
+})
+
+test('tick spawns no watch pass while the factory is halted (claude-factory-960.7)', async () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  writeFileSync(prState, JSON.stringify({ state: 'OPEN', updatedAt: iso(3 * 60_000) }))
+  parkedRun('r1', repo(), f)
+  writeFileSync(
+    join(home, 'halt.json'),
+    JSON.stringify({ state: 'stopping', at: Date.now(), told: {}, closed: {} }),
+  )
+  factory(['tick'])
+  await new Promise(resolve => setTimeout(resolve, 150)) // time for a wrongly-spawned pass to land
+  expect(existsSync(join(home, 'watch.json'))).toBe(false)
+  expect(ghCallCount()).toHaveLength(0)
+})
+
+test('tick spawns no watch pass while another one still holds watch.lock (claude-factory-960.7)', async () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  writeFileSync(prState, JSON.stringify({ state: 'OPEN', updatedAt: iso(3 * 60_000) }))
+  parkedRun('r1', repo(), f)
+  mkdirSync(join(home, 'watch.lock'))
+  writeFileSync(join(home, 'watch.lock', 'pid'), String(process.pid)) // this test process: alive
+  factory(['tick'])
+  await new Promise(resolve => setTimeout(resolve, 150)) // time for a wrongly-spawned pass to land
+  expect(existsSync(join(home, 'watch.json'))).toBe(false)
+  expect(ghCallCount()).toHaveLength(0)
+})
