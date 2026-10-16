@@ -46,6 +46,11 @@ const PANE = 'factory'
 const TICK_MS = 5000
 // ponytail: a heartbeat costs one manager turn per interval while workers run; make it a setting if that hurts
 const PATROL_MS = 10 * 60_000
+/** a patrol subagent that never answers (a dead model turn, a wedged tool) stops blocking new ones */
+const PATROL_WATCHDOG_MS = 15 * 60_000
+/** a denied spawn waits this long before the next attempt, instead of asking again every tick */
+const PATROL_RETRY_MS = 60_000
+const PATROL_TYPE = 'factory:patrol'
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
 const view = atom({ plugin: 'factory', key: 'view' } as const, 'board' as FactoryView)
 const selected = atom({ plugin: 'factory', key: 'selected' } as const, null as string | null)
@@ -73,17 +78,27 @@ const draft = atom(
 const VIEWS = new Set<string>(['board', 'backlog', 'mail', 'prs', 'rigs', 'interview'])
 
 const manual = (cli: string) => `## Software factory manager
-You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff.
-A message starting "[factory] patrol" is your loop. It lists what is new and the board; work through it in this order:
-1. Mail: answer a worker's question yourself (\`mail\`) when the goal, the journal or the factory's memory (\`${cli} memory search <query>\`) settles it; otherwise ask the person and name the run that waits. What the person decides that later runs should follow too, save: \`${cli} memory add "<summary>" "<the decision and why>"\`.
-2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog; \`${cli} decisions answer\` opens that same confirm dialog, for the same reason).
-3. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
-   Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), ask them and name the pull request (they can also answer a parked or stuck station's question in the console's Interview tab, \`/factory interview\`): deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them; when it is resolved, mail that station and it wakes at once. \`${cli} waiting\` lists everything that waits on the person, with how to answer each: show it when they ask what they owe the factory.
+You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff. A hidden patrol subagent, not this session, answers mail, works stuck stations and starts backlog work on its own timer; you see only what is the person's to decide.
+Gates: when the person asks you to decide one, show them the question, the evidence (the pull request, the verify and review summaries) and the outcomes, then run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog; \`${cli} decisions answer\` opens that same confirm dialog, for the same reason). A gate is always the person's call: never decide one on your own.
+\`${cli} rig add <name> <repo> [factory] [--max n] [--sweeps monitor,maintain,improve|none] [--goal <text>]\` defines or redefines a rig and \`${cli} rig rm <name>\` drops it (its runs carry on); do either only when the person asks. When the person wants the factory's own definition changed, file that as work on \`.factory/\` rather than editing it in this session.
 A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, human-flagged and owner-only bd beads) that still need a short, clear shape. For each, run \`${cli} decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]\`, using the item's own key exactly as given: a question of 160 characters or fewer that names the decision in plain words, an optional \`--context\` sentence of 200 characters or fewer, and 2-4 options, each "label: effect" with a label of 40 characters or fewer and an effect of 100 characters or fewer. Mark at most one option recommended, by adding "(recommended)" after its effect. When the answer is already on record (the person decided this elsewhere), answer it directly instead of proposing: for an \`iv:\` key, mail that station with it; for a \`bd:\` or \`own:\` key, there is no station to mail, so run \`${cli} decisions answer <rig> <bead> "<text>"\` instead. Never propose for a \`gate:\` key, which only the person decides, and never for a \`prompt:\` key (a blocked worker waiting on a prompt in its pane) -- look at it instead. An \`own:\` key (an owner-only bead) keeps its two fixed options, start now and not now: propose only a shorter question or context for it, never new options.
-4. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
-5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: pass --owned only when the person names that bead (that start also opens the same confirm dialog as a gate); a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
-6. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped for you. Read each SKILL.md: install it (\`${cli} skills install <name>\`) only when its commands are right and safe for this factory and it saves you real work; otherwise \`${cli} skills reject <name> "<why>"\`. Tell the person what you installed.
-7. Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
+Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
+Your skills (the Skill tool) are the factory's playbooks for work you keep repeating, written by the dream from your past sessions: when one fits the task, use it rather than working it out again.`
+
+/** the patrol subagent's whole system prompt (omitClaudeMd: true replaces the session's). It never
+ * reaches the person directly: $.agent.spawn's prompt is its one turn, and its answer goes to a
+ * log and a toast, never into the main chat. */
+const PATROL = (cli: string) => `## Factory patrol
+You are the factory manager's patrol, a subagent it spawns on a timer or on new mail so this work never queues behind the person's own chat with the manager. Nothing you say here reaches the person directly: mail a worker, decide nothing a person must decide, and end with the short report below.
+You get what is new and the board; work through it in this order, acting only through the factory CLI below:
+1. Mail: answer a worker's question yourself (\`mail\`) when the goal, the journal or the factory's memory (\`${cli} memory search <query>\`) settles it. Otherwise mail that worker's own station to report blocked, with a line \`Question: <the decision, in plain words>\` and \`Options: <label>: <effect> | <label>: <effect>\`, so the person sees it in the console's Interview tab; never wait on them yourself. Save a decision later runs should follow too: \`${cli} memory add "<summary>" "<the decision and why>"\`.
+2. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
+   Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), mail that station to report blocked with Question:/Options: as above, naming the pull request if there is one: deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them. \`${cli} waiting\` lists everything that waits on the person, with how to answer each.
+3. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
+4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
+5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no Skill tool here: note each proposal in your report so the manager can read and decide on it.
+Never act on a run a board row marks held: the person is on it, leave it for the next patrol.
+Never run \`${cli} decide\`, \`${cli} decisions answer\` or \`${cli} start ... --owned\`: each is denied to you outright. Gates and owner-only beads are the person's alone; report them, never decide them.
 The factory CLI, through Bash:
 - \`${cli} status [run]\`: every run, or one run's full journal
 - \`${cli} mail <run> <station> "<text>"\`: answer or steer a worker (delivered into its session)
@@ -91,10 +106,10 @@ The factory CLI, through Bash:
 - \`${cli} retry <run>\` (a stuck station), \`${cli} goto <run> <station|done>\` (also skips a timed wait), \`${cli} abort <run>\`, \`${cli} fork <run> <station> "<note>"\`, \`${cli} rm <run>\` (finished runs)
 - \`${cli} start <factory>[@station] <rig|repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}; lifecycle covers build, release, incidents, optimization, refactoring and the monitor, maintain and improve sweeps
 - \`herdr pane read <pane> --source recent --lines 80\`: see what a worker is doing
-The factory works rigs: named repos, listed by \`${cli} rig\`. A rig's ready beads labeled \`factory\` start as runs, it keeps the sweeps it asks for running, and its own cap (\`--max\`) bounds its busy runs under the town's. A rig's name stands for its repo in every command. \`${cli} rig add <name> <repo> [factory] [--max n] [--sweeps monitor,maintain,improve|none] [--goal <text>]\` defines or redefines one and \`${cli} rig rm <name>\` drops it (its runs carry on); do either only when the person asks.
-In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. A rig's backlog is its beads: \`${cli} queue <rig> <bead> [station]\` labels one \`factory\`; \`station:<name>\` starts it at that station; sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred. \`${cli} start lifecycle <rig> <bead-id>\` runs one bead now.
-A repo owns its factory once \`${cli} adopt <rig>\` copies the template to \`.factory/lifecycle.ts\` and it is committed: each run follows the version its starting commit holds, the improve sweep and postmortems propose changes to it, and those ship through review and the person's merge like any change. \`${cli} check <file>\` validates one. When the person wants the factory itself changed, file that as work on \`.factory/\` rather than editing it in this session.
-Your skills (the Skill tool) are the factory's playbooks for work you keep repeating, written by the dream from your past sessions: when one fits the task, use it rather than working it out again.`
+The factory works rigs: named repos, listed by \`${cli} rig\`. A rig's ready beads labeled \`factory\` start as runs, it keeps the sweeps it asks for running, and its own cap (\`--max\`) bounds its busy runs under the town's. A rig's name stands for its repo in every command.
+In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. A rig's backlog is its beads: \`${cli} queue <rig> <bead> [station]\` labels one \`factory\`; \`station:<name>\` starts it at that station; sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred.
+A repo owns its factory once \`${cli} adopt <rig>\` copies the template to \`.factory/lifecycle.ts\` and it is committed: each run follows the version its starting commit holds, the improve sweep and postmortems propose changes to it, and those ship through review and the person's merge like any change.
+End your reply with a report of at most 3 lines: the first line says what needs the person, or "nothing" when there is none; the rest say what changed and what you did.`
 
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
 const rt = {
@@ -122,6 +137,15 @@ const rt = {
   sig: undefined as string | undefined,
   sigAt: 0,
   isPatrolling: false,
+  /** the running patrol subagent's id. $.agent.spawn sets it; its turn.complete clears it */
+  patrolId: undefined as string | undefined,
+  /** the last 20 patrol subagent ids. The watchdog uses this list to ignore a late turn.complete */
+  patrolIds: [] as string[],
+  patrolStartedAt: 0,
+  /** a denied spawn's next attempt; 0 means try at once */
+  retryAt: 0,
+  /** interviewMe's own one-at-a-time guard, apart from isPatrolling: it still runs in the main loop */
+  isInterviewing: false,
   /** told once that the console sits above the prompt because the layout cannot dock it */
   isInlineTold: false,
 }
@@ -212,11 +236,27 @@ async function isPaneSession($: EngineInterface) {
   }
 }
 
-/** wake this session's model to patrol, one patrol at a time */
+/**
+ * Patrol, one at a time, as a hidden `factory:patrol` subagent. This adds no turn to the main chat.
+ * A watchdog clears a patrol stuck past PATROL_WATCHDOG_MS (a dead model turn, a wedged tool). So
+ * one bad patrol does not block every later one.
+ *
+ * A denied spawn leaves `rt.unsent`, `rt.seen` and `rt.patrolAt` as they were. A hook refused the
+ * spawn. The code tries again after PATROL_RETRY_MS, so no mail is lost.
+ *
+ * A rejected spawn falls back to the pre-subagent path, `$.prompt.submit`, once for this patrol.
+ * An old manager with no Agent tool in its `--tools` causes this. A status line says so. The
+ * fallback repeats on every later due patrol, until the person restarts the manager.
+ */
 async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRig[]) {
-  if (rt.isPatrolling) return
-  if (!(await isPaneSession($))) return
   const now = await $.clock.now()
+  if (rt.isPatrolling && rt.patrolStartedAt && now - rt.patrolStartedAt >= PATROL_WATCHDOG_MS) {
+    rt.isPatrolling = false
+    $.ui.status('factory: a patrol ran past 15 min with no answer; the watchdog freed the next one')
+  }
+  if (rt.isPatrolling) return
+  if (now < rt.retryAt) return
+  if (!(await isPaneSession($))) return
   // ponytail: the whole board again each hour, so a manager that compacted it away gets it back
   const last = now - rt.sigAt < 3_600_000 ? rt.sig : undefined
   const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last)
@@ -224,17 +264,40 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark
   if (!due) return
   if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
-  rt.unsent = []
-  for (const key of due.keys) rt.seen.add(key)
-  rt.patrolAt = now
   rt.isPatrolling = true
-  // not awaited: it resolves only once the session is idle and the patrol's turn starts
-  void $.prompt
-    .submit({ text: due.text })
-    .catch(() => {})
-    .finally(() => {
-      rt.isPatrolling = false
+  rt.patrolStartedAt = now
+  try {
+    const res = await $.agent.spawn({
+      subagentType: PATROL_TYPE,
+      prompt: due.text,
+      description: 'factory patrol',
     })
+    if (res.deny) {
+      rt.isPatrolling = false
+      rt.retryAt = now + PATROL_RETRY_MS
+      $.ui.status(`factory: the patrol spawn was denied: ${line(res.deny, 160)}`)
+      return
+    }
+    rt.unsent = due.kept
+    for (const key of due.keys) rt.seen.add(key)
+    rt.patrolAt = now
+    rt.patrolId = res.agentId
+    if (res.agentId) rt.patrolIds = [...rt.patrolIds, res.agentId].slice(-20)
+  } catch (err) {
+    // an old manager with no Agent tool in --tools: the same commit and fallback the old code did
+    rt.unsent = due.kept
+    for (const key of due.keys) rt.seen.add(key)
+    rt.patrolAt = now
+    $.ui.status(
+      `factory: the patrol spawn failed (${line(String(err), 100)}); it fell back to the main chat. Restart the manager to fix it.`,
+    )
+    void $.prompt
+      .submit({ text: due.text })
+      .catch(() => {})
+      .finally(() => {
+        rt.isPatrolling = false
+      })
+  }
 }
 
 async function ensureTicking($: EngineInterface) {
@@ -308,25 +371,26 @@ async function sweepDecisions($: EngineInterface) {
  * the 'Interview me' button: refresh bd decisions now (sweepDecisions, also used by the throttled auto-refresh),
  * then once ask the manager to propose options for whatever still needs one, the same open list the console
  * draws (interviewPrompt excludes a gate and a prompt, and anything that already needs no proposal). Skipped
- * like a patrol: never from a background fork of the manager, and never while one patrol or interview round
- * is already in its turn.
+ * like a patrol: never from a background fork of the manager. This still runs in the main loop (its own
+ * `$.prompt.submit`, not a subagent), so its own `isInterviewing` flag guards it, apart from a patrol's
+ * `isPatrolling`: the two may run at once.
  */
 async function interviewMe($: EngineInterface) {
   await sweepDecisions($)
-  if (rt.isPatrolling) return
+  if (rt.isInterviewing) return
   if (!(await isPaneSession($))) return
   const [b, dec, d] = await Promise.all([read($, board), read($, decisions), read($, draft)])
   const answered = Object.fromEntries((d.interviewed ?? []).map(x => [x.key, x.answer]))
   const items = openInterviews(b.runs, dec.rigs, dec.proposals, answered)
   const text = interviewPrompt(items)
   if (!text) return
-  rt.isPatrolling = true
+  rt.isInterviewing = true
   // not awaited: it resolves only once the session is idle and this round's turn starts, like a patrol
   void $.prompt
     .submit({ text })
     .catch(() => {})
     .finally(() => {
-      rt.isPatrolling = false
+      rt.isInterviewing = false
     })
 }
 
