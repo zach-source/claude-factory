@@ -45,8 +45,19 @@ A bead is **queued** (dispatch starts it) when all of these are true:
 | It is top-level                       | It has a parent: it is a task of some bead                                |
 | It has no open children               | It is an epic that you split into children (see below)                    |
 | Its metadata has no `owner_decisions` | Its owner hands it out. Start it by hand with `factory start ... --owned` |
+| No merged pull request in the rig's repo names its id in the title, and no live run already holds it | Dispatch's pre-check rejects it instead (see below) |
 
 A ready bead **without** the `factory` label is **unqueued**: the board's Backlog lists it for you to prioritize, and the manager does not start it. You queue it when you want it done.
+
+**Dispatch's pre-check**: dispatch runs this check before it starts a run for a ready, GitHub-hosted bead. The check runs `gh pr list --state merged --search <id>` in the rig's repo. It also searches the bead's own run branches. It looks for a merged pull request. The pull request title names the bead's exact id. It can also name a dotted child id of a bead with no open children.
+
+If the check finds a match, dispatch rejects the bead. Dispatch sets `rejected_by: dispatch`. It puts the pull request's URL, number, merge SHA and title in the reject reason. It leaves one comment with that evidence. It never closes the bead.
+
+The check also runs when a live run already holds a ready, unassigned bead. This happens when the run lost its own claim on the bead. In this case, dispatch leaves one comment that names the run. It does not start a second run. A `dispatch_skip` metadata stamp stops dispatch from commenting twice on the same run.
+
+`factory queue <rig> <id>` clears a dispatch reject. It clears the reject in the same way as a station reject. A bead that dispatch already rejected (`rejected_by: dispatch`) skips the check. It starts at once. To turn off the check, set `FACTORY_PRECHECK=0`.
+
+If `gh` fails or times out, the check fails open. The run starts anyway. `factory metrics` counts this as `gh fail-open`, apart from a real skip. `factory metrics` also prints how many triage rejects there were. It prints how many beads the pre-check did skip before a run can start (`dispatch skipped ... (merged-pr ..., live-run ...)`).
 
 **Priority**: dispatch takes queued beads in `bd ready` order, which is by priority first (`-p 0` is the most urgent, `-p 4` the backlog). Set it with `bd update <id> -p <n>` or `bd priority`.
 
@@ -305,5 +316,7 @@ If a rig's pull fails, the factory mails the manager once for that error. If a l
 | A worker's bd writes fail with schema errors                | The `bd` on `PATH` does not match the repo's schema. Use one `bd` version everywhere, the factory machine and the AX image included.                                                                                                               |
 | A deferred bead never comes back                            | Deferred beads stay out of `bd ready` until you `bd undefer <id>`. That is how you hand held or aborted work back.                                                                                                                                 |
 | A bead that a station rejected                              | It is open with the `rejected` label and the reason in its metadata (`bd show <id>`). `factory queue <rig> <id>` queues it again, or close it yourself.                                                                                            |
+| A ready bead never starts a run, with a comment that names a merged pull request | Dispatch's pre-check rejected it (`bd show <id>` shows `rejected_by: dispatch`). Check the evidence in the comment. `factory queue <rig> <id>` starts it anyway. |
+| A ready bead never starts a run, with a comment that names a live run | Dispatch's pre-check found that run already holds the bead (`bd show <id>` shows metadata `dispatch_skip: <runId>`, and keeps the `factory` label; it is not rejected). `factory queue <rig> <id>` is a no-op here. Wait for the holding run to end or release the bead, or find out why the run lost its claim. |
 | `factory start ... <id>` fails with `could not look up bead <id> ...; nothing was created` | bd could not answer for a goal shaped like one of the rig's own bead ids (a timeout, bd down). Nothing was created or started; fix bd (`bd ping`) and start again. |
 | `factory start ... <id>` fails with `no bead <id> in <repo>; nothing was created` | The id carries the rig's own prefix but bd genuinely has no such bead. Check the id, or drop the `<prefix>-` shape if you meant it as plain goal text. |

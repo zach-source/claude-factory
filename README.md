@@ -402,6 +402,12 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 - **The backlog dispatches itself**: every rig's ready, unassigned, top-level beads labeled
   `factory` become runs, every 30 s while the rig and the town have room. A
   `station:<name>` label starts one at that station.
+- **Dispatch checks a bead before it starts a run**: it looks for a merged pull request that
+  already names the bead's id. It also looks for a live run that already holds the bead. On a
+  hit, it rejects the bead (`rejected_by: dispatch`) or leaves one comment, and starts no run.
+  `factory queue <rig> <id>` clears the reject and starts the bead. Set `FACTORY_PRECHECK=0`
+  to turn the check off. See [docs/beads.md](docs/beads.md#hand-work-to-the-factory) for the
+  full rule.
 - **Sweeps file to the backlog**: incidents and security fixes labeled `factory` start on
   their own; everything else is filed unlabeled for you to prioritize by adding the label.
 - **Sync**: every 5 minutes each rig with a Dolt remote runs `bd sync` (pull, repair, push), so

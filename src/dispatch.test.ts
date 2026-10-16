@@ -11,6 +11,8 @@ import { afterEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createActor } from 'xstate'
+import { compile, type Factory } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `dispatch-${process.pid}`)
@@ -302,4 +304,387 @@ test('a planned P3 never starts before a real P2: priority always sorts ahead of
   const out = factory(['beads'])
   expect(out.code).toBe(0)
   expect(startedBead()).toBe('acme-1') // P2 still wins
+})
+
+// claude-factory-6as.2: dispatch's pre-check.
+// A merged PR can already cite a ready bead.
+// When it does, dispatch must reject the bead and must not start a run for it.
+// A gh error must fail open: dispatch starts the run and logs the skip.
+// This test uses its own harness, since the rig's repo needs a GitHub origin remote (originRef's
+// gate). The harness adds a fake `gh` on PATH, next to the fake `bd`.
+const pdir = join(tmpdir(), `dispatch-precheck-${process.pid}`)
+const phome = join(pdir, 'home')
+const pbin = join(pdir, 'bin')
+const pClaudeConfig = join(pdir, 'claude-config')
+const bdCallsLog = join(pdir, 'bd-calls.log')
+const ghCallsLog = join(pdir, 'gh-calls.log')
+const rejectedFlag = join(pdir, 'rejected.flag')
+
+afterEach(() => rmSync(pdir, { recursive: true, force: true }))
+
+function pfactory(args: string[], extraEnv: Record<string, string> = {}) {
+  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const p = Bun.spawnSync([CLI, ...args], {
+    env: {
+      ...laptop,
+      FACTORY_HOME: phome,
+      PATH: `${pbin}:${laptop.PATH}`,
+      CLAUDE_CONFIG_DIR: pClaudeConfig,
+      FACTORY_SELF_UPDATE: '0',
+      ...extraEnv,
+    },
+  })
+  return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
+}
+
+const skipFlag = join(pdir, 'dispatch-skip.flag')
+
+/** fake bd: `ready` answers one bead (`acme-1`, carrying `extra`), or `[]` once `rejected.flag` exists
+ * (the real `bd reject` removes the `factory` label, which drops a bead out of `bd ready --label
+ * factory` for good), or the same bead with `metadata.dispatch_skip` set once `update --set-metadata
+ * dispatch_skip=<runId>` ran (claude-factory-6as.3's dedupe). `update ... --add-label rejected` writes
+ * the rejected flag. Every call is logged. */
+function fakePrecheckBd(extra: Record<string, unknown> = {}) {
+  mkdirSync(pbin, { recursive: true })
+  const bead = JSON.stringify([{ id: 'acme-1', title: 'fix it', labels: ['factory'], ...extra }])
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${bdCallsLog}"`,
+    'case "$1" in',
+    '  ready)',
+    `    if [ -f "${rejectedFlag}" ]; then printf '%s' '[]'`,
+    `    elif [ -f "${skipFlag}" ]; then skip=$(cat "${skipFlag}"); printf '%s' '[{"id":"acme-1","title":"fix it","labels":["factory"],"metadata":{"dispatch_skip":"'"$skip"'"}}]'`,
+    `    else printf '%s' '${bead}'`,
+    '    fi;;',
+    "  children) printf '%s' '[]';;",
+    '  update)',
+    `    case " $* " in *" --add-label rejected "*) : > "${rejectedFlag}";; esac`,
+    `    case "$*" in *dispatch_skip=*) echo "$*" | sed -n 's/.*dispatch_skip=\\([^ ]*\\).*/\\1/p' > "${skipFlag}";; esac`,
+    '    exit 0;;',
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'bd'), script)
+  chmodSync(join(pbin, 'bd'), 0o755)
+}
+
+/** fake gh: it logs every call. `$GH_FAIL` set makes every call fail, like a timeout or a rate
+ * limit. `$GH_FAIL_HEAD` set makes only a `--head` call fail (claude-factory-6as.9). Else it answers
+ * `$GH_JSON` (a `gh pr list --json ...` shaped array, or `[]`) on stdout. */
+function fakeGh() {
+  const script = [
+    '#!/bin/sh',
+    `echo "gh $*" >> "${ghCallsLog}"`,
+    'if [ -n "$GH_FAIL" ]; then echo "gh: rate limited" >&2; exit 1; fi',
+    'case "$*" in',
+    '  *--head*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi;;',
+    'esac',
+    'printf \'%s\' "$GH_JSON"',
+  ].join('\n')
+  writeFileSync(join(pbin, 'gh'), script)
+  chmodSync(join(pbin, 'gh'), 0o755)
+}
+
+/** fake bd: `ready` answers two beads, `acme-1` and `acme-2`, both unassigned and labeled `factory`
+ * (claude-factory-6as.9's 2-candidate pass). Otherwise the same as `fakePrecheckBd`. */
+function fakePrecheckBdTwo() {
+  mkdirSync(pbin, { recursive: true })
+  const beadsJson = JSON.stringify(
+    ['acme-1', 'acme-2'].map(id => ({ id, title: 'fix it', labels: ['factory'] })),
+  )
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${bdCallsLog}"`,
+    'case "$1" in',
+    `  ready) printf '%s' '${beadsJson}';;`,
+    "  children) printf '%s' '[]';;",
+    '  update)',
+    `    case " $* " in *" --add-label rejected "*) : > "${rejectedFlag}";; esac`,
+    '    exit 0;;',
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'bd'), script)
+  chmodSync(join(pbin, 'bd'), 0o755)
+}
+
+/** fake herdr: only `worktree create` answers, as `fakeHerdr` above does */
+function fakePrecheckHerdr() {
+  const worktree = join(pdir, 'worktree-stub')
+  const script = [
+    '#!/bin/sh',
+    'case "$1 $2" in',
+    `  "worktree create") printf '%s' '{"result":{"workspace":{"workspace_id":"ws1"},"worktree":{"path":"${worktree}"}}}';;`,
+    '  "worktree remove") exit 0;;',
+    '  *) echo "herdr-stub: unexpected $*" >&2; exit 1;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'herdr'), script)
+  chmodSync(join(pbin, 'herdr'), 0o755)
+}
+
+/** a repo with a GitHub origin, so `originRef` reads this rig as GitHub (the pre-check's own gate) */
+function precheckRepo() {
+  const r = join(pdir, 'repo')
+  mkdirSync(join(r, '.beads'), { recursive: true })
+  Bun.spawnSync(['git', '-C', r, 'init', '-q'])
+  Bun.spawnSync(['git', '-C', r, 'remote', 'add', 'origin', 'https://github.com/acme/widget.git'])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    r,
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=t',
+    'commit',
+    '--allow-empty',
+    '-q',
+    '-m',
+    'init',
+  ])
+  return r
+}
+
+function precheckReset(extra: Record<string, unknown> = {}) {
+  rmSync(pdir, { recursive: true, force: true })
+  mkdirSync(pClaudeConfig, { recursive: true })
+  writeFileSync(join(pClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(phome, { recursive: true })
+  // labelPass() also calls gh, for an unrelated label check, now that the repo has a GitHub origin.
+  // A fresh labels.stamp throttles it out of this pass, so every gh call a test sees is the pre-check's.
+  writeFileSync(join(phome, 'labels.stamp'), '')
+  const r = precheckRepo()
+  fakePrecheckBd(extra)
+  fakeGh()
+  fakePrecheckHerdr()
+  writeFileSync(join(phome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+}
+
+const runDirs = () => (existsSync(join(phome, 'runs')) ? readdirSync(join(phome, 'runs')) : [])
+const mergedPr = (title: string) =>
+  JSON.stringify([
+    {
+      number: 57,
+      url: 'https://github.com/acme/widget/pull/57',
+      title,
+      headRefName: 'factory/some-other-run',
+      mergeCommit: { oid: 'deadbeef' },
+    },
+  ])
+
+test('a merged PR citing the bead rejects it with one comment, and starts no run (claude-factory-6as.2)', () => {
+  precheckReset()
+  const out = pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-1 lands the thing') })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(0)
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(calls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
+})
+
+test('a second dispatch pass after a reject adds 0 new comments (the bead no longer shows in ready)', () => {
+  precheckReset()
+  const ghJson = mergedPr('fix: acme-1 lands the thing')
+  pfactory(['beads'], { GH_JSON: ghJson })
+  rmSync(join(phome, 'dispatch.stamp'), { force: true }) // the 30s throttle would else skip pass 2
+  pfactory(['beads'], { GH_JSON: ghJson })
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+})
+
+test('a bead with no matching merged PR starts a run normally', () => {
+  precheckReset()
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+})
+
+test('gh failing (or timing out) fails open: the run still starts, with one dispatch.json row', () => {
+  precheckReset()
+  const out = pfactory(['beads'], { GH_FAIL: '1' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+  const rows = JSON.parse(readFileSync(join(phome, 'dispatch.json'), 'utf8')) as {
+    id: string
+    error?: string
+  }[]
+  expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped/.test(r.error ?? ''))).toBe(true)
+})
+
+// claude-factory-6as.9: a hung or rate-limited gh costs up to 4 calls of 15s, for each candidate.
+// One candidate can already prove gh broken for this pass. Dispatch must not pay that cost again
+// for the rest. It must fail every other candidate open, with no further gh call.
+test('a gh failure for the first candidate fails every later candidate open with no further gh call (claude-factory-6as.9)', () => {
+  precheckReset()
+  fakePrecheckBdTwo()
+  const out = pfactory(['beads'], { GH_FAIL: '1' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(2) // both acme-1 and acme-2 start: gh broken fails every candidate open
+  const ghCalls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
+  expect(ghCalls).toHaveLength(1) // only the first candidate's own (failed) gh call; the second makes none
+})
+
+// claude-factory-6as.9: a `--head` call is a supplementary lookup, for a PR with no bead id in its
+// title. A failed `--head` call must not discard a hit `--search` already found for the same bead.
+test('a --search hit still rejects the bead even when a --head call for its run branch fails (claude-factory-6as.9)', () => {
+  precheckReset()
+  endedRun('ended-run', 'acme-1')
+  const out = pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-1 lands the thing'), GH_FAIL_HEAD: '1' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toEqual(['ended-run']) // no new run started for acme-1
+  const bdCalls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(bdCalls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(bdCalls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
+  const ghCalls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
+  expect(ghCalls.some(l => l.includes('--head'))).toBe(true) // the --head call ran, and failed
+})
+
+test('a person-requeued bead (rejected_by=dispatch metadata) starts, with 0 gh calls', () => {
+  precheckReset({ metadata: { rejected_by: 'dispatch' } })
+  const out = pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-1 lands the thing') })
+  expect(out.code).toBe(0)
+  expect(existsSync(ghCallsLog)).toBe(false)
+  expect(runDirs()).toHaveLength(1)
+})
+
+test('FACTORY_PRECHECK=0 turns the whole check off: 0 gh calls, the run starts as before', () => {
+  precheckReset()
+  const out = pfactory(['beads'], {
+    FACTORY_PRECHECK: '0',
+    GH_JSON: mergedPr('fix: acme-1 lands the thing'),
+  })
+  expect(out.code).toBe(0)
+  expect(existsSync(ghCallsLog)).toBe(false)
+  expect(runDirs()).toHaveLength(1)
+})
+
+// claude-factory-6as.3: a live run can hold a ready, unassigned bead (it lost its own claim, to a
+// reaper, say). dispatch must not start a second run for it, and must leave one comment naming the
+// run, deduped across passes by a `dispatch_skip` metadata stamp.
+const MINI: Factory = {
+  name: 'lifecycle',
+  start: 'implement',
+  nodes: { implement: { prompt: 'do it', next: { done: 'done' } } },
+}
+/** run.json + state.json for a run sitting at a live node (not done/aborted), holding `bead`. `run.factory`
+ * must be a real file `loadFactory` can read (the beads pass's track() loop opens it for every run with a
+ * bead), so this writes `MINI` as its own on-disk factory JSON, as watch.test.ts's `parkedRun` does. */
+function liveRun(id: string, bead: string) {
+  const actor = createActor(compile(MINI)).start()
+  const f = join(pdir, 'mini.json')
+  if (!existsSync(f)) writeFileSync(f, JSON.stringify(MINI))
+  const d = join(phome, 'runs', id)
+  mkdirSync(d, { recursive: true })
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id,
+      factory: f,
+      repo: 'n/a',
+      goal: 'g',
+      ws: 'ws1',
+      worktree: 'n/a',
+      branch: 'b',
+      bead,
+    }),
+  )
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+}
+
+test('a ready, unassigned bead a live run already holds gets one comment, and starts no second run', () => {
+  precheckReset()
+  liveRun('other-run', 'acme-1')
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toEqual(['other-run']) // no new run for acme-1
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(calls.some(l => /^bd update\b/.test(l) && l.includes('dispatch_skip=other-run'))).toBe(true)
+  // claude-factory-6as.4: `factory metrics` counts a live-run skip from this file, not from bd
+  const lines = readFileSync(join(phome, 'precheck.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(lines.filter((l: { kind: string }) => l.kind === 'live-run')).toHaveLength(1)
+})
+
+// claude-factory-6as.10: logPrecheck runs between bd's landed write and the comment that explains
+// it. A bad precheck.jsonl (here, a directory in its place, so the durable append throws EISDIR)
+// must cost `factory metrics` one row, never the bd comment.
+test('an unwritable precheck.jsonl still leaves the live-run comment (claude-factory-6as.10)', () => {
+  precheckReset()
+  liveRun('other-run', 'acme-1')
+  mkdirSync(join(phome, 'precheck.jsonl'))
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toEqual(['other-run'])
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(calls.some(l => /^bd update\b/.test(l) && l.includes('dispatch_skip=other-run'))).toBe(true)
+})
+
+test('a second pass adds 0 new comments for a bead a live run already holds', () => {
+  precheckReset()
+  liveRun('other-run', 'acme-1')
+  pfactory(['beads'], { GH_JSON: '[]' })
+  rmSync(join(phome, 'dispatch.stamp'), { force: true }) // the 30s throttle would else skip pass 2
+  pfactory(['beads'], { GH_JSON: '[]' })
+  expect(runDirs()).toEqual(['other-run'])
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+})
+
+/** run.json + state.json for an ended (aborted) run that still names `bead`. Unlike `liveRun`, the
+ * run's node here is `'aborted'`, so dispatch's `linked` map drops it and the bead looks unowned.
+ * Only the candidate loop's own scan for a run with this bead (cli.ts, `runBranches`) can still find
+ * it, through the PR's head branch. */
+function endedRun(id: string, bead: string) {
+  const f = join(pdir, 'mini.json')
+  if (!existsSync(f)) writeFileSync(f, JSON.stringify(MINI))
+  const actor = createActor(compile(MINI)).start()
+  actor.send({ type: 'ABORT', at: Date.now() })
+  const d = join(phome, 'runs', id)
+  mkdirSync(d, { recursive: true })
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id,
+      factory: f,
+      repo: 'n/a',
+      goal: 'g',
+      ws: 'ws1',
+      worktree: 'n/a',
+      branch: 'b',
+      bead,
+    }),
+  )
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+}
+
+const mergedPrByHead = (title: string, headRefName: string) =>
+  JSON.stringify([
+    {
+      number: 57,
+      url: 'https://github.com/acme/widget/pull/57',
+      title,
+      headRefName,
+      mergeCommit: { oid: 'deadbeef' },
+    },
+  ])
+
+// claude-factory-6as.6: a merged PR can close a bead's work with no bead id in its title, when the PR
+// is the ended run's own branch (`factory/<runId>`). dispatch's runBranches scan must still catch
+// this, by matching the PR's `headRefName` against the ended run's branch, not its title.
+test('a merged PR matching only by an ended run’s head branch (no bead id in the title) still rejects (claude-factory-6as.6)', () => {
+  precheckReset()
+  endedRun('ended-run', 'acme-1')
+  const out = pfactory(['beads'], { GH_JSON: mergedPrByHead('fix: tidy up the thing', 'factory/ended-run') })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toEqual(['ended-run']) // no new run started for acme-1
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(calls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
 })

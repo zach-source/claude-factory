@@ -87,6 +87,8 @@ import {
   createdAt,
   fate,
   metrics,
+  parsePrecheckLines,
+  precheckStats,
   render,
   renderTokens,
   sessionOf,
@@ -94,19 +96,24 @@ import {
   type Session,
 } from './metrics'
 import {
+  alreadyDone,
   asPrsFile,
   buildPrs,
   DEFAULT_BUDGET,
+  evidenceLine,
   forgeNote,
   forgeOf,
   gitlabForge,
   mrsIn,
   parseGitlabLabeled,
+  parseMergedPrs,
   parseRemote,
   sameFile,
   spawnGh,
   spawnGlab,
   type ForgeKind,
+  type Gh,
+  type MergedPr,
   type PrsFile,
   type RunMeta,
 } from './prs'
@@ -3556,6 +3563,101 @@ function freshPlanOrUndefined(): plan.Plan | undefined {
   }
 }
 
+// claude-factory-6as: dispatch's pre-check.
+// A 3-day review found 30 of 319 triage visits (9.4%) already done.
+// A merged PR did the work before triage ever saw the bead. Each one cost a run and a worktree.
+// This code checks a ready bead against the rig's merged pull requests, right before dispatch starts it.
+const PRECHECK_TIMEOUT_MS = 15_000
+const precheckFile = () => join(HOME, 'precheck.jsonl')
+/** one line per pre-check hit or fail-open, for `factory metrics` and a soak trail independent of bd */
+/** claude-factory-6as.10: logPrecheck is best effort. A bad precheck.jsonl file must not block the bd comment after it, or the rest of the pass. */
+const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) => {
+  try {
+    durable(precheckFile(), `${JSON.stringify({ at: Date.now(), rig, bead, kind, evidence })}\n`, 'a')
+  } catch {
+    // best effort: see above
+  }
+}
+
+/** `gh pr list --state merged --search <id> ...`, plus `--head <branch>` for up to 3 local run
+ * branches of this bead (a PR that closed the bead's own run but never named it in its title) */
+async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh): Promise<MergedPr[]> {
+  const fields = 'number,url,title,headRefName,mergeCommit'
+  const search = await gh(['pr', 'list', '--state', 'merged', '--search', id, '--json', fields, '-L', '30'], {
+    cwd: repo,
+    timeout: PRECHECK_TIMEOUT_MS,
+  })
+  if (search.code !== 0) throw new Error(clip(search.err.trim().split('\n')[0] || 'gh pr list failed', 200))
+  const found = parseMergedPrs(search.out)
+  // claude-factory-6as.9: a failed `--head` call must not discard a hit `--search` already found.
+  // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
+  // the one call that failed.
+  for (const branch of branches.slice(0, 3)) {
+    const byHead = await gh(['pr', 'list', '--state', 'merged', '--head', branch, '--json', fields], {
+      cwd: repo,
+      timeout: PRECHECK_TIMEOUT_MS,
+    })
+    if (byHead.code !== 0) continue
+    found.push(...parseMergedPrs(byHead.out))
+  }
+  return found
+}
+
+/**
+ * claude-factory-6as: check if a merged PR already proves `bead`'s work is done.
+ * If it does, dispatch must reject the bead instead of starting a run for it.
+ *
+ * This makes no gh call at all in four cases:
+ * - `FACTORY_PRECHECK=0`
+ * - a person already overrode a prior reject (`rejected_by` metadata still names dispatch after a
+ *   requeue)
+ * - the id does not look like a bead id
+ * - the rig's repo is not on GitHub
+ *
+ * A gh failure or timeout fails open: the run starts, and the caller gets one dispatch.json row that
+ * shows it.
+ */
+async function precheckSkip(
+  rig: Pick<Rig, 'name' | 'repo'>,
+  bead: Bead,
+  b: ReturnType<typeof beads>,
+  runBranches: string[],
+  gh: Gh,
+): Promise<{ skip: boolean; error?: string }> {
+  if (process.env.FACTORY_PRECHECK === '0') return { skip: false }
+  if (bead.metadata?.rejected_by === 'dispatch') return { skip: false }
+  if (!/^[\w.-]+$/.test(bead.id)) return { skip: false }
+  if (originRef(rig.repo)?.forge !== 'github') return { skip: false }
+  let merged: MergedPr[]
+  try {
+    merged = await mergedPrsFor(rig.repo, bead.id, runBranches, gh)
+  } catch (err) {
+    const error = `pre-check skipped: ${(err as Error).message}`
+    logPrecheck(rig.name, bead.id, 'skip', error)
+    return { skip: false, error }
+  }
+  const children = b.children(bead.id)
+  const hit = alreadyDone(bead.id, merged, {
+    childIds: children.map(c => c.id),
+    allChildrenClosed: children.length > 0 && children.every(c => c.status === 'closed'),
+    runBranches,
+  })
+  if (!hit) return { skip: false }
+  const evidence = evidenceLine(hit.pr, rig.name, bead.id)
+  try {
+    b.reject(bead.id, 'dispatch', evidence)
+  } catch {
+    return { skip: true } // not landed: skip only this pass, with no comment; the next pass retries
+  }
+  logPrecheck(rig.name, bead.id, hit.kind, evidence)
+  try {
+    b.comment(bead.id, evidence)
+  } catch {
+    // the reject already landed; a bead with no comment still shows rejected, evidence in its metadata
+  }
+  return { skip: true }
+}
+
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
   if (halted() || !rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS))
@@ -3564,7 +3666,22 @@ async function dispatch() {
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
   const { ids: linearIds, rigs: linearRigs } = linearExcluded()
-  const linked = liveBeadIdSet()
+  // claude-factory-6as.9: one hung gh call already proved gh broken for this pass (4 calls, up to
+  // 15s each). The other candidates, in this rig or the next, must fail open with no further gh
+  // calls, not wait out the same timeout again.
+  let ghFailed = false
+  // live runs only: a finished run's deferred bead, undeferred by a person, is new work again.
+  // claude-factory-6as.3: a Map, not a Set, so dispatch can name the run working a bead that is
+  // still `ready` and unassigned (it lost its own claim on the bead), for one comment.
+  const linked = new Map(
+    runIds().flatMap(id => {
+      const { run, value } = current(id)
+      return run.bead && !['done', 'aborted'].includes(where(value)[0])
+        ? ([[run.bead, id]] as [string, string][])
+        : []
+    }),
+  )
+  // the pm's plan, read once per pass: a stale or missing plan changes nothing (claude-factory-dun.3)
   const freshPlan = freshPlanOrUndefined()
   // a sync's error stands until the next sync: dispatch passes every 30 s would clear it
   const synced = existsSync(syncFile())
@@ -3597,19 +3714,69 @@ async function dispatch() {
         })
         continue
       }
+      const ready = b.ready()
+      // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
+      // lost its own claim on the bead, to a reaper, say). `dispatchable` below drops this bead from
+      // `candidates`, so no second run starts for it. This loop still leaves one comment naming the
+      // run. A `dispatch_skip` metadata stamp dedupes it, so a stuck bead gets no new comment every
+      // 30s pass.
+      for (const x of ready) {
+        if (x.parent || x.assignee) continue
+        const runId = linked.get(x.id)
+        if (!runId || x.metadata?.dispatch_skip === runId) continue
+        let node = ''
+        try {
+          node = where(current(runId).value)[0] ?? ''
+        } catch {
+          // the run ended, or something removed it between building `linked` and here; comment with no node
+        }
+        try {
+          b.setMetadata(x.id, { dispatch_skip: runId })
+        } catch (err) {
+          errors.push({ id: x.id, error: (err as Error).message })
+          continue // not landed: skip the comment too, so a later pass can retry both together
+        }
+        const evidence = `not started: live run ${runId}${node ? ` at ${node}` : ''} works this bead`
+        logPrecheck(rig.name, x.id, 'live-run', evidence) // claude-factory-6as.4: counted by `factory metrics`
+        try {
+          b.comment(x.id, evidence)
+        } catch (err) {
+          errors.push({ id: x.id, error: (err as Error).message }) // the metadata stamp already landed
+        }
+      }
       // children are looked up only for the candidates, until the rig is full
-      const ready = dispatchable(b.ready(), linked, Infinity).filter(
+      const eligible = dispatchable(ready, new Set(linked.keys()), Infinity).filter(
         x => !isOwned(x) && !openChildren(b, x.id).length && !linearIds.has(x.id),
       )
       // a fresh plan's order wins inside each priority band; a stale or missing plan changes
       // nothing (claude-factory-dun.3). `rigPlanOf` looks up the rig safely: a plain
       // `freshPlan.rigs[rig.name]` would resolve a rig named, for example, `constructor` to an
       // inherited `Object.prototype` value instead of `undefined` (claude-factory-dun.18).
-      const candidates = plan.orderByPlan(ready, plan.rigPlanOf(freshPlan, rig.name))
+      const candidates = plan.orderByPlan(eligible, plan.rigPlanOf(freshPlan, rig.name))
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
         if (room(rig, busy, undefined, held) <= 0) break
+        const runBranches = runIds()
+          .filter(id => {
+            try {
+              return loadRun(id).bead === bead.id
+            } catch {
+              return false
+            }
+          })
+          .slice(0, 3)
+          .map(id => `factory/${id}`)
+        // claude-factory-6as.9: skip the gh calls outright once this pass already proved gh broken;
+        // the first candidate's row in precheck.jsonl already covers the fail-open for the rest.
+        const { skip, error } = ghFailed
+          ? { skip: false, error: undefined }
+          : await precheckSkip(rig, bead, b, runBranches, spawnGh)
+        if (error) {
+          errors.push({ id: bead.id, error })
+          ghFailed = true
+        }
+        if (skip) continue
         let run, def
         try {
           ;({ run, def } = await createTracked(rig.factory, preview.name, rig.repo, goalOf(bead), bead.id))
@@ -5158,13 +5325,30 @@ if (import.meta.main && !outboxCmd)
         )
         const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
         const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
+        // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
+        // fail-opens (logPrecheck), independent of bd; this command is the only reader.
+        const since_ = since ? Date.now() - days * 86_400_000 : 0
+        const precheckAll = existsSync(precheckFile())
+          ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
+          : []
+        const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
         if (args.includes('--json'))
           console.log(
-            JSON.stringify({ all: metrics(picked), rigs: Object.fromEntries(groups.map(g => [g, of(g)])) }),
+            JSON.stringify({
+              all: metrics(picked),
+              precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
+              rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
+            }),
           )
         else {
-          console.log(render(metrics(picked), `${basename(HOME)}${since ? `, last ${days}d` : ''}`))
-          if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g))
+          console.log(
+            render(
+              metrics(picked),
+              `${basename(HOME)}${since ? `, last ${days}d` : ''}`,
+              precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
+            ),
+          )
+          if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
         }
         if (args.includes('--tokens')) {
           const live = picked.filter(r => runIds().includes(r.id))
