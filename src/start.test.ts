@@ -295,3 +295,16 @@ test('a stuck run does not count against FACTORY_MAX_RUNS, but a working run doe
   expect(allowed.code).toBe(0)
   expect(readdirSync(join(home, 'runs')).length).toBe(2)
 })
+
+// claude-factory-ytz.2: the owner already runs the live manager with FACTORY_MAX_RUNS=16 in its
+// shell env, a setting no committed file holds. Commit 16 as the default, so a fresh shell or CI
+// matches the live cap. The test below deletes FACTORY_MAX_RUNS from the spawned env, so it
+// shows the committed default, not whatever the test runner's own shell happens to export.
+test('`factory help` names the committed default FACTORY_MAX_RUNS as 16 (claude-factory-ytz.2)', () => {
+  reset()
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_MAX_RUNS, ...laptop } = process.env
+  const p = Bun.spawnSync([CLI, 'help'], {
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+  })
+  expect(p.stdout.toString()).toContain('FACTORY_MAX_RUNS (16)')
+})

@@ -120,7 +120,7 @@ const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
-const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 8)
+const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 const SYNC_MS = 5 * 60_000 // how often each rig's beads sync with its Dolt remote
 const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below
