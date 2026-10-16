@@ -103,7 +103,8 @@ Gates: when the person asks you to decide one, show them the question, the evide
 \`${cli} rig add <name> <repo> [factory] [--max n] [--sweeps monitor,maintain,improve|none] [--goal <text>]\` defines or redefines a rig and \`${cli} rig rm <name>\` drops it (its runs carry on); do either only when the person asks. When the person wants the factory's own definition changed, file that as work on \`.factory/\` rather than editing it in this session.
 A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, human-flagged and owner-only bd beads) that still need a short, clear shape. For each, run \`${cli} decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]\`, using the item's own key exactly as given: a question of 160 characters or fewer that names the decision in plain words, an optional \`--context\` sentence of 200 characters or fewer, and 2-4 options, each "label: effect" with a label of 40 characters or fewer and an effect of 100 characters or fewer. Mark at most one option recommended, by adding "(recommended)" after its effect. When the answer is already on record (the person decided this elsewhere), answer it directly instead of proposing: for an \`iv:\` key, mail that station with it; for a \`bd:\` or \`own:\` key, there is no station to mail, so run \`${cli} decisions answer <rig> <bead> "<text>"\` instead. Never propose for a \`gate:\` key, which only the person decides, and never for a \`prompt:\` key (a blocked worker waiting on a prompt in its pane) -- look at it instead. An \`own:\` key (an owner-only bead) keeps its two fixed options, start now and not now: propose only a shorter question or context for it, never new options.
 Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
-Your skills (the Skill tool) are the factory's playbooks for work you keep repeating, written by the dream from your past sessions: when one fits the task, use it rather than working it out again.`
+Your skills (the Skill tool) are the factory's playbooks for work you keep repeating, written by the dream from your past sessions: when one fits the task, use it rather than working it out again.
+When the person says a skill proposal needs review (the patrol's report toasted this), run \`${cli} skills\` to list it, read each file it names, then \`${cli} skills install <name>\` only when its commands are right and safe for this factory and it saves real work, or \`${cli} skills reject <name> "<why>"\` otherwise. Tell the person what you installed.`
 
 /** the patrol subagent's whole system prompt (omitClaudeMd: true replaces the session's). It never
  * reaches the person directly: $.agent.spawn's prompt is its one turn, and its answer goes to a
@@ -116,7 +117,7 @@ You get what is new and the board; work through it in this order, acting only th
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), mail that station to report blocked with Question:/Options: as above, naming the pull request if there is one: deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them. \`${cli} waiting\` lists everything that waits on the person, with how to answer each.
 3. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
 4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
-5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no Skill tool here: note each proposal in your report so the manager can read and decide on it.
+5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no way to install or reject one yourself, so put it in your report's first line ("N skill proposal(s) need review") instead of your usual line there: this toasts straight to the person, who can ask the manager to work it.
 Never act on a run a board row marks held: the person is on it, leave it for the next patrol.
 Never run \`${cli} decide\`, \`${cli} decisions answer\` or \`${cli} start ... --owned\`: each is denied to you outright. Gates and owner-only beads are the person's alone; report them, never decide them.
 The factory CLI, through Bash:
@@ -323,7 +324,6 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   // a due heartbeat whose board repeats the last one sent wakes nobody: patrolAt stays put, so a
   // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark
   if (!due) return
-  if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
   rt.isPatrolling = true
   rt.patrolStartedAt = now
   rt.patrolActions = []
@@ -339,6 +339,11 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
       $.ui.status(`factory: the patrol spawn was denied: ${line(res.deny, 160)}`)
       return
     }
+    // claude-factory-72v.10: this commit, like rt.unsent/rt.seen/rt.patrolAt below, waits until the
+    // spawn is confirmed. A denied spawn that committed rt.sig first lost the next heartbeat: the
+    // retry, run with the same lastSig the denied one already set, saw no sig change and so no
+    // news, and patrol() returned null (view.ts L369) for up to an hour (sigAt's own refresh).
+    if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
     rt.unsent = due.kept
     for (const key of due.keys) rt.seen.add(key)
     rt.patrolAt = now
@@ -346,14 +351,17 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
     if (res.agentId) rt.patrolIds = [...rt.patrolIds, res.agentId].slice(-20)
   } catch (err) {
     // an old manager with no Agent tool in --tools: the same commit and fallback the old code did
+    if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
     rt.unsent = due.kept
     for (const key of due.keys) rt.seen.add(key)
     rt.patrolAt = now
     $.ui.status(
       `factory: the patrol spawn failed (${line(String(err), 100)}); it fell back to the main chat. Restart the manager to fix it.`,
     )
+    // claude-factory-72v.13: manual() no longer carries the patrol's own loop rules (PATROL does).
+    // The fallback must carry them itself, or the main chat gets due.text with no rules to work it.
     void $.prompt
-      .submit({ text: due.text })
+      .submit({ text: `${PATROL(rt.cli)}\n\n${due.text}` })
       .catch(() => {})
       .finally(() => {
         rt.isPatrolling = false
@@ -672,7 +680,10 @@ export const register: Register = (on, options) => {
         maxTurns: 40,
         omitClaudeMd: true,
       })
-      .catch(() => {})
+      // claude-factory-72v.15: a swallowed failure here left the person with no patrol and no
+      // clue why. Show it: every heartbeat then falls back to $.prompt.submit (the catch block
+      // in patrolNow), so a status line here at least explains the first one.
+      .catch(err => $.ui.status(`factory: could not register the patrol agent: ${line(String(err), 160)}`))
     return next(e)
   })
 
@@ -711,10 +722,24 @@ export const register: Register = (on, options) => {
 
     // [SECURITY] a subagent (the patrol, or any other) gets no dialog: nobody is there to answer
     // it, so this denies a gated command outright. For a non-gated command that acts on one run,
-    // it logs the command (clipped to 200 chars) for the patrol log (claude-factory-72v.5).
+    // it logs the command (clipped to 200 chars) for the patrol log (claude-factory-72v.5), but
+    // only for this running patrol's own agentId (claude-factory-72v.9): a second, unrelated
+    // subagent's own command must not land in the patrol's log, or move rt.patrolId off this
+    // patrol's own id.
     if (e.agentId) {
       if (gated) return { deny: `${gated.deny} A patrol never decides this: leave it for the person.` }
-      if (PATROL_VERB.test(normalized))
+      // claude-factory-72v.14: the prompt already leaves a held run's mail out, but that alone
+      // did not stop a subagent's own Bash call from acting on a held run directly. This denies
+      // it too, the same hold PATROL_HOLD_MS already gives the main chat.
+      const target = normalized.match(TOUCH_RE)?.[2]
+      if (target) {
+        const at = rt.touched.get(target)
+        if (at !== undefined && (await $.clock.now()) - at < PATROL_HOLD_MS)
+          return {
+            deny: `${target} was touched by the person in the last few minutes: a patrol must not act on it now.`,
+          }
+      }
+      if (e.agentId === rt.patrolId && PATROL_VERB.test(normalized))
         rt.patrolActions = [...rt.patrolActions, line(e.command, 200)].slice(-50)
       return next(pinned)
     }
@@ -739,15 +764,24 @@ export const register: Register = (on, options) => {
   // Clears patrolNow's one-at-a-time guard once the subagent's own turn ends, win or not. The
   // watchdog in patrolNow also clears it, for a turn that never completes.
   //
-  // `rt.patrolId === undefined` is a fallback for a mod test. In a real session, core always sets
-  // `agent.spawn`'s resolved `agentId` before the subagent's own turn starts. In a mod test, core
-  // never does, even when the test's own `agent.spawn` hook answers with one: a mod's own
-  // `$.agent.spawn` call, for a registered agent type, always resolves to `{ model: 'inherit' }`
-  // with no `agentId`, no matter what the hook answers. `isPatrolling` already allows only one
-  // running patrol, so the first `turn.complete` seen while it is true, with no real id on file,
-  // is safe to trust as that patrol's own. This branch never fires in a real session.
+  // A main-loop turn carries no `agentId`. The check below requires `e.agentId` to be set.
+  // claude-factory-72v.8: the old test (`e.agentId === rt.patrolId`) skipped this check. It
+  // matched two main-loop turns by mistake, since `undefined === undefined` is true.
+  //
+  // The `rt.patrolId === undefined` branch below is a fallback for a mod test. It only runs once
+  // `e.agentId` is set. In a real session, core sets `agent.spawn`'s resolved `agentId` before the
+  // subagent's own turn starts, so `rt.patrolId` is never `undefined` here. In a mod test, core
+  // never sets it: a mod's own `$.agent.spawn` call, for a registered agent type, always resolves
+  // to `{ model: 'inherit' }` with no `agentId`, even when the test's own hook answers with one.
+  // `rt.patrolIds` lists ids already seen. The fallback excludes those ids. This stops a late turn
+  // from an older, already-freed patrol from matching by mistake. Only a fresh, never-seen id
+  // counts as this running patrol's own.
   on('turn.complete', async ($, e, next) => {
-    if (rt.isPatrolling && (e.agentId === rt.patrolId || rt.patrolId === undefined)) {
+    if (
+      rt.isPatrolling &&
+      e.agentId &&
+      (e.agentId === rt.patrolId || (rt.patrolId === undefined && !rt.patrolIds.includes(e.agentId)))
+    ) {
       rt.isPatrolling = false
       rt.patrolId = undefined
       rt.patrolStartedAt = undefined
@@ -762,9 +796,15 @@ export const register: Register = (on, options) => {
         report,
       }
       rt.patrolActions = []
-      await appendPatrolLog($, entry)
-      await update($, lastPatrol, () => entry)
-      if (report.trim()) $.ui.toast(`factory patrol: ${line(report.split('\n')[0] ?? '', 200)}`)
+      // claude-factory-72v.11: a write failure here (a full disk, a bad path) must not skip
+      // next(e): isPatrolling is already cleared above, so the next patrol still runs either way.
+      try {
+        await appendPatrolLog($, entry)
+        await update($, lastPatrol, () => entry)
+        if (report.trim()) $.ui.toast(`factory patrol: ${line(report.split('\n')[0] ?? '', 200)}`)
+      } catch (err) {
+        $.ui.status(`factory: failed to write the patrol log: ${line(String(err), 160)}`)
+      }
     }
     return next(e)
   })

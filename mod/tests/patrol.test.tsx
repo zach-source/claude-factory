@@ -200,6 +200,10 @@ test(
     expect(submits).toHaveLength(1)
     expect(submits[0]!.text).toContain('[factory] patrol')
     expect(submits[0]!.text).toContain('which DB?')
+    // claude-factory-72v.13: manual() no longer carries the patrol's own loop rules (PATROL does),
+    // so the fallback must carry them itself, or the main chat gets due.text with no rules to work it
+    expect(submits[0]!.text).toContain('## Factory patrol')
+    expect(submits[0]!.text).toContain("You are the factory manager's patrol")
     expect(JSON.stringify(status)).toContain('fell back to the main chat')
   },
 )
@@ -644,5 +648,253 @@ test(
       viewport: { columns: 100, rows: 3 },
     })
     expect(JSON.stringify(await band.drawn())).toContain('patrol 3m ago')
+  },
+)
+
+test(
+  'a main-loop turn.complete while a patrol runs does not free it; only a fresh agentId does (claude-factory-72v.8)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const spawns: unknown[] = []
+    let queued: readonly unknown[] = [mail(1)]
+    baseMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('agent.spawn', () => {
+      spawns.push({})
+      // no agentId delivered, as in this test kit (claude-factory-72v memory): rt.patrolId stays
+      // undefined, the same gap a main-loop turn.complete must not be able to exploit
+      return { model: 'sonnet' } as never
+    })
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(spawns).toHaveLength(1)
+
+    // a main-loop turn carries no agentId at all: it must not free the running patrol
+    await $.turn.complete({
+      answer: 'a main-chat answer',
+      durationMs: 5,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 'm1',
+    } as never)
+    queued = [mail(2)]
+    await clock.advance(5_000)
+    expect(spawns).toHaveLength(1) // still running: no second spawn
+
+    // the real patrol's own turn, a fresh (never-seen) agentId, does free it
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 500,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-8',
+    } as never)
+    await clock.advance(5_000)
+    expect(spawns).toHaveLength(2)
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 500,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't2',
+      agentId: 'patrol-8',
+    } as never)
+  },
+)
+
+test(
+  "a second, unrelated subagent's own Bash commands never land in the patrol log or move rt.patrolId (claude-factory-72v.9)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/home/factory',
+      files,
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    // the real patrol's own id comes back from agent.spawn directly, as in a real session
+    on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-A' }) as never)
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    // NOT YET GREEN (claude-factory-72v handoff): isolated (just this tool.call, then turn.complete,
+    // no other Bash call in between) this passes. Adding this one extra tool.call, with a different
+    // agentId, before turn.complete makes the file end up empty: confirmed by a DEBUG
+    // console.error inside register.tsx's own tool.call and turn.complete hooks, printing
+    // rt.isPatrolling/rt.patrolId at each call -- but the debug lines never printed at all in the
+    // plugin test runner's output (stdout/stderr from the hook body did not surface), so the next
+    // worker must add visibility a different way (write a debug line into `files` itself, or into
+    // the `status` array via the test's own `on('ui.status', ...)` mock) rather than console.error.
+    await $.tool.call({
+      tool: 'Bash',
+      command: 'factory mail r1 implement "from the other agent"',
+      agentId: 'other-1',
+    } as never)
+    // the real patrol's own command
+    await $.tool.call({
+      tool: 'Bash',
+      command: 'factory mail r1 implement "from the patrol"',
+      agentId: 'patrol-A',
+    } as never)
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-A',
+    } as never)
+
+    const log = (files.get('/home/factory/patrol-log.jsonl') ?? '').trim().split('\n').filter(Boolean)
+    expect(log).toHaveLength(1)
+    const entry = JSON.parse(log[0]!)
+    expect(entry.actions).toEqual(['factory mail r1 implement "from the patrol"'])
+  },
+)
+
+test(
+  'a denied heartbeat (a long-working run, no mail) still retries after the window, not left sig-silent for up to an hour (claude-factory-72v.10)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const spawns: unknown[] = []
+    const status: unknown[] = []
+    const runs = [{ id: 'r1', rig: 'api', node: 'implement', sub: 'working', goal: 'g' }]
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
+    on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
+    on('process.run', ($, e) => {
+      if (e.argv.includes('tick'))
+        return {
+          value: {
+            exitCode: 0,
+            stdout: JSON.stringify({ manager: [], rigs: [], runs }),
+            stderr: '',
+          } as never,
+        }
+      return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+    })
+    on('agent.spawn', ($, e) => {
+      spawns.push(e as never)
+      return { deny: 'not now' } as never
+    })
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    // the first ever heartbeat (a long-working run, due at 10 min), denied
+    await clock.advance(10 * 60_000)
+    expect(spawns).toHaveLength(1)
+    expect(JSON.stringify(status)).toContain('the patrol spawn was denied')
+
+    // past the 60 s retry window, with nothing else changed: the board's own sig was never
+    // committed by the denied attempt, so this heartbeat is still due, and retries
+    await clock.advance(61_000)
+    expect(spawns).toHaveLength(2)
+  },
+)
+
+test(
+  'a patrol-log write failure is shown in the status line, not left to break turn.complete (claude-factory-72v.11)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const status: unknown[] = []
+    let queued: readonly unknown[] = [mail(1)]
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    on('ui.open', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
+    on('process.run', ($, e) => {
+      if (e.argv.includes('tick')) {
+        const out = JSON.stringify({ manager: queued, rigs: [], runs: [RUN] })
+        queued = []
+        return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+      }
+      if (e.argv.includes('home'))
+        return { value: { exitCode: 0, stdout: '/home/factory', stderr: '' } as never }
+      return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+    })
+    on('fs.read', () => {
+      throw new Error("ENOENT: no such file, open 'patrol-log.jsonl'")
+    })
+    on('fs.write', () => {
+      throw new Error('ENOSPC: no space left on device')
+    })
+    on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-11' }) as never)
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    // the base implementation beneath register.tsx's own turn.complete hook, or next(e) throws
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-11',
+    } as never)
+
+    expect(JSON.stringify(status)).toContain('failed to write the patrol log')
+  },
+)
+
+test(
+  "[SECURITY] a subagent's command on a run the person just touched is denied too, not only left off its prompt (claude-factory-72v.14)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    let ran = 0
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+
+    // the main chat touches r9 directly: this holds it for PATROL_HOLD_MS
+    await $.tool.call({ tool: 'Bash', command: 'factory mail r9 implement "steer"' } as never)
+    expect(ran).toBe(1)
+
+    // a subagent's own command naming that same, still-held run is denied, with no dialog
+    const denied = await $.tool.call({
+      tool: 'Bash',
+      command: 'factory poke r9',
+      agentId: 'patrol-14',
+    } as never)
+    expect(denied.deny).toContain('touched by the person')
+    expect(ran).toBe(1) // not run
+
+    await clock.settle()
   },
 )
