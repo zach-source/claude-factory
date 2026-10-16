@@ -1,16 +1,20 @@
-// src/linear.ts's pure helpers: team ids, secret-broker credentials, argv, env and output parsing,
-// redaction. The broker tests run a fake broker HTTP server (Bun.serve), never a real one. The
-// end-to-end loop through a fake `bd` on PATH is in this file's CLI tests, further down.
+// src/linear.ts's pure helpers: team ids, routing, secret-broker credentials, the Linear API list
+// call, argv, env and output parsing, redaction. The broker and Linear API tests run a fake HTTP
+// server (Bun.serve), never a real one. The end-to-end loop through a fake `bd` on PATH is in this
+// file's CLI tests, further down.
 import { expect, test } from 'bun:test'
 import {
   type ConnectCache,
   CONNECT_SETUP_HELP,
+  fetchLinearIssues,
+  parseLinearList,
   parseLinearTeams,
   parseSync,
+  pullArgs,
   redact,
   resolveConnectCreds,
   resolveLinearApiKey,
-  syncArgs,
+  routeLinearIssue,
   syncEnv,
 } from './linear'
 
@@ -23,24 +27,57 @@ test('parseLinearTeams accepts one or more UUIDs, and refuses anything else, nam
   expect(() => parseLinearTeams(`${id1},nope`)).toThrow('"nope"')
 })
 
-test('syncArgs is pull-if-stale only, with --json, and never --push or the key', () => {
-  const args = syncArgs(['04114abf-ddb7-4a6f-bb47-814fd2c44373'])
+test('parseLinearList splits a comma list and trims each name, and refuses an empty list', () => {
+  expect(parseLinearList('a, b ,c')).toEqual(['a', 'b', 'c'])
+  expect(() => parseLinearList('')).toThrow()
+  expect(() => parseLinearList(' , ')).toThrow()
+})
+
+test('pullArgs is "linear pull <ref...> --json", never --push or the key', () => {
+  const args = pullArgs(['https://linear.app/x/issue/A-1', 'https://linear.app/x/issue/A-2'])
   expect(args).toEqual([
     'linear',
-    'sync',
-    '--pull-if-stale',
-    '--threshold',
-    '15m',
-    '--team',
-    '04114abf-ddb7-4a6f-bb47-814fd2c44373',
+    'pull',
+    'https://linear.app/x/issue/A-1',
+    'https://linear.app/x/issue/A-2',
     '--json',
   ])
   expect(args).not.toContain('--push')
   expect(args.join(' ')).not.toMatch(/lin_/)
 })
 
-test('syncArgs joins several team ids with a comma', () => {
-  expect(syncArgs(['a', 'b'])).toContain('a,b')
+test('routeLinearIssue rule 1: a project named "[<rig-name>] ..." routes to that rig, with no other config', () => {
+  const rigs = [
+    { name: 'acme', linear: { team: ['t'] } },
+    { name: 'widget', linear: { team: ['t'] } },
+  ]
+  expect(routeLinearIssue({ project: '[acme] fix the thing', labels: [] }, rigs)).toBe('acme')
+  expect(routeLinearIssue({ project: '[widget] ship it', labels: [] }, rigs)).toBe('widget')
+})
+
+test('routeLinearIssue rule 2: an exact project-name match routes to the rig that configured it', () => {
+  const rigs = [{ name: 'acme', linear: { team: ['t'], projects: ['Infra Catalog'] } }]
+  expect(routeLinearIssue({ project: 'Infra Catalog', labels: [] }, rigs)).toBe('acme')
+  expect(routeLinearIssue({ project: 'Other Project', labels: [] }, rigs)).toBeUndefined()
+})
+
+test('routeLinearIssue rule 2: a matching label routes to the rig that configured it', () => {
+  const rigs = [{ name: 'acme', linear: { team: ['t'], labels: ['Area/infra'] } }]
+  expect(routeLinearIssue({ project: undefined, labels: ['Area/infra', 'bug'] }, rigs)).toBe('acme')
+  expect(routeLinearIssue({ project: undefined, labels: ['bug'] }, rigs)).toBeUndefined()
+})
+
+test('routeLinearIssue: the first opted-in rig, in order, wins a rule-2 tie', () => {
+  const rigs = [
+    { name: 'acme', linear: { team: ['t'], labels: ['Area/x'] } },
+    { name: 'widget', linear: { team: ['t'], labels: ['Area/x'] } },
+  ]
+  expect(routeLinearIssue({ project: undefined, labels: ['Area/x'] }, rigs)).toBe('acme')
+})
+
+test('routeLinearIssue returns undefined with no match, and ignores a rig not opted in', () => {
+  const rigs = [{ name: 'acme', linear: { team: ['t'], projects: ['Infra Catalog'] } }, { name: 'other' }]
+  expect(routeLinearIssue({ project: 'Nowhere', labels: [] }, rigs)).toBeUndefined()
 })
 
 // A fake secret-broker server.
@@ -194,19 +231,62 @@ test('syncEnv sets only LINEAR_API_KEY, dropping every inherited LINEAR_* first'
   expect(env.PATH).toBe(process.env.PATH)
 })
 
-test('parseSync reads a fresh skip, a real pull, and an engine error, the three shapes bd 1.3.0 prints', () => {
-  expect(
-    parseSync('{"is_fresh":true,"skipped":true,"last_pull":"2026-10-15T10:00:00Z","age":"5m"}', 0),
-  ).toEqual({
-    fresh: true,
-    lastPull: '2026-10-15T10:00:00Z',
+// A fake Linear GraphQL endpoint, in-process (safe here: nothing in this test uses Bun.spawnSync,
+// so this process keeps serving its own event loop between requests).
+function fakeLinearApi(pages: { ref: string; project?: string; labels: string[] }[][]) {
+  const requests: { authorization: string | null; variables: Record<string, unknown> }[] = []
+  let call = 0
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = (await req.json()) as { variables: Record<string, unknown> }
+      requests.push({ authorization: req.headers.get('authorization'), variables: body.variables })
+      const page = pages[call] ?? pages[pages.length - 1]!
+      call++
+      return Response.json({
+        data: {
+          issues: {
+            nodes: page.map(i => ({
+              url: i.ref,
+              project: i.project ? { name: i.project } : null,
+              labels: { nodes: i.labels.map(name => ({ name })) },
+            })),
+            pageInfo: { hasNextPage: call < pages.length, endCursor: `c${call}` },
+          },
+        },
+      })
+    },
   })
+  return { url: server.url.toString(), requests, stop: () => server.stop(true) }
+}
+
+test('fetchLinearIssues sends the raw key as the Authorization header (no Bearer prefix) and follows pageInfo across pages', async () => {
+  const fake = fakeLinearApi([
+    [{ ref: 'https://linear.app/x/issue/A-1', project: '[acme] p', labels: [] }],
+    [{ ref: 'https://linear.app/x/issue/A-2', labels: ['Area/x'] }],
+  ])
+  try {
+    const issues = await fetchLinearIssues('test-key', ['team-1'], fake.url)
+    expect(issues).toEqual([
+      { ref: 'https://linear.app/x/issue/A-1', project: '[acme] p', labels: [] },
+      { ref: 'https://linear.app/x/issue/A-2', project: undefined, labels: ['Area/x'] },
+    ])
+    expect(fake.requests).toHaveLength(2)
+    expect(fake.requests[0]!.authorization).toBe('test-key')
+    expect(fake.requests[0]!.authorization).not.toContain('Bearer')
+    expect((fake.requests[1]!.variables as { after?: string }).after).toBe('c1')
+  } finally {
+    fake.stop()
+  }
+})
+
+test('parseSync reads a real pull and an engine error, the two shapes "bd linear pull" prints', () => {
   expect(
     parseSync(
       '{"stats":{"pulled":3,"pushed":0,"created":2,"updated":1,"skipped":0,"errors":0,"conflicts":0},"warnings":[],"is_fresh":true,"skipped":false}',
       0,
     ),
-  ).toEqual({ fresh: false, pulled: 3, created: 2, updated: 1 })
+  ).toEqual({ pulled: 3, created: 2, updated: 1 })
   expect(parseSync('{"error":"dial tcp 127.0.0.1:3308: i/o timeout"}', 1)).toEqual({
     error: 'dial tcp 127.0.0.1:3308: i/o timeout',
   })
@@ -222,7 +302,7 @@ test('parseSync falls back to stderr when stdout has no usable detail', () => {
     error: 'panic: dial tcp timeout',
   })
   expect(parseSync('{"stats":{}}', 1, 'panic: dial tcp timeout')).toEqual({
-    error: 'bd linear sync exited 1: panic: dial tcp timeout',
+    error: 'bd linear pull exited 1: panic: dial tcp timeout',
   })
 })
 
@@ -259,12 +339,12 @@ test('redact strips control characters, like an ANSI escape, from the text (secu
 // So these tests check the real loop (src/cli.ts's linearPass), not a mock of it.
 //
 // `factory(...)` below runs the CLI with `Bun.spawnSync`. This call blocks the test file's own
-// event loop until the child exits. `fakeConnect` (an in-process `Bun.serve`, used above for the
-// pure unit tests) would deadlock here. The reason: the spawned `factory` process sends a
-// `fetch` call back to this process. This process must run its event loop to answer that call.
-// But `Bun.spawnSync` has already blocked that loop. `fakeConnectProcess` below avoids this. It
-// runs the broker in its own OS process, so the broker keeps answering requests while
-// `Bun.spawnSync` blocks this process.
+// event loop until the child exits. `fakeConnect` and `fakeLinearApi` (an in-process `Bun.serve`,
+// used above for the pure unit tests) would deadlock here. The reason: the spawned `factory`
+// process sends a `fetch` call back to this process. This process must run its event loop to
+// answer that call. But `Bun.spawnSync` has already blocked that loop. `fakeConnectProcess` and
+// `fakeLinearProcess` below avoid this. Each runs its fake server in its own OS process, so it
+// keeps answering requests while `Bun.spawnSync` blocks this process.
 import { afterAll, beforeEach } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -300,25 +380,71 @@ async function fakeConnectProcess(opts: { vaultTitle?: string; key?: string } = 
   return { url: `http://127.0.0.1:${port}`, vault: vaultTitle, stop: () => proc.kill() }
 }
 
+/**
+ * A fake Linear GraphQL endpoint, run as its own process via `bun -e`. See the note above.
+ * It re-reads `issuesFile` (JSON, an array of `{ref, project?, labels}`) on every request, so a
+ * test can change the fixture between `factory(...)` calls. It always answers one page
+ * (`hasNextPage: false`) and ignores the query's team filter: `routeLinearIssue` is already unit
+ * tested above, so these end-to-end tests only need to exercise the wiring.
+ */
+async function fakeLinearProcess(issuesFile: string) {
+  const script = `
+    const fs = require('node:fs')
+    const issuesFile = ${JSON.stringify(issuesFile)}
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const issues = JSON.parse(fs.readFileSync(issuesFile, 'utf8'))
+        return Response.json({
+          data: {
+            issues: {
+              nodes: issues.map(i => ({
+                url: i.ref,
+                project: i.project ? { name: i.project } : null,
+                labels: { nodes: (i.labels ?? []).map(name => ({ name })) },
+              })),
+              pageInfo: { hasNextPage: false, endCursor: '' },
+            },
+          },
+        })
+      },
+    })
+    console.log(server.port)
+    await new Promise(() => {}) // stay alive until killed
+  `
+  const proc = Bun.spawn(['bun', '-e', script], { stdout: 'pipe', stderr: 'pipe' })
+  const { value } = await proc.stdout.getReader().read()
+  const port = new TextDecoder().decode(value).trim()
+  return { url: `http://127.0.0.1:${port}/graphql`, stop: () => proc.kill() }
+}
+
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const cdir = join(tmpdir(), `linear-cli-${process.pid}`)
 const home = join(cdir, 'home')
 const bin = join(cdir, 'bin')
 const calls = join(cdir, 'calls.log')
-const mode = join(cdir, 'mode') // fresh | pulled | error, read by the fake bd's `linear sync`
+const mode = join(cdir, 'mode') // pulled | error, read by the fake bd's `linear pull`
 const listTurn = join(cdir, 'list-turn') // counts `bd list` calls, so before/after differ
 const failLabel = join(cdir, 'fail-label') // an id `bd label remove` exits 1 for, when this file names it
 const listFailTurns = join(cdir, 'list-fail-turns') // comma-joined `bd list` turn numbers that exit 1
 const readyFlag = join(cdir, 'ready-has-acme-new') // makes `bd ready --label factory` list acme-new too
+const linearIssuesFile = join(cdir, 'linear-issues.json') // fixture fakeLinearProcess reads
 
 const TEAM = '04114abf-ddb7-4a6f-bb47-814fd2c44373'
 const repoA = join(cdir, 'repo-a')
 const repoB = join(cdir, 'repo-b')
+// the default fixture (one issue, project "[a]"): rule 1 routes it to a rig named "a" with no
+// other config, so every pre-existing test below keeps working with only its `writeRigs` call
+// changed from `linear: [TEAM]` to `linear: { team: [TEAM] }`.
+const DEFAULT_REF = 'https://linear.app/x/issue/A-1'
+const defaultIssues = () => [{ ref: DEFAULT_REF, project: '[a]', labels: [] }]
 
 const connect = await fakeConnectProcess({ key: 'test-key-123' })
+const linearApi = await fakeLinearProcess(linearIssuesFile)
 afterAll(() => {
   rmSync(cdir, { recursive: true, force: true })
   connect.stop()
+  linearApi.stop()
 })
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
@@ -338,6 +464,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
       OP_CONNECT_TOKEN: 'tok',
       CF_ACCESS_CLIENT_ID: 'cfid',
       CF_ACCESS_CLIENT_SECRET: 'cfsecret',
+      LINEAR_API_URL: linearApi.url,
       ...env,
     },
   })
@@ -348,7 +475,7 @@ const noConnectEnv = { OP_CONNECT_TOKEN: '', CF_ACCESS_CLIENT_ID: '', CF_ACCESS_
 
 /**
  * This is the fake bd. It answers each call this way:
- * - `linear sync`: from $mode (fresh, pulled, or error).
+ * - `linear pull`: from $mode (pulled, or error).
  * - `list`, turn 1: `[{"id":"acme-old"}]`. No bead carries the label yet.
  * - `list`, turn 2 on: adds `acme-new`. The strip step then has one new id to act on.
  * - `list`, a turn named in $listFailTurns (comma-joined): exits 1, names the turn in stderr.
@@ -365,9 +492,8 @@ function fakeBd() {
     `echo "ARGV|$*|CWD|$(pwd)|KEY|${'$'}{LINEAR_API_KEY}|OAUTHID|${'$'}{LINEAR_OAUTH_CLIENT_ID}|OAUTHSECRET|${'$'}{LINEAR_OAUTH_CLIENT_SECRET}" >> ${calls}`,
     'case "$1" in',
     '  linear)',
-    `    m=$(cat ${mode} 2>/dev/null || echo fresh)`,
+    `    m=$(cat ${mode} 2>/dev/null || echo pulled)`,
     '    case "$m" in',
-    '      fresh) printf \'%s\' \'{"is_fresh":true,"skipped":true,"last_pull":"2026-10-15T10:00:00Z","age":"5m"}\';;',
     '      pulled) printf \'%s\' \'{"stats":{"pulled":2,"pushed":0,"created":1,"updated":1,"skipped":0,"errors":0,"conflicts":0},"warnings":[],"is_fresh":true,"skipped":false}\';;',
     '      error) echo "dial tcp 127.0.0.1:3308: i/o timeout, key test-key-123" >&2; printf \'%s\' \'{"error":"dial tcp 127.0.0.1:3308: i/o timeout, key test-key-123"}\'; exit 1;;',
     '    esac;;',
@@ -408,6 +534,7 @@ function reset() {
   mkdirSync(repoB, { recursive: true })
   fakeBd()
   writeFileSync(mode, 'pulled')
+  writeFileSync(linearIssuesFile, JSON.stringify(defaultIssues()))
 }
 
 const callLines = () =>
@@ -418,50 +545,50 @@ const keyOf = (line: string) => line.split('|')[5]!
 
 beforeEach(reset)
 
-test('linearPass runs pull-if-stale for every opted-in rig only, never --push, cwd the rig repo', () => {
+test("linearPass pulls each opted-in rig's routed issues only, never --push, cwd the rig repo", () => {
   writeRigs([
-    { name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] },
+    { name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } },
     { name: 'b', repo: repoB, factory: 'lifecycle' }, // not opted in: no Linear call at all
   ])
   const out = factory(['linear'])
   expect(out.code).toBe(0)
-  const syncCalls = callLines().filter(l => argvOf(l).startsWith('linear sync'))
-  expect(syncCalls).toHaveLength(1)
-  expect(argvOf(syncCalls[0]!)).toBe(`linear sync --pull-if-stale --threshold 15m --team ${TEAM} --json`)
-  expect(argvOf(syncCalls[0]!)).not.toContain('--push')
-  expect(cwdOf(syncCalls[0]!)).toEndWith('/repo-a')
+  const pullCalls = callLines().filter(l => argvOf(l).startsWith('linear pull'))
+  expect(pullCalls).toHaveLength(1)
+  expect(argvOf(pullCalls[0]!)).toBe(`linear pull ${DEFAULT_REF} --json`)
+  expect(argvOf(pullCalls[0]!)).not.toContain('--push')
+  expect(cwdOf(pullCalls[0]!)).toEndWith('/repo-a')
   expect(callLines().some(l => cwdOf(l).endsWith('/repo-b'))).toBe(false)
 })
 
-test('the key reaches bd only by env, on the sync call; list/label calls carry no key at all', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+test('the key reaches bd only by env, on the pull call; list/label calls carry no key at all', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   factory(['linear'])
-  const syncCall = callLines().find(l => argvOf(l).startsWith('linear sync'))!
-  expect(keyOf(syncCall)).toBe('test-key-123')
-  expect(argvOf(syncCall)).not.toContain('test-key-123')
-  for (const l of callLines().filter(l => !argvOf(l).startsWith('linear sync'))) expect(keyOf(l)).toBe('')
+  const pullCall = callLines().find(l => argvOf(l).startsWith('linear pull'))!
+  expect(keyOf(pullCall)).toBe('test-key-123')
+  expect(argvOf(pullCall)).not.toContain('test-key-123')
+  for (const l of callLines().filter(l => !argvOf(l).startsWith('linear pull'))) expect(keyOf(l)).toBe('')
 })
 
-test('a rig syncs at most once per 20 min; --force syncs again right away', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+test('a rig pulls at most once per 20 min; --force pulls again right away', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   factory(['linear'])
-  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1)
   factory(['linear']) // too soon: no second call
-  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1)
   factory(['linear', '--force'])
-  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(2)
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(2)
 })
 
 test('after a pull, only the bead newly labeled factory loses the label; one already labeled keeps it', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   factory(['linear'])
   const removes = callLines().filter(l => argvOf(l).startsWith('label remove'))
   expect(removes).toHaveLength(1)
   expect(argvOf(removes[0]!)).toBe('label remove acme-new factory')
 })
 
-test('linear sync never runs for a rig with no secret-broker credentials: it errors with the setup message, and bd is never called (claude-factory-b6c.17)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+test('the Linear pull loop never runs for a rig with no secret-broker credentials: it errors with the setup message, and bd is never called (claude-factory-b6c.17)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   const out = factory(['linear'], noConnectEnv) // no env, and this worker's Keychain has no entry either
   expect(out.out).toContain('secret-broker credentials')
   expect(out.out).toContain('docs/beads.md')
@@ -470,8 +597,8 @@ test('linear sync never runs for a rig with no secret-broker credentials: it err
   expect(state.a.error).toContain('docs/beads.md')
 })
 
-test('a sync error is recorded redacted (no secret value) and clipped, in linear-sync.json', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+test('a pull error is recorded redacted (no secret value) and clipped, in linear-sync.json', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   writeFileSync(mode, 'error')
   factory(['linear'])
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
@@ -480,8 +607,8 @@ test('a sync error is recorded redacted (no secret value) and clipped, in linear
   expect(state.a.error.length).toBeLessThanOrEqual(201)
 })
 
-test('a sync error still strips a bead the pull newly labeled before it erred (claude-factory-b6c.8)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+test('a pull error still strips a bead the pull newly labeled before it erred (claude-factory-b6c.8)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   writeFileSync(mode, 'error')
   factory(['linear'])
   const removes = callLines().filter(l => argvOf(l).startsWith('label remove'))
@@ -493,7 +620,7 @@ test('a sync error still strips a bead the pull newly labeled before it erred (c
 })
 
 test('a bead whose label remove fails is queued and retried first next pass (claude-factory-b6c.9)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   writeFileSync(failLabel, 'acme-new')
   factory(['linear'])
   let state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
@@ -510,7 +637,7 @@ test('a bead whose label remove fails is queued and retried first next pass (cla
 })
 
 test('a post-pull listing that still fails after one retry keeps the pre-pull before-set as a baseline; the next pass strips the bead it missed (security#1.13)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   // turn 1 is the pre-pull before-list. Turns 2 and 3 are the post-pull listing's first try and its one
   // retry: both fail. The pass cannot confirm acme-new as newly labeled, so it must not strip it, and it
   // must not drop the fact that it still owes that check.
@@ -532,31 +659,65 @@ test('a post-pull listing that still fails after one retry keeps the pre-pull be
   expect(state.a.stripped).toBe(1)
 })
 
-test('a fresh skip is recorded, with no label strip (nothing new to strip)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
-  writeFileSync(mode, 'fresh')
+test('a rig with no routed issues pulls nothing, calls bd not at all, and records the unrouted count', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
+  writeFileSync(
+    linearIssuesFile,
+    JSON.stringify([{ ref: 'https://linear.app/x/issue/A-9', project: '[nowhere]', labels: [] }]),
+  )
   factory(['linear'])
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
-  expect(state.a.fresh).toBe(true)
-  expect(state.a.lastPull).toBe('2026-10-15T10:00:00Z')
+  expect(state.a.pulled).toBe(0)
+  expect(state.a.unrouted).toBe(1)
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(0)
   expect(callLines().some(l => argvOf(l).startsWith('label remove'))).toBe(false)
 })
 
+test('the loop routes each issue to at most one opted-in rig, by bracket prefix or configured project/label, and counts the rest as unrouted (claude-factory-b6c.18)', () => {
+  writeRigs([
+    {
+      name: 'acme',
+      repo: repoA,
+      factory: 'lifecycle',
+      linear: { team: [TEAM], projects: ['Infra Catalog'] },
+    },
+    { name: 'widget', repo: repoB, factory: 'lifecycle', linear: { team: [TEAM], labels: ['Area/widget'] } },
+  ])
+  writeFileSync(
+    linearIssuesFile,
+    JSON.stringify([
+      { ref: 'https://linear.app/x/issue/A-1', project: '[acme] bracket rule', labels: [] }, // rule 1 -> acme
+      { ref: 'https://linear.app/x/issue/A-2', project: 'Infra Catalog', labels: [] }, // rule 2 project -> acme
+      { ref: 'https://linear.app/x/issue/A-3', labels: ['Area/widget'] }, // rule 2 label -> widget
+      { ref: 'https://linear.app/x/issue/A-4', project: 'Nowhere', labels: [] }, // unrouted
+    ]),
+  )
+  factory(['linear', '--force'])
+  const acmePull = callLines().find(l => cwdOf(l).endsWith('/repo-a') && argvOf(l).startsWith('linear pull'))!
+  const widgetPull = callLines().find(
+    l => cwdOf(l).endsWith('/repo-b') && argvOf(l).startsWith('linear pull'),
+  )!
+  expect(argvOf(acmePull)).toBe(
+    'linear pull https://linear.app/x/issue/A-1 https://linear.app/x/issue/A-2 --json',
+  )
+  expect(argvOf(widgetPull)).toBe('linear pull https://linear.app/x/issue/A-3 --json')
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.acme.unrouted).toBe(1)
+  expect(state.widget.unrouted).toBe(1)
+})
+
 test("rig list shows a Linear-opted rig's last pull count, or its error (claude-factory-b6c.5)", () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   writeFileSync(
     join(home, 'linear-sync.json'),
-    JSON.stringify({ a: { at: Date.now(), fresh: false, pulled: 3, created: 1, updated: 2, stripped: 0 } }),
+    JSON.stringify({ a: { at: Date.now(), pulled: 3, created: 1, updated: 2, stripped: 0, unrouted: 1 } }),
   )
   const pulled = factory(['rig', 'list'])
-  expect(pulled.out).toContain(`linear: ${TEAM} (pulled 3,`)
+  expect(pulled.out).toContain(`linear: team ${TEAM} (pulled 3, unrouted 1,`)
 
-  writeFileSync(
-    join(home, 'linear-sync.json'),
-    JSON.stringify({ a: { at: Date.now(), fresh: false, error: 'boom' } }),
-  )
+  writeFileSync(join(home, 'linear-sync.json'), JSON.stringify({ a: { at: Date.now(), error: 'boom' } }))
   const erred = factory(['rig', 'list'])
-  expect(erred.out).toContain(`linear: ${TEAM} (error`)
+  expect(erred.out).toContain(`linear: team ${TEAM} (error`)
   expect(erred.out).toContain('boom')
 })
 
@@ -575,11 +736,11 @@ const tickJson = () => JSON.parse(factory(['tick']).out)
 
 test("tick's out.rigs carries each opted-in rig's last Linear sync state, for the console", () => {
   writeRigs([
-    { name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] },
+    { name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } },
     { name: 'b', repo: repoB, factory: 'lifecycle' }, // not opted in: no linearSync at all
   ])
   blockBeadsKick()
-  const state = { at: Date.now(), fresh: false, pulled: 2, created: 1, updated: 1, stripped: 0 }
+  const state = { at: Date.now(), pulled: 2, created: 1, updated: 1, stripped: 0, unrouted: 0 }
   writeSyncState({ a: state })
   const out = tickJson()
   expect(out.rigs.find((r: { name: string }) => r.name === 'a').linearSync).toEqual(state)
@@ -587,12 +748,12 @@ test("tick's out.rigs carries each opted-in rig's last Linear sync state, for th
 })
 
 test('a failing rig mails the manager once; the same error again mails nothing more; success then failure mails again', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   blockBeadsKick()
   const linearMailOf = (out: { manager: { from: string; text: string; run: string }[] }) =>
     out.manager.filter(m => m.from === 'linear')
 
-  writeSyncState({ a: { at: Date.now(), fresh: false, error: 'boom' } })
+  writeSyncState({ a: { at: Date.now(), error: 'boom' } })
   const first = linearMailOf(tickJson())
   expect(first).toHaveLength(1)
   expect(first[0]!.run).toBe('factory')
@@ -602,31 +763,31 @@ test('a failing rig mails the manager once; the same error again mails nothing m
   expect(second).toHaveLength(0)
 
   // a success since the last mail clears the told state
-  writeSyncState({ a: { at: Date.now(), fresh: true, lastPull: '2026-10-15T10:00:00Z' } })
+  writeSyncState({ a: { at: Date.now(), pulled: 1, created: 0, updated: 0, stripped: 0 } })
   const third = linearMailOf(tickJson())
   expect(third).toHaveLength(0)
 
-  writeSyncState({ a: { at: Date.now(), fresh: false, error: 'boom2' } }) // a new error after a success
+  writeSyncState({ a: { at: Date.now(), error: 'boom2' } }) // a new error after a success
   const fourth = linearMailOf(tickJson())
   expect(fourth).toHaveLength(1)
   expect(fourth[0]!.text).toContain('boom2')
 })
 
 test('factory beads runs the Linear pass too, not only factory linear (claude-factory-b6c.11)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   factory(['beads'])
-  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1)
   const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
   expect(state.a.pulled).toBe(2)
 })
 
 test("factory linear holds beads.lock, so it never races a tick's beadsPass (claude-factory-b6c.10)", () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   blockBeadsKick() // simulates a live beadsPass already holding the lock
   const out = factory(['linear'])
   expect(out.code).not.toBe(0)
   expect(out.err).toContain('beads.lock')
-  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(0)
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(0)
 })
 
 test('factory linear fails naming an unknown rig, and a rig not opted into the loop, writing nothing (claude-factory-b6c.12)', () => {
@@ -645,7 +806,7 @@ test('factory linear fails naming an unknown rig, and a rig not opted into the l
 })
 
 test('factory linear fails, naming why, when the factory is halted (claude-factory-b6c.12)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   writeFileSync(
     join(home, 'halt.json'),
     JSON.stringify({ state: 'stopping', at: Date.now(), told: {}, closed: {} }),
@@ -662,7 +823,7 @@ test('factory linear fails, naming why, when the factory is halted (claude-facto
 // through `factory beads`, not a stub of it.
 
 test('dispatch does not start a run while a post-pull listing leaves the baseline open (claude-factory-b6c.16)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   writeFileSync(readyFlag, '1') // acme-new is really labeled `factory`, as the pull left it
   // turn 1 is the pre-pull before-list; turns 2 and 3 are the post-pull listing and its one retry: both
   // fail, so the pass cannot learn that acme-new is newly labeled and must not treat it as confirmed safe
@@ -674,11 +835,11 @@ test('dispatch does not start a run while a post-pull listing leaves the baselin
   // pre-fix code starts a run on acme-new here: dispatch claims the bead before the strip is confirmed
   expect(callLines().some(l => argvOf(l).startsWith('update acme-new'))).toBe(false)
 
-  // the next pass: the listing now succeeds. The retry must resolve this with no new `linear sync` call
+  // the next pass: the listing now succeeds. The retry must resolve this with no new `linear pull` call
   // (`linearRecoverOne`, not `linearSyncOne`): the pull already ran, only the strip was unconfirmed.
   rmSync(listFailTurns, { force: true })
   factory(['beads'])
-  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1)
   const removes = callLines().filter(l => argvOf(l).startsWith('label remove'))
   expect(removes).toHaveLength(1)
   expect(argvOf(removes[0]!)).toBe('label remove acme-new factory')
@@ -687,7 +848,7 @@ test('dispatch does not start a run while a post-pull listing leaves the baselin
 })
 
 test('dispatch does not start a run on a bead a label remove failed on (claude-factory-b6c.16)', () => {
-  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
   writeFileSync(readyFlag, '1')
   writeFileSync(failLabel, 'acme-new')
   const out = factory(['beads'])
@@ -696,10 +857,10 @@ test('dispatch does not start a run on a bead a label remove failed on (claude-f
   expect(state.a.unstripped).toEqual(['acme-new'])
   expect(callLines().some(l => argvOf(l).startsWith('update acme-new'))).toBe(false)
 
-  // the next pass: the label remove now succeeds, with no new `linear sync` call, and the retry resolves it
+  // the next pass: the label remove now succeeds, with no new `linear pull` call, and the retry resolves it
   rmSync(failLabel, { force: true })
   factory(['beads'])
-  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1)
   const removes = callLines().filter(l => argvOf(l).startsWith('label remove acme-new'))
   expect(removes.length).toBeGreaterThanOrEqual(2) // the failed attempt, then the retry
   const state2 = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))

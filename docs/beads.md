@@ -123,8 +123,19 @@ Today a factory assumes that every `factory/...` claim and branch on a rig is it
 ## Linear
 
 A rig can turn on a Linear pull loop. The loop copies Linear issues from a team into the
-rig's beads. It uses `bd linear sync --pull-if-stale`. The loop never pushes changes back to
-Linear.
+rig's beads. The loop never pushes changes back to Linear.
+
+`bd` has no project or label filter of its own. A plain `bd linear sync` pull copies every
+issue of a team into every rig that pulls from it.
+
+So the loop does its own filtering, in 3 steps:
+
+1. It lists each team's issues itself, with a read-only call to the Linear API.
+2. It routes each issue to at most one opted-in rig (see "Route issues to a rig" below).
+3. For each rig, it asks `bd` to pull only that rig's routed issues: `bd linear pull
+   <issue-url...>`.
+
+An issue that matches no rig never goes to any rig. The loop counts it as "unrouted".
 
 ### Turn it on
 
@@ -185,16 +196,43 @@ Linear.
 
    The `--linear` flag can have one team id, or several team ids separated by commas.
 
-   If you run `rig add` again with no `--linear` flag, the factory removes the field. It also turns the loop off for that rig.
+   Use `--linear-projects` or `--linear-labels` to name the exact Linear project names, or
+   label names, that route an issue to this rig. See "Route issues to a rig" below. Each flag
+   takes one name, or several names separated by commas. Both flags need `--linear` too.
+
+   `rig add` with no `--linear` flag removes the field and turns the loop off for that rig.
+
+### Route issues to a rig
+
+Two or more rigs can share one Linear team. The loop checks two rules, in this order, to
+send each issue of that team to at most one rig:
+
+1. **Bracket prefix.** Check a project name that starts with `[<rig-name>]`. Route the issue
+   to the rig of that exact name. This rule needs no setup: it works from the rig's name
+   alone. For example, route a project named `[app] Billing work` to the rig named `app`.
+2. **Configured project or label.** Check a project name, or a label name, against each
+   rig's own `--linear-projects` or `--linear-labels` list. Route the issue to the first rig,
+   in add order, whose list names a match.
+
+Route an issue that matches neither rule to no rig. The loop never pulls it. Count it
+instead toward that pull's "unrouted" total (see "Checking it" below).
 
 ### What the loop does
 
-Every 20 minutes, the factory runs `bd linear sync --pull-if-stale --threshold 15m --team
-<ids> --json` in the rig's repo. It does this for each rig that has the loop on.
+Every 20 minutes, for each rig with the loop on, the factory does 3 steps:
 
-The factory fetches a fresh key from the secret broker before each sync. It passes the key through the environment only, as `LINEAR_API_KEY`. It never puts the key on the command line, on disk, or in a bead.
+1. Fetch a fresh key from the secret broker. List the rig's team's issues from the Linear
+   API with that key. This is a read-only call: it never changes a Linear issue.
+2. Route each issue to a rig, by the rules above.
+3. Run `bd linear pull <issue-url...> --json` in the rig's repo. Name only the issues this
+   rig's own routing step found. Make no `bd` call at all for a rig with no routed issues
+   this pass.
 
-To run the sync now, use `factory linear [rig...] --force`. With no rig names, the command runs the sync for all rigs with the loop on. With rig names, it runs the sync only for those rigs.
+The factory passes the key to `bd` through the environment only, as `LINEAR_API_KEY`. It
+never puts the key on the command line, on disk, or in a bead.
+
+Use `factory linear [rig...] --force` to run this now. With no rig names, the command runs
+for every rig with the loop on. With rig names, it runs only for those rigs.
 
 A pull adds Linear labels to the beads it touches. A Linear label named `factory` can start a run by itself. To prevent this, the loop removes the `factory` label after each pull.
 
@@ -208,7 +246,7 @@ A person's queue, not Linear's label, decides what the factory works on.
 
 ### Checking it
 
-`factory rig list` shows the last pull for each rig with the loop on. The output shows the age of the pull, and either what it pulled or the error.
+`factory rig list` shows the last pull for each rig with the loop on. The output shows the age of the pull, and either what it pulled and its unrouted count, or the error.
 
 The console's [Rigs tab](console.md#rigs-key-4) shows the same line.
 

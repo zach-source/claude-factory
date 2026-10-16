@@ -141,8 +141,9 @@ any rig".
 A rig can opt into the [Linear pull loop](beads.md#linear) with `rig add ... --linear <team id>`.
 Such a rig shows one more line.
 
-- After a pull that found new or updated beads, the dim line reads "linear · pulled N · \<age\> ago".
-- After a pull that found nothing new (the data was already fresh), the dim line reads "linear · fresh · \<age\> ago".
+- After a pull, the dim line reads "linear · pulled N · \<age\> ago". It adds ", unrouted M"
+  right after the pulled count when an issue matched no rig (see
+  [Route issues to a rig](beads.md#route-issues-to-a-rig)).
 - When the last pull failed, the red line reads "linear: \<error\>".
 - A rig with no `--linear` team shows no line.
 

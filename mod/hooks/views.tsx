@@ -796,7 +796,7 @@ export function rigsView(p: Base, board: FactoryBoard) {
                   <Text dimColor>
                     linear
                     {g.linearSync
-                      ? ` · ${g.linearSync.fresh ? 'fresh' : `pulled ${g.linearSync.pulled ?? 0}`} · ${dur(p.now - g.linearSync.at)} ago`
+                      ? ` · pulled ${g.linearSync.pulled ?? 0}${g.linearSync.unrouted ? `, unrouted ${g.linearSync.unrouted}` : ''} · ${dur(p.now - g.linearSync.at)} ago`
                       : ''}
                   </Text>
                 )}

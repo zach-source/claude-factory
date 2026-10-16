@@ -62,12 +62,17 @@ import * as ax from './ax'
 import type { Egress } from './ax'
 import {
   type ConnectCache,
+  type LinearRouting,
+  type SyncOutcome,
+  fetchLinearIssues,
+  parseLinearList,
   parseLinearTeams,
   parseSync,
+  pullArgs,
   redact,
   resolveConnectCreds,
   resolveLinearApiKey,
-  syncArgs,
+  routeLinearIssue,
   syncEnv,
 } from './linear'
 import * as worker from './worker'
@@ -2677,7 +2682,12 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
 
 /**
  * This function makes one rig's Linear pull.
- * It runs `bd linear sync --pull-if-stale`, never `--push`.
+ * First, it lists the rig's team(s) with a read-only Linear API call (`fetchLinearIssues`).
+ * Then it routes each issue to at most one opted-in rig (`routeLinearIssue`).
+ * Then it asks `bd` to pull only this rig's routed issues (`bd linear pull <ref...>`, never `--push`).
+ * `bd` has no project or label filter of its own (claude-factory-b6c.18). This function filters instead,
+ * before it calls `bd`.
+ * An issue with no matching rig counts toward `unrouted`. The loop never pulls it anywhere.
  * It fetches the key from the secret broker and passes it to `bd` by env only.
  *
  * `bd` copies each Linear label to the bead that it maps. A new bead, or an updated bead, can have the
@@ -2697,7 +2707,8 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
  * catches the ids this pull labeled, once a listing call succeeds (security#1.13).
  *
  * This function also uses a `baseline` from an earlier pass as this pass's pre-pull snapshot. It clears
- * that `baseline` once a listing call succeeds.
+ * that `baseline` once a listing call succeeds. It skips the listing call entirely when there is
+ * nothing to check: no issue routed to this rig, no `unstripped` retry, and no open `baseline`.
  *
  * This function writes `state[rig.name]`. It never throws, so one rig's failure does not stop the others.
  */
@@ -2712,20 +2723,34 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
     secrets = [creds.token, creds.cfId, creds.cfSecret]
     const apiKey = await resolveLinearApiKey(creds, linearConnectCache)
     secrets.push(apiKey)
+    const issues = await fetchLinearIssues(apiKey, rig.linear!.team)
+    const allRigs = rigs()
+    let unrouted = 0
+    const mine: string[] = []
+    for (const issue of issues) {
+      const dest = routeLinearIssue(issue, allRigs)
+      if (dest === rig.name) mine.push(issue.ref)
+      else if (dest === undefined) unrouted++
+    }
     const env = syncEnv(apiKey)
-    const beforeIds = baseline ?? linearLabeled(rig.repo).map(b => b.id)
+    const needsCheck = mine.length > 0 || retry.length > 0 || !!baseline
+    const beforeIds = baseline ?? (needsCheck ? linearLabeled(rig.repo).map(b => b.id) : [])
     const before = new Set(beforeIds)
-    const p = Bun.spawnSync(['bd', ...syncArgs(rig.linear!)], { cwd: rig.repo, env, timeout: 120_000 })
-    const outcome = parseSync(p.stdout.toString(), p.exitCode ?? 1, p.stderr.toString())
+    let outcome: SyncOutcome
+    if (mine.length) {
+      const p = Bun.spawnSync(['bd', ...pullArgs(mine)], { cwd: rig.repo, env, timeout: 120_000 })
+      outcome = parseSync(p.stdout.toString(), p.exitCode ?? 1, p.stderr.toString())
+    } else {
+      outcome = { pulled: 0, created: 0, updated: 0 }
+    }
 
     // a listing failure here must not lose the pull's own outcome below: it is caught on its own, and
     // every id the listing could not confirm stays queued (as `retry`) for the next pass. `nextBaseline`
-    // carries the open baseline forward by default (a "fresh" outcome never calls the listing at all,
-    // so there is nothing new to learn either way).
+    // carries the open baseline forward by default (nothing routed here means nothing new to learn).
     let toStrip = retry
     let listErr: string | undefined
     let nextBaseline = baseline
-    if (!('fresh' in outcome) || !outcome.fresh) {
+    if (needsCheck) {
       try {
         const newly = linearLabeledRetrying(rig.repo)
           .filter(x => !before.has(x.id))
@@ -2742,36 +2767,27 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
     if ('error' in outcome) {
       state[rig.name] = {
         at,
-        fresh: false,
+        unrouted,
         error: redact(outcome.error, secrets),
         ...(strip.unstripped.length && { unstripped: strip.unstripped }),
         ...(nextBaseline && { baseline: nextBaseline }),
       }
       return
     }
-    state[rig.name] = outcome.fresh
-      ? {
-          at,
-          fresh: true,
-          lastPull: outcome.lastPull,
-          ...(strip.unstripped.length && { unstripped: strip.unstripped }),
-          ...(nextBaseline && { baseline: nextBaseline }),
-        }
-      : {
-          at,
-          fresh: false,
-          pulled: outcome.pulled,
-          created: outcome.created,
-          updated: outcome.updated,
-          stripped: strip.stripped,
-          ...(strip.unstripped.length && { unstripped: strip.unstripped }),
-          ...(nextBaseline && { baseline: nextBaseline }),
-          ...(listErr && { error: redact(`label list after the pull: ${listErr}`, secrets) }),
-        }
+    state[rig.name] = {
+      at,
+      unrouted,
+      pulled: outcome.pulled,
+      created: outcome.created,
+      updated: outcome.updated,
+      stripped: strip.stripped,
+      ...(strip.unstripped.length && { unstripped: strip.unstripped }),
+      ...(nextBaseline && { baseline: nextBaseline }),
+      ...(listErr && { error: redact(`label list after the pull: ${listErr}`, secrets) }),
+    }
   } catch (err) {
     state[rig.name] = {
       at,
-      fresh: false,
       error: clip(redact((err as Error).message, secrets), 200),
       ...(retry.length && { unstripped: retry }),
       ...(baseline && { baseline }), // nothing resolved this attempt: carry the open baseline forward
@@ -2839,7 +2855,7 @@ function linearRecoverOne(rig: Rig, state: Record<string, LinearSyncState>) {
  */
 async function linearPass(names: string[] = [], force = false) {
   if (halted()) return []
-  const chosen = rigs().filter(r => r.linear?.length && (!names.length || names.includes(r.name)))
+  const chosen = rigs().filter(r => r.linear?.team?.length && (!names.length || names.includes(r.name)))
   if (!chosen.length) return []
   const state = existsSync(linearSyncFile())
     ? readJson<Record<string, LinearSyncState>>(linearSyncFile())
@@ -2856,9 +2872,7 @@ async function linearPass(names: string[] = [], force = false) {
     lines.push(
       s.error
         ? `${rig.name}: error, ${s.error}${left}`
-        : s.fresh
-          ? `${rig.name}: fresh (last pull ${s.lastPull ?? 'unknown'})${left}`
-          : `${rig.name}: pulled ${s.pulled}, created ${s.created}, updated ${s.updated}, stripped ${s.stripped} factory label(s)${left}`,
+        : `${rig.name}: pulled ${s.pulled ?? 0}, created ${s.created ?? 0}, updated ${s.updated ?? 0}, stripped ${s.stripped ?? 0} factory label(s), unrouted ${s.unrouted ?? 0}${left}`,
     )
   }
   if (lines.length) writeJson(linearSyncFile(), state)
@@ -3040,8 +3054,10 @@ export type Rig = {
   beadsRemote?: { name: string; url: string; user: string }
   /** the factory's params, set for this rig (`--param name=value`) */
   params?: Record<string, string>
-  /** opts this rig into the Linear pull loop (claude-factory-b6c): the Linear team ids it pulls from */
-  linear?: string[]
+  /** opts this rig into the Linear pull loop (claude-factory-b6c).
+   * It names the rig's team(s).
+   * It also names the project and label names that route an issue to it (claude-factory-b6c.18). */
+  linear?: LinearRouting
   /** `tick()` adds this from `linear-sync.json` for an opted-in rig; `rig add` never writes it */
   linearSync?: LinearSyncState
 }
@@ -3049,12 +3065,12 @@ const rigsFile = () => join(HOME, 'rigs.json')
 /** `$FACTORY_HOME/linear-sync.json`'s per-rig state, keyed by rig name, after each Linear pull attempt */
 export type LinearSyncState = {
   at: number
-  fresh: boolean
-  lastPull?: string
   pulled?: number
   created?: number
   updated?: number
   stripped?: number
+  /** issues this rig's team(s) listed that no opted-in rig claimed (`routeLinearIssue`); never pulled */
+  unrouted?: number
   /**
    * ids the strip does not confirm as removed: `bd label remove` failed on them, or the listing call
    * after the pull failed. The next pass retries these ids first.
@@ -3081,7 +3097,7 @@ function linearSyncLine(name: string): string {
   const age = `${Math.round((Date.now() - s.at) / 60_000)}m ago`
   return s.error
     ? ` (error ${age}: ${s.error})`
-    : ` (${s.fresh ? 'fresh' : `pulled ${s.pulled ?? 0}`}, ${age})`
+    : ` (pulled ${s.pulled ?? 0}, unrouted ${s.unrouted ?? 0}, ${age})`
 }
 const linearToldFile = () => join(HOME, 'linear-told.json')
 /**
@@ -3479,6 +3495,8 @@ async function defineRig(
     params,
     egress,
     linear,
+    linearProjects,
+    linearLabels,
   }: {
     max?: string
     sweeps?: string
@@ -3489,6 +3507,8 @@ async function defineRig(
     params?: string[]
     egress?: string[]
     linear?: string
+    linearProjects?: string
+    linearLabels?: string
   },
 ) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
@@ -3556,10 +3576,15 @@ async function defineRig(
   }
   if (linear !== undefined) {
     try {
-      rig.linear = parseLinearTeams(linear)
+      const team = parseLinearTeams(linear)
+      const projects = linearProjects !== undefined ? parseLinearList(linearProjects) : undefined
+      const labels = linearLabels !== undefined ? parseLinearList(linearLabels) : undefined
+      rig.linear = { team, ...(projects && { projects }), ...(labels && { labels }) }
     } catch (err) {
       fail((err as Error).message)
     }
+  } else if (linearProjects !== undefined || linearLabels !== undefined) {
+    fail('--linear-projects and --linear-labels need --linear <team_id[,team_id]> too')
   }
   return rig
 }
@@ -3916,13 +3941,14 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id]] [--goal text...] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
                                      the MCP servers in a Claude-shaped mcpServers file; --egress (repeatable, runner ax) lets the VM reach
                                      those hosts, injecting the agent-vault credential KEY for them; --linear opts the rig into the
-                                     Linear pull loop, for these Linear team ids
+                                     Linear pull loop, for these Linear team ids; --linear-projects and --linear-labels route an issue of
+                                     a matching project or label name to this rig (needs --linear too)
   linear [rig...] [--force]         pulls each opted-in rig's Linear issues into its beads now, instead of waiting for
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
@@ -4209,7 +4235,7 @@ if (import.meta.main && !outboxCmd)
         const names = args.filter(a => a !== '--force')
         for (const name of names) {
           const rig = rigs().find(r => r.name === name) ?? fail(`factory linear: no rig "${name}"`)
-          if (!rig.linear?.length)
+          if (!rig.linear?.team?.length)
             fail(
               `factory linear: rig "${name}" is not opted into the Linear pull loop (no --linear team ids)`,
             )
@@ -4460,13 +4486,15 @@ if (import.meta.main && !outboxCmd)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
-        const [max, sweeps, runner, agent, mcp, linear] = [
+        const [max, sweeps, runner, agent, mcp, linear, linearProjects, linearLabels] = [
           opt('--max'),
           opt('--sweeps'),
           opt('--runner'),
           opt('--agent'),
           opt('--mcp'),
           opt('--linear'),
+          opt('--linear-projects'),
+          opt('--linear-labels'),
         ]
         const params: string[] = []
         while (args.includes('--param')) params.push(opt('--param') ?? '')
@@ -4476,7 +4504,7 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id]] [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
@@ -4488,6 +4516,8 @@ if (import.meta.main && !outboxCmd)
             params,
             egress,
             linear,
+            linearProjects,
+            linearLabels,
           })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
@@ -4527,7 +4557,15 @@ if (import.meta.main && !outboxCmd)
             if (r.agent) console.log(`  agent: ${r.agent}`)
             if (r.mcp) console.log(`  mcp: ${r.mcp}`)
             for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
-            if (r.linear) console.log(`  linear: ${r.linear.join(',')}${linearSyncLine(r.name)}`)
+            if (r.linear) {
+              const extra = [
+                r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
+                r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
+              ].filter(Boolean)
+              console.log(
+                `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
+              )
+            }
           }
         } else fail(`unknown rig command "${sub}": add, rm or list`)
         break
