@@ -79,7 +79,7 @@ The next table shows the options that you need first. `factory --help` lists all
 
 | Option | Meaning |
 | --- | --- |
-| `--max n` | The cap of busy runs for this rig. It sits under `FACTORY_MAX_RUNS` (default 8). |
+| `--max n` | The cap of busy runs for this rig. It sits under `FACTORY_MAX_RUNS` (default 16). |
 | `--goal text...` | Your direction for the rig. While the rig has room, the manager gives it the next work for this goal. |
 | `--sweeps a,b\|none` | The sweeps that the factory keeps running. The default is all sweeps of lifecycle: `monitor`, `maintain` and `improve`. |
 | `--runner herdr\|ax` | Where the workers run. The default is `herdr` panes on this machine. |

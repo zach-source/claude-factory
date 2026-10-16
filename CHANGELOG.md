@@ -6,6 +6,17 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A stuck run no longer counts against `FACTORY_MAX_RUNS`, the town-wide cap.
+  (claude-factory-ytz)
+  - A run goes stuck when it passes `factory retry`'s attempt budget. The run then waits
+    for the owner.
+  - `busyRigs()` (`src/cli.ts`) now returns two sets: `busy` and a new `held` set.
+  - `dispatch`, `rework`, `assertRoom`, `backlog` and `rig list` count `held` only against
+    a rig's own `maxRuns`. They do not count `held` against the town cap.
+  - `room()` takes `held` as a new, optional argument.
+  - `rig list` adds a new line: `town: busy X/MAX, stuck Y`.
+  - The default `FACTORY_MAX_RUNS` moves from 8 to 16. This is the cap the owner already
+    uses.
 - Fixed: a large prior report can kill a worker turn with this error: `ENAMETOOLONG: name too long, posix_spawn claude`. (claude-factory-kcg)
   - Cause: `turn()` in `src/worker.ts` put the whole prompt as the last argv element
     for `claude`, `codex` and `pi`. Linux's `MAX_ARG_STRLEN` caps one argv string at
