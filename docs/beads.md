@@ -174,7 +174,7 @@ The loop checks every bead that now carries the `factory` label for the first ti
 
 The loop also checks for this label after a pull that errors or times out. The pull can label a bead before it fails.
 
-Sometimes the factory cannot confirm that it removed a label. This can happen when `bd label remove` fails, or when the check after it fails. The factory tries that bead first on the next pass, before any bead the new pass finds.
+Sometimes the factory cannot confirm that it removed a label. This can happen when `bd label remove` fails, or when the check after it fails. The factory tries that bead first on the next pass, before any bead the new pass finds. The factory retries that check on every pass, not only every 20 minutes. It does not start a run in that rig until the retry confirms the strip. During this time, a person's own `factory` label on another bead in that rig may also get removed by the retry.
 
 A person's queue, not Linear's label, decides what the factory works on.
 

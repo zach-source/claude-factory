@@ -2757,11 +2757,63 @@ function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
   }
 }
 
+/** true when a rig has an unconfirmed strip: a named `unstripped` id, or an open `baseline` diff */
+const linearRecovering = (state: LinearSyncState | undefined) =>
+  !!(state?.unstripped?.length || state?.baseline)
+
+/**
+ * This function retries a rig's open Linear recovery (claude-factory-b6c.16): `unstripped` ids a prior
+ * strip could not remove, or an open `baseline` diff a prior listing could not resolve. It runs no `bd
+ * linear sync` call: dispatch (below) holds back this rig while recovery stays open, so a new pull would
+ * not help, and it would reset the normal 20-minute pull timer for no reason.
+ *
+ * When `baseline` is set: it lists labeled beads once more (`linearLabeledRetrying`), diffs the list
+ * against `baseline`, and strips each new id this finds, plus each `unstripped` id. A listing failure
+ * keeps `baseline` open for the next pass, the same way `linearSyncOne` does.
+ * When only `unstripped` is set: it retries only those ids, with no listing call.
+ */
+function linearRecoverOne(rig: Rig, state: Record<string, LinearSyncState>) {
+  const prior = state[rig.name]!
+  const retry = prior.unstripped ?? []
+  const baseline = prior.baseline
+  let toStrip = retry
+  let nextBaseline = baseline
+  let listErr: string | undefined
+  if (baseline) {
+    try {
+      const before = new Set(baseline)
+      const newly = linearLabeledRetrying(rig.repo)
+        .filter(x => !before.has(x.id))
+        .map(x => x.id)
+      toStrip = [...new Set([...retry, ...newly])]
+      nextBaseline = undefined
+    } catch (err) {
+      listErr = redact((err as Error).message, [])
+    }
+  }
+  const strip = toStrip.length ? stripFactoryLabel(rig.repo, toStrip) : { stripped: 0, unstripped: [] }
+  state[rig.name] = {
+    ...prior,
+    stripped: (prior.stripped ?? 0) + strip.stripped,
+    ...(strip.unstripped.length ? { unstripped: strip.unstripped } : { unstripped: undefined }),
+    ...(nextBaseline ? { baseline: nextBaseline } : { baseline: undefined }),
+    ...(listErr
+      ? { error: redact(`label list after the pull: ${listErr}`, []) }
+      : nextBaseline || strip.unstripped.length
+        ? {}
+        : { error: undefined }),
+  }
+}
+
 /**
  * pulls each opted-in rig's Linear issues into its beads, at most every 20 minutes a rig
  * (`factory linear <rig> --force` sooner). Pull only, from `beadsPass`, after the claim and track loops
  * and before dispatch: a slow pull there is safe, since every run's heartbeat already ran that pass, and
  * nothing else changes labels between the pull and the strip above (claude-factory-b6c design).
+ *
+ * A rig with an unresolved strip (`linearRecovering`) retries that strip on every call here, not every
+ * 20 minutes. Dispatch (below) blocks that rig until the retry resolves it. So the retry must not wait
+ * on the pull timer (claude-factory-b6c.16).
  */
 function linearPass(names: string[] = [], force = false) {
   if (halted()) return []
@@ -2772,8 +2824,11 @@ function linearPass(names: string[] = [], force = false) {
     : {}
   const lines: string[] = []
   for (const rig of chosen) {
-    if (!linearDue(state[rig.name], force)) continue
-    linearSyncOne(rig, state)
+    const prior = state[rig.name]
+    const due = linearDue(prior, force)
+    if (!due && !linearRecovering(prior)) continue
+    if (due) linearSyncOne(rig, state)
+    else linearRecoverOne(rig, state)
     const s = state[rig.name]!
     const left = s.unstripped?.length ? `, ${s.unstripped.length} still labeled, retried next pass` : ''
     lines.push(
@@ -3074,6 +3129,28 @@ const syncFile = () => join(HOME, 'sync.json')
 /** a rig with room that dispatch has nothing to start for and no goal to steer the manager by sits unnoticed unless the board says so */
 export const idle = (rig: Pick<Rig, 'goal'>, ready: number) => !rig.goal && ready === 0
 
+/**
+ * This reads what dispatch must hold back, from `linear-sync.json` (claude-factory-b6c.16).
+ * A person, not a Linear label, must decide what the factory works on (see `linearSyncOne`). Until a
+ * pull's label strip confirms itself, dispatch must fail closed, not start a run on the unconfirmed bead.
+ *
+ * `ids` names each bead an `unstripped` retry still owes a check. `rigs` names each rig with an open
+ * `baseline` diff: that rig's other ready beads are not Linear beads, but this function cannot tell
+ * which ones are, so it holds back the whole rig until the next listing resolves the diff.
+ */
+function linearExcluded(): { ids: Set<string>; rigs: Set<string> } {
+  const state = existsSync(linearSyncFile())
+    ? readJson<Record<string, LinearSyncState>>(linearSyncFile())
+    : {}
+  const ids = new Set<string>()
+  const rigs = new Set<string>()
+  for (const [name, s] of Object.entries(state)) {
+    for (const id of s.unstripped ?? []) ids.add(id)
+    if (s.baseline) rigs.add(name)
+  }
+  return { ids, rigs }
+}
+
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
   if (halted() || !rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS))
@@ -3081,6 +3158,7 @@ async function dispatch() {
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const busy = await busyRigs()
+  const { ids: linearIds, rigs: linearRigs } = linearExcluded()
   // live runs only: a finished run's deferred bead, undeferred by a person, is new work again
   const linked = new Set(
     runIds().flatMap(id => {
@@ -3110,9 +3188,18 @@ async function dispatch() {
       const syncError = synced[rig.repo]?.error
       if (syncError) errors.push({ id: `rig:${rig.name}`, error: syncError }) // dispatch goes on: local beads are still true
       if (room(rig, busy) <= 0) continue // full: no more bd calls
+      if (linearRigs.has(rig.name)) {
+        // an open Linear baseline: a pull may have labeled a bead here that the listing never confirmed
+        // (claude-factory-b6c.16); hold back every ready bead until the retry resolves it
+        errors.push({
+          id: `rig:${rig.name}`,
+          error: 'Linear label strip unresolved: dispatch held back until the retry confirms it',
+        })
+        continue
+      }
       // children are looked up only for the candidates, until the rig is full
       const candidates = dispatchable(b.ready(), linked, Infinity).filter(
-        x => !isOwned(x) && !openChildren(b, x.id).length,
+        x => !isOwned(x) && !openChildren(b, x.id).length && !linearIds.has(x.id),
       )
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })

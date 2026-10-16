@@ -201,6 +201,7 @@ const mode = join(cdir, 'mode') // fresh | pulled | error, read by the fake bd's
 const listTurn = join(cdir, 'list-turn') // counts `bd list` calls, so before/after differ
 const failLabel = join(cdir, 'fail-label') // an id `bd label remove` exits 1 for, when this file names it
 const listFailTurns = join(cdir, 'list-fail-turns') // comma-joined `bd list` turn numbers that exit 1
+const readyFlag = join(cdir, 'ready-has-acme-new') // makes `bd ready --label factory` list acme-new too
 
 const TEAM = '04114abf-ddb7-4a6f-bb47-814fd2c44373'
 const repoA = join(cdir, 'repo-a')
@@ -223,6 +224,9 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
  * - `list`, turn 2 on: adds `acme-new`. The strip step then has one new id to act on.
  * - `list`, a turn named in $listFailTurns (comma-joined): exits 1, names the turn in stderr.
  * - `label remove`: exits 1 for the id named in $failLabel, exits 0 for every other call.
+ * - `ready`: `[{"id":"acme-new"}]` when $readyFlag exists (acme-new really still carries the label,
+ *   as a pull would leave it), else `[]`. Used only by dispatch() tests (claude-factory-b6c.16).
+ * - `children`: `[]`, always (no bead here has one).
  * Every call logs one line: its argv, its cwd, and the three LINEAR_* env vars it saw (empty when unset).
  */
 function fakeBd() {
@@ -252,6 +256,10 @@ function fakeBd() {
     `    f=$(cat ${failLabel} 2>/dev/null || echo "")`,
     '    [ "$2" = "remove" ] && [ -n "$f" ] && [ "$3" = "$f" ] && exit 1',
     '    exit 0;;',
+    '  ready)',
+    `    if [ -f ${readyFlag} ]; then printf '%s' '[{"id":"acme-new"}]'; else printf '%s' '[]'; fi;;`,
+    '  children)',
+    '    printf \'%s\' \'[]\';;',
     '  *) exit 0;;',
     'esac',
   ].join('\n')
@@ -534,4 +542,56 @@ test('factory linear fails, naming why, when the factory is halted (claude-facto
   expect(out.code).not.toBe(0)
   expect(out.err).toContain('stopping')
   expect(callLines()).toHaveLength(0)
+})
+
+// claude-factory-b6c.16: dispatch must fail closed on a bead a Linear pull labeled `factory`, until the
+// strip confirms it removed that label. `ready` is a real bd command dispatch calls; the fake bd above
+// lists `acme-new` there too, while $readyFlag exists, so these tests exercise the real dispatch() path
+// through `factory beads`, not a stub of it.
+
+test('dispatch does not start a run while a post-pull listing leaves the baseline open (claude-factory-b6c.16)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  linearJson({ apiKey: 'printf test-key-123' })
+  writeFileSync(readyFlag, '1') // acme-new is really labeled `factory`, as the pull left it
+  // turn 1 is the pre-pull before-list; turns 2 and 3 are the post-pull listing and its one retry: both
+  // fail, so the pass cannot learn that acme-new is newly labeled and must not treat it as confirmed safe
+  writeFileSync(listFailTurns, '2,3')
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.baseline).toEqual(['acme-old'])
+  // pre-fix code starts a run on acme-new here: dispatch claims the bead before the strip is confirmed
+  expect(callLines().some(l => argvOf(l).startsWith('update acme-new'))).toBe(false)
+
+  // the next pass: the listing now succeeds. The retry must resolve this with no new `linear sync` call
+  // (`linearRecoverOne`, not `linearSyncOne`): the pull already ran, only the strip was unconfirmed.
+  rmSync(listFailTurns, { force: true })
+  factory(['beads'])
+  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
+  const removes = callLines().filter(l => argvOf(l).startsWith('label remove'))
+  expect(removes).toHaveLength(1)
+  expect(argvOf(removes[0]!)).toBe('label remove acme-new factory')
+  const state2 = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state2.a.baseline).toBeUndefined()
+})
+
+test('dispatch does not start a run on a bead a label remove failed on (claude-factory-b6c.16)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  linearJson({ apiKey: 'printf test-key-123' })
+  writeFileSync(readyFlag, '1')
+  writeFileSync(failLabel, 'acme-new')
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.unstripped).toEqual(['acme-new'])
+  expect(callLines().some(l => argvOf(l).startsWith('update acme-new'))).toBe(false)
+
+  // the next pass: the label remove now succeeds, with no new `linear sync` call, and the retry resolves it
+  rmSync(failLabel, { force: true })
+  factory(['beads'])
+  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
+  const removes = callLines().filter(l => argvOf(l).startsWith('label remove acme-new'))
+  expect(removes.length).toBeGreaterThanOrEqual(2) // the failed attempt, then the retry
+  const state2 = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state2.a.unstripped).toBeUndefined()
 })
