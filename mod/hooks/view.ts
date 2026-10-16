@@ -471,14 +471,18 @@ const PM_DEBOUNCE_MS = 5 * 60_000
 /**
  * Pure cadence for the pm subagent (claude-factory-dun.5). This is a hidden `factory:pm` subagent.
  * It ranks each rig's next work on its own timer, never every patrol. register.tsx's `pmNow` calls
- * this function each tick. It passes the plan's own freshness (`hasPlan`, from a fresh
- * `readPlan($)` call, never from `pmAt`). A mock clock in every mod test starts at 0; this is the
- * same trap `patrolStartedAt`'s own comment in register.tsx already documents. It also passes
- * whether a live run just went not-live (`liveDropped`).
+ * this function each tick. It passes the plan's own `at` (`planAt`, from a fresh `readPlan($)`
+ * call's own field, `undefined` with no plan yet), never only `pmAt`: claude-factory-dun.15, a hot
+ * reload or a new session resets `pmAt` to 0 in this session, but the plan on disk still carries
+ * its own age. `planAt` folds that in, so a plan 5 minutes old at the last reload does not read as
+ * stale just because this session never ran the pm yet. A mock clock in every mod test starts at
+ * 0; this is the same trap `patrolStartedAt`'s own comment in register.tsx already documents. It
+ * also passes whether a live run just went not-live (`liveDropped`).
  *
- * `due` is true in three cases: there is no plan yet; `now - pmAt` is at least `PM_INTERVAL_MS`
- * (60 min old, so stale); or a run dropped (`liveDropped`), or an earlier drop is still pending
- * (`wanted`), and `now - pmAt` is at least `PM_DEBOUNCE_MS` (5 min since the last pm turn).
+ * `due` is true in three cases: there is no plan yet; the later of `pmAt` and a past `planAt` is
+ * at least `PM_INTERVAL_MS` old (60 min, so stale); or a run dropped (`liveDropped`), or an
+ * earlier drop is still pending (`wanted`), and that same time is at least `PM_DEBOUNCE_MS` old (5
+ * min since the last pm turn or the plan's own write, whichever is later).
  *
  * The returned `wanted` carries a drop forward through the debounce window. It is `false` once
  * `due` is true, since the caller is about to act on it. Otherwise the drop stays pending
@@ -487,12 +491,13 @@ const PM_DEBOUNCE_MS = 5 * 60_000
 export function pmDue(
   now: number,
   pmAt: number,
-  hasPlan: boolean,
+  planAt: number | undefined,
   liveDropped: boolean,
   wanted: boolean,
 ): { due: boolean; wanted: boolean } {
-  const stale = !hasPlan || now - pmAt >= PM_INTERVAL_MS
-  const afterDebounce = (liveDropped || wanted) && now - pmAt >= PM_DEBOUNCE_MS
+  const at = Math.max(pmAt, planAt !== undefined && planAt <= now ? planAt : 0)
+  const stale = planAt === undefined || now - at >= PM_INTERVAL_MS
+  const afterDebounce = (liveDropped || wanted) && now - at >= PM_DEBOUNCE_MS
   const due = stale || afterDebounce
   return { due, wanted: due ? false : liveDropped || wanted }
 }

@@ -382,3 +382,34 @@ test(
     expect(spawns).toHaveLength(0)
   },
 )
+
+test(
+  'session.start registers the pm with no tool at all, matching its own prompt (claude-factory-dun.10)',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    // nothing beneath the plugin under test answers session.start by default: this test's own
+    // hook stands in for the engine's own, the same as a real session reaching this plugin's
+    on('session.start', ($, e) => ({ cwd: e.cwd }) as never)
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+    on('command.register', () => ({ value: { command: 'factory' } }) as never)
+    const registered: { name: string; tools?: readonly string[] }[] = []
+    on('agent.register', ($, e) => {
+      registered.push(e as unknown as { name: string; tools?: readonly string[] })
+      return { value: { agent: `factory:${(e as unknown as { name: string }).name}` } } as never
+    })
+
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false } as never)
+
+    const pm = registered.find(r => r.name === 'pm')
+    expect(pm).toBeDefined()
+    // an empty array, not left out: a left-out `tools` field gives the pm every tool its parent
+    // session has, which an untrusted bead title could use to leak a local file into a proposal
+    expect(pm!.tools).toEqual([])
+    // the patrol keeps its own tools: this guards the pm alone, not every agent
+    const patrol = registered.find(r => r.name === 'patrol')
+    expect(patrol!.tools).toEqual(['Bash', 'Read', 'Grep', 'Glob'])
+  },
+)

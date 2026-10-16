@@ -190,8 +190,9 @@ minor release may change the factory format, the CLI or the run state.
   so the backlog patrol's rule 5 (start something when a rig has room) picks the
   most important work first instead of plain bd order. It wakes once an hour, and
   again soon after a run finishes (`pmDue`, `mod/hooks/view.ts`), spawned the same
-  way as the patrol (`$.agent.register`/`spawn`, `factory:pm`, tools Read/Grep/Glob
-  only, no Bash: it can read and rank, never run `bd` or edit a file itself).
+  way as the patrol (`$.agent.register`/`spawn`, `factory:pm`, no tool at all: it
+  can read and rank only the facts its own prompt carries, never run `bd`, read a
+  file or edit one itself).
   `factory plan facts|set|show` (`src/cli.ts`) gathers each rig's ready beads, goal,
   open epics and recent closes; validates the pm's answer; and writes
   `<home>/plan.json` (`writeJson`, tmp+rename) plus one line per run to

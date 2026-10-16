@@ -134,7 +134,7 @@ You get what is new and the board; work through it in this order, acting only th
 2. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), mail that station to report blocked with Question:/Options: as above, naming the pull request if there is one: deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them. \`${cli} waiting\` lists everything that waits on the person, with how to answer each.
 3. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
-4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig. When the prompt carries a Plan, give each rig with room its next work from that list, in order, skipping a bead already in a run or refused; with no Plan, choose as below.
+4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig. When the prompt carries a Plan, give each rig with room its next work from that list, in order, skipping a bead already in a run or refused; with no Plan, choose as above.
 5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no way to install or reject one yourself, so put it in your report's first line ("N skill proposal(s) need review") instead of your usual line there: this toasts straight to the person, who can ask the manager to work it.
 Never act on a run a board row marks held: the person is on it, leave it for the next patrol.
 Never run \`${cli} decide\`, \`${cli} decisions answer\` or \`${cli} start ... --owned\`: each is denied to you outright. Gates and owner-only beads are the person's alone; report them, never decide them.
@@ -244,6 +244,9 @@ const rt = {
   liveIds: new Set<string>(),
   /** a denied pm spawn's next attempt; 0 means try at once */
   pmRetryAt: 0,
+  /** true while `pmNow` awaits `factory plan facts`, before `isPlanning` is set (claude-factory-dun.12):
+   * `tick()` calls `pmNow` with `void`, so a later tick must not start a second facts gather */
+  isGatheringFacts: false,
 }
 
 async function factory($: EngineInterface, args: string[]) {
@@ -308,8 +311,10 @@ async function tick($: EngineInterface) {
         await patrolNow($, res.halt ? [] : res.runs, res.halt ? [] : (res.rigs ?? []))
     }
     // the pm runs on its own cadence, independent of autopilot/the patrol: a person driving the
-    // main chat still wants a fresh plan. Halted, nothing runs, not even the pm.
-    if (!res.halt) await pmNow($, res.runs)
+    // main chat still wants a fresh plan. Halted, nothing runs, not even the pm. Not awaited
+    // (claude-factory-dun.12), the same reason refresh() above is not: `factory plan facts` must
+    // not hold up the next tick's board, mail and patrol.
+    if (!res.halt) void pmNow($, res.runs)
   } catch (err) {
     await tickFailed($, String(err))
   } finally {
@@ -531,6 +536,12 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
  * A denied spawn, or a spawn that throws, leaves `rt.pmAt` untouched, so the next due check tries
  * again rather than waiting a full PM_INTERVAL_MS. Unlike the patrol, a failed pm spawn has no
  * `$.prompt.submit` fallback: the main chat has no use for raw plan-facts JSON.
+ *
+ * `tick()` calls this with `void`, not `await` (claude-factory-dun.12): `factory plan facts` can
+ * run several `bd` calls and must never hold up the board, mail or patrol for the next 5s tick.
+ * `rt.isGatheringFacts` guards the gap this opens: without it, a tick that starts while an
+ * earlier `plan facts` call is still running (before `rt.isPlanning` is set, just below) could
+ * start a second one.
  */
 async function pmNow($: EngineInterface, runs: FactoryRun[]) {
   if (!rt.isPmEnabled) return
@@ -539,7 +550,7 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
     rt.isPlanning = false
     $.ui.status('factory: a pm turn ran past 15 min with no answer; the watchdog freed the next one')
   }
-  if (rt.isPlanning) return
+  if (rt.isPlanning || rt.isGatheringFacts) return
   if (now < rt.pmRetryAt) return
   if (!(await isPaneSession($))) return
   // a run dropping live (done or aborted) since the last check wakes the pm again, after a
@@ -548,10 +559,16 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
   const liveDropped = [...rt.liveIds].some(id => !liveIds.has(id))
   rt.liveIds = liveIds
   const plan = await readPlan($)
-  const { due, wanted } = pmDue(now, rt.pmAt, plan !== undefined, liveDropped, rt.pmWanted)
+  // claude-factory-dun.15: a hot reload or a new session resets rt.pmAt to 0, but the plan on
+  // disk still carries its own `at`. pmDue folds that in, so a fresh plan right after a reload
+  // does not look stale just because this session never ran the pm yet.
+  const { due, wanted } = pmDue(now, rt.pmAt, plan?.at, liveDropped, rt.pmWanted)
   rt.pmWanted = wanted
   if (!due) return
-  const { isOk, out: facts } = await factory($, ['plan', 'facts'])
+  rt.isGatheringFacts = true
+  const { isOk, out: facts } = await factory($, ['plan', 'facts']).finally(() => {
+    rt.isGatheringFacts = false
+  })
   if (!isOk) {
     rt.pmRetryAt = now + PM_RETRY_MS
     $.ui.status(`factory: plan facts failed: ${line(facts, 160)}`)
@@ -573,8 +590,11 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
     if (res.agentId) rt.pmIds = [...rt.pmIds, res.agentId].slice(-20)
   } catch (err) {
     // no $.prompt.submit fallback here (unlike the patrol's own catch): raw facts JSON is nothing
-    // the main chat can act on. Leaving rt.pmAt untouched means the next due check tries again.
+    // the main chat can act on. rt.pmAt stays untouched, so the plan still reads as stale; but a
+    // throw (claude-factory-dun.11, not only `res.deny` above) must still set pmRetryAt, or every
+    // 5s tick re-runs `factory plan facts` and re-throws until the next hour mark.
     rt.isPlanning = false
+    rt.pmRetryAt = now + PM_RETRY_MS
     $.ui.status(`factory: the pm spawn failed (${line(String(err), 100)}); it will try again when next due.`)
   }
 }
@@ -911,7 +931,12 @@ export const register: Register = (on, options) => {
         description:
           "The factory manager's hidden pm: ranks each rig's next work toward its goal, on its own hourly timer.",
         prompt: PM(rt.cli),
-        tools: ['Read', 'Grep', 'Glob'], // no Bash: the pm reads and ranks, the CLI writes
+        // No tool at all (claude-factory-dun.10). A Linear sync can set a bead's title to text we
+        // do not trust. With Read, that text can make the pm copy a local file into a proposal's
+        // `why`. `plan set` then files that text as a bead. `bd sync` can push it to the Dolt
+        // remote. An empty array tells the engine to allow no tool call. Leaving `tools` out
+        // instead gives the pm every tool its parent session has.
+        tools: [],
         model: 'sonnet',
         maxTurns: 15,
         omitClaudeMd: true,
