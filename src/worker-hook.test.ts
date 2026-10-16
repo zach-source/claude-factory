@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
-import { denyReason, REASON } from './worker-hook'
+import { denyReason, LIVE_REASON, REASON } from './worker-hook'
 
 const DENY = [
   'rm -rf foo',
@@ -95,10 +95,58 @@ test.each(ALLOW_INSIDE_ROOT)('denyReason allows an rm inside the root %j', cmd =
   expect(denyReason(cmd, ROOT)).toBeUndefined()
 })
 
+// claude-factory-25z.1: a rig's personOnlyContexts (for example ['acme']) denies a live kubectl/ko/helm
+// change there, and denies one with no --context at all (fail closed: current-context is unknown).
+const ACME = ['acme']
+
+const DENY_LIVE = [
+  'kubectl --context acme apply -f x.yaml',
+  'kubectl --context=acme apply -f x.yaml',
+  'kubectl -n ax --context acme rollout restart deploy/w',
+  'kubectl --context acme scale deploy/w --replicas=3',
+  'kubectl --context acme patch deploy/w -p x',
+  'kubectl --context acme delete -f x.yaml',
+  'ko apply -f config/',
+  'kubectl apply -f x', // no --context: fail closed
+  'sh -c "kubectl --context acme apply -f x"',
+  'env KUBECONFIG=k timeout 30 kubectl --context acme apply -f -',
+  'ko resolve -f c | kubectl --context acme apply -f -',
+  'helm --kube-context acme upgrade r c',
+]
+
+const ALLOW_LIVE = [
+  'kubectl --context acme get pods',
+  'kubectl --context acme rollout status deploy/w',
+  'kubectl --context acme diff -f x',
+  'kubectl --context kind-kind apply -f x', // an explicit, non-listed context
+  'kubectl --context acme apply --dry-run=server -f x',
+]
+
+test.each(DENY_LIVE)('denyReason denies a live-apply command %j with personOnly acme', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+})
+
+test.each(ALLOW_LIVE)('denyReason allows %j with personOnly acme', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
+})
+
+test.each([...DENY_LIVE, ...ALLOW_LIVE])(
+  'denyReason allows %j (fails open to the normal prompt) when personOnly is empty or absent',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+    expect(denyReason(cmd, undefined, [])).toBeUndefined()
+  },
+)
+
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
-async function run(stdin: string, env?: Record<string, string | undefined>) {
-  const p = Bun.spawn(['bun', HOOK], { stdin: new Response(stdin), stdout: 'pipe', stderr: 'pipe', env })
+async function run(stdin: string, env?: Record<string, string | undefined>, argv: string[] = []) {
+  const p = Bun.spawn(['bun', HOOK, ...argv], {
+    stdin: new Response(stdin),
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env,
+  })
   const out = await new Response(p.stdout).text()
   const code = await p.exited
   return { out, code }
@@ -115,6 +163,24 @@ test('run as `bun src/worker-hook.ts`, a deny command on stdin prints one PreToo
       permissionDecisionReason: REASON,
     },
   })
+}, 10_000)
+
+test('run as `bun src/worker-hook.ts --person-only-contexts acme`, a live-apply command prints one deny object; without the argv it prints nothing (claude-factory-25z.1)', async () => {
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    tool_input: { command: 'kubectl --context acme apply -f x' },
+  })
+  const withArgv = await run(input, undefined, ['--person-only-contexts', 'acme'])
+  expect(withArgv.code).toBe(0)
+  expect(JSON.parse(withArgv.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: LIVE_REASON,
+    },
+  })
+  const withoutArgv = await run(input)
+  expect(withoutArgv).toEqual({ out: '', code: 0 })
 }, 10_000)
 
 test('run as `bun src/worker-hook.ts`, an allow command, a non-Bash tool or bad JSON on stdin prints nothing and exits 0', async () => {

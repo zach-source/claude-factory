@@ -11,6 +11,12 @@
  * A later worker (lifecycle-mvaf3xiato) stopped the same way on `rm -i "$X"/*`.
  * The -r/-rf check alone did not catch a variable or glob target with no recursive flag.
  *
+ * It also denies a kubectl, ko or helm command against a rig's person-only kube context (claude-factory-25z).
+ * Two deploy stations in the ax rig ran `kubectl --context acme apply`. The rig's goal reserves that step
+ * for a person. An old memory note told the stations to run it anyway. A prose rule alone did not stop
+ * the second station.
+ * This hook receives the rig's list in its own argv: `--person-only-contexts a,b`.
+ *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
  * claude-factory-9wu rejected another design: a hook that approves `rm -rf`, which is a safety regression.
@@ -25,6 +31,13 @@ export const REASON =
   'rm a $variable path, a glob, or a path outside the worktree. ' +
   'Leave .scratch as is, use a new subfolder (for example .scratch/<name>-2): git ignores .scratch/. ' +
   'Use absolute paths or git -C <dir> in place of cd. Do not retry this command.'
+
+// claude-factory-25z
+export const LIVE_REASON =
+  'The factory denies this command: in this rig only a person changes the live kube contexts. ' +
+  'A kubectl, ko or helm command that mutates state there is refused, including one that names no ' +
+  '--context (fail closed: the current context is unknown here). Do not retry this command. ' +
+  'Report blocked: "parked, waiting on: <the exact command>".'
 
 // wrapper commands whose own name we skip to find the command they run
 const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
@@ -191,11 +204,119 @@ function realCommand(words: string[]): string[] {
   }
 }
 
+// claude-factory-25z: global flags that take a separate value word, so the verb search can step past
+// them even when they come before the verb (`kubectl -n ax --context acme rollout restart ...`)
+const KUBECTL_VALUE_FLAGS = new Set([
+  '--context',
+  '-n',
+  '--namespace',
+  '--kubeconfig',
+  '--cluster',
+  '--user',
+  '--token',
+  '--server',
+  '-o',
+  '--output',
+  '--request-timeout',
+  '--as',
+  '--as-group',
+])
+const KO_VALUE_FLAGS = new Set(['--context'])
+const HELM_VALUE_FLAGS = new Set(['--kube-context', '-n', '--namespace', '--kubeconfig'])
+
+const KUBECTL_MUTATING_VERBS = new Set([
+  'apply',
+  'create',
+  'replace',
+  'patch',
+  'delete',
+  'edit',
+  'scale',
+  'autoscale',
+  'set',
+  'label',
+  'annotate',
+  'taint',
+  'drain',
+  'cordon',
+  'uncordon',
+  'expose',
+  'run',
+  'cp',
+  'debug',
+])
+const KUBECTL_ROLLOUT_MUTATING = new Set(['restart', 'undo', 'pause', 'resume'])
+const KO_MUTATING_VERBS = new Set(['apply', 'create', 'delete', 'run'])
+const HELM_MUTATING_VERBS = new Set(['install', 'upgrade', 'uninstall', 'delete', 'rollback'])
+
+/** the value of the first flag in `names` found in `words`, in its `--flag value` or `--flag=value` form */
+function flagValue(words: string[], names: Set<string>): string | undefined {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (names.has(w)) return words[i + 1]
+    for (const n of names) if (w.startsWith(`${n}=`)) return w.slice(n.length + 1)
+  }
+  return undefined
+}
+
+/** the index of the first non-flag word in `words`. It steps past a global flag. When the flag is in `valueFlags` and has no `=`, it also steps past the flag's own value word. */
+function firstVerbIndex(words: string[], valueFlags: Set<string>): number {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w.startsWith('-')) {
+      if (!w.includes('=') && valueFlags.has(w)) i++
+      continue
+    }
+    return i
+  }
+  return -1
+}
+
+/**
+ * true when `cmd` (a kubectl, ko or helm invocation) mutates state at a context in `personOnly`, or at
+ * no named context at all (fail closed: the current context is unknown to this hook).
+ */
+function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
+  const b = baseWord(cmd[0]!)
+  const tail = cmd.slice(1)
+  if (b === 'kubectl') {
+    const vi = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS)
+    if (vi < 0) return false
+    const verb = tail[vi]!
+    const sub = tail[vi + 1]
+    if (verb === 'apply') {
+      const dryRun = flagValue(cmd, new Set(['--dry-run']))
+      if (dryRun === 'client' || dryRun === 'server') return false
+    }
+    const mutating =
+      verb === 'rollout' ? !!sub && KUBECTL_ROLLOUT_MUTATING.has(sub) : KUBECTL_MUTATING_VERBS.has(verb)
+    if (!mutating) return false
+    const ctx = flagValue(cmd, new Set(['--context']))
+    return ctx === undefined || personOnly.includes(ctx)
+  }
+  if (b === 'ko') {
+    const vi = firstVerbIndex(tail, KO_VALUE_FLAGS)
+    if (vi < 0 || !KO_MUTATING_VERBS.has(tail[vi]!)) return false
+    const ctx = flagValue(cmd, new Set(['--context']))
+    return ctx === undefined || personOnly.includes(ctx)
+  }
+  if (b === 'helm') {
+    const vi = firstVerbIndex(tail, HELM_VALUE_FLAGS)
+    if (vi < 0 || !HELM_MUTATING_VERBS.has(tail[vi]!)) return false
+    const ctx = flagValue(cmd, new Set(['--kube-context']))
+    return ctx === undefined || personOnly.includes(ctx)
+  }
+  return false
+}
+
 /**
  * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
- * `root` is the worktree root; an rm operand outside it is risky too (see riskyTarget).
+ * `root` is the worktree root. An rm operand outside it is risky too (see riskyTarget).
+ * `personOnly` is the rig's list of kube contexts a person alone may change (claude-factory-25z).
+ * A non-empty list also denies a kubectl, ko or helm mutation there.
+ * It also denies one that names no --context at all.
  */
-export function denyReason(command: string, root?: string): string | undefined {
+export function denyReason(command: string, root?: string, personOnly?: string[]): string | undefined {
   if (!command) return undefined
   let hasRm = false
   let hasCd = false
@@ -203,6 +324,7 @@ export function denyReason(command: string, root?: string): string | undefined {
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
+    if (personOnly?.length && liveApplyDenied(cmd, personOnly)) return LIVE_REASON
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
@@ -211,7 +333,7 @@ export function denyReason(command: string, root?: string): string | undefined {
     } else if (b === 'sh' || b === 'bash' || b === 'zsh' || b === 'dash') {
       const ci = cmd.indexOf('-c')
       if (ci >= 0 && cmd[ci + 1] !== undefined) {
-        const r = denyReason(cmd[ci + 1]!, root)
+        const r = denyReason(cmd[ci + 1]!, root, personOnly)
         if (r) return r
       }
     } else if (b === 'find') {
@@ -238,7 +360,10 @@ async function main() {
   // Claude Code sets CLAUDE_PROJECT_DIR to the worktree root for a hook; input.cwd can be a
   // subdir of it after a `cd`, so it is only the second choice for root.
   const root = process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd()
-  const reason = denyReason(i.tool_input?.command ?? '', root)
+  // claude-factory-25z: the rig's person-only kube contexts, carried on this hook's own argv
+  const argi = process.argv.indexOf('--person-only-contexts')
+  const personOnly = argi >= 0 ? process.argv[argi + 1]?.split(',').filter(Boolean) : undefined
+  const reason = denyReason(i.tool_input?.command ?? '', root, personOnly)
   if (!reason) return
   console.log(
     JSON.stringify({
