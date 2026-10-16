@@ -211,6 +211,27 @@ export type FactoryPatrolLogEntry = {
   report: string
 }
 
+/** one ranked bead in a rig's plan (mirrors `PlanItem`, src/plan.ts). `why` is the pm's one-line
+ * reason for the bead's place in the order. `why` is 120 characters or fewer. */
+export type FactoryPlanItem = { id: string; title: string; priority: number; why: string }
+/** a starvation or plan-gap finding in the pm's plan (mirrors `Finding`, src/plan.ts) */
+export type FactoryPlanFinding = {
+  kind: 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan'
+  rig: string
+  bead?: string
+  key: string
+  text: string
+}
+/** a change only the person may make. The pm proposes it; nothing applies it (mirrors
+ * `Proposal`, src/plan.ts). */
+export type FactoryPlanProposal = { rig: string; bead?: string; change: string; why: string }
+/** one rig's part of `<home>/plan.json` (mirrors `RigPlan`, src/plan.ts) */
+export type FactoryRigPlan = { items: FactoryPlanItem[]; findings: FactoryPlanFinding[] }
+/** `<home>/plan.json`, the pm subagent's last ranking (mirrors `Plan`, src/plan.ts). `at` is the
+ * time the pm wrote it. A plan 2 or more hours old is stale: the patrol and `dispatch()` then use
+ * today's order instead. */
+export type FactoryPlan = { at: number; rigs: Record<string, FactoryRigPlan>; proposals: FactoryPlanProposal[] }
+
 declare module 'claude-code' {
   interface PluginState {
     factory: {

@@ -13,6 +13,7 @@ import type {
   FactoryDraft,
   FactoryMail,
   FactoryPatrolLogEntry,
+  FactoryPlan,
   FactoryRig,
   FactoryRun,
   FactoryView,
@@ -120,7 +121,7 @@ You get what is new and the board; work through it in this order, acting only th
 2. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), mail that station to report blocked with Question:/Options: as above, naming the pull request if there is one: deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them. \`${cli} waiting\` lists everything that waits on the person, with how to answer each.
 3. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
-4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
+4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig. When the prompt carries a Plan, give each rig with room its next work from that list, in order, skipping a bead already in a run or refused; with no Plan, choose as below.
 5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no way to install or reject one yourself, so put it in your report's first line ("N skill proposal(s) need review") instead of your usual line there: this toasts straight to the person, who can ask the manager to work it.
 Never act on a run a board row marks held: the person is on it, leave it for the next patrol.
 Never run \`${cli} decide\`, \`${cli} decisions answer\` or \`${cli} start ... --owned\`: each is denied to you outright. Gates and owner-only beads are the person's alone; report them, never decide them.
@@ -309,6 +310,20 @@ async function appendPatrolLog($: EngineInterface, entry: FactoryPatrolLogEntry)
   await $.fs.write(`${rt.home}/patrol-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
 }
 
+/** `<home>/plan.json`, the pm's last ranking; `undefined` with no home yet, no file, or invalid
+ * JSON. `patrol()` (view.ts) itself checks freshness, so a stale or corrupt plan here still
+ * reaches it, the same as a missing one, and the prompt falls back the same way for both. */
+async function readPlan($: EngineInterface): Promise<FactoryPlan | undefined> {
+  if (!rt.home) return undefined
+  const text = await $.fs.read(`${rt.home}/plan.json`).catch(() => '')
+  if (!text) return undefined
+  try {
+    return JSON.parse(text) as FactoryPlan
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Patrol, one at a time, as a hidden `factory:patrol` subagent. This adds no turn to the main chat.
  * A watchdog clears a patrol stuck past PATROL_WATCHDOG_MS (a dead model turn, a wedged tool). So
@@ -340,7 +355,8 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   const last = now - rt.sigAt < 3_600_000 ? rt.sig : undefined
   // a cold subagent has no memory of earlier patrols: these let it see what they already did
   const log = (await readPatrolLog($)).slice(-PATROL_LOG_RECENT).flatMap(e => e.actions)
-  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last, hold, log)
+  const plan = await readPlan($)
+  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last, hold, log, plan, now)
   // a due heartbeat whose board repeats the last one sent wakes nobody: patrolAt stays put, so a
   // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark
   if (!due) return
