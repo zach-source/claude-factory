@@ -3548,7 +3548,7 @@ export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1
  * one rig's trouble never stops the others from reaching the pm. */
 async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
   const now = Date.now()
-  const busyList = await busyRigs()
+  const { busy: busyList } = await busyRigs()
   const busyCount = new Map<string, number>()
   for (const name of busyList) if (name) busyCount.set(name, (busyCount.get(name) ?? 0) + 1)
   const linked = liveBeadIdSet()
