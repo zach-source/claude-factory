@@ -269,6 +269,10 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   const repo = join(dir, 'repo')
   mkdirSync(own, { recursive: true })
   mkdirSync(repo, { recursive: true })
+  // Save env here, before FACTORY_BRIEF is set below. Restore it in finally. This stops FACTORY_OUTBOX,
+  // FACTORY_FROM and FACTORY_BRIEF from leaking into later tests' subprocess calls, which inherit
+  // process.env (claude-factory-5h9.4, claude-factory-kcg.6).
+  const saved = { ...process.env }
   process.env.FACTORY_BRIEF = 'the brief'
   // a fake claude: records its argv and its stdin (the prompt, now passed there instead), prints a
   // stream-json init event
@@ -283,9 +287,6 @@ echo '{"type":"system","subtype":"init","session_id":"sess-1"}'
 `,
   )
   chmodSync(claude, 0o755)
-  // saved/restored (below): FACTORY_OUTBOX and FACTORY_FROM must not leak into a later test file's own
-  // subprocess calls, which inherit process.env (claude-factory-5h9.4)
-  const saved = { ...process.env }
   Object.assign(process.env, {
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
@@ -811,8 +812,14 @@ test('a turn with a 200_000-byte prompt runs: the agent gets it byte for byte on
   const repo = join(dir, 'repo-big')
   mkdirSync(own, { recursive: true })
   mkdirSync(repo, { recursive: true })
+  // Save env here, before any change below. Restore it in finally.
+  const saved = { ...process.env }
   const big = 'x'.repeat(200_000)
-  process.env.FACTORY_BRIEF = big
+  // Put the big brief on the real big-brief path: own()/brief.md, read by worker.ts's sentFile().
+  // Do not put it in FACTORY_BRIEF. Linux's MAX_ARG_STRLEN (131072 bytes) caps each env string too.
+  // A 200 KB FACTORY_BRIEF value fails posix_spawn with E2BIG on Linux CI (claude-factory-kcg.5).
+  writeFileSync(join(own, 'brief.md'), big)
+  delete process.env.FACTORY_BRIEF
   // records argv (one line) and stdin (the whole prompt) to separate files
   const claude = join(dir, 'claude-big')
   writeFileSync(
@@ -824,7 +831,6 @@ echo '{"type":"system","subtype":"init","session_id":"big-1"}'
 `,
   )
   chmodSync(claude, 0o755)
-  const saved = { ...process.env }
   Object.assign(process.env, {
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
