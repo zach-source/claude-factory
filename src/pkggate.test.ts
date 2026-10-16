@@ -720,10 +720,13 @@ test('AC5: a cold start with index.golang.org down refuses an old version (no fl
   }
 })
 
-test('AC6: a failed floor refresh keeps the old floor; a later successful one raises it and never lowers it', async () => {
+test('AC6: a failed floor refresh keeps the old floor; a successful one follows each new sample, up or down, capped by real sumdb traffic (claude-factory-56j)', async () => {
   let now = NOW
   let indexUp = true
   let recordOffset = 0
+  // sum.golang.org's tree size. It grows by 1000 at each honest refresh below -- far over the >= 200
+  // growth GO_FLOOR_RISE_MARGIN (3) needs to let a genuine 600-record rise through uncapped.
+  let latestSize = 1_000_000
   // each version of the probe module carries its own fixed sum.golang.org record, so each call is a fresh
   // decision (never served from goInfoCache's forever cache), but still proves which floor was in force
   const probeRecords: Record<string, number> = { 'v1.0.0': 500, 'v2.0.0': 500, 'v3.0.0': 500, 'v4.0.0': 300 }
@@ -735,7 +738,7 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
         if (!indexUp) return new Response('internal error', { status: 500 })
         return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(now).toISOString()))
       }
-      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(latestSize))
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
         const probeVersion = key.startsWith('floortiming.example.com/mod@')
@@ -784,14 +787,20 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     expect(second.status).toBe(404)
     await waitForFloorRefresh(lines, m1) // let this failed attempt fully land before phase 3 changes the fixture
 
-    // the index comes back, with every sample now higher. A priming decision starts the new refresh; once
-    // it lands, the floor reads 700
+    // the index comes back, with every sample now higher, and real sumdb traffic (latestSize) grew by
+    // 1000, well over the >= 200 this rise needs. A priming decision starts the new refresh; once it
+    // lands, the floor reads 700, uncapped
     indexUp = true
     recordOffset = 600
+    latestSize += 1000
     now += 31 * 60_000
     const m2 = lines.length
     await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v0.5.0.info'))
     await waitForFloorRefresh(lines, m2)
+    const floorLine3 = JSON.parse(
+      lines.slice(m2).find(l => JSON.parse(l).eco === 'go' && typeof JSON.parse(l).floor === 'number')!,
+    )
+    expect(floorLine3.capped).toBe(false)
     const healthzThird = await g(new Request('http://gate/healthz'))
     expect(
       (await (healthzThird.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
@@ -801,9 +810,12 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     const third = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v3.0.0.info'))
     expect(third.status).toBe(200)
 
-    // the index now reports a thinner window again (recordOffset back to 0, minimum 100). Once this refresh
-    // lands too, the floor must still read 700 -- proof it never dropped back down to 100
+    // the index now reports a thinner window again (recordOffset back to 0, minimum 100), with sumdb
+    // traffic growing by another 1000. Once this refresh lands, the floor follows the sample back down to
+    // 100 -- a lower floor only refuses more, the safe side (claude-factory-56j). The old ratchet would
+    // have kept 700; this is the fix, not a weaker test.
     recordOffset = 0
+    latestSize += 1000
     now += 31 * 60_000
     const m3 = lines.length
     await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v0.6.0.info'))
@@ -811,10 +823,144 @@ test('AC6: a failed floor refresh keeps the old floor; a later successful one ra
     const healthzFourth = await g(new Request('http://gate/healthz'))
     expect(
       (await (healthzFourth.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
-    ).toBe(700)
-    // a 4th probe version, with a record (300) between the two floors, is still allowed
+    ).toBe(100)
+    // a 4th probe version, with a record (300) that the old ratcheted floor (700) would have allowed, is
+    // now refused against the lowered floor (100)
     const fourth = await g(new Request('http://gate/go/floortiming.example.com/mod/@v/v4.0.0.info'))
-    expect(fourth.status).toBe(200)
+    expect(fourth.status).toBe(404)
+  } finally {
+    console.log = origLog
+    srv.stop(true)
+  }
+})
+
+test("claude-factory-56j: owning every sampled index entry caps one refresh's rise to real sumdb traffic, instead of reaching near-now and sticking there", async () => {
+  // 9 modules this fixture server's own /index answers with, regardless of `since`.
+  const RAISE_PATHS = Array.from(
+    { length: 9 },
+    (_, i) => `raise56j-${String.fromCharCode(97 + i)}.example.com/mod`,
+  )
+  const RAISE_VERSION = 'v1.0.0'
+  // phase 'start': the floor before any attack. 9 samples 1000..1008 (min 1000), /latest 10_000.
+  const START_IDS = Array.from({ length: 9 }, (_, i) => 1000 + i)
+  // phase 'attack': the attacker owns every sampled index entry and logs each one in sum.golang.org just
+  // before this refresh runs, all 9 close to /latest (10_100, a growth of only 100 real records): ids
+  // 10090..10098 (min 10090). Every one still sits below /latest, so claude-factory-8ub.6's outlier drop
+  // keeps all 9 -- that fix alone does not stop this attack.
+  const ATTACK_IDS = Array.from({ length: 9 }, (_, i) => 10090 + i)
+  // phase 'honest': a later, genuine refresh, real traffic only: ids 1100..1108 (min 1100), /latest 10_200
+  // (another honest growth of 100)
+  const HONEST_IDS = Array.from({ length: 9 }, (_, i) => 1100 + i)
+  type Phase = 'start' | 'attack' | 'honest'
+  let phase: Phase = 'start'
+  let now = NOW
+  const latestByPhase: Record<Phase, number> = { start: 10_000, attack: 10_100, honest: 10_200 }
+  // the probe module, separate from the sampled paths, so its own decisions never feed the floor it is
+  // judged against
+  const PROBE_RECORDS: Record<string, number> = { 'v1.0.0': 5000, 'v2.0.0': 1200 }
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') {
+        const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(now).toISOString())
+        const ts = new Date(sinceMs + 15 * 60_000).toISOString()
+        return new Response(
+          RAISE_PATHS.map(p => JSON.stringify({ Path: p, Version: RAISE_VERSION, Timestamp: ts })).join(
+            '\n',
+          ) + '\n',
+        )
+      }
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(latestByPhase[phase]))
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        const probePrefix = 'raiseprobe.example.com/mod@'
+        if (key.startsWith(probePrefix))
+          return new Response(`${PROBE_RECORDS[key.slice(probePrefix.length)] ?? 1}\n`)
+        const idx = RAISE_PATHS.findIndex(p => key === `${escapeGoPath(p)}@${escapeGoPath(RAISE_VERSION)}`)
+        const ids = phase === 'start' ? START_IDS : phase === 'attack' ? ATTACK_IDS : HONEST_IDS
+        return new Response(`${idx >= 0 ? ids[idx] : 999_999}\n`)
+      }
+      const m = url.pathname.match(/^\/raiseprobe\.example\.com\/mod\/@v\/(v[\d.]+)\.info$/)
+      if (m) return new Response(`{"Version":"${m[1]}","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  const lines: string[] = []
+  const origLog = console.log
+  console.log = (s: string) => lines.push(s)
+  const findFloorLine = (from: number) => {
+    const l = lines.slice(from).find(line => {
+      const j = JSON.parse(line)
+      return j.eco === 'go' && typeof j.floor === 'number'
+    })
+    return l ? JSON.parse(l) : undefined
+  }
+  try {
+    const g = makeGate({
+      upstream: {
+        go: srv.url.origin,
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: srv.url.origin,
+        goIndex: srv.url.origin,
+      },
+      now: () => now,
+    })
+    // 'start': a cold start always waits for its own refresh. The floor builds at 1000 (min of START_IDS),
+    // with no cap (no prior floor yet)
+    const m0 = lines.length
+    await g(new Request('http://gate/go/raiseprobe.example.com/mod/@v/v0.0.0.info'))
+    await waitForFloorRefresh(lines, m0)
+    const healthzStart = await g(new Request('http://gate/healthz'))
+    expect(
+      (await (healthzStart.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
+    ).toBe(1000)
+
+    // AC1: the attack phase. /latest grows by only 100 real records (10_000 -> 10_100); every sample sits
+    // just below it (10090-10098, min 10090). GO_FLOOR_RISE_MARGIN (3) caps the new floor at
+    // 1000 + 3*100 = 1300 -- not the poisoned 10090.
+    phase = 'attack'
+    now += 31 * 60_000
+    const m1 = lines.length
+    await g(new Request('http://gate/go/raiseprobe.example.com/mod/@v/v0.1.0.info'))
+    await waitForFloorRefresh(lines, m1)
+    const floorLine1 = findFloorLine(m1)
+    expect(floorLine1).toMatchObject({ floor: 1300, sampled: 10090, capped: true })
+    const healthzAttack = await g(new Request('http://gate/healthz'))
+    expect(
+      (await (healthzAttack.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
+    ).toBe(1300)
+
+    // AC2: a backdated version whose own sum.golang.org record (5000) sits well above the capped floor
+    // (1300) is still refused -- the attack bought it nothing close to a near-now floor
+    const attackProbe = await g(new Request('http://gate/go/raiseprobe.example.com/mod/@v/v1.0.0.info'))
+    expect(attackProbe.status).toBe(404)
+    expect(await attackProbe.text()).toBe(
+      'pkg-gate: raiseprobe.example.com/mod@v1.0.0 first logged in sum.golang.org less than 4d ago, minimum 4d',
+    )
+
+    // AC3: a later, honest refresh. /latest grows by another 100 real records (10_100 -> 10_200); real
+    // samples now read 1100-1108 (min 1100). The floor follows them down to 1100, below the poisoned 1300
+    // -- the old Math.max(old,new) ratchet would have kept 10090 (max(1000, min(ATTACK_IDS))) forever and
+    // let a record-1200 version through; this fix does not.
+    phase = 'honest'
+    now += 31 * 60_000
+    const m2 = lines.length
+    await g(new Request('http://gate/go/raiseprobe.example.com/mod/@v/v0.2.0.info'))
+    await waitForFloorRefresh(lines, m2)
+    const floorLine2 = findFloorLine(m2)
+    expect(floorLine2).toMatchObject({ floor: 1100, sampled: 1100, capped: false })
+    const healthzHonest = await g(new Request('http://gate/healthz'))
+    expect(
+      (await (healthzHonest.json() as Promise<{ goFloor: { record: number } | null }>)).goFloor?.record,
+    ).toBe(1100)
+    const honestProbe = await g(new Request('http://gate/go/raiseprobe.example.com/mod/@v/v2.0.0.info'))
+    expect(honestProbe.status).toBe(404)
+    expect(await honestProbe.text()).toBe(
+      'pkg-gate: raiseprobe.example.com/mod@v2.0.0 first logged in sum.golang.org less than 4d ago, minimum 4d',
+    )
   } finally {
     console.log = origLog
     srv.stop(true)
