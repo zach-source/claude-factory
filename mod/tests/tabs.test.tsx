@@ -24,36 +24,40 @@ async function mountBoard($: any, on: any) {
   await $.command.run({ command: 'factory', args: 'board' } as never)
 }
 
-test('the tab bar is Board..Interview on contiguous hotkeys 1-6, with exactly those 6 tabs and no Run tab', SLOW, async ($, on) => {
-  await mountBoard($, on)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({
-      plugin: 'factory',
-      surface,
-      component: 'Pane',
-      requestId: 'factory',
-      props: { bodyColumns: 100, placement: 'dock' } as never,
-      viewport: { columns: 100, rows: 60 },
-    })
-    const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).not.toContain('"key":"tab-new"')
-    expect(drawn).not.toContain('"key":"tab-run"')
-    for (const [label, key] of [
-      ['Board', '1'],
-      ['Backlog', '2'],
-      ['Mail', '3'],
-      ['Rigs', '4'],
-      ['PRs', '5'],
-      ['Interview', '6'],
-    ])
-      expect(drawn).toContain(`"label":"${label}","hotkey":"${key}"`)
-    // exactly 6 tab buttons: Run folded into Board
-    expect((drawn.match(/"key":"tab-/g) ?? []).length).toBe(6)
-    expect(drawn).toContain('1-6 views')
-    expect(drawn).not.toContain('1-7 views')
-    await ui.unmount()
-  }
-})
+test(
+  'the tab bar is Board..Interview on contiguous hotkeys 1-6, with exactly those 6 tabs and no Run tab',
+  SLOW,
+  async ($, on) => {
+    await mountBoard($, on)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({
+        plugin: 'factory',
+        surface,
+        component: 'Pane',
+        requestId: 'factory',
+        props: { bodyColumns: 100, placement: 'dock' } as never,
+        viewport: { columns: 100, rows: 60 },
+      })
+      const drawn = JSON.stringify(await ui.drawn())
+      expect(drawn).not.toContain('"key":"tab-new"')
+      expect(drawn).not.toContain('"key":"tab-run"')
+      for (const [label, key] of [
+        ['Board', '1'],
+        ['Backlog', '2'],
+        ['Mail', '3'],
+        ['Rigs', '4'],
+        ['PRs', '5'],
+        ['Interview', '6'],
+      ])
+        expect(drawn).toContain(`"label":"${label}","hotkey":"${key}"`)
+      // exactly 6 tab buttons: Run folded into Board
+      expect((drawn.match(/"key":"tab-/g) ?? []).length).toBe(6)
+      expect(drawn).toContain('1-6 views')
+      expect(drawn).not.toContain('1-7 views')
+      await ui.unmount()
+    }
+  },
+)
 
 test("the rigs tab has no 'new run here' button, and still has 'backlog'", SLOW, async ($, on) => {
   await mountBoard($, on)

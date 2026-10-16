@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "prettier": "3.9.9"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -15,6 +16,8 @@
   },
   "scripts": {
     "test": "bun test src factories && claude plugin test mod",
-    "typecheck": "tsc --noEmit -p . && tsc -p mod"
+    "typecheck": "tsc --noEmit -p . && tsc -p mod",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   }
 }

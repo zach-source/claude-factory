@@ -18,6 +18,53 @@ const PYTHON3 = Bun.which('python3')
 // only used to build the Go module zip and the PyPI wheel fixtures below, never to run a tool under test
 const ZIP = Bun.which('zip')
 
+// CI's test job sets PKGGATE_E2E_REQUIRE=1 (claude-factory-5h9): a hosted runner missing go, npm, pip, uv,
+// python3 or zip must fail the run by name, not quietly skip the real-protocol test that binary needs.
+// Without it (a laptop that may lack some of these), a missing binary still just skips its own test.
+export const REQUIRE_TOOLS = process.env.PKGGATE_E2E_REQUIRE === '1'
+
+// The name of the first tool in `tools` whose binary is null, or null when every one is present.
+export function missingTool(...tools: [name: string, bin: string | null][]): string | null {
+  for (const [name, bin] of tools) if (!bin) return name
+  return null
+}
+
+// Registers `title` to run `fn` when every tool is present. When a tool is missing and
+// PKGGATE_E2E_REQUIRE=1, it registers a test that fails by name instead. When a tool is missing and
+// PKGGATE_E2E_REQUIRE is unset, it registers a skipped test that says why.
+function toolTest(
+  title: string,
+  tools: [name: string, bin: string | null][],
+  fn: () => void | Promise<void>,
+) {
+  const missing = missingTool(...tools)
+  if (!missing) {
+    test(title, fn)
+    return
+  }
+  if (REQUIRE_TOOLS)
+    test(`${title} [REQUIRED: ${missing} missing from PATH]`, () => {
+      throw new Error(`PKGGATE_E2E_REQUIRE=1 but ${missing} is not on PATH`)
+    })
+  else test.skip(`${title} [${missing} missing from PATH, PKGGATE_E2E_REQUIRE unset]`, fn)
+}
+
+test('missingTool names the first tool whose binary is null, or null when every one is present', () => {
+  expect(missingTool(['go', null], ['zip', '/usr/bin/zip'])).toBe('go')
+  expect(missingTool(['npm', '/usr/bin/npm'], ['pip', null])).toBe('pip')
+  expect(missingTool(['uv', '/usr/bin/uv'])).toBeNull()
+})
+
+test("the npm pack test pins npm_config_before, so the host's own release cooldown never hides a fixture", () => {
+  const src = readFileSync(new URL(import.meta.url), 'utf8')
+  expect(src).toContain('npm_config_before: new Date().toISOString()')
+})
+
+test("the uv test pins UV_EXCLUDE_NEWER, so the host's own release cooldown never hides a fixture", () => {
+  const src = readFileSync(new URL(import.meta.url), 'utf8')
+  expect(src).toContain('UV_EXCLUDE_NEWER: new Date().toISOString()')
+})
+
 const scratch = mkdtempSync(join(tmpdir(), 'pkggate-e2e-'))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
@@ -78,8 +125,14 @@ function buildWheel(version: string): Buffer {
   const stage = join(scratch, `wheel-${version}`)
   const distInfo = join(stage, `${PY_DIST}-${version}.dist-info`)
   mkdirSync(distInfo, { recursive: true })
-  writeFileSync(join(distInfo, 'METADATA'), `Metadata-Version: 2.1\nName: ${PY_PROJECT}\nVersion: ${version}\n`)
-  writeFileSync(join(distInfo, 'WHEEL'), 'Wheel-Version: 1.0\nGenerator: pkggate-e2e\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+  writeFileSync(
+    join(distInfo, 'METADATA'),
+    `Metadata-Version: 2.1\nName: ${PY_PROJECT}\nVersion: ${version}\n`,
+  )
+  writeFileSync(
+    join(distInfo, 'WHEEL'),
+    'Wheel-Version: 1.0\nGenerator: pkggate-e2e\nRoot-Is-Purelib: true\nTag: py3-none-any\n',
+  )
   writeFileSync(join(distInfo, 'RECORD'), '')
   const whlPath = join(scratch, `${PY_DIST}-${version}-py3-none-any.whl`)
   const r = Bun.spawnSync(['zip', '-X', '-r', whlPath, `${PY_DIST}-${version}.dist-info`], { cwd: stage })
@@ -142,7 +195,8 @@ beforeAll(async () => {
       // with a low record (1), so it always sits at or below the floor this builds (also 1). /latest
       // (claude-factory-8ub.6) answers with a tree size far above every record id here, so none is ever
       // dropped as an outlier.
-      if (url.pathname === '/latest') return new Response('go.sum database tree\n1000000\nfakehash\n\n— sum.golang.org fakesignature\n')
+      if (url.pathname === '/latest')
+        return new Response('go.sum database tree\n1000000\nfakehash\n\n— sum.golang.org fakesignature\n')
       // the backdated probe's own record sits far above the floor (1); every other lookup defaults low (AC12)
       if (url.pathname === `/lookup/${GO_MODULE}@${GO_BACKDATED_VERSION}`) return new Response('999999\n')
       if (url.pathname.startsWith('/lookup/')) return new Response('1\n')
@@ -158,35 +212,55 @@ beforeAll(async () => {
       if (url.pathname === '/index') {
         const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(NOW).toISOString())
         const ts = new Date(sinceMs + 15 * 60_000).toISOString()
-        const lines = Array.from({ length: 5 }, (_, i) => JSON.stringify({ Path: `floorsample-${i}.example.com/mod`, Version: 'v1.0.0', Timestamp: ts }))
+        const lines = Array.from({ length: 5 }, (_, i) =>
+          JSON.stringify({ Path: `floorsample-${i}.example.com/mod`, Version: 'v1.0.0', Timestamp: ts }),
+        )
         return new Response(lines.join('\n') + '\n')
       }
       if (url.pathname === `/${GO_MODULE}/@v/list`) return new Response('v1.0.0\nv1.0.1\n')
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.info`)
-        return new Response(JSON.stringify({ Version: 'v1.0.0', Time: OLD_TIME }), { headers: { 'content-type': 'application/json' } })
+        return new Response(JSON.stringify({ Version: 'v1.0.0', Time: OLD_TIME }), {
+          headers: { 'content-type': 'application/json' },
+        })
       if (url.pathname === `/${GO_MODULE}/@v/${GO_BACKDATED_VERSION}.info`)
-        return new Response(JSON.stringify({ Version: GO_BACKDATED_VERSION, Time: OLD_TIME }), { headers: { 'content-type': 'application/json' } })
+        return new Response(JSON.stringify({ Version: GO_BACKDATED_VERSION, Time: OLD_TIME }), {
+          headers: { 'content-type': 'application/json' },
+        })
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.1.info`)
-        return new Response(JSON.stringify({ Version: 'v1.0.1', Time: YOUNG_TIME }), { headers: { 'content-type': 'application/json' } })
+        return new Response(JSON.stringify({ Version: 'v1.0.1', Time: YOUNG_TIME }), {
+          headers: { 'content-type': 'application/json' },
+        })
       if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.mod` || url.pathname === `/${GO_MODULE}/@v/v1.0.1.mod`)
         return new Response(`module ${GO_MODULE}\n\ngo 1.21\n`)
-      if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.zip` && fixtures.goZipOld) return new Response(fixtures.goZipOld)
-      if (url.pathname === `/${GO_MODULE}/@v/v1.0.1.zip` && fixtures.goZipYoung) return new Response(fixtures.goZipYoung)
+      if (url.pathname === `/${GO_MODULE}/@v/v1.0.0.zip` && fixtures.goZipOld)
+        return new Response(fixtures.goZipOld)
+      if (url.pathname === `/${GO_MODULE}/@v/v1.0.1.zip` && fixtures.goZipYoung)
+        return new Response(fixtures.goZipYoung)
 
       if (url.pathname === `/${NPM_PKG}` && fixtures.npmTarOld && fixtures.npmTarYoung) {
         const body = JSON.stringify({
           name: NPM_PKG,
           'dist-tags': { latest: '1.0.1' },
           versions: {
-            '1.0.0': { name: NPM_PKG, version: '1.0.0', dist: { tarball: `${url.origin}/${NPM_PKG}/-/${NPM_PKG}-1.0.0.tgz`, shasum: 'x' } },
-            '1.0.1': { name: NPM_PKG, version: '1.0.1', dist: { tarball: `${url.origin}/${NPM_PKG}/-/${NPM_PKG}-1.0.1.tgz`, shasum: 'y' } },
+            '1.0.0': {
+              name: NPM_PKG,
+              version: '1.0.0',
+              dist: { tarball: `${url.origin}/${NPM_PKG}/-/${NPM_PKG}-1.0.0.tgz`, shasum: 'x' },
+            },
+            '1.0.1': {
+              name: NPM_PKG,
+              version: '1.0.1',
+              dist: { tarball: `${url.origin}/${NPM_PKG}/-/${NPM_PKG}-1.0.1.tgz`, shasum: 'y' },
+            },
           },
           time: { created: OLD_TIME, modified: YOUNG_TIME, '1.0.0': OLD_TIME, '1.0.1': YOUNG_TIME },
         })
         return new Response(body, { headers: { 'content-type': 'application/json' } })
       }
-      if (url.pathname === `/${NPM_PKG}/-/${NPM_PKG}-1.0.0.tgz` && fixtures.npmTarOld) return new Response(fixtures.npmTarOld)
-      if (url.pathname === `/${NPM_PKG}/-/${NPM_PKG}-1.0.1.tgz` && fixtures.npmTarYoung) return new Response(fixtures.npmTarYoung)
+      if (url.pathname === `/${NPM_PKG}/-/${NPM_PKG}-1.0.0.tgz` && fixtures.npmTarOld)
+        return new Response(fixtures.npmTarOld)
+      if (url.pathname === `/${NPM_PKG}/-/${NPM_PKG}-1.0.1.tgz` && fixtures.npmTarYoung)
+        return new Response(fixtures.npmTarYoung)
 
       if (url.pathname === `/simple/${PY_PROJECT}/` && fixtures.wheelOld && fixtures.wheelYoung) {
         const body = JSON.stringify({
@@ -201,13 +275,20 @@ beforeAll(async () => {
               hashes: {},
               'core-metadata': true,
             },
-            { filename: `${PY_DIST}-1.0.1-py3-none-any.whl`, url: `${url.origin}/files/${PY_DIST}-1.0.1-py3-none-any.whl`, 'upload-time': YOUNG_TIME, hashes: {} },
+            {
+              filename: `${PY_DIST}-1.0.1-py3-none-any.whl`,
+              url: `${url.origin}/files/${PY_DIST}-1.0.1-py3-none-any.whl`,
+              'upload-time': YOUNG_TIME,
+              hashes: {},
+            },
           ],
         })
         return new Response(body, { headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' } })
       }
-      if (url.pathname === `/files/${PY_DIST}-1.0.0-py3-none-any.whl` && fixtures.wheelOld) return new Response(fixtures.wheelOld)
-      if (url.pathname === `/files/${PY_DIST}-1.0.1-py3-none-any.whl` && fixtures.wheelYoung) return new Response(fixtures.wheelYoung)
+      if (url.pathname === `/files/${PY_DIST}-1.0.0-py3-none-any.whl` && fixtures.wheelOld)
+        return new Response(fixtures.wheelOld)
+      if (url.pathname === `/files/${PY_DIST}-1.0.1-py3-none-any.whl` && fixtures.wheelYoung)
+        return new Response(fixtures.wheelYoung)
       // the same METADATA content buildWheel() packed into the wheel's own .dist-info, served separately
       if (url.pathname === `/files/${PY_DIST}-1.0.0-py3-none-any.whl.metadata`)
         return new Response(`Metadata-Version: 2.1\nName: ${PY_PROJECT}\nVersion: 1.0.0\n`)
@@ -217,7 +298,10 @@ beforeAll(async () => {
   })
   const base = upstream.url.origin
   const sumdbBase = sumdbUpstream.url.origin
-  gate = serve({ upstream: { go: base, npm: base, pypi: base, files: base, sumdb: sumdbBase, goIndex: base }, port: 0 })
+  gate = serve({
+    upstream: { go: base, npm: base, pypi: base, files: base, sumdb: sumdbBase, goIndex: base },
+    port: 0,
+  })
   gateBase = gate.url.origin
   // a real-process client (go/npm/pip/uv) can hit a connection reset if it is the very first inbound
   // connection right after Bun.serve returns; warm up every server with a real fetch before any test runs
@@ -231,10 +315,12 @@ afterAll(() => {
   gate.stop(true)
 })
 
-test('a binary sumdb tile passes through serve()\'s real HTTP socket byte-identical (ei0.8), fetched from the distinct sumdb fake', async () => {
+test("a binary sumdb tile passes through serve()'s real HTTP socket byte-identical (ei0.8), fetched from the distinct sumdb fake", async () => {
   const r = await fetch(`${gateBase}/go/sumdb/sum.golang.org/tile/8/0/000`)
   expect(r.status).toBe(200)
-  expect(new Uint8Array(await r.arrayBuffer())).toEqual(new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]))
+  expect(new Uint8Array(await r.arrayBuffer())).toEqual(
+    new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x00, 0xff, 0x80, 0xc3]),
+  )
 })
 
 test('claude-factory-1hc AC6: GET /go/sumdb/sum.golang.org/supported is 200 over the real socket, with zero hit on the sumdb fake (it 404s /supported)', async () => {
@@ -244,7 +330,7 @@ test('claude-factory-1hc AC6: GET /go/sumdb/sum.golang.org/supported is 200 over
   expect(sumdbSupportedHits).toBe(before)
 })
 
-test('AC12: a backdated version (.info old enough, record above the floor) is refused through serve()\'s real socket; an old one with a low record still serves (claude-factory-8ub)', async () => {
+test("AC12: a backdated version (.info old enough, record above the floor) is refused through serve()'s real socket; an old one with a low record still serves (claude-factory-8ub)", async () => {
   const backdated = await fetch(`${gateBase}/go/${GO_MODULE}/@v/${GO_BACKDATED_VERSION}.info`)
   expect(backdated.status).toBe(404)
   expect(await backdated.text()).toContain('first logged in sum.golang.org')
@@ -254,24 +340,31 @@ test('AC12: a backdated version (.info old enough, record above the floor) is re
   expect(await old.json()).toMatchObject({ Version: 'v1.0.0' })
 })
 
-test.if(!!GO && !!ZIP)('go mod download: a young module version fails with pkg-gate in stderr; an old one succeeds', async () => {
-  const env = {
-    GOPROXY: `${gateBase}/go`,
-    GOSUMDB: 'off',
-    GOFLAGS: '-modcacherw',
-    GOMODCACHE: join(scratch, 'gomodcache'),
-    GOCACHE: join(scratch, 'gocache'),
-    HOME: join(scratch, 'gohome'),
-  }
-  const young = await run([GO!, 'mod', 'download', `${GO_MODULE}@v1.0.1`], env)
-  expect(young.code).not.toBe(0)
-  expect(young.err).toContain('pkg-gate')
+toolTest(
+  'go mod download: a young module version fails with pkg-gate in stderr; an old one succeeds',
+  [
+    ['go', GO],
+    ['zip', ZIP],
+  ],
+  async () => {
+    const env = {
+      GOPROXY: `${gateBase}/go`,
+      GOSUMDB: 'off',
+      GOFLAGS: '-modcacherw',
+      GOMODCACHE: join(scratch, 'gomodcache'),
+      GOCACHE: join(scratch, 'gocache'),
+      HOME: join(scratch, 'gohome'),
+    }
+    const young = await run([GO!, 'mod', 'download', `${GO_MODULE}@v1.0.1`], env)
+    expect(young.code).not.toBe(0)
+    expect(young.err).toContain('pkg-gate')
 
-  const old = await run([GO!, 'mod', 'download', `${GO_MODULE}@v1.0.0`], env)
-  expect(old.code).toBe(0)
-})
+    const old = await run([GO!, 'mod', 'download', `${GO_MODULE}@v1.0.0`], env)
+    expect(old.code).toBe(0)
+  },
+)
 
-test.if(!!NPM)('npm pack: a young package version fails; an old one succeeds', async () => {
+toolTest('npm pack: a young package version fails; an old one succeeds', [['npm', NPM]], async () => {
   const outDir = join(scratch, 'npmout')
   mkdirSync(outDir, { recursive: true })
   const env = {
@@ -288,7 +381,7 @@ test.if(!!NPM)('npm pack: a young package version fails; an old one succeeds', a
   expect(old.code).toBe(0)
 })
 
-test.if(!!PIP)('pip download --no-deps: a young file fails; an old one succeeds', async () => {
+toolTest('pip download --no-deps: a young file fails; an old one succeeds', [['pip', PIP]], async () => {
   const outDir = join(scratch, 'pipout')
   mkdirSync(outDir, { recursive: true })
   const env = { PIP_INDEX_URL: `${gateBase}/pypi/simple`, PIP_TRUSTED_HOST: new URL(gateBase).hostname }
@@ -299,19 +392,29 @@ test.if(!!PIP)('pip download --no-deps: a young file fails; an old one succeeds'
   expect(old.code).toBe(0)
 })
 
-test.if(!!UV && !!PYTHON3)('uv pip install --dry-run: a young version fails; an old one succeeds', async () => {
-  const venv = join(scratch, 'uvvenv')
-  const made = await run([UV!, 'venv', venv, '--python', PYTHON3!], {})
-  expect(made.code).toBe(0)
-  const env = {
-    UV_DEFAULT_INDEX: `${gateBase}/pypi/simple`,
-    UV_INSECURE_HOST: new URL(gateBase).hostname,
-    UV_EXCLUDE_NEWER: new Date().toISOString(), // the host's own cooldown, as npm's `before` above
-  }
+toolTest(
+  'uv pip install --dry-run: a young version fails; an old one succeeds',
+  [
+    ['uv', UV],
+    ['python3', PYTHON3],
+  ],
+  async () => {
+    const venv = join(scratch, 'uvvenv')
+    const made = await run([UV!, 'venv', venv, '--python', PYTHON3!], {})
+    expect(made.code).toBe(0)
+    const env = {
+      UV_DEFAULT_INDEX: `${gateBase}/pypi/simple`,
+      UV_INSECURE_HOST: new URL(gateBase).hostname,
+      UV_EXCLUDE_NEWER: new Date().toISOString(), // the host's own cooldown, as npm's `before` above
+    }
 
-  const young = await run([UV!, 'pip', 'install', '--dry-run', '--python', venv, `${PY_PROJECT}==1.0.1`], env)
-  expect(young.code).not.toBe(0)
+    const young = await run(
+      [UV!, 'pip', 'install', '--dry-run', '--python', venv, `${PY_PROJECT}==1.0.1`],
+      env,
+    )
+    expect(young.code).not.toBe(0)
 
-  const old = await run([UV!, 'pip', 'install', '--dry-run', '--python', venv, `${PY_PROJECT}==1.0.0`], env)
-  expect(old.code).toBe(0)
-})
+    const old = await run([UV!, 'pip', 'install', '--dry-run', '--python', venv, `${PY_PROJECT}==1.0.0`], env)
+    expect(old.code).toBe(0)
+  },
+)

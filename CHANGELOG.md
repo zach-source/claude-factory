@@ -6,6 +6,30 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- CI and releases now run on their own, with no hand edits. `.github/workflows/ci.yml`
+  runs 4 required checks on every pull request and on `main`. `test` runs
+  `bun test --timeout 30000 src factories`; `PKGGATE_E2E_REQUIRE=1` makes a missing
+  go/npm/pip/uv/python3/zip on the runner fail the test by name, instead of skipping it.
+  `plugin` runs `claude plugin test mod`. `typecheck` runs `tsc --noEmit -p .`; it skips
+  `tsc -p mod`, because that command needs `mod/.claude-plugin/types/`, a directory that
+  only a live Claude Code session writes. `format` runs `prettier@3.9.9 --check .`. The
+  repo now commits `.prettierrc` and `.prettierignore`, and pins `prettier` as an exact
+  `3.9.9` devDependency. `src/release.ts` bumps `package.json` and
+  `mod/.claude-plugin/plugin.json` together, and moves the CHANGELOG's `## Unreleased`
+  section under a new version heading. It refuses a version mismatch between the two
+  files, an empty Unreleased section, and an existing tag. A person starts a release from
+  the Actions tab: `release.yml`'s `workflow_dispatch` takes `bump: patch|minor|major`
+  and `dry_run`, and opens pull request `release/vX.Y.Z` with that bump already made.
+  The person merges it with `gh pr merge --match-head-commit <SHA>`; this command
+  refuses the merge if the branch moved past the SHA the checks ran on, so no unchecked
+  commit can reach `main` this way. After the merge, `release-tag.yml` tags the merge
+  commit and publishes the GitHub release on its own. gitsign, Sigstore's keyless
+  signer, signs each new tag through the workflow's own GitHub OIDC identity; this
+  public repo stores no signing key. `factory self-update` (new `src/selfupdate.ts`)
+  fast-forwards the checkout that holds `bin/factory` to `origin/main`. `tick()` runs it
+  at most once every 5 minutes. It refuses a dirty tree, a diverged branch, a non-`main`
+  branch, or `FACTORY_SELF_UPDATE=0`. [docs/releasing.md](docs/releasing.md) has the
+  full recipe. (claude-factory-5h9)
 - Fixed: `claude plugin test mod` has no `--timeout` flag, so each test used the kit's fixed 5000 ms limit. At a shared-host load average over 100, some async tests (the ones that call `$` or `on`) failed with `Error: timed out after 5000 ms`, with no code change. This happened in `mod/tests/prs.test.tsx`, `rigs.test.tsx` and 5 other test files: `backlog.test.tsx`, `board.test.tsx`, `gate.test.ts`, `interview.test.tsx` and `tabs.test.tsx`. These 7 files' 30 async tests now pass `{ timeoutMs: 30_000 }` as the kit's `test()` second argument. (claude-factory-abm)
 - A rig's devenv can now declare services (`devenv.nix`'s `services.postgres`, say) and get them started. `worker serve` reads the devenv's process list from `DEVENV_TASK_FILE`. It starts each process directly, never through `devenv up`, which would run `enterShell`. It starts each process's own `after` dependencies first, and waits on each one's readiness probe before it. It merges each process's own `env` field over the serve env, for the spawn and the probe. It builds an HTTP probe's URL from devenv's `{host,port,path,scheme}` object. When the devenv does not already set `DATABASE_URL`, `serve` sets it for the agent. The first turn's brief gets a `[factory] services: ...` line that names each process as ready or failed. `FACTORY_SERVICES=0` turns this off for one rig. `FACTORY_SERVICES_WAIT_MS` changes the readiness budget (120000 ms by default; a non-numeric or non-positive value falls back to it instead of blocking the first turn forever). (claude-factory-5sn)
 - Fixed: a worker's cleanup command (`rm -rf`) and a `cd <dir> && ...` chain outside the worktree triggered Claude Code's own permission prompt. Nobody answers this prompt. An unattended worker waited up to 2 minutes, then got denied. `worker.excludeScratch()` (`src/worker.ts`) now adds `.scratch/` to `<git-common-dir>/info/exclude`. It adds the line only once, and keeps any existing lines. `createRun` (`src/cli.ts`) calls it right after `herdr worktree create`. The AX clone (`src/worker.ts`) calls it right after `git clone`. `src/worker-system.md` now tells a worker to keep scratch state in `.scratch/` inside the worktree. It tells the worker never to chain `cd` with another command, and never to run `rm -rf`. It tells the worker to use `git -C`, `go -C` or an absolute path instead. It tells the worker to make a fresh `.scratch/<new-name>` in place of a cleanup. (claude-factory-9wu)

@@ -94,7 +94,7 @@ test('sourcing LAUNCH_LINE in the pane shell runs the written command byte-for-b
   const promptDir = join(dir, 'runs', 'lifecycle-mv8khojkz6', 'prompts', 'x-jk-y')
   mkdirSync(promptDir, { recursive: true })
   const promptPath = join(promptDir, 'triage.md')
-  const promptText = "hostile jk ' \" $(touch pwned) `touch pwned2`\nline two"
+  const promptText = 'hostile jk \' " $(touch pwned) `touch pwned2`\nline two'
   writeFileSync(promptPath, promptText)
   const fakeDir = join(tmpdir(), `fake-${process.pid}-${Date.now()}`)
   mkdirSync(fakeDir, { recursive: true })

@@ -284,7 +284,12 @@ export function role(pr: RoleInput, ctx: RoleCtx): PrRole {
   return 'companion'
 }
 
-const TTL_MS: Record<PrState, number> = { OPEN: 2 * 60_000, CLOSED: 30 * 60_000, MERGED: Infinity, UNKNOWN: 0 }
+const TTL_MS: Record<PrState, number> = {
+  OPEN: 2 * 60_000,
+  CLOSED: 30 * 60_000,
+  MERGED: Infinity,
+  UNKNOWN: 0,
+}
 
 const MAX_BACKOFF_MS = 30 * 60_000
 
@@ -429,13 +434,22 @@ export function parseBranchList(out: string): { url: string; headRefName: string
   }
 }
 /** which of a rig's listed PRs are a given run's own branch, as Found (corroborating, AC2d) */
-export function branchFound(list: { url: string; headRefName: string }[], runId: string, now: number): Found[] {
-  return list.filter(p => p.headRefName === `factory/${runId}`).map(p => ({ url: p.url, at: now, source: 'branch' as const }))
+export function branchFound(
+  list: { url: string; headRefName: string }[],
+  runId: string,
+  now: number,
+): Found[] {
+  return list
+    .filter(p => p.headRefName === `factory/${runId}`)
+    .map(p => ({ url: p.url, at: now, source: 'branch' as const }))
 }
 
 /** `gh pr view <url> --json ...` parsed: headRefName and body are used only to feed `role` right here, in
  * the same call, and are never carried into the stored PrRecord (RoleInput says so) */
-export type Viewed = Pick<PrRecord, 'title' | 'state' | 'isDraft' | 'reviewDecision' | 'mergeStateStatus' | 'checks' | 'updatedAt'> & {
+export type Viewed = Pick<
+  PrRecord,
+  'title' | 'state' | 'isDraft' | 'reviewDecision' | 'mergeStateStatus' | 'checks' | 'updatedAt'
+> & {
   headRefName: string
   body: string
 }
@@ -452,7 +466,9 @@ export function parseView(out: string): Viewed | null {
     isDraft: !!v.isDraft,
     reviewDecision: typeof v.reviewDecision === 'string' ? v.reviewDecision : '',
     mergeStateStatus: typeof v.mergeStateStatus === 'string' ? v.mergeStateStatus : '',
-    checks: checksOf(Array.isArray(v.statusCheckRollup) ? (v.statusCheckRollup as { conclusion?: string | null }[]) : []),
+    checks: checksOf(
+      Array.isArray(v.statusCheckRollup) ? (v.statusCheckRollup as { conclusion?: string | null }[]) : [],
+    ),
     updatedAt: typeof v.updatedAt === 'string' ? v.updatedAt : '',
     headRefName: typeof v.headRefName === 'string' ? v.headRefName : '',
     body: typeof v.body === 'string' ? v.body : '',
@@ -622,7 +638,12 @@ export const applyViewError = (pr: PrRecord, err: string, now: number): PrRecord
 /** up to `limit` of `items` run through `fn` at once, in `items`' own start order; `stop()` is checked
  * before every new start so a caller can cut the pool short (wyc.7's overall deadline) without aborting
  * whatever is already in flight */
-async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>, stop: () => boolean = () => false): Promise<void> {
+async function pool<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+  stop: () => boolean = () => false,
+): Promise<void> {
   let next = 0
   async function worker() {
     for (;;) {
@@ -810,7 +831,13 @@ export async function buildPrs(
     if (!r.owner) {
       // wyc.8: no GitHub origin to search against; mark it searched (nothing found) rather than retry
       // `gh search prs --owner ''` every call
-      files.set(runId, { ...cur, searchedAt: now, searchedFinal: r.ended || cur.searchedFinal, searchErrorStreak: 0, searchErroredAt: 0 })
+      files.set(runId, {
+        ...cur,
+        searchedAt: now,
+        searchedFinal: r.ended || cur.searchedFinal,
+        searchErrorStreak: 0,
+        searchErroredAt: 0,
+      })
       continue
     }
     const forge = forgeOfRun(r)
@@ -819,7 +846,12 @@ export async function buildPrs(
       // wyc.11: a failed search must not spend the run's one final-search shot (searchedFinal stays as
       // it was); it only bumps an error streak so `needsSearch` backs off instead of retrying every call
       runErrors.set(runId, ghError(res.err))
-      files.set(runId, { ...cur, searchedAt: now, searchErrorStreak: (cur.searchErrorStreak ?? 0) + 1, searchErroredAt: now })
+      files.set(runId, {
+        ...cur,
+        searchedAt: now,
+        searchErrorStreak: (cur.searchErrorStreak ?? 0) + 1,
+        searchErroredAt: now,
+      })
       continue
     }
     const found = forge.parseSearch(res.out, r.startAt, r.endAt, now)

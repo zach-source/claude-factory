@@ -166,7 +166,12 @@ export type SyncResult = { ok: true } | { ok: false; step: 'pull' | 'push'; erro
  * A refusal must not repeat that host where the worker's mail or logs can send it on.
  */
 function lastError(stderr: string): string {
-  const line = stderr.split('\n').map(l => l.trim()).filter(Boolean).at(-1) ?? ''
+  const line =
+    stderr
+      .split('\n')
+      .map(l => l.trim())
+      .filter(Boolean)
+      .at(-1) ?? ''
   return line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>').slice(0, 300)
 }
 
@@ -346,7 +351,8 @@ async function turn(text: string, model?: string, session?: string, onSession?: 
   }
   const err = await errP
   const code = await p.exited
-  if (code !== 0 || err) appendFileSync(serveLog(), `${new Date().toISOString()} ${h} exited ${code}: ${err.slice(-4000)}\n`)
+  if (code !== 0 || err)
+    appendFileSync(serveLog(), `${new Date().toISOString()} ${h} exited ${code}: ${err.slice(-4000)}\n`)
   return { session: h === 'pi' ? id : (sessionIn(h, out) ?? session), egress: egressFailure(h, out, err) }
 }
 
@@ -723,7 +729,9 @@ async function waitReady(
     let ready = false
     try {
       if (p.readyExec) {
-        ready = Bun.spawnSync(['bash', '-c', p.readyExec], { cwd: p.cwd ?? repo(), env, timeout: 4000 }).exitCode === 0
+        ready =
+          Bun.spawnSync(['bash', '-c', p.readyExec], { cwd: p.cwd ?? repo(), env, timeout: 4000 })
+            .exitCode === 0
       } else if (p.readyHttp) {
         ready = (await fetch(httpGetUrl(p.readyHttp), { signal: AbortSignal.timeout(4000) })).ok
       } else {
@@ -780,13 +788,21 @@ export async function startServices(): Promise<ServiceResult[]> {
     const env = { ...process.env, ...p.env }
     let sub: ReturnType<typeof Bun.spawn>
     try {
-      sub = Bun.spawn(['bash', '-c', p.command], { cwd: p.cwd ?? repo(), env, stdin: 'ignore', stdout: fd, stderr: fd })
+      sub = Bun.spawn(['bash', '-c', p.command], {
+        cwd: p.cwd ?? repo(),
+        env,
+        stdin: 'ignore',
+        stdout: fd,
+        stderr: fd,
+      })
     } finally {
       closeSync(fd)
     }
     sub.unref()
     const r = await waitReady(p, sub.exited, startedAt, waitMs, env)
-    const line = r.ok ? `services: ${p.name} ${r.detail}` : `services: ${p.name} failed: ${r.detail}, see ${log}`
+    const line = r.ok
+      ? `services: ${p.name} ${r.detail}`
+      : `services: ${p.name} failed: ${r.detail}, see ${log}`
     appendFileSync(serveLog(), `${new Date().toISOString()} ${line}\n`)
     results.push({ name: p.name, ok: r.ok, log, detail: r.detail })
   }
@@ -811,7 +827,8 @@ export function servicesNote(results: ServiceResult[], env: Record<string, strin
   const failed = results.filter(r => !r.ok)
   const parts: string[] = []
   if (ready.length) parts.push(`ready: ${ready.join(', ')}`)
-  if (failed.length) parts.push(`failed: ${failed.map(f => `${f.name} (${f.detail}, see ${f.log})`).join('; ')}`)
+  if (failed.length)
+    parts.push(`failed: ${failed.map(f => `${f.name} (${f.detail}, see ${f.log})`).join('; ')}`)
   const dbLine = env.DATABASE_URL ? ' DATABASE_URL is set.' : ''
   return `\n\n[factory] services: ${parts.join('; ')}.${dbLine}`
 }
@@ -971,7 +988,14 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
-    session = await turnWithRetry(brief + servicesNote(services, process.env), model, undefined, onEgress, onSession, egress)
+    session = await turnWithRetry(
+      brief + servicesNote(services, process.env),
+      model,
+      undefined,
+      onEgress,
+      onSession,
+      egress,
+    )
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
