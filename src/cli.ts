@@ -27,6 +27,7 @@ import {
   extend,
   fill,
   isParked,
+  isPrWait,
   WORKER_OUTCOMES,
   parkDelayMin,
   prsIn,
@@ -129,7 +130,7 @@ const CLOSE_LABEL = 'close'
 const CONFLICT_LABEL = 'conflict'
 const REWORK_LABEL = 'rework'
 const REWORK_LABELS = [CONFLICT_LABEL, REWORK_LABEL]
-const WATCH_MS = 5 * 60_000 // how often the pull requests parked stations wait on are looked at
+const WATCH_MS = 60_000 // how often the pull requests parked stations wait on are looked at
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
 const DREAM_MS = 24 * 3600_000
@@ -862,12 +863,19 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
         ]
       : []),
     ...(parked
-      ? [
-          '',
-          '## The previous worker was blocked',
-          clipReport(parked.summary),
-          'Check whether that still holds before anything else; if it does, report blocked again.',
-        ]
+      ? isPrWait(parked)
+        ? [
+            '',
+            '## The factory waited for the pull or merge request',
+            clipReport(parked.summary),
+            'No worker ran yet: the factory held this station until the request merged, closed, or changed. Check whether it is really ready before anything else; if it is not, report blocked.',
+          ]
+        : [
+            '',
+            '## The previous worker was blocked',
+            clipReport(parked.summary),
+            'Check whether that still holds before anything else; if it does, report blocked again.',
+          ]
       : []),
     ...(prior
       ? [
@@ -2148,7 +2156,6 @@ async function beadsPass() {
     await linearPass()
     await dispatch()
     await labelPass()
-    await watchPass()
   } finally {
     release()
   }
@@ -2400,6 +2407,19 @@ const kickDevenv = () => {
   }).unref()
 }
 
+/** a watch pass at most once a minute. Checked here, so a busy or too-recent pass costs no process
+ * every tick (claude-factory-960) */
+const kickWatch = () => {
+  const stamp = join(HOME, 'watch.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (isHeld('watch.lock') || age < WATCH_MS) return
+  spawnChild(CLI, ['watch'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 /** once a day, or sooner when the inbox fills; the dream itself skips when nothing is new */
 const kickDream = () => {
   const stamp = join(HOME, 'dream.stamp')
@@ -2636,6 +2656,7 @@ async function tick(isPatrol = false) {
     if (rigs().length || runIds().length) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
+      if (!halted()) kickWatch()
       kickDevenv()
       kickConfigSync()
       kickSelfUpdate()
@@ -3541,66 +3562,105 @@ async function labelPass() {
 }
 
 /**
- * why a station parked on pull requests should wake, if it should: one was updated after it parked (a merge
- * or a close updates it too), or none is open, so nothing will change them (a deploy waiting on CI after
- * the merge, say) and it wakes on the timer it would have had without links
+ * tells whether a station parked on pull requests must wake now. Two cases wake it: a pull request
+ * changed after the park (a merge or a close also updates it), or no linked pull request stays open, so
+ * none will change. In the second case the station wakes on the timer it would have had with no links.
+ *
+ * `isPreLaunch` marks a station's awaitsPr park: no worker ran before this park (claude-factory-960). Here
+ * a pull request already merged or closed, even before the park, wakes the station at once. The station
+ * does not wait out `plainMin`, since no worker ever spent that wait.
  */
 export function watchWake(
   prs: { url: string; state: string; updatedAt: string }[],
   parkedAt: number,
   now: number,
   plainMin: number,
+  isPreLaunch = false,
 ) {
   const changed = prs.find(p => Date.parse(p.updatedAt) > parkedAt)
   if (changed)
     return `[factory] ${changed.url} changed since you parked: it is ${changed.state.toLowerCase()}, updated ${changed.updatedAt}. Check where it stands now.`
-  if (prs.length && !prs.some(p => p.state === 'OPEN') && now - parkedAt >= plainMin * 60_000)
+  if (
+    prs.length &&
+    !prs.some(p => p.state === 'OPEN') &&
+    (isPreLaunch || now - parkedAt >= plainMin * 60_000)
+  )
     return `[factory] None of the pull requests you linked is open, so they will not change: check again whether what you wait on is done.`
 }
 
+/** one pull or merge request as `watchPass` last viewed it in this pass, or null when gh/glab could
+ * not say (down, or the request gone): the park's own timer still wakes that station */
+type WatchedPr = { url: string; state: string; updatedAt: string }
+
 /**
- * a station parked on pull requests (its blocked report links them) is woken by mail when one is updated
- * after it parked: merged, closed, reviewed, commented on or pushed to. A gh call each instead of a worker each re-check.
+ * a station parked on pull requests (its blocked report, or an awaitsPr arrival, links them) is woken by
+ * mail when one changes after it parked: merged, closed, reviewed, commented on or pushed to. Every run
+ * parked on the same pull request shares one gh/glab view this pass (claude-factory-960), so a popular
+ * pull request costs one call, not one per parked run.
  */
 async function watchPass() {
+  const release = hold('watch.lock')
+  if (!release) return
   const stamp = join(HOME, 'watch.stamp')
-  if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < WATCH_MS)) return
   writeFileSync(stamp, '')
-  for (const id of runIds()) {
-    try {
-      const { run, value, c } = current(id)
-      const [node, sub] = where(value)
-      if (sub !== 'waiting' || !isParked(c, node)) continue
-      const parked = c.log.at(-1)!
-      const ghPrs = prsIn(parked.summary).flatMap(url => {
-        const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state,updatedAt'], {
-          cwd: run.repo,
-          timeout: 60_000,
-        })
-        // gh down or the PR gone: the park's own timer still wakes it
-        return p.exitCode === 0 ? [{ url, ...JSON.parse(p.stdout.toString()) }] : []
+  const cache = new Map<string, WatchedPr | null>()
+  let errors = 0
+  const woke: { run: string; node: string; url: string; state: string; at: number }[] = []
+  try {
+    // cwd only sets where gh/glab spawns from; the first parked run naming a URL this pass picks it,
+    // and every later run that names the same URL reuses the one answer, with no second call
+    const viewGh = async (url: string, cwd: string): Promise<WatchedPr | null> => {
+      if (cache.has(url)) return cache.get(url)!
+      const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state,updatedAt'], {
+        cwd,
+        timeout: 60_000,
       })
-      // a GitLab merge request is viewed the way `factory prs` does; glab down or it gone: same timer
-      const mrs = await Promise.all(
-        mrsIn(parked.summary).map(async url => {
-          const v = await gitlabForge(spawnGlab).view(url, run.repo)
-          return 'viewed' in v ? [{ url, state: v.viewed.state, updatedAt: v.viewed.updatedAt }] : []
-        }),
-      )
-      const prs = [...ghPrs, ...mrs.flat()]
-      // the plain park this report would have had, had it linked nothing
-      const plainMin = parkDelayMin(
-        { ...c, log: c.log.slice(0, -1) },
-        node,
-        (await loadFactory(run.factory)).nodes[node]?.parkMin ?? 60,
-      )
-      const text = watchWake(prs, parked.at, Date.now(), plainMin)
-      if (!text) continue
-      post(id, { type: 'MAIL', from: 'factory', to: node, text })
-      console.log(`${new Date().toISOString()} ${id}: waking ${node}: ${text}`)
-    } catch {
-      // removed mid-pass
+      const v: WatchedPr | null = p.exitCode === 0 ? { url, ...JSON.parse(p.stdout.toString()) } : null
+      if (p.exitCode !== 0) errors++
+      cache.set(url, v)
+      return v
     }
+    const viewMr = async (url: string, cwd: string): Promise<WatchedPr | null> => {
+      if (cache.has(url)) return cache.get(url)!
+      const r = await gitlabForge(spawnGlab).view(url, cwd)
+      const v: WatchedPr | null =
+        'viewed' in r ? { url, state: r.viewed.state, updatedAt: r.viewed.updatedAt } : null
+      if (!('viewed' in r)) errors++
+      cache.set(url, v)
+      return v
+    }
+    for (const id of runIds()) {
+      try {
+        const { run, value, c } = current(id)
+        const [node, sub] = where(value)
+        if (sub !== 'waiting' || !isParked(c, node)) continue
+        const parked = c.log.at(-1)!
+        const ghPrs = (await Promise.all(prsIn(parked.summary).map(url => viewGh(url, run.repo)))).filter(
+          v => v !== null,
+        )
+        const mrs = (await Promise.all(mrsIn(parked.summary).map(url => viewMr(url, run.repo)))).filter(
+          v => v !== null,
+        )
+        const prs = [...ghPrs, ...mrs]
+        // the plain park this report would have had, had it linked nothing
+        const plainMin = parkDelayMin(
+          { ...c, log: c.log.slice(0, -1) },
+          node,
+          (await loadFactory(run.factory)).nodes[node]?.parkMin ?? 60,
+        )
+        const text = watchWake(prs, parked.at, Date.now(), plainMin, isPrWait(parked))
+        if (!text) continue
+        post(id, { type: 'MAIL', from: 'factory', to: node, text })
+        console.log(`${new Date().toISOString()} ${id}: waking ${node}: ${text}`)
+        const trigger = prs.find(p => Date.parse(p.updatedAt) > parked.at) ?? prs[0]
+        if (trigger) woke.push({ run: id, node, url: trigger.url, state: trigger.state, at: Date.now() })
+      } catch {
+        // removed mid-pass
+      }
+    }
+  } finally {
+    writeJson(join(HOME, 'watch.json'), { at: Date.now(), viewed: cache.size, errors, woke })
+    release()
   }
 }
 
@@ -4210,6 +4270,8 @@ const usage = `factory — herdr software factories on xstate
                                      once reviewed, or reject it, saying why
                                      (each tick starts one a day)
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
+  watch                              one pass of the pull request watch that wakes a parked station (each
+                                     tick starts one, at most once a minute)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
@@ -4317,6 +4379,9 @@ if (import.meta.main && !outboxCmd)
         break
       case 'beads':
         await beadsPass()
+        break
+      case 'watch':
+        await watchPass()
         break
       case 'manager':
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)

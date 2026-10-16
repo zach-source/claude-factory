@@ -2,7 +2,8 @@
 // repo. Pure matching/merge/role/budget logic lives here, read-only against a run's log and inbox; the IO
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
-import { prsIn, type Entry } from './machine'
+import { mrsIn, prsIn, type Entry } from './machine'
+export { mrsIn }
 
 export type PrSource = 'report' | 'mail' | 'search' | 'branch'
 export type PrRole = 'code' | 'companion' | 'deploy' | 'mentioned'
@@ -93,16 +94,6 @@ export function prRef(url: string): { repo: string; number: number; forge?: 'git
     )
   return g ? { repo: g[1]!, number: Number(g[2]), forge: 'gitlab' } : null
 }
-
-/** every GitLab merge request URL in a text; machine.ts's `prsIn` stays GitHub-only because the park
- * watch behind it runs `gh pr view` */
-export const mrsIn = (text: string) => [
-  ...new Set(
-    text.match(
-      /https:\/\/(?!github\.com\/)[\w.-]+(?::\d+)?\/(?:[\w.-]+\/)+[\w.-]+\/-\/merge_requests\/\d+/g,
-    ) ?? [],
-  ),
-]
 
 /** host and project path out of a remote URL (https, ssh:// or scp-style), or null */
 export function parseRemote(url: string): { host: string; path: string } | null {

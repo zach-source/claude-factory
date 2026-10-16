@@ -156,6 +156,9 @@ Report ready with the pull request link, the CI status and exactly what shipping
       runner: LAPTOP,
       retries: 1,
       timeoutMin: 90,
+      // the arrival carries the pull request link (release always names it): the tick waits for the
+      // merge, the close, or new activity on that pull request, and spawns no worker until then
+      awaitsPr: true,
       prompt: `Ship the pull request once a person has merged it: their merge is the approval, and you never merge it yourself. First check what is already done (merged? tagged? deployed?) and do only what is not.
 A merge approves the change it carries, not an owner-only step (see House rules): a hand-run kubectl or helm apply, an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential change. Do every other step, then park with "parked, waiting on: <the owner step and the exact command>" and a \`Question:\` line asking the person to run it or to approve you running it.
 Not merged yet: if a person requested changes or left comments asking for them since release, report changes with every point they raised, each also recorded as a task of this run (see Tracking); if a person closed it unmerged, report hold with their reason, if any; otherwise report blocked with the pull request link and what it waits for (the merge, or a required check or queue), so the person is asked; you are woken when it changes.

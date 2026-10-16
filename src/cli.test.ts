@@ -334,6 +334,25 @@ test('a watched park wakes when a PR changes, or on the plain timer once none is
   expect(watchWake([], at, at + 9 * 3600_000, 60)).toBeUndefined() // gh could not say: the backstop wakes it
 })
 
+test('an awaitsPr pre-launch park wakes at once on a merge or close, even one that predates the park (claude-factory-960 AC2/AC3)', () => {
+  const pr = (state: string, updatedAt: string) => ({
+    url: 'https://github.com/o/r/pull/1',
+    state,
+    updatedAt,
+  })
+  const at = Date.parse('2026-10-11T10:00:00Z')
+  // still open, no activity: no wake, even long after the park (AC2)
+  expect(watchWake([pr('OPEN', '2026-10-11T09:00:00Z')], at, at + 9 * 3600_000, 60, true)).toBeUndefined()
+  // merged after the park: wakes at once, same as a worker's own park
+  expect(watchWake([pr('MERGED', '2026-10-11T10:05:00Z')], at, at + 600_000, 60, true)).toContain(
+    'it is merged',
+  )
+  // merged (or closed) before the park ever started: a worker's own park would wait out plainMin, but a
+  // pre-launch park spent no worker on that wait, so it wakes at the very next pass
+  expect(watchWake([pr('MERGED', '2026-10-11T09:00:00Z')], at, at + 1000, 60, true)).toContain('None of')
+  expect(watchWake([pr('CLOSED', '2026-10-11T09:00:00Z')], at, at + 1000, 60, true)).toContain('None of')
+})
+
 test("a worker's context is its transcript's last turn, read from a tail that may start mid-line", () => {
   const turn = (input: number, read: number) =>
     JSON.stringify({
@@ -652,6 +671,74 @@ test("brief() clips a 200_000-char inbox mail instead of pasting it whole (the o
   expect(text.length).toBeLessThan(100_000)
   expect(text).toContain('[clipped: 32000 of 200000 chars]')
   expect(text).not.toContain('x'.repeat(40_000))
+})
+
+test('brief() tells an awaitsPr pre-launch park apart from a worker-reported block (claude-factory-960)', () => {
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-960-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-960-test',
+    branch: 'b',
+  }
+  const def = {
+    name: 'f',
+    start: 'deploy',
+    nodes: { deploy: { prompt: 'ship it', next: { deployed: 'done' } } },
+  }
+  const baseC = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+  }
+  const PR = 'https://github.com/acme/widget/pull/7'
+  const preLaunch = brief(
+    run,
+    def,
+    'deploy',
+    {
+      ...baseC,
+      log: [
+        {
+          node: 'deploy',
+          attempt: 0,
+          outcome: 'blocked',
+          summary: `no worker yet: waiting for ${PR}`,
+          at: 1,
+        },
+      ],
+    },
+    [],
+  )
+  const workerBlocked = brief(
+    run,
+    def,
+    'deploy',
+    {
+      ...baseC,
+      log: [
+        { node: 'deploy', attempt: 1, outcome: 'blocked', summary: `still waiting on review ${PR}`, at: 1 },
+      ],
+    },
+    [],
+  )
+  expect(preLaunch).toContain('No worker ran yet')
+  expect(preLaunch).not.toContain('The previous worker was blocked')
+  expect(workerBlocked).toContain('The previous worker was blocked')
+  expect(workerBlocked).not.toContain('No worker ran yet')
 })
 
 test('ruleLines names a rig’s person-only contexts under the Rig goal section (claude-factory-25z.3)', () => {

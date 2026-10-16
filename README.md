@@ -425,8 +425,11 @@ export default {
 
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
-the manager; lifecycle's review has 3), and `gate: true` for a station the person decides instead of a worker. An edge can wait:
-`{ to: 'soak', delayMin: 15 }` parks the run with no worker; `goto` skips the wait.
+the manager; lifecycle's review has 3), `gate: true` for a station the person decides instead of a
+worker, and `awaitsPr: true` for a station that must wait for someone to merge, close or update a
+pull or merge request an arrival's report links, before it starts a worker (lifecycle's `deploy`;
+see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }` parks the run with no worker;
+`goto` skips the wait.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
 edge refills it, so a sweep loops forever), `maxContextK` (200: the context, in thousands of
@@ -481,15 +484,23 @@ rows = [
   without reporting (after two nudges) backs off and retries with a fresh worker.
   Out of retries, the station is stuck and the manager is paged. Stations with
   side effects you never want repeated: `retries: 0`.
-- **Parking**: a worker waiting on something outside the run (a person's decision, a
-  human review or merge, another run) reports `blocked "<what>"`. The run parks at that
-  station with no worker and no attempt spent, the manager is told what it waits for, and
-  a fresh worker checks again after `parkMin` or as soon as the station is mailed. Deploy
-  parks this way on a pull request the repo will only let a person approve or merge. When the
-  report links pull requests, the factory watches them (`gh`, every 5 minutes) and mails the
-  station once one is merged, closed or updated, instead of launching a worker to look; the
-  timer only backstops that, at 8 hours. When none of them is open (a deploy waiting on CI after
-  the merge), the station wakes on the plain `parkMin` timer instead.
+- **Parking**: a worker reports `blocked "<what>"` when it waits on something outside the
+  run (a person's decision, a human review or merge, another run). The run parks at that
+  station. It spends no worker and no attempt. The manager learns what it waits for. A fresh
+  worker checks again after `parkMin`, or as soon as someone mails the station. Deploy parks
+  this way on a pull request that only a person can approve or merge. When the report links
+  pull requests, the factory watches them (`gh`, every minute). It mails the station once
+  someone merges, closes or updates one, instead of launching a worker to look. The timer only
+  backstops that watch, at 8 hours. When no linked pull request stays open (for example,
+  a deploy that waits on CI after the merge), the station wakes on the plain `parkMin` timer
+  instead.
+- **Parking before a worker ever starts**: a station marked `awaitsPr: true` (lifecycle's
+  `deploy`) skips its first worker, too. This happens when the arrival that reaches the
+  station already links a pull or merge request (release's report). The run parks there at
+  once, the same way a worker's own `blocked` report parks it. It spends no attempt and
+  starts no worker. The same `gh`/`glab` watch, polled every minute, wakes it once someone
+  merges, closes or updates that pull or merge request. A deploy worker starts only once
+  there is work for it to do.
 - **Durable workers**: a worker whose pane dies resumes its own Claude session once
   before falling back to a retry; fresh workers are told what the branch already
   committed. Reports carry the worker's `seq`, so stale and duplicate ones drop.
