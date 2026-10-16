@@ -246,6 +246,81 @@ test('plan set prints a JSON summary on stdout: rigs, items, findings, and filed
   expect(summary).toEqual({ rigs: 1, items: 2, findings: 3, filed: 3 }) // 3 findings + 1 proposal, capped at 3
 })
 
+// `factory plan facts` gathers `rigFacts` for real, through a fake `bd` (claude-factory-dun.12, .13).
+
+/** fake bd for `plan facts`: `list --all` answers 4 beads (two top-level candidates, one of them
+ * with an open child, and a 3rd top-level candidate `c-3`); `ready` answers the 3 top-level ones.
+ * Any `children` call is logged too, so a test can assert it never happens (claude-factory-dun.12). */
+function fakeBdForFacts() {
+  mkdirSync(bin, { recursive: true })
+  const every = JSON.stringify([
+    { id: 'c-1', title: 'clean', labels: ['factory'], priority: 2 },
+    { id: 'c-2', title: 'has an open child', labels: ['factory'], priority: 2 },
+    { id: 'c-2.1', title: 'child', status: 'open' },
+    { id: 'c-3', title: 'linear-held', labels: ['factory'], priority: 2 },
+  ])
+  const ready = JSON.stringify([
+    { id: 'c-1', title: 'clean', labels: ['factory'], priority: 2 },
+    { id: 'c-2', title: 'has an open child', labels: ['factory'], priority: 2 },
+    { id: 'c-3', title: 'linear-held', labels: ['factory'], priority: 2 },
+  ])
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> '${join(bin, 'calls.log')}'`,
+    'case "$1" in',
+    `  list) printf '%s' '${every}';;`,
+    `  ready) printf '%s' '${ready}';;`,
+    "  children) printf '%s' '[]';;",
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+}
+
+function resetForFacts() {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(claudeConfig, { recursive: true })
+  writeFileSync(join(claudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(home, { recursive: true })
+  mkdirSync(join(repo, '.beads'), { recursive: true })
+  fakeBdForFacts()
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo, factory: 'lifecycle', goal: 'ship' }]),
+  )
+}
+
+const candidateIdsOf = () =>
+  (JSON.parse(readFileSync(factsFile(), 'utf8')).a.candidates as { id: string }[]).map(c => c.id)
+
+test('plan facts drops a candidate with an open child, using the already-fetched list: no `bd children` call (claude-factory-dun.12)', () => {
+  resetForFacts()
+  const out = factory(['plan', 'facts'])
+  expect(out.code).toBe(0)
+  expect(candidateIdsOf()).toEqual(['c-1', 'c-3'])
+  expect(callsLog()).not.toMatch(/^children\b/m)
+})
+
+test('plan facts drops an id linear-sync.json still owes an unstripped check (claude-factory-dun.13)', () => {
+  resetForFacts()
+  writeFileSync(
+    join(home, 'linear-sync.json'),
+    JSON.stringify({ a: { at: Date.now(), unstripped: ['c-3'] } }),
+  )
+  const out = factory(['plan', 'facts'])
+  expect(out.code).toBe(0)
+  expect(candidateIdsOf()).toEqual(['c-1'])
+})
+
+test('plan facts drops every candidate for a rig with an open Linear baseline diff (claude-factory-dun.13)', () => {
+  resetForFacts()
+  writeFileSync(join(home, 'linear-sync.json'), JSON.stringify({ a: { at: Date.now(), baseline: ['c-1'] } }))
+  const out = factory(['plan', 'facts'])
+  expect(out.code).toBe(0)
+  expect(candidateIdsOf()).toEqual([])
+})
+
 test('plan show prints the plan as text, or says there is none', () => {
   reset()
   const none = factory(['plan', 'show'])

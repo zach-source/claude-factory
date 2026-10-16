@@ -3503,19 +3503,26 @@ function rigFacts(
   linked: Set<string>,
   busy: number,
   now: number,
+  linear: { ids: Set<string>; rigs: Set<string> },
 ): RigFacts {
-  const b = beads(rig.repo, 'factory')
-  const candidates = dispatchable(ready, linked, Infinity)
-    .filter(x => !isOwned(x) && !openChildren(b, x.id).length)
-    .slice(0, 40)
-    .map(c => ({ id: c.id, title: c.title, priority: c.priority, issue_type: c.issue_type }))
+  // every open child, read from `every` (already in hand): no `bd children` subprocess call
+  // per candidate (claude-factory-dun.12).
+  const childrenOf = (id: string) => every.filter(x => parentOf(x) === id)
+  const openChildrenOf = (id: string) => childrenOf(id).filter(x => x.status !== 'closed')
+  // a rig with an open Linear baseline diff is held back whole, the same as dispatch() (claude-factory-b6c.16).
+  // an id still owed an unstripped-label check is held back on its own (claude-factory-dun.13).
+  const candidates = linear.rigs.has(rig.name)
+    ? []
+    : dispatchable(ready, linked, Infinity)
+        .filter(x => !isOwned(x) && !openChildrenOf(x.id).length && !linear.ids.has(x.id))
+        .slice(0, 40)
+        .map(c => ({ id: c.id, title: c.title, priority: c.priority, issue_type: c.issue_type }))
   const isClosed = (x: Bead) => x.status === 'closed'
   const tsOf = (iso?: string) => {
     if (!iso) return undefined
     const t = new Date(iso).getTime()
     return Number.isFinite(t) ? t : undefined
   }
-  const childrenOf = (id: string) => every.filter(x => parentOf(x) === id)
   const epics = every
     .filter(e => !isClosed(e) && childrenOf(e.id).length > 0)
     .map(e => {
@@ -3573,6 +3580,7 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
   const busyCount = new Map<string, number>()
   for (const name of busyList) if (name) busyCount.set(name, (busyCount.get(name) ?? 0) + 1)
   const linked = liveBeadIdSet()
+  const linear = linearExcluded()
   const out: Record<string, RigFacts> = {}
   for (const rig of rigs()) {
     const busy = busyCount.get(rig.name) ?? 0
@@ -3582,7 +3590,7 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
     }
     try {
       const b = beads(rig.repo, 'factory')
-      out[rig.name] = rigFacts(rig, b.every(), b.ready(), linked, busy, now)
+      out[rig.name] = rigFacts(rig, b.every(), b.ready(), linked, busy, now, linear)
     } catch (err) {
       out[rig.name] = emptyRigFacts(rig, busy, (err as Error).message)
     }
