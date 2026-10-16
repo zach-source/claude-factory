@@ -736,17 +736,23 @@ export function withProposals(
   })
 }
 
-/** returns every open item for the person: a run's gate, prompt, parked or stuck report, and a rig's bd
- * decisions. It merges in any stored proposal, and it folds same-decision items together. The console and the
- * manager's own interview round both make this one call, so they never see a different list. */
+/** Returns every open item for the person: a run's gate, prompt, parked or stuck report, and a rig's bd
+ * decisions. It folds same-decision items into one row, then it applies any stored proposal. The console and
+ * the manager's own interview round use this one function, so they always see the same list.
+ *
+ * `mergeSame` must run first, on each item's own raw question. Two bead-less items merge only while both
+ * still carry the same raw question text. A proposal rewrites the question of one member only (the member
+ * whose key it names). If `mergeSame` ran after that, it would compare the rewritten text on one member
+ * against the raw text on the rest. The group would no longer match, and the row would split back into two. */
 export function openInterviews(
   runs: readonly FactoryRun[],
   decisions: readonly Decision[],
   proposals: Record<string, Proposal> = {},
   answered: Record<string, string> = {},
 ): Interview[] {
-  return mergeSame(
-    withProposals([...interviews(runs, answered), ...beadInterviews(decisions, answered)], proposals),
+  return withProposals(
+    mergeSame([...interviews(runs, answered), ...beadInterviews(decisions, answered)]),
+    proposals,
   )
 }
 

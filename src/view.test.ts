@@ -783,6 +783,49 @@ test('openInterviews merges a bead-matching interview fixture pair into one item
   expect(merged[0]!.also?.map(m => m.key)).toEqual(['iv:gs2d@2'])
 })
 
+test('openInterviews keeps a bead-less merge after a proposal lands on the primary (claude-factory-9f6.18)', () => {
+  // two runs with no bead write the same long own question (over 160 chars, so each needs a proposal
+  // on its own) in the same rig: mergeSame must fold them into one row before any proposal rewrites it
+  const longQ = `Which way should we go? ${'x'.repeat(140)}`
+  const ra = {
+    id: 'ra',
+    rig: 'api',
+    node: 'triage',
+    sub: 'waiting',
+    last: {
+      node: 'triage',
+      attempt: 1,
+      outcome: 'blocked',
+      summary: `Two specs disagree.\nQuestion: ${longQ}\nOptions: a | b`,
+      at: 1,
+    },
+  }
+  const rb = {
+    id: 'rb',
+    rig: 'api',
+    node: 'deploy',
+    sub: 'waiting',
+    last: {
+      node: 'deploy',
+      attempt: 1,
+      outcome: 'blocked',
+      summary: `Still waiting.\nQuestion: ${longQ}\nOptions: a | b`,
+      at: 5,
+    },
+  }
+  const proposals = { 'iv:ra@1': { question: 'Short q?', options: ['go: do it', 'wait: hold off'], at: 9 } }
+  const before = openInterviews([ra, rb], [])
+  expect(before).toHaveLength(1) // merged before any proposal exists
+  expect(before[0]!.also?.map(m => m.key)).toEqual(['iv:rb@5'])
+
+  const after = openInterviews([ra, rb], [], proposals)
+  expect(after).toHaveLength(1) // still one row: the proposal must not split the merge back apart
+  expect(after[0]!.key).toBe('iv:ra@1')
+  expect(after[0]!.question).toBe('Short q?')
+  expect(after[0]!.needsProposal).toBe(false)
+  expect(after[0]!.also?.map(m => m.key)).toEqual(['iv:rb@5'])
+})
+
 test('a collapsed interview item built from a recorded parked summary stays short and redacted; the details toggle holds the full text', () => {
   const fixtures: { run: string; node: string; bead?: string; summary: string }[] = [
     { run: 'lpv', node: 'triage', bead: 'claude-factory-lpv', summary: lpv },
