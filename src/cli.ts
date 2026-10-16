@@ -3736,7 +3736,7 @@ function planSetCmd(answerPath?: string) {
         .map(p => ({
           title: `pm proposal: ${clip(p.change, 80)}`,
           desc: `${p.why}${p.bead ? ` (${p.bead})` : ''}`,
-          key: `proposal:${name}:${plan.hashOf(`${p.change}\n${p.why}`)}`,
+          key: plan.proposalKey(name, p),
           human: true,
         })),
     ]

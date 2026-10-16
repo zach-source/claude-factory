@@ -201,6 +201,24 @@ test("a proposal becomes a 'human'-labeled bead; the argv log has no update and 
   expect(log.split(/\s+/)).not.toContain('-p')
 })
 
+test('a proposal naming a bead dedupes on rig+bead, not on its wording: a reworded repeat files no second bead (claude-factory-dun.19)', () => {
+  reset()
+  writeFacts({ findings: [] }) // no findings: only the proposal can file
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath, {
+    proposals: [{ rig: 'a', bead: 'fx-1', change: 'bump fx-1 to P0', why: 'a customer is blocked' }],
+  })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  expect(createCalls()).toHaveLength(1)
+
+  // the pm is cold next hour: same rig+bead, new wording
+  writeAnswer(answerPath, {
+    proposals: [{ rig: 'a', bead: 'fx-1', change: 'raise fx-1 to top priority', why: 'blocking a release' }],
+  })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  expect(createCalls()).toHaveLength(1) // still 1: the key matched the already-filed bead
+})
+
 test('plan set labels starved-epic and goal-no-beads human; epic-done-open and goal-no-plan stay unlabeled (claude-factory-dun.16, pins HUMAN_FINDING_KINDS)', () => {
   reset()
   writeFacts({

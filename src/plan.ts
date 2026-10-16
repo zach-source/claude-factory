@@ -32,6 +32,19 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 export const hashOf = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 8)
 
 /**
+ * `factory plan set`'s dedupe key for one proposal. A proposal that names a bead keys on
+ * `rig:bead`: the pm runs cold each hour, with no memory of what it proposed before, so the same
+ * change in new words must still match the key of an already-filed bead. Hashing `change`+`why`
+ * instead, as the key for a bead-naming proposal once did, let a reworded repeat file a new
+ * human-labeled bead every hour, up to 3 per rig per turn (claude-factory-dun.19).
+ *
+ * A proposal that names no bead (a rig- or goal-wide change) still keys on a hash of `change` and
+ * `why`, since there is no bead id to key on instead. */
+export function proposalKey(rig: string, p: Pick<Proposal, 'bead' | 'change' | 'why'>): string {
+  return p.bead ? `proposal:${rig}:${p.bead}` : `proposal:${rig}:${hashOf(`${p.change}\n${p.why}`)}`
+}
+
+/**
  * This function returns true when `plan.at` is a real past or present time.
  * The time must be within `PLAN_FRESH_MS`.
  * A plan that is exactly `PLAN_FRESH_MS` old is stale. The check uses `<`, not `<=`.

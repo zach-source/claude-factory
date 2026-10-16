@@ -8,6 +8,7 @@ import {
   isValidRigPlan,
   orderByPlan,
   PLAN_FRESH_MS,
+  proposalKey,
   rankPlan,
   rigPlanOf,
   type Plan,
@@ -116,6 +117,22 @@ test('rigPlanOf: a rig named after an Object.prototype member the plan never men
   expect(rigPlanOf(p, 'constructor')).toBeUndefined()
   expect(rigPlanOf(p, 'toString')).toBeUndefined()
   expect(rigPlanOf(p, 'hasOwnProperty')).toBeUndefined()
+})
+
+// ---- proposalKey ----
+
+test('proposalKey: a bead-naming proposal keys on rig+bead, stable across a reworded change/why', () => {
+  const k1 = proposalKey('a', { bead: 'fx-1', change: 'bump fx-1 to P0', why: 'blocked' })
+  const k2 = proposalKey('a', { bead: 'fx-1', change: 'raise fx-1 priority', why: 'a release' })
+  expect(k1).toBe(k2)
+  expect(k1).toBe('proposal:a:fx-1')
+})
+
+test('proposalKey: a proposal naming no bead keys on a hash of change+why, so a different proposal gets a different key', () => {
+  const k1 = proposalKey('a', { change: 'add a rig', why: 'the owner asked' })
+  const k2 = proposalKey('a', { change: 'add a different rig', why: 'the owner asked' })
+  expect(k1).not.toBe(k2)
+  expect(k1).toMatch(/^proposal:a:[0-9a-f]{8}$/)
 })
 
 // ---- findings: starved-epic ----
