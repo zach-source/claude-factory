@@ -9,7 +9,8 @@ minor release may change the factory format, the CLI or the run state.
 - Deploy no longer starts a worker against an unmerged pull request. (claude-factory-960)
   - Cause: a run reached `deploy` as soon as release reported, so a worker always launched
     even when the pull request was still open. The worker then found nothing to do and
-    parked, 1.44 deploy sessions per shipped run over 3 days, 215M tokens spent on parks.
+    parked: 1.50 deploy sessions per shipped run over 3 days (2026-10-13 to 16, by the
+    `fate()` this change ships), 215M tokens spent on parks.
   - Fix: `Node.awaitsPr` (`src/machine.ts`) marks a station, `deploy` in `factories/lifecycle.ts`,
     that must wait for a linked pull or merge request before it starts a worker. When an
     arrival's report names one and `awaitsPr` is set, the run parks at once, spending no
