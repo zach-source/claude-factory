@@ -3457,8 +3457,9 @@ function parseOption(raw: string): { label: string; effect?: string; recommended
 /** the manager proposes a short title, an optional context sentence, and 2-4 options for an item the person
  * would otherwise have to answer in their own words; never for a gate, which only the person decides, and
  * never for a blocked-on-prompt item, which waits on the person looking at the worker's pane rather than on
- * a choice. Refuses each field over its limit (named in the error, with its length and the limit) before it
- * writes anything, so a bad call leaves decisions.json unchanged.
+ * a choice. Refuses each field over its limit, an empty question or option label, and a question of only
+ * whitespace (named in the error, with its length and the limit) before it writes anything, so a bad call
+ * leaves decisions.json unchanged.
  *
  * An own: key identifies an owner-only bead. It always keeps its two fixed options, start now and not now.
  * This function ignores any options that the caller gives for an own: key, and does not parse or store them.
@@ -3471,6 +3472,7 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
   if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
   if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
   if (/\n/.test(question)) fail('question has a newline: it must be one line')
+  if (!question.trim()) fail('question is empty, or only whitespace')
   if (question.length > 160) fail(`question is ${question.length} characters, over the 160 limit`)
   if (context !== undefined && /\n/.test(context)) fail('context has a newline: it must be one sentence')
   if (context !== undefined && context.length > 200)
@@ -3497,6 +3499,7 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
   if (rawOptions.length > 4) fail(`${rawOptions.length} options given, over the 4 limit`)
   const parsed = rawOptions.map(parseOption)
   for (const o of parsed) {
+    if (!o.label) fail(`option "${o.effect ?? ''}" has no label before its ": "`)
     if (o.label.length > 40)
       fail(`option label "${o.label}" is ${o.label.length} characters, over the 40 limit`)
     if (o.effect && o.effect.length > 100)

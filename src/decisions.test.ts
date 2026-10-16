@@ -202,6 +202,26 @@ test('decisions propose keeps a value at its limit, refuses one over it naming t
   expect(snapshot()).toBe(before)
 })
 
+test('decisions propose refuses an empty option label and a whitespace-only question (claude-factory-9f6.17)', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', '[]')
+  const decisionsFile = join(home, 'decisions.json')
+  const snapshot = () => (existsSync(decisionsFile) ? readFileSync(decisionsFile, 'utf8') : undefined)
+  const before = snapshot()
+
+  // ': go now (recommended) | : wait' parses to two options with an empty label each
+  const emptyLabel = factory(['decisions', 'propose', 'bd:api:api-1', 'q', ': go now (recommended) | : wait'])
+  expect(emptyLabel.code).not.toBe(0)
+  expect(emptyLabel.err).toContain('no label')
+  expect(snapshot()).toBe(before)
+
+  const blankQuestion = factory(['decisions', 'propose', 'bd:api:api-1', '   ', 'a | b'])
+  expect(blankQuestion.code).not.toBe(0)
+  expect(blankQuestion.err).toContain('question is empty')
+  expect(snapshot()).toBe(before)
+})
+
 test('decisions propose refuses a newline in the question, the context or the options line', () => {
   rmSync(dir, { recursive: true, force: true })
   rig('api')
