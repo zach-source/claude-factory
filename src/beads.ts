@@ -331,6 +331,37 @@ export const beads = (repo: string, actor: string) => ({
     const r = bd(repo, actor, 'children', id, '--json')
     return r.isOk ? JSON.parse(r.out) : []
   },
+  /** every bead, closed included, that already carries `<field>=<value>` in its metadata. The pm
+   * (`factory plan set`, claude-factory-dun) uses this to dedupe a finding by its `pm_finding` key
+   * before filing it: a finding already filed, even one whose bead later closed, is never filed
+   * again. Throws rather than answering false on a real bd failure, the same as `lookup` above. */
+  hasMetadata: (field: string, value: string): boolean => {
+    const r = bd(repo, actor, 'list', '--all', '--metadata-field', `${field}=${value}`, '--json', '-n', '2')
+    if (!r.isOk) throw new Error(`bd list --metadata-field ${field}=${value}: ${r.err.split('\n')[0]}`)
+    return r.out !== 'null' && (JSON.parse(r.out) as Bead[]).length > 0
+  },
+  /**
+   * Files a plan finding or proposal (claude-factory-dun) as a new bead, with no `factory` label
+   * (unlike `create`, above): the factory itself must never start it as a run. `human` adds the
+   * `human` label instead, which puts it in the console's Interview tab as a decision item; without
+   * it, the bead files unlabeled, for a person to triage like any other backlog item. The caller
+   * checks `hasMetadata('pm_finding', key)` first; this call always creates.
+   */
+  fileFinding: (title: string, description: string, key: string, { human = false } = {}): string =>
+    must(
+      bd(
+        repo,
+        actor,
+        'create',
+        title,
+        '-d',
+        description,
+        '--metadata',
+        `{"pm_finding":"${key}"}`,
+        ...(human ? ['-l', 'human'] : []),
+      ),
+      'create',
+    ),
   /**
    * pull, repair and push against the repo's Dolt remote (`bd sync`), so other machines' beads and
    * claims reach dispatch and ours reach them; false with no remote. Bounded: a hung remote must not
