@@ -3455,11 +3455,15 @@ async function dispatch() {
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
   const { ids: linearIds, rigs: linearRigs } = linearExcluded()
-  // live runs only: a finished run's deferred bead, undeferred by a person, is new work again
-  const linked = new Set(
+  // live runs only: a finished run's deferred bead, undeferred by a person, is new work again.
+  // claude-factory-6as.3: a Map, not a Set, so dispatch can name the run working a bead that is
+  // still `ready` and unassigned (it lost its own claim on the bead), for one comment.
+  const linked = new Map(
     runIds().flatMap(id => {
       const { run, value } = current(id)
-      return run.bead && !['done', 'aborted'].includes(where(value)[0]) ? [run.bead] : []
+      return run.bead && !['done', 'aborted'].includes(where(value)[0])
+        ? ([[run.bead, id]] as [string, string][])
+        : []
     }),
   )
   // a sync's error stands until the next sync: dispatch passes every 30 s would clear it
@@ -3493,8 +3497,36 @@ async function dispatch() {
         })
         continue
       }
+      const ready = b.ready()
+      // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
+      // lost its own claim on the bead, to a reaper, say). `dispatchable` below drops this bead from
+      // `candidates`, so no second run starts for it. This loop still leaves one comment naming the
+      // run. A `dispatch_skip` metadata stamp dedupes it, so a stuck bead gets no new comment every
+      // 30s pass.
+      for (const x of ready) {
+        if (x.parent || x.assignee) continue
+        const runId = linked.get(x.id)
+        if (!runId || x.metadata?.dispatch_skip === runId) continue
+        let node = ''
+        try {
+          node = where(current(runId).value)[0] ?? ''
+        } catch {
+          // the run ended, or something removed it between building `linked` and here; comment with no node
+        }
+        try {
+          b.setMetadata(x.id, { dispatch_skip: runId })
+        } catch (err) {
+          errors.push({ id: x.id, error: (err as Error).message })
+          continue // not landed: skip the comment too, so a later pass can retry both together
+        }
+        try {
+          b.comment(x.id, `not started: live run ${runId}${node ? ` at ${node}` : ''} works this bead`)
+        } catch (err) {
+          errors.push({ id: x.id, error: (err as Error).message }) // the metadata stamp already landed
+        }
+      }
       // children are looked up only for the candidates, until the rig is full
-      const candidates = dispatchable(b.ready(), linked, Infinity).filter(
+      const candidates = dispatchable(ready, new Set(linked.keys()), Infinity).filter(
         x => !isOwned(x) && !openChildren(b, x.id).length && !linearIds.has(x.id),
       )
       if (idle(rig, candidates.length))

@@ -11,6 +11,8 @@ import { afterEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createActor } from 'xstate'
+import { compile, type Factory } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `dispatch-${process.pid}`)
@@ -164,9 +166,13 @@ function pfactory(args: string[], extraEnv: Record<string, string> = {}) {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 
+const skipFlag = join(pdir, 'dispatch-skip.flag')
+
 /** fake bd: `ready` answers one bead (`acme-1`, carrying `extra`), or `[]` once `rejected.flag` exists
  * (the real `bd reject` removes the `factory` label, which drops a bead out of `bd ready --label
- * factory` for good). `update ... --add-label rejected` writes that flag. Every call is logged. */
+ * factory` for good), or the same bead with `metadata.dispatch_skip` set once `update --set-metadata
+ * dispatch_skip=<runId>` ran (claude-factory-6as.3's dedupe). `update ... --add-label rejected` writes
+ * the rejected flag. Every call is logged. */
 function fakePrecheckBd(extra: Record<string, unknown> = {}) {
   mkdirSync(pbin, { recursive: true })
   const bead = JSON.stringify([{ id: 'acme-1', title: 'fix it', labels: ['factory'], ...extra }])
@@ -174,9 +180,16 @@ function fakePrecheckBd(extra: Record<string, unknown> = {}) {
     '#!/bin/sh',
     `echo "bd $*" >> "${bdCallsLog}"`,
     'case "$1" in',
-    `  ready) if [ -f "${rejectedFlag}" ]; then printf '%s' '[]'; else printf '%s' '${bead}'; fi;;`,
+    '  ready)',
+    `    if [ -f "${rejectedFlag}" ]; then printf '%s' '[]'`,
+    `    elif [ -f "${skipFlag}" ]; then skip=$(cat "${skipFlag}"); printf '%s' '[{"id":"acme-1","title":"fix it","labels":["factory"],"metadata":{"dispatch_skip":"'"$skip"'"}}]'`,
+    `    else printf '%s' '${bead}'`,
+    '    fi;;',
     "  children) printf '%s' '[]';;",
-    `  update) case " $* " in *" --add-label rejected "*) : > "${rejectedFlag}";; esac; exit 0;;`,
+    '  update)',
+    `    case " $* " in *" --add-label rejected "*) : > "${rejectedFlag}";; esac`,
+    `    case "$*" in *dispatch_skip=*) echo "$*" | sed -n 's/.*dispatch_skip=\\([^ ]*\\).*/\\1/p' > "${skipFlag}";; esac`,
+    '    exit 0;;',
     '  dolt) echo "No remotes configured";;',
     '  *) exit 0;;',
     'esac',
@@ -319,4 +332,59 @@ test('FACTORY_PRECHECK=0 turns the whole check off: 0 gh calls, the run starts a
   expect(out.code).toBe(0)
   expect(existsSync(ghCallsLog)).toBe(false)
   expect(runDirs()).toHaveLength(1)
+})
+
+// claude-factory-6as.3: a live run can hold a ready, unassigned bead (it lost its own claim, to a
+// reaper, say). dispatch must not start a second run for it, and must leave one comment naming the
+// run, deduped across passes by a `dispatch_skip` metadata stamp.
+const MINI: Factory = {
+  name: 'lifecycle',
+  start: 'implement',
+  nodes: { implement: { prompt: 'do it', next: { done: 'done' } } },
+}
+/** run.json + state.json for a run sitting at a live node (not done/aborted), holding `bead`. `run.factory`
+ * must be a real file `loadFactory` can read (the beads pass's track() loop opens it for every run with a
+ * bead), so this writes `MINI` as its own on-disk factory JSON, as watch.test.ts's `parkedRun` does. */
+function liveRun(id: string, bead: string) {
+  const actor = createActor(compile(MINI)).start()
+  const f = join(pdir, 'mini.json')
+  if (!existsSync(f)) writeFileSync(f, JSON.stringify(MINI))
+  const d = join(phome, 'runs', id)
+  mkdirSync(d, { recursive: true })
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id,
+      factory: f,
+      repo: 'n/a',
+      goal: 'g',
+      ws: 'ws1',
+      worktree: 'n/a',
+      branch: 'b',
+      bead,
+    }),
+  )
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+}
+
+test('a ready, unassigned bead a live run already holds gets one comment, and starts no second run', () => {
+  precheckReset()
+  liveRun('other-run', 'acme-1')
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toEqual(['other-run']) // no new run for acme-1
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(calls.some(l => /^bd update\b/.test(l) && l.includes('dispatch_skip=other-run'))).toBe(true)
+})
+
+test('a second pass adds 0 new comments for a bead a live run already holds', () => {
+  precheckReset()
+  liveRun('other-run', 'acme-1')
+  pfactory(['beads'], { GH_JSON: '[]' })
+  rmSync(join(phome, 'dispatch.stamp'), { force: true }) // the 30s throttle would else skip pass 2
+  pfactory(['beads'], { GH_JSON: '[]' })
+  expect(runDirs()).toEqual(['other-run'])
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
 })
