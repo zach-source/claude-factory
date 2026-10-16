@@ -376,6 +376,12 @@ test('a ready, unassigned bead a live run already holds gets one comment, and st
   const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
   expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
   expect(calls.some(l => /^bd update\b/.test(l) && l.includes('dispatch_skip=other-run'))).toBe(true)
+  // claude-factory-6as.4: `factory metrics` counts a live-run skip from this file, not from bd
+  const lines = readFileSync(join(phome, 'precheck.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(lines.filter((l: { kind: string }) => l.kind === 'live-run')).toHaveLength(1)
 })
 
 test('a second pass adds 0 new comments for a bead a live run already holds', () => {

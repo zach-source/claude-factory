@@ -83,6 +83,8 @@ import {
   createdAt,
   fate,
   metrics,
+  parsePrecheckLines,
+  precheckStats,
   render,
   renderTokens,
   sessionOf,
@@ -3519,8 +3521,10 @@ async function dispatch() {
           errors.push({ id: x.id, error: (err as Error).message })
           continue // not landed: skip the comment too, so a later pass can retry both together
         }
+        const evidence = `not started: live run ${runId}${node ? ` at ${node}` : ''} works this bead`
+        logPrecheck(rig.name, x.id, 'live-run', evidence) // claude-factory-6as.4: counted by `factory metrics`
         try {
-          b.comment(x.id, `not started: live run ${runId}${node ? ` at ${node}` : ''} works this bead`)
+          b.comment(x.id, evidence)
         } catch (err) {
           errors.push({ id: x.id, error: (err as Error).message }) // the metadata stamp already landed
         }
@@ -4720,13 +4724,30 @@ if (import.meta.main && !outboxCmd)
         )
         const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
         const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
+        // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
+        // fail-opens (logPrecheck), independent of bd; this command is the only reader.
+        const since_ = since ? Date.now() - days * 86_400_000 : 0
+        const precheckAll = existsSync(precheckFile())
+          ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
+          : []
+        const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
         if (args.includes('--json'))
           console.log(
-            JSON.stringify({ all: metrics(picked), rigs: Object.fromEntries(groups.map(g => [g, of(g)])) }),
+            JSON.stringify({
+              all: metrics(picked),
+              precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
+              rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
+            }),
           )
         else {
-          console.log(render(metrics(picked), `${basename(HOME)}${since ? `, last ${days}d` : ''}`))
-          if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g))
+          console.log(
+            render(
+              metrics(picked),
+              `${basename(HOME)}${since ? `, last ${days}d` : ''}`,
+              precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
+            ),
+          )
+          if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
         }
         if (args.includes('--tokens')) {
           const live = picked.filter(r => runIds().includes(r.id))
