@@ -101,6 +101,14 @@ which runs await you, which are stuck, and how many are finished or aborted. A r
 team ([docs/beads.md#linear](docs/beads.md#linear)) shows its last pull too: pulled count and
 age, or an error. Press `backlog` to see only the beads of that rig on the Backlog tab.
 
+When the pm ranks a rig, the Rigs tab shows a line that starts with "Next up". This line
+names up to 3 beads, in order, each as `<id> (P<priority>) <why>`. Under it, a yellow line
+names each finding: a starved epic, a goal with no open bead, or a gap in the plan.
+
+The pane header and the band show the age of the plan too, for example "plan 12m ago · 2
+findings". After 2 hours, both show "plan stale". See
+[The manager drives](#the-manager-drives) for what the pm does and how its plan feeds the patrol.
+
 ### PRs (key 5)
 
 ![The PRs tab: the pull requests and merge requests of each run](docs/images/console-prs.png)
@@ -154,6 +162,14 @@ last patrol ran. Underneath, the runtime stays mechanical. It ticks every 5 s, l
 workers, and nudges an idle worker twice before it retries with backoff. So a quiet manager never
 stalls a run.
 
+A hidden `pm` subagent runs once an hour and soon after a run finishes. It reads each rig's ready beads, goal, open epics, epic progress, and runs in flight. It writes `<home>/plan.json`, a ranked list of next work for each rig, with a one-line reason for each bead. It also writes one line per run to `<home>/pm-log.jsonl`. The patrol and `factory dispatch` use this plan when it is less than 2 hours old. If the plan is older or missing, they use today's order instead.
+
+The pm shows two types of problem as decision items. The first type is a starved epic. A starved epic gets no new work for many hours, while lower-priority work is done. The second type is a goal with no open bead. For each problem, the pm makes a human-labeled bead. It is a decision item in the Interview tab, like a proposal.
+
+A plan gap is different. In one kind, an epic stays open after all its children close. In the other kind, a goal has no bead in the plan. For each plan gap, the pm makes an unlabeled bead. A person must add a label to triage it.
+
+The pm does not change the priority of a P0 or P1 bead, a rig goal, or an owner-only setting. It can only propose such a change. The proposal becomes a decision item in the Interview tab. A person must decide on the item. To turn off the pm, set `pm` to `false` in the plugin's `userConfig`.
+
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats
 (a fresh session per visit, a durable identity in the run), each repo the factory works is
@@ -175,7 +191,8 @@ and pushes it, and pushes the memory to the `memory` branch, so the factory can 
 A rig is a repo the factory works, by name. Its ready beads labeled `factory` start as runs,
 it keeps its sweeps running, and it has its own cap on busy runs under the factory's
 `FACTORY_MAX_RUNS`. A goal is the person's standing direction for the rig: while the rig has
-room, the manager's heartbeat patrol carries it and gives the rig the next work toward it.
+room, the manager's heartbeat patrol carries it and gives the rig the next work toward it,
+using the pm's plan when it is fresh (see [The manager drives](#the-manager-drives)).
 The goal also reaches every worker's brief, under "## Rig goal", so a step it reserves for
 the person binds every station, not only the manager.
 

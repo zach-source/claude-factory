@@ -3,8 +3,12 @@ import type {
   FactoryBead,
   FactoryMail,
   FactoryPatrolLogEntry,
+  FactoryPlan,
+  FactoryPlanFinding,
+  FactoryPlanItem,
   FactoryPrs,
   FactoryRig,
+  FactoryRigPlan,
   FactoryRun,
 } from '../types'
 
@@ -294,6 +298,105 @@ export function runFacts(
     .join('')
 }
 
+/** a plan this old or older is stale (mirrors `PLAN_FRESH_MS`, src/plan.ts): the patrol then
+ * chooses as it did before the pm existed, the same as with no plan at all. */
+const PLAN_FRESH_MS = 2 * 60 * 60_000
+
+/** true only for a plan whose `at` is a real, non-future time less than `PLAN_FRESH_MS` old
+ * (mirrors `isFresh`, src/plan.ts: kept separate since mod code cannot import from src) */
+function isPlanFresh(plan: FactoryPlan | null | undefined, now: number): boolean {
+  if (!plan || typeof plan.at !== 'number' || !Number.isFinite(plan.at)) return false
+  if (plan.at > now) return false
+  return now - plan.at < PLAN_FRESH_MS
+}
+
+/** Checks the shape of one finding (mirrors `isValidFinding`, src/plan.ts: kept separate since mod
+ * code cannot import from src). `kind`, `key` and `text` must each be a string.
+ *
+ * `isValidRigPlan` once checked only that `findings` is an array, and so passed `findings:
+ * [null]`. `planSection` below and `rigsView` (mod/hooks/views.tsx) then read `f.key` and `f.text`
+ * on `null`, and threw (claude-factory-dun.20). */
+function isValidFinding(x: unknown): x is FactoryPlanFinding {
+  if (!x || typeof x !== 'object') return false
+  const o = x as Record<string, unknown>
+  return typeof o.kind === 'string' && typeof o.key === 'string' && typeof o.text === 'string'
+}
+
+/** Checks the shape of one rig's plan (mirrors `isValidRigPlan`, src/plan.ts: kept separate since
+ * mod code cannot import from src). `items` and `findings` must both be arrays. Each item must
+ * have a string `id`, a string `title`, a string `why` and a finite `priority`. Each finding must
+ * pass `isValidFinding`.
+ *
+ * `readPlan` (register.tsx) calls `isValidPlan` below on the whole file before this function
+ * ever runs, so by the time a caller here sees a `FactoryPlan`, every rig entry already passed
+ * this check (claude-factory-dun.18). */
+function isValidRigPlan(x: unknown): x is FactoryRigPlan {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return false
+  const o = x as Record<string, unknown>
+  return (
+    Array.isArray(o.items) &&
+    o.items.every(
+      it =>
+        !!it &&
+        typeof it === 'object' &&
+        typeof (it as Partial<FactoryPlanItem>).id === 'string' &&
+        typeof (it as Partial<FactoryPlanItem>).title === 'string' &&
+        typeof (it as Partial<FactoryPlanItem>).why === 'string' &&
+        Number.isFinite((it as Partial<FactoryPlanItem>).priority),
+    ) &&
+    Array.isArray(o.findings) &&
+    o.findings.every(isValidFinding)
+  )
+}
+
+/** Checks the shape of a whole plan read from `plan.json`: a real `at`, a `rigs` object whose
+ * every entry passes `isValidRigPlan`, and a `proposals` array. A hand-edited or truncated file
+ * can fail this; `readPlan` then reads it as no plan, the same as a missing or corrupt file
+ * (claude-factory-dun.18, mirrors `isValidPlanShape`, src/cli.ts). */
+export function isValidPlan(p: unknown): p is FactoryPlan {
+  if (!p || typeof p !== 'object') return false
+  const o = p as Record<string, unknown>
+  return (
+    typeof o.at === 'number' &&
+    !!o.rigs &&
+    typeof o.rigs === 'object' &&
+    !Array.isArray(o.rigs) &&
+    Object.values(o.rigs as Record<string, unknown>).every(isValidRigPlan) &&
+    Array.isArray(o.proposals)
+  )
+}
+
+/** Looks up one rig's plan by name, the way `rigsView` does (mirrors `rigPlanOf`, src/plan.ts).
+ *
+ * Returns `undefined` when `plan` is absent, or when the plan never mentions this rig.
+ *
+ * A plain `plan.rigs[name]` lookup is not safe here. `rigs` is a JSON-parsed plain object. Give
+ * it a name like `constructor` or `toString` (an `Object.prototype` member) that the plan never
+ * mentions, and the lookup still finds that inherited function, not `undefined`. `rp.items` then
+ * throws on a function (claude-factory-dun.18). `Object.hasOwn` checks the plan's own key first,
+ * so it does not make this mistake. */
+export function rigPlanOf(p: FactoryPlan | null | undefined, name: string): FactoryRigPlan | undefined {
+  if (!p || !Object.hasOwn(p.rigs, name)) return undefined
+  return p.rigs[name]
+}
+
+/** the patrol prompt's 'Plan' section: `undefined` with no fresh plan, so the prompt's text then
+ * stays byte-identical to a patrol with no plan at all. Lists, per rig with an item or a finding,
+ * the top 5 ranked beads in order and every open finding. */
+function planSection(plan: FactoryPlan | undefined, now: number): string | undefined {
+  if (!isPlanFresh(plan, now)) return undefined
+  const rigs = Object.entries(plan!.rigs).filter(([, rp]) => rp.items.length || rp.findings.length)
+  if (!rigs.length) return undefined
+  const rigText = rigs
+    .map(([rig, rp]) => {
+      const items = rp.items.slice(0, 5).map((it, i) => `  ${i + 1}. ${it.id} (P${it.priority}) ${it.why}`)
+      const findings = rp.findings.map(f => `  - ${f.text}`)
+      return [`${rig}:`, ...items, ...findings].join('\n')
+    })
+    .join('\n')
+  return `Plan (from the pm, ${dur(now - plan!.at)} old): for a rig with room, start from it in order\n${rigText}`
+}
+
 /**
  * The manager's loop. This builds the message to wake the patrol subagent with.
  * It returns null when nothing calls for a wake.
@@ -333,6 +436,8 @@ export function patrol(
   lastSig?: string,
   hold: ReadonlySet<string> = new Set(),
   log: readonly string[] = [],
+  plan?: FactoryPlan,
+  now: number = Date.now(),
 ) {
   const live = runs.filter(isRunLive)
   const blockedAll = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
@@ -384,6 +489,7 @@ export function patrol(
     }${s.stuck.length ? `, ${s.stuck.length} stuck` : ''}`
   }
   const rigSummary = rigs.map(rigLine).filter((l): l is string => !!l)
+  const plannedWork = planSection(plan, now)
   const text = [
     '[factory] patrol',
     ...(rigSummary.length ? [line(`Rigs: ${rigSummary.join('; ')}.`, 300)] : []),
@@ -391,6 +497,7 @@ export function patrol(
       ? `New:\n${news.join('\n')}`
       : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
     state,
+    ...(plannedWork ? [plannedWork] : []),
     ...(log.length ? [`Earlier patrols:\n${log.map(a => `- ${a}`).join('\n')}`] : []),
   ].join('\n')
   return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state, sig, kept }
@@ -399,6 +506,17 @@ export function patrol(
 /** "patrol 3m ago", drawn in the header and the band; '' before any patrol has run */
 export function patrolAgo(now: number, lastPatrol: FactoryPatrolLogEntry | null) {
   return lastPatrol ? `patrol ${dur(Math.max(0, now - lastPatrol.at))} ago` : ''
+}
+
+/** "plan 12m ago · 2 findings". The header and the band draw this next to `patrolAgo`'s own text.
+ * A plan 2 or more hours old (see `isPlanFresh`) shows "plan stale" instead. This is the same
+ * age limit the patrol and `dispatch()` use for their own fallback to today's order. The result
+ * is '' before the pm writes its first plan. */
+export function planAgo(now: number, plan: FactoryPlan | null): string {
+  if (!plan) return ''
+  if (!isPlanFresh(plan, now)) return 'plan stale'
+  const findings = Object.values(plan.rigs).reduce((n, rp) => n + rp.findings.length, 0)
+  return `plan ${dur(Math.max(0, now - plan.at))} ago · ${findings} finding${findings === 1 ? '' : 's'}`
 }
 
 /** `/factory patrols`: the newest 10 entries of `<home>/patrol-log.jsonl`, oldest first */
@@ -414,6 +532,47 @@ export function patrolsText(log: readonly FactoryPatrolLogEntry[]) {
       return `- ${clockOf(e.at)} (${e.reason}, ${cost}): ${line(e.report, 300)}${acts}`
     })
     .join('\n')
+}
+
+/** the pm's own interval. The pm must plan again once a plan reaches this age, even with no other
+ * news (mirrors `PLAN_FRESH_MS`, src/plan.ts and this file's own `PLAN_FRESH_MS`). */
+const PM_INTERVAL_MS = 60 * 60_000
+/** A run going from live to not live wakes the pm again. It waits this long first (the debounce
+ * window), so several runs that finish together cost one pm turn, not one each. */
+const PM_DEBOUNCE_MS = 5 * 60_000
+
+/**
+ * Pure cadence for the pm subagent (claude-factory-dun.5). This is a hidden `factory:pm` subagent.
+ * It ranks each rig's next work on its own timer, never every patrol. register.tsx's `pmNow` calls
+ * this function each tick. It passes the plan's own `at` (`planAt`, from a fresh `readPlan($)`
+ * call's own field, `undefined` with no plan yet), never only `pmAt`: claude-factory-dun.15, a hot
+ * reload or a new session resets `pmAt` to 0 in this session, but the plan on disk still carries
+ * its own age. `planAt` folds that in, so a plan 5 minutes old at the last reload does not read as
+ * stale just because this session never ran the pm yet. A mock clock in every mod test starts at
+ * 0; this is the same trap `patrolStartedAt`'s own comment in register.tsx already documents. It
+ * also passes whether a live run just went not-live (`liveDropped`).
+ *
+ * `due` is true in three cases: there is no plan yet; the later of `pmAt` and a past `planAt` is
+ * at least `PM_INTERVAL_MS` old (60 min, so stale); or a run dropped (`liveDropped`), or an
+ * earlier drop is still pending (`wanted`), and that same time is at least `PM_DEBOUNCE_MS` old (5
+ * min since the last pm turn or the plan's own write, whichever is later).
+ *
+ * The returned `wanted` carries a drop forward through the debounce window. It is `false` once
+ * `due` is true, since the caller is about to act on it. Otherwise the drop stays pending
+ * (`liveDropped || wanted`), so a check before the debounce window ends does not lose it.
+ */
+export function pmDue(
+  now: number,
+  pmAt: number,
+  planAt: number | undefined,
+  liveDropped: boolean,
+  wanted: boolean,
+): { due: boolean; wanted: boolean } {
+  const at = Math.max(pmAt, planAt !== undefined && planAt <= now ? planAt : 0)
+  const stale = planAt === undefined || now - at >= PM_INTERVAL_MS
+  const afterDebounce = (liveDropped || wanted) && now - at >= PM_DEBOUNCE_MS
+  const due = stale || afterDebounce
+  return { due, wanted: due ? false : liveDropped || wanted }
 }
 
 /** what an open pull request waits on, worst first: conflicts, failing checks, a review, then the merge */

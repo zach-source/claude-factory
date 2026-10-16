@@ -1206,3 +1206,135 @@ test(
     await clock.settle()
   },
 )
+
+test(
+  'patrolNow reads <home>/plan.json and carries a fresh plan into the prompt; a corrupt or malshaped plan.json reads as none, the same as a missing one (claude-factory-dun.4, .18)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const spawns: { prompt: string }[] = []
+    // a long-working run, no mail: the 10-minute heartbeat alone fires the first patrol, with no
+    // news to carry, so that spawn proves the Plan section on its own
+    const working = [{ id: 'r1', rig: 'api', node: 'implement', sub: 'working', goal: 'g' }]
+    let queued: readonly unknown[] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    on('ui.open', () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      if (e.argv.includes('tick')) {
+        const out = JSON.stringify({ manager: queued, rigs: [], runs: working })
+        queued = []
+        return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+      }
+      if (e.argv.includes('home'))
+        return { value: { exitCode: 0, stdout: '/home/factory', stderr: '' } as never }
+      return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+    })
+    on('fs.read', ($, e) => {
+      const path = (e as { path: string }).path
+      if (!files.has(path)) throw new Error(`ENOENT: no such file, open '${path}'`)
+      return { value: files.get(path)! } as never
+    })
+    on('fs.write', ($, e) => {
+      const { path, text } = e as { path: string; text: string }
+      files.set(path, text)
+      return { value: undefined } as never
+    })
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('agent.spawn', ($, e) => {
+      spawns.push(e as never)
+      return { model: 'sonnet', agentId: `patrol-${spawns.length}` } as never
+    })
+    agentListMock(on, ['patrol-1', 'patrol-2', 'patrol-3', 'patrol-4'])
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+
+    files.set(
+      '/home/factory/plan.json',
+      JSON.stringify({
+        at: 0, // the mock clock starts at 0
+        rigs: {
+          api: {
+            items: [{ id: 'api-1', title: 'fix it', priority: 1, why: 'blocks release' }],
+            findings: [],
+          },
+        },
+        proposals: [],
+      }),
+    )
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(spawns).toHaveLength(0) // not yet due: no mail, and the 10-minute heartbeat has not elapsed
+    // the first heartbeat (a long-working run, no mail): the plan is now 10 min old, still fresh
+    await clock.advance(10 * 60_000)
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0]!.prompt).toContain('Plan (from the pm, 10m old)')
+    expect(spawns[0]!.prompt).toContain('api-1 (P1) blocks release')
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-1',
+    } as never)
+
+    // a corrupt plan.json: register.tsx's own JSON.parse catch reads it as no plan at all, the
+    // same as a missing file. New mail (not a repeat heartbeat) drives the next patrol, so this
+    // does not depend on the heartbeat's own repeat-sig dedupe.
+    files.set('/home/factory/plan.json', 'not json')
+    queued = [mail(2)]
+    await clock.advance(5_000)
+    expect(spawns).toHaveLength(2)
+    expect(spawns[1]!.prompt).not.toContain('Plan (from the pm,')
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't2',
+      agentId: 'patrol-2',
+    } as never)
+
+    // a well-formed JSON file, but a malshaped rig entry (no `items`/`findings` arrays):
+    // `isValidPlan` (view.ts) rejects the whole plan, so `readPlan` reads it as none too, instead
+    // of letting a later `.items.map` throw (claude-factory-dun.18).
+    files.set('/home/factory/plan.json', JSON.stringify({ at: 5_000, rigs: { api: {} }, proposals: [] }))
+    queued = [mail(3)]
+    await clock.advance(5_000)
+    expect(spawns).toHaveLength(3)
+    expect(spawns[2]!.prompt).not.toContain('Plan (from the pm,')
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't3',
+      agentId: 'patrol-3',
+    } as never)
+
+    // a well-formed JSON file, with a well-shaped items array but a null finding: `isValidPlan`
+    // (view.ts) rejects the whole plan the same way, instead of letting a later `f.key`/`f.text`
+    // read throw (claude-factory-dun.20).
+    files.set(
+      '/home/factory/plan.json',
+      JSON.stringify({ at: 10_000, rigs: { api: { items: [], findings: [null] } }, proposals: [] }),
+    )
+    queued = [mail(4)]
+    await clock.advance(5_000)
+    expect(spawns).toHaveLength(4)
+    expect(spawns[3]!.prompt).not.toContain('Plan (from the pm,')
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't4',
+      agentId: 'patrol-4',
+    } as never)
+  },
+)

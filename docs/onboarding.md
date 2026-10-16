@@ -129,6 +129,25 @@ header and band show how long ago the last patrol ran.
 
 Between patrols, the runtime ticks every 5 seconds. A tick starts and resumes workers. It nudges an idle worker two times, and then retries with backoff. Run only one manager session for each factory.
 
+A hidden `pm` subagent also starts, once an hour and again soon after a run ends. It reads each
+rig's ready beads, its goal, its open epics, and its runs in progress. It writes a ranked plan
+to `<home>/plan.json`, with one reason per bead, and one log line per run to
+`<home>/pm-log.jsonl`. The patrol and `factory dispatch` use this plan when it is less than 2
+hours old. They use today's order instead when the plan is older or missing.
+
+The pm flags two types of problem as decision items. The first type is a starved epic. A
+starved epic gets no new work for many hours. Lower-priority work ships in that time. The
+second type is a goal with no open bead. For each of these problems, the pm makes a
+human-labeled bead. The bead is a decision item in the Interview tab. It works like a proposal.
+
+A plan gap is different. There are two kinds of plan gap. In the first kind, an epic stays
+open after all its children close. In the second kind, a goal has no bead in the plan. For
+each plan gap, the pm makes an unlabeled bead. A person must add a label to triage it.
+
+The pm never changes a P0 or P1 bead's priority, a rig's goal, or an owner-only setting. It
+only proposes a change. The proposal becomes a decision item in the Interview tab. You must
+decide on it. Set `pm` to `false` in the plugin's `userConfig` to turn off the pm.
+
 To tick with no console, run `factory loop [--interval ms]` in the factory directory.
 
 ## 6. Your first run

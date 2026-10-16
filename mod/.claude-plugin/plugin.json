@@ -12,6 +12,12 @@
       "title": "Let a hidden patrol subagent drive the factory",
       "description": "On: a hidden patrol subagent patrols the factory, so the main chat stays free for you. It wakes on mail for the manager (a stuck station, a worker's question, a gate, a finished run), on a worker blocked on a prompt, and every 10 minutes while workers run or a rig with a goal has room, and acts on them. Off: mail only shows in the pane and a toast.",
       "default": true
+    },
+    "pm": {
+      "type": "boolean",
+      "title": "Let a hidden pm subagent rank each rig's next work",
+      "description": "On: a hidden 'pm' subagent ranks each rig's ready work into a plan once an hour, and again soon after a run finishes. It has no Bash: it only ranks and explains, and the factory CLI writes the plan and files any finding. The patrol and dispatch then use that plan while it is fresh (under 2 hours old). Off: they keep today's order.",
+      "default": true
     }
   }
 }

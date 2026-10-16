@@ -236,6 +236,34 @@ minor release may change the factory format, the CLI or the run state.
   "parked, waiting on: \<the owner step and the exact command\>". The lifecycle
   deploy prompt and the release rollout prompt each add a line: a merge approves
   the change it carries, not an owner-only step. (claude-factory-9gx)
+- Added: a hidden `pm` subagent ranks each rig's next work and flags starved epics,
+  so the backlog patrol's rule 5 (start something when a rig has room) picks the
+  most important work first instead of plain bd order. It wakes once an hour, and
+  again soon after a run finishes (`pmDue`, `mod/hooks/view.ts`), spawned the same
+  way as the patrol (`$.agent.register`/`spawn`, `factory:pm`, no tool at all: it
+  can read and rank only the facts its own prompt carries, never run `bd`, read a
+  file or edit one itself).
+  `factory plan facts|set|show` (`src/cli.ts`) gathers each rig's ready beads, goal,
+  open epics and recent closes; validates the pm's answer; and writes
+  `<home>/plan.json` (`writeJson`, tmp+rename) plus one line per run to
+  `<home>/pm-log.jsonl`. `dispatch()` (`src/cli.ts`) and the patrol prompt
+  (`mod/hooks/view.ts`) use the plan's order when it is under 2 hours old;
+  missing, corrupt or stale, both fall back to today's plain bd order, unchanged.
+  `rankPlan` and `orderByPlan` (`src/plan.ts`) keep the pm inside the owner's
+  existing priority bands: it reorders only within one priority, and a planned
+  bead never passes a numerically lower (higher-value) one. A starved epic (no
+  new work for `starveHours` hours, 24 by default, while lower-priority work
+  shipped) and a goal with no open bead both become findings that `plan set`
+  files as a `human`-labeled bead (`beads.ts` `fileFinding`), an Interview-tab
+  decision item like a proposal. A plan gap (a done epic still open, or a goal
+  with no bead in the plan at all) files as an unlabeled bead instead, for a
+  person to triage. `plan set` dedupes each finding by `pm_finding` metadata,
+  capped at 3 new beads per rig per run. Any P0/P1, goal or owner-only change is only
+  ever proposed, also as a `human`-labeled decision item in the Interview tab:
+  nothing applies it. The console's Rigs tab
+  shows each rig's top 3 next-up items and its findings; the header and the band
+  show the plan's own age, or "plan stale" past 2 hours. `pm` in the plugin's
+  `userConfig` turns the pm off. (claude-factory-dun)
 - `decide()` now archives a never-shown short note after 14 days, caps how many
   notes one tiering pass can archive, and logs the plan before it writes
   anything. (claude-factory-503.2)

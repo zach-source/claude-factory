@@ -138,6 +138,13 @@ how many have finished or aborted.
 A rig with no live runs says so. Runs that belong to no rig get their own list, "outside
 any rig".
 
+When the pm ranks a rig, the Rigs tab shows a "Next up" line. The line names up to 3 beads,
+in order, each as `<id> (P<priority>) <why>`.
+
+A yellow line follows for each finding: a starved epic, a goal with no open bead, or a gap
+in the plan. The header and the band also show the plan's age, for example "plan 12m ago ·
+2 findings", or "plan stale" after 2 hours.
+
 A rig can opt into the [Linear pull loop](beads.md#linear) with `rig add ... --linear <team id>`.
 Such a rig shows one more line.
 

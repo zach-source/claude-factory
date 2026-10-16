@@ -52,9 +52,11 @@ import {
   goalOf,
   hasBeads,
   isOwned,
+  parentOf,
   stationOf,
   type Bead,
 } from './beads'
+import * as plan from './plan'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
@@ -3573,6 +3575,48 @@ function linearExcluded(): { ids: Set<string>; rigs: Set<string> } {
   return { ids, rigs }
 }
 
+/** the bead ids any live run owns right now (not `done` or `aborted`): a finished run's deferred
+ * bead, undeferred by a person, is new work again. `dispatch()` must not start a second run on
+ * one of these; `factory plan facts` reports them to the pm as busy context (claude-factory-dun.2). */
+const liveBeadIdSet = () =>
+  new Set(
+    runIds().flatMap(id => {
+      const { run, value } = current(id)
+      return run.bead && !['done', 'aborted'].includes(where(value)[0]) ? [run.bead] : []
+    }),
+  )
+
+/** Checks `plan.json`'s shape before any caller reads `rigs` or `proposals`.
+ * A hand-edited or truncated file can miss one of these fields.
+ * Without this check, `orderByPlan` or `planShowText` would then throw (claude-factory-dun.17d).
+ * `plan set` itself always writes the full shape. */
+function isValidPlanShape(p: unknown): p is plan.Plan {
+  if (!p || typeof p !== 'object') return false
+  const o = p as Record<string, unknown>
+  return (
+    typeof o.at === 'number' &&
+    !!o.rigs &&
+    typeof o.rigs === 'object' &&
+    !Array.isArray(o.rigs) &&
+    Object.values(o.rigs as Record<string, unknown>).every(plan.isValidRigPlan) &&
+    Array.isArray(o.proposals)
+  )
+}
+
+/** the pm's plan, read once per `dispatch()` pass: missing, corrupt, malshaped or stale
+ * (`!plan.isFresh`) all read as no plan, so dispatch falls back to today's order
+ * (claude-factory-dun.3, .17d). */
+function freshPlanOrUndefined(): plan.Plan | undefined {
+  if (!existsSync(planFile())) return undefined
+  try {
+    const p: unknown = JSON.parse(readFileSync(planFile(), 'utf8'))
+    if (!isValidPlanShape(p)) return undefined
+    return plan.isFresh(p, Date.now()) ? p : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // claude-factory-6as: dispatch's pre-check.
 // A 3-day review found 30 of 319 triage visits (9.4%) already done.
 // A merged PR did the work before triage ever saw the bead. Each one cost a run and a worktree.
@@ -3691,6 +3735,8 @@ async function dispatch() {
         : []
     }),
   )
+  // the pm's plan, read once per pass: a stale or missing plan changes nothing (claude-factory-dun.3)
+  const freshPlan = freshPlanOrUndefined()
   // a sync's error stands until the next sync: dispatch passes every 30 s would clear it
   const synced = existsSync(syncFile())
     ? readJson<Record<string, { at: number; error?: string }>>(syncFile())
@@ -3753,9 +3799,14 @@ async function dispatch() {
         }
       }
       // children are looked up only for the candidates, until the rig is full
-      const candidates = dispatchable(ready, new Set(linked.keys()), Infinity).filter(
+      const eligible = dispatchable(ready, new Set(linked.keys()), Infinity).filter(
         x => !isOwned(x) && !openChildren(b, x.id).length && !linearIds.has(x.id),
       )
+      // a fresh plan's order wins inside each priority band; a stale or missing plan changes
+      // nothing (claude-factory-dun.3). `rigPlanOf` looks up the rig safely: a plain
+      // `freshPlan.rigs[rig.name]` would resolve a rig named, for example, `constructor` to an
+      // inherited `Object.prototype` value instead of `undefined` (claude-factory-dun.18).
+      const candidates = plan.orderByPlan(eligible, plan.rigPlanOf(freshPlan, rig.name))
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
@@ -3796,6 +3847,359 @@ async function dispatch() {
     }
   }
   writeJson(dispatchFile(), errors)
+}
+
+// --- the pm's plan (claude-factory-dun): `factory plan facts|set|show` ---
+// The pm subagent has no Bash. `factory plan facts` gathers what the pm needs: each rig's
+// work and its findings. It writes this to `plan-facts.json` and prints it too.
+// `plan set` checks this file's age later.
+//
+// `factory plan set <file>` reads the pm's answer.
+// It builds `plan.json` with src/plan.ts's pure functions.
+// It files each finding and proposal as a bead.
+// The pm itself never calls `bd`.
+const planFactsFile = () => join(HOME, 'plan-facts.json')
+const planFile = () => join(HOME, 'plan.json')
+
+/** one rig's facts for the pm: its ready candidates, open epics, recently closed work, the ids
+ * a live run there owns now, and the code findings (src/plan.ts's `findings`) already computed
+ * once here, so `plan set` never needs the raw bead dump (claude-factory-dun.2). */
+export type RigFacts = {
+  goal?: string
+  maxRuns?: number
+  busy: number
+  candidates: { id: string; title: string; priority?: number; issue_type?: string }[]
+  epics: {
+    id: string
+    title: string
+    priority?: number
+    done: number
+    total: number
+    lastProgressHoursAgo: number
+  }[]
+  closedRecently: { id: string; title: string; priority?: number }[]
+  liveBeadIds: string[]
+  findings: plan.Finding[]
+  error?: string
+}
+
+const emptyRigFacts = (rig: Pick<Rig, 'goal' | 'maxRuns'>, busy: number, error?: string): RigFacts => ({
+  goal: rig.goal,
+  maxRuns: rig.maxRuns,
+  busy,
+  candidates: [],
+  epics: [],
+  closedRecently: [],
+  liveBeadIds: [],
+  findings: [],
+  ...(error && { error }),
+})
+
+/** one rig's facts, from its own `bd ready`/`bd list --all` (claude-factory-dun.2) */
+function rigFacts(
+  rig: Rig,
+  every: Bead[],
+  ready: Bead[],
+  linked: Set<string>,
+  busy: number,
+  now: number,
+  linear: { ids: Set<string>; rigs: Set<string> },
+): RigFacts {
+  // every open child, read from `every` (already in hand): no `bd children` subprocess call
+  // per candidate (claude-factory-dun.12).
+  const childrenOf = (id: string) => every.filter(x => parentOf(x) === id)
+  const openChildrenOf = (id: string) => childrenOf(id).filter(x => x.status !== 'closed')
+  // a rig with an open Linear baseline diff is held back whole, the same as dispatch() (claude-factory-b6c.16).
+  // an id still owed an unstripped-label check is held back on its own (claude-factory-dun.13).
+  const candidates = linear.rigs.has(rig.name)
+    ? []
+    : dispatchable(ready, linked, Infinity)
+        .filter(x => !isOwned(x) && !openChildrenOf(x.id).length && !linear.ids.has(x.id))
+        .slice(0, 40)
+        .map(c => ({
+          id: c.id,
+          title: plan.sanitize(c.title),
+          priority: c.priority,
+          issue_type: c.issue_type,
+        }))
+  const isClosed = (x: Bead) => x.status === 'closed'
+  const tsOf = (iso?: string) => {
+    if (!iso) return undefined
+    const t = new Date(iso).getTime()
+    return Number.isFinite(t) ? t : undefined
+  }
+  // a deferred epic is a person's own decision: the pm must not flag it as a gap (claude-factory-dun.14)
+  const epics = every
+    .filter(e => !isClosed(e) && e.status !== 'deferred' && childrenOf(e.id).length > 0)
+    .map(e => {
+      const kids = childrenOf(e.id)
+      const progress = kids.flatMap(k =>
+        [tsOf(k.closed_at), tsOf(k.started_at)].filter((t): t is number => t !== undefined),
+      )
+      const lastProgress = progress.length ? Math.max(...progress) : (tsOf(e.created_at) ?? now)
+      return {
+        id: e.id,
+        title: plan.sanitize(e.title),
+        priority: e.priority,
+        done: kids.filter(isClosed).length,
+        total: kids.length,
+        lastProgressHoursAgo: Math.round((now - lastProgress) / 3_600_000),
+      }
+    })
+  const dayAgo = now - 24 * 3_600_000
+  const closedRecently = every
+    .filter(x => isClosed(x) && (tsOf(x.closed_at) ?? -Infinity) >= dayAgo)
+    .map(x => ({ id: x.id, title: plan.sanitize(x.title), priority: x.priority }))
+  const liveBeadIds = every.filter(x => linked.has(x.id)).map(x => x.id)
+  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now)
+  return {
+    goal: rig.goal,
+    maxRuns: rig.maxRuns,
+    busy,
+    candidates,
+    epics,
+    closedRecently,
+    liveBeadIds,
+    findings: found,
+  }
+}
+
+/** Keeps the printed facts under `maxBytes` bytes. This is the pm's prompt budget.
+ * This function drops fields in steps, across every rig, until the result fits.
+ * First, it drops `closedRecently`.
+ * Next, it cuts `epics` to 5 items.
+ * Next, it cuts `candidates` to 20 items.
+ *
+ * These three steps are not a hard guarantee on their own. An oversized title can still blow the
+ * budget at 20 candidates. A title can be longer than the `rigFacts` boundary's own clip, or this
+ * function can get one directly. Proof: 20 candidates of 8000 characters each gave 160566 bytes
+ * against a 65536-byte budget (claude-factory-dun.25).
+ *
+ * So this function also cuts `findings` to 10 items and `liveBeadIds` to 20 items. Then it
+ * shrinks `candidates` and `epics` together, one step at a time, down to zero if nothing else
+ * fits. The result is always at most `maxBytes` bytes. The one exception: the empty shape itself
+ * (every rig with no candidates, epics, findings or liveBeadIds) does not fit. Only a very large
+ * number of rigs, or an oversized `goal` string, can cause that. */
+export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1024): string {
+  const clone: Record<string, RigFacts> = JSON.parse(JSON.stringify(facts))
+  const fits = () => Buffer.byteLength(JSON.stringify(clone)) <= maxBytes
+  if (fits()) return JSON.stringify(clone)
+  for (const r of Object.values(clone)) r.closedRecently = []
+  if (fits()) return JSON.stringify(clone)
+  for (const r of Object.values(clone)) r.epics = r.epics.slice(0, 5)
+  if (fits()) return JSON.stringify(clone)
+  for (const r of Object.values(clone)) r.candidates = r.candidates.slice(0, 20)
+  if (fits()) return JSON.stringify(clone)
+  for (const r of Object.values(clone)) {
+    r.findings = r.findings.slice(0, 10)
+    r.liveBeadIds = r.liveBeadIds.slice(0, 20)
+  }
+  if (fits()) return JSON.stringify(clone)
+  for (let cap = 10; cap >= 0; cap--) {
+    for (const r of Object.values(clone)) {
+      r.candidates = r.candidates.slice(0, cap)
+      r.epics = r.epics.slice(0, cap)
+    }
+    if (fits()) return JSON.stringify(clone)
+  }
+  return JSON.stringify(clone)
+}
+
+/** every rig's facts, gathered once: a rig whose own bd call fails still reports (with `error`), so
+ * one rig's trouble never stops the others from reaching the pm. */
+async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
+  const now = Date.now()
+  const { busy: busyList } = await busyRigs()
+  const busyCount = new Map<string, number>()
+  for (const name of busyList) if (name) busyCount.set(name, (busyCount.get(name) ?? 0) + 1)
+  const linked = liveBeadIdSet()
+  const linear = linearExcluded()
+  const out: Record<string, RigFacts> = {}
+  for (const rig of rigs()) {
+    const busy = busyCount.get(rig.name) ?? 0
+    if (!hasBeads(rig.repo)) {
+      out[rig.name] = emptyRigFacts(rig, busy)
+      continue
+    }
+    try {
+      const b = beads(rig.repo, 'factory')
+      out[rig.name] = rigFacts(rig, b.every(), b.ready(), linked, busy, now, linear)
+    } catch (err) {
+      out[rig.name] = emptyRigFacts(rig, busy, (err as Error).message)
+    }
+  }
+  return out
+}
+
+async function planFactsCmd() {
+  const facts = await gatherPlanFacts()
+  writeJson(planFactsFile(), facts)
+  console.log(clipFactsJson(facts))
+}
+
+const findingTitle = (kind: plan.FindingKind): string =>
+  (
+    ({
+      'starved-epic': 'pm: starved epic, no progress while lower-priority work shipped',
+      'goal-no-beads': "pm: this rig's goal has no open bead driving it",
+      'epic-done-open': "pm: an epic's children are all closed, but it is still open",
+      'goal-no-plan': "pm: this rig's goal has no ranked work to act on",
+    }) as Record<plan.FindingKind, string>
+  )[kind]
+
+/** the pm's raw answer, before `plan set` checks each field by hand: `{id, why}` per rig and
+ * `{rig, bead?, change, why}` proposals, exactly as claude-factory-dun's inbox spec shapes it. */
+type PmAnswer = {
+  rigs?: Record<string, { id?: unknown; why?: unknown }[]>
+  proposals?: { rig?: unknown; bead?: unknown; change?: unknown; why?: unknown }[]
+}
+
+/**
+ * `factory plan set <file>` command (claude-factory-dun.2).
+ * It reads the pm's answer. It builds `plan.json`. It files each finding and proposal as a bead.
+ *
+ * It refuses, and writes nothing, in each of these cases:
+ * - a worker calls it (`FACTORY_FROM` is set)
+ * - `plan-facts.json` is missing, too old (`>= plan.PLAN_FRESH_MS`), or not valid JSON
+ * - `<file>` is missing or not valid JSON
+ *
+ * The pm never runs `bd`. This function turns the pm's answer into bd writes.
+ * For each finding or proposal, it checks `hasMetadata('pm_finding', key)` first.
+ * A key already filed is never filed again, even under a bead that later closed.
+ * It files at most 3 new beads for each rig.
+ */
+function planSetCmd(answerPath?: string) {
+  if (process.env.FACTORY_FROM) fail('a worker cannot set the plan: only the pm, through its own turn, may')
+  if (!answerPath) fail('usage: factory plan set <file>')
+  if (!existsSync(planFactsFile())) fail('no plan-facts.json yet: run `factory plan facts` first')
+  const factsAge = Date.now() - statSync(planFactsFile()).mtimeMs
+  if (factsAge >= plan.PLAN_FRESH_MS)
+    fail(
+      `plan-facts.json is ${Math.round(factsAge / 60_000)}m old (stale at ${plan.PLAN_FRESH_MS / 60_000}m): run \`factory plan facts\` again`,
+    )
+  let facts: Record<string, RigFacts>
+  try {
+    facts = JSON.parse(readFileSync(planFactsFile(), 'utf8'))
+  } catch (err) {
+    fail(`plan-facts.json: ${(err as Error).message}`)
+  }
+  if (!existsSync(answerPath!)) fail(`no file ${answerPath}`)
+  let answer: PmAnswer
+  try {
+    answer = JSON.parse(readFileSync(answerPath!, 'utf8'))
+  } catch (err) {
+    fail(`${answerPath}: ${(err as Error).message}`)
+  }
+
+  const now = Date.now()
+  const rigNames = new Set(Object.keys(facts!))
+  const rigsPlan: Record<string, plan.RigPlan> = {}
+  for (const [name, rf] of Object.entries(facts!)) {
+    const rawAnswer = Array.isArray(answer!.rigs?.[name]) ? answer!.rigs![name]! : []
+    const cleanAnswer: plan.AnswerItem[] = rawAnswer
+      .filter((a): a is { id: string; why?: unknown } => !!a && typeof a.id === 'string')
+      .map(a => ({ id: a.id, why: typeof a.why === 'string' ? a.why : undefined }))
+    const candidates: Bead[] = rf.candidates.map(c => ({
+      id: c.id,
+      title: c.title,
+      priority: c.priority,
+      issue_type: c.issue_type,
+    }))
+    const items = plan.rankPlan(cleanAnswer, candidates)
+    const found = [...rf.findings]
+    if (rf.goal && items.length === 0) found.push(plan.goalNoPlanFinding(name, rf.goal))
+    rigsPlan[name] = { items, findings: found }
+  }
+  const cleanProposals: plan.Proposal[] = (Array.isArray(answer!.proposals) ? answer!.proposals : [])
+    .filter(
+      (p): p is { rig: string; bead?: unknown; change: string; why: string } =>
+        !!p &&
+        typeof p.rig === 'string' &&
+        rigNames.has(p.rig) &&
+        typeof p.change === 'string' &&
+        typeof p.why === 'string',
+    )
+    .map(p => ({
+      rig: p.rig,
+      ...(typeof p.bead === 'string' && p.bead ? { bead: plan.sanitize(p.bead, 40) } : {}),
+      change: plan.sanitize(p.change, 300),
+      why: plan.sanitize(p.why, 300),
+    }))
+
+  // every validation above must pass before anything is written: a refusal never touches plan.json
+  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: cleanProposals } satisfies plan.Plan)
+
+  let filedTotal = 0
+  for (const name of rigNames) {
+    const rig = rigs().find(r => r.name === name)
+    if (!rig || !hasBeads(rig.repo)) continue
+    const b = beads(rig.repo, 'factory')
+    const toFile = [
+      ...rigsPlan[name]!.findings.map(f => ({
+        title: findingTitle(f.kind),
+        desc: f.text,
+        key: f.key,
+        human: plan.HUMAN_FINDING_KINDS.has(f.kind),
+      })),
+      ...cleanProposals
+        .filter(p => p.rig === name)
+        .map(p => ({
+          title: `pm proposal: ${clip(p.change, 80)}`,
+          desc: `${p.why}${p.bead ? ` (${p.bead})` : ''}`,
+          key: plan.proposalKey(name, p),
+          human: true,
+        })),
+    ]
+    let filed = 0
+    for (const item of toFile) {
+      if (filed >= 3) break
+      try {
+        if (b.hasMetadata('pm_finding', item.key)) continue
+        b.fileFinding(item.title, item.desc, item.key, { human: item.human })
+        filed++
+      } catch (err) {
+        console.error(`factory plan set: ${name}: could not file ${item.key}: ${(err as Error).message}`)
+      }
+    }
+    filedTotal += filed
+  }
+  const itemsTotal = Object.values(rigsPlan).reduce((n, rp) => n + rp.items.length, 0)
+  const findingsTotal = Object.values(rigsPlan).reduce((n, rp) => n + rp.findings.length, 0)
+  console.log(
+    JSON.stringify({
+      rigs: Object.keys(rigsPlan).length,
+      items: itemsTotal,
+      findings: findingsTotal,
+      filed: filedTotal,
+    }),
+  )
+}
+
+/** `factory plan` (or `plan show`): the plan as text, for a person or `/factory plan` */
+function planShowText(): string {
+  if (!existsSync(planFile()))
+    return 'no plan.json yet: `factory plan facts` then `factory plan set <file>`, or wait for the pm'
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(planFile(), 'utf8'))
+  } catch (err) {
+    return `plan.json: ${(err as Error).message}`
+  }
+  if (!isValidPlanShape(raw)) return 'plan.json: missing or malformed rigs/proposals'
+  const p: plan.Plan = raw
+  const now = Date.now()
+  const age = Math.round((now - p.at) / 60_000)
+  const lines = [`plan ${age}m ago${plan.isFresh(p, now) ? '' : ' (stale)'}`]
+  for (const [name, rp] of Object.entries(p.rigs)) {
+    lines.push(`${name}:`)
+    for (const it of rp.items.slice(0, 5)) lines.push(`  P${it.priority} ${it.id} ${it.title} -- ${it.why}`)
+    for (const f of rp.findings) lines.push(`  ! ${f.text}`)
+  }
+  if (p.proposals.length) {
+    lines.push('proposals:')
+    for (const pr of p.proposals) lines.push(`  ${pr.rig}: ${pr.change} -- ${pr.why}`)
+  }
+  return lines.join('\n')
 }
 
 /** the rig of every run holding a worker; a wait or a gate costs nothing */
@@ -4638,6 +5042,10 @@ const usage = `factory — herdr software factories on xstate
   decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
+  plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
+                                     pm (writes plan-facts.json); set <file> reads the pm's answer, writes
+                                     plan.json and files findings/proposals as beads; show (or bare plan)
+                                     prints the plan as text
   metrics [--rig r] [--since 7d] [--json]   how the factory performs: fates, ship rate, time to ship and on
                                      the approve gate, review loops, failures by kind, each station's outcomes
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
@@ -5054,6 +5462,24 @@ if (import.meta.main && !outboxCmd)
           break
         }
         fail(`unknown decisions command "${sub}": list, answer or propose`)
+        break
+      }
+      case 'plan': {
+        const [sub, arg] = args
+        if (!sub || sub === 'show') {
+          console.log(planShowText())
+          break
+        }
+        if (sub === 'facts') {
+          await planFactsCmd()
+          break
+        }
+        if (sub === 'set') {
+          if (!arg) fail('usage: factory plan set <file>')
+          planSetCmd(arg)
+          break
+        }
+        fail(`unknown plan command "${sub}": facts, set <file> or show`)
         break
       }
       case 'queue': {
