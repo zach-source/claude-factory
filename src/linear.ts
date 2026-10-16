@@ -348,6 +348,12 @@ const ISSUES_QUERY = `
  * names, and its `updatedAt` (an ISO-8601 string, used to pull only changed issues, claude-factory-b6c.24). */
 export type LinearIssueRef = LinearIssue & { ref: string; updatedAt: string }
 
+/** A real Linear identifier's own shape: letters and digits, a dash, then digits (for example
+ * `STI-123`). `fetchLinearIssues` checks every `identifier` the API returns against this shape.
+ * Reason (claude-factory-b6c.29): with no check, a ref that starts with `-` would reach `bd linear
+ * pull <ref...>`'s argv as an unintended flag. */
+const REF_SHAPE = /^[A-Za-z0-9]+-[0-9]+$/
+
 type IssuesPage = {
   data?: {
     issues?: {
@@ -407,13 +413,19 @@ export async function fetchLinearIssues(
     if (json.errors?.length) throw new Error(`Linear API error: ${json.errors[0]!.message}`)
     const page_ = json.data?.issues
     if (!page_) throw new Error('Linear API: no issues in response')
-    for (const n of page_.nodes)
+    for (const n of page_.nodes) {
+      // claude-factory-b6c.29: a `ref` goes straight into `bd linear pull <ref...>`'s argv (no
+      // shell runs, but a ref shaped like a flag, for example "--force", would still reach bd as
+      // one). This check fails the whole pass instead of silently dropping the bad ref.
+      if (!REF_SHAPE.test(n.identifier))
+        throw new Error(`Linear API: issue identifier "${n.identifier.slice(0, 40)}" is not shaped <KEY>-<n>`)
       issues.push({
         ref: n.identifier,
         updatedAt: n.updatedAt,
         project: n.project?.name,
         labels: n.labels?.nodes.map(l => l.name) ?? [],
       })
+    }
     if (!page_.pageInfo.hasNextPage) break
     after = page_.pageInfo.endCursor
     if (page === 49) truncated = true

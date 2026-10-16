@@ -355,6 +355,15 @@ test('fetchLinearIssues refuses a redirect from the Linear API, and never calls 
   }
 })
 
+test('fetchLinearIssues refuses an identifier not shaped <KEY>-<n>, instead of passing it through (claude-factory-b6c.29)', async () => {
+  const fake = fakeLinearApi([[{ ref: '--force', project: '[a]', labels: [] }]])
+  try {
+    await expect(fetchLinearIssues('test-key', ['team-1'], fake.url)).rejects.toThrow('--force')
+  } finally {
+    fake.stop()
+  }
+})
+
 test('parseSync reads a real pull and an engine error, the two shapes "bd linear pull" prints', () => {
   expect(
     parseSync(
@@ -781,6 +790,18 @@ test('a pull error is recorded redacted (no secret value) and clipped, in linear
   expect(state.a.error).toBeTruthy()
   expect(state.a.error).not.toContain('test-key-123')
   expect(state.a.error.length).toBeLessThanOrEqual(201)
+})
+
+test('an issue identifier not shaped <KEY>-<n> never reaches bd argv; the pass records an error instead (claude-factory-b6c.29)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
+  writeFileSync(linearIssuesFile, JSON.stringify([{ ref: '--force', project: '[a]', labels: [] }]))
+  const out = factory(['linear'])
+  expect(out.code).toBe(0) // the loop itself still exits 0: the failure is this rig's own recorded state
+  expect(callLines().some(l => argvOf(l).startsWith('linear pull'))).toBe(false) // never reached bd at all
+  expect(callLines().every(l => !argvOf(l).includes('--force'))).toBe(true)
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.error).toBeTruthy()
+  expect(state.a.error).toContain('--force')
 })
 
 test('a pull that reports skipped or errored refs, with exit 0, is recorded as a failure, not a silent "pulled 0" (claude-factory-b6c.21)', () => {
