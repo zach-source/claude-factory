@@ -283,6 +283,9 @@ test('a goto revive after gc recreates prompts/ and starts a worker with no ENOE
     // no .claude.json at this path: isTrusted() hits its catch branch and reads as trusted, so the
     // worker starts instead of parking at "awaiting trust" (see start.test.ts for the opposite case)
     CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+    // tick's own finally block would otherwise kick a detached `factory gc` at this same FACTORY_HOME,
+    // which outlives this test and races the next test's own gc fixtures
+    FACTORY_GC: '0',
   })
   expect(out.code).toBe(0)
   const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === id)
@@ -290,6 +293,58 @@ test('a goto revive after gc recreates prompts/ and starts a worker with no ENOE
   expect(row.pane).toBe('p1')
   expect(existsSync(join(d, 'prompts'))).toBe(true) // recreated, not left missing
   expect(readdirSync(join(d, 'prompts'))).toContain('2-implement.md')
+})
+
+// PR #59 review finding 1's sibling write site (claude-factory-503.1.5). resumeFile() writes into
+// prompts/ too, on the branch where a pane goes missing and the run resumes by session. This can
+// run with no prior goto or gc: build that state directly and remove prompts/ by hand.
+test('resumeFile() recreates prompts/ before writing the resume note (claude-factory-503.1.5)', () => {
+  reset()
+  const id = freshId('ship')
+  const wt = join(dir, id)
+  mkdirSync(wt, { recursive: true })
+  const d = runDir(id)
+  mkdirSync(d, { recursive: true })
+  const factoryFile = join(d, 'factory.ts')
+  writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({ id, factory: factoryFile, repo: wt, goal: 'g', ws: 'w1', worktree: wt, branch: 'b' }),
+  )
+  const actor = createActor(compile(DEF)).start()
+  actor.send({ type: 'TICK', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  // a worker already spawned and reported its session, as a real run does before its pane dies
+  actor.send({ type: 'SPAWNED', seq, pane: 'oldpane', at: 0 })
+  actor.send({ type: 'SESSION', seq, session: 's1', at: 0 })
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+  writeFileSync(join(d, 'inbox.jsonl'), '')
+  writeFileSync(join(d, 'track.json'), '{}')
+  writeFileSync(join(d, 'progress.json'), '{}')
+  // no prompts/ dir at all here: proves resumeFile()'s own mkdir, not spawn()'s
+
+  const okHerdr = join(dir, 'ok-herdr-resume')
+  writeFileSync(
+    okHerdr,
+    [
+      '#!/bin/sh',
+      'case "$1 $2" in',
+      '  "pane get") printf \'{"error":{"code":"pane_not_found"}}\\n\' ;;',
+      '  "tab create") printf \'{"result":{"root_pane":{"pane_id":"p2"}}}\\n\' ;;',
+      '  "pane run") exit 0 ;;',
+      "  *) echo '{}' ;;",
+      'esac',
+    ].join('\n'),
+  )
+  chmodSync(okHerdr, 0o755)
+  // FACTORY_GC=0: tick's own finally block would otherwise kick a detached `factory gc` at this
+  // same FACTORY_HOME, which outlives this test and races the next test's own gc fixtures
+  const out = factory(['tick'], { FACTORY_HERDR: okHerdr, FACTORY_GC: '0' })
+  expect(out.code).toBe(0)
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === id)
+  expect(row.error).toBeFalsy()
+  expect(existsSync(join(d, 'prompts'))).toBe(true)
+  expect(readdirSync(join(d, 'prompts'))).toContain(`${seq}-implement-resume.md`)
 })
 
 // PR #59 review finding 2 (claude-factory-503.1.6). One run dir gc cannot read (removed mid-pass, or
