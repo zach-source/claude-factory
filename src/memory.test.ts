@@ -532,8 +532,9 @@ test('decide() merges a shown-or-helped note once it is 7 days old, not at 6', (
   expect(decide([short({ ageDays: 8, shown: 0, helped: 1 })], [])).toEqual([
     { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 8 days old' },
   ])
-  // never shown and never helped: stays short, however old
-  expect(decide([short({ ageDays: 400, shown: 0, helped: 0, staleDays: 10 })], [])).toEqual([])
+  // never shown and never helped: never merges (claude-factory-503.2 now archives it at 14+ days
+  // old instead; see the never-shown archive-rule tests below, so this stays under that boundary)
+  expect(decide([short({ ageDays: 10, shown: 0, helped: 0, staleDays: 10 })], [])).toEqual([])
 })
 
 test('decide() archives a superseded note outright, even if young and helped', () => {
@@ -561,6 +562,103 @@ test('decide() turns a scored pair at or above SAME (0.88) into a dedupe decisio
   expect(decide([], [], sims)).toEqual([
     { kind: 'dedupe', a: 'beads/LONG.md#c', b: 'beads/LONG.md#d', reason: 'similarity 0.90' },
   ])
+})
+
+// AC1: archive a never-shown, never-helped note at 14 days old.
+test('decide() archives a never-shown note at 14 days old, not at 13.9', () => {
+  expect(decide([short({ ageDays: 13.9, shown: 0, helped: 0 })], [])).toEqual([])
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 0 })], [])).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'never shown, 14 days old' },
+  ])
+})
+
+test('decide() never-shown archive rule skips a note shown or helped even once', () => {
+  // shown or helped at ageDays 14 qualifies for the merge rule instead, never the archive rule
+  expect(decide([short({ ageDays: 14, shown: 1, helped: 0 })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 14 days old' },
+  ])
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 1 })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 14 days old' },
+  ])
+})
+
+// AC2: a usage-history guard holds back both usage-based archive rules under 14 days of history.
+test('decide() usage-history guard stops both usage-based archive rules under 14 days, never the superseded rule', () => {
+  // The new never-shown rule waits for the guard, then archives.
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 0 })], [], [], { historyDays: 13.9 })).toEqual([])
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 0 })], [], [], { historyDays: 14 })).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'never shown, 14 days old' },
+  ])
+  // The existing 30-day never-helped rule waits for the same guard.
+  expect(decide([short({ staleDays: 31, helped: 0 })], [], [], { historyDays: 13.9 })).toEqual([])
+  expect(decide([short({ staleDays: 31, helped: 0 })], [], [], { historyDays: 14 })).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'never helped, unused for 31 days' },
+  ])
+  // The superseded rule ignores the guard: it archives with no usage history at all.
+  expect(decide([short({ superseded: 'beads/y.md' })], [], [], { historyDays: 0 })).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'superseded by beads/y.md' },
+  ])
+})
+
+// AC3: the archive cap keeps the oldest notes (by ageDays) first. A tie breaks by path. The cap spans every topic.
+test('decide() caps archives per pass at the default of 25, oldest first, the rest held', () => {
+  const cands = Array.from({ length: 40 }, (_, i) =>
+    short({ path: `beads/n${15 + i}.md`, ageDays: 15 + i, shown: 0, helped: 0 }),
+  )
+  const decisions = decide(cands, [], [], { historyDays: 100 })
+  const archived = decisions.filter(d => d.kind === 'archive').map(d => d.path)
+  const held = decisions.filter(d => d.kind === 'held').map(d => d.path)
+  expect(archived).toHaveLength(25)
+  expect(held).toHaveLength(15)
+  // the 25 oldest: ages 54 down to 30
+  expect(new Set(archived)).toEqual(new Set(cands.filter(c => c.ageDays >= 30).map(c => c.path)))
+  expect(new Set(held)).toEqual(new Set(cands.filter(c => c.ageDays < 30).map(c => c.path)))
+  expect(decisions.find(d => d.kind === 'held')?.reason).toBe('over the archive cap of 25 this pass')
+})
+
+test('decide() archive cap tie-break: same ageDays, path ascending wins the slot', () => {
+  const cands = [
+    short({ path: 'beads/b.md', ageDays: 20 }),
+    short({ path: 'beads/a.md', ageDays: 20 }),
+    short({ path: 'beads/c.md', ageDays: 20 }),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, archiveCap: 2 })
+  // the two lowest paths (a, b) win the 2 slots; the highest (c) is held
+  expect(new Set(decisions.filter(d => d.kind === 'archive').map(d => d.path))).toEqual(
+    new Set(['beads/a.md', 'beads/b.md']),
+  )
+  expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/c.md'])
+})
+
+test('decide() archive cap is global across topics, not per topic', () => {
+  const cands = [
+    short({ path: 'beads/a.md', topic: 'beads', ageDays: 20 }),
+    short({ path: 'ci/a.md', topic: 'ci', ageDays: 19 }),
+    short({ path: 'release/a.md', topic: 'release', ageDays: 18 }),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, archiveCap: 1 })
+  expect(decisions.filter(d => d.kind === 'archive')).toHaveLength(1)
+  expect(decisions.filter(d => d.kind === 'held')).toHaveLength(2)
+})
+
+test('decide() archive cap of 0 holds every archive', () => {
+  const decisions = decide([short({ staleDays: 31, helped: 0 })], [], [], {
+    historyDays: 100,
+    archiveCap: 0,
+  })
+  expect(decisions).toEqual([
+    { kind: 'held', path: 'beads/x.md', reason: 'over the archive cap of 0 this pass' },
+  ])
+})
+
+test('decide() archive cap counts a superseded archive against the same cap', () => {
+  const cands = [
+    short({ path: 'beads/a.md', ageDays: 50, superseded: 'beads/z.md' }),
+    short({ path: 'beads/b.md', ageDays: 20, shown: 0, helped: 0 }),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, archiveCap: 1 })
+  expect(decisions.filter(d => d.kind === 'archive').map(d => d.path)).toEqual(['beads/a.md'])
+  expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/b.md'])
 })
 
 test('mdFileCount counts CORE.md and every topic README, LONG.md and short note, never .archive', () => {

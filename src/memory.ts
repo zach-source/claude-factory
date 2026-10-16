@@ -620,6 +620,11 @@ export const usageLines = (dir: string) => {
 const DAY_MS = 24 * 60 * 60 * 1000
 const MERGE_AGE_DAYS = 7 // a short note waits this long before it can merge: a fresh note may still be wrong
 const ARCHIVE_STALE_DAYS = 30 // never shown or helped in this long, and this old: a candidate to archive
+const ARCHIVE_NEW_DAYS = 14 // never shown at all, and this old: a candidate too, once usage history is old enough to trust "never shown"
+// at most this many archives in one tiering pass, oldest (by ageDays) first: a long-idle home must not
+// dump every stale note into .archive the moment it crosses ARCHIVE_NEW_DAYS or ARCHIVE_STALE_DAYS
+// (claude-factory-503: a ~190-note mass archive at day 30 forced a revert of a 139-merge pass).
+const ARCHIVE_CAP = 25
 const PROMOTE_HELPED = 3 // a long entry helped at least this often...
 const PROMOTE_RUNS = 3 // ...across at least this many distinct runs, becomes a promotion candidate
 
@@ -641,11 +646,35 @@ export type SimPair = { a: string; b: string; score: number }
 export type Decision =
   | { kind: 'merge'; path: string; reason: string }
   | { kind: 'archive'; path: string; reason: string }
+  | { kind: 'held'; path: string; reason: string }
   | { kind: 'promote'; path: string; reason: string }
   | { kind: 'dedupe'; a: string; b: string; reason: string }
 
-/** the tiering pass's plan. No fs, no clock. Every boundary (7, 30 days; 3 helps or runs) is a table test. */
-export function decide(short: ShortCandidate[], long: LongCandidate[], sims: SimPair[] = []): Decision[] {
+/**
+ * The tiering pass creates a plan. The plan uses no file and no clock. A table test covers each
+ * boundary: 7, 14 and 30 days; 3 helps or runs; the cap.
+ *
+ * `opts.historyDays` shows how far back the usage log goes.
+ * If the history is shorter than ARCHIVE_NEW_DAYS (14 days), both usage-based archive rules do not apply.
+ * A home with a new or lost `.usage.jsonl` file cannot tell "never shown" from "shown before logging began."
+ * This is a spec edge case.
+ * The default is Infinity. A caller that does not measure it, like most direct tests, keeps the old, unguarded rules.
+ * The superseded rule ignores this guard. A note marked `superseded:` always archives.
+ *
+ * `opts.archiveCap` sets the maximum number of notes that one pass archives.
+ * The oldest notes, by ageDays, go first. A tie breaks by path, ascending.
+ * The cap applies to every topic and every archive rule, including superseded.
+ * A note past the cap gets a `held` decision instead of `archive`.
+ * This prevents a long-idle home from sending hundreds of notes to `.archive` on one day.
+ * That day is the day they all cross their threshold.
+ */
+export function decide(
+  short: ShortCandidate[],
+  long: LongCandidate[],
+  sims: SimPair[] = [],
+  opts: { historyDays?: number; archiveCap?: number } = {},
+): Decision[] {
+  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP } = opts
   const decisions: Decision[] = []
   for (const n of short) {
     if (n.topic === 'inbox') continue // the dream files these; decide() never touches them
@@ -653,11 +682,19 @@ export function decide(short: ShortCandidate[], long: LongCandidate[], sims: Sim
       decisions.push({ kind: 'archive', path: n.path, reason: `superseded by ${n.superseded}` })
       continue
     }
-    if (n.helped === 0 && n.staleDays >= ARCHIVE_STALE_DAYS) {
+    if (historyDays >= ARCHIVE_NEW_DAYS && n.helped === 0 && n.staleDays >= ARCHIVE_STALE_DAYS) {
       decisions.push({
         kind: 'archive',
         path: n.path,
         reason: `never helped, unused for ${Math.floor(n.staleDays)} days`,
+      })
+      continue
+    }
+    if (historyDays >= ARCHIVE_NEW_DAYS && n.shown === 0 && n.helped === 0 && n.ageDays >= ARCHIVE_NEW_DAYS) {
+      decisions.push({
+        kind: 'archive',
+        path: n.path,
+        reason: `never shown, ${Math.floor(n.ageDays)} days old`,
       })
       continue
     }
@@ -678,7 +715,57 @@ export function decide(short: ShortCandidate[], long: LongCandidate[], sims: Sim
   for (const s of sims)
     if (s.score >= SAME)
       decisions.push({ kind: 'dedupe', a: s.a, b: s.b, reason: `similarity ${s.score.toFixed(2)}` })
+
+  // the archive cap: the oldest decisions (by the note's ageDays) keep their `archive` kind; the rest
+  // of this pass's archive decisions become `held`, so nothing past the cap is ever written this pass.
+  type ArchiveDecision = Extract<Decision, { kind: 'archive' }>
+  const ageOf = new Map(short.map(n => [n.path, n.ageDays]))
+  const overCap: { d: ArchiveDecision; i: number }[] = []
+  decisions.forEach((d, i) => {
+    if (d.kind === 'archive') overCap.push({ d, i })
+  })
+  overCap.sort((x, y) => {
+    const diff = (ageOf.get(y.d.path) ?? 0) - (ageOf.get(x.d.path) ?? 0)
+    return diff !== 0 ? diff : x.d.path.localeCompare(y.d.path)
+  })
+  for (const { d, i } of overCap.slice(archiveCap))
+    decisions[i] = { kind: 'held', path: d.path, reason: `over the archive cap of ${archiveCap} this pass` }
+
   return decisions
+}
+
+/**
+ * one line per decision, for a dream's or a compact's log.
+ * The first line is a header. Each later line reads `kind  path: reason`.
+ * A dedupe decision names two notes, so its line reads `dedupe  a ~ b: reason` instead.
+ * applyTiers() passes this to its caller through `opts.onPlan`, before it writes or removes anything.
+ * The plan on disk then always matches what ran.
+ */
+export function planLines(
+  decisions: Decision[],
+  opts: { archiveCap: number; historyDays: number },
+): string[] {
+  const count = (kind: Decision['kind']) => decisions.filter(d => d.kind === kind).length
+  const describe = (d: Decision) => ('path' in d ? d.path : `${d.a} ~ ${d.b}`)
+  const header =
+    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('held')} held ` +
+    `(cap ${opts.archiveCap}), usage history ${Math.floor(opts.historyDays)} days`
+  return [header, ...decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`)]
+}
+
+/** FACTORY_MEMORY_ARCHIVE_CAP, when it is a whole number >= 0; else the default ARCHIVE_CAP (25). */
+function envArchiveCap(): number {
+  const raw = process.env.FACTORY_MEMORY_ARCHIVE_CAP
+  if (raw === undefined) return ARCHIVE_CAP
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 0 ? n : ARCHIVE_CAP
+}
+
+/** how many days of usage history the store holds: now minus the oldest note's newest recorded `at`.
+ * 0 with no usage file, or when no entry ever recorded an `at` (claude-factory-503.2, AC2's guard). */
+function usageHistoryDays(dir: string, now: number, uses: Map<string, Use>): number {
+  const ats = [...uses.values()].map(u => u.at).filter(at => at > 0)
+  return ats.length ? (now - Math.min(...ats)) / DAY_MS : 0
 }
 
 /**
