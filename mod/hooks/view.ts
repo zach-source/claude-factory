@@ -331,7 +331,7 @@ const PLAN_FRESH_MS = 2 * 60 * 60_000
 
 /** true only for a plan whose `at` is a real, non-future time less than `PLAN_FRESH_MS` old
  * (mirrors `isFresh`, src/plan.ts: kept separate since mod code cannot import from src) */
-function isPlanFresh(plan: FactoryPlan | undefined, now: number): boolean {
+function isPlanFresh(plan: FactoryPlan | null | undefined, now: number): boolean {
   if (!plan || typeof plan.at !== 'number' || !Number.isFinite(plan.at)) return false
   if (plan.at > now) return false
   return now - plan.at < PLAN_FRESH_MS
@@ -433,6 +433,17 @@ export function patrol(
 /** "patrol 3m ago", drawn in the header and the band; '' before any patrol has run */
 export function patrolAgo(now: number, lastPatrol: FactoryPatrolLogEntry | null) {
   return lastPatrol ? `patrol ${dur(Math.max(0, now - lastPatrol.at))} ago` : ''
+}
+
+/** "plan 12m ago · 2 findings". The header and the band draw this next to `patrolAgo`'s own text.
+ * A plan 2 or more hours old (see `isPlanFresh`) shows "plan stale" instead. This is the same
+ * age limit the patrol and `dispatch()` use for their own fallback to today's order. The result
+ * is '' before the pm writes its first plan. */
+export function planAgo(now: number, plan: FactoryPlan | null): string {
+  if (!plan) return ''
+  if (!isPlanFresh(plan, now)) return 'plan stale'
+  const findings = Object.values(plan.rigs).reduce((n, rp) => n + rp.findings.length, 0)
+  return `plan ${dur(Math.max(0, now - plan.at))} ago · ${findings} finding${findings === 1 ? '' : 's'}`
 }
 
 /** `/factory patrols`: the newest 10 entries of `<home>/patrol-log.jsonl`, oldest first */

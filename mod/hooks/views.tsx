@@ -13,6 +13,7 @@ import type {
   FactoryEdge,
   FactoryMail,
   FactoryPatrolLogEntry,
+  FactoryPlan,
   FactoryRun,
   FactoryView,
 } from '../types'
@@ -30,6 +31,7 @@ import {
   mailTabs,
   openInterviews,
   patrolAgo,
+  planAgo,
   prName,
   prState,
   progress,
@@ -200,11 +202,13 @@ export function header(
   history: number[],
   view: FactoryView,
   lastPatrol: FactoryPatrolLogEntry | null,
+  plan: FactoryPlan | null,
 ) {
   const { Box, Text, Button } = p.ui
   const live = board.runs.filter(isLive)
   const { working, gates, stuck, waiting } = counts(board.runs)
   const agoText = patrolAgo(p.now, lastPatrol)
+  const planText = planAgo(p.now, plan)
   const stat = (n: number, color: string, label: string) =>
     n > 0 && (
       <Text>
@@ -227,6 +231,7 @@ export function header(
         {stat(waiting, 'blue', 'waiting')}
         {live.length === 0 && !board.halt && <Text dimColor>idle</Text>}
         {agoText && <Text dimColor>{agoText}</Text>}
+        {planText && <Text dimColor>{planText}</Text>}
         {board.staleSince !== undefined && (
           <Text bold color="red">
             ! stale since {clockOf(board.staleSince)}
@@ -761,7 +766,7 @@ export function backlogView(p: Base, backlog: FactoryBacklog, type = 'all', draf
 }
 
 /** every rig: its cap and how full it is, its goal, where its runs stand, what needs the person */
-export function rigsView(p: Base, board: FactoryBoard) {
+export function rigsView(p: Base, board: FactoryBoard, plan: FactoryPlan | null) {
   const { Box, Text, Button } = p.ui
   const rigs = board.rigs ?? []
   const loose = board.runs.filter(r => isLive(r) && !r.rig)
@@ -780,6 +785,7 @@ export function rigsView(p: Base, board: FactoryBoard) {
         const s = rigStats(g, board.runs)
         const sweeps =
           g.sweeps === undefined ? 'all sweeps' : g.sweeps.length ? g.sweeps.join(', ') : 'no sweeps'
+        const rp = plan?.rigs[g.name]
         return (
           <Box key={`rigs-${g.name}`} flexDirection="column" marginBottom={1}>
             {rule(p, g.name, `${shortPath(g.repo)} · ${shortPath(g.factory)} · ${sweeps}`)}
@@ -796,6 +802,20 @@ export function rigsView(p: Base, board: FactoryBoard) {
               </Text>
             </Box>
             {g.goal && <Text wrap="wrap">◎ {g.goal}</Text>}
+            {rp && rp.items.length > 0 && (
+              <Text wrap="wrap">
+                Next up:{' '}
+                {rp.items
+                  .slice(0, 3)
+                  .map(it => `${it.id} (P${it.priority}) ${it.why}`)
+                  .join(' · ')}
+              </Text>
+            )}
+            {rp?.findings.map(f => (
+              <Text key={`rigs-finding-${g.name}-${f.key}`} color="yellow" wrap="wrap">
+                ! {f.text}
+              </Text>
+            ))}
             {g.linear && (
               <Box key={`rigs-linear-${g.name}`}>
                 {g.linearSync?.error ? (
@@ -1224,12 +1244,14 @@ export function band(
   board: FactoryBoard,
   draft: FactoryDraft,
   lastPatrol: FactoryPatrolLogEntry | null,
+  plan: FactoryPlan | null,
 ) {
   const { Box, Text, Button } = p.ui
   const live = board.runs.filter(isLive)
   const first = live.find(r => r.gate)
   const n = counts(board.runs)
   const agoText = patrolAgo(p.now, lastPatrol)
+  const planText = planAgo(p.now, plan)
   return (
     <Box key="band" flexDirection="column">
       <Box gap={1}>
@@ -1241,6 +1263,7 @@ export function band(
         {n.stuck > 0 && <Text color="red">· {String(n.stuck)} stuck</Text>}
         {n.waiting > 0 && <Text color="blue">· {String(n.waiting)} waiting</Text>}
         {agoText && <Text dimColor>· {agoText}</Text>}
+        {planText && <Text dimColor>· {planText}</Text>}
         <Text dimColor>·</Text>
         <Button key="band-open" label="open console" dimColor onPress={() => p.act.show('board')} />
       </Box>

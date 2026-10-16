@@ -99,6 +99,10 @@ const lastPatrol = atom(
   { plugin: 'factory', key: 'lastPatrol' } as const,
   null as FactoryPatrolLogEntry | null,
 )
+/** the pm's last plan, refreshed from `<home>/plan.json` each tick (a cheap fs read); drawn in the
+ * header, the band and the Rigs tab. `null` before the pm ever wrote one, the same convention
+ * `lastPatrol` uses (`$.state.set` only ever stores JSON data, which has no `undefined`). */
+const plan = atom({ plugin: 'factory', key: 'plan' } as const, null as FactoryPlan | null)
 const draft = atom(
   { plugin: 'factory', key: 'draft' } as const,
   {
@@ -283,6 +287,9 @@ async function tick($: EngineInterface) {
     const live = res.runs.filter(isLive)
     const busy = live.filter(r => !r.gate && r.sub !== 'waiting').length
     await update($, history, h => [...h, busy].slice(-120))
+    // cheap (one fs read, no CLI subprocess): refreshed every tick, not gated behind a tab's own view
+    const freshPlan = await readPlan($)
+    await update($, plan, () => freshPlan ?? null)
     // not awaited: a slow tab fetch (backlog, decisions) must not hold the board's next tick
     void refresh($)
 
@@ -450,7 +457,18 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   // a cold subagent has no memory of earlier patrols: these let it see what they already did
   const log = (await readPatrolLog($)).slice(-PATROL_LOG_RECENT).flatMap(e => e.actions)
   const plan = await readPlan($)
-  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last, hold, log, plan, now)
+  const due = patrol(
+    runs,
+    rt.unsent,
+    rt.seen,
+    now - rt.patrolAt >= PATROL_MS,
+    rigs,
+    last,
+    hold,
+    log,
+    plan,
+    now,
+  )
   // a due heartbeat whose board repeats the last one sent wakes nobody: patrolAt stays put, so a
   // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark
   if (!due) return
@@ -1163,7 +1181,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel, lp] = await Promise.all([
+    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel, lp, pl] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
@@ -1177,6 +1195,7 @@ export const register: Register = (on, options) => {
       $.clock.now(),
       read($, selected),
       read($, lastPatrol),
+      read($, plan),
     ])
     // a stored view of 'run', from before the Run tab folded into Board, reads as 'board'
     const shown = mapView(rawShown as string)
@@ -1196,13 +1215,13 @@ export const register: Register = (on, options) => {
           : shown === 'prs'
             ? prsView(p, pr, b)
             : shown === 'rigs'
-              ? rigsView(p, b)
+              ? rigsView(p, b, pl)
               : shown === 'interview'
                 ? interviewView(p, b, dr, dec)
                 : boardView(p, b, dr, sel, d, tail)
     return (
       <Box flexDirection="column">
-        {header(p, b, samples, shown, lp)}
+        {header(p, b, samples, shown, lp, pl)}
         {body}
         {footer(p)}
       </Box>
@@ -1216,6 +1235,6 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || isOpen || !b.runs.some(isLive)) return next(e)
     const ui = $.ui.resolve(e) as unknown as UI
     const p = { ui, act: actions($), width: e.props.bodyColumns, now: await $.clock.now() }
-    return band(p, b, await read($, draft), await read($, lastPatrol))
+    return band(p, b, await read($, draft), await read($, lastPatrol), await read($, plan))
   })
 }

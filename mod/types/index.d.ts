@@ -247,7 +247,11 @@ export type FactoryRigPlan = { items: FactoryPlanItem[]; findings: FactoryPlanFi
 /** `<home>/plan.json`, the pm subagent's last ranking (mirrors `Plan`, src/plan.ts). `at` is the
  * time the pm wrote it. A plan 2 or more hours old is stale: the patrol and `dispatch()` then use
  * today's order instead. */
-export type FactoryPlan = { at: number; rigs: Record<string, FactoryRigPlan>; proposals: FactoryPlanProposal[] }
+export type FactoryPlan = {
+  at: number
+  rigs: Record<string, FactoryRigPlan>
+  proposals: FactoryPlanProposal[]
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -266,6 +270,9 @@ declare module 'claude-code' {
       decisions: FactoryDecisions
       /** the last patrol's log entry, drawn in the pane header and band; null before any patrol wrote one */
       lastPatrol: FactoryPatrolLogEntry | null
+      /** the pm's last plan, refreshed each tick; null before the pm ever wrote one. `null`, not
+       * `undefined`: `$.state.set` only ever stores JSON data, which has no `undefined` */
+      plan: FactoryPlan | null
     }
   }
 }
