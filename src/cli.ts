@@ -2364,6 +2364,7 @@ async function dream() {
 }
 const devenvConfig = () => join(HOME, 'devenv.json')
 const DEVENV_CHECK_MS = 30 * 60_000
+const GC_MS = Number(process.env.FACTORY_GC_MS) || 3_600_000
 
 /**
  * builds and caches the devenv of each AX rig with a binary cache (FACTORY_NIX_CACHE) whose devenv files or
@@ -2736,6 +2737,18 @@ function gcPass(days: number, dryRun: boolean) {
   }
   for (const pane of plan.launch) rmSync(join(launchDir(), `${pane}.sh`), { force: true })
 }
+/** a gc pass at most every GC_MS (default hourly). FACTORY_GC=0 turns this off: tick spawns none. */
+const kickGc = () => {
+  if (process.env.FACTORY_GC === '0') return
+  const stamp = join(HOME, 'gc.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (isHeld('gc.lock') || age < GC_MS) return
+  spawnChild(CLI, ['gc'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
 
 async function tick(isPatrol = false) {
   const release = hold('tick.lock')
@@ -2783,6 +2796,7 @@ async function tick(isPatrol = false) {
       kickDevenv()
       kickConfigSync()
       kickSelfUpdate()
+      kickGc()
     }
   }
 }
