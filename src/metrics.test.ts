@@ -62,6 +62,33 @@ test('metrics count ship rate, time to ship, the approve wait, review loops and 
   })
 })
 
+test('fate only counts deploy deployed or published as shipped, never blocked/changes/hold', () => {
+  expect(
+    fate({ id: 'a', node: 'deploy', createdAt: 0, log: [e('deploy', 'blocked', 1)] }),
+  ).toBe('running@deploy')
+  expect(
+    fate({ id: 'a', node: 'implement', createdAt: 0, log: [e('deploy', 'changes', 1)] }),
+  ).toBe('running@implement')
+  expect(fate({ id: 'a', node: 'done', createdAt: 0, log: [e('deploy', 'hold', 1)] })).toBe('closed')
+})
+
+test('deploySessionsPerShippedRun counts deploy sessions (not pre-launch PR parks) over shipped runs', () => {
+  const prWait = (h: number) => ({ node: 'deploy', attempt: 0, outcome: 'blocked', summary: 'x', at: h * H })
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      log: [prWait(1), e('deploy', 'blocked', 2), e('deploy', 'deployed', 3)],
+    },
+    { id: 'r2', node: 'done', createdAt: 0, log: [prWait(1), e('deploy', 'published', 2)] },
+  ])
+  // r1 has 2 real deploy sessions (blocked + deployed; the pre-launch park is not a session)
+  // r2 has 1 real deploy session (published; the pre-launch park is not a session)
+  // 3 sessions / 2 shipped runs = 1.5
+  expect(m.deploySessionsPerShippedRun).toBe(1.5)
+})
+
 test("a run's id carries its creation time", () => {
   const t = 1791286012157
   expect(createdAt(`lifecycle-${t.toString(36)}x9`)).toBe(t)
