@@ -6,6 +6,17 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A stuck run no longer counts against `FACTORY_MAX_RUNS`, the town-wide cap.
+  (claude-factory-ytz)
+  - A run goes stuck when it passes `factory retry`'s attempt budget. The run then waits
+    for the owner.
+  - `busyRigs()` (`src/cli.ts`) now returns two sets: `busy` and a new `held` set.
+  - `dispatch`, `rework`, `assertRoom`, `backlog` and `rig list` count `held` only against
+    a rig's own `maxRuns`. They do not count `held` against the town cap.
+  - `room()` takes `held` as a new, optional argument.
+  - `rig list` adds a new line: `town: busy X/MAX, stuck Y`.
+  - The default `FACTORY_MAX_RUNS` moves from 8 to 16. This is the cap the owner already
+    uses.
 - Console: a due patrol now runs as a hidden `factory:patrol` subagent (`$.agent.spawn`,
   `mod/hooks/register.tsx`), instead of waking the manager's own main chat with `$.prompt.submit`.
   The person can keep typing while a patrol runs; a patrol adds no turn to the main chat and no
