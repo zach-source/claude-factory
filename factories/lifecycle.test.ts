@@ -2,9 +2,11 @@ import { expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import { createActor } from 'xstate'
 import { ruleLines } from '../src/cli'
-import { compile, validate, where, type Factory } from '../src/machine'
+import { compile, isPrWait, validate, where, WATCHED_PARK_MIN, type Factory } from '../src/machine'
 import lifecycle from './lifecycle'
 import release from './release'
+
+const PR = 'https://github.com/acme/widget/pull/42'
 
 // shaped like the real ax and claude-factory rig goals behind the incidents this bead fixes, with the
 // private repo paths swapped for the acme/widget fixture (the guard-private commit hook refuses the real ones)
@@ -137,6 +139,70 @@ test('a deploy or rollout brief for a rig whose goal names owner-only steps carr
     expect(brief).toMatch(/bead's description|factory mail.*manager/)
     expect(brief).toContain('parked, waiting on:')
   }
+})
+
+// claude-factory-960: release always names the pull request, so deploy parks before any worker starts
+// (AC1), wakes on a merge/close/activity mail or the 8h backstop (AC3/AC4), and still routes every
+// outcome exactly as today once a worker does run (AC4); a release with no link starts deploy at once (AC5).
+test('release reporting ready with a pull request link parks deploy with no worker (claude-factory-960 AC1)', () => {
+  const actor = createActor(compile(lifecycle)).start()
+  actor.send({ type: 'GOTO', node: 'release', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
+  const s = actor.getSnapshot()
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  expect(s.context.seq).toBe(seq) // no worker spawned
+  const last = s.context.log.at(-1)!
+  expect(isPrWait(last)).toBe(true)
+  expect(last.summary).toContain(PR)
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('deploy is parked, waiting on:')
+  expect(s.context.wakeAt).toBe(1000 + WATCHED_PARK_MIN * 60_000)
+})
+
+test('a merge or close mail wakes a parked deploy, which then routes every outcome as today (claude-factory-960 AC4)', () => {
+  const cases: { outcome: string; next: [string, string] }[] = [
+    { outcome: 'deployed', next: ['soak', 'waiting'] },
+    { outcome: 'published', next: ['done', ''] },
+    { outcome: 'changes', next: ['implement', 'working'] },
+    { outcome: 'hold', next: ['done', ''] },
+    { outcome: 'failed', next: ['rollback', 'working'] },
+  ]
+  for (const { outcome, next } of cases) {
+    const actor = createActor(compile(lifecycle)).start()
+    actor.send({ type: 'GOTO', node: 'release', at: 0 })
+    const released = actor.getSnapshot().context.seq
+    actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
+    expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'waiting'])
+    actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+    expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'working'])
+    const deploySeq = actor.getSnapshot().context.seq
+    actor.send({ type: 'DONE', seq: deploySeq, outcome, summary: outcome, at: 3000 })
+    expect(where(actor.getSnapshot().value)).toEqual(next)
+  }
+})
+
+test("a worker's own blocked report at deploy still parks as today, after the pre-launch park woke it (claude-factory-960 AC4)", () => {
+  const actor = createActor(compile(lifecycle)).start()
+  actor.send({ type: 'GOTO', node: 'release', at: 0 })
+  const released = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
+  actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+  const deploySeq = actor.getSnapshot().context.seq
+  actor.send({ type: 'BLOCKED', seq: deploySeq, reason: `still waiting on review ${PR}`, at: 3000 })
+  const s = actor.getSnapshot()
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'deploy', attempt: 1, outcome: 'blocked' })
+  expect(isPrWait(s.context.log.at(-1))).toBe(false) // a real worker report, not the pre-launch park
+})
+
+test('release reporting ready with no pull request link starts deploy at once (claude-factory-960 AC5)', () => {
+  const actor = createActor(compile(lifecycle)).start()
+  actor.send({ type: 'GOTO', node: 'release', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 'shipping, nothing to link', at: 1000 })
+  const s = actor.getSnapshot()
+  expect(where(s.value)).toEqual(['deploy', 'working'])
+  expect(s.context.seq).toBe(seq + 1)
 })
 
 test('sweeps loop on their timers past any step budget', () => {

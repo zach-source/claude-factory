@@ -3,6 +3,8 @@ import { createActor, type Snapshot } from 'xstate'
 import {
   compile,
   failClass,
+  isPrWait,
+  mrsIn,
   parkDelayMin,
   prsIn,
   reach,
@@ -364,4 +366,122 @@ test('failures of different kinds still retry', () => {
   send({ type: 'TICK', at: 11_000 })
   const s = send({ type: 'FAIL', seq: 2, reason: 'stalled: no output for 40 min', at: 12_000 })
   expect(where(s.value)).toEqual(['implement', 'backoff'])
+})
+
+// claude-factory-960.1: an awaitsPr station (deploy, for example) parks before its first worker starts.
+// This happens when the arriving report names a pull request. A merge, a close, or any later activity on
+// that pull request wakes the park. The same watch and mail path already wakes a worker's own blocked report.
+const prGraph: Factory = {
+  name: 'ship',
+  start: 'release',
+  nodes: {
+    release: { prompt: 'ship it', next: { ready: 'deploy' } },
+    deploy: { prompt: 'deploy it', awaitsPr: true, next: { deployed: 'done' } },
+  },
+}
+const PR = 'https://github.com/acme/widget/pull/7'
+
+test('an arrival naming a pull request at an awaitsPr station parks it with no worker, spending no attempt (claude-factory-960)', () => {
+  const { send } = run(prGraph)
+  const s = send({
+    type: 'DONE',
+    seq: 1,
+    outcome: 'ready',
+    summary: `ready to ship ${PR}`,
+    at: 1000,
+  })
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  expect(s.context).toMatchObject({ seq: 1, pane: null }) // no worker launch: seq never bumped past release's
+  const last = s.context.log.at(-1)!
+  expect(last).toMatchObject({ node: 'deploy', attempt: 0, outcome: 'blocked' })
+  expect(last.summary).toContain(PR)
+  expect(isPrWait(last)).toBe(true)
+  expect(s.context.wakeAt).toBe(1000 + WATCHED_PARK_MIN * 60_000)
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('deploy is parked, waiting on:')
+  expect(s.context.mail.manager?.at(-1)?.text).toContain(PR)
+  // the report's own box still carries the whole report, for whenever a worker does start
+  expect(s.context.mail.deploy?.at(-1)?.text).toContain(PR)
+})
+
+test('an awaitsPr park wakes on the clock or on mail, exactly like a worker-reported block', () => {
+  const { send } = run(prGraph)
+  let s = send({ type: 'DONE', seq: 1, outcome: 'ready', summary: `ready ${PR}`, at: 1000 })
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  const wake = 1000 + WATCHED_PARK_MIN * 60_000
+
+  s = send({ type: 'TICK', at: wake - 1 })
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  s = send({ type: 'TICK', at: wake })
+  expect(where(s.value)).toEqual(['deploy', 'working']) // the 8h backstop starts a worker
+  expect(s.context.seq).toBe(2)
+})
+
+test('mail to an awaitsPr station wakes it at once, with no attempt spent', () => {
+  const { send } = run(prGraph)
+  send({ type: 'DONE', seq: 1, outcome: 'ready', summary: `ready ${PR}`, at: 1000 })
+  const s = send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+  expect(where(s.value)).toEqual(['deploy', 'working'])
+  expect(s.context.seq).toBe(2)
+})
+
+test('an arrival with no pull request named starts the worker at once, awaitsPr or not', () => {
+  const { send } = run(prGraph)
+  const s = send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'ready, nothing to link', at: 1000 })
+  expect(where(s.value)).toEqual(['deploy', 'working'])
+  expect(s.context.seq).toBe(2)
+})
+
+test('a GitLab merge request also gates an awaitsPr arrival', () => {
+  const mr = 'https://gitlab.example.com/acme/widget/-/merge_requests/9'
+  expect(mrsIn(`see ${mr} for the change`)).toEqual([mr])
+  const { send } = run(prGraph)
+  const s = send({ type: 'DONE', seq: 1, outcome: 'ready', summary: `ready ${mr}`, at: 1000 })
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'deploy', attempt: 0, outcome: 'blocked' })
+})
+
+test('goto into an awaitsPr station skips the park and starts a worker now', () => {
+  const { send } = run(prGraph)
+  const s = send({ type: 'GOTO', node: 'deploy', at: 1000 })
+  expect(where(s.value)).toEqual(['deploy', 'working'])
+})
+
+test('validate refuses awaitsPr on a gate: a gate has no worker to hold back', () => {
+  expect(() =>
+    validate({
+      name: 'x',
+      start: 'g',
+      nodes: { g: { prompt: '?', gate: true, awaitsPr: true, next: { ok: 'done' } } },
+    }),
+  ).toThrow('a gate has no worker')
+})
+
+test('parkDelayMin skips the pre-launch (attempt 0) park entries awaitsPr adds, so they never inflate the backoff', () => {
+  const ctx = (entries: { outcome: string; attempt: number }[]) =>
+    ({
+      log: [{ node: 'plan', outcome: 'ready', attempt: 1 }, ...entries.map(e => ({ node: 'deploy', ...e }))],
+    }) as never
+  // two real worker blocks, one pre-launch park mixed in: only the 2 real ones double the wait
+  expect(
+    parkDelayMin(
+      ctx([
+        { outcome: 'blocked', attempt: 0 },
+        { outcome: 'blocked', attempt: 1 },
+        { outcome: 'blocked', attempt: 1 },
+      ]),
+      'deploy',
+      60,
+    ),
+  ).toBe(240)
+  // pre-launch parks alone never escalate the wait past the base
+  expect(
+    parkDelayMin(
+      ctx([
+        { outcome: 'blocked', attempt: 0 },
+        { outcome: 'blocked', attempt: 0 },
+      ]),
+      'deploy',
+      60,
+    ),
+  ).toBe(60)
 })

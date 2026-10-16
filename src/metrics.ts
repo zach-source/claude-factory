@@ -1,9 +1,11 @@
-import type { Entry } from './machine'
+import { isPrWait, type Entry } from './machine'
 
 /** one run as metrics see it: live from its state, or kept in metrics.jsonl after factory rm */
 export type RunRecord = { id: string; rig?: string; node: string; createdAt: number; log: Entry[] }
 
 const FAILED = new Set(['fail', 'failed', 'abandon', 'red'])
+/** deploy's only outcomes that mean the change shipped; blocked, changes and hold are not a ship */
+const SHIPPED_OUTCOMES = new Set(['deployed', 'published'])
 const HOUR = 3_600_000
 
 /** the id carries the run's creation time: `${name}-${Date.now().toString(36)}xx` */
@@ -19,7 +21,7 @@ const p90 = (xs: number[]) =>
 
 /** a run's fate: shipped (deploy succeeded), rejected (triage turned it down), closed, aborted, or where it is */
 export function fate(r: RunRecord) {
-  if (r.log.some(e => e.node === 'deploy' && !FAILED.has(e.outcome))) return 'shipped'
+  if (r.log.some(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))) return 'shipped'
   if (r.log[0]?.node === 'triage' && r.log[0].outcome === 'reject') return 'rejected'
   if (r.node === 'done') return 'closed'
   if (r.node === 'aborted') return 'aborted'
@@ -50,6 +52,9 @@ export function metrics(records: RunRecord[]) {
     fates[f] = (fates[f] ?? 0) + 1
     let prev = r.createdAt
     for (const e of r.log) {
+      // a pre-launch PR park (isPrWait) spent no worker: skip it so it is not a station visit,
+      // and leave prev at the entry before it so the next real visit's wait time is still correct
+      if (isPrWait(e)) continue
       const s = (stations[e.node] ??= { visits: 0, failed: 0, outcomes: {}, hours: [] })
       s.visits++
       s.outcomes[e.outcome] = (s.outcomes[e.outcome] ?? 0) + 1
@@ -64,10 +69,15 @@ export function metrics(records: RunRecord[]) {
       if (e.node === 'review' && e.outcome === 'changes') reviewLoops++
       prev = e.at
     }
-    const shipped = r.log.find(e => e.node === 'deploy' && !FAILED.has(e.outcome))
+    const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
     if (shipped) cycle.push((shipped.at - r.createdAt) / HOUR)
   }
   const ended = (fates.shipped ?? 0) + (fates.rejected ?? 0) + (fates.closed ?? 0) + (fates.aborted ?? 0)
+  // a pre-launch PR park (isPrWait) spent no worker, so it is not a deploy session
+  const deploySessions = records.reduce(
+    (n, r) => n + r.log.filter(e => e.node === 'deploy' && !isPrWait(e)).length,
+    0,
+  )
   return {
     runs: records.length,
     fates,
@@ -75,6 +85,7 @@ export function metrics(records: RunRecord[]) {
     hoursToShip: { median: median(cycle), p90: p90(cycle) },
     approveWaitHours: { median: median(gateWait), p90: p90(gateWait) },
     reviewLoops,
+    deploySessionsPerShippedRun: fates.shipped ? deploySessions / fates.shipped : null,
     fails,
     stations: Object.fromEntries(
       Object.entries(stations).map(([id, s]) => [
@@ -95,6 +106,7 @@ export function render(m: ReturnType<typeof metrics>, title: string) {
     `  ship rate ${m.shipRate === null ? '-' : `${Math.round(m.shipRate * 100)}%`} of ended runs` +
       `, to ship ${h(m.hoursToShip.median)} median / ${h(m.hoursToShip.p90)} p90` +
       `, waiting on approve ${h(m.approveWaitHours.median)} median / ${h(m.approveWaitHours.p90)} p90`,
+    `  deploy sessions per shipped run ${m.deploySessionsPerShippedRun === null ? '-' : m.deploySessionsPerShippedRun.toFixed(2)}`,
     `  review sent work back ${m.reviewLoops}x; failures: ${
       Object.entries(m.fails)
         .map(([k, v]) => `${k} ${v}`)
