@@ -597,6 +597,7 @@ test("withProposals overrides a needsProposal item's question, title, context an
     bead: 'api-9',
     title: 'api-9: A pilot bead',
     question: 'A pilot bead',
+    options: [{ label: 'start now' }, { label: 'not now' }],
     needsProposal: true,
   })
   const bead = iv({
@@ -617,14 +618,13 @@ test("withProposals overrides a needsProposal item's question, title, context an
     'gate:g1@1': { question: 'x', options: ['y', 'z'], at: 1 },
   }
   const merged = withProposals([gate, owned, bead], proposals)
+  // an owner-only bead's title, question and context can shorten, but its two fixed options
+  // (start now, not now) never give way to the manager's own options (claude-factory-9f6.9)
   expect(merged.find(i => i.key === 'own:api:api-9')).toMatchObject({
     title: 'api-9: Start the pilot now?',
     question: 'Start the pilot now?',
     context: 'Nobody has run it yet.',
-    options: [
-      { label: 'start now', effect: 'begins at once', recommended: false },
-      { label: 'not now', effect: 'leaves it queued', recommended: true },
-    ],
+    options: [{ label: 'start now' }, { label: 'not now' }],
   })
   expect(merged.find(i => i.key === 'gate:g1@1')!.options).toEqual([]) // never merged into a gate
   expect(merged.find(i => i.key === 'bd:api:api-7')!.options).toEqual([
@@ -690,9 +690,17 @@ test('mergeSame folds open items that share a bead or the same question in the s
     kind: 'parked',
     rig: 'web',
     question: '  Ship   It?  ',
+    hasOwnQuestion: true,
     at: 2,
   })
-  const d = iv({ key: 'iv:r4@9', kind: 'parked', rig: 'web', question: 'ship it?', at: 9 })
+  const d = iv({
+    key: 'iv:r4@9',
+    kind: 'parked',
+    rig: 'web',
+    question: 'ship it?',
+    hasOwnQuestion: true,
+    at: 9,
+  })
   const gate1 = iv({ key: 'gate:g1@1', kind: 'gate', rig: 'web', question: 'ship it?', at: 1 })
   const prompt1 = iv({ key: 'prompt:p1@1', kind: 'prompt', rig: 'web', question: 'ship it?', at: 1 })
 
@@ -704,6 +712,44 @@ test('mergeSame folds open items that share a bead or the same question in the s
   expect(byQuestion.also?.map(m => m.key)).toEqual(['iv:r4@9'])
   expect(merged.find(m => m.key === 'gate:g1@1')!.also).toBeUndefined()
   expect(merged.find(m => m.key === 'prompt:p1@1')!.also).toBeUndefined()
+})
+
+test('mergeSame never merges two bead-less items on a stand-in question, even when the words match (claude-factory-9f6.7)', () => {
+  // two different runs park at the same station. Neither names its own bead. interviews() fills in the
+  // exact same stand-in line for both ("triage is parked waiting on something outside the run..."). This
+  // test must show that the code never reads two equal stand-in lines as "the same decision".
+  const standIn = 'triage is parked waiting on something outside the run. What should it do?'
+  const r1 = iv({ key: 'iv:r1@1', kind: 'parked', rig: 'api', question: standIn, at: 1 })
+  const r2 = iv({ key: 'iv:r2@2', kind: 'parked', rig: 'api', question: standIn, at: 2 })
+  const merged = mergeSame([r1, r2])
+  expect(merged).toHaveLength(2)
+  expect(merged.every(m => m.also === undefined)).toBe(true)
+})
+
+test('mergeSame never merges a run item into a bd item on a shared bead (claude-factory-9f6.8)', () => {
+  // a stuck run's options answer "how should the run go on" (retry or abort); a bd item's options answer
+  // the bead's own question. Folding them would force one option set to answer both.
+  const stuck = iv({
+    key: 'iv:w1@1',
+    kind: 'stuck',
+    bead: 'web-1',
+    rig: 'web',
+    question: 'How should it go on?',
+    options: [{ label: 'retry' }, { label: 'abort' }],
+    at: 1,
+  })
+  const bdItem = iv({
+    key: 'bd:web:web-1',
+    kind: 'bead',
+    bead: 'web-1',
+    rig: 'web',
+    question: 'Which plan?',
+    options: [{ label: 'plan A' }, { label: 'plan B' }],
+    at: 0,
+  })
+  const merged = mergeSame([stuck, bdItem])
+  expect(merged).toHaveLength(2)
+  expect(merged.every(m => m.also === undefined)).toBe(true)
 })
 
 test('openInterviews merges a bead-matching interview fixture pair into one item with the other in `also`', () => {
@@ -757,6 +803,40 @@ test('a collapsed interview item built from a recorded parked summary stays shor
     const fixture = fixtures.find(f => f.run === iv.run)!
     expect(iv.details).toBe(fixture.summary)
   }
+})
+
+test("interviews() and withProposals() both redact a URL or a SHA out of an item's own Context: line (claude-factory-9f6.12)", () => {
+  const sha = 'a1b2c3d4e5f'
+  const runs = [
+    {
+      id: 'r1',
+      node: 'triage',
+      sub: 'waiting',
+      last: {
+        node: 'triage',
+        attempt: 1,
+        outcome: 'blocked',
+        summary: `See https://github.com/acme/widget/pull/1 at ${sha}.\nQuestion: Merge now?\nContext: Commit ${sha} failed CI, see https://ci.example.com/run/1\nOptions: yes | no`,
+        at: 1,
+      },
+    },
+  ]
+  const [iv1] = interviews(runs)
+  expect(iv1!.context).not.toContain(sha)
+  expect(iv1!.context).not.toContain('https://')
+
+  const proposals = {
+    [iv1!.key]: {
+      question: 'Merge now?',
+      context: `See ${sha} at https://ci.example.com/run/1 for the failure`,
+      options: ['yes', 'no'],
+      at: 2,
+    },
+  }
+  const withOwnContext = { ...iv1!, needsProposal: true } // force the override path, as a long title would
+  const proposed = withProposals([withOwnContext], proposals)[0]!
+  expect(proposed.context).not.toContain(sha)
+  expect(proposed.context).not.toContain('https://')
 })
 
 test('patrol lines carry the attempt, time in station, quiet time and a paused runner', () => {

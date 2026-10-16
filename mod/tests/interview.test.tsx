@@ -536,8 +536,11 @@ test(
       props: { bodyColumns: 100, placement: 'dock' } as never,
       viewport: { columns: 100, rows: 60 },
     })
-    // two parked reports on one bead, folded into a single open row
-    expect(JSON.stringify(await ui.drawn())).toContain('questions (1)')
+    // two parked reports on one bead, folded into a single open row; the folded run (rb) still shows
+    // (claude-factory-9f6.10), so the person knows one answer covers both stations
+    const folded = JSON.stringify(await ui.drawn())
+    expect(folded).toContain('questions (1)')
+    expect(folded).toContain('also: rb')
 
     await ui.press({ key: 'iv-opt-iv:ra@1-0' }) // 'pause merges', the oldest (ra) report's key
     await clock.settle()
@@ -550,6 +553,51 @@ test(
     const after = JSON.stringify(await ui.drawn())
     expect(after).toContain('questions (0)') // the merged row is gone
     expect(after).toContain('answered (2)') // both members are recorded as answered
+    await ui.unmount()
+  },
+)
+
+test(
+  "when the second member of a merged row fails to mail, the first member's answer still records (claude-factory-9f6.11)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      // 'ra' mails fine; 'rb' fails, as a station gone from the board between tick and send would
+      if (e.argv.includes('mail') && e.argv.includes('rb'))
+        return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+          stderr: '',
+        } as never,
+      }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    await ui.press({ key: 'iv-opt-iv:ra@1-0' }) // 'pause merges'
+    await clock.settle()
+    const mails = ran.filter(a => a.includes('mail'))
+    expect(mails.map(a => a.slice(-3)[0])).toEqual(['ra', 'rb']) // both attempted, in order
+    const drawn = JSON.stringify(await ui.drawn())
+    // ra's own answer still recorded, even though rb's mail failed right after it
+    expect(drawn).toContain('answered (1)')
+    expect(drawn).toContain('questions (1)') // rb, unanswered, asks again on its own
     await ui.unmount()
   },
 )

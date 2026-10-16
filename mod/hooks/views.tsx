@@ -1008,6 +1008,11 @@ export function interviewView(
                       {iv.context}
                     </Text>
                   )}
+                  {iv.also && iv.also.length > 0 && (
+                    <Text dimColor wrap="wrap">
+                      {`also: ${iv.also.map(m => m.run ?? m.bead ?? m.key).join(', ')}`}
+                    </Text>
+                  )}
                   {iv.details && (
                     <Box flexDirection="column">
                       <Button

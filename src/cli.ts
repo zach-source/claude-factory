@@ -850,7 +850,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
-    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer; add "(recommended)" after the effect of the one you recommend, when there is one): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
+    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now, 200 characters or fewer>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer, each effect 100 characters or fewer; add "(recommended)" after the effect of at most one option): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
@@ -3458,7 +3458,12 @@ function parseOption(raw: string): { label: string; effect?: string; recommended
  * would otherwise have to answer in their own words; never for a gate, which only the person decides, and
  * never for a blocked-on-prompt item, which waits on the person looking at the worker's pane rather than on
  * a choice. Refuses each field over its limit (named in the error, with its length and the limit) before it
- * writes anything, so a bad call leaves decisions.json unchanged. */
+ * writes anything, so a bad call leaves decisions.json unchanged.
+ *
+ * An own: key identifies an owner-only bead. It always keeps its two fixed options, start now and not now.
+ * This function ignores any options that the caller gives for an own: key, and does not parse or store them.
+ * An owner-only bead never takes the manager's own choices. The manager can still give it a shorter question,
+ * or an added context sentence. */
 function decisionsPropose(key: string, question: string, optionsLine: string, context?: string) {
   if (process.env.FACTORY_FROM)
     fail("a worker cannot propose the person's decisions: mail the manager instead")
@@ -3467,8 +3472,23 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
   if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
   if (/\n/.test(question)) fail('question has a newline: it must be one line')
   if (question.length > 160) fail(`question is ${question.length} characters, over the 160 limit`)
+  if (context !== undefined && /\n/.test(context)) fail('context has a newline: it must be one sentence')
   if (context !== undefined && context.length > 200)
     fail(`context is ${context.length} characters, over the 200 limit`)
+  const all = proposals()
+  if (/^own:/.test(key)) {
+    all[key] = {
+      question,
+      options: ['start now', 'not now'],
+      at: Date.now(),
+      ...(context ? { context } : {}),
+    }
+    mkdirSync(HOME, { recursive: true })
+    writeJson(decisionsFile(), all)
+    console.log(`proposed options for ${key} (its two fixed options stay: start now, not now)`)
+    return
+  }
+  if (/\n/.test(optionsLine)) fail('options have a newline: each option must be one line')
   const rawOptions = optionsLine
     .split('|')
     .map(s => s.trim())
@@ -3484,7 +3504,6 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
   }
   const recommended = parsed.filter(o => o.recommended).length
   if (recommended > 1) fail(`${recommended} options marked recommended, only 1 is allowed`)
-  const all = proposals()
   all[key] = { question, options: rawOptions, at: Date.now(), ...(context ? { context } : {}) }
   mkdirSync(HOME, { recursive: true })
   writeJson(decisionsFile(), all)
@@ -3943,6 +3962,11 @@ if (import.meta.main && !outboxCmd)
           const ci = extra.indexOf('--context')
           const context = ci === -1 ? undefined : extra[ci + 1]
           if (ci !== -1 && !context) fail('usage: ... --context "<sentence>" needs a value')
+          const leftover = ci === -1 ? extra : extra.filter((_, i) => i !== ci && i !== ci + 1)
+          if (leftover.length)
+            fail(
+              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context "<sentence>" is allowed`,
+            )
           decisionsPropose(key!, question!, optionsLine!, context)
           break
         }

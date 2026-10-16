@@ -202,6 +202,66 @@ test('decisions propose keeps a value at its limit, refuses one over it naming t
   expect(snapshot()).toBe(before)
 })
 
+test('decisions propose refuses a newline in the question, the context or the options line', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', '[]')
+
+  const badQuestion = factory(['decisions', 'propose', 'bd:api:api-1', 'line one\nline two', 'a | b'])
+  expect(badQuestion.code).not.toBe(0)
+  expect(badQuestion.err).toContain('question has a newline')
+
+  const badContext = factory([
+    'decisions',
+    'propose',
+    'bd:api:api-1',
+    'q',
+    'a | b',
+    '--context',
+    'line one\nline two',
+  ])
+  expect(badContext.code).not.toBe(0)
+  expect(badContext.err).toContain('context has a newline')
+
+  const badOptions = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a\nmore | b'])
+  expect(badOptions.code).not.toBe(0)
+  expect(badOptions.err).toContain('options have a newline')
+})
+
+test('decisions propose refuses an unknown extra argument instead of silently ignoring it', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', '[]')
+  const typo = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b', '--contxt', 'oops'])
+  expect(typo.code).not.toBe(0)
+  expect(typo.err).toContain('unknown argument')
+  expect(typo.err).toContain('--contxt')
+  const out = JSON.parse(factory(['decisions']).out)
+  expect(out.proposals['bd:api:api-1']).toBeUndefined() // the bad call stored nothing
+})
+
+test("decisions propose ignores the given options for an own: key and always keeps 'start now' and 'not now'", () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', '[]')
+  const proposed = factory([
+    'decisions',
+    'propose',
+    'own:api:api-9',
+    'Start the pilot now?',
+    'ship it: go live | hold: wait',
+    '--context',
+    'Nobody has run it yet.',
+  ])
+  expect(proposed.code).toBe(0)
+  const out = JSON.parse(factory(['decisions']).out)
+  expect(out.proposals['own:api:api-9']).toMatchObject({
+    question: 'Start the pilot now?',
+    context: 'Nobody has run it yet.',
+    options: ['start now', 'not now'],
+  })
+})
+
 test('decisions propose --context round-trips into `factory decisions` output', () => {
   rmSync(dir, { recursive: true, force: true })
   rig('api')
