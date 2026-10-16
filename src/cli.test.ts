@@ -323,14 +323,27 @@ test("a worker's context is its transcript's last turn, read from a tail that ma
 })
 
 test("a worker's settings are its own: the user's hooks and environment, none of their plugins", () => {
-  const hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'guard' }] }] }
+  const hooks = {
+    SessionStart: [{ hooks: [{ type: 'command', command: 'herdr-session' }] }],
+    PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'guard' }] }],
+  }
   const user = {
     env: { A: '1', CLAUDE_CODE_PLUGIN_DIRS: '/x/herdr-fleet:/y/mine' },
     hooks,
     enabledPlugins: { p: true },
   }
   const w = workerSettings(user, 200)
-  expect(w.hooks).toBe(hooks)
+  const pre = w.hooks.PreToolUse as { matcher: string; hooks: { command: string }[] }[]
+  // the user's own PreToolUse entry (a secret guard such as ctxguard) stays first, unchanged
+  expect(pre[0]).toEqual(hooks.PreToolUse[0])
+  // claude-factory-cr6: the factory's deny-rm-rf hook comes last, so it never shadows the user's own guard
+  expect(pre[1]).toMatchObject({ matcher: 'Bash' })
+  expect(pre[1]!.hooks[0]!.command).toMatch(/worker-hook\.ts'$/)
+  expect(pre).toHaveLength(2)
+  // workerSettings keeps a hook event other than PreToolUse as the user set it
+  expect(w.hooks.SessionStart).toEqual(hooks.SessionStart)
+  // a user with no hooks at all gets only the factory's entry
+  expect(workerSettings({}, 200).hooks.PreToolUse).toHaveLength(1)
   expect(w.env).toMatchObject({
     A: '1',
     CLAUDE_CODE_PLUGIN_DIRS: '/y/mine',
