@@ -1,8 +1,12 @@
 // This is the Linear pull loop (claude-factory-b6c).
-// The loop moves Linear issues from each opted-in rig to that rig's beads store.
+// The loop moves Linear issues from each opted-in rig's configured team(s) into that rig's beads
+// store, routing each issue to at most one rig (claude-factory-b6c.18). It never pushes a change
+// back to Linear.
 //
-// The loop uses the bd command `bd linear sync --pull-if-stale`.
-// The loop must not use `--push`.
+// `bd` has no project or label filter on a pull: `bd linear sync --pull --team <ids>` always
+// imports every issue of a team. So the loop lists each team's issues itself (`fetchLinearIssues`,
+// read-only), decides which rig, if any, each issue belongs to (`routeLinearIssue`), then asks
+// `bd` to pull only the routed issues into that rig (`bd linear pull <ref...>`, never `--push`).
 //
 // The loop gets the Linear API key on demand from a secret-broker REST service (claude-factory-b6c.17,
 // the person's decision of 2026-10-16). It never asks for an interactive approval.
@@ -13,6 +17,10 @@
 // infrastructure, so this file never hardcodes them: every run reads them from its own environment or
 // Keychain, set up once, by hand, outside git (see docs/beads.md). The item name "LinearBotsApiKey" and
 // the field name "credential" are not infrastructure names, so they stay as constants below.
+//
+// The same rule holds for a rig's Linear project and label names (`--linear-projects`,
+// `--linear-labels`): they name a real team's project and label taxonomy, so this file ships no
+// default list for any rig name. The person sets them per rig, outside git (see docs/beads.md).
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** The argument of `--linear <team_id[,team_id]>`: one or more Linear team UUIDs. */
 export function parseLinearTeams(spec: string): string[] {
@@ -24,6 +32,55 @@ export function parseLinearTeams(spec: string): string[] {
   if (bad !== undefined) throw new Error(`--linear team id "${bad}" is not a UUID`)
   if (!ids.length) throw new Error('--linear needs at least one team UUID')
   return ids
+}
+
+/** The argument of `--linear-projects <name[,name]>` or `--linear-labels <name[,name]>`: one or
+ * more exact Linear project or label names, comma-separated. A name must not itself hold a comma. */
+export function parseLinearList(spec: string): string[] {
+  const names = spec
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  if (!names.length) throw new Error('needs at least one name')
+  return names
+}
+
+/** A rig's Linear configuration (`rigs.json`'s `linear` field): the team(s) it pulls from, and the
+ * exact project names and label names that route an issue to it (claude-factory-b6c.18). `projects`
+ * and `labels` are each optional: a rig with neither still gets an issue whose project name starts
+ * with `[<rig-name>]` (see `routeLinearIssue`), but nothing else. */
+export type LinearRouting = { team: string[]; projects?: string[]; labels?: string[] }
+
+/** One Linear issue, as `routeLinearIssue` needs it: its project name, if any, and its label names. */
+export type LinearIssue = { project?: string; labels: string[] }
+
+/** A rig, as `routeLinearIssue` needs it: its name, and its Linear routing config, if opted in. */
+export type RoutableRig = { name: string; linear?: LinearRouting }
+
+/**
+ * Routes one Linear issue to at most one opted-in rig (claude-factory-b6c.18). `bd` has no such
+ * filter itself, so the loop decides this in its own code, before it asks `bd` to pull anything.
+ *
+ * Rule 1 (always on, no config): a project name that starts with `[<rig-name>]` routes to the
+ * opted-in rig of that exact name. No such rig: the issue falls through to rule 2.
+ *
+ * Rule 2: a project name, or a label, that is in some opted-in rig's own `projects` or `labels`
+ * list (`rig add --linear-projects`/`--linear-labels`) routes to that rig. The first opted-in rig,
+ * in `rigs` order, that matches wins.
+ *
+ * No rule matches: the function returns `undefined`. The issue lands in no rig.
+ */
+export function routeLinearIssue(issue: LinearIssue, rigs: RoutableRig[]): string | undefined {
+  const opted = rigs.filter((r): r is RoutableRig & { linear: LinearRouting } => !!r.linear?.team?.length)
+  if (issue.project) {
+    const byName = opted.find(r => issue.project!.startsWith(`[${r.name}]`))
+    if (byName) return byName.name
+  }
+  for (const r of opted) {
+    if (issue.project && r.linear.projects?.includes(issue.project)) return r.name
+    if (issue.labels.some(l => r.linear.labels?.includes(l))) return r.name
+  }
+  return undefined
 }
 
 const ITEM_TITLE = 'LinearBotsApiKey'
@@ -169,39 +226,24 @@ export function syncEnv(
   return { ...stripped, LINEAR_API_KEY: apiKey }
 }
 
-/** This is the argv for `bd linear sync --pull-if-stale ...`. It pulls only, for the opted-in team IDs.
- * It must not include `--push` or the key. */
-export const syncArgs = (teamIds: string[]): string[] => [
-  'linear',
-  'sync',
-  '--pull-if-stale',
-  '--threshold',
-  '15m',
-  '--team',
-  teamIds.join(','),
-  '--json',
-]
+/** This is the argv for `bd linear pull <ref...>`. It names the exact issues to pull, by their
+ * Linear URL (`routeLinearIssue`'s caller passes only the refs it has routed to this rig). It must
+ * not include `--push` or the key: `bd linear pull` has no such flag. */
+export const pullArgs = (refs: string[]): string[] => ['linear', 'pull', ...refs, '--json']
 
-export type SyncOutcome =
-  | { fresh: true; lastPull?: string }
-  | { fresh: false; pulled: number; created: number; updated: number }
-  | { error: string }
+export type SyncOutcome = { pulled: number; created: number; updated: number } | { error: string }
 
 /**
- * `bd linear sync --json` (bd 1.3.0) returns one of three shapes.
+ * `bd linear pull <ref...> --json` (bd 1.3.0) returns one of two shapes.
  *
- * The first shape is a skip. The sync did not run because the data is not stale.
- * It has the fields `is_fresh`, `skipped: true`, `last_pull`, and `age`.
+ * The first shape is a pull that ran. It has a `stats` object with the fields `pulled`,
+ * `created`, `updated`, and more.
  *
- * The second shape is a pull that ran.
- * It has `skipped: false` and a `stats` object with the fields `pulled`, `created`, `updated`, and more.
+ * The second shape is an engine error. It has an `error` field and a nonzero exit code.
  *
- * The third shape is an engine error.
- * It has an `error` field and a nonzero exit code.
- *
- * A nonzero exit code that has none of these shapes is also an error. `stderr` is optional: when stdout
- * has no usable detail, the error message falls back to stderr's first line, so a crash with empty stdout
- * still names what failed.
+ * A nonzero exit code that has neither shape is also an error. `stderr` is optional: when stdout
+ * has no usable detail, the error message falls back to stderr's first line, so a crash with empty
+ * stdout still names what failed.
  */
 export function parseSync(stdout: string, exitCode: number, stderr = ''): SyncOutcome {
   const errDetail = () => stderr.trim().split('\n')[0]
@@ -212,8 +254,8 @@ export function parseSync(stdout: string, exitCode: number, stderr = ''): SyncOu
     return {
       error:
         exitCode === 0
-          ? 'bd linear sync: no JSON on stdout'
-          : stdout.trim() || errDetail() || `bd linear sync exited ${exitCode}`,
+          ? 'bd linear pull: no JSON on stdout'
+          : stdout.trim() || errDetail() || `bd linear pull exited ${exitCode}`,
     }
   }
   const j = json as Record<string, unknown>
@@ -221,12 +263,76 @@ export function parseSync(stdout: string, exitCode: number, stderr = ''): SyncOu
   if (exitCode !== 0)
     return {
       error: errDetail()
-        ? `bd linear sync exited ${exitCode}: ${errDetail()}`
-        : `bd linear sync exited ${exitCode}`,
+        ? `bd linear pull exited ${exitCode}: ${errDetail()}`
+        : `bd linear pull exited ${exitCode}`,
     }
-  if (j?.skipped) return { fresh: true, ...(j.last_pull !== undefined && { lastPull: String(j.last_pull) }) }
   const s = (j?.stats as Record<string, number>) ?? {}
-  return { fresh: false, pulled: s.pulled ?? 0, created: s.created ?? 0, updated: s.updated ?? 0 }
+  return { pulled: s.pulled ?? 0, created: s.created ?? 0, updated: s.updated ?? 0 }
+}
+
+const LINEAR_API_URL = () => process.env.LINEAR_API_URL || 'https://api.linear.app/graphql'
+
+const ISSUES_QUERY = `
+  query Issues($filter: IssueFilter!, $first: Int!, $after: String) {
+    issues(first: $first, after: $after, filter: $filter) {
+      nodes { url project { name } labels { nodes { name } } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`
+
+/** One Linear issue, as the loop lists it: its URL (the exact ref `bd linear pull` takes), its
+ * project name, if any, and its label names. */
+export type LinearIssueRef = LinearIssue & { ref: string }
+
+type IssuesPage = {
+  data?: {
+    issues?: {
+      nodes: { url: string; project?: { name: string } | null; labels?: { nodes: { name: string }[] } }[]
+      pageInfo: { hasNextPage: boolean; endCursor: string }
+    }
+  }
+  errors?: { message: string }[]
+}
+
+/**
+ * Lists every issue of the given Linear team(s): its URL, its project name, and its label names.
+ * This is a read: it never creates, updates, or closes a Linear issue.
+ *
+ * `bd` has no project or label filter on a pull (claude-factory-b6c.18), so the loop lists issues
+ * itself, routes each one in its own code (`routeLinearIssue`), then asks `bd` to pull only the
+ * routed refs. `endpoint` defaults to Linear's own API; a test overrides it with a fake server.
+ *
+ * This stops after 50 pages (5,000 issues at 100 per page), a safety bound against a malformed
+ * response that never reports its last page.
+ */
+export async function fetchLinearIssues(
+  apiKey: string,
+  teamIds: string[],
+  endpoint: string = LINEAR_API_URL(),
+): Promise<LinearIssueRef[]> {
+  const issues: LinearIssueRef[] = []
+  let after: string | undefined
+  for (let page = 0; page < 50; page++) {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { Authorization: apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: ISSUES_QUERY,
+        variables: { filter: { team: { id: { in: teamIds } } }, first: 100, after },
+      }),
+    })
+    if (!res.ok) throw new Error(`Linear API request failed: ${res.status}`)
+    const json = (await res.json()) as IssuesPage
+    if (json.errors?.length) throw new Error(`Linear API error: ${json.errors[0]!.message}`)
+    const page_ = json.data?.issues
+    if (!page_) throw new Error('Linear API: no issues in response')
+    for (const n of page_.nodes)
+      issues.push({ ref: n.url, project: n.project?.name, labels: n.labels?.nodes.map(l => l.name) ?? [] })
+    if (!page_.pageInfo.hasNextPage) break
+    after = page_.pageInfo.endCursor
+  }
+  return issues
 }
 
 const TOKEN_SHAPE = /lin_(api|oauth)_\S+/g
