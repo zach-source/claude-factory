@@ -162,6 +162,12 @@ last patrol ran. Underneath, the runtime stays mechanical. It ticks every 5 s, l
 workers, and nudges an idle worker twice before it retries with backoff. So a quiet manager never
 stalls a run.
 
+A hidden `pm` subagent runs once an hour and soon after a run finishes. It reads each rig's ready beads, goal, open epics, epic progress, and runs in flight. It writes `<home>/plan.json`, a ranked list of next work for each rig, with a one-line reason for each bead. It also writes one line per run to `<home>/pm-log.jsonl`. The patrol and `factory dispatch` use this plan when it is less than 2 hours old. If the plan is older or missing, they use today's order instead.
+
+The pm flags two problems. A starved epic has had no progress for many hours while work with a lower priority shipped. A plan gap is a goal with no open bead, or a done epic that is still open. The pm creates an unlabeled bead for each one. A person must triage each bead.
+
+The pm does not change the priority of a P0 or P1 bead, a rig goal, or an owner-only setting. It can only propose such a change. The proposal becomes a decision item in the Interview tab. A person must decide on the item. To turn off the pm, set `pm` to `false` in the plugin's `userConfig`.
+
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats
 (a fresh session per visit, a durable identity in the run), each repo the factory works is
@@ -183,7 +189,8 @@ and pushes it, and pushes the memory to the `memory` branch, so the factory can 
 A rig is a repo the factory works, by name. Its ready beads labeled `factory` start as runs,
 it keeps its sweeps running, and it has its own cap on busy runs under the factory's
 `FACTORY_MAX_RUNS`. A goal is the person's standing direction for the rig: while the rig has
-room, the manager's heartbeat patrol carries it and gives the rig the next work toward it.
+room, the manager's heartbeat patrol carries it and gives the rig the next work toward it,
+using the pm's plan when it is fresh (see [The manager drives](#the-manager-drives)).
 The goal also reaches every worker's brief, under "## Rig goal", so a step it reserves for
 the person binds every station, not only the manager.
 
