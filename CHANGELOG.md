@@ -6,6 +6,18 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- The console's Interview tab now shows a short item for each question. Each item has a
+  title (the run or bead id, and the decision in plain words). Each item has one line of
+  context, and 2-4 options. Each option has a label and an effect. A `details` toggle holds
+  the full raw report; the item itself does not show it. The manager can mark one option
+  "(recommended)". With no marked option, no option stands out. Items that ask the same
+  decision fold into one row: the same bead, or the same question in the same rig. One answer
+  to a folded row answers every run or bead in it. `factory decisions propose` now takes an
+  optional `--context` sentence. It refuses a question over 160 characters, a context over
+  200, fewer than 2 or more than 4 options, a label over 40 characters, an effect over 100, or
+  more than one recommended option. On a refusal, `decisions.json` stays unchanged. The
+  `[factory] interview` prompt, the manager's system prompt, the blocked-run brief and
+  `repeatQuestion` all ask for this same shape. (claude-factory-9f6)
 - Fixed: a bug let the pkg-gate's Go sumdb floor (`refreshGoFloor` in `src/pkggate.ts`) rise to near `now` in one refresh. The floor then stayed there until the pod restarted. An attacker who owned all 9 sampled `index.golang.org` entries could log each one in `sum.golang.org` right before a refresh. The old `Math.max(old, new)` ratchet then kept that high floor. Each refresh now stores the `sum.golang.org` tree size it read before lookups (`goFloor.latest`). It caps the floor's rise at `prev.record + 3 * max(0, latest - prev.latest)`. This cap is 3 times the real sumdb traffic since the last refresh. The `Math.max` ratchet is gone, so a refresh can also lower the floor. A lower floor only refuses more versions. The cap limits one refresh only. Two follow-ups stay open. A sustained attack can still raise the floor across many refreshes (claude-factory-ldb). The first refresh after a pod start has no cap yet (claude-factory-b9f). (claude-factory-56j)
 - Fixed: a worker ran `rm -r`/`rm -rf` on its own `.scratch/` folder. The prompt rule in
   `src/worker-system.md` (claude-factory-9wu) did not stop this. The worker then

@@ -114,11 +114,18 @@ from `factory prs` and refreshes not more than one time in 60 seconds. Press the
 
 ![The Interview tab: the questions that only you can answer](docs/images/console-interview.png)
 
-The Interview tab is one list of the questions that only you can answer. It collects the gates,
-the parked and stuck runs, the workers that wait on a prompt, and the bd decisions of all rigs.
-Press `Interview me` to sweep the rigs. After that, the manager proposes options for the bare items.
-Press an option or type an answer, then press `send answer`. The answered items move to the
-second sub-tab.
+The Interview tab is one list of the questions that only you can answer. It shows these items:
+
+- the gates
+- the parked and stuck runs
+- the workers that wait on a prompt
+- the bd decisions of all rigs
+
+Each item has a short title. The title gives the run or bead id and the decision in plain words. For example: "ama-gs2: will you merge PR #68 now?" Each item also has one line of context and 2-4 options. Each option has a label and an effect.
+
+The manager marks one option "(recommended)" when it has one. The full raw report is behind a `details` toggle. Two items that ask the same decision become one row.
+
+Press `Interview me` to sweep the rigs. After that, the manager proposes a title, context and options for the items that still need them. Press an option or type an answer. Then press `send answer`. The answered items move to the second sub-tab.
 
 ## The manager drives
 
