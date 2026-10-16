@@ -805,8 +805,8 @@ test('claude-factory-56j: owning every sampled index entry caps one refresh\'s r
 
     // AC3: a later, honest refresh. /latest grows by another 100 real records (10_100 -> 10_200); real
     // samples now read 1100-1108 (min 1100). The floor follows them down to 1100, below the poisoned 1300
-    // -- the old Math.max(old,new) ratchet would have kept 1300 forever and let a record-1200 version
-    // through; this fix does not.
+    // -- the old Math.max(old,new) ratchet would have kept 10090 (max(1000, min(ATTACK_IDS))) forever and
+    // let a record-1200 version through; this fix does not.
     phase = 'honest'
     now += 31 * 60_000
     const m2 = lines.length

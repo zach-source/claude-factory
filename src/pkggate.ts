@@ -59,12 +59,16 @@ type Resolved = {
    * `latest` is the sum.golang.org tree size. This refresh reads it before its lookups. The next refresh
    * uses this value to measure real traffic for its increase cap. See GO_FLOOR_RISE_MARGIN and refreshGoFloor.
    *
-   * An attacker can control every sampled index entry. The attacker can record each one in
-   * sum.golang.org right before a refresh. The margin sets a limit on the increase that this attack can
-   * cause. The floor cannot jump straight to `now` (claude-factory-56j).
+   * An attacker can own every sampled index entry. The attacker can log each one in sum.golang.org right
+   * before a refresh. The margin limits the rise of one refresh only.
    *
-   * The first refresh after a pod start has no earlier `latest` value. So it cannot limit its increase.
-   * See claude-factory-b9f for this gap. */
+   * The margin does not stop a sustained attack across many refreshes. An attacker who owns the samples
+   * at every refresh in a row gains about 2x real traffic per refresh above the truth. The attacker's own
+   * sumdb records count as traffic for the next refresh's cap too. After about minDays / 2 refreshes, the
+   * floor can get near `now`. See claude-factory-ldb for this gap.
+   *
+   * The first refresh after a pod start has no earlier `latest` value. This refresh has no cap on its
+   * rise. See claude-factory-b9f for this gap. */
   goFloor: { record: number; at: number; latest: number } | null
   /** goFloorRefreshing holds the one in-flight floor refresh. Every decision that needs a refresh shares
    * this promise, so concurrent decisions trigger at most one index.golang.org request
@@ -103,12 +107,15 @@ const GO_FLOOR_MIN_SAMPLES = 5
  * Sets a limit on how much one refresh can increase the floor.
  *
  * The cap is a multiple of the real sum.golang.org traffic since the prior refresh (`latest -
- * prev.latest`). sumdb record ids increase about 1:1 with time (claude-factory-8ub). So this traffic
- * count is a fair estimate of how far the true floor can increase across the same span.
+ * prev.latest`). The assumption: the sumdb record rate now is at least 1/3 of the rate minDays ago
+ * (claude-factory-8ub). So this traffic count is a fair lower bound on how far the true floor can
+ * increase across the same span. A `capped: true` line in a refresh's log can also come from an honest
+ * rate drop of more than 3x; that only makes the floor lag low, an availability cost, not a safety gap.
  *
  * A margin of 3 allows normal variance. Examples are bursty publishing and a refresh that runs late. It
- * still stops an attacker who controls every sampled entry from pushing the floor far past real traffic
- * (claude-factory-56j).
+ * limits one refresh only: an attacker who controls every sampled entry gains at most this margin over
+ * real traffic in that one refresh. It does not stop a sustained attacker who owns the samples at every
+ * refresh in a row -- see claude-factory-ldb (claude-factory-56j).
  *
  * The cap has no time term. A long idle or backoff gap still shows up as a large `latest` delta. So the
  * floor can still catch up to it in one refresh.
@@ -425,10 +432,11 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
  * can record each one in sum.golang.org right before the refresh. Then `sampled` can move close to `now`.
  * So the new floor is `Math.min(sampled, bound)`.
  *
- * Here `bound` sets a limit on the increase since the prior refresh. Its value is GO_FLOOR_RISE_MARGIN
- * times the real sum.golang.org traffic in that span (`latest - prev.latest`). See `goFloor`'s own doc
- * comment and claude-factory-56j. A cold start (no prior floor) has no bound. The new floor can come out
- * below the old one, and a low `bound` makes more versions too new, which is the safe side.
+ * Here `bound` sets a limit on this one refresh's increase. Its value is GO_FLOOR_RISE_MARGIN times the
+ * real sum.golang.org traffic in that span (`latest - prev.latest`). See `goFloor`'s own doc comment and
+ * claude-factory-56j. This bound does not stop a sustained attacker who owns the samples at every refresh
+ * in a row -- see claude-factory-ldb. A cold start (no prior floor) has no bound. The new floor can come
+ * out below the old one, and a low `bound` makes more versions too new, which is the safe side.
  *
  * A failed fetch, or fewer than `GO_FLOOR_MIN_SAMPLES` answers left after the drop, leaves the existing
  * floor in place. So a down upstream never blocks every decision behind a refresh.
