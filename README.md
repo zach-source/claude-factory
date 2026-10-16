@@ -181,6 +181,21 @@ fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). Th
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
 redefine a rig with `rig add`; there is one rig per repo.
 
+A rig can name kube contexts that only a person can change. Use `--person-only-context` to
+add one. Repeat the flag to add more contexts.
+
+```sh
+factory rig add ax ~/repos/ax --person-only-context acme
+```
+
+A worker's PreToolUse hook refuses a `kubectl`, `ko` or `helm` command that changes state at a
+named context. The hook fails closed. It also refuses a command with no `--context` flag,
+because the worker does not know its current context.
+
+A worker's brief carries this rule too, in the Rig goal section. The worker reports blocked
+with the exact command, instead of running it. The guard does not cover a person's own
+session or the manager's session. A person runs the live change.
+
 ### Harnesses and MCP servers
 
 A station's worker is a shell command (`agent` on the station, or on the factory). Claude Code,
