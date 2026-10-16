@@ -259,7 +259,7 @@ function fakeBd() {
     '  ready)',
     `    if [ -f ${readyFlag} ]; then printf '%s' '[{"id":"acme-new"}]'; else printf '%s' '[]'; fi;;`,
     '  children)',
-    '    printf \'%s\' \'[]\';;',
+    "    printf '%s' '[]';;",
     '  *) exit 0;;',
     'esac',
   ].join('\n')
