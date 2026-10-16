@@ -784,6 +784,20 @@ export function rigsView(p: Base, board: FactoryBoard) {
               </Text>
             </Box>
             {g.goal && <Text wrap="wrap">◎ {g.goal}</Text>}
+            {g.linear && (
+              <Box key={`rigs-linear-${g.name}`}>
+                {g.linearSync?.error ? (
+                  <Text color="red" wrap="wrap">{`linear: ${g.linearSync.error}`}</Text>
+                ) : (
+                  <Text dimColor>
+                    linear
+                    {g.linearSync
+                      ? ` · ${g.linearSync.fresh ? 'fresh' : `pulled ${g.linearSync.pulled ?? 0}`} · ${dur(p.now - g.linearSync.at)} ago`
+                      : ''}
+                  </Text>
+                )}
+              </Box>
+            )}
             {s.stations.length > 0 ? (
               <Text wrap="wrap">
                 {s.stations.map(({ node, n }, i) => (
