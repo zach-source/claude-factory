@@ -1208,7 +1208,7 @@ test(
 )
 
 test(
-  "patrolNow reads <home>/plan.json and carries a fresh plan into the prompt; a corrupt plan.json reads as none, the same as a missing one (claude-factory-dun.4)",
+  'patrolNow reads <home>/plan.json and carries a fresh plan into the prompt; a corrupt plan.json reads as none, the same as a missing one (claude-factory-dun.4)',
   SLOW,
   async ($, on) => {
     const clock = mock.clock(on)
@@ -1226,7 +1226,8 @@ test(
         queued = []
         return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
       }
-      if (e.argv.includes('home')) return { value: { exitCode: 0, stdout: '/home/factory', stderr: '' } as never }
+      if (e.argv.includes('home'))
+        return { value: { exitCode: 0, stdout: '/home/factory', stderr: '' } as never }
       return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
     })
     on('fs.read', ($, e) => {
@@ -1253,7 +1254,12 @@ test(
       '/home/factory/plan.json',
       JSON.stringify({
         at: 0, // the mock clock starts at 0
-        rigs: { api: { items: [{ id: 'api-1', title: 'fix it', priority: 1, why: 'blocks release' }], findings: [] } },
+        rigs: {
+          api: {
+            items: [{ id: 'api-1', title: 'fix it', priority: 1, why: 'blocks release' }],
+            findings: [],
+          },
+        },
         proposals: [],
       }),
     )

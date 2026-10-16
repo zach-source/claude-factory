@@ -47,10 +47,21 @@ test("a fresh plan adds a 'Plan' section: top 5 items in order, per rig, plus fi
   expect(due!.text).not.toContain('web:') // web has no items and no findings: left out entirely
 })
 
-test('a stale plan (2h old or more) and a missing plan leave the prompt byte-identical to today\'s text', () => {
+test("a stale plan (2h old or more) and a missing plan leave the prompt byte-identical to today's text", () => {
   const now = PLAN.at + 2 * 3_600_000
   const base = patrol([], [], new Set(), true, RIGS, undefined, new Set(), [])
-  const stale = patrol([], [], new Set(), true, RIGS, undefined, new Set(), [], { ...PLAN, at: now - 2 * 3_600_000 }, now)
+  const stale = patrol(
+    [],
+    [],
+    new Set(),
+    true,
+    RIGS,
+    undefined,
+    new Set(),
+    [],
+    { ...PLAN, at: now - 2 * 3_600_000 },
+    now,
+  )
   const missing = patrol([], [], new Set(), true, RIGS, undefined, new Set(), [], undefined, now)
   expect(stale!.text).toBe(base!.text)
   expect(missing!.text).toBe(base!.text)
