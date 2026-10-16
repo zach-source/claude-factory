@@ -1995,6 +1995,7 @@ async function beadsPass() {
         // removed mid-pass
       }
     }
+    linearPass()
     await dispatch()
     await labelPass()
     await watchPass()
@@ -2440,6 +2441,94 @@ async function sweep() {
       console.error(`${new Date().toISOString()} sweeps for rig ${rig.name}: ${(err as Error).message}`)
     }
   }
+}
+
+const LINEAR_MS = 20 * 60_000 // how often an opted-in rig's Linear issues are pulled
+const linearConfigFile = () => join(HOME, 'linear.json')
+/** a rig's Linear pull is due: never tried, forced, or LINEAR_MS since the last attempt (whether it erred) */
+const linearDue = (state: LinearSyncState | undefined, force: boolean) =>
+  force || !state || Date.now() - state.at >= LINEAR_MS
+
+/** beads with a Linear external ref that carry the factory label right now, in `repo` */
+function linearLabeled(repo: string): { id: string }[] {
+  const p = Bun.spawnSync(
+    ['bd', 'list', '--all', '--brief', '--label', 'factory', '--external-contains', 'linear.app', '--json', '-n', '0'],
+    { cwd: repo, env: process.env, timeout: 60_000 },
+  )
+  if (p.exitCode !== 0) throw new Error(`bd list: ${p.stderr.toString().trim().split('\n')[0] || 'failed'}`)
+  const out = p.stdout.toString().trim()
+  return out === 'null' || !out ? [] : JSON.parse(out)
+}
+
+/**
+ * one rig's Linear pull: `bd linear sync --pull-if-stale`, never `--push`, with the key or OAuth pair by
+ * env only. Labels a Linear pull landed are copied onto the bead (bd's own mapping), so a bead with a
+ * Linear external ref that is newly labeled `factory` here had that label stripped right back off: a
+ * person, not a Linear label, decides what the factory works. A bead already labeled before this pull
+ * keeps it. Writes `state[rig.name]`; never throws, so one rig's failure does not stop the others.
+ */
+function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
+  const at = Date.now()
+  try {
+    const cfg = readLinearConfig(linearConfigFile())
+    const env = syncEnv(cfg)
+    const secrets = [env.LINEAR_API_KEY, env.LINEAR_OAUTH_CLIENT_ID, env.LINEAR_OAUTH_CLIENT_SECRET].filter(
+      (s): s is string => !!s,
+    )
+    const before = new Set(linearLabeled(rig.repo).map(b => b.id))
+    const p = Bun.spawnSync(['bd', ...syncArgs(rig.linear!)], { cwd: rig.repo, env, timeout: 120_000 })
+    const outcome = parseSync(p.stdout.toString(), p.exitCode ?? 1)
+    if ('error' in outcome) {
+      state[rig.name] = { at, fresh: false, error: redact(outcome.error, secrets) }
+      return
+    }
+    let stripped = 0
+    if (!outcome.fresh) {
+      for (const b of linearLabeled(rig.repo).filter(x => !before.has(x.id))) {
+        Bun.spawnSync(['bd', 'label', 'remove', b.id, 'factory'], {
+          cwd: rig.repo,
+          env: process.env,
+          timeout: 30_000,
+        })
+        stripped++
+      }
+    }
+    state[rig.name] = outcome.fresh
+      ? { at, fresh: true, lastPull: outcome.lastPull }
+      : { at, fresh: false, pulled: outcome.pulled, created: outcome.created, updated: outcome.updated, stripped }
+  } catch (err) {
+    state[rig.name] = { at, fresh: false, error: clip((err as Error).message, 200) }
+  }
+}
+
+/**
+ * pulls each opted-in rig's Linear issues into its beads, at most every 20 minutes a rig
+ * (`factory linear <rig> --force` sooner). Pull only, from `beadsPass`, after the claim and track loops
+ * and before dispatch: a slow pull there is safe, since every run's heartbeat already ran that pass, and
+ * nothing else changes labels between the pull and the strip above (claude-factory-b6c design).
+ */
+function linearPass(names: string[] = [], force = false) {
+  if (halted()) return []
+  const chosen = rigs().filter(r => r.linear?.length && (!names.length || names.includes(r.name)))
+  if (!chosen.length) return []
+  const state = existsSync(linearSyncFile())
+    ? readJson<Record<string, LinearSyncState>>(linearSyncFile())
+    : {}
+  const lines: string[] = []
+  for (const rig of chosen) {
+    if (!linearDue(state[rig.name], force)) continue
+    linearSyncOne(rig, state)
+    const s = state[rig.name]!
+    lines.push(
+      s.error
+        ? `${rig.name}: error, ${s.error}`
+        : s.fresh
+          ? `${rig.name}: fresh (last pull ${s.lastPull ?? 'unknown'})`
+          : `${rig.name}: pulled ${s.pulled}, created ${s.created}, updated ${s.updated}, stripped ${s.stripped} factory label(s)`,
+    )
+  }
+  if (lines.length) writeJson(linearSyncFile(), state)
+  return lines
 }
 
 /** ticks forever, so runs advance, the rigs dispatch and their sweeps stay running with no console open */
@@ -3686,6 +3775,14 @@ if (import.meta.main && !outboxCmd)
       case 'devenv':
         console.log(
           devenvPass(
+            args.filter(a => a !== '--force'),
+            args.includes('--force'),
+          ).join('\n'),
+        )
+        break
+      case 'linear':
+        console.log(
+          linearPass(
             args.filter(a => a !== '--force'),
             args.includes('--force'),
           ).join('\n'),
