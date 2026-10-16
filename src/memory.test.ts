@@ -532,8 +532,9 @@ test('decide() merges a shown-or-helped note once it is 7 days old, not at 6', (
   expect(decide([short({ ageDays: 8, shown: 0, helped: 1 })], [])).toEqual([
     { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 8 days old' },
   ])
-  // never shown and never helped: stays short, however old
-  expect(decide([short({ ageDays: 400, shown: 0, helped: 0, staleDays: 10 })], [])).toEqual([])
+  // never shown and never helped: never merges (claude-factory-503.2 now archives it at 14+ days
+  // old instead; see the never-shown archive-rule tests below, so this stays under that boundary)
+  expect(decide([short({ ageDays: 10, shown: 0, helped: 0, staleDays: 10 })], [])).toEqual([])
 })
 
 test('decide() archives a superseded note outright, even if young and helped', () => {
@@ -561,6 +562,103 @@ test('decide() turns a scored pair at or above SAME (0.88) into a dedupe decisio
   expect(decide([], [], sims)).toEqual([
     { kind: 'dedupe', a: 'beads/LONG.md#c', b: 'beads/LONG.md#d', reason: 'similarity 0.90' },
   ])
+})
+
+// AC1: archive a never-shown, never-helped note at 14 days old.
+test('decide() archives a never-shown note at 14 days old, not at 13.9', () => {
+  expect(decide([short({ ageDays: 13.9, shown: 0, helped: 0 })], [])).toEqual([])
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 0 })], [])).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'never shown, 14 days old' },
+  ])
+})
+
+test('decide() never-shown archive rule skips a note shown or helped even once', () => {
+  // shown or helped at ageDays 14 qualifies for the merge rule instead, never the archive rule
+  expect(decide([short({ ageDays: 14, shown: 1, helped: 0 })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 14 days old' },
+  ])
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 1 })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 14 days old' },
+  ])
+})
+
+// AC2: a usage-history guard holds back both usage-based archive rules under 14 days of history.
+test('decide() usage-history guard stops both usage-based archive rules under 14 days, never the superseded rule', () => {
+  // The new never-shown rule waits for the guard, then archives.
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 0 })], [], [], { historyDays: 13.9 })).toEqual([])
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 0 })], [], [], { historyDays: 14 })).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'never shown, 14 days old' },
+  ])
+  // The existing 30-day never-helped rule waits for the same guard.
+  expect(decide([short({ staleDays: 31, helped: 0 })], [], [], { historyDays: 13.9 })).toEqual([])
+  expect(decide([short({ staleDays: 31, helped: 0 })], [], [], { historyDays: 14 })).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'never helped, unused for 31 days' },
+  ])
+  // The superseded rule ignores the guard: it archives with no usage history at all.
+  expect(decide([short({ superseded: 'beads/y.md' })], [], [], { historyDays: 0 })).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'superseded by beads/y.md' },
+  ])
+})
+
+// AC3: the archive cap keeps the oldest notes (by ageDays) first. A tie breaks by path. The cap spans every topic.
+test('decide() caps archives per pass at the default of 25, oldest first, the rest held', () => {
+  const cands = Array.from({ length: 40 }, (_, i) =>
+    short({ path: `beads/n${15 + i}.md`, ageDays: 15 + i, shown: 0, helped: 0 }),
+  )
+  const decisions = decide(cands, [], [], { historyDays: 100 })
+  const archived = decisions.filter(d => d.kind === 'archive').map(d => d.path)
+  const held = decisions.filter(d => d.kind === 'held').map(d => d.path)
+  expect(archived).toHaveLength(25)
+  expect(held).toHaveLength(15)
+  // the 25 oldest: ages 54 down to 30
+  expect(new Set(archived)).toEqual(new Set(cands.filter(c => c.ageDays >= 30).map(c => c.path)))
+  expect(new Set(held)).toEqual(new Set(cands.filter(c => c.ageDays < 30).map(c => c.path)))
+  expect(decisions.find(d => d.kind === 'held')?.reason).toBe('over the archive cap of 25 this pass')
+})
+
+test('decide() archive cap tie-break: same ageDays, path ascending wins the slot', () => {
+  const cands = [
+    short({ path: 'beads/b.md', ageDays: 20 }),
+    short({ path: 'beads/a.md', ageDays: 20 }),
+    short({ path: 'beads/c.md', ageDays: 20 }),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, archiveCap: 2 })
+  // the two lowest paths (a, b) win the 2 slots; the highest (c) is held
+  expect(new Set(decisions.filter(d => d.kind === 'archive').map(d => d.path))).toEqual(
+    new Set(['beads/a.md', 'beads/b.md']),
+  )
+  expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/c.md'])
+})
+
+test('decide() archive cap is global across topics, not per topic', () => {
+  const cands = [
+    short({ path: 'beads/a.md', topic: 'beads', ageDays: 20 }),
+    short({ path: 'ci/a.md', topic: 'ci', ageDays: 19 }),
+    short({ path: 'release/a.md', topic: 'release', ageDays: 18 }),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, archiveCap: 1 })
+  expect(decisions.filter(d => d.kind === 'archive')).toHaveLength(1)
+  expect(decisions.filter(d => d.kind === 'held')).toHaveLength(2)
+})
+
+test('decide() archive cap of 0 holds every archive', () => {
+  const decisions = decide([short({ staleDays: 31, helped: 0 })], [], [], {
+    historyDays: 100,
+    archiveCap: 0,
+  })
+  expect(decisions).toEqual([
+    { kind: 'held', path: 'beads/x.md', reason: 'over the archive cap of 0 this pass' },
+  ])
+})
+
+test('decide() archive cap counts a superseded archive against the same cap', () => {
+  const cands = [
+    short({ path: 'beads/a.md', ageDays: 50, superseded: 'beads/z.md' }),
+    short({ path: 'beads/b.md', ageDays: 20, shown: 0, helped: 0 }),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, archiveCap: 1 })
+  expect(decisions.filter(d => d.kind === 'archive').map(d => d.path)).toEqual(['beads/a.md'])
+  expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/b.md'])
 })
 
 test('mdFileCount counts CORE.md and every topic README, LONG.md and short note, never .archive', () => {
@@ -619,6 +717,8 @@ test('applyTiers() archives a never-helped, long-stale short note, and a superse
     join(dir, 'beads', 'old.md'),
     format({ summary: 'the old way to do it', at: '2026-08-01', superseded: 'beads/new.md', body: 'body' }),
   )
+  // 20 days of usage history: clears the guard that holds back the never-helped archive rule
+  use(dir, ['beads/unrelated.md'], 'shown', now - 20 * 24 * 60 * 60 * 1000)
   const { merged, archived, decisions } = applyTiers(dir, { now })
   expect(merged).toBe(0)
   expect(archived).toBe(2)
@@ -627,6 +727,85 @@ test('applyTiers() archives a never-helped, long-stale short note, and a superse
   expect(existsSync(join(dir, 'beads', 'old.md'))).toBe(false)
   expect(readFileSync(join(dir, '.archive', 'beads.md'), 'utf8')).toContain('a note nobody ever needed')
   expect(readFileSync(join(dir, '.archive', 'beads.md'), 'utf8')).toContain('the old way to do it')
+})
+
+// AC4 and AC7: a 30-note, never-shown fixture (ages 20..49 days) with the cap at its default of 25.
+function fixtureNeverShown30(dir: string, now: number): string[] {
+  const DAY = 24 * 60 * 60 * 1000
+  const paths: string[] = []
+  for (let age = 20; age <= 49; age++) {
+    const path = `beads/n${age}.md`
+    paths.push(path)
+    const at = new Date(now - age * DAY).toISOString().slice(0, 10)
+    writeFileSync(join(dir, 'beads', `n${age}.md`), format({ summary: `note ${age}`, at, body: 'body' }))
+  }
+  return paths
+}
+
+test('applyTiers() caps a mass of never-shown notes at 25, holds the rest, and plans before writing', () => {
+  const dir = join(tmpdir(), `memory-apply-cap-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const DAY = 24 * 60 * 60 * 1000
+  const paths = fixtureNeverShown30(dir, now)
+  use(dir, ['beads/seed.md'], 'shown', now - 20 * DAY) // 20 days of usage history: clears the guard
+
+  const plans: string[][] = []
+  const { archived, held, archiveCap, historyDays } = applyTiers(dir, {
+    now,
+    onPlan: lines => {
+      plans.push(lines)
+      // onPlan must run before any write or rmSync: every note is still on disk right now
+      for (const p of paths) expect(existsSync(join(dir, p))).toBe(true)
+    },
+  })
+  expect(archived).toBe(25)
+  expect(held).toBe(5)
+  expect(archiveCap).toBe(25)
+  expect(Math.floor(historyDays)).toBe(20)
+  expect(plans).toHaveLength(1)
+  expect(plans[0]![0]).toBe('tier plan: 0 merge, 25 archive, 5 held (cap 25), usage history 20 days')
+  expect(plans[0]!.filter(l => l.startsWith('archive  ')).length).toBe(25)
+  expect(plans[0]!.filter(l => l.startsWith('held  ')).length).toBe(5)
+
+  // the 5 youngest (20..24 days old) stay; the 25 oldest (25..49 days old) archive
+  for (let age = 20; age <= 24; age++) expect(existsSync(join(dir, 'beads', `n${age}.md`))).toBe(true)
+  for (let age = 25; age <= 49; age++) expect(existsSync(join(dir, 'beads', `n${age}.md`))).toBe(false)
+})
+
+test('applyTiers() archives nothing under the usage-history guard with no usage file at all', () => {
+  const dir = join(tmpdir(), `memory-apply-cap-noguard-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const paths = fixtureNeverShown30(dir, now)
+
+  const { archived, historyDays } = applyTiers(dir, { now })
+  expect(archived).toBe(0)
+  expect(historyDays).toBe(0)
+  for (const p of paths) expect(existsSync(join(dir, p))).toBe(true)
+})
+
+test('applyTiers() reads the archive cap from FACTORY_MEMORY_ARCHIVE_CAP, and a bad value falls back to 25', () => {
+  const dir = join(tmpdir(), `memory-apply-cap-env-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const DAY = 24 * 60 * 60 * 1000
+  fixtureNeverShown30(dir, now)
+  use(dir, ['beads/seed.md'], 'shown', now - 20 * DAY)
+
+  const prev = process.env.FACTORY_MEMORY_ARCHIVE_CAP
+  try {
+    process.env.FACTORY_MEMORY_ARCHIVE_CAP = '3'
+    expect(applyTiers(dir, { now, dryRun: true }).archived).toBe(3)
+    process.env.FACTORY_MEMORY_ARCHIVE_CAP = 'abc'
+    expect(applyTiers(dir, { now, dryRun: true }).archived).toBe(25)
+  } finally {
+    if (prev === undefined) delete process.env.FACTORY_MEMORY_ARCHIVE_CAP
+    else process.env.FACTORY_MEMORY_ARCHIVE_CAP = prev
+  }
 })
 
 test('applyTiers() with dryRun counts decisions but writes nothing, and a second pass is a no-op', () => {
@@ -659,6 +838,8 @@ test("applyTiers must run after the dream's own renames are compacted, or a just
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(join(dir, 'beads'), { recursive: true })
     use(dir, ['inbox/x.md'], 'helped', now - 1000) // helped under its pre-dream path
+    // 20 days of usage history: clears the guard that holds back the never-helped archive rule
+    use(dir, ['beads/unrelated.md'], 'shown', now - 20 * 24 * 60 * 60 * 1000)
     // the dream filed it under beads/ already, keeping the note's own old at: date
     writeFileSync(
       join(dir, 'beads', 'x.md'),
@@ -860,6 +1041,8 @@ test("applyTiers() rewrites an archived note's README link, not just a merged on
     },
   )
   const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_STALE_DAYS (30)
+  // 20 days of usage history: clears the guard that holds back the never-helped archive rule
+  use(dir, ['beads/unrelated.md'], 'shown', now - 20 * 24 * 60 * 60 * 1000)
 
   const { archived } = applyTiers(dir, { now })
   expect(archived).toBe(1)
@@ -886,6 +1069,8 @@ test('applyTiers() ages a note with no at: from the commit that added it, not fr
     },
   )
   const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_STALE_DAYS (30)
+  // 20 days of usage history: clears the guard that holds back the never-helped archive rule
+  use(dir, ['beads/unrelated.md'], 'shown', now - 20 * 24 * 60 * 60 * 1000)
 
   const { decisions, archived } = applyTiers(dir, { now })
   expect(archived).toBe(1)
@@ -914,6 +1099,8 @@ test('applyTiers() ages a note with no at: from the commit that added it, not th
   writeFileSync(join(dir, 'beads', 'old.md'), format({ summary: 'a note with no at', body: 'edited body' }))
   commit('edit', '2026-10-14T00:00:00') // 1 day before `now`: too fresh to archive on its own
   const now = Date.parse('2026-10-15T00:00:00Z')
+  // 20 days of usage history: clears the guard that holds back the never-helped archive rule
+  use(dir, ['beads/unrelated.md'], 'shown', now - 20 * 24 * 60 * 60 * 1000)
 
   const { decisions, archived } = applyTiers(dir, { now })
   expect(archived).toBe(1) // archived only because the age comes from the 2026-08-01 add, not the edit
