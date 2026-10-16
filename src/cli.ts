@@ -2707,7 +2707,16 @@ function launchFacts(): gc.LaunchFact[] {
  */
 function gcPass(days: number, dryRun: boolean) {
   const now = Date.now()
-  const runs = runIds().map(id => runFact(id))
+  // a run dir removed mid-pass, or one with no run.json/state.json, must not fail the whole pass
+  // (claude-factory-503.1.6)
+  const runs = runIds().flatMap(id => {
+    try {
+      return [runFact(id)]
+    } catch (err) {
+      console.error(`gc: skipping ${id}: ${(err as Error).message}`)
+      return []
+    }
+  })
   const launch = launchFacts()
   const livePanes = strictPanes()
   const plan = gc.gcPlan(runs, launch, livePanes, now, days)

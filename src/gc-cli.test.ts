@@ -291,3 +291,17 @@ test('a goto revive after gc recreates prompts/ and starts a worker with no ENOE
   expect(existsSync(join(d, 'prompts'))).toBe(true) // recreated, not left missing
   expect(readdirSync(join(d, 'prompts'))).toContain('2-implement.md')
 })
+
+// PR #59 review finding 2 (claude-factory-503.1.6). One run dir gc cannot read (removed mid-pass, or
+// never finished writing run.json/state.json) must not stop the whole pass. Before this fix,
+// runFact() threw inside runIds().map() with no per-run catch: gc exited 1 and pruned nothing.
+test('a half-made run dir beside an eligible run does not stop the pass (claude-factory-503.1.6)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  mkdirSync(join(home, 'runs', 'zz-half-made'), { recursive: true }) // no run.json, no state.json
+  const out = factory(['gc', '--days', '1'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(d, 'prompts'))).toBe(false) // the eligible run was still pruned
+  expect(out.err).toContain('zz-half-made') // the skipped dir is named, not silently dropped
+})
