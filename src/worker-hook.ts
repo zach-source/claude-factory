@@ -14,8 +14,11 @@
  * If a parse error occurs, the hook fails open. It prints nothing. Claude Code's own prompt stays the backstop.
  */
 
+import { resolve as resolvePath } from 'node:path'
+
 export const REASON =
-  'The factory denies this command: do not run rm -r or rm -rf, and do not chain cd with rm. ' +
+  'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
+  'rm a $variable path, a glob, or a path outside the worktree. ' +
   'Leave .scratch as is, use a new subfolder (for example .scratch/<name>-2): git ignores .scratch/. ' +
   'Use absolute paths or git -C <dir> in place of cd. Do not retry this command.'
 
@@ -118,6 +121,43 @@ function isRecursiveRm(words: string[]): boolean {
   return false
 }
 
+/**
+ * Returns the operands of an rm command. `words[0]` is the rm word itself.
+ * An operand is a non-flag word before a `--`, or any word after a `--`
+ * (a word there can start with `-` and still be a path).
+ */
+function rmTargets(words: string[]): string[] {
+  const targets: string[] = []
+  let afterDashDash = false
+  for (const w of words.slice(1)) {
+    if (afterDashDash) {
+      targets.push(w)
+      continue
+    }
+    if (w === '--') {
+      afterDashDash = true
+      continue
+    }
+    if (!w.startsWith('-')) targets.push(w)
+  }
+  return targets
+}
+
+/**
+ * Checks rm target `t` for risk.
+ * A `$` expansion, a glob char (`*`, `?`, `[`), or a leading `~` makes `t` risky.
+ * A path that resolves outside `root` also makes `t` risky, when the caller passes `root`.
+ * `root` itself counts as outside, so `rm <root>` is risky too.
+ * When the caller omits `root`, an absolute path or a path with a `..` segment is risky instead.
+ */
+function riskyTarget(t: string, root?: string): boolean {
+  if (/[$*?[]/.test(t) || t.startsWith('~')) return true
+  if (root === undefined) return t.startsWith('/') || t.split('/').includes('..')
+  const base = root.endsWith('/') ? root.slice(0, -1) : root
+  const resolved = resolvePath(base, t)
+  return !resolved.startsWith(base + '/')
+}
+
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   let w = words
@@ -157,7 +197,7 @@ export function denyReason(command: string): string | undefined {
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     if (b === 'rm') {
-      if (isRecursiveRm(cmd)) return REASON
+      if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t))) return REASON
       hasRm = true
     } else if (b === 'cd') {
       hasCd = true

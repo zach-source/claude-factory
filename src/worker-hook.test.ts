@@ -26,6 +26,19 @@ const DENY = [
   'timeout 5 rm -rf x',
 ]
 
+// a $variable or glob target, any rm flags (or none): claude-factory-99d.1
+const DENY_VAR_OR_GLOB = [
+  'rm -i "$X"/*',
+  'rm $X',
+  'rm "${X}"',
+  'rm -- $X',
+  'rm -f .scratch/*.md',
+  'rm a?.md',
+  'rm [ab].md',
+  'rm $(ls)',
+  "bash -c 'rm $X'",
+]
+
 const ALLOW = [
   'git -C .scratch/x status',
   'rm -f .scratch/a.md',
@@ -41,11 +54,22 @@ const ALLOW = [
   '',
 ]
 
+// stay allowed even though they mention $ or a glob char, because none is an rm operand: claude-factory-99d.1
+const ALLOW_VAR_OR_GLOB = ['echo $X', 'ls *.md', "git rm '*.md'"]
+
 test.each(DENY)('denyReason denies %j', cmd => {
   expect(denyReason(cmd)).toBe(REASON)
 })
 
+test.each(DENY_VAR_OR_GLOB)('denyReason denies an rm with a $variable or glob target %j', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
 test.each(ALLOW)('denyReason allows %j (fails open to the normal prompt)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test.each(ALLOW_VAR_OR_GLOB)('denyReason allows %j (no rm operand)', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
 
