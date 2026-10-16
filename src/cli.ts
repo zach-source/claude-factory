@@ -6,6 +6,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -57,6 +58,7 @@ import {
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
+import * as gc from './gc'
 import * as selfupdate from './selfupdate'
 import * as memory from './memory'
 import * as ax from './ax'
@@ -240,6 +242,9 @@ export type Row = {
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
+// gc writes this before it removes prompts/ (claude-factory-503.1.2): the file names that were in
+// it, so sessionsOf() still maps a session's turns to the station that ran it after gc prunes them
+const promptsListFile = (id: string) => join(runDir(id), 'prompts.list')
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
 function durable(path: string, text: string, flag: 'w' | 'a') {
@@ -974,7 +979,11 @@ const runnerOfStation = (run: Run, def: Factory, node: string) =>
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   const full = () => brief(run, def, node, c, c.mail[node] ?? [])
-  if (!session) writeFileSync(file, full())
+  // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
+  if (!session) {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, full())
+  }
   return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
 }
 
@@ -1172,6 +1181,8 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
 /** the note a resumed worker is sent, written where its launch reads it */
 function resumeFile(run: Run, node: string, c: Ctx) {
   const file = promptOf(run, node, c).replace(/\.md$/, '-resume.md')
+  // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
+  mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, resumeNote(run, node, c))
   return file
 }
@@ -2366,6 +2377,7 @@ async function dream() {
 }
 const devenvConfig = () => join(HOME, 'devenv.json')
 const DEVENV_CHECK_MS = 30 * 60_000
+const GC_MS = Number(process.env.FACTORY_GC_MS) || 3_600_000
 
 /**
  * builds and caches the devenv of each AX rig with a binary cache (FACTORY_NIX_CACHE) whose devenv files or
@@ -2582,6 +2594,28 @@ const isIn = (p: HerdrPane, r: Pick<Run, 'ws' | 'worktree'>) =>
   p.workspace_id === r.ws && !!p.cwd && (p.cwd === r.worktree || p.cwd.startsWith(`${r.worktree}/`))
 
 /**
+ * gc's own herdr read.
+ *
+ * herdrPanes() fails open to `[]`. An empty answer there only skips a reap pass. That is safe.
+ * This function fails closed to `null` instead. It returns `null` in four cases: herdr is missing,
+ * the call's exit code is non-zero, the JSON is bad, or the answer has no `result.panes`.
+ *
+ * When this is `null`, gc removes no launch script. A herdr outage must never look like "no live
+ * panes" (claude-factory-503.1.3).
+ */
+function strictPanes(): Set<string> | null {
+  if (!herdrInstalled()) return null
+  const p = Bun.spawnSync([HERDR(), 'pane', 'list'])
+  if (p.exitCode !== 0) return null
+  try {
+    const panes = JSON.parse(p.stdout.toString() || '{}').result?.panes
+    return Array.isArray(panes) ? new Set(panes.map((x: HerdrPane) => x.pane_id)) : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * what herdr still holds that no run needs: a finished run's workspace (its worktree and branch stay for
  * `factory rm`), and a Claude idle in a live run's workspace that is not the run's worker (a duplicate
  * launch, a worker its run moved on from).
@@ -2619,6 +2653,128 @@ function reap(rows: Row[]) {
   for (const pane of panes) Bun.spawnSync([HERDR(), 'pane', 'close', pane])
   for (const what of [...workspaces.map(w => `workspace ${w}`), ...panes.map(p => `pane ${p}`)])
     console.error(`${new Date().toISOString()} reaped ${what}`)
+}
+
+const launchDir = () => join(HOME, 'launch')
+const fmtBytes = (n: number): string => {
+  if (n < 1024) return `${n} B`
+  const units = ['KB', 'MB', 'GB']
+  let v = n / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(1)} ${units[i]}`
+}
+/** a directory's bytes and file count. This walks the directory with lstat. A symlink inside it
+ * counts as itself. It never counts what the symlink points at. */
+function dirSize(path: string): { bytes: number; files: number } {
+  let bytes = 0
+  let files = 0
+  for (const name of readdirSync(path)) {
+    const st = lstatSync(join(path, name))
+    if (st.isDirectory()) {
+      const s = dirSize(join(path, name))
+      bytes += s.bytes
+      files += s.files
+    } else {
+      bytes += st.size
+      files += 1
+    }
+  }
+  return { bytes, files }
+}
+/** the top-level facts of one run's directory, as gc.gcPlan() needs them: no symlink followed */
+function runFact(id: string): gc.RunFact {
+  const dir = runDir(id)
+  const entries: gc.FileFact[] = readdirSync(dir).map(name => {
+    const st = lstatSync(join(dir, name))
+    const { bytes, files } = st.isDirectory() ? dirSize(join(dir, name)) : { bytes: st.size, files: 1 }
+    return { name, isDir: st.isDirectory(), bytes, files }
+  })
+  const { value, c } = current(id)
+  return { id, node: where(value)[0], finishedAt: c.log.at(-1)?.at ?? createdAt(id), entries }
+}
+function launchFacts(): gc.LaunchFact[] {
+  const dir = launchDir()
+  if (!existsSync(dir)) return []
+  return readdirSync(dir)
+    .filter(f => f.endsWith('.sh'))
+    .map(f => {
+      const st = lstatSync(join(dir, f))
+      return { pane: f.slice(0, -'.sh'.length), bytes: st.size, mtimeMs: st.mtimeMs }
+    })
+}
+/**
+ * Removes the reproducible files of a done or aborted run older than `days`. It also removes a
+ * dead launch script. It follows the rules in gc.gcPlan().
+ *
+ * `--dry-run` only prints the bytes per kind. It deletes nothing (claude-factory-503.1).
+ */
+function gcPass(days: number, dryRun: boolean) {
+  const now = Date.now()
+  // a run dir removed mid-pass, or one with no run.json/state.json, must not fail the whole pass
+  // (claude-factory-503.1.6)
+  const runs = runIds().flatMap(id => {
+    try {
+      return [runFact(id)]
+    } catch (err) {
+      console.error(`gc: skipping ${id}: ${(err as Error).message}`)
+      return []
+    }
+  })
+  const launch = launchFacts()
+  const livePanes = strictPanes()
+  const plan = gc.gcPlan(runs, launch, livePanes, now, days)
+  const totalBytes =
+    plan.totals.prompts.bytes +
+    plan.totals.briefs.bytes +
+    plan.totals.backups.bytes +
+    plan.totals.launch.bytes
+  const totalFiles =
+    plan.totals.prompts.files +
+    plan.totals.briefs.files +
+    plan.totals.backups.files +
+    plan.totals.launch.files
+  console.log(
+    [
+      `prompts: ${plan.totals.prompts.files} files, ${fmtBytes(plan.totals.prompts.bytes)}`,
+      `briefs: ${plan.totals.briefs.files} files, ${fmtBytes(plan.totals.briefs.bytes)}`,
+      `backups: ${plan.totals.backups.files} files, ${fmtBytes(plan.totals.backups.bytes)}`,
+      `launch: ${plan.totals.launch.files} files, ${fmtBytes(plan.totals.launch.bytes)}`,
+      `total: ${totalFiles} files, ${fmtBytes(totalBytes)} across ${plan.totals.runs} run(s)`,
+      ...(livePanes === null ? ['herdr pane list did not answer: removed no launch script'] : []),
+    ].join('\n'),
+  )
+  if (dryRun) return
+  for (const r of plan.runs) {
+    if (r.paths.includes('prompts')) {
+      const dir = join(runDir(r.id), 'prompts')
+      const listFile = promptsListFile(r.id)
+      // Union with any names prompts.list already held (claude-factory-503.1.7): a goto revive
+      // after an earlier gc can have refilled prompts/ with only its new names, and overwriting
+      // the list here would lose the old station names sessionsOf() still needs.
+      const old = existsSync(listFile) ? readJson<string[]>(listFile) : []
+      const current = existsSync(dir) ? readdirSync(dir) : []
+      writeJson(listFile, [...new Set([...old, ...current])])
+    }
+    appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(r.id)) + '\n')
+    for (const p of r.paths) rmSync(join(runDir(r.id), p), { recursive: true, force: true })
+  }
+  for (const pane of plan.launch) rmSync(join(launchDir(), `${pane}.sh`), { force: true })
+}
+/** a gc pass at most every GC_MS (default hourly). FACTORY_GC=0 turns this off: tick spawns none. */
+const kickGc = () => {
+  if (process.env.FACTORY_GC === '0') return
+  const stamp = join(HOME, 'gc.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (isHeld('gc.lock') || age < GC_MS) return
+  spawnChild(CLI, ['gc'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
 }
 
 async function tick(isPatrol = false) {
@@ -2667,6 +2823,7 @@ async function tick(isPatrol = false) {
       kickDevenv()
       kickConfigSync()
       kickSelfUpdate()
+      kickGc()
     }
   }
 }
@@ -4321,8 +4478,18 @@ function sessionsOf(run: Run): Session[] {
   )
   if (!existsSync(dir)) return []
   const prompts = join(runDir(run.id), 'prompts')
+  const listFile = promptsListFile(run.id)
+  // gc can have removed prompts/, leaving prompts.list with the names that were in it. A goto
+  // revive after gc recreates prompts/ with only the new names: union both so old station names
+  // survive the revive (claude-factory-503.1.5).
+  const names = [
+    ...new Set([
+      ...(existsSync(listFile) ? readJson<string[]>(listFile) : []),
+      ...(existsSync(prompts) ? readdirSync(prompts) : []),
+    ]),
+  ]
   const nodes = new Map(
-    (existsSync(prompts) ? readdirSync(prompts) : []).flatMap(f => {
+    names.flatMap(f => {
       const m = /^(\d+)-(.+)\.md$/.exec(f)
       return m ? [[Number(m[1]), m[2]!.replace(/-resume$/, '')] as const] : []
     }),
@@ -4335,12 +4502,15 @@ function sessionsOf(run: Run): Session[] {
 
 function records(): RunRecord[] {
   const file = join(HOME, 'metrics.jsonl')
-  const kept: RunRecord[] = existsSync(file)
+  const lines: RunRecord[] = existsSync(file)
     ? readFileSync(file, 'utf8')
         .split('\n')
         .filter(Boolean)
         .map(l => JSON.parse(l))
     : []
+  // a run can get two lines over its life (a gc prune, then later `factory rm`): a Map keeps only
+  // the last line for each id, so metrics never counts a pruned-then-removed run twice
+  const kept = [...new Map(lines.map(r => [r.id, r])).values()]
   const live = runIds().map(id => record(id))
   const liveIds = new Set(live.map(r => r.id))
   return [...kept.filter(r => !liveIds.has(r.id)), ...live]
@@ -4445,6 +4615,10 @@ const usage = `factory — herdr software factories on xstate
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
+  gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
+                                     drop prompts, briefs and stray backups, and a dead launch script;
+                                     --dry-run only prints bytes per kind, deleting nothing (each tick
+                                     starts one, at most hourly, FACTORY_GC_MS; FACTORY_GC=0 turns it off)
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
@@ -5076,6 +5250,25 @@ if (import.meta.main && !outboxCmd)
         appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
         rmSync(runDir(run.id), { recursive: true })
         console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
+        break
+      }
+      case 'gc': {
+        const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
+        const dryRun = args.includes('--dry-run')
+        const daysArg = opt('--days') ?? process.env.FACTORY_GC_DAYS
+        const days = daysArg === undefined ? 7 : Number(daysArg)
+        if (!(days > 0)) fail('usage: factory gc [--days N] [--dry-run]: --days must be a positive number')
+        const release = hold('gc.lock')
+        if (!release) {
+          console.log('a gc pass is already running: skipped this one')
+          break
+        }
+        try {
+          writeFileSync(join(HOME, 'gc.stamp'), '') // a failed pass waits for the next window too, not every tick
+          gcPass(days, dryRun)
+        } finally {
+          release()
+        }
         break
       }
       default:
