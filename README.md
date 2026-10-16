@@ -352,10 +352,15 @@ memory/
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
   `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
   topic's `LONG.md` once the note is 7 days old and was shown or helped at least once, and
-  archives a short note into `.archive/<topic>.md` once it is 30 days unused and never helped (or
-  marked `superseded:` outright). A merge keeps the note's usage count under its new
-  `<topic>/LONG.md#<id>` path, through `.renames.jsonl`, so a later `factory memory helped <old
-  path>` still resolves and nothing helped is lost. `--dry-run` prints the plan without writing.
+  archives a short note into `.archive/<topic>.md` once it is 30 days unused and never helped, or
+  once it was never shown at all and is 14 days old (or marked `superseded:` outright). Both
+  usage-based archive rules wait until the store holds at least 14 days of usage history, so a new
+  or lost `.usage.jsonl` cannot be misread as "never shown." A pass archives at most
+  `FACTORY_MEMORY_ARCHIVE_CAP` notes (default 25), oldest first across every topic; the rest are
+  held back for a later pass. The pass writes its plan to `dream.log` before it merges or archives
+  anything. A merge keeps the note's usage count under its new `<topic>/LONG.md#<id>` path,
+  through `.renames.jsonl`, so a later `factory memory helped <old path>` still resolves and
+  nothing helped is lost. `--dry-run` prints the plan without writing.
 - `factory memory eval` runs a fixed query set (`<memory>/.eval.jsonl`) through search and prints
   recall@5 and MRR, with which queries missed: how to tell that tiering did not cost search quality.
 
