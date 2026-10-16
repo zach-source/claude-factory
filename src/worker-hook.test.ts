@@ -708,6 +708,23 @@ test.each(ALLOW_API_PUSH)('denyReason allows %j', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
 
+// claude-factory-zl5.13: ghApiPushDenied shares protectedBranchSet with gitPushDenied. An
+// unresolved origin/HEAD read denies an API branch write too, not only a `git push`.
+test('denyReason denies a gh api branch write to any branch when a wired gate.originHead cannot read it', () => {
+  const gate = { originHead: () => undefined }
+  expect(
+    denyReason('gh api -X PATCH repos/o/r/git/refs/heads/factory/x -f sha=abc123', undefined, undefined, gate),
+  ).toBe(PUSH_REASON)
+  expect(
+    denyReason(
+      'gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=YQ== -f branch=factory/x',
+      undefined,
+      undefined,
+      gate,
+    ),
+  ).toBe(PUSH_REASON)
+})
+
 // claude-factory-zl5.9: main() wires gate.headOf and gate.originHead through real `git
 // symbolic-ref` calls. A reviewer set both to return undefined by hand, and the 328 tests at the
 // time still passed: this end-to-end test runs the hook against a real scratch git repo instead.
