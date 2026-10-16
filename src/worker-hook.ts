@@ -40,6 +40,15 @@ export const LIVE_REASON =
   'current context is unknown here). This guard matches context and cluster names only. ' +
   'Do not retry this command. Report blocked: "parked, waiting on: <the exact command>".'
 
+// claude-factory-25z.20: a command this long can make the guard's own scan slow enough to miss
+// the 10 s PreToolUse hook timeout, which lets the command run unchecked.
+const MAX_COMMAND_LENGTH = 8192
+
+export const LONG_COMMAND_REASON =
+  'The factory denies this command: it is longer than 8192 bytes, and this rig checks commands ' +
+  'against a person-only kube context. A command this long can make that check too slow. ' +
+  'Split this command into shorter commands and run them one at a time. Do not retry this exact command.'
+
 // wrapper commands whose own name we skip to find the command they run
 const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
 
@@ -546,6 +555,11 @@ function anyShellReason(
  */
 export function denyReason(command: string, root?: string, personOnly?: string[]): string | undefined {
   if (!command) return undefined
+  // claude-factory-25z.20: this guard's own scan cost rises with the length of `command` (see
+  // anyLiveApplyWord and anyShellReason). A command built to be long enough can push that scan
+  // past the 10 s PreToolUse hook timeout, which lets the command run unchecked. When a
+  // person-only context list is set, deny a command this long outright instead of scanning it.
+  if (personOnly?.length && command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
   let hasRm = false
   let hasCd = false
   for (const words of segments(command)) {

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
-import { denyReason, LIVE_REASON, REASON } from './worker-hook'
+import { denyReason, LIVE_REASON, LONG_COMMAND_REASON, REASON } from './worker-hook'
 
 const DENY = [
   'rm -rf foo',
@@ -234,6 +234,27 @@ test('denyReason denies a live-apply command behind a stack of eval words, fast 
 test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-factory-25z.17)', () => {
   expect(denyReason(`${STACKED_EVAL}; rm -rf x`)).toBe(REASON)
 }, 500)
+
+// claude-factory-25z.20: the .17 fix made the scan linear. But a command of n eval words, then n
+// bare kubectl words, then a real apply still costs about n^3. A command built to be about 26 KB
+// can push that scan past the 10 s PreToolUse hook timeout. A timed-out hook runs the command
+// unchecked. So denyReason now denies a command longer than 8192 bytes outright, before any
+// scan, when personOnly is set.
+const LONG_COMMAND_8192 = 'x'.repeat(8192)
+const LONG_COMMAND_8193 = 'x'.repeat(8193)
+
+test('denyReason denies a command over 8192 bytes outright when personOnly is set (claude-factory-25z.20)', () => {
+  expect(denyReason(LONG_COMMAND_8193, undefined, ACME)).toBe(LONG_COMMAND_REASON)
+})
+
+test('denyReason keeps today’s behavior for a command over 8192 bytes when personOnly is empty or absent (claude-factory-25z.20)', () => {
+  expect(denyReason(LONG_COMMAND_8193)).toBeUndefined()
+  expect(denyReason(LONG_COMMAND_8193, undefined, [])).toBeUndefined()
+})
+
+test('denyReason gives a normal verdict for a command at exactly 8192 bytes, personOnly set (claude-factory-25z.20)', () => {
+  expect(denyReason(LONG_COMMAND_8192, undefined, ACME)).toBeUndefined()
+})
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
