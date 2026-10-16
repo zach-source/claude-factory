@@ -57,8 +57,21 @@ test(
       viewport: { columns: 100, rows: 60 },
     })
     const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).toContain('Which spec wins?')
+    expect(drawn).toContain('r1: Which spec wins?') // the title: run id and the plain-words decision
+    expect(drawn).toContain('Two specs disagree.') // the one-line context
     expect(drawn).toContain('questions (1)')
+    // the collapsed row never shows the raw Question:/Options: text; the details toggle does
+    expect(drawn).not.toContain('Options: the ADR | the bead')
+    expect(drawn).toContain('details ▸')
+    await ui.press({ key: 'iv-details-iv:r1@1' })
+    await clock.settle()
+    const opened = JSON.stringify(await ui.drawn())
+    expect(opened).toContain('details ▾')
+    expect(opened).toContain('Options: the ADR | the bead')
+    await ui.press({ key: 'iv-details-iv:r1@1' }) // closes again
+    await clock.settle()
+    expect(JSON.stringify(await ui.drawn())).not.toContain('Options: the ADR | the bead')
+
     await ui.press({ key: 'iv-opt-iv:r1@1-0' })
     await clock.settle()
     const mail = ran.find(a => a.includes('mail'))
@@ -334,7 +347,7 @@ test(
       'answer',
       'api',
       'api-9',
-      'Answering "api-9: A pilot bead": The person chose: start now.',
+      'Answering "A pilot bead": The person chose: start now.',
     ])
     const start = ran.filter(a => a.includes('start')).at(-1)
     expect(start?.slice(-5)).toEqual(['start', 'custom', 'api', 'api-9', '--owned'])
@@ -453,6 +466,90 @@ test(
     await ui.press({ key: 'iv-opt-iv:s1@5-0' }) // 'retry it'
     await clock.settle()
     expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
+    await ui.unmount()
+  },
+)
+
+// two runs parked on the same bead, from two different stations: mergeSame folds them into one open item
+const SAME_BEAD_TICK = {
+  manager: [],
+  rigs: [{ name: 'api', repo: '/w/api', factory: 'lifecycle' }],
+  runs: [
+    {
+      id: 'ra',
+      bead: 'ama-1',
+      rig: 'api',
+      node: 'triage',
+      sub: 'waiting',
+      last: {
+        node: 'triage',
+        attempt: 1,
+        outcome: 'blocked',
+        summary: 'Two specs disagree.\nQuestion: Merge policy?\nOptions: pause merges | keep auto-merge',
+        at: 1,
+      },
+    },
+    {
+      id: 'rb',
+      bead: 'ama-1',
+      rig: 'api',
+      node: 'deploy',
+      sub: 'waiting',
+      last: {
+        node: 'deploy',
+        attempt: 1,
+        outcome: 'blocked',
+        summary: 'Still waiting.\nQuestion: Merge policy?\nOptions: pause merges | keep auto-merge',
+        at: 5,
+      },
+    },
+  ],
+}
+
+test(
+  'two open items on the same bead become one row; answering it mails both stations and answers both',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+          stderr: '',
+        } as never,
+      }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    // two parked reports on one bead, folded into a single open row
+    expect(JSON.stringify(await ui.drawn())).toContain('questions (1)')
+
+    await ui.press({ key: 'iv-opt-iv:ra@1-0' }) // 'pause merges', the oldest (ra) report's key
+    await clock.settle()
+    const mails = ran.filter(a => a.includes('mail'))
+    expect(mails).toHaveLength(2)
+    expect(mails.map(a => a.slice(-3)[0])).toEqual(['ra', 'rb']) // one mail to each station
+    expect(
+      mails.every(a => a.slice(-1)[0] === 'Answering "Merge policy?": The person chose: pause merges.'),
+    ).toBe(true)
+    const after = JSON.stringify(await ui.drawn())
+    expect(after).toContain('questions (0)') // the merged row is gone
+    expect(after).toContain('answered (2)') // both members are recorded as answered
     await ui.unmount()
   },
 )
