@@ -17,6 +17,23 @@ minor release may change the factory format, the CLI or the run state.
   - `rig list` adds a new line: `town: busy X/MAX, stuck Y`.
   - The default `FACTORY_MAX_RUNS` moves from 8 to 16. This is the cap the owner already
     uses.
+- Fixed: a large prior report can kill a worker turn with this error: `ENAMETOOLONG: name too long, posix_spawn claude`. (claude-factory-kcg)
+  - Cause: `turn()` in `src/worker.ts` put the whole prompt as the last argv element
+    for `claude`, `codex` and `pi`. Linux's `MAX_ARG_STRLEN` caps one argv string at
+    131072 bytes. A long prompt, for example a station report with a large pasted
+    diff, failed `posix_spawn` past this cap.
+  - Fix 1: `turnArgv()` now builds an argv with no prompt text, for all 3 harnesses.
+    `turn()` sends the prompt on stdin instead (`stdin: new Blob([text])`).
+  - Fix 2: `src/cli.ts`'s `brief()` already clipped journal lines to 1500 characters.
+    3 other spots had no clip: the `lastFail`, `handedOff` and `parked` summaries,
+    and inbox mail text. A new `clipReport()` (`REPORT_MAX` = 32000 characters) now
+    runs at all 5 places where a report or mail reaches a brief or a delivered mail.
+    It never cuts between a UTF-16 surrogate pair's two units.
+  - Fix 3: `src/ax.ts`'s `ax.prompt()` sends mid-run mail as one base64 argv to the
+    `factory worker prompt` command. Base64 text is 4/3 the size of the source text,
+    so a mail over about 96 KiB failed the same way on a VM worker. A new
+    `clipBytes()` (`PROMPT_MAX_BYTES` = 90000) clips the UTF-8 byte length before the
+    base64 encode. It backs off over a multi-byte character, so it never splits one.
 - Console: a due patrol now runs as a hidden `factory:patrol` subagent (`$.agent.spawn`,
   `mod/hooks/register.tsx`), instead of waking the manager's own main chat with `$.prompt.submit`.
   The person can keep typing while a patrol runs; a patrol adds no turn to the main chat and no

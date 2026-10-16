@@ -388,13 +388,38 @@ function asWorker(argv: string[]) {
 }
 export const poll = (task: string, cursor: number): Poll =>
   JSON.parse(must(['ssh', task, '--', ...asWorker(['factory', 'worker', 'poll', String(cursor)])]))
+/**
+ * the byte budget for prompt()'s text, before it is base64'd onto the ssh argv: base64 blows up a byte
+ * count by 4/3, and Linux's execve() caps one argv string at MAX_ARG_STRLEN (131072 bytes). 90,000 bytes
+ * encodes to about 120,000, with headroom for the ssh command itself and the clip marker below
+ * (claude-factory-kcg)
+ */
+export const PROMPT_MAX_BYTES = 90_000
+/**
+ * text clipped to at most `maxBytes` UTF-8 bytes, a marker appended naming both sizes: never cuts a
+ * multi-byte character in half. A UTF-8 continuation byte (10xxxxxx) never starts a character, so backing
+ * up over any at the cut point lands on the start of the character it belongs to, and that whole character
+ * is dropped rather than left half-decoded
+ */
+export function clipBytes(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, 'utf8')
+  if (buf.length <= maxBytes) return text
+  let end = maxBytes
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--
+  return `${buf.subarray(0, end).toString('utf8')}\n[clipped: ${end} of ${buf.length} bytes]`
+}
 // base64: ax parses its own flags anywhere on the line, so a prompt starting with -a or -n would be eaten
 export const prompt = (task: string, text: string) =>
   must([
     'ssh',
     task,
     '--',
-    ...asWorker(['factory', 'worker', 'prompt', Buffer.from(text).toString('base64')]),
+    ...asWorker([
+      'factory',
+      'worker',
+      'prompt',
+      Buffer.from(clipBytes(text, PROMPT_MAX_BYTES), 'utf8').toString('base64'),
+    ]),
   ])
 /**
  * one part of a file for the VM, over ssh: Substrate takes no env value past 32 KiB, so what is bigger (the
