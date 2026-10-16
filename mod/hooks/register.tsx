@@ -51,6 +51,15 @@ const PATROL_WATCHDOG_MS = 15 * 60_000
 /** a denied spawn waits this long before the next attempt, instead of asking again every tick */
 const PATROL_RETRY_MS = 60_000
 const PATROL_TYPE = 'factory:patrol'
+/** a run the main chat touched stays out of a patrol for this long: the person and a patrol
+ * must not act on the same run at once */
+const PATROL_HOLD_MS = 5 * 60_000
+/** matches a patrol's own Bash command that acts on a run: recorded for the patrol log */
+const PATROL_VERB = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|queue|start)\b/
+/** matches a main-chat Bash command that acts on one run, its id the 2nd capture group */
+const TOUCH_RE = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|decide)\s+(\S+)/
+/** verbs act()'s own args[0] uses for the same run-acting commands, for the console's buttons */
+const TOUCH_VERBS = new Set(['mail', 'poke', 'retry', 'goto', 'fork', 'abort', 'rm', 'decide'])
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
 const view = atom({ plugin: 'factory', key: 'view' } as const, 'board' as FactoryView)
 const selected = atom({ plugin: 'factory', key: 'selected' } as const, null as string | null)
@@ -149,6 +158,12 @@ const rt = {
   retryAt: 0,
   /** interviewMe's own one-at-a-time guard, apart from isPatrolling: it still runs in the main loop */
   isInterviewing: false,
+  /** a run id's last touch by the main chat: a Bash factory command or a console action. A
+   * patrol leaves a recently touched run alone for PATROL_HOLD_MS. */
+  touched: new Map<string, number>(),
+  /** the running patrol's own factory commands this run, each clipped to 200 chars. turn.complete
+   * reads and resets this into the patrol log (claude-factory-72v.5). */
+  patrolActions: [] as string[],
   /** told once that the console sits above the prompt because the layout cannot dock it */
   isInlineTold: false,
 }
@@ -263,15 +278,19 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   if (rt.isPatrolling) return
   if (now < rt.retryAt) return
   if (!(await isPaneSession($))) return
+  // drop a run outside PATROL_HOLD_MS, not only skip it: this keeps rt.touched small
+  for (const [id, at] of rt.touched) if (now - at >= PATROL_HOLD_MS) rt.touched.delete(id)
+  const hold = new Set(rt.touched.keys())
   // ponytail: the whole board again each hour, so a manager that compacted it away gets it back
   const last = now - rt.sigAt < 3_600_000 ? rt.sig : undefined
-  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last)
+  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last, hold)
   // a due heartbeat whose board repeats the last one sent wakes nobody: patrolAt stays put, so a
   // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark
   if (!due) return
   if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
   rt.isPatrolling = true
   rt.patrolStartedAt = now
+  rt.patrolActions = []
   try {
     const res = await $.agent.spawn({
       subagentType: PATROL_TYPE,
@@ -401,6 +420,8 @@ async function interviewMe($: EngineInterface) {
 }
 
 async function act($: EngineInterface, args: string[]) {
+  // the console acts on a run too: hold it out of the next patrol, same as a main-chat Bash command
+  if (args[1] && TOUCH_VERBS.has(args[0] ?? '')) rt.touched.set(args[1], await $.clock.now())
   const { isOk, out } = await factory($, args)
   $.ui.toast(out.split('\n').at(-1) || `${args.join(' ')}: queued`)
   rt.backlogAt = 0 // a queue or start changes the backlog: the next tick lists it again
@@ -645,10 +666,29 @@ export const register: Register = (on, options) => {
     }
     // the model's shell cd's into rigs to read them: its factory commands still work this factory
     const pinned = rt.home ? { ...e, command: `export FACTORY_HOME='${rt.home}'\n${e.command}` } : e
+    const gated = gatedCommand(e.command)
+    // gatedCommand's own normalize, repeated here so TOUCH_RE and PATROL_VERB see the same text
+    // (a line continuation or a quoted newline must not hide a run-acting command from either)
+    const normalized = e.command.replace(/\\\n/g, '')
+
+    // [SECURITY] a subagent (the patrol, or any other) gets no dialog: nobody is there to answer
+    // it, so this denies a gated command outright. For a non-gated command that acts on one run,
+    // it logs the command (clipped to 200 chars) for the patrol log (claude-factory-72v.5).
+    if (e.agentId) {
+      if (gated) return { deny: `${gated.deny} A patrol never decides this: leave it for the person.` }
+      if (PATROL_VERB.test(normalized))
+        rt.patrolActions = [...rt.patrolActions, line(e.command, 200)].slice(-50)
+      return next(pinned)
+    }
+
+    // the main chat: a factory command that acts on one run holds that run out of the next
+    // patrol for PATROL_HOLD_MS, so the person and a patrol never act on the same run at once
+    const touched = normalized.match(TOUCH_RE)?.[2]
+    if (touched) rt.touched.set(touched, await $.clock.now())
+
     // a gate, a bd decision answer and an owner-only start are the person's call: the model may run
     // any of them only after they confirm it here, since it has no other way to intercept the manager's
     // own shell (FACTORY_FROM, which refuses these for workers, is unset in the manager session)
-    const gated = gatedCommand(e.command)
     if (!gated) return next(pinned)
     const choice = await $.ui.ask(gated.question, ['Allow', 'Deny']).catch(() => 'Deny')
     return choice === 'Allow' ? next(pinned) : { deny: gated.deny }

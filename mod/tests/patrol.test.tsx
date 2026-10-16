@@ -279,3 +279,130 @@ test(
     } as never)
   },
 )
+
+test(
+  "[SECURITY] a subagent's gated command is denied with no dialog; the main chat's own still asks",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    let asked = 0
+    let ran = 0
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      asked += 1
+      const question = e.questions[0]!.question
+      return { result: { questions: e.questions, answers: { [question]: 'Allow' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+
+    // the patrol subagent's own call: e.agentId set, so the hook refuses it outright, no dialog
+    const fromPatrol = await $.tool.call({
+      tool: 'Bash',
+      command: '/repo/bin/factory decide r1 ship "looks good"',
+      agentId: 'patrol-1',
+    } as never)
+    expect(fromPatrol.deny).toContain('did not confirm')
+    expect(fromPatrol.deny).toContain('A patrol never decides this')
+    expect(asked).toBe(0)
+    expect(ran).toBe(0)
+
+    // a non-gated command from the same subagent runs normally, with no dialog either
+    const patrolMail = await $.tool.call({
+      tool: 'Bash',
+      command: '/repo/bin/factory mail r1 implement "answered"',
+      agentId: 'patrol-1',
+    } as never)
+    expect(patrolMail.deny).toBeUndefined()
+    expect(asked).toBe(0)
+    expect(ran).toBe(1)
+
+    // the main chat's own identical gated call: still gets the dialog, same as before this change
+    const fromMain = await $.tool.call({
+      tool: 'Bash',
+      command: '/repo/bin/factory decide r1 ship "looks good"',
+    } as never)
+    expect(fromMain.deny).toBeUndefined()
+    expect(asked).toBe(1)
+    expect(ran).toBe(2)
+    await clock.settle()
+  },
+)
+
+test(
+  'a run the main chat touched is held out of the next patrol; its mail stays queued until the hold clears',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const spawns: { prompt: string }[] = []
+    let queued: readonly unknown[] = [mail(1)]
+    const runs = [
+      RUN,
+      { id: 'r2', rig: 'api', node: 'implement', sub: 'working', agent: 'blocked', since: 5 },
+    ]
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      if (e.argv.includes('tick')) {
+        const out = JSON.stringify({ manager: queued, rigs: [], runs })
+        queued = []
+        return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+      }
+      return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+    })
+    on('agent.spawn', ($, e) => {
+      spawns.push(e as never)
+      return { model: 'sonnet' } as never
+    })
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
+
+    // the main chat mails r1 directly: this touches r1, holding it out of the next patrol
+    await $.tool.call({ tool: 'Bash', command: 'factory mail r1 implement "steer"' } as never)
+
+    // r2's own new blocked state is real news on its own, so a patrol spawns even with r1 held
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0]!.prompt).toMatch(/r1.*held/)
+    expect(spawns[0]!.prompt).not.toContain('which DB?') // r1's own mail stays held, unreported
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 500,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't6',
+      agentId: 'patrol-6',
+    } as never)
+
+    // short of 5 min: r1's held mail is still the only news, so still no second patrol
+    await clock.advance(4 * 60_000 + 55_000)
+    expect(spawns).toHaveLength(1)
+
+    // past 5 min: the hold clears, r1's held mail becomes news, and a fresh patrol carries it
+    await clock.advance(10_000)
+    expect(spawns).toHaveLength(2)
+    expect(spawns[1]!.prompt).toContain('which DB?')
+    expect(spawns[1]!.prompt).not.toMatch(/r1.*held/)
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 500,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't7',
+      agentId: 'patrol-6',
+    } as never)
+  },
+)
