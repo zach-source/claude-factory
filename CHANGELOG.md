@@ -7,6 +7,23 @@ minor release may change the factory format, the CLI or the run state.
 ## Unreleased
 
 - Fixed: a bug let the pkg-gate's Go sumdb floor (`refreshGoFloor` in `src/pkggate.ts`) rise to near `now` in one refresh. The floor then stayed there until the pod restarted. An attacker who owned all 9 sampled `index.golang.org` entries could log each one in `sum.golang.org` right before a refresh. The old `Math.max(old, new)` ratchet then kept that high floor. Each refresh now stores the `sum.golang.org` tree size it read before lookups (`goFloor.latest`). It caps the floor's rise at `prev.record + 3 * max(0, latest - prev.latest)`. This cap is 3 times the real sumdb traffic since the last refresh. The `Math.max` ratchet is gone, so a refresh can also lower the floor. A lower floor only refuses more versions. The cap limits one refresh only. Two follow-ups stay open. A sustained attack can still raise the floor across many refreshes (claude-factory-ldb). The first refresh after a pod start has no cap yet (claude-factory-b9f). (claude-factory-56j)
+- Fixed: a worker ran `rm -r`/`rm -rf` on its own `.scratch/` folder. The prompt rule in
+  `src/worker-system.md` (claude-factory-9wu) did not stop this. The worker then
+  waited about 2 minutes on Claude Code's own permission prompt, which nobody answers,
+  until Claude Code denied it on its own. New `src/worker-hook.ts` adds a
+  `PreToolUse` Bash hook, `denyReason(command)`, that denies the command at once, with
+  one reason:
+  - It tokenizes the command (quote-aware). It denies a recursive `rm`, or a `cd`
+    segment paired with an `rm` segment in one command.
+  - It checks inside a `sh`/`bash`/`zsh -c` string, and inside the command after
+    `find`'s `-exec`/`-execdir`.
+  - It only denies a command. It never approves a command that Claude Code's own
+    prompt would refuse.
+  - `workerSettings()` (herdr workers) adds this hook as the last `PreToolUse` entry,
+    after the user's own hooks, so a secret guard such as ctxguard still runs first.
+  - `vmClaudeFlags()` (AX/VM workers) runs the same hook from the VM image's own copy,
+    at `${ax.FACTORY_DIR}/src/worker-hook.ts`. `Dockerfile.worker` already ships `bun`
+    and `src/`, so the image needs no change. (claude-factory-cr6)
 - CI and releases now run on their own, with no hand edits. `.github/workflows/ci.yml`
   runs 4 required checks on every pull request and on `main`. `test` runs
   `bun test --timeout 30000 src factories`; `PKGGATE_E2E_REQUIRE=1` makes a missing
