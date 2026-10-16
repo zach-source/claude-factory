@@ -222,8 +222,12 @@ factory rig add ax ~/repos/ax --protected-branch acme-deploy
 A worker's PreToolUse hook denies these commands:
 
 - a `git push` to a protected branch, to `main` or `master`, or to the branch that `origin/HEAD` names
+- a `git -c alias.<name>=push` definition: a worker never needs a throwaway push alias
 - `gh pr merge`, also with `--auto` and `--admin`
 - the GraphQL mutation that turns on a pull request's auto-merge
+- a REST or GraphQL call that writes a ref or a file straight to a protected branch (a `git/refs`
+  update or delete, a `contents` write with no `branch` field or a protected one, and the
+  `createCommitOnBranch`, `updateRef`, `updateRefs` and `deleteRef` GraphQL mutations)
 - `gh pr ready`, except in the release station
 
 This rule applies whatever the list holds. Only a person can merge a pull request or push the default branch. A worker pushes its own run branch and opens a pull request.
