@@ -137,6 +137,17 @@ const DENY_LIVE = [
   'kubectl --context acme auth reconcile -f r.yaml',
   'kubectl --context acme certificate approve csr1',
   'kubectl --context acme certificate deny csr1',
+  // claude-factory-25z.12: an unstripped wrapper must not hide a kubectl/ko/helm word that follows it.
+  'eval "kubectl --context acme apply -f x"',
+  'find . -name "*.yaml" -exec kubectl --context acme apply -f {} \\;',
+  'ls | xargs -n 1 kubectl --context acme apply -f',
+  'timeout -s KILL 60 kubectl --context acme apply -f x',
+  'watch kubectl --context acme scale deploy x --replicas 0',
+  'nix shell nixpkgs#kubectl -c kubectl --context acme apply -f x',
+  'direnv exec . kubectl --context acme apply -f x',
+  // claude-factory-25z.13: helm's uninstall aliases del and un mutate too.
+  'helm --kube-context acme del r',
+  'helm --kube-context acme un r',
 ]
 
 const ALLOW_LIVE = [
@@ -154,6 +165,9 @@ const ALLOW_LIVE = [
   'kubectl --context acme apply -f x --context kind-kind',
   // claude-factory-25z.9: an unlisted --cluster does not deny an unlisted --context.
   'kubectl --context other --cluster kind-kind apply -f x',
+  // claude-factory-25z.12: a quoted word that merely contains "kubectl apply" is not a command.
+  'git commit -m "kubectl apply"',
+  'grep -n kubectl README.md',
 ]
 
 test.each(DENY_LIVE)('denyReason denies a live-apply command %j with personOnly acme', cmd => {

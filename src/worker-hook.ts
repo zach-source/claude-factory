@@ -277,7 +277,8 @@ const KUBECTL_ROLLOUT_MUTATING = new Set(['restart', 'undo', 'pause', 'resume'])
 const KUBECTL_AUTH_MUTATING = new Set(['reconcile'])
 const KUBECTL_CERTIFICATE_MUTATING = new Set(['approve', 'deny'])
 const KO_MUTATING_VERBS = new Set(['apply', 'create', 'delete', 'run'])
-const HELM_MUTATING_VERBS = new Set(['install', 'upgrade', 'uninstall', 'delete', 'rollback'])
+// claude-factory-25z.13: `del` and `un` are helm's own aliases for `uninstall`.
+const HELM_MUTATING_VERBS = new Set(['install', 'upgrade', 'uninstall', 'delete', 'del', 'un', 'rollback'])
 
 /**
  * Finds the value of the LAST flag in `names` in `words`. A flag can take the `--flag value`
@@ -440,6 +441,25 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
 }
 
 /**
+ * True when a word in `words` is a bare `kubectl`, `ko` or `helm` token. From that word on, the
+ * words must start a mutating command denied by `personOnly`.
+ * claude-factory-25z.12: this hook does not know every wrapper by name (`eval`, `find -exec`,
+ * `xargs`, `timeout` with flags, `watch`, `nix shell ... -c`, `direnv exec`). A wrapper it does not
+ * know must not hide that word. So this checks every position in the segment, not only the head.
+ * A word that only contains the text "kubectl" does not match. This covers a quoted argument, a
+ * path, and an unrelated flag value.
+ */
+function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
+  for (let j = 0; j < words.length; j++) {
+    const bw = baseWord(words[j]!)
+    if ((bw === 'kubectl' || bw === 'ko' || bw === 'helm') && liveApplyDenied(words.slice(j), personOnly)) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
  * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
  * `root` is the worktree root. An rm operand outside it is risky too (see riskyTarget).
  * `personOnly` is the rig's list of kube contexts a person alone may change (claude-factory-25z).
@@ -454,7 +474,9 @@ export function denyReason(command: string, root?: string, personOnly?: string[]
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
-    if (personOnly?.length && liveApplyDenied(cmd, personOnly)) return LIVE_REASON
+    // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
+    // strip by name cannot hide a kubectl, ko or helm word that follows it.
+    if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
@@ -466,6 +488,11 @@ export function denyReason(command: string, root?: string, personOnly?: string[]
         const r = denyReason(cmd[ci + 1]!, root, personOnly)
         if (r) return r
       }
+    } else if (b === 'eval') {
+      // eval joins its remaining words with a space and runs the result as a new command, the
+      // same as `sh -c`'s quoted script (claude-factory-25z.12).
+      const r = denyReason(cmd.slice(1).join(' '), root, personOnly)
+      if (r) return r
     } else if (b === 'find') {
       for (let i = 0; i < cmd.length; i++) {
         if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
