@@ -618,7 +618,10 @@ test("withProposals overrides a needsProposal item's question, title, context an
     'own:api:api-9': {
       question: 'Start the pilot now?',
       context: 'Nobody has run it yet.',
-      options: ['start now: begins at once', 'not now: leaves it queued (recommended)'],
+      // labels differ on purpose from the fixed options ('start now', 'not now') below,
+      // so a reverted options-override guard changes the asserted labels. It does not
+      // add fields that toMatchObject would ignore (claude-factory-9f6.15).
+      options: ['yes: begins at once', 'no: leaves it queued (recommended)'],
       at: 1,
     },
     'gate:g1@1': { question: 'x', options: ['y', 'z'], at: 1 },
