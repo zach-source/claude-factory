@@ -2620,6 +2620,19 @@ function linearLabeled(repo: string): { id: string }[] {
 }
 
 /**
+ * This function calls `linearLabeled` once more when the first call throws.
+ * A transient error (a busy Dolt server) must not, by itself, cost a confirmed listing (security#1.13).
+ * The second call's error, if any, reaches the caller as is.
+ */
+function linearLabeledRetrying(repo: string): { id: string }[] {
+  try {
+    return linearLabeled(repo)
+  } catch {
+    return linearLabeled(repo)
+  }
+}
+
+/**
  * This function removes the `factory` label from each id in `ids`, in `repo`.
  * It checks the exit code of each `bd label remove` call.
  * When a call does not exit 0, the function does not count that id as stripped.
@@ -2645,21 +2658,32 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
  * It runs `bd linear sync --pull-if-stale`, never `--push`.
  * It passes the key, or the OAuth pair, by env only.
  *
- * `bd` copies each Linear label onto the bead it maps. A new bead, or an updated one, can carry the
- * `factory` label the moment the pull lands it. This function strips that label right back off. A
- * person, not a Linear label, must decide what the factory works. A bead that already carried the
- * label before this pull keeps it.
+ * `bd` copies each Linear label to the bead that it maps. A new bead, or an updated bead, can have the
+ * `factory` label as soon as the pull writes it. This function removes that label again. A person, not a
+ * Linear label, must decide what the factory works on. A bead that already had the label before this pull
+ * keeps it.
  *
- * The strip runs after every pull that reaches `bd`. It also runs after a pull that then errors or
- * times out (claude-factory-b6c.8), because the pull can label beads before it fails. When `bd label
- * remove`, or the listing call after the pull, fails on an id, this function puts that id in
- * `unstripped`. The next pass tries that id again first (claude-factory-b6c.9).
+ * This function removes the label after every pull that reaches `bd`. It also removes the label after
+ * a pull that then errors or times out (claude-factory-b6c.8), because the pull can label beads before
+ * it fails. When `bd label remove` fails on an id, this function puts that id in `unstripped`. The next
+ * pass tries that id again first (claude-factory-b6c.9).
+ *
+ * The listing call right after the pull can also fail. This function retries that call once
+ * (`linearLabeledRetrying`). When the retry also fails, the function cannot tell which ids the pull
+ * labeled, so it must not guess. It keeps this pass's pre-pull snapshot as `baseline` in the state,
+ * not a fresh one. The next pass's diff still starts from before this pull. So the next pass still
+ * catches the ids this pull labeled, once a listing call succeeds (security#1.13).
+ *
+ * This function also uses a `baseline` from an earlier pass as this pass's pre-pull snapshot. It clears
+ * that `baseline` once a listing call succeeds.
  *
  * This function writes `state[rig.name]`. It never throws, so one rig's failure does not stop the others.
  */
 function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
   const at = Date.now()
-  const retry = state[rig.name]?.unstripped ?? []
+  const prior = state[rig.name]
+  const retry = prior?.unstripped ?? []
+  const baseline = prior?.baseline
   let secrets: string[] = []
   try {
     const cfg = readLinearConfig(linearConfigFile())
@@ -2667,22 +2691,28 @@ function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
     secrets = [env.LINEAR_API_KEY, env.LINEAR_OAUTH_CLIENT_ID, env.LINEAR_OAUTH_CLIENT_SECRET].filter(
       (s): s is string => !!s,
     )
-    const before = new Set(linearLabeled(rig.repo).map(b => b.id))
+    const beforeIds = baseline ?? linearLabeled(rig.repo).map(b => b.id)
+    const before = new Set(beforeIds)
     const p = Bun.spawnSync(['bd', ...syncArgs(rig.linear!)], { cwd: rig.repo, env, timeout: 120_000 })
     const outcome = parseSync(p.stdout.toString(), p.exitCode ?? 1, p.stderr.toString())
 
     // a listing failure here must not lose the pull's own outcome below: it is caught on its own, and
-    // every id the listing could not confirm stays queued (as `retry`) for the next pass.
+    // every id the listing could not confirm stays queued (as `retry`) for the next pass. `nextBaseline`
+    // carries the open baseline forward by default (a "fresh" outcome never calls the listing at all,
+    // so there is nothing new to learn either way).
     let toStrip = retry
     let listErr: string | undefined
+    let nextBaseline = baseline
     if (!('fresh' in outcome) || !outcome.fresh) {
       try {
-        const newly = linearLabeled(rig.repo)
+        const newly = linearLabeledRetrying(rig.repo)
           .filter(x => !before.has(x.id))
           .map(x => x.id)
         toStrip = [...new Set([...retry, ...newly])]
+        nextBaseline = undefined // the diff resolved: nothing left to carry
       } catch (err) {
         listErr = redact((err as Error).message, secrets)
+        nextBaseline = beforeIds // still unresolved: keep this pass's before-set for the next pass
       }
     }
     const strip = toStrip.length ? stripFactoryLabel(rig.repo, toStrip) : { stripped: 0, unstripped: [] }
@@ -2693,6 +2723,7 @@ function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
         fresh: false,
         error: redact(outcome.error, secrets),
         ...(strip.unstripped.length && { unstripped: strip.unstripped }),
+        ...(nextBaseline && { baseline: nextBaseline }),
       }
       return
     }
@@ -2702,6 +2733,7 @@ function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
           fresh: true,
           lastPull: outcome.lastPull,
           ...(strip.unstripped.length && { unstripped: strip.unstripped }),
+          ...(nextBaseline && { baseline: nextBaseline }),
         }
       : {
           at,
@@ -2711,6 +2743,7 @@ function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
           updated: outcome.updated,
           stripped: strip.stripped,
           ...(strip.unstripped.length && { unstripped: strip.unstripped }),
+          ...(nextBaseline && { baseline: nextBaseline }),
           ...(listErr && { error: redact(`label list after the pull: ${listErr}`, secrets) }),
         }
   } catch (err) {
@@ -2719,6 +2752,7 @@ function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
       fresh: false,
       error: clip(redact((err as Error).message, secrets), 200),
       ...(retry.length && { unstripped: retry }),
+      ...(baseline && { baseline }), // nothing resolved this attempt: carry the open baseline forward
     }
   }
 }
@@ -2944,8 +2978,21 @@ export type LinearSyncState = {
   created?: number
   updated?: number
   stripped?: number
-  /** ids the strip cannot confirm off (a failed `bd label remove` or listing call); tried again first */
+  /**
+   * ids the strip does not confirm as removed: `bd label remove` failed on them, or the listing call
+   * after the pull failed. The next pass retries these ids first.
+   */
   unstripped?: string[]
+  /**
+   * This is the pre-pull snapshot of labeled ids.
+   * The function keeps it only while the post-pull listing cannot confirm which ids the pull labeled
+   * (security#1.13).
+   * The next pass diffs against this stored set, not a fresh snapshot.
+   * A fresh snapshot would already include the ids this pull labeled, so the diff would never count
+   * them as new.
+   * The function clears this field the next time the listing succeeds.
+   */
+  baseline?: string[]
   error?: string
 }
 export const linearSyncFile = () => join(HOME, 'linear-sync.json')

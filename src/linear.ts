@@ -159,10 +159,20 @@ export function parseSync(stdout: string, exitCode: number, stderr = ''): SyncOu
   return { fresh: false, pulled: s.pulled ?? 0, created: s.created ?? 0, updated: s.updated ?? 0 }
 }
 
-/** This function removes each secret value from error text before the text goes into a log, a bead, or
- * mail. It then cuts the text to 200 characters when the text is longer than that. */
+const TOKEN_SHAPE = /lin_(api|oauth)_\S+/g
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/g
+
+// This function cleans error text before the text goes into a log, a bead, or mail.
+// It removes each secret value named in `secrets`.
+// A failed resolver can leave `secrets` empty or miss one value, while its own error text
+// still carries a token (security#1.14). This function also removes any text shaped like
+// a Linear key or OAuth secret, so a token stays hidden even then.
+// It also removes control characters, for example an ANSI escape code (security#1.15).
+// It then cuts the text to 200 characters, when the text is longer than that.
 export function redact(text: string, secrets: string[]): string {
   let out = text
   for (const s of secrets.filter(Boolean)) out = out.split(s).join('***')
+  out = out.replace(TOKEN_SHAPE, '***').replace(CONTROL_CHARS, '')
   return out.length > 200 ? `${out.slice(0, 200)}…` : out
 }

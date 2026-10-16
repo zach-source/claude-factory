@@ -172,6 +172,21 @@ test('redact with no secrets still clips long text', () => {
   expect(out.length).toBeLessThanOrEqual(201)
 })
 
+test('redact scrubs a lin_api_ or lin_oauth_ token the secrets list never learned (security#1.14)', () => {
+  // syncEnv can throw before it resolves a value (the config command failed): `secrets` stays empty,
+  // or misses the OAuth client id, even though the failing command's own stderr can carry a token.
+  expect(redact('linear.json command failed: rejected lin_api_SURPRISE999', [])).not.toContain(
+    'lin_api_SURPRISE999',
+  )
+  expect(redact('bad token lin_oauth_zzz999 in request', [])).not.toContain('lin_oauth_zzz999')
+})
+
+test('redact strips control characters, like an ANSI escape, from the text (security#1.15)', () => {
+  const out = redact('\x1b[31mBOOM\x1b[0m\x07', [])
+  expect(out).not.toMatch(/[\x00-\x1f\x7f]/)
+  expect(out).toContain('BOOM')
+})
+
 // The loop end to end through `bin/factory linear`, with a fake `bd` on PATH that logs every call's
 // argv, cwd and LINEAR_* env, so the real loop (src/cli.ts's linearPass) is proven, not a mock of it.
 import { afterAll, beforeEach } from 'bun:test'
@@ -185,6 +200,7 @@ const calls = join(cdir, 'calls.log')
 const mode = join(cdir, 'mode') // fresh | pulled | error, read by the fake bd's `linear sync`
 const listTurn = join(cdir, 'list-turn') // counts `bd list` calls, so before/after differ
 const failLabel = join(cdir, 'fail-label') // an id `bd label remove` exits 1 for, when this file names it
+const listFailTurns = join(cdir, 'list-fail-turns') // comma-joined `bd list` turn numbers that exit 1
 
 const TEAM = '04114abf-ddb7-4a6f-bb47-814fd2c44373'
 const repoA = join(cdir, 'repo-a')
@@ -201,12 +217,13 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
 }
 
 /**
- * This is the fake bd.
- * `linear sync` answers from $mode: fresh, pulled, or error.
- * `list` answers [] the first time. No bead carries the label yet.
- * `list` answers one newly-labeled bead the second time. The strip step then has exactly one new id to act on.
- * `label remove` exits 1 for the id named in $failLabel. It exits 0 for every other id, and for every other call.
- * Every call appends one line to the log: its argv, its cwd, and the three LINEAR_* env vars it saw (empty when unset).
+ * This is the fake bd. It answers each call this way:
+ * - `linear sync`: from $mode (fresh, pulled, or error).
+ * - `list`, turn 1: `[{"id":"acme-old"}]`. No bead carries the label yet.
+ * - `list`, turn 2 on: adds `acme-new`. The strip step then has one new id to act on.
+ * - `list`, a turn named in $listFailTurns (comma-joined): exits 1, names the turn in stderr.
+ * - `label remove`: exits 1 for the id named in $failLabel, exits 0 for every other call.
+ * Every call logs one line: its argv, its cwd, and the three LINEAR_* env vars it saw (empty when unset).
  */
 function fakeBd() {
   mkdirSync(bin, { recursive: true })
@@ -223,6 +240,10 @@ function fakeBd() {
     '    esac;;',
     '  list)',
     `    n=$(cat ${listTurn} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${listTurn}`,
+    `    ft=$(cat ${listFailTurns} 2>/dev/null || echo "")`,
+    '    case ",$ft," in',
+    '      *",$n,"*) echo "list failed (turn $n)" >&2; exit 1;;',
+    '    esac',
     '    case "$n" in',
     '      1) printf \'%s\' \'[{"id":"acme-old"}]\';;',
     '      *) printf \'%s\' \'[{"id":"acme-old"},{"id":"acme-new"}]\';;',
@@ -360,6 +381,30 @@ test('a bead whose label remove fails is queued and retried first next pass (cla
   state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
   expect(state.a.unstripped).toBeUndefined()
   expect(state.a.stripped).toBeGreaterThanOrEqual(1)
+})
+
+test('a post-pull listing that still fails after one retry keeps the pre-pull before-set as a baseline; the next pass strips the bead it missed (security#1.13)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  linearJson({ apiKey: 'printf test-key-123' })
+  // turn 1 is the pre-pull before-list. Turns 2 and 3 are the post-pull listing's first try and its one
+  // retry: both fail. The pass cannot confirm acme-new as newly labeled, so it must not strip it, and it
+  // must not drop the fact that it still owes that check.
+  writeFileSync(listFailTurns, '2,3')
+  factory(['linear'])
+  let state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.baseline).toEqual(['acme-old'])
+  expect(callLines().some(l => argvOf(l).startsWith('label remove'))).toBe(false)
+
+  // the next pass: the listing now succeeds. Pre-fix code takes a fresh before-snapshot here, which
+  // already includes acme-new, so the diff finds nothing new and acme-new keeps the factory label
+  // forever. The fix diffs against the stored baseline instead, so acme-new is still "newly labeled".
+  factory(['linear', '--force'])
+  const removes = callLines().filter(l => argvOf(l).startsWith('label remove'))
+  expect(removes).toHaveLength(1)
+  expect(argvOf(removes[0]!)).toBe('label remove acme-new factory')
+  state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.baseline).toBeUndefined() // the listing resolved: nothing left to carry
+  expect(state.a.stripped).toBe(1)
 })
 
 test('a fresh skip is recorded, with no label strip (nothing new to strip)', () => {
