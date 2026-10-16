@@ -559,8 +559,6 @@ test('denyReason denies a push command behind a stack of eval words, fast', () =
 }, 500)
 
 const ALLOW_PUSH = [
-  'git push -u origin HEAD',
-  'git push',
   'git push origin factory/x',
   'git push origin v1.2.3',
   'git push origin --tags',
@@ -579,15 +577,43 @@ test('denyReason allows a bare git push, git push origin HEAD and git push -u or
   expect(denyReason('git push -u origin HEAD', undefined, undefined, gate)).toBeUndefined()
 })
 
+// claude-factory-zl5.12: a HEAD-targeting push is a bare `git push`, or `git push origin HEAD`.
+// When this guard cannot read the current branch, it has no name to check against the
+// protected list. This guard then fails closed. It denies, and does not let the push through.
+const DENY_PUSH_UNKNOWN_CURRENT_BRANCH = ['git push', 'git push origin HEAD', 'git push -u origin HEAD']
+
+test.each(DENY_PUSH_UNKNOWN_CURRENT_BRANCH)(
+  'denyReason denies %j when the current branch cannot be read (fail closed, claude-factory-zl5.12)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+    expect(denyReason(cmd, undefined, undefined, { headOf: () => undefined })).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-zl5.13: `gate.originHead` is wired (the rig reads the real origin/HEAD), but the
+// read failed. This guard cannot tell the rig's real default branch from any other, so it denies
+// every branch-targeting push outright, even to a branch name that is not on the protected list.
+test('denyReason denies a push to any branch when a wired gate.originHead cannot read it (fail closed, claude-factory-zl5.13)', () => {
+  const gate = { originHead: () => undefined }
+  expect(denyReason('git push origin develop', undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(denyReason('git push origin factory/x', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+// claude-factory-zl5.13: a rig with no gate.originHead at all never reads origin/HEAD. The
+// unresolved-read deny does not apply: main, master and protectedBranches still apply alone.
+test('denyReason allows a push to an unprotected branch when the rig has no gate.originHead at all', () => {
+  expect(denyReason('git push origin develop')).toBeUndefined()
+})
+
 test('denyReason allows git -C .scratch/x status (not a push)', () => {
   expect(denyReason('git -C .scratch/x status')).toBeUndefined()
 })
 
 // claude-factory-zl5.3: main() reads the rig's protected branch names from --protected-branches on
 // its own argv, split on comma, and carries origin/HEAD and the current branch through real git
-// calls. A fake root with no real git repo fails both closed (undefined), so the default main and
-// master names alone still deny a push there.
-test('run as `bun src/worker-hook.ts`, git push origin main denies; git push origin factory/x allows', async () => {
+// calls. claude-factory-zl5.13: a fake root with no real git repo cannot resolve origin/HEAD at
+// all, so it denies every branch-targeting push there, not only main and master.
+test('run as `bun src/worker-hook.ts`, with no origin/HEAD to read, main and other branches both deny (claude-factory-zl5.13)', async () => {
   const denyInput = JSON.stringify({
     tool_name: 'Bash',
     cwd: '/w',
@@ -602,22 +628,38 @@ test('run as `bun src/worker-hook.ts`, git push origin main denies; git push ori
       permissionDecisionReason: PUSH_REASON,
     },
   })
-  const allowInput = JSON.stringify({
+  const otherInput = JSON.stringify({
     tool_name: 'Bash',
     cwd: '/w',
     tool_input: { command: 'git push origin factory/x' },
   })
-  const allowed = await run(allowInput)
-  expect(allowed).toEqual({ out: '', code: 0 })
+  const deniedOther = await run(otherInput)
+  expect(deniedOther.code).toBe(0)
+  expect(JSON.parse(deniedOther.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
 }, 10_000)
 
+// claude-factory-zl5.13: this test needs origin/HEAD to resolve, so it uses a real scratch repo
+// (like the claude-factory-zl5.9 tests below), not a fake root. On that repo, --protected-branches
+// makes the only difference: a push to acme/deploy denies with the argv, and allows without it.
 test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, a push to that branch denies; without the argv it allows', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-push-protected-branch-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
   const input = JSON.stringify({
     tool_name: 'Bash',
-    cwd: '/w',
+    cwd: dir,
     tool_input: { command: 'git push origin acme/deploy' },
   })
-  const withArgv = await run(input, undefined, ['--protected-branches', 'acme/deploy'])
+  const withArgv = await run(input, env, ['--protected-branches', 'acme/deploy'])
   expect(withArgv.code).toBe(0)
   expect(JSON.parse(withArgv.out.trim())).toEqual({
     hookSpecificOutput: {
@@ -626,7 +668,7 @@ test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, a push t
       permissionDecisionReason: PUSH_REASON,
     },
   })
-  const withoutArgv = await run(input)
+  const withoutArgv = await run(input, env)
   expect(withoutArgv).toEqual({ out: '', code: 0 })
 }, 10_000)
 
@@ -673,6 +715,30 @@ test('run as `bun src/worker-hook.ts`, on a real repo on main a bare git push de
   const dir = mkdtempSync(join(tmpdir(), 'wh-push-main-'))
   Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
   Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: 'git push' } })
+  const denied = await run(input, env)
+  expect(denied.code).toBe(0)
+  expect(JSON.parse(denied.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+}, 10_000)
+
+// claude-factory-zl5.12: `git symbolic-ref --short HEAD` fails on a detached HEAD. This end-to-end
+// test proves the real `headOf` wiring in main() denies there, not only a test's own fake gate.
+// It sets refs/remotes/origin/HEAD to a resolvable branch first, so the deny comes from the
+// unknown current branch (zl5.12), not from an unresolved origin/HEAD (zl5.13, tested above).
+test('run as `bun src/worker-hook.ts`, on a real repo with a detached HEAD, a bare git push denies (claude-factory-zl5.12)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-push-detached-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  Bun.spawnSync(['git', '-C', dir, 'checkout', '-q', '--detach', 'HEAD'])
   const env: Record<string, string | undefined> = { ...process.env }
   delete env.CLAUDE_PROJECT_DIR
   const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: 'git push' } })

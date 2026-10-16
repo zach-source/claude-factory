@@ -710,6 +710,8 @@ const CONTENTS_PATH = /\/contents\/.+/
  * The entries are `createCommitOnBranch`, `updateRef`, `updateRefs` and `deleteRef`.
  *
  * If this guard cannot read a branch name (no `ref` or `branch` field), it denies the call.
+ * claude-factory-zl5.13: it also denies when `protectedBranchSet` reports `unresolved`: it
+ * then cannot check the branch name against the rig's real default branch.
  */
 function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
@@ -720,19 +722,20 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
   const fields = ghApiFields(apiArgs)
   const hasData = fields.length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
   const effective = method || (hasData ? 'POST' : 'GET')
-  const protectedSet = protectedBranchSet(gate)
+  const { branches: protectedSet, unresolved } = protectedBranchSet(gate)
   const refMatch = REF_HEADS_PATH.exec(endpoint)
-  if (refMatch) return (effective === 'PATCH' || effective === 'DELETE') && protectedSet.has(refMatch[1]!)
+  if (refMatch)
+    return (effective === 'PATCH' || effective === 'DELETE') && (unresolved || protectedSet.has(refMatch[1]!))
   if (REFS_CREATE_PATH.test(endpoint) && effective === 'POST') {
     const ref = fields.find(f => f.name === 'ref')?.value
-    return ref === undefined || protectedSet.has(stripRefsHeads(ref))
+    return ref === undefined || unresolved || protectedSet.has(stripRefsHeads(ref))
   }
   if (
     CONTENTS_PATH.test(endpoint) &&
     (effective === 'PUT' || effective === 'POST' || effective === 'DELETE')
   ) {
     const branch = fields.find(f => f.name === 'branch')?.value
-    return branch === undefined || protectedSet.has(branch)
+    return branch === undefined || unresolved || protectedSet.has(branch)
   }
   return false
 }
@@ -823,12 +826,12 @@ function stripRefsHeads(ref: string): string {
  *
  * With no colon, the whole text names the remote branch, except a bare `HEAD`.
  *
- * For a bare `HEAD`, git pushes the current branch to a remote branch of the same name.
- * So this guard reads `currentBranch` instead.
+ * A bare `HEAD` makes git push the current branch to a remote branch of the same name.
+ * So this guard reads `currentBranch` for that case.
  *
- * `currentBranch` can itself have the value `undefined`.
- * An unknown current branch allows the push (claude-factory-zl5.3).
- * This guard then has no branch name to check against the protected list.
+ * `currentBranch` can have the value `undefined`. `gate.headOf` sets it to `undefined`
+ * on a timeout, or on a detached `HEAD`. claude-factory-zl5.12: in that case this guard
+ * fails closed. It has no branch name to check against the protected list. It denies the push.
  */
 function refspecTarget(
   spec: string,
@@ -838,7 +841,10 @@ function refspecTarget(
   if (REFSPEC_UNSAFE.test(s)) return { unsafe: true }
   const ci = s.indexOf(':')
   if (ci < 0) {
-    if (s === 'HEAD') return { target: currentBranch, unsafe: false }
+    if (s === 'HEAD') {
+      if (currentBranch === undefined) return { unsafe: true }
+      return { target: currentBranch, unsafe: false }
+    }
     return { target: stripRefsHeads(s), unsafe: false }
   }
   const dst = s.slice(ci + 1)
@@ -889,17 +895,29 @@ function pushOperands(tail: string[]): {
 /**
  * This guard denies a direct write to: `main`, `master`, `gate.protectedBranches`,
  * and the branch that `gate.originHead` names.
- * This guard uses the `gate.originHead` branch only if it returns a name.
  *
  * claude-factory-zl5.3: a rig's real default branch can differ from both. For example, acme/deploy.
  * claude-factory-zl5.10: `gitPushDenied` and `ghApiPushDenied` use this same set.
  * An API ref write or file write reaches the same protected branches as a `git push`.
+ *
+ * The rig sets `gate.originHead` when it reads the real `origin/HEAD`. `unresolved` is true
+ * when that read fails: a timeout, or no `origin` remote.
+ *
+ * claude-factory-zl5.13: on `unresolved`, a caller must deny outright. It cannot check a
+ * branch name against the rig's real default branch, since it does not know that name.
+ *
+ * `unresolved` stays false when the rig sets no `gate.originHead` at all. The rig then never
+ * reads `origin/HEAD`, but `main`, `master` and `protectedBranches` still apply.
  */
-function protectedBranchSet(gate: HookGate): Set<string> {
-  const set = new Set(['main', 'master', ...(gate.protectedBranches ?? [])])
-  const originHead = gate.originHead?.()
-  if (originHead) set.add(originHead)
-  return set
+function protectedBranchSet(gate: HookGate): { branches: Set<string>; unresolved: boolean } {
+  const branches = new Set(['main', 'master', ...(gate.protectedBranches ?? [])])
+  let unresolved = false
+  if (gate.originHead) {
+    const originHead = gate.originHead()
+    if (originHead) branches.add(originHead)
+    else unresolved = true
+  }
+  return { branches, unresolved }
 }
 
 /**
@@ -915,9 +933,13 @@ function gitPushDenied(tail: string[], currentBranch: string | undefined, gate: 
   if (dryRun) return false
   if (broad) return true
   const refspecs = operands.slice(1)
-  const protectedSet = protectedBranchSet(gate)
   // claude-factory-zl5.3: --tags with no refspec pushes only tags, not the current branch.
   const specs = refspecs.length ? refspecs : tags ? [] : ['HEAD']
+  if (specs.length === 0) return false
+  const { branches: protectedSet, unresolved } = protectedBranchSet(gate)
+  // claude-factory-zl5.13: an unresolved origin/HEAD read means this guard cannot tell the
+  // rig's real default branch from any other. It denies every branch-targeting push outright.
+  if (unresolved) return true
   for (const spec of specs) {
     const { target, unsafe } = refspecTarget(spec, currentBranch)
     if (unsafe) return true
