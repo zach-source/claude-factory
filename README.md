@@ -212,6 +212,22 @@ runs the command directly. It cannot read a script that reaches a shell by anoth
 `nix-shell --run`, or a variable or `$(...)` that holds the real command. The brief's own rule
 still applies there.
 
+A rig can name branches that only a person may push, in addition to `main` and `master`.
+Use `--protected-branch` to add one branch. Repeat the flag to add more branches.
+
+```sh
+factory rig add ax ~/repos/ax --protected-branch acme-deploy
+```
+
+A worker's PreToolUse hook denies these commands:
+
+- a `git push` to a protected branch, to `main` or `master`, or to the branch that `origin/HEAD` names
+- `gh pr merge`, also with `--auto` and `--admin`
+- the GraphQL mutation that turns on a pull request's auto-merge
+- `gh pr ready`, except in the release station
+
+This rule applies whatever the list holds. Only a person can merge a pull request or push the default branch. A worker pushes its own run branch and opens a pull request.
+
 A worker's brief carries this rule too, in the Rig goal section. The worker reports blocked
 with the exact command, instead of running it. The guard does not cover a person's own
 session or the manager's session. A person runs the live change.
