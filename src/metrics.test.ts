@@ -1,5 +1,15 @@
 import { expect, test } from 'bun:test'
-import { createdAt, failKind, fate, metrics, renderTokens, sessionOf } from './metrics'
+import {
+  createdAt,
+  failKind,
+  fate,
+  metrics,
+  parsePrecheckLines,
+  precheckStats,
+  render,
+  renderTokens,
+  sessionOf,
+} from './metrics'
 
 const H = 3_600_000
 const e = (node: string, outcome: string, h: number, summary = '') => ({
@@ -139,4 +149,81 @@ test("a session's tokens count each turn once, and its station comes from the br
   const table = renderTokens([s, { ...s, run: 'run-2', tokens: 1e6 }], new Set(['run-2']))
   expect(table).toContain('2 worker sessions in 2 runs')
   expect(table).toMatch(/implement\s+2/)
+})
+
+// claude-factory-6as.4: triage reject rate, and how many of those rejects were ALREADY_DONE
+// (the bead's work shipped before triage ever saw it) vs a real triage decision.
+test('metrics counts triage visits, rejects, and already-done rejects by summary text', () => {
+  const m = metrics([
+    { id: 'r1', node: 'done', createdAt: 0, log: [e('triage', 'reject', 1, 'already merged in #57')] },
+    { id: 'r2', node: 'done', createdAt: 0, log: [e('triage', 'reject', 1, 'duplicate of ama-9cs.3')] },
+    { id: 'r3', node: 'done', createdAt: 0, log: [e('triage', 'reject', 1, 'out of scope for this rig')] },
+    { id: 'r4', node: 'implement', createdAt: 0, log: [e('triage', 'ready', 1), e('implement', 'ready', 2)] },
+  ])
+  expect(m.stations.triage).toEqual({
+    visits: 4,
+    failed: 0,
+    outcomes: { reject: 3, ready: 1 },
+    medianHours: 1,
+  })
+  expect(m.triageAlreadyDone).toBe(2)
+})
+
+test('ALREADY_DONE matches the baseline phrases, case-insensitively, and not an unrelated reject', () => {
+  const r = (summary: string) =>
+    metrics([{ id: 'r', node: 'done', createdAt: 0, log: [e('triage', 'reject', 1, summary)] }])
+      .triageAlreadyDone
+  expect(r('Already fixed by claude-factory-960.8')).toBe(1)
+  expect(r('ALREADY SHIPPED in main')).toBe(1)
+  expect(r('is closed as a duplicate')).toBe(1)
+  expect(r('superseded by claude-factory-1uj')).toBe(1)
+  expect(r('nothing left to do here')).toBe(1)
+  expect(r('landed in #42')).toBe(1)
+  expect(r('out of scope for this rig')).toBe(0)
+  expect(r('waiting on operator decision')).toBe(0)
+})
+
+test('parsePrecheckLines reads one JSON object per line and drops a malformed line', () => {
+  const text = [
+    JSON.stringify({ at: 1000, rig: 'claude-factory', bead: 'a-1', kind: 'merged-pr', evidence: 'x' }),
+    'not json',
+    JSON.stringify({ at: 2000, rig: 'claude-factory', bead: 'a-2', kind: 'live-run', evidence: 'y' }),
+    '',
+  ].join('\n')
+  expect(parsePrecheckLines(text)).toEqual([
+    { at: 1000, rig: 'claude-factory', bead: 'a-1', kind: 'merged-pr', evidence: 'x' },
+    { at: 2000, rig: 'claude-factory', bead: 'a-2', kind: 'live-run', evidence: 'y' },
+  ])
+})
+
+test('precheckStats counts dispatch skips by kind, and counts a fail-open skip row on its own (claude-factory-6as.8)', () => {
+  const line = (kind: string) => ({ at: 0, rig: 'r', bead: 'b', kind, evidence: '' })
+  expect(
+    precheckStats([line('merged-pr'), line('merged-pr'), line('live-run'), line('skip'), line('skip')]),
+  ).toEqual({
+    skipped: 3,
+    mergedPr: 2,
+    liveRun: 1,
+    failOpen: 2,
+  })
+  expect(precheckStats([])).toEqual({ skipped: 0, mergedPr: 0, liveRun: 0, failOpen: 0 })
+})
+
+test('render prints the triage reject rate and dispatch pre-check skip line', () => {
+  const m = metrics([
+    { id: 'r1', node: 'done', createdAt: 0, log: [e('triage', 'reject', 1, 'already merged in #57')] },
+    { id: 'r2', node: 'implement', createdAt: 0, log: [e('triage', 'ready', 1)] },
+  ])
+  const out = render(m, 'title', { mergedPr: 2, liveRun: 1, failOpen: 4 })
+  expect(out).toContain(
+    'triage rejects 1 of 2 (1 already done); dispatch skipped 3 (merged-pr 2, live-run 1), gh fail-open 4',
+  )
+})
+
+test('render defaults the dispatch pre-check counts, including fail-open, to 0 when no precheck data is given', () => {
+  const m = metrics([{ id: 'r1', node: 'implement', createdAt: 0, log: [] }])
+  const out = render(m, 'title')
+  expect(out).toContain(
+    'triage rejects 0 of 0 (0 already done); dispatch skipped 0 (merged-pr 0, live-run 0), gh fail-open 0',
+  )
 })

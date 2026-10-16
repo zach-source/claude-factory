@@ -38,6 +38,13 @@ export const failKind = (summary: string) =>
         ? 'blocked'
         : 'other'
 
+// claude-factory-6as.4: matches a triage reject summary that says the work already shipped
+// (through another PR, another bead, or on its own) before triage saw it. The dispatch
+// pre-check (claude-factory-6as) now stops most of these before a run starts. This regex
+// measures what is left, against the 2026-10-13..16 baseline: 30 of 319 triage visits (9.4%).
+export const ALREADY_DONE =
+  /already (fixed|shipped|done|merged)|\bduplicate\b|supersed|nothing left to do|landed in/i
+
 export function metrics(records: RunRecord[]) {
   const fates: { [k: string]: number } = {}
   const stations: {
@@ -47,6 +54,7 @@ export function metrics(records: RunRecord[]) {
   const cycle: number[] = []
   const gateWait: number[] = []
   let reviewLoops = 0
+  let triageAlreadyDone = 0
   for (const r of records) {
     const f = fate(r)
     fates[f] = (fates[f] ?? 0) + 1
@@ -67,6 +75,7 @@ export function metrics(records: RunRecord[]) {
       // ponytail: a gate's wait is its station's time; gates are named approve in every factory so far
       if (e.node === 'approve') gateWait.push((e.at - prev) / HOUR)
       if (e.node === 'review' && e.outcome === 'changes') reviewLoops++
+      if (e.node === 'triage' && e.outcome === 'reject' && ALREADY_DONE.test(e.summary)) triageAlreadyDone++
       prev = e.at
     }
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
@@ -86,6 +95,7 @@ export function metrics(records: RunRecord[]) {
     approveWaitHours: { median: median(gateWait), p90: p90(gateWait) },
     reviewLoops,
     deploySessionsPerShippedRun: fates.shipped ? deploySessions / fates.shipped : null,
+    triageAlreadyDone,
     fails,
     stations: Object.fromEntries(
       Object.entries(stations).map(([id, s]) => [
@@ -98,7 +108,13 @@ export function metrics(records: RunRecord[]) {
 
 const h = (x: number | null) => (x === null ? '-' : `${x.toFixed(1)}h`)
 
-export function render(m: ReturnType<typeof metrics>, title: string) {
+export function render(
+  m: ReturnType<typeof metrics>,
+  title: string,
+  precheck: { mergedPr: number; liveRun: number; failOpen?: number } = { mergedPr: 0, liveRun: 0 },
+) {
+  const triageRejects = m.stations.triage?.outcomes.reject ?? 0
+  const triageVisits = m.stations.triage?.visits ?? 0
   const lines = [
     `${title}: ${m.runs} runs, ${Object.entries(m.fates)
       .map(([k, v]) => `${k} ${v}`)
@@ -112,6 +128,9 @@ export function render(m: ReturnType<typeof metrics>, title: string) {
         .map(([k, v]) => `${k} ${v}`)
         .join(', ') || 'none'
     }`,
+    `  triage rejects ${triageRejects} of ${triageVisits} (${m.triageAlreadyDone} already done); ` +
+      `dispatch skipped ${precheck.mergedPr + precheck.liveRun} (merged-pr ${precheck.mergedPr}, live-run ${precheck.liveRun}), ` +
+      `gh fail-open ${precheck.failOpen ?? 0}`,
     '  station      visits  failed  median  outcomes',
   ]
   for (const [id, s] of Object.entries(m.stations))
@@ -123,6 +142,39 @@ export function render(m: ReturnType<typeof metrics>, title: string) {
         .join(', ')}`,
     )
   return lines.join('\n')
+}
+
+/** one line of HOME/precheck.jsonl: a dispatch pre-check hit, or a fail-open skip (kind: 'skip') */
+export type PrecheckLine = { at: number; rig: string; bead: string; kind: string; evidence: string }
+
+/** reads HOME/precheck.jsonl: one JSON object a line. This drops a malformed line, not an error. */
+export function parsePrecheckLines(text: string): PrecheckLine[] {
+  const out: PrecheckLine[] = []
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    try {
+      out.push(JSON.parse(line))
+    } catch {
+      continue // a partial write mid-append; the next pass's line still parses
+    }
+  }
+  return out
+}
+
+/** counts dispatch pre-check skips by kind. A fail-open row (kind 'skip') is not a skip: the run
+ * still started. claude-factory-6as.8: `failOpen` counts those rows on their own. `factory
+ * metrics` can then show how often `gh` failed or timed out, apart from how often the check caught
+ * a hit. */
+export function precheckStats(lines: Pick<PrecheckLine, 'kind'>[]) {
+  let mergedPr = 0
+  let liveRun = 0
+  let failOpen = 0
+  for (const l of lines) {
+    if (l.kind === 'merged-pr') mergedPr++
+    else if (l.kind === 'live-run') liveRun++
+    else if (l.kind === 'skip') failOpen++
+  }
+  return { skipped: mergedPr + liveRun, mergedPr, liveRun, failOpen }
 }
 
 /** one Claude worker session's spend, from its transcript */

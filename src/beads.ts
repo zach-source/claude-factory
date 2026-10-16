@@ -283,6 +283,19 @@ export const beads = (repo: string, actor: string) => ({
     return !b.assignee || b.assignee === actor
   },
   comment: (id: string, text: string) => must(bd(repo, actor, 'comment', id, text), 'comment'),
+  /** stamps metadata keys onto a bead, with no other change (it stays open, ready, labeled as it was):
+   * claude-factory-6as.3's `dispatch_skip=<runId>` dedupes a live-run-hit comment across passes */
+  setMetadata: (id: string, kv: Record<string, string>) =>
+    must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        ...Object.entries(kv).flatMap(([k, v]) => ['--set-metadata', `${k}=${v}`]),
+      ),
+      'update',
+    ),
   /** false when bd refuses, e.g. while the bead still has open tasks */
   close: (id: string, reason: string) => bd(repo, actor, 'close', id, '--reason', reason).isOk,
   /** unassigned and out of bd ready until a person undefers it, which hands it back to the factory */

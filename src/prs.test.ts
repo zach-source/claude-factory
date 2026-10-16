@@ -1,21 +1,26 @@
 import { expect, test } from 'bun:test'
 import { prsIn } from './machine'
 import {
+  alreadyDone,
   asPrsFile,
   checksOf,
+  citesBead,
   collectMentions,
   DEFAULT_BUDGET,
   due,
+  evidenceLine,
   foldFound,
   foldMentions,
   keepSearchHit,
   namesBead,
   needsSearch,
   needsView,
+  parseMergedPrs,
   prRef,
   role,
   sameFile,
   viewBackoff,
+  type MergedPr,
   type PrRecord,
   type PrsFile,
 } from './prs'
@@ -26,6 +31,168 @@ test('namesBead matches the bead itself and a dotted descendant, not a longer si
   expect(namesBead('ex-12.3', 'ex-12.30 is unrelated')).toBe(false)
   expect(namesBead('ex-12.3', 'only ex-12 is named here')).toBe(false)
   expect(namesBead('ex-12.3', 'no bead named')).toBe(false)
+})
+
+test('citesBead matches only the exact id, never a dotted descendant, a longer sibling or a shorter ancestor', () => {
+  expect(citesBead('ex-12.3', 'ex-12.3: build.')).toBe(true)
+  expect(citesBead('ex-12.3', 'fixes ex-12.3')).toBe(true)
+  expect(citesBead('ex-12.3', 'child task ex-12.3.5 closed')).toBe(false)
+  expect(citesBead('ex-12.3', 'ex-12.30 is unrelated')).toBe(false)
+  expect(citesBead('ex-12.3', 'only ex-12 is named here')).toBe(false)
+  expect(citesBead('ex-12.3', 'no bead named')).toBe(false)
+})
+
+const merged = (over: Partial<MergedPr> = {}): MergedPr => ({
+  number: 57,
+  url: 'https://github.com/acme/widget/pull/57',
+  title: 'fix: ex-12.3 lands the thing',
+  headRefName: 'factory/run-1',
+  mergeCommit: 'deadbeef',
+  state: 'MERGED',
+  ...over,
+})
+
+test('alreadyDone: a merged PR whose title cites the exact id is a hit', () => {
+  const hit = alreadyDone('ex-12.3', [merged()], { childIds: [], allChildrenClosed: false, runBranches: [] })
+  expect(hit).toEqual({
+    kind: 'merged-pr',
+    pr: {
+      number: 57,
+      url: 'https://github.com/acme/widget/pull/57',
+      title: merged().title,
+      mergeCommit: 'deadbeef',
+    },
+  })
+})
+
+test('alreadyDone: a merged PR on a known run branch for this bead is a hit, with no id in the title', () => {
+  const pr = merged({ title: 'unrelated title', headRefName: 'factory/run-9' })
+  const hit = alreadyDone('ex-12.3', [pr], {
+    childIds: [],
+    allChildrenClosed: false,
+    runBranches: ['factory/run-9'],
+  })
+  expect(hit?.kind).toBe('merged-pr')
+})
+
+test("alreadyDone: a merged PR on another run's branch, with no id in the title, is not a hit", () => {
+  const pr = merged({ title: 'unrelated title', headRefName: 'factory/run-9' })
+  const hit = alreadyDone('ex-12.3', [pr], {
+    childIds: [],
+    allChildrenClosed: false,
+    runBranches: ['factory/run-other'],
+  })
+  expect(hit).toBeNull()
+})
+
+test('alreadyDone: a merged PR naming a closed child, with every child closed, is a hit for the parent', () => {
+  const pr = merged({ title: 'closes ex-12.3.1' })
+  const hit = alreadyDone('ex-12.3', [pr], {
+    childIds: ['ex-12.3.1', 'ex-12.3.2'],
+    allChildrenClosed: true,
+    runBranches: [],
+  })
+  expect(hit?.kind).toBe('merged-pr')
+})
+
+test('alreadyDone: a merged PR naming a child is not a hit while any child stays open', () => {
+  const pr = merged({ title: 'closes ex-12.3.1' })
+  const hit = alreadyDone('ex-12.3', [pr], {
+    childIds: ['ex-12.3.1', 'ex-12.3.2'],
+    allChildrenClosed: false,
+    runBranches: [],
+  })
+  expect(hit).toBeNull()
+})
+
+test('alreadyDone: a merged PR naming a child is not a hit when the bead has no children', () => {
+  const pr = merged({ title: 'closes ex-12.3.1' })
+  const hit = alreadyDone('ex-12.3', [pr], { childIds: [], allChildrenClosed: true, runBranches: [] })
+  expect(hit).toBeNull()
+})
+
+test('alreadyDone: a longer-sibling title (x-1.20 vs x-1.2) is not a hit', () => {
+  const pr = merged({ title: 'ex-12.30 lands' })
+  const hit = alreadyDone('ex-12.3', [pr], { childIds: [], allChildrenClosed: false, runBranches: [] })
+  expect(hit).toBeNull()
+})
+
+test('alreadyDone: a shorter-ancestor title (x-1 vs x-1.2) is not a hit', () => {
+  const pr = merged({ title: 'ex-12 epic wraps up' })
+  const hit = alreadyDone('ex-12.3', [pr], { childIds: [], allChildrenClosed: false, runBranches: [] })
+  expect(hit).toBeNull()
+})
+
+test('alreadyDone: a body-only mention never hits (only title and headRefName count)', () => {
+  // MergedPr carries no body field; a caller cannot express a body mention here. This documents the
+  // contract: title is the only text alreadyDone ever reads for a direct cite.
+  const pr = merged({ title: 'unrelated title' })
+  const hit = alreadyDone('ex-12.3', [pr], { childIds: [], allChildrenClosed: false, runBranches: [] })
+  expect(hit).toBeNull()
+})
+
+test('alreadyDone: a non-MERGED PR citing the id is never a hit', () => {
+  for (const state of ['OPEN', 'CLOSED', 'UNKNOWN'] as const) {
+    const pr = merged({ state })
+    expect(
+      alreadyDone('ex-12.3', [pr], { childIds: [], allChildrenClosed: false, runBranches: [] }),
+    ).toBeNull()
+  }
+})
+
+test('alreadyDone: an empty PR list is never a hit', () => {
+  expect(alreadyDone('ex-12.3', [], { childIds: [], allChildrenClosed: false, runBranches: [] })).toBeNull()
+})
+
+test('parseMergedPrs: gh pr list --json number,url,title,headRefName,mergeCommit shape, flattening mergeCommit.oid', () => {
+  const out = JSON.stringify([
+    {
+      number: 57,
+      url: 'https://github.com/acme/widget/pull/57',
+      title: 'fix: ex-12.3',
+      headRefName: 'factory/run-1',
+      mergeCommit: { oid: 'deadbeef' },
+    },
+  ])
+  expect(parseMergedPrs(out)).toEqual([
+    {
+      number: 57,
+      url: 'https://github.com/acme/widget/pull/57',
+      title: 'fix: ex-12.3',
+      headRefName: 'factory/run-1',
+      mergeCommit: 'deadbeef',
+      state: 'MERGED',
+    },
+  ])
+})
+
+test('parseMergedPrs: garbage input is an empty list, never a throw', () => {
+  expect(parseMergedPrs('not json')).toEqual([])
+  expect(parseMergedPrs('{}')).toEqual([])
+})
+
+test('evidenceLine: PR url, number, merge SHA and a clipped title, with the requeue command', () => {
+  const line = evidenceLine(
+    { number: 57, url: 'https://github.com/acme/widget/pull/57', title: 'fix it', mergeCommit: 'deadbeef' },
+    'acme',
+    'ex-12.3',
+  )
+  expect(line).toContain('https://github.com/acme/widget/pull/57')
+  expect(line).toContain('#57')
+  expect(line).toContain('deadbeef')
+  expect(line).toContain('fix it')
+  expect(line).toContain('factory queue acme ex-12.3')
+})
+
+test('evidenceLine: a title past 120 chars is clipped', () => {
+  const longTitle = 'x'.repeat(200)
+  const line = evidenceLine(
+    { number: 1, url: 'https://github.com/acme/widget/pull/1', title: longTitle, mergeCommit: 'abc' },
+    'acme',
+    'ex-1',
+  )
+  expect(line).not.toContain(longTitle)
+  expect(line).toContain('x'.repeat(120))
 })
 
 test('prRef parses a github pull request URL and rejects anything else', () => {

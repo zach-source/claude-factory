@@ -110,14 +110,122 @@ export function forgeOf(host: string, glabKnows: (host: string) => boolean = () 
   return host.includes('gitlab') || glabKnows(host) ? 'gitlab' : null
 }
 
+/** Escape an id's regex-special characters. `namesBead` and `citesBead` share this. */
+const escapeBead = (bead: string) => bead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 /**
- * whether text names this bead or a dotted descendant of it (proj-1.2 matches "proj-1.2:" and
- * "proj-1.2.5") but not a longer sibling id sharing its prefix (proj-1.20) or a shorter ancestor
- * (proj-1 alone never matches "proj-1.2")
+ * Check if text names this bead or a dotted descendant of it.
+ * "proj-1.2" matches "proj-1.2:" and "proj-1.2.5".
+ * It does not match a longer sibling id with the same prefix ("proj-1.20").
+ * It does not match a shorter ancestor ("proj-1" alone never matches "proj-1.2").
  */
 export function namesBead(bead: string, text: string): boolean {
-  const esc = bead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const esc = escapeBead(bead)
   return new RegExp(`(?<![\\w.-])${esc}(?:\\.\\d+)*(?![\\w-]|\\.\\w)`).test(text)
+}
+
+/**
+ * Check if text names exactly this id.
+ * "proj-1.2" does not match:
+ * - "proj-1.2.5", a dotted descendant
+ * - "proj-1.20", a longer sibling with the same prefix
+ * - "proj-1" alone, a shorter ancestor
+ * `alreadyDone` uses this check. A merged PR must never count for a bead when its title names only
+ * that bead's ancestor or descendant.
+ */
+export function citesBead(id: string, text: string): boolean {
+  const esc = escapeBead(id)
+  return new RegExp(`(?<![\\w.-])${esc}(?![\\w-]|\\.\\w)`).test(text)
+}
+
+/** a merged PR, as `parseMergedPrs` reads it off `gh pr list --json number,url,title,headRefName,mergeCommit` */
+export type MergedPr = {
+  number: number
+  url: string
+  title: string
+  headRefName: string
+  /** `mergeCommit.oid`, flattened to a bare sha */
+  mergeCommit: string
+  state: PrState
+}
+
+/** claude-factory-6as: evidence a bead's work already shipped, for dispatch's pre-check */
+export type AlreadyDoneHit = {
+  kind: 'merged-pr'
+  pr: { number: number; url: string; title: string; mergeCommit: string }
+}
+
+/**
+ * claude-factory-6as: a merged PR can show that `id` is done. If it does, dispatch must not start
+ * a run for `id`.
+ *
+ * A match needs a MERGED PR and one of these:
+ * - Its title cites `id` exactly, not a dotted descendant, a longer sibling, or a shorter ancestor
+ *   (see `citesBead`).
+ * - Its head branch is one of `runBranches`, so a local run claimed this bead under `factory/<runId>`.
+ * - Its title cites one of `childIds`, and `allChildrenClosed` is true, so a child's PR closed the
+ *   last task of the parent.
+ *
+ * Body text never counts. The title holds only the author's own words.
+ * A person writes it by hand, or a worker writes it after it reads the bead.
+ *
+ * A PR body often names a sibling bead that stays open. The body of PR #57 names claude-factory-5nb.
+ * If body text counted, every bead that a PR body mentions would match by mistake.
+ */
+export function alreadyDone(
+  id: string,
+  prs: MergedPr[],
+  ctx: { childIds: string[]; allChildrenClosed: boolean; runBranches: string[] },
+): AlreadyDoneHit | null {
+  for (const pr of prs) {
+    if (pr.state !== 'MERGED') continue
+    const citesChild =
+      ctx.childIds.length > 0 && ctx.allChildrenClosed && ctx.childIds.some(c => citesBead(c, pr.title))
+    if (citesBead(id, pr.title) || ctx.runBranches.includes(pr.headRefName) || citesChild)
+      return {
+        kind: 'merged-pr',
+        pr: { number: pr.number, url: pr.url, title: pr.title, mergeCommit: pr.mergeCommit },
+      }
+  }
+  return null
+}
+
+/** `gh pr list --json number,url,title,headRefName,mergeCommit` parsed, flattening `mergeCommit.oid` to a
+ * bare sha; every row already satisfies `--state merged`, but a row here is still tagged MERGED so
+ * `alreadyDone` need not trust its caller. Garbage input is an empty list, never a throw. */
+export function parseMergedPrs(out: string): MergedPr[] {
+  let v: unknown
+  try {
+    v = JSON.parse(out)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(v)) return []
+  return (v as Record<string, unknown>[])
+    .map(p => ({
+      number: typeof p.number === 'number' ? p.number : 0,
+      url: typeof p.url === 'string' ? p.url : '',
+      title: typeof p.title === 'string' ? p.title : '',
+      headRefName: typeof p.headRefName === 'string' ? p.headRefName : '',
+      mergeCommit:
+        typeof (p.mergeCommit as Record<string, unknown> | undefined)?.oid === 'string'
+          ? ((p.mergeCommit as Record<string, unknown>).oid as string)
+          : '',
+      state: 'MERGED' as PrState,
+    }))
+    .filter(p => p.url)
+}
+
+/** the one-line bd comment an `alreadyDone` hit leaves on a bead: the PR, its merge sha, its title
+ * clipped to 120 chars, and how a person undoes the skip. Never a shell quote: bd takes this as one
+ * plain argv string. */
+export function evidenceLine(
+  pr: { number: number; url: string; title: string; mergeCommit: string },
+  rig: string,
+  id: string,
+): string {
+  const title = pr.title.length > 120 ? pr.title.slice(0, 120) : pr.title
+  return `already done: ${pr.url} (#${pr.number}, merged ${pr.mergeCommit}) "${title}". Requeue: factory queue ${rig} ${id}`
 }
 
 /** a PR mention pulled from a report summary or a mail line: where and when it was first named */
