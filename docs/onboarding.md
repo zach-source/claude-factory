@@ -188,6 +188,7 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 | `factory goto <run> <node\|done>` | Move a run to a station. |
 | `factory abort <run>` | Abort a run. Its bead is deferred. |
 | `factory rm <run>` | Remove a finished run. Its branch stays. |
+| `factory gc [--days N] [--dry-run]` | Remove old files of finished runs, and a dead launch script. `--dry-run` only shows the bytes. |
 
 ### Stop and resume
 

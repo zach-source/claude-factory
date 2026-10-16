@@ -1,0 +1,237 @@
+// Tests for `factory gc` end to end (claude-factory-503.1.3). This covers the CLI case beside `rm`,
+// the strict herdr pane read, the lock, and the metrics line gc appends.
+//
+// src/gc.test.ts proves gcPlan() itself is correct. These tests prove cli.ts wires real run
+// directories, a real herdr and the lock into it the way the acceptance criteria name.
+//
+// These tests drive the real CLI against on-disk fixtures. The fixtures come from the real
+// machine, like src/watch.test.ts and src/records.test.ts do.
+import { afterEach, expect, test } from 'bun:test'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createActor } from 'xstate'
+import { compile, type Factory } from './machine'
+
+const CLI = join(import.meta.dir, '..', 'bin', 'factory')
+const dir = join(tmpdir(), `gc-cli-${process.pid}`)
+const home = join(dir, 'home')
+
+afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+const factory = (args: string[], env: Record<string, string> = {}) => {
+  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const p = Bun.spawnSync([CLI, ...args], {
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', ...env },
+  })
+  return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
+}
+
+const DEF: Factory = {
+  name: 'ship',
+  start: 'implement',
+  nodes: { implement: { prompt: 'do it', next: { ready: 'done' } } },
+}
+
+const runDir = (id: string) => join(home, 'runs', id)
+// createdAt(id) parses the id's own trailing "-<base36 time>xx" suffix: a bare id parses to NaN
+const freshId = (name: string) => `${name}-${Date.now().toString(36)}xx`
+
+/** builds run.json + state.json for one run, worked by the real xstate machine, then the run's own
+ * files beside them: a `prompts/` dir, a brief, a stray backup, and a few names gc must keep. */
+function writeRun(
+  id: string,
+  opts: { outcome: 'done' | 'aborted' | 'working'; finishedAt?: number },
+): string {
+  const wt = join(dir, id)
+  mkdirSync(wt, { recursive: true })
+  const d = runDir(id)
+  mkdirSync(d, { recursive: true })
+  const factoryFile = join(d, 'factory.ts')
+  writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({ id, factory: factoryFile, repo: wt, goal: 'g', ws: 'w1', worktree: wt, branch: 'b' }),
+  )
+  const actor = createActor(compile(DEF)).start()
+  actor.send({ type: 'TICK', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  if (opts.outcome === 'done')
+    actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 's', at: opts.finishedAt ?? 0 })
+  else if (opts.outcome === 'aborted') actor.send({ type: 'ABORT', at: opts.finishedAt ?? 0 })
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+
+  mkdirSync(join(d, 'prompts'), { recursive: true })
+  writeFileSync(join(d, 'prompts', `${seq}-implement.md`), 'the brief')
+  writeFileSync(join(d, `f-implement.brief.md`), 'ax copy')
+  writeFileSync(join(d, `rigs.json.before-123`), 'stray backup')
+  writeFileSync(join(d, 'inbox.jsonl'), '')
+  writeFileSync(join(d, 'track.json'), '{}')
+  writeFileSync(join(d, 'progress.json'), '{}')
+  return d
+}
+
+const reset = () => {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(home, { recursive: true })
+}
+
+const DAY = 24 * 3_600_000
+
+test('--dry-run prints bytes per kind and the run count, and deletes nothing (AC1)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  const before = readdirSync(d).sort()
+  const out = factory(['gc', '--days', '1', '--dry-run'])
+  expect(out.code).toBe(0)
+  expect(out.out).toMatch(/prompts: 1 files?,/)
+  expect(out.out).toMatch(/briefs: 1 files?,/)
+  expect(out.out).toMatch(/backups: 1 files?,/)
+  expect(out.out).toMatch(/launch: 0 files?,/)
+  expect(out.out).toMatch(/total: 3 files?,.*across 1 run/)
+  expect(readdirSync(d).sort()).toEqual(before) // byte-identical: nothing removed
+})
+
+test('a real pass removes prompts/, the brief and the stray backup; every kept name stays (AC2)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  const promptNames = readdirSync(join(d, 'prompts'))
+  const out = factory(['gc', '--days', '1'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(d, 'prompts'))).toBe(false)
+  expect(existsSync(join(d, 'f-implement.brief.md'))).toBe(false)
+  expect(existsSync(join(d, 'rigs.json.before-123'))).toBe(false)
+  for (const name of ['run.json', 'state.json', 'inbox.jsonl', 'track.json', 'progress.json', 'factory.ts'])
+    expect(existsSync(join(d, name))).toBe(true)
+  // prompts.list keeps the names prompts/ held, so sessionsOf() still names each session's station (AC8)
+  expect(existsSync(join(d, 'prompts.list'))).toBe(true)
+  expect(JSON.parse(readFileSync(join(d, 'prompts.list'), 'utf8')).sort()).toEqual(promptNames.sort())
+})
+
+test('an aborted run with no journal entry still ages off createdAt(id) (AC2)', () => {
+  reset()
+  const id = freshId('ship') // created "now": not yet old enough at --days 1
+  const d = writeRun(id, { outcome: 'aborted' })
+  expect(factory(['gc', '--days', '1']).code).toBe(0)
+  expect(existsSync(join(d, 'prompts'))).toBe(true) // too young: untouched
+})
+
+test('a still-running run is byte-identical after gc, even 30 days old (AC3)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'working' })
+  // backdate every file so an mtime-based (wrong) rule would also prune it
+  const old = new Date(Date.now() - 30 * DAY)
+  for (const name of readdirSync(d)) utimesSync(join(d, name), old, old)
+  const before = readdirSync(d).sort()
+  const out = factory(['gc', '--days', '1'])
+  expect(out.code).toBe(0)
+  expect(readdirSync(d).sort()).toEqual(before)
+  expect(existsSync(join(d, 'prompts'))).toBe(true)
+})
+
+test('a done run younger than the cutoff is untouched (AC4)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 1 * DAY })
+  const out = factory(['gc', '--days', '7'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(d, 'prompts'))).toBe(true)
+})
+
+const writeLaunchScript = (pane: string, ageMs: number) => {
+  const ldir = join(home, 'launch')
+  mkdirSync(ldir, { recursive: true })
+  const f = join(ldir, `${pane}.sh`)
+  writeFileSync(f, 'export FOO=bar\n')
+  const at = new Date(Date.now() - ageMs)
+  utimesSync(f, at, at)
+  return f
+}
+
+test('herdr missing: no launch script removed, and gc says so (AC5)', () => {
+  reset()
+  const f = writeLaunchScript('deadpane', 2 * 3_600_000)
+  const out = factory(['gc'], { FACTORY_HERDR: join(dir, 'no-such-herdr') })
+  expect(out.code).toBe(0)
+  expect(existsSync(f)).toBe(true)
+  expect(out.out).toContain('removed no launch script')
+})
+
+test('herdr installed but its call fails: no launch script removed (AC5)', () => {
+  reset()
+  const f = writeLaunchScript('deadpane', 2 * 3_600_000)
+  const badHerdr = join(dir, 'bad-herdr')
+  writeFileSync(badHerdr, '#!/bin/sh\nexit 1\n')
+  chmodSync(badHerdr, 0o755)
+  const out = factory(['gc'], { FACTORY_HERDR: badHerdr })
+  expect(out.code).toBe(0)
+  expect(existsSync(f)).toBe(true)
+  expect(out.out).toContain('removed no launch script')
+})
+
+test('a working herdr: a dead pane old enough is removed, a live one and a young dead one are kept (AC5)', () => {
+  reset()
+  const dead = writeLaunchScript('dead', 2 * 3_600_000) // 2h dead: past LAUNCH_MIN_AGE_MS (1h)
+  const young = writeLaunchScript('young', 10 * 60_000) // 10 min dead: not yet
+  const live = writeLaunchScript('live', 2 * 3_600_000) // old, but herdr still lists its pane
+  const okHerdr = join(dir, 'ok-herdr')
+  writeFileSync(
+    okHerdr,
+    `#!/bin/sh\ncase "$1 $2" in\n  "pane list") printf '{"result":{"panes":[{"pane_id":"live"}]}}\\n' ;;\n  *) echo '{}' ;;\nesac\n`,
+  )
+  chmodSync(okHerdr, 0o755)
+  const out = factory(['gc'], { FACTORY_HERDR: okHerdr })
+  expect(out.code).toBe(0)
+  expect(existsSync(dead)).toBe(false)
+  expect(existsSync(young)).toBe(true)
+  expect(existsSync(live)).toBe(true)
+})
+
+test('each pruned run gets one metrics.jsonl record line; a second pass adds none (AC6)', () => {
+  reset()
+  const id = freshId('ship')
+  writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  expect(factory(['gc', '--days', '1']).code).toBe(0)
+  const metricsFile = join(home, 'metrics.jsonl')
+  const linesAfterFirst = readFileSync(metricsFile, 'utf8').trim().split('\n').filter(Boolean)
+  expect(linesAfterFirst).toHaveLength(1)
+  expect(JSON.parse(linesAfterFirst[0]!)).toMatchObject({ id, node: 'done' })
+  expect(factory(['gc', '--days', '1']).code).toBe(0) // nothing left to prune for this run
+  const linesAfterSecond = readFileSync(metricsFile, 'utf8').trim().split('\n').filter(Boolean)
+  expect(linesAfterSecond).toHaveLength(1)
+})
+
+test('a non-positive or non-numeric --days fails, deleting nothing (AC10)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  for (const bad of ['0', '-1', 'nope']) {
+    const out = factory(['gc', '--days', bad])
+    expect(out.code).toBe(1)
+    expect(existsSync(join(d, 'prompts'))).toBe(true)
+  }
+})
+
+test('a second gc that finds gc.lock already held exits 0 with a note, deleting nothing (AC10)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  mkdirSync(join(home, 'gc.lock'))
+  writeFileSync(join(home, 'gc.lock', 'pid'), String(process.pid)) // this test process: alive
+  const out = factory(['gc', '--days', '1'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain('already running')
+  expect(existsSync(join(d, 'prompts'))).toBe(true)
+})
