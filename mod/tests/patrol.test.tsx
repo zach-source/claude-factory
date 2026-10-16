@@ -24,6 +24,40 @@ function baseMocks(on: On, manager: () => readonly unknown[], clear: () => void)
   })
 }
 
+/**
+ * `baseMocks` plus a real `factory home` answer and an in-memory `$.fs.read`/`$.fs.write`
+ * (`files`, keyed by path), so `patrol-log.jsonl` behaves like a real file across the test.
+ */
+function homeMocks(
+  on: On,
+  manager: () => readonly unknown[],
+  clear: () => void,
+  home: string,
+  files: Map<string, string>,
+) {
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  on('ui.open', () => ({ value: undefined }) as never)
+  on('process.run', ($, e) => {
+    if (e.argv.includes('tick')) {
+      const out = JSON.stringify({ manager: manager(), rigs: [], runs: [RUN] })
+      clear()
+      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+    }
+    if (e.argv.includes('home')) return { value: { exitCode: 0, stdout: home, stderr: '' } as never }
+    return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+  })
+  on('fs.read', ($, e) => {
+    const path = (e as { path: string }).path
+    if (!files.has(path)) throw new Error(`ENOENT: no such file, open '${path}'`)
+    return { value: files.get(path)! } as never
+  })
+  on('fs.write', ($, e) => {
+    const { path, text } = e as { path: string; text: string }
+    files.set(path, text)
+    return { value: undefined } as never
+  })
+}
+
 test(
   'a due patrol spawns the hidden factory:patrol subagent, never prompt.submit, one at a time, freed by turn.complete',
   SLOW,
@@ -404,5 +438,211 @@ test(
       turnId: 't7',
       agentId: 'patrol-6',
     } as never)
+  },
+)
+
+test(
+  "the patrol's own turn.complete writes one patrol-log.jsonl line with its actions and toasts the report; a main-loop turn.complete writes nothing",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const toasts: unknown[] = []
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/home/factory',
+      files,
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', (_, e) => (toasts.push(e), { value: undefined }) as never)
+    on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-1' }) as never)
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    // the patrol's own non-gated action, recorded for the log (claude-factory-72v.4)
+    await $.tool.call({
+      tool: 'Bash',
+      command: 'factory mail r1 implement "answered"',
+      agentId: 'patrol-1',
+    } as never)
+
+    await $.turn.complete({
+      answer: 'Mailed r1. Nothing needs you.',
+      durationMs: 1234,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-1',
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        model: 'claude-x',
+      },
+    } as never)
+
+    expect(JSON.stringify(toasts)).toContain('Mailed r1')
+    const log = (files.get('/home/factory/patrol-log.jsonl') ?? '').trim().split('\n').filter(Boolean)
+    expect(log).toHaveLength(1)
+    const entry = JSON.parse(log[0]!)
+    expect(entry.reason).toBe('answer')
+    expect(entry.durationMs).toBe(1234)
+    expect(entry.tokens).toBe(150)
+    expect(entry.actions).toEqual(['factory mail r1 implement "answered"'])
+    expect(entry.report).toContain('Mailed r1')
+
+    // the main loop's own turn.complete (no agentId, isPatrolling already false): writes nothing more
+    await $.turn.complete({
+      answer: 'a main-chat answer',
+      durationMs: 10,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't2',
+    } as never)
+    expect(
+      (files.get('/home/factory/patrol-log.jsonl') ?? '').trim().split('\n').filter(Boolean),
+    ).toHaveLength(1)
+  },
+)
+
+test(
+  'patrol-log.jsonl is capped at 50 lines; a fresh patrol carries the last 10 entries’ actions; /factory patrols prints them',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const seeded = Array.from({ length: 50 }, (_, i) => ({
+      at: i + 1,
+      agentId: `patrol-seed-${i + 1}`,
+      reason: 'answer',
+      durationMs: 1,
+      tokens: 1,
+      actions: [`action-${i + 1}`],
+      report: `report ${i + 1}`,
+    }))
+    files.set('/home/factory/patrol-log.jsonl', `${seeded.map(e => JSON.stringify(e)).join('\n')}\n`)
+    const spawns: { prompt: string }[] = []
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/home/factory',
+      files,
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('agent.spawn', ($, e) => {
+      spawns.push(e as never)
+      return { model: 'sonnet', agentId: 'patrol-51' } as never
+    })
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    // the fresh subagent's prompt lists only the newest 10 seeded entries' actions
+    expect(spawns).toHaveLength(1)
+    for (let i = 41; i <= 50; i++) expect(spawns[0]!.prompt).toContain(`action-${i}`)
+    expect(spawns[0]!.prompt).not.toContain('action-40')
+    expect(spawns[0]!.prompt).not.toContain('action-1\n')
+
+    // /factory patrols prints the newest 10 seeded reports, not the older ones
+    const patrols = await $.command.run({ command: 'factory', args: 'patrols' } as never)
+    expect((patrols as { text: string }).text).toContain('report 50')
+    expect((patrols as { text: string }).text).not.toContain('report 40')
+
+    // this patrol's own turn.complete appends a 51st entry; the file still holds only 50, oldest dropped
+    await $.turn.complete({
+      answer: 'report 51',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-51',
+    } as never)
+    const log = (files.get('/home/factory/patrol-log.jsonl') ?? '').trim().split('\n').filter(Boolean)
+    expect(log).toHaveLength(50)
+    const parsed = log.map(l => JSON.parse(l) as { at: number; report: string })
+    expect(parsed[0]!.at).toBe(2) // the oldest seeded entry (at: 1) was dropped
+    expect(parsed.at(-1)!.report).toBe('report 51') // the freshly appended entry, kept
+  },
+)
+
+test(
+  'the pane header and the band above the prompt say how long ago the last patrol ran',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/home/factory',
+      files,
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('ui.panes', () => ({ value: [] }) as never)
+    on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-1' }) as never)
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-1',
+    } as never)
+    await clock.advance(3 * 60_000)
+
+    const pane = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    expect(JSON.stringify(await pane.drawn())).toContain('patrol 3m ago')
+
+    const band = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'AbovePrompt',
+      requestId: 'factory',
+      props: { bodyColumns: 100, hasSurvey: false } as never,
+      viewport: { columns: 100, rows: 3 },
+    })
+    expect(JSON.stringify(await band.drawn())).toContain('patrol 3m ago')
   },
 )

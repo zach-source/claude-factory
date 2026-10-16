@@ -1,5 +1,12 @@
 // Pure layout helpers for the factory console: no `$`, no elements.
-import type { FactoryBead, FactoryMail, FactoryPrs, FactoryRig, FactoryRun } from '../types'
+import type {
+  FactoryBead,
+  FactoryMail,
+  FactoryPatrolLogEntry,
+  FactoryPrs,
+  FactoryRig,
+  FactoryRun,
+} from '../types'
 
 /** one station on a run's path: how often it ran, and whether the run is there now */
 export type Stop = { id: string; runs: number; isCurrent: boolean }
@@ -387,6 +394,26 @@ export function patrol(
     ...(log.length ? [`Earlier patrols:\n${log.map(a => `- ${a}`).join('\n')}`] : []),
   ].join('\n')
   return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state, sig, kept }
+}
+
+/** "patrol 3m ago", drawn in the header and the band; '' before any patrol has run */
+export function patrolAgo(now: number, lastPatrol: FactoryPatrolLogEntry | null) {
+  return lastPatrol ? `patrol ${dur(Math.max(0, now - lastPatrol.at))} ago` : ''
+}
+
+/** `/factory patrols`: the newest 10 entries of `<home>/patrol-log.jsonl`, oldest first */
+export function patrolsText(log: readonly FactoryPatrolLogEntry[]) {
+  const recent = log.slice(-10)
+  if (!recent.length) return 'No patrol has run yet.'
+  return recent
+    .map(e => {
+      const cost = [dur(e.durationMs), e.tokens !== undefined ? `${e.tokens} tok` : undefined]
+        .filter(Boolean)
+        .join(', ')
+      const acts = e.actions.length ? ` Actions: ${e.actions.join('; ')}.` : ''
+      return `- ${clockOf(e.at)} (${e.reason}, ${cost}): ${line(e.report, 300)}${acts}`
+    })
+    .join('\n')
 }
 
 /** what an open pull request waits on, worst first: conflicts, failing checks, a review, then the merge */

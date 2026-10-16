@@ -196,6 +196,21 @@ export type FactoryDecisions = {
   proposals: Record<string, { question: string; context?: string; options: string[]; at: number }>
 }
 
+/** one patrol subagent's outcome: turn.complete (register.tsx) appends one of these per patrol to
+ * `<home>/patrol-log.jsonl`, capped at 50 lines. `/factory patrols` prints the last 10. */
+export type FactoryPatrolLogEntry = {
+  at: number
+  agentId?: string
+  reason: string
+  durationMs: number
+  /** input + output tokens the patrol's turn cost; absent when the turn reported none */
+  tokens?: number
+  /** the patrol's own run-acting factory commands this run, each clipped to 200 chars */
+  actions: string[]
+  /** the patrol's final answer, clipped to 600 chars */
+  report: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     factory: {
@@ -211,6 +226,8 @@ declare module 'claude-code' {
       history: number[]
       draft: FactoryDraft
       decisions: FactoryDecisions
+      /** the last patrol's log entry, drawn in the pane header and band; null before any patrol wrote one */
+      lastPatrol: FactoryPatrolLogEntry | null
     }
   }
 }

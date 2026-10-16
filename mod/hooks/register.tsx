@@ -12,6 +12,7 @@ import type {
   FactoryDetail,
   FactoryDraft,
   FactoryMail,
+  FactoryPatrolLogEntry,
   FactoryRig,
   FactoryRun,
   FactoryView,
@@ -37,6 +38,7 @@ import {
   mailKey,
   openInterviews,
   patrol,
+  patrolsText,
   quickAnswer,
   statusText,
   type Interview,
@@ -58,6 +60,10 @@ const PATROL_HOLD_MS = 5 * 60_000
 const PATROL_VERB = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|queue|start)\b/
 /** matches a main-chat Bash command that acts on one run, its id the 2nd capture group */
 const TOUCH_RE = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|decide)\s+(\S+)/
+/** patrol-log.jsonl keeps at most this many lines, oldest dropped first */
+const PATROL_LOG_CAP = 50
+/** how many of the newest log entries a fresh patrol's own prompt carries, and `/factory patrols` prints */
+const PATROL_LOG_RECENT = 10
 /** verbs act()'s own args[0] uses for the same run-acting commands, for the console's buttons */
 const TOUCH_VERBS = new Set(['mail', 'poke', 'retry', 'goto', 'fork', 'abort', 'rm', 'decide'])
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
@@ -74,6 +80,11 @@ const decisions = atom(
 )
 /** runs holding a worker, one sample a tick: the header's sparkline */
 const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
+/** the last patrol's log entry, drawn in the pane header and band; null before any patrol wrote one */
+const lastPatrol = atom(
+  { plugin: 'factory', key: 'lastPatrol' } as const,
+  null as FactoryPatrolLogEntry | null,
+)
 const draft = atom(
   { plugin: 'factory', key: 'draft' } as const,
   {
@@ -254,6 +265,29 @@ async function isPaneSession($: EngineInterface) {
   }
 }
 
+/** `<home>/patrol-log.jsonl`, oldest first; `[]` before the first patrol ever wrote one, or with no home yet */
+async function readPatrolLog($: EngineInterface): Promise<FactoryPatrolLogEntry[]> {
+  if (!rt.home) return []
+  const text = await $.fs.read(`${rt.home}/patrol-log.jsonl`).catch(() => '')
+  return text
+    .split('\n')
+    .filter(Boolean)
+    .flatMap(l => {
+      try {
+        return [JSON.parse(l) as FactoryPatrolLogEntry]
+      } catch {
+        return [] // a half-written line from a crashed write: skip it rather than lose the rest
+      }
+    })
+}
+
+/** appends one patrol's outcome, keeping only the newest PATROL_LOG_CAP lines */
+async function appendPatrolLog($: EngineInterface, entry: FactoryPatrolLogEntry) {
+  if (!rt.home) return
+  const log = [...(await readPatrolLog($)), entry].slice(-PATROL_LOG_CAP)
+  await $.fs.write(`${rt.home}/patrol-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
+}
+
 /**
  * Patrol, one at a time, as a hidden `factory:patrol` subagent. This adds no turn to the main chat.
  * A watchdog clears a patrol stuck past PATROL_WATCHDOG_MS (a dead model turn, a wedged tool). So
@@ -283,7 +317,9 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   const hold = new Set(rt.touched.keys())
   // ponytail: the whole board again each hour, so a manager that compacted it away gets it back
   const last = now - rt.sigAt < 3_600_000 ? rt.sig : undefined
-  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last, hold)
+  // a cold subagent has no memory of earlier patrols: these let it see what they already did
+  const log = (await readPatrolLog($)).slice(-PATROL_LOG_RECENT).flatMap(e => e.actions)
+  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last, hold, log)
   // a due heartbeat whose board repeats the last one sent wakes nobody: patrolAt stays put, so a
   // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark
   if (!due) return
@@ -620,8 +656,8 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'factory',
       description:
-        'Factory dashboard; or a factory command (start, status, decide, rig, queue, mail, poke, retry, goto, fork, abort, rm)',
-      argumentHint: '[start|status|decide|rig|queue|mail|poke|retry|goto|fork|abort|rm ...]',
+        'Factory dashboard; or a factory command (start, status, decide, rig, queue, mail, poke, retry, goto, fork, abort, rm, patrols)',
+      argumentHint: '[start|status|decide|rig|queue|mail|poke|retry|goto|fork|abort|rm|patrols ...]',
     })
     await ensureTicking($)
     // re-registered on every session.start (a hot reload included): the engine replaces the name, never duplicates it
@@ -649,6 +685,8 @@ export const register: Register = (on, options) => {
       await show($, (requested as FactoryView | undefined) ?? 'board', args[1])
       return { text: 'Factory console opened.' }
     }
+    // this mod's own patrol-log.jsonl, not a factory CLI command: the CLI knows nothing of it
+    if (args[0] === 'patrols') return { text: patrolsText(await readPatrolLog($)) }
     const { out } = await factory($, args)
     void tick($)
     return { text: out || 'ok' }
@@ -713,6 +751,20 @@ export const register: Register = (on, options) => {
       rt.isPatrolling = false
       rt.patrolId = undefined
       rt.patrolStartedAt = undefined
+      const report = e.answer.length > 600 ? `${e.answer.slice(0, 599)}…` : e.answer
+      const entry: FactoryPatrolLogEntry = {
+        at: await $.clock.now(),
+        agentId: e.agentId,
+        reason: e.reason,
+        durationMs: e.durationMs,
+        tokens: e.usage ? e.usage.input_tokens + e.usage.output_tokens : undefined,
+        actions: rt.patrolActions,
+        report,
+      }
+      rt.patrolActions = []
+      await appendPatrolLog($, entry)
+      await update($, lastPatrol, () => entry)
+      if (report.trim()) $.ui.toast(`factory patrol: ${line(report.split('\n')[0] ?? '', 200)}`)
     }
     return next(e)
   })
@@ -739,7 +791,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel] = await Promise.all([
+    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel, lp] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
@@ -752,6 +804,7 @@ export const register: Register = (on, options) => {
       read($, decisions),
       $.clock.now(),
       read($, selected),
+      read($, lastPatrol),
     ])
     // a stored view of 'run', from before the Run tab folded into Board, reads as 'board'
     const shown = mapView(rawShown as string)
@@ -777,7 +830,7 @@ export const register: Register = (on, options) => {
                 : boardView(p, b, dr, sel, d, tail)
     return (
       <Box flexDirection="column">
-        {header(p, b, samples, shown)}
+        {header(p, b, samples, shown, lp)}
         {body}
         {footer(p)}
       </Box>
@@ -791,6 +844,6 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || isOpen || !b.runs.some(isLive)) return next(e)
     const ui = $.ui.resolve(e) as unknown as UI
     const p = { ui, act: actions($), width: e.props.bodyColumns, now: await $.clock.now() }
-    return band(p, b, await read($, draft))
+    return band(p, b, await read($, draft), await read($, lastPatrol))
   })
 }
