@@ -171,15 +171,16 @@ each rig's bd beads flagged for a person, and its unassigned ready beads. The `f
 data refreshes at most one time in 60 seconds. The tab also shows the options that the manager
 proposed for a bare item.
 
-Each item has a short title: the run or bead id and the decision in plain words, for example
-"ama-gs2: will you merge PR #68 now?" Below the title is one line of context that shows what
-is true at this time. Below the context are 2-4 option buttons. Each button has a short label.
+Each item has a short title with the run or bead id and the decision in plain words. For
+example, the title can be "ama-gs2: will you merge PR #68 now?" Below the title is one line of
+context that shows what is true at this time. Below the context are 2-4 option buttons. Each button has a short label.
 Next to each button is one line on its effect.
 
-When the manager marks one option recommended, that button says so and stands out. The full
-raw report sits behind a `details` toggle, and the collapsed row never shows it. Two open
-items that ask the same decision fold into one row. This applies to the same bead, or to the
-same question in the same rig. Answering that row answers every run or bead it stands for.
+When the manager marks one option recommended, that button says so and is easier to see. The
+full raw report sits behind a `details` toggle, and the collapsed row does not show it.
+
+Two open items that have the same decision fold into one row. This applies to the same bead, or
+to the same question in the same rig. Answering that row answers every run or bead that the row covers.
 
 | Key or button | What it does |
 | --- | --- |
