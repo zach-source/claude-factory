@@ -233,6 +233,9 @@ export type Row = {
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
+// gc writes this before it removes prompts/ (claude-factory-503.1.2): the file names that were in
+// it, so sessionsOf() still maps a session's turns to the station that ran it after gc prunes them
+const promptsListFile = (id: string) => join(runDir(id), 'prompts.list')
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
 function durable(path: string, text: string, flag: 'w' | 'a') {
@@ -4161,8 +4164,15 @@ function sessionsOf(run: Run): Session[] {
   )
   if (!existsSync(dir)) return []
   const prompts = join(runDir(run.id), 'prompts')
+  const listFile = promptsListFile(run.id)
+  // gc can have removed prompts/ already; it leaves prompts.list with the names that were in it
+  const names = existsSync(prompts)
+    ? readdirSync(prompts)
+    : existsSync(listFile)
+      ? readJson<string[]>(listFile)
+      : []
   const nodes = new Map(
-    (existsSync(prompts) ? readdirSync(prompts) : []).flatMap(f => {
+    names.flatMap(f => {
       const m = /^(\d+)-(.+)\.md$/.exec(f)
       return m ? [[Number(m[1]), m[2]!.replace(/-resume$/, '')] as const] : []
     }),
@@ -4175,12 +4185,15 @@ function sessionsOf(run: Run): Session[] {
 
 function records(): RunRecord[] {
   const file = join(HOME, 'metrics.jsonl')
-  const kept: RunRecord[] = existsSync(file)
+  const lines: RunRecord[] = existsSync(file)
     ? readFileSync(file, 'utf8')
         .split('\n')
         .filter(Boolean)
         .map(l => JSON.parse(l))
     : []
+  // a run can get two lines over its life (a gc prune, then later `factory rm`): a Map keeps only
+  // the last line for each id, so metrics never counts a pruned-then-removed run twice
+  const kept = [...new Map(lines.map(r => [r.id, r])).values()]
   const live = runIds().map(id => record(id))
   const liveIds = new Set(live.map(r => r.id))
   return [...kept.filter(r => !liveIds.has(r.id)), ...live]
