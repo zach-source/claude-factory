@@ -551,6 +551,12 @@ test('interviewPrompt asks the manager to propose options only for items that ne
   expect(text).not.toContain('gate:g1@1')
   expect(text).not.toContain('Which DB?')
   expect(interviewPrompt([gate, bead])).toBeNull() // neither needs a proposal
+  // the prompt states every limit `decisions propose` enforces, not only the question and label
+  // limits (claude-factory-9f6.13)
+  expect(text).toContain('100 characters or fewer') // each option's effect
+  expect(text).toContain('200 characters or fewer') // an optional context sentence
+  expect(text).toContain('at most one option recommended')
+  expect(text).toContain('own: key keeps its two fixed options')
 })
 
 test('interviewPrompt quotes a bare title and its details as untrusted data, escaping any quote already inside', () => {
