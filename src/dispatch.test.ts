@@ -79,7 +79,20 @@ function repo() {
   const r = join(dir, 'repo')
   mkdirSync(join(r, '.beads'), { recursive: true })
   Bun.spawnSync(['git', '-C', r, 'init', '-q'])
-  Bun.spawnSync(['git', '-C', r, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-q', '-m', 'init'])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    r,
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=t',
+    'commit',
+    '--allow-empty',
+    '-q',
+    '-m',
+    'init',
+  ])
   return r
 }
 
@@ -111,7 +124,7 @@ test("dispatch never starts a run at a Linear-sourced bead's station:<name> labe
   expect(gotoOf()).toEqual([]) // the run stays at the factory's own start station, not "deploy"
 })
 
-test("a station:<name> label a person wrote by hand (no Linear external_ref) still starts the run there", () => {
+test('a station:<name> label a person wrote by hand (no Linear external_ref) still starts the run there', () => {
   reset(undefined)
   const out = factory(['beads'])
   expect(out.code).toBe(0)

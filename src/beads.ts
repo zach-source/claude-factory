@@ -55,8 +55,7 @@ export const linearSourced = (b: Bead) => !!b.external_ref?.toLowerCase().includ
  * A person can still send such a run to a chosen station, with `factory fork <run> <station>`.
  */
 export const stationOf = (b: Bead) =>
-  (!linearSourced(b) && b.labels?.find(l => l.startsWith('station:'))?.slice('station:'.length)) ||
-  undefined
+  (!linearSourced(b) && b.labels?.find(l => l.startsWith('station:'))?.slice('station:'.length)) || undefined
 
 /** a bead's parent: bd's parent-child edge, else the id's own `<parent>.<n>` */
 export const parentOf = (b: Bead) =>

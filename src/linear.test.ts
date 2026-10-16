@@ -342,7 +342,9 @@ test('fetchLinearIssues refuses a redirect from the Linear API, and never calls 
     port: 0,
     fetch() {
       targetCalls++
-      return Response.json({ data: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: '' } } } })
+      return Response.json({
+        data: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: '' } } },
+      })
     },
   })
   const api = Bun.serve({ port: 0, fetch: () => Response.redirect(target.url.toString(), 302) })
