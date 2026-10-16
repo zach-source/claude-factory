@@ -201,12 +201,15 @@ minor release may change the factory format, the CLI or the run state.
   `rankPlan` and `orderByPlan` (`src/plan.ts`) keep the pm inside the owner's
   existing priority bands: it reorders only within one priority, and a planned
   bead never passes a numerically lower (higher-value) one. A starved epic (no
-  progress for `starveHours` hours, 24 by default, while lower-priority work
-  shipped) and a plan gap (a done epic still open, or a goal with no open bead) become
-  findings; `plan set` files each as a bead (`beads.ts` `fileFinding`), deduped by
-  `pm_finding` metadata, capped at 3 new beads per rig per run. Any P0/P1, goal or
-  owner-only change is only ever proposed, as a `human`-labeled decision item in
-  the Interview tab: nothing applies it. The console's Rigs tab
+  new work for `starveHours` hours, 24 by default, while lower-priority work
+  shipped) and a goal with no open bead both become findings that `plan set`
+  files as a `human`-labeled bead (`beads.ts` `fileFinding`), an Interview-tab
+  decision item like a proposal. A plan gap (a done epic still open, or a goal
+  with no bead in the plan at all) files as an unlabeled bead instead, for a
+  person to triage. `plan set` dedupes each finding by `pm_finding` metadata,
+  capped at 3 new beads per rig per run. Any P0/P1, goal or owner-only change is only
+  ever proposed, also as a `human`-labeled decision item in the Interview tab:
+  nothing applies it. The console's Rigs tab
   shows each rig's top 3 next-up items and its findings; the header and the band
   show the plan's own age, or "plan stale" past 2 hours. `pm` in the plugin's
   `userConfig` turns the pm off. (claude-factory-dun)

@@ -164,7 +164,9 @@ stalls a run.
 
 A hidden `pm` subagent runs once an hour and soon after a run finishes. It reads each rig's ready beads, goal, open epics, epic progress, and runs in flight. It writes `<home>/plan.json`, a ranked list of next work for each rig, with a one-line reason for each bead. It also writes one line per run to `<home>/pm-log.jsonl`. The patrol and `factory dispatch` use this plan when it is less than 2 hours old. If the plan is older or missing, they use today's order instead.
 
-The pm flags two problems. A starved epic has had no progress for many hours while work with a lower priority shipped. A plan gap is a goal with no open bead, or a done epic that is still open. The pm creates an unlabeled bead for each one. A person must triage each bead.
+The pm shows two types of problem as decision items. The first type is a starved epic. A starved epic gets no new work for many hours, while lower-priority work is done. The second type is a goal with no open bead. For each problem, the pm makes a human-labeled bead. It is a decision item in the Interview tab, like a proposal.
+
+A plan gap is different. In one kind, an epic stays open after all its children close. In the other kind, a goal has no bead in the plan. For each plan gap, the pm makes an unlabeled bead. A person must add a label to triage it.
 
 The pm does not change the priority of a P0 or P1 bead, a rig goal, or an owner-only setting. It can only propose such a change. The proposal becomes a decision item in the Interview tab. A person must decide on the item. To turn off the pm, set `pm` to `false` in the plugin's `userConfig`.
 
