@@ -28,6 +28,26 @@ const prio = (b: Pick<Bead, 'priority'>) => b.priority ?? 4
 const stripControl = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
+/**
+ * Cleans untrusted bead text, such as a Linear-synced title or a pm-proposed `why`.
+ * The clean text fits on one line in the pane, the patrol prompt, `factory plan` output, or a
+ * filed bead's own text.
+ *
+ * `stripControl` keeps `\n`, `\r` and `\t`. One of these can still fake an extra line in
+ * `planSection`'s or `planShowText`'s one-line-per-item format.
+ * `sanitize` strips control characters first.
+ * Next, it turns each run of `\n`, `\r` or `\t` into one space.
+ * Last, it clips the text to `n` characters (claude-factory-dun.23).
+ */
+export function sanitize(s: string, n = 160): string {
+  return clip(
+    stripControl(s)
+      .replace(/[\n\r\t]+/g, ' ')
+      .trim(),
+    n,
+  )
+}
+
 /** An 8-character stable key for a goal-shaped finding. A goal-shaped finding names no single bead. */
 export const hashOf = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 8)
 
@@ -89,8 +109,8 @@ export function rankPlan(answer: AnswerItem[], candidates: Bead[]): PlanItem[] {
     if (!a || typeof a.id !== 'string' || seen.has(a.id) || !byId.has(a.id)) continue
     seen.add(a.id)
     order.push(a.id)
-    const why = stripControl(String(a.why ?? '')).trim()
-    whyOf.set(a.id, why ? clip(why, 120) : '(no reason given)')
+    const why = sanitize(String(a.why ?? ''), 120)
+    whyOf.set(a.id, why ? why : '(no reason given)')
   }
   const rank = new Map(order.map((id, i) => [id, i]))
   return candidates
@@ -99,7 +119,7 @@ export function rankPlan(answer: AnswerItem[], candidates: Bead[]): PlanItem[] {
     .slice(0, 10)
     .map(({ c }) => ({
       id: c.id,
-      title: c.title,
+      title: sanitize(c.title),
       priority: prio(c),
       why: whyOf.get(c.id) ?? '(no reason given)',
     }))
@@ -249,7 +269,7 @@ export function findings(
           rig,
           bead: epic.id,
           key: `epic-done-open:${rig}:${epic.id}`,
-          text: `${epic.id} "${epic.title}": every child is closed, but the epic is still open`,
+          text: `${epic.id} "${sanitize(epic.title)}": every child is closed, but the epic is still open`,
         })
       continue
     }
@@ -278,7 +298,7 @@ export function findings(
         rig,
         bead: epic.id,
         key: `starved-epic:${rig}:${epic.id}`,
-        text: `${epic.id} "${epic.title}" (P${epicPriority}) has had no progress in ${Math.round((now - lastProgress) / 3_600_000)}h while lower-priority work shipped`,
+        text: `${epic.id} "${sanitize(epic.title)}" (P${epicPriority}) has had no progress in ${Math.round((now - lastProgress) / 3_600_000)}h while lower-priority work shipped`,
       })
   }
 

@@ -252,6 +252,38 @@ test('plan set labels starved-epic and goal-no-beads human; epic-done-open and g
   expect(goalNoPlan).not.toContain('-l human')
 })
 
+test('plan set strips control characters and newlines from a proposal before plan.json and the filed bead (claude-factory-dun.24)', () => {
+  reset()
+  writeFacts({ findings: [] }) // no findings: only the proposal can file
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath, {
+    proposals: [
+      {
+        rig: 'a',
+        change: 'bump \x1b[31mfx-1\x1b[0m to P0\nfor real',
+        why: 'a customer\nis blocked \x1b[31mnow\x1b[0m',
+      },
+    ],
+  })
+  const out = factory(['plan', 'set', answerPath])
+  expect(out.code).toBe(0)
+  const written = JSON.parse(readFileSync(planJson(), 'utf8'))
+  const [proposal] = written.proposals
+  expect(proposal.change).not.toContain('\x1b')
+  expect(proposal.change).not.toContain('\n')
+  expect(proposal.why).not.toContain('\x1b')
+  expect(proposal.why).not.toContain('\n')
+
+  // the filed bead's title/desc (one argv line in calls.log) carries neither control characters
+  // nor a stray newline: a real newline in `change` would split this one call across two lines,
+  // so `for real` would land on a different line than `bump`.
+  const log = callsLog()
+  expect(log).not.toContain('\x1b')
+  const proposalLine = log.split('\n').find(l => l.includes('bump'))
+  expect(proposalLine).toBeDefined()
+  expect(proposalLine).toContain('for real')
+})
+
 test('stale plan-facts.json refuses: exit 1, plan.json untouched', () => {
   reset()
   writeFacts()
@@ -344,6 +376,45 @@ function resetForFacts() {
 
 const candidateIdsOf = () =>
   (JSON.parse(readFileSync(factsFile(), 'utf8')).a.candidates as { id: string }[]).map(c => c.id)
+
+/** fake bd for `plan facts` with an untrusted (Linear-synced) title: ESC plus a newline, far past
+ * `sanitize`'s own clip length (claude-factory-dun.23). */
+function fakeBdForDirtyTitle() {
+  mkdirSync(bin, { recursive: true })
+  const dirty = `a\u001b[31mtitle\nwith a break and ${'z'.repeat(300)}`
+  const every = JSON.stringify([{ id: 'c-1', title: dirty, labels: ['factory'], priority: 2 }])
+  const ready = every
+  const script = [
+    '#!/bin/sh',
+    'case "$1" in',
+    `  list) printf '%s' '${every}';;`,
+    `  ready) printf '%s' '${ready}';;`,
+    "  children) printf '%s' '[]';;",
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+}
+
+test('plan facts sanitizes an untrusted candidate title (ESC, a newline, and an oversized length) before writing plan-facts.json (claude-factory-dun.23)', () => {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(claudeConfig, { recursive: true })
+  writeFileSync(join(claudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(home, { recursive: true })
+  mkdirSync(join(repo, '.beads'), { recursive: true })
+  fakeBdForDirtyTitle()
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo, factory: 'lifecycle', goal: 'ship' }]),
+  )
+  const out = factory(['plan', 'facts'])
+  expect(out.code).toBe(0)
+  const title = (JSON.parse(readFileSync(factsFile(), 'utf8')).a.candidates as { title: string }[])[0]!.title
+  expect(title).not.toContain('\u001b')
+  expect(title).not.toContain('\n')
+  expect(title.length).toBeLessThanOrEqual(160)
+})
 
 test('plan facts drops a candidate with an open child, using the already-fetched list: no `bd children` call (claude-factory-dun.12)', () => {
   resetForFacts()

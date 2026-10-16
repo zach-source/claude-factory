@@ -3695,7 +3695,12 @@ function rigFacts(
     : dispatchable(ready, linked, Infinity)
         .filter(x => !isOwned(x) && !openChildrenOf(x.id).length && !linear.ids.has(x.id))
         .slice(0, 40)
-        .map(c => ({ id: c.id, title: c.title, priority: c.priority, issue_type: c.issue_type }))
+        .map(c => ({
+          id: c.id,
+          title: plan.sanitize(c.title),
+          priority: c.priority,
+          issue_type: c.issue_type,
+        }))
   const isClosed = (x: Bead) => x.status === 'closed'
   const tsOf = (iso?: string) => {
     if (!iso) return undefined
@@ -3713,7 +3718,7 @@ function rigFacts(
       const lastProgress = progress.length ? Math.max(...progress) : (tsOf(e.created_at) ?? now)
       return {
         id: e.id,
-        title: e.title,
+        title: plan.sanitize(e.title),
         priority: e.priority,
         done: kids.filter(isClosed).length,
         total: kids.length,
@@ -3723,7 +3728,7 @@ function rigFacts(
   const dayAgo = now - 24 * 3_600_000
   const closedRecently = every
     .filter(x => isClosed(x) && (tsOf(x.closed_at) ?? -Infinity) >= dayAgo)
-    .map(x => ({ id: x.id, title: x.title, priority: x.priority }))
+    .map(x => ({ id: x.id, title: plan.sanitize(x.title), priority: x.priority }))
   const liveBeadIds = every.filter(x => linked.has(x.id)).map(x => x.id)
   const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now)
   return {
@@ -3738,8 +3743,22 @@ function rigFacts(
   }
 }
 
-/** keeps the printed facts under `maxBytes` (the pm's prompt budget): drops `closedRecently`
- * first, then `epics` beyond 5, then `candidates` beyond 20, across every rig, until it fits. */
+/** Keeps the printed facts under `maxBytes` bytes. This is the pm's prompt budget.
+ * This function drops fields in steps, across every rig, until the result fits.
+ * First, it drops `closedRecently`.
+ * Next, it cuts `epics` to 5 items.
+ * Next, it cuts `candidates` to 20 items.
+ *
+ * These three steps are not a hard guarantee on their own. An oversized title can still blow the
+ * budget at 20 candidates. A title can be longer than the `rigFacts` boundary's own clip, or this
+ * function can get one directly. Proof: 20 candidates of 8000 characters each gave 160566 bytes
+ * against a 65536-byte budget (claude-factory-dun.25).
+ *
+ * So this function also cuts `findings` to 10 items and `liveBeadIds` to 20 items. Then it
+ * shrinks `candidates` and `epics` together, one step at a time, down to zero if nothing else
+ * fits. The result is always at most `maxBytes` bytes. The one exception: the empty shape itself
+ * (every rig with no candidates, epics, findings or liveBeadIds) does not fit. Only a very large
+ * number of rigs, or an oversized `goal` string, can cause that. */
 export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1024): string {
   const clone: Record<string, RigFacts> = JSON.parse(JSON.stringify(facts))
   const fits = () => Buffer.byteLength(JSON.stringify(clone)) <= maxBytes
@@ -3749,6 +3768,19 @@ export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1
   for (const r of Object.values(clone)) r.epics = r.epics.slice(0, 5)
   if (fits()) return JSON.stringify(clone)
   for (const r of Object.values(clone)) r.candidates = r.candidates.slice(0, 20)
+  if (fits()) return JSON.stringify(clone)
+  for (const r of Object.values(clone)) {
+    r.findings = r.findings.slice(0, 10)
+    r.liveBeadIds = r.liveBeadIds.slice(0, 20)
+  }
+  if (fits()) return JSON.stringify(clone)
+  for (let cap = 10; cap >= 0; cap--) {
+    for (const r of Object.values(clone)) {
+      r.candidates = r.candidates.slice(0, cap)
+      r.epics = r.epics.slice(0, cap)
+    }
+    if (fits()) return JSON.stringify(clone)
+  }
   return JSON.stringify(clone)
 }
 
@@ -3868,9 +3900,9 @@ function planSetCmd(answerPath?: string) {
     )
     .map(p => ({
       rig: p.rig,
-      ...(typeof p.bead === 'string' && p.bead ? { bead: clip(p.bead, 40) } : {}),
-      change: clip(p.change, 300),
-      why: clip(p.why, 300),
+      ...(typeof p.bead === 'string' && p.bead ? { bead: plan.sanitize(p.bead, 40) } : {}),
+      change: plan.sanitize(p.change, 300),
+      why: plan.sanitize(p.why, 300),
     }))
 
   // every validation above must pass before anything is written: a refusal never touches plan.json

@@ -11,6 +11,7 @@ import {
   proposalKey,
   rankPlan,
   rigPlanOf,
+  sanitize,
   type Plan,
   type RigInput,
 } from './plan'
@@ -30,6 +31,22 @@ test('isFresh: under 2h is fresh, exactly 2h and over are stale, a future or cor
   expect(isFresh({ at: Number.NaN }, now)).toBe(false)
   expect(isFresh(undefined, now)).toBe(false)
   expect(isFresh(null, now)).toBe(false)
+})
+
+// ---- sanitize (claude-factory-dun.23) ----
+
+test('sanitize strips control characters including ESC, collapses newlines/tabs to a space, and clips to n', () => {
+  const dirty = `title\x1b[31m with\nan embedded\r\nnewline and\ta tab${'z'.repeat(200)}`
+  const clean = sanitize(dirty)
+  expect(clean).not.toContain('\x1b')
+  expect(clean).not.toContain('\n')
+  expect(clean).not.toContain('\r')
+  expect(clean).not.toContain('\t')
+  expect(clean.length).toBeLessThanOrEqual(160)
+})
+
+test('sanitize leaves a short, clean string unchanged', () => {
+  expect(sanitize('a clean title')).toBe('a clean title')
 })
 
 // ---- rankPlan ----
@@ -65,6 +82,19 @@ test('rankPlan: clips why to 120 chars, strips control characters, and caps at 1
   expect(items[0]!.why.length).toBe(120)
   expect(items[0]!.why).not.toContain('\x00')
   expect(items[0]!.why.endsWith('…')).toBe(true)
+})
+
+test('rankPlan: a why with an embedded newline reads as one line (claude-factory-dun.23)', () => {
+  const candidates = [bead('a-1', { priority: 1 })]
+  const items = rankPlan([{ id: 'a-1', why: 'first line\nsecond line' }], candidates)
+  expect(items[0]!.why).not.toContain('\n')
+})
+
+test('rankPlan: a candidate title with ESC and a newline (an untrusted Linear-synced title) comes out clean (claude-factory-dun.23)', () => {
+  const candidates = [bead('a-1', { priority: 1, title: 'a\x1b[31mtitle\nwith a line break' })]
+  const items = rankPlan([{ id: 'a-1', why: 'w' }], candidates)
+  expect(items[0]!.title).not.toContain('\x1b')
+  expect(items[0]!.title).not.toContain('\n')
 })
 
 // ---- orderByPlan ----
@@ -232,6 +262,35 @@ test('findings: an open epic whose children are all closed is a plan gap, unless
     },
   ])
   expect(findings('acme', undefined, every, ['r-2'], now)).toEqual([]) // a live run's own epic: not a gap yet
+})
+
+test('findings: an epic title with ESC and a newline (an untrusted Linear-synced title) comes out clean in the epic-done-open text (claude-factory-dun.23)', () => {
+  const now = 1_000 * HOUR
+  const every: Bead[] = [
+    bead('r-2', { status: 'open', priority: 2, title: 'a\x1b[31mtitle\nwith a break' }),
+    bead('r-2.0', { status: 'closed', parent: 'r-2' }),
+  ]
+  const [found] = findings('acme', undefined, every, [], now)
+  expect(found!.text).not.toContain('\x1b')
+  expect(found!.text).not.toContain('\n')
+})
+
+test('findings: a starved epic title with ESC and a newline comes out clean in the starved-epic text (claude-factory-dun.23)', () => {
+  const now = 1_000 * HOUR
+  const createdAt = now - 25 * HOUR
+  const every: Bead[] = [
+    bead('r-1', {
+      status: 'open',
+      priority: 1,
+      title: 'a\x1b[31mtitle\nwith a break',
+      created_at: iso(createdAt),
+    }),
+    bead('r-1.0', { status: 'open', parent: 'r-1' }),
+    bead('r-9', { status: 'closed', priority: 2, closed_at: iso(now - 1 * HOUR) }),
+  ]
+  const [found] = findings('acme', undefined, every, [], now)
+  expect(found!.text).not.toContain('\x1b')
+  expect(found!.text).not.toContain('\n')
 })
 
 test('findings: a closed epic never fires either finding', () => {
