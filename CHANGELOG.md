@@ -6,6 +6,22 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Console: a due patrol now runs as a hidden `factory:patrol` subagent (`$.agent.spawn`,
+  `mod/hooks/register.tsx`), instead of waking the manager's own main chat with
+  `$.prompt.submit`. The person can keep typing while a patrol runs; a patrol adds no turn to
+  the main chat and no task-notification turn either. `$.agent.register('patrol')` registers
+  the type in `session.start`, with `agent.offer` hiding it from the model. Only one patrol
+  runs at a time (`isPatrolling`), freed by its own `turn.complete` or a 15-minute watchdog. The
+  tool.call hook now denies a patrol's gated command (`factory decide`, `decisions answer`, a
+  `start --owned`) outright, with no `$.ui.ask` dialog: nobody is there to answer it. The same
+  hook holds a run the main chat touched in the last 5 minutes out of the next patrol, and
+  denies a patrol's own command on that run too. Each patrol's outcome (its actions, token use,
+  report) appends one
+  line to `<home>/patrol-log.jsonl` (capped at 50 lines), shown by a new `/factory patrols`
+  command and folded into the dream's manager-activity digest (`memory.patrolActivity` in
+  `src/memory.ts`). The pane header and the band above the prompt show how long ago the last
+  patrol ran. Owner decisions still surface through the existing decisions/interview queue.
+  (claude-factory-72v)
 - Added: a Linear pull loop (claude-factory-b6c). A rig opts in with `factory rig add
   ... --linear <team_id[,team_id]>` (or a `rigs.json` `linear.team` field, plus optional
   `projects`/`labels` for routing). `tick()` runs `bd linear sync` for each opted-in rig
