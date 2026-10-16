@@ -28,6 +28,18 @@
  * Implement opens a pull request as a draft. Only release marks it ready for review, once verify,
  * review and security pass. `gh pr ready --undo` (back to draft) is always allowed.
  *
+ * It also denies a `git push` to a protected branch (claude-factory-zl5.3).
+ * A protected branch is main or master: the rig's default branch.
+ * A protected branch is also the branch that `origin/HEAD` points to.
+ * A rig can also set a protected branch with `--protected-branch`.
+ * This hook reads that list from its own argv, as `--protected-branches a,b`.
+ *
+ * A worker must push its own run branch, and open a pull request for it.
+ * Only a person can push a protected branch.
+ * The owner made the same rule for a merge: only a person can merge.
+ * `git push -n` is a dry run: it does not push anything.
+ * The hook allows a dry run at all times.
+ *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
  * claude-factory-9wu rejected another design: a hook that approves `rm -rf`, which is a safety regression.
@@ -72,6 +84,14 @@ export const READY_REASON =
   'The factory denies this command: only the release station marks a pull request ready for ' +
   'review. Keep the pull request a draft here; report its link in your summary. Release marks it ' +
   'ready after verify, review and security pass. Do not retry this command.'
+
+// claude-factory-zl5.3
+export const PUSH_REASON =
+  'The factory denies this command: a worker never pushes straight to a protected branch, by ' +
+  'owner decision. A protected branch is main, master, the branch origin/HEAD names, or a branch ' +
+  'the rig names with --protected-branch. Push your run branch instead, and open a pull request ' +
+  'for the change, or a revert pull request for a rollback. Only a person pushes or merges a ' +
+  'protected branch. Do not retry this command.'
 
 /**
  * `gate` carries the context this guard needs for the merge-gate checks (claude-factory-zl5): the
@@ -682,6 +702,169 @@ function anyGhReason(words: string[], gate: HookGate): string | undefined {
   return undefined
 }
 
+// claude-factory-zl5.3: git's own global flags that take a value word (`git -C dir push ...`).
+// The verb search steps past them. GH_VALUE_FLAGS does the same for `gh`.
+const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
+// `git push`'s own flags that take a value word. The operand search steps past them.
+const GIT_PUSH_VALUE_FLAGS = new Set(['--repo', '-o', '--push-option', '--receive-pack', '--exec'])
+// A `git push` flag that pushes every branch, or deletes a remote branch with no local match.
+// Each flag can reach a protected branch with no refspec that names it. This guard denies these flags outright.
+const PUSH_BROAD_FLAGS = new Set(['--all', '--branches', '--mirror', '--prune'])
+// A refspec that has a `$variable`, a backtick, a glob (`*`, `?`, `[`, `]`) or a brace (`{`, `}`).
+// This guard cannot resolve any of these before git does. It treats the refspec as unknown and
+// fails closed. It denies the push.
+const REFSPEC_UNSAFE = /[$`*?[\]{}]/
+
+/** Removes a leading `refs/heads/` from `ref`. This makes `refs/heads/main` and `main` compare equal. */
+function stripRefsHeads(ref: string): string {
+  return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
+}
+
+/**
+ * Returns the remote branch name that a push `refspec` updates.
+ * Returns undefined when the refspec names no branch (an unresolved `HEAD`, see below).
+ * `unsafe` is true when this guard cannot read the name. The guard then fails closed.
+ * It uses the same rule as `unknownFlagValue` for a kube context.
+ *
+ * A refspec is `[+]<src>[:<dst>]`. The leading `+` (force) drops.
+ * After a colon, `<dst>` names the remote branch.
+ * An empty `<dst>` (`:main`) deletes the remote branch that the text before the colon names.
+ * With no colon, the whole text names the remote branch, except a bare `HEAD`.
+ *
+ * For a bare `HEAD`, git pushes the current branch to a remote branch of the same name.
+ * So this guard reads `currentBranch` instead.
+ *
+ * `currentBranch` can itself have the value `undefined`.
+ * An unknown current branch allows the push (claude-factory-zl5.3).
+ * This guard then has no branch name to check against the protected list.
+ */
+function refspecTarget(
+  spec: string,
+  currentBranch: string | undefined,
+): { target?: string; unsafe: boolean } {
+  const s = spec.startsWith('+') ? spec.slice(1) : spec
+  if (REFSPEC_UNSAFE.test(s)) return { unsafe: true }
+  const ci = s.indexOf(':')
+  if (ci < 0) {
+    if (s === 'HEAD') return { target: currentBranch, unsafe: false }
+    return { target: stripRefsHeads(s), unsafe: false }
+  }
+  const dst = s.slice(ci + 1)
+  return { target: stripRefsHeads(dst === '' ? s.slice(0, ci) : dst), unsafe: false }
+}
+
+/**
+ * Parses `tail`, which holds the arguments of a `git push` call after the `push` word.
+ * `operands` holds every non-flag word, in order.
+ * `operands[0]` is the remote, when named. The rest are refspecs.
+ *
+ * `broad` is true for these flags: `--all`, `--branches`, `--mirror` and `--prune`.
+ * Each one can push or prune every branch with no refspec that names one.
+ * `tags` is true for `--tags`.
+ *
+ * `dryRun` is true for `-n` or `--dry-run`.
+ * This never pushes, so the caller allows it outright.
+ */
+function pushOperands(tail: string[]): {
+  operands: string[]
+  broad: boolean
+  tags: boolean
+  dryRun: boolean
+} {
+  const operands: string[] = []
+  let broad = false
+  let tags = false
+  let dryRun = false
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
+    if (w === '--') continue
+    if (w.startsWith('-') && w !== '-') {
+      if (w.includes('=')) continue
+      if (GIT_PUSH_VALUE_FLAGS.has(w)) {
+        i++
+        continue
+      }
+      if (PUSH_BROAD_FLAGS.has(w)) broad = true
+      else if (w === '--tags') tags = true
+      else if (w === '-n' || w === '--dry-run') dryRun = true
+      continue
+    }
+    operands.push(w)
+  }
+  return { operands, broad, tags, dryRun }
+}
+
+/**
+ * Returns true when `tail` reaches a protected branch.
+ * `tail` holds the arguments of a `git push` call.
+ *
+ * `currentBranch` is the branch that the push runs from. `gate.headOf` reads it on demand.
+ * Both a bare `git push` and `git push <remote> HEAD` push the current branch.
+ * This guard reads `currentBranch` for them.
+ *
+ * The protected set always has `main` and `master`.
+ * It also adds `gate.protectedBranches` and the branch that `gate.originHead` names, when either one resolves.
+ * claude-factory-zl5.3: a rig's real default branch can differ from both, for example acme/deploy.
+ */
+function gitPushDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
+  const { operands, broad, tags, dryRun } = pushOperands(tail)
+  if (dryRun) return false
+  if (broad) return true
+  const refspecs = operands.slice(1)
+  const protectedSet = new Set(['main', 'master', ...(gate.protectedBranches ?? [])])
+  const originHead = gate.originHead?.()
+  if (originHead) protectedSet.add(originHead)
+  // claude-factory-zl5.3: --tags with no refspec pushes only tags, not the current branch.
+  const specs = refspecs.length ? refspecs : tags ? [] : ['HEAD']
+  for (const spec of specs) {
+    const { target, unsafe } = refspecTarget(spec, currentBranch)
+    if (unsafe) return true
+    if (target !== undefined && protectedSet.has(target)) return true
+  }
+  return false
+}
+
+/**
+ * Returns the reason to deny `cmd`, a command that starts with a `git` word.
+ * Returns undefined to allow `cmd`.
+ *
+ * claude-factory-zl5.3: this finds the `push` verb past git's own global flags.
+ * Those flags are `-C`, `-c`, `--git-dir`, `--work-tree` and `--namespace`.
+ * It uses the same method that `ghReason` uses to find the verb of `gh`.
+ * `dir` is the value of `-C` when given. Otherwise, `dir` is `root`.
+ * `gate.headOf(dir)` reads the current branch there.
+ */
+function gitReason(cmd: string[], root: string | undefined, gate: HookGate): string | undefined {
+  const tail = cmd.slice(1)
+  const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS)
+  let pushTail: string[] | undefined
+  if (vi >= 0 && tail[vi] === 'push') pushTail = tail.slice(vi + 1)
+  else if (uncertain && hasMutatingWordBeforeDashDash(tail, new Set(['push']))) {
+    const pi = tail.indexOf('push')
+    if (pi >= 0) pushTail = tail.slice(pi + 1)
+  }
+  if (!pushTail) return undefined
+  const dir = flagValue(tail, new Set(['-C'])) ?? root
+  const currentBranch = gate.headOf?.(dir)
+  return gitPushDenied(pushTail, currentBranch, gate) ? PUSH_REASON : undefined
+}
+
+/**
+ * Returns true when a word in `words` is a bare `git` token.
+ * From that word, the words start a command that this guard denies (claude-factory-zl5.3).
+ * The function scans every position, with the same fail-closed rule as `anyGhReason` for `gh`.
+ * A wrapper that this hook does not strip by name cannot hide a `git` word that follows it.
+ */
+function anyGitReason(words: string[], root: string | undefined, gate: HookGate): string | undefined {
+  for (let j = 0; j < words.length; j++) {
+    if (baseWord(words[j]!) === 'git') {
+      const r = gitReason(words.slice(j), root, gate)
+      if (r) return r
+    }
+  }
+  return undefined
+}
+
 /**
  * True when a word in `words` is a bare `kubectl`, `ko` or `helm` token. From that word on, the
  * words must start a mutating command denied by `personOnly`.
@@ -805,6 +988,10 @@ export function denyReason(
     // timeout) can push past position 0.
     const ghFound = anyGhReason(words, g)
     if (ghFound) return ghFound
+    // claude-factory-zl5.3: the same any-position scan, for a git word a wrapper can push past
+    // position 0.
+    const gitFound = anyGitReason(words, root, g)
+    if (gitFound) return gitFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
@@ -826,6 +1013,20 @@ export function denyReason(
   return hasRm && hasCd ? REASON : undefined
 }
 
+// claude-factory-zl5.3: runs `git symbolic-ref`, with a 2 s cap.
+// The 2 s cap stops a stuck or missing git from holding up the 10 s PreToolUse hook.
+// This returns undefined on an error, a non-zero exit, or empty output.
+// `gate.headOf` and `gate.originHead` then treat the branch as unknown.
+function gitSymbolicRef(args: string[]): string | undefined {
+  try {
+    const p = Bun.spawnSync(['git', ...args], { timeout: 2000 })
+    if (p.exitCode !== 0) return undefined
+    return p.stdout.toString().trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -842,7 +1043,19 @@ async function main() {
   // claude-factory-25z: the rig's person-only kube contexts, carried on this hook's own argv
   const argi = process.argv.indexOf('--person-only-contexts')
   const personOnly = argi >= 0 ? process.argv[argi + 1]?.split(',').filter(Boolean) : undefined
-  const gate: HookGate = { station: process.env.FACTORY_FROM }
+  // claude-factory-zl5.3: the rig's protected branch names, carried on this hook's own argv
+  const argp = process.argv.indexOf('--protected-branches')
+  const protectedBranches = argp >= 0 ? process.argv[argp + 1]?.split(',').filter(Boolean) : undefined
+  const gate: HookGate = {
+    station: process.env.FACTORY_FROM,
+    protectedBranches,
+    headOf: dir => gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD']),
+    originHead: () =>
+      gitSymbolicRef(['-C', root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])?.replace(
+        /^origin\//,
+        '',
+      ),
+  }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
   if (!reason) return
   console.log(
