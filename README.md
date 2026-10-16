@@ -158,6 +158,8 @@ A rig is a repo the factory works, by name. Its ready beads labeled `factory` st
 it keeps its sweeps running, and it has its own cap on busy runs under the factory's
 `FACTORY_MAX_RUNS`. A goal is the person's standing direction for the rig: while the rig has
 room, the manager's heartbeat patrol carries it and gives the rig the next work toward it.
+The goal also reaches every worker's brief, under "## Rig goal", so a step it reserves for
+the person binds every station, not only the manager.
 
 ```sh
 factory rig add web ~/repos/web --max 4                     # all of lifecycle's sweeps

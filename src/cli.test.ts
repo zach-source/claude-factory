@@ -28,6 +28,7 @@ import {
   progressSig,
   relaunch,
   reworkGoal,
+  ruleLines,
   selfUpdateMail,
   stalled,
   swapUntil,
@@ -512,6 +513,22 @@ test('a rig with no goal and no ready beads is idle', () => {
   expect(idle({}, 0)).toBe(true)
   expect(idle({ goal: 'v2' }, 0)).toBe(false) // the manager steers it
   expect(idle({}, 2)).toBe(false)
+})
+
+test('ruleLines carries the rig goal, when one is given, under its own section after House rules', () => {
+  const def = { rules: '- rule one\n- rule two' }
+  expect(ruleLines(def)).toEqual(['', '## House rules', def.rules])
+  expect(ruleLines(def)).not.toContain('## Rig goal')
+
+  const axGoal =
+    'Skip owner-only live applies, credential and branch-protection steps and surface them instead.'
+  const lines = ruleLines(def, axGoal)
+  expect(lines.indexOf('## House rules')).toBeLessThan(lines.indexOf('## Rig goal'))
+  expect(lines).toContain(axGoal)
+  expect(lines.join('\n')).toContain('owner-only')
+
+  expect(ruleLines({}, axGoal).join('\n')).not.toContain('## House rules')
+  expect(ruleLines({})).toEqual([])
 })
 
 test('PKG_GATE_MIN_DAYS unset is undefined (the gate default), but a non-finite or negative value fails closed (ei0.10)', () => {

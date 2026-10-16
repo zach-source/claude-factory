@@ -1,8 +1,23 @@
 import { expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import { createActor } from 'xstate'
+import { ruleLines } from '../src/cli'
 import { compile, validate, where, type Factory } from '../src/machine'
 import lifecycle from './lifecycle'
+import release from './release'
+
+// shaped like the real ax and claude-factory rig goals behind the incidents this bead fixes, with the
+// private repo paths swapped for the acme/widget fixture (the guard-private commit hook refuses the real ones)
+const AX_GOAL =
+  'Make ax a reliable remote runner for the factory at about 20 concurrent tasks. First: size the ax ' +
+  'WorkerPool (deploy/acme/workerpool.yaml: replicas 2, 8Gi per worker today) so about 20 tasks fit ' +
+  'without OOM; then make task placement memory-aware, let task routing survive a worker restart (ax ssh ' +
+  'answered 421 for every task of a restarted worker on 2026-10-15), and clear tasks stuck in Terminating. ' +
+  'Branch from and open PRs against acme/widget (the deploy branch; main tracks upstream). Skip owner-' +
+  'only live applies, credential and branch-protection steps and surface them instead.'
+const CLAUDE_FACTORY_GOAL =
+  'Work the ready backlog in priority order, highest priority and least blocked first; skip owner-only ' +
+  'credential, branch-protection and live-switch steps and surface them instead'
 
 /** drives a run by outcomes (waking it from any timed wait) and returns the stations it visited */
 function walk(def: Factory, outcomes: string[], at = 'triage') {
@@ -78,6 +93,50 @@ test('incidents, optimizations and refactors take their own entries', () => {
     ...['triage', 'characterize', 'plan', 'implement'],
   ])
   expect(walk(lifecycle, ['optimize', 'nothing-to-gain']).visited.at(-1)).toBe('done')
+})
+
+test('lifecycle and release house rules each name every owner-only class, the approval clause and the park text', () => {
+  for (const rules of [lifecycle.rules!, release.rules!]) {
+    expect(rules).toContain('kubectl apply')
+    expect(rules).toContain('production registry')
+    expect(rules).toContain('ruleset')
+    expect(rules).toContain('organization setting')
+    expect(rules).toContain('credential')
+    expect(rules).toMatch(/bead's description|factory mail.*manager/)
+    expect(rules).toContain("a worker's own comment never counts as approval")
+    expect(rules).toContain('parked, waiting on:')
+  }
+})
+
+test('the lifecycle deploy prompt and the release rollout prompt park on an owner-only step instead of doing it', () => {
+  expect(lifecycle.nodes.deploy!.prompt).toContain('parked, waiting on:')
+  expect(lifecycle.nodes.deploy!.prompt).toContain('owner-only')
+  expect(lifecycle.nodes.deploy!.prompt).toContain('Question:')
+  expect(release.nodes.rollout!.prompt).toContain('parked, waiting on:')
+  expect(release.nodes.rollout!.prompt).toContain('owner-only')
+  expect(release.nodes.rollout!.prompt).toContain('Question:')
+})
+
+test('a deploy or rollout brief for a rig whose goal names owner-only steps carries the goal, the rule and the park text', () => {
+  const cases: { def: Factory; node: string; goal: string }[] = [
+    { def: lifecycle, node: 'deploy', goal: AX_GOAL }, // ax-768: the ko build/push + kubectl apply incident
+    { def: lifecycle, node: 'deploy', goal: CLAUDE_FACTORY_GOAL }, // claude-factory-5h9: the ruleset incident
+    { def: release, node: 'rollout', goal: AX_GOAL },
+  ]
+  for (const { def, node, goal } of cases) {
+    const brief = [...ruleLines(def, goal), def.nodes[node]!.prompt].join('\n')
+    expect(brief).toContain(goal)
+    for (const needle of [
+      'kubectl apply',
+      'production registry',
+      'ruleset',
+      'organization setting',
+      'credential',
+    ])
+      expect(brief).toContain(needle)
+    expect(brief).toMatch(/bead's description|factory mail.*manager/)
+    expect(brief).toContain('parked, waiting on:')
+  }
 })
 
 test('sweeps loop on their timers past any step budget', () => {

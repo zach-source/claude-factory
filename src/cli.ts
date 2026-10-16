@@ -766,6 +766,25 @@ const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.de
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
+/**
+ * the House rules every worker's brief carries, plus the rig goal when the run's rig has one: the goal
+ * verbatim, under its own section, so a step it reserves for the person (a skip list, say) binds every
+ * station, not only the manager patrol that reads rigs.json directly. No rules and no goal: no output.
+ */
+export function ruleLines(def: Pick<Factory, 'rules'>, rigGoal?: string): string[] {
+  return [
+    ...(def.rules ? ['', '## House rules', def.rules.trim()] : []),
+    ...(rigGoal
+      ? [
+          '',
+          '## Rig goal',
+          rigGoal.trim(),
+          'Each step this goal says to skip, or reserves for the person, is owner-only: a hard rule at every station.',
+        ]
+      : []),
+  ]
+}
+
 function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
@@ -780,7 +799,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
     `This run follows the factory pinned when it started (${run.factoryFrom ?? run.factory}): changes to ${OWN}/ on any branch reach only runs that start after they merge. Check an edited factory file with ${CLI} check <file>.`,
-    ...(def.rules ? ['', '## House rules', def.rules.trim()] : []),
+    ...ruleLines(def, rigOf(run.repo)?.goal),
     '',
     ...remembered(run, node),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
