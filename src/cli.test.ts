@@ -565,6 +565,22 @@ test('ruleLines carries the rig goal, when one is given, under its own section a
   expect(ruleLines({})).toEqual([])
 })
 
+test('ruleLines names a rig’s person-only contexts under the Rig goal section (claude-factory-25z.3)', () => {
+  const def = { rules: '- rule one' }
+  const axGoal = 'Skip owner-only live applies and surface them instead.'
+
+  const lines = ruleLines(def, axGoal, ['acme'])
+  const text = lines.join('\n')
+  expect(text).toContain('acme')
+  expect(text).toContain('parked, waiting on:')
+  expect(lines.indexOf('## Rig goal')).toBeLessThan(lines.findIndex(l => l.includes('acme')))
+
+  // unchanged when no list, an empty list, or no goal at all
+  expect(ruleLines(def, axGoal)).toEqual(ruleLines(def, axGoal, undefined))
+  expect(ruleLines(def, axGoal, [])).toEqual(ruleLines(def, axGoal))
+  expect(ruleLines(def, undefined, ['acme'])).toEqual(ruleLines(def))
+})
+
 test('PKG_GATE_MIN_DAYS unset is undefined (the gate default), but a non-finite or negative value fails closed (ei0.10)', () => {
   expect(parsePkgGateMinDays(undefined)).toBeUndefined()
   expect(parsePkgGateMinDays('')).toBeUndefined()
