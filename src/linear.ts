@@ -66,10 +66,10 @@ function resolve(cmd: string): string {
  * It puts the resolved key, or the OAuth pair, only in environment variables.
  * It does not put them on disk, in the command-line arguments, or in a bead.
  *
- * A `LINEAR_*` variable from an earlier operation can stay in this environment.
+ * A `LINEAR_*` variable from a previous operation can stay in this environment.
  * The function removes each `LINEAR_*` variable first.
- * This makes sure that a stray OAuth pair cannot override the value in the rig's own `linear.json`.
  * Then it adds the new value from the rig's own `linear.json`.
+ * No OAuth pair from a previous operation can override this value.
  */
 export function syncEnv(
   cfg: LinearConfig,
