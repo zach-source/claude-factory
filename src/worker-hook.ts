@@ -17,6 +17,13 @@
  * the second station.
  * This hook receives the rig's list in its own argv: `--person-only-contexts a,b`.
  *
+ * It also denies `gh pr merge` and `gh repo sync` (claude-factory-zl5).
+ * It denies a GraphQL or REST call that merges a pull request.
+ * It denies a GraphQL or REST call that turns on a pull request's auto-merge.
+ * The owner decided that only a person merges a pull request.
+ * GitHub's admin bypass lets a worker merge, even under a ruleset that needs a review.
+ * Before this guard, two pull requests merged before their review ran (ax-aw1).
+ *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
  * claude-factory-9wu rejected another design: a hook that approves `rm -rf`, which is a safety regression.
@@ -48,6 +55,38 @@ export const LONG_COMMAND_REASON =
   'The factory denies this command: it is longer than 8192 bytes, and this rig checks commands ' +
   'against a person-only kube context. A command this long can make that check too slow. ' +
   'Split this command into shorter commands and run them one at a time. Do not retry this exact command.'
+
+// claude-factory-zl5
+export const MERGE_REASON =
+  'The factory denies this command: a worker never merges a pull request and never turns its ' +
+  'auto-merge on. Only a person merges, by owner decision. This covers gh pr merge, gh repo sync, ' +
+  'and a GraphQL or REST call that merges a pull request or a branch, or marks it for auto-merge. ' +
+  'Report the pull request link and what it waits on; leave it open. Do not retry this command.'
+
+// claude-factory-zl5.2
+export const READY_REASON =
+  'The factory denies this command: only the release station marks a pull request ready for ' +
+  'review. Keep the pull request a draft here; report its link in your summary. Release marks it ' +
+  'ready after verify, review and security pass. Do not retry this command.'
+
+/**
+ * `gate` carries the context this guard needs for the merge-gate checks (claude-factory-zl5): the
+ * running station's name, the rig's protected branch names, and small reads of the live repo and
+ * filesystem a unit test can fake out. `main()` wires the real ones; a test passes its own.
+ */
+export interface HookGate {
+  /** the running station, from FACTORY_FROM. Only the release station may mark a pull request ready. */
+  station?: string
+  /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
+  protectedBranches?: string[]
+  /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any error */
+  headOf?: (dir?: string) => string | undefined
+  /** the short branch name the repo's `origin/HEAD` points to, or undefined on any error */
+  originHead?: () => string | undefined
+  /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
+   * resolved relative to the tool call's own cwd; undefined when it cannot be read */
+  readFile?: (path: string) => string | undefined
+}
 
 // wrapper commands whose own name we skip to find the command they run
 const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
@@ -477,6 +516,168 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
   return false
 }
 
+// claude-factory-zl5: gh's own global flags that take a value word. The verb search steps past
+// them. This matters when they come before the verb (`gh -R o/r pr merge 5`).
+const GH_VALUE_FLAGS = new Set(['-R', '--repo', '--hostname'])
+// `gh api` flags that take a value word. The endpoint search steps past them.
+const GH_API_VALUE_FLAGS = new Set([
+  '-X',
+  '--method',
+  '-H',
+  '--header',
+  '-f',
+  '--raw-field',
+  '-F',
+  '--field',
+  '--input',
+  '--hostname',
+  '--cache',
+  '-t',
+  '--template',
+  '-q',
+  '--jq',
+])
+// a GraphQL mutation name that merges a pull request or a branch
+const MERGE_MUTATIONS = ['enablePullRequestAutoMerge', 'mergePullRequest', 'mergeBranch']
+// a GraphQL mutation name that marks a pull request ready for review (claude-factory-zl5.2)
+const READY_MUTATIONS = ['markPullRequestReadyForReview']
+
+/**
+ * Collects every `-f`/`--raw-field`/`-F`/`--field` name=value pair in `words`, a `gh api` call's
+ * own arguments. It stops at a literal `--`.
+ * `gh api` repeats these flags, one per field. This reads every one, not only the last.
+ * `flagValue` differs: it reads a flag that `gh`, `kubectl`, `ko` or `helm` itself takes once.
+ */
+function ghApiFields(words: string[]): { name: string; value: string }[] {
+  const fields: { name: string; value: string }[] = []
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--') break
+    if (w === '-f' || w === '--raw-field' || w === '-F' || w === '--field') {
+      const v = words[i + 1]
+      const eq = v?.indexOf('=') ?? -1
+      if (v !== undefined && eq >= 0) fields.push({ name: v.slice(0, eq), value: v.slice(eq + 1) })
+      i++
+    }
+  }
+  return fields
+}
+
+/**
+ * Reads the text of every `query` or `input` field of a `gh api graphql` call. It also reads the
+ * call's `--input` file, when set.
+ * A field value that starts with `@` names a file. `gate.readFile` reads it, relative to the tool
+ * call's own cwd.
+ * `unresolved` is true when this cannot read a file's text. The caller then fails closed: the
+ * real query text is unknown here.
+ */
+function graphqlTexts(apiArgs: string[], gate: HookGate): { texts: string[]; unresolved: boolean } {
+  const texts: string[] = []
+  let unresolved = false
+  const take = (v: string) => {
+    if (!v.startsWith('@')) {
+      texts.push(v)
+      return
+    }
+    const content = gate.readFile?.(v.slice(1))
+    if (content === undefined) unresolved = true
+    else texts.push(content)
+  }
+  for (const f of ghApiFields(apiArgs)) if (f.name === 'query' || f.name === 'input') take(f.value)
+  const inputFile = flagValue(apiArgs, new Set(['--input']))
+  if (inputFile !== undefined) take(`@${inputFile}`)
+  return { texts, unresolved }
+}
+
+/** true when a `gh api graphql` call's query text names one of `mutations`, or its text is unknown */
+function hasGraphqlMutation(apiArgs: string[], gate: HookGate, mutations: string[]): boolean {
+  const { texts, unresolved } = graphqlTexts(apiArgs, gate)
+  if (unresolved) return true
+  return texts.some(t => mutations.some(m => new RegExp(`\\b${m}\\b`).test(t)))
+}
+
+/**
+ * True when a `gh api` call merges a pull request or a branch through the REST or GraphQL API.
+ * `apiArgs` is the call's own arguments, after the `api` word.
+ * REST: `PUT .../pulls/<n>/merge` merges a pull request. `POST .../merges` merges a branch.
+ * `gh api` sends POST on its own once a caller gives `-f`, `-F` or `--input` data and names no
+ * other method with `-X` or `--method`. So a merges call with no explicit method still counts.
+ * GraphQL: the `graphql` endpoint's query or `--input` body names `enablePullRequestAutoMerge`,
+ * `mergePullRequest` or `mergeBranch`.
+ */
+function ghApiMergeDenied(apiArgs: string[], gate: HookGate): boolean {
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  if (!endpoint) return false
+  if (endpoint === 'graphql') return hasGraphqlMutation(apiArgs, gate, MERGE_MUTATIONS)
+  const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
+  const hasData = ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
+  const effective = method || (hasData ? 'POST' : 'GET')
+  if (effective === 'PUT' && /\/pulls\/\d+\/merge(\?.*)?$/.test(endpoint)) return true
+  return (effective === 'POST' || effective === 'PUT') && /\/merges(\?.*)?$/.test(endpoint)
+}
+
+/**
+ * True when a `gh api` call's `graphql` endpoint marks a pull request ready for review
+ * (claude-factory-zl5.2): its query or `--input` body names `markPullRequestReadyForReview`.
+ */
+function ghApiReadyDenied(apiArgs: string[], gate: HookGate): boolean {
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  return endpoint === 'graphql' && hasGraphqlMutation(apiArgs, gate, READY_MUTATIONS)
+}
+
+/**
+ * The reason to deny `cmd`, a command that starts with a `gh` word, or undefined to allow it.
+ * claude-factory-zl5.1: `gh pr merge` and `gh repo sync` always deny. A GraphQL or REST call that
+ * merges a pull request or a branch, found through `ghApiMergeDenied`, denies the same way.
+ * claude-factory-zl5.2: `gh pr ready` and a GraphQL `markPullRequestReadyForReview` call deny
+ * outside the release station; `gh pr ready --undo` (back to draft) is always allowed.
+ * claude-factory-25z.6: an unknown global flag before the verb makes the verb search uncertain.
+ * This then falls back to a plain word scan for `merge`, `sync` or `ready` before a literal `--`,
+ * the same fail-closed rule the live-apply guard uses for an unknown kubectl/ko/helm flag.
+ */
+function ghReason(cmd: string[], gate: HookGate): string | undefined {
+  const tail = cmd.slice(1)
+  const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
+  const verb = vi >= 0 ? tail[vi] : undefined
+  const sub = vi >= 0 ? tail[vi + 1] : undefined
+  if (verb === 'pr' && sub === 'merge') return MERGE_REASON
+  if (verb === 'repo' && sub === 'sync') return MERGE_REASON
+  if (verb === 'pr' && sub === 'ready') {
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['--undo']))) return undefined
+    return gate.station === 'release' ? undefined : READY_REASON
+  }
+  if (verb === 'api') {
+    const apiArgs = tail.slice(vi + 1)
+    if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
+    if (ghApiReadyDenied(apiArgs, gate)) return gate.station === 'release' ? undefined : READY_REASON
+    return undefined
+  }
+  if (uncertain) {
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
+      return gate.station === 'release' ? undefined : READY_REASON
+  }
+  return undefined
+}
+
+/**
+ * True when a word in `words` is a bare `gh` token, from which the words start a command this
+ * guard denies (claude-factory-zl5). Scans every position, the same fail-closed rule
+ * `anyLiveApplyWord` uses for kubectl, ko and helm, so a wrapper this hook does not strip by name
+ * cannot hide a `gh` word that follows it.
+ */
+function anyGhReason(words: string[], gate: HookGate): string | undefined {
+  for (let j = 0; j < words.length; j++) {
+    if (baseWord(words[j]!) === 'gh') {
+      const r = ghReason(words.slice(j), gate)
+      if (r) return r
+    }
+  }
+  return undefined
+}
+
 /**
  * True when a word in `words` is a bare `kubectl`, `ko` or `helm` token. From that word on, the
  * words must start a mutating command denied by `personOnly`.
@@ -528,6 +729,7 @@ function anyShellReason(
   words: string[],
   root: string | undefined,
   personOnly: string[] | undefined,
+  gate: HookGate,
 ): string | undefined {
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -540,11 +742,11 @@ function anyShellReason(
         const w = words[k]!
         if (w === '--') {
           k++
-          if (k < words.length) found = denyReason(words[k]!, root, personOnly)
+          if (k < words.length) found = denyReason(words[k]!, root, personOnly, gate)
           break
         }
         if (w.startsWith('-')) continue
-        found = denyReason(w, root, personOnly)
+        found = denyReason(w, root, personOnly, gate)
         if (found) break
       }
       if (found) return found
@@ -554,7 +756,7 @@ function anyShellReason(
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {
-        const r = denyReason(rest.join(' '), root, personOnly)
+        const r = denyReason(rest.join(' '), root, personOnly, gate)
         if (r) return r
       }
       break
@@ -569,14 +771,23 @@ function anyShellReason(
  * `personOnly` is the rig's list of kube contexts a person alone may change (claude-factory-25z).
  * A non-empty list also denies a kubectl, ko or helm mutation there.
  * It also denies one that names no --context at all.
+ * `gate` carries the merge-gate checks' own context (claude-factory-zl5): the running station, the
+ * rig's protected branches, and small reads of the live repo a test can fake out. These checks
+ * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
  */
-export function denyReason(command: string, root?: string, personOnly?: string[]): string | undefined {
+export function denyReason(
+  command: string,
+  root?: string,
+  personOnly?: string[],
+  gate?: HookGate,
+): string | undefined {
   if (!command) return undefined
   // claude-factory-25z.20: this guard's own scan cost rises with the length of `command` (see
   // anyLiveApplyWord and anyShellReason). A command built to be long enough can push that scan
   // past the 10 s PreToolUse hook timeout, which lets the command run unchecked. When a
   // person-only context list is set, deny a command this long outright instead of scanning it.
   if (personOnly?.length && command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
+  const g = gate ?? {}
   let hasRm = false
   let hasCd = false
   for (const words of segments(command)) {
@@ -586,10 +797,14 @@ export function denyReason(command: string, root?: string, personOnly?: string[]
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
+    // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
+    // timeout) can push past position 0.
+    const ghFound = anyGhReason(words, g)
+    if (ghFound) return ghFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
-    const shellReason = anyShellReason(words, root, personOnly)
+    const shellReason = anyShellReason(words, root, personOnly, g)
     if (shellReason) return shellReason
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
@@ -623,7 +838,8 @@ async function main() {
   // claude-factory-25z: the rig's person-only kube contexts, carried on this hook's own argv
   const argi = process.argv.indexOf('--person-only-contexts')
   const personOnly = argi >= 0 ? process.argv[argi + 1]?.split(',').filter(Boolean) : undefined
-  const reason = denyReason(i.tool_input?.command ?? '', root, personOnly)
+  const gate: HookGate = { station: process.env.FACTORY_FROM }
+  const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
   if (!reason) return
   console.log(
     JSON.stringify({

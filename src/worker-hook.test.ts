@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
-import { denyReason, LIVE_REASON, LONG_COMMAND_REASON, REASON } from './worker-hook'
+import { denyReason, LIVE_REASON, LONG_COMMAND_REASON, MERGE_REASON, REASON } from './worker-hook'
 
 const DENY = [
   'rm -rf foo',
@@ -352,3 +352,67 @@ test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-facto
   )
   expect(allow).toEqual({ out: '', code: 0 })
 }, 10_000)
+
+// claude-factory-zl5.1: a worker never merges a pull request. It never turns on auto-merge.
+// Only a person merges, by owner decision. ax-aw1 found two PRs merged before their review ran.
+const DENY_MERGE = [
+  'gh pr merge 5',
+  'gh pr merge --auto --squash 5',
+  'gh pr merge --admin 5',
+  'gh pr merge -R o/r 5',
+  'sudo gh pr merge 5',
+  'env FOO=1 gh pr merge 5',
+  'timeout 5 gh pr merge 5',
+  'watch gh pr merge 5',
+  "bash -lc 'gh pr merge 5'",
+  "eval 'gh pr merge 5'",
+  'gh\\\n pr merge 5',
+  'gh pr \\\nmerge 5',
+  'gh repo sync',
+  'gh api -X PUT repos/o/r/pulls/5/merge',
+  'gh api repos/o/r/merges -f base=main',
+  "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'",
+  "gh api graphql -F query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+  "gh api graphql -f query='mutation { mergeBranch(input: {}) { clientMutationId } }'",
+]
+
+test.each(DENY_MERGE)('denyReason denies %j', cmd => {
+  expect(denyReason(cmd)).toBe(MERGE_REASON)
+})
+
+const ALLOW_MERGE = [
+  'gh pr view 5',
+  'gh pr checks 5',
+  'gh pr create --title merge',
+  'gh pr diff 5',
+  'gh pr comment 5 --body merge',
+  'gh api repos/o/r/pulls/5/merge', // GET: read-only
+  "gh api graphql -f query='query { viewer { login } }'",
+  'git commit -m "deny enablePullRequestAutoMerge"', // text outside a gh api segment
+]
+
+test.each(ALLOW_MERGE)('denyReason allows %j', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+// claude-factory-zl5.1: a query=@file or --input file reference the hook cannot read is unknown, so
+// it fails closed (denies); when the hook's gate can read the file, it scans the real content.
+test('denyReason resolves a graphql query=@file through gate.readFile, and fails closed when it cannot read it', () => {
+  const safe = { readFile: () => 'query { viewer { login } }' }
+  const mutating = {
+    readFile: () => 'mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }',
+  }
+  expect(denyReason('gh api graphql -f query=@m.graphql', undefined, undefined, safe)).toBeUndefined()
+  expect(denyReason('gh api graphql -f query=@m.graphql', undefined, undefined, mutating)).toBe(MERGE_REASON)
+  // no gate.readFile at all: the file's content is unknown, so this fails closed
+  expect(denyReason('gh api graphql -f query=@m.graphql')).toBe(MERGE_REASON)
+  expect(denyReason('gh api graphql --input body.json')).toBe(MERGE_REASON)
+  expect(denyReason('gh api graphql --input body.json', undefined, undefined, safe)).toBeUndefined()
+})
+
+// claude-factory-zl5.1: a stack of eval words must not hide a merge command, and must not time out
+// the 10 s hook (claude-factory-25z.17's bound).
+const STACKED_EVAL_MERGE = Array(24).fill('eval').join(' ')
+test('denyReason denies a merge command behind a stack of eval words, fast', () => {
+  expect(denyReason(`${STACKED_EVAL_MERGE}; gh pr merge 5`)).toBe(MERGE_REASON)
+}, 500)
