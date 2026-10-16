@@ -26,6 +26,15 @@ minor release may change the factory format, the CLI or the run state.
   now read every run id a compound Bash command names (`matchAll`, not only the first match),
   and the hold also covers an older patrol the watchdog freed but which still runs late.
   (claude-factory-72v)
+- Added: a rig can name kube contexts that only a person can change live. Use
+  `factory rig add <rig> <repo> --person-only-context <context>` (repeat the flag for more
+  than one context). The worker `PreToolUse` hook (`src/worker-hook.ts`) now refuses a
+  `kubectl`, `ko` or `helm` command that mutates state at one of those contexts. It also
+  refuses a mutating command with no named `--context` (fail closed). `ruleLines` adds a
+  line under a worker's "## Rig goal" section that names the contexts and the park text, so
+  the rule reaches the brief, not only a memory note. A rig with the list gets its own
+  `worker-settings-<rig>.json`; a rig with no list keeps the shared file.
+  (claude-factory-25z)
 - Added: a Linear pull loop (claude-factory-b6c). A rig opts in with `factory rig add
   ... --linear <team_id[,team_id]>` (or a `rigs.json` `linear.team` field, plus optional
   `projects`/`labels` for routing). `tick()` runs `bd linear sync` for each opted-in rig

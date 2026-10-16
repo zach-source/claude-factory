@@ -193,6 +193,29 @@ fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). Th
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
 redefine a rig with `rig add`; there is one rig per repo.
 
+A rig can name kube contexts that only a person can change. Use `--person-only-context` to
+add one. Repeat the flag to add more contexts.
+
+```sh
+factory rig add ax ~/repos/ax --person-only-context acme
+```
+
+A worker's PreToolUse hook refuses a `kubectl`, `ko` or `helm` command that changes state at a
+named context. The hook fails closed. It refuses a command with no `--context` flag, because
+the worker does not know its current context. The hook matches context and cluster names only.
+It cannot resolve a shell expansion. So it also refuses a `--context` or a kubectl `--cluster`
+value that is not a literal name, such as `$CTX` or a backtick.
+
+The hook reads only the command text Claude Code is about to run, so it stops a worker that
+runs the command directly. It cannot read a script that reaches a shell by another path: a pipe
+(`echo "kubectl --context acme apply -f x" | bash`), a here-string, `env -S`, `su -c`,
+`nix-shell --run`, or a variable or `$(...)` that holds the real command. The brief's own rule
+still applies there.
+
+A worker's brief carries this rule too, in the Rig goal section. The worker reports blocked
+with the exact command, instead of running it. The guard does not cover a person's own
+session or the manager's session. A person runs the live change.
+
 `--linear <team id[,team id]>` opts a rig into the Linear pull loop. Every 20 minutes the
 factory pulls that team's Linear issues into the rig's beads. The loop then strips the
 `factory` label back off each pulled bead ([docs/beads.md#linear](docs/beads.md#linear)).

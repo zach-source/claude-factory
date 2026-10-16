@@ -34,6 +34,7 @@ import {
   stalled,
   swapUntil,
   watchWake,
+  workerFlags,
   workerSettings,
   WORKER_TOOLS,
   commitIdentity,
@@ -358,6 +359,39 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   expect(workerSettings({}, 30).autoCompactWindow).toBe(100_000) // Claude Code's floor
 })
 
+// claude-factory-25z.2: a rig with personOnlyContexts gets its own worker-settings-<rig>.json, so a
+// launch for a different rig (which writes the shared file with no argv) never overwrites its hook argv
+test("workerFlags writes a rig's own worker-settings-<rig>.json when it has personOnlyContexts, else the shared worker-settings.json", () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-flags-'))
+  const acme = { name: 'acme', personOnlyContexts: ['acme-ctx'] }
+  const web = { name: 'web' }
+  const extraAcme = workerFlags({ maxContextK: 200 }, acme, home)
+  const extraWeb = workerFlags({ maxContextK: 200 }, web, home)
+  expect(extraAcme).toContain(join(home, 'worker-settings-acme.json'))
+  expect(extraWeb).toContain(join(home, 'worker-settings.json'))
+  expect(existsSync(join(home, 'worker-settings-acme.json'))).toBe(true)
+  expect(existsSync(join(home, 'worker-settings.json'))).toBe(true)
+  const acmeSettings = JSON.parse(readFileSync(join(home, 'worker-settings-acme.json'), 'utf8'))
+  const webSettings = JSON.parse(readFileSync(join(home, 'worker-settings.json'), 'utf8'))
+  expect(acmeSettings.hooks.PreToolUse.at(-1).hooks[0].command).toContain("--person-only-contexts 'acme-ctx'")
+  expect(webSettings.hooks.PreToolUse.at(-1).hooks[0].command).not.toContain('--person-only-contexts')
+})
+
+// claude-factory-25z.2: a rig's personOnlyContexts reaches the deny hook's own argv, so it can refuse a
+// kubectl, ko or helm mutation there even with no live rig policy anywhere else in the worker's settings
+test("workerSettings carries a rig's personOnlyContexts on the deny hook's own argv", () => {
+  const withList = workerSettings({}, 200, undefined, ['acme'])
+  const pre = withList.hooks.PreToolUse as { hooks: { command: string }[] }[]
+  expect(pre.at(-1)!.hooks[0]!.command).toMatch(/--person-only-contexts 'acme'$/)
+  // no list, or an empty one: today's command, unchanged
+  const withNone = workerSettings({}, 200)
+  const withEmpty = workerSettings({}, 200, undefined, [])
+  expect(withNone).toEqual(withEmpty)
+  expect((withNone.hooks.PreToolUse as { hooks: { command: string }[] }[]).at(-1)!.hooks[0]!.command).toMatch(
+    /worker-hook\.ts'$/,
+  )
+})
+
 // mv9: a worker still gets no plugin but asd-ste100 -- its skill and SessionStart STE brief are lean
 // enough to carry, and the plugin brings the writing rule instead of a copy of its text
 test('a worker gets the asd-ste100 plugin alone, with bundled skills off, so it writes in ASD-STE100', () => {
@@ -536,6 +570,22 @@ test('ruleLines carries the rig goal, when one is given, under its own section a
 
   expect(ruleLines({}, axGoal).join('\n')).not.toContain('## House rules')
   expect(ruleLines({})).toEqual([])
+})
+
+test('ruleLines names a rig’s person-only contexts under the Rig goal section (claude-factory-25z.3)', () => {
+  const def = { rules: '- rule one' }
+  const axGoal = 'Skip owner-only live applies and surface them instead.'
+
+  const lines = ruleLines(def, axGoal, ['acme'])
+  const text = lines.join('\n')
+  expect(text).toContain('acme')
+  expect(text).toContain('parked, waiting on:')
+  expect(lines.indexOf('## Rig goal')).toBeLessThan(lines.findIndex(l => l.includes('acme')))
+
+  // unchanged when no list, an empty list, or no goal at all
+  expect(ruleLines(def, axGoal)).toEqual(ruleLines(def, axGoal, undefined))
+  expect(ruleLines(def, axGoal, [])).toEqual(ruleLines(def, axGoal))
+  expect(ruleLines(def, undefined, ['acme'])).toEqual(ruleLines(def))
 })
 
 test('PKG_GATE_MIN_DAYS unset is undefined (the gate default), but a non-finite or negative value fails closed (ei0.10)', () => {
