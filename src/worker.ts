@@ -217,13 +217,19 @@ type Harness = 'claude' | 'codex' | 'pi'
 const harness = (): Harness => (process.env.FACTORY_HARNESS as Harness | undefined) ?? 'claude'
 
 /**
- * the argv of one headless turn of an agent: the brief when there is no session yet, else the next prompt
- * resuming it. Claude: `-p --resume <id>`; codex: `exec`, then `exec resume <id>`; pi: `-p --session-id <id>`,
- * which pi creates on first use. The agents' permission prompts are off: the microVM is the sandbox.
+ * the argv of one headless turn of an agent. Claude: `-p --resume <id>`; codex: `exec`, then
+ * `exec resume <id>`; pi: `-p --session-id <id>`, which pi creates on first use. The brief is the first turn,
+ * with no session yet; later turns resume it with the next prompt. The agents' permission prompts are off:
+ * the microVM is the sandbox.
+ *
+ * This argv never carries the prompt text. turn() sends the prompt to the agent on stdin instead. Linux's
+ * execve() caps one argv string at MAX_ARG_STRLEN (131072 bytes). A prompt over that limit made posix_spawn
+ * fail with ENAMETOOLONG, and that error killed the worker turn (claude-factory-kcg). `claude -p` with no
+ * prompt argument reads stdin. codex exec's trailing `-` does the same. So does `pi -p` with no message
+ * argument.
  */
 export function turnArgv(
   h: Harness,
-  text: string,
   o: { model?: string; provider?: string; session?: string; claudeFlags?: string[]; piDir?: string } = {},
 ) {
   const model = (flag: string) => (o.model ? [flag, o.model] : [])
@@ -235,7 +241,6 @@ export function turnArgv(
         ...(o.claudeFlags ?? []),
         ...model('--model'),
         ...(o.session ? ['--resume', o.session] : []),
-        text,
       ]
     case 'codex':
       return [
@@ -243,8 +248,8 @@ export function turnArgv(
         ...['exec', ...(o.session ? ['resume'] : [])],
         ...['--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
         ...model('-m'),
-        // after --, so a prompt that starts with a dash is not a flag
-        ...['--', ...(o.session ? [o.session] : []), text],
+        // after --, so a resumed session id is never read as a flag; '-' reads the prompt from stdin
+        ...['--', ...(o.session ? [o.session] : []), '-'],
       ]
     case 'pi':
       return [
@@ -252,7 +257,6 @@ export function turnArgv(
         ...['-p', '--session-dir', o.piDir!, '--session-id', o.session!],
         ...(o.provider ? ['--provider', o.provider] : []),
         ...model('--model'),
-        text,
       ]
   }
 }
@@ -315,15 +319,22 @@ async function turn(text: string, model?: string, session?: string, onSession?: 
   // pi has no output to read an id from: it takes one on first use
   const id = h === 'pi' ? (session ?? crypto.randomUUID()) : session
   if (id && h === 'pi') onSession?.(id)
-  const argv = turnArgv(h, text, {
+  const argv = turnArgv(h, {
     model,
     provider: process.env.FACTORY_PROVIDER,
     session: id,
     claudeFlags: process.env.FACTORY_CLAUDE_FLAGS ? JSON.parse(process.env.FACTORY_CLAUDE_FLAGS) : [],
     piDir: join(own(), 'pi'),
   })
-  // env spelled out: Bun's default is the env at startup, without what setup() added
-  const p = Bun.spawn(argv, { cwd: repo(), env: { ...process.env }, stdout: 'pipe', stderr: 'pipe' })
+  // env spelled out: Bun's default is the env at startup, without what setup() added. The prompt goes on
+  // stdin, not argv (see turnArgv): a Blob holds the whole text in memory, same as the string already did
+  const p = Bun.spawn(argv, {
+    cwd: repo(),
+    env: { ...process.env },
+    stdin: new Blob([text]),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
   const errP = new Response(p.stderr).text()
   const chunkFile = join(own(), `${h}.jsonl`)
   const reader = p.stdout.getReader()

@@ -253,11 +253,17 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
   mkdirSync(own, { recursive: true })
   mkdirSync(repo, { recursive: true })
   process.env.FACTORY_BRIEF = 'the brief'
-  // a fake claude: records its argv, prints a stream-json init event
+  // a fake claude: records its argv and its stdin (the prompt, now passed there instead), prints a
+  // stream-json init event
   const claude = join(dir, 'claude')
   writeFileSync(
     claude,
-    `#!/bin/sh\necho "$*" >> ${dir}/claude.log\necho '{"type":"system","subtype":"init","session_id":"sess-1"}'\n`,
+    `#!/bin/sh
+echo "$*" >> ${dir}/claude.log
+n=$(ls ${dir}/claude.stdin.* 2>/dev/null | wc -l)
+cat > ${dir}/claude.stdin.$n
+echo '{"type":"system","subtype":"init","session_id":"sess-1"}'
+`,
   )
   chmodSync(claude, 0o755)
   // saved/restored (below): FACTORY_OUTBOX and FACTORY_FROM must not leak into a later test file's own
@@ -277,8 +283,10 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
     await worker.serve('m1', { once: true }) // a resumed task: no second brief
     const turns = readFileSync(join(dir, 'claude.log'), 'utf8').trim().split('\n')
     expect(turns).toHaveLength(2)
-    expect(turns[0]).toEndWith('--model m1 the brief')
-    expect(turns[1]).toEndWith('--model m1 --resume sess-1 [factory mail from manager] yes')
+    expect(turns[0]).toEndWith('--model m1') // no prompt text on argv: it goes on stdin
+    expect(turns[1]).toEndWith('--model m1 --resume sess-1')
+    expect(readFileSync(join(dir, 'claude.stdin.0'), 'utf8')).toBe('the brief')
+    expect(readFileSync(join(dir, 'claude.stdin.1'), 'utf8')).toBe('[factory mail from manager] yes')
     expect(readdirSync(join(own, 'prompts'))).toEqual([])
 
     worker.queue(['report', 'r1', '1', 'ready', 'done it'])
@@ -305,11 +313,13 @@ test("serve starts the devenv's processes and ends the first brief with a [facto
   mkdirSync(repo, { recursive: true })
   // records every arg, null-separated, since the brief now carries embedded newlines (the services note)
   const argsFile = join(dir, 'claude-svc-args')
+  const stdinFile = join(dir, 'claude-svc-stdin')
   const claude = join(dir, 'claude-svc')
   writeFileSync(
     claude,
     `#!/bin/sh
 for a in "$@"; do printf '%s\\0' "$a" >> ${argsFile}; done
+cat > ${stdinFile}
 echo '{"type":"system","subtype":"init","session_id":"sess-svc"}'
 `,
   )
@@ -343,7 +353,8 @@ echo '{"type":"system","subtype":"init","session_id":"sess-svc"}'
   try {
     await worker.serve('m1', { once: true })
     const args = readFileSync(argsFile, 'utf8').split('\0').filter(Boolean)
-    const prompt = args.at(-1)!
+    expect(args.at(-1)).toBe('m1') // the prompt text is not in argv: it goes on stdin
+    const prompt = readFileSync(stdinFile, 'utf8')
     expect(prompt).toStartWith('the brief\n\n[factory] services: ready: postgres.')
     expect(prompt).toContain('DATABASE_URL is set.')
     expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('services: postgres ready in')
@@ -480,6 +491,7 @@ test('serve retries a turn that ended on the egress failure, same session, backe
 n=$(( $(cat ${counter} 2>/dev/null || echo 0) + 1 ))
 echo "$n" > ${counter}
 echo "$*" >> ${log}
+cat > ${log}.stdin.$n
 echo '{"type":"system","subtype":"init","session_id":"s1"}'
 if [ "$n" -eq 2 ]; then sleep 1; fi
 if [ "$n" -le 2 ]; then
@@ -509,9 +521,12 @@ fi
     await p
     const turns = readFileSync(log, 'utf8').trim().split('\n')
     expect(turns).toHaveLength(3)
-    expect(turns[0]).toEndWith('--model m1 the brief')
-    expect(turns[1]).toEndWith(`--model m1 --resume s1 ${worker.EGRESS_RETRY_PROMPT}`)
-    expect(turns[2]).toEndWith(`--model m1 --resume s1 ${worker.EGRESS_RETRY_PROMPT}`)
+    expect(turns[0]).toEndWith('--model m1')
+    expect(turns[1]).toEndWith('--model m1 --resume s1')
+    expect(turns[2]).toEndWith('--model m1 --resume s1')
+    expect(readFileSync(`${log}.stdin.1`, 'utf8')).toBe('the brief')
+    expect(readFileSync(`${log}.stdin.2`, 'utf8')).toBe(worker.EGRESS_RETRY_PROMPT)
+    expect(readFileSync(`${log}.stdin.3`, 'utf8')).toBe(worker.EGRESS_RETRY_PROMPT)
     expect(worker.poll(0)).toMatchObject({ status: 'idle', session: 's1' })
     expect(worker.poll(0).egress).toBeUndefined() // the turn that got through cleared it
     const retries = readFileSync(join(own, 'serve.log'), 'utf8').match(/egress failure, retry/g) ?? []
@@ -533,6 +548,8 @@ test('serve gives up retrying at its budget, leaving the outage visible to poll,
     claude,
     `#!/bin/sh
 echo "$*" >> ${log}
+n=$(ls ${log}.stdin.* 2>/dev/null | wc -l)
+cat > ${log}.stdin.$n
 echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect error or disconnect/reset before headers: remote connection failure"}'
 `,
   )
@@ -553,7 +570,8 @@ echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect
     await worker.serve('m1', { once: true })
     const turns = readFileSync(log, 'utf8').trim().split('\n')
     expect(turns.length).toBeGreaterThan(1) // it tried more than once before giving up
-    for (const t of turns) expect(t).toEndWith('--model m1 the brief') // no session: reruns the brief every time
+    for (const t of turns) expect(t).toEndWith('--model m1') // no session: reruns the brief every time
+    for (let n = 0; n < turns.length; n++) expect(readFileSync(`${log}.stdin.${n}`, 'utf8')).toBe('the brief')
     const polled = worker.poll(0)
     expect(polled.status).toBe('idle')
     expect(polled.session).toBeUndefined()
@@ -576,6 +594,7 @@ test("an outage's budget and since survive a restart and a turn change: a queued
     claude,
     `#!/bin/sh
 echo "$*" >> ${log}
+cat > ${log}.stdin
 echo '{"type":"system","subtype":"init","session_id":"s1"}'
 echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect error or disconnect/reset before headers: remote connection failure"}'
 `,
@@ -608,7 +627,8 @@ echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect
     await worker.serve('m1', { once: true })
     const turns = readFileSync(log, 'utf8').trim().split('\n')
     expect(turns).toHaveLength(1) // the already-spent budget stops it after exactly one more try
-    expect(turns[0]).toEndWith('--model m1 --resume s1 a reply') // the queued prompt itself, not a retry prompt
+    expect(turns[0]).toEndWith('--model m1 --resume s1')
+    expect(readFileSync(`${log}.stdin`, 'utf8')).toBe('a reply') // the queued prompt itself, not a retry prompt
     const polled = worker.poll(0)
     expect(polled.status).toBe('idle')
     expect(polled.session).toBe('s1')
@@ -741,29 +761,70 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
   }
 })
 
-test("a turn is the headless command of the rig's agent, resuming by that agent's own session", () => {
+test("a turn is the headless command of the rig's agent, resuming by that agent's own session; the prompt never sits on its argv (claude-factory-kcg.1)", () => {
   for (const k of ['FACTORY_CLAUDE', 'FACTORY_CODEX', 'FACTORY_PI']) delete process.env[k] // an earlier test's fakes
   const pi = { piDir: '/o/pi' }
-  expect(worker.turnArgv('codex', 'go', { model: 'o3' })).toEqual([
+  // codex: no session -> '-- -' ('-' reads the prompt from stdin); the agents all read the prompt from
+  // stdin, never argv, since a prompt over Linux's MAX_ARG_STRLEN (131072 bytes) made posix_spawn fail with
+  // ENAMETOOLONG (claude-factory-kcg)
+  expect(worker.turnArgv('codex', { model: 'o3' })).toEqual([
     ...['codex', 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
-    ...['-m', 'o3', '--', 'go'],
+    ...['-m', 'o3', '--', '-'],
   ])
-  expect(worker.turnArgv('codex', '-dash', { session: 'th-1' })).toEqual([
+  expect(worker.turnArgv('codex', { session: 'th-1' })).toEqual([
     ...['codex', 'exec', 'resume', '--json', '--dangerously-bypass-approvals-and-sandbox'],
-    ...['--skip-git-repo-check', '--', 'th-1', '-dash'],
+    ...['--skip-git-repo-check', '--', 'th-1', '-'],
   ])
-  expect(worker.turnArgv('pi', 'go', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
+  expect(worker.turnArgv('pi', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
     ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
-    ...['--provider', 'anthropic', '--model', 'm', 'go'],
+    ...['--provider', 'anthropic', '--model', 'm'],
   ])
-  expect(worker.turnArgv('claude', 'go', { session: 's', claudeFlags: ['--tools', 'Bash'] })).toEqual([
+  expect(worker.turnArgv('claude', { session: 's', claudeFlags: ['--tools', 'Bash'] })).toEqual([
     ...['claude', '-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'],
-    ...['--tools', 'Bash', '--resume', 's', 'go'],
+    ...['--tools', 'Bash', '--resume', 's'],
   ])
   expect(
     worker.sessionIn('codex', '{"type":"thread.started","thread_id":"th-9"}\n{"type":"turn.started"}'),
   ).toBe('th-9')
   expect(worker.sessionIn('codex', '{"type":"turn.started"}')).toBeUndefined()
+})
+
+test('a turn with a 200_000-byte prompt runs: the agent gets it byte for byte on stdin, never on argv (claude-factory-kcg.1)', async () => {
+  const own = join(dir, 'own-big')
+  const repo = join(dir, 'repo-big')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const big = 'x'.repeat(200_000)
+  process.env.FACTORY_BRIEF = big
+  // records argv (one line) and stdin (the whole prompt) to separate files
+  const claude = join(dir, 'claude-big')
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+echo "$*" > ${dir}/claude-big.argv
+cat > ${dir}/claude-big.stdin
+echo '{"type":"system","subtype":"init","session_id":"big-1"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    await worker.serve('m1', { once: true }) // throws (ENAMETOOLONG) pre-fix, on Linux, with the prompt on argv
+    const argv = readFileSync(join(dir, 'claude-big.argv'), 'utf8')
+    expect(argv.length).toBeLessThan(4096)
+    expect(argv).not.toContain('x'.repeat(100))
+    expect(readFileSync(join(dir, 'claude-big.stdin'), 'utf8')).toBe(big)
+  } finally {
+    process.env = saved
+  }
 })
 
 test('a codex worker briefs once, then resumes the thread its first turn named', async () => {
@@ -774,7 +835,12 @@ test('a codex worker briefs once, then resumes the thread its first turn named',
   const codex = join(dir, 'codex')
   writeFileSync(
     codex,
-    `#!/bin/sh\necho "$*" >> ${dir}/codex.log\necho '{"type":"thread.started","thread_id":"th-1"}'\n`,
+    `#!/bin/sh
+echo "$*" >> ${dir}/codex.log
+n=$(ls ${dir}/codex.stdin.* 2>/dev/null | wc -l)
+cat > ${dir}/codex.stdin.$n
+echo '{"type":"thread.started","thread_id":"th-1"}'
+`,
   )
   chmodSync(codex, 0o755)
   const saved = { ...process.env }
@@ -793,9 +859,11 @@ test('a codex worker briefs once, then resumes the thread its first turn named',
     worker.prompt(Buffer.from('more').toString('base64'))
     await worker.serve('o3', { once: true })
     const turns = readFileSync(join(dir, 'codex.log'), 'utf8').trim().split('\n')
-    expect(turns[0]).toEndWith('-m o3 -- codex brief')
+    expect(turns[0]).toEndWith('-m o3 -- -') // no prompt text on argv: '-' reads it from stdin
     expect(turns[1]).toStartWith('exec resume --json')
-    expect(turns[1]).toEndWith('-m o3 -- th-1 more')
+    expect(turns[1]).toEndWith('-m o3 -- th-1 -')
+    expect(readFileSync(join(dir, 'codex.stdin.0'), 'utf8')).toBe('codex brief')
+    expect(readFileSync(join(dir, 'codex.stdin.1'), 'utf8')).toBe('more')
     expect(worker.poll(0).session).toBe('th-1')
     expect(existsSync(join(own, 'codex.jsonl'))).toBe(true)
   } finally {
@@ -809,7 +877,14 @@ test('a pi worker names its own session and keeps it across turns', async () => 
   mkdirSync(own, { recursive: true })
   mkdirSync(repo, { recursive: true })
   const pi = join(dir, 'pi')
-  writeFileSync(pi, `#!/bin/sh\necho "$*" >> ${dir}/pi.log\n`)
+  writeFileSync(
+    pi,
+    `#!/bin/sh
+echo "$*" >> ${dir}/pi.log
+n=$(ls ${dir}/pi.stdin.* 2>/dev/null | wc -l)
+cat > ${dir}/pi.stdin.$n
+`,
+  )
   chmodSync(pi, 0o755)
   const saved = { ...process.env }
   Object.assign(process.env, {
@@ -828,8 +903,11 @@ test('a pi worker names its own session and keeps it across turns', async () => 
     const [first, second] = readFileSync(join(dir, 'pi.log'), 'utf8').trim().split('\n')
     const id = worker.poll(0).session!
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
-    expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} pi brief`)
-    expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} more`)
+    // no prompt text on argv: it goes on stdin
+    expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id}`)
+    expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id}`)
+    expect(readFileSync(join(dir, 'pi.stdin.0'), 'utf8')).toBe('pi brief')
+    expect(readFileSync(join(dir, 'pi.stdin.1'), 'utf8')).toBe('more')
     // pi -p only prints once a turn exits, so own()/pi.jsonl never grows mid-turn: a constant size would look
     // like a non-committing pi worker is stalled; bytes must stay out of the stall signature entirely for pi
     // (claude-factory-xq3.6)
