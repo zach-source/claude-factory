@@ -208,7 +208,7 @@ test('tick spawns one watch pass, then none while still inside that pass’s min
   const first = (await waitForWatch()) as { at: number }
   expect(ghCallCount()).toHaveLength(1)
   factory(['tick']) // immediately after: well inside the same minute, so this must spawn nothing
-  await new Promise(resolve => setTimeout(resolve, 150)) // time for a wrongly-spawned pass to land
+  await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
   expect(ghCallCount()).toHaveLength(1) // still one gh call, not two
   const second = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
   expect(second.at).toBe(first.at) // the file is untouched since the first pass
@@ -225,7 +225,7 @@ test('tick spawns no watch pass while the factory is halted (claude-factory-960.
     JSON.stringify({ state: 'stopping', at: Date.now(), told: {}, closed: {} }),
   )
   factory(['tick'])
-  await new Promise(resolve => setTimeout(resolve, 150)) // time for a wrongly-spawned pass to land
+  await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
   expect(existsSync(join(home, 'watch.json'))).toBe(false)
   expect(ghCallCount()).toHaveLength(0)
 })
@@ -239,7 +239,7 @@ test('tick spawns no watch pass while another one still holds watch.lock (claude
   mkdirSync(join(home, 'watch.lock'))
   writeFileSync(join(home, 'watch.lock', 'pid'), String(process.pid)) // this test process: alive
   factory(['tick'])
-  await new Promise(resolve => setTimeout(resolve, 150)) // time for a wrongly-spawned pass to land
+  await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
   expect(existsSync(join(home, 'watch.json'))).toBe(false)
   expect(ghCallCount()).toHaveLength(0)
 })
