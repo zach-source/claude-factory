@@ -28,6 +28,9 @@ const DENY = [
   // realCommand because `watch` is not a known wrapper) must not hide an `rm -rf` inside its
   // quoted script.
   'watch sh -c "rm -rf /tmp/x"',
+  // claude-factory-25z.19: bash reads `-x` as its own xtrace option, not as the script. The
+  // guard must still find the script after it.
+  "bash -c -x 'rm -rf /tmp/x'",
 ]
 
 // a $variable or glob target, any rm flags (or none): claude-factory-99d.1
@@ -167,6 +170,16 @@ const DENY_LIVE = [
   // claude-factory-25z.16: kubectl exec and attach mutate a live pod too.
   'kubectl --context acme exec -it pod -- sh -c "reboot"',
   'kubectl --context acme attach pod -c c -i',
+  // claude-factory-25z.19: sh, bash and zsh keep reading their own options after the `-c`
+  // cluster, up to the first word that is not one of their options. A flag word there is not
+  // the script. The guard must still find the real script after it.
+  "bash -c -x 'kubectl --context acme apply -f x'",
+  "sh -c -e 'kubectl --context acme apply -f x'",
+  "zsh -c -x 'kubectl --context acme apply -f x'",
+  "sudo -u root bash -lc -x 'kubectl --context acme apply -f x'",
+  "bash -c -O extglob 'kubectl --context acme apply -f x'",
+  "bash -c -- 'kubectl --context acme apply -f x'",
+  "sh -c -- 'kubectl --context acme apply -f x'",
 ]
 
 const ALLOW_LIVE = [

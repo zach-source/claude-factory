@@ -471,20 +471,32 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
 }
 
 /**
- * Looks for a `sh`, `bash`, `zsh`, `dash` or `eval` word at any position in `words`, and recurses
- * into denyReason on the script it runs.
+ * Looks for a `sh`, `bash`, `zsh`, `dash` or `eval` word at any position in `words`. It recurses
+ * into denyReason on the script that word runs.
+ *
  * claude-factory-25z.14: a wrapper this hook does not strip by name (`sudo -u`, `nice -n`,
- * `timeout -s`, `watch`, `find -exec`) can carry flag words of its own, which push the shell word
- * past position 0. `realCommand` only strips a wrapper word it knows; it does not know these
- * flags, so it leaves the shell word in place and `baseWord(cmd[0])` never finds it. This scans
- * every word position instead, the same fail-closed scan `anyLiveApplyWord` uses.
+ * `timeout -s`, `watch`, `find -exec`) can carry flag words of its own. These flag words push the
+ * shell word past position 0. `realCommand` strips only a wrapper word it knows, so it leaves an
+ * unknown wrapper's shell word in place, and `baseWord(cmd[0])` never finds it. This function
+ * scans every word position instead, the same fail-closed scan `anyLiveApplyWord` uses.
+ *
  * claude-factory-25z.17: the `eval` case reads every word from `j + 1` on. The `sh -c` case reads
- * the one script word. A later loop step must not read those same words again in a new recursion.
- * The old code did read them again at each later `j`. Each extra read doubled the work of the one
- * before it. A command with many stacked `eval` words then took exponential time. It could time
- * out the 10 s hook, instead of a deny or an allow. So a shell or `eval` word now consumes every
- * word after it. The loop moves `j` past the script, or (for `eval`) stops: no word after a bare
- * `eval` has a use outside its own joined rest.
+ * one script word. A later loop step must not read those same words again in a new recursion. The
+ * old code did read them again at each later `j`. Each extra read doubled the work of the read
+ * before it. A command with many stacked `eval` words then took exponential time. This can time
+ * out the 10 s hook, in place of a deny or an allow verdict. A shell or `eval` word now consumes
+ * every word after it. The loop moves `j` past the script. For `eval` the loop stops: no word
+ * after a bare `eval` has a use outside its own joined rest.
+ *
+ * claude-factory-25z.19: `sh`, `bash` and `zsh` keep reading their own options after the `-c`
+ * cluster, up to the first word that is not one of their options. An option can itself take a
+ * value word, for example `-O extglob`. So the real script can sit one or more words past
+ * `words[j + ci + 1]`. This hook does not know every shell option. It tries every later word that
+ * does not start with `-` as a candidate script. It also tries the word right after a literal
+ * `--`, because an operand there can start with `-` and still be the script. A recursion on a
+ * wrong candidate (an option's own value word, for example `extglob`) is safe: denyReason returns
+ * undefined for it. Each word is still read once. The loop moves `j` to the last word it checked,
+ * so a later step never reads this span again (the .17 bound).
  */
 function anyShellReason(
   words: string[],
@@ -495,14 +507,25 @@ function anyShellReason(
     const bw = baseWord(words[j]!)
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
       const ci = shCFlagIndex(words.slice(j))
-      const scriptWord = ci >= 0 ? words[j + ci + 1] : undefined
-      if (scriptWord !== undefined) {
-        const r = denyReason(scriptWord, root, personOnly)
-        if (r) return r
-        j += ci + 1
-        continue
+      if (ci < 0) continue
+      let k = j + ci + 1
+      let found: string | undefined
+      for (; k < words.length; k++) {
+        const w = words[k]!
+        if (w === '--') {
+          k++
+          if (k < words.length) found = denyReason(words[k]!, root, personOnly)
+          break
+        }
+        if (w.startsWith('-')) continue
+        found = denyReason(w, root, personOnly)
+        if (found) break
       }
-    } else if (bw === 'eval') {
+      if (found) return found
+      j = k
+      continue
+    }
+    if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {
         const r = denyReason(rest.join(' '), root, personOnly)
