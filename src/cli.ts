@@ -2372,10 +2372,14 @@ async function tick(isPatrol = false) {
   if (!release) return { busy: true }
   try {
     const now = Date.now()
+    const linearState = existsSync(linearSyncFile())
+      ? readJson<Record<string, LinearSyncState>>(linearSyncFile())
+      : {}
     const out = {
       runs: [] as Row[],
       manager: [] as (Mail & { run: string })[],
-      rigs: rigs(), // the manager's patrol works toward their goals
+      // the manager's patrol works toward their goals; each opted-in rig carries its last Linear pull
+      rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
     }
     const halt = halted()
     for (const id of runIds()) {
@@ -2388,6 +2392,7 @@ async function tick(isPatrol = false) {
       }
     }
     out.manager.push(...skillMail(now))
+    out.manager.push(...linearMail(now))
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
     out.runs.push(
       ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
@@ -2708,6 +2713,8 @@ export type Rig = {
   params?: Record<string, string>
   /** opts this rig into the Linear pull loop (claude-factory-b6c): the Linear team ids it pulls from */
   linear?: string[]
+  /** `tick()` adds this from `linear-sync.json` for an opted-in rig; `rig add` never writes it */
+  linearSync?: LinearSyncState
 }
 const rigsFile = () => join(HOME, 'rigs.json')
 /** `$FACTORY_HOME/linear-sync.json`'s per-rig state, keyed by rig name, after each Linear pull attempt */
@@ -2729,6 +2736,33 @@ function linearSyncLine(name: string): string {
   if (!s) return ''
   const age = `${Math.round((Date.now() - s.at) / 60_000)}m ago`
   return s.error ? ` (error ${age}: ${s.error})` : ` (${s.fresh ? 'fresh' : `pulled ${s.pulled ?? 0}`}, ${age})`
+}
+const linearToldFile = () => join(HOME, 'linear-told.json')
+/**
+ * the manager hears once of each rig's new Linear pull error (claude-factory-b6c.5). A repeat of an
+ * error already told stays quiet. A pull that then succeeds clears the told state, so a later new
+ * failure tells the manager again, the same way skillMail (above) dedupes a pending skill set.
+ */
+function linearMail(now: number): (Mail & { run: string })[] {
+  if (!existsSync(linearSyncFile())) return []
+  const state = readJson<Record<string, LinearSyncState>>(linearSyncFile())
+  const told = existsSync(linearToldFile()) ? readJson<Record<string, string>>(linearToldFile()) : {}
+  const mail: (Mail & { run: string })[] = []
+  let changed = false
+  for (const [name, s] of Object.entries(state)) {
+    if (s.error) {
+      if (told[name] !== s.error) {
+        mail.push({ run: 'factory', from: 'linear', text: `${name}: Linear pull failed: ${s.error}`, at: now })
+        told[name] = s.error
+        changed = true
+      }
+    } else if (name in told) {
+      delete told[name]
+      changed = true
+    }
+  }
+  if (changed) writeJson(linearToldFile(), told)
+  return mail
 }
 const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)

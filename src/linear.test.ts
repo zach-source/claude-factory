@@ -299,3 +299,70 @@ test('a fresh skip is recorded, with no label strip (nothing new to strip)', () 
   expect(state.a.lastPull).toBe('2026-10-15T10:00:00Z')
   expect(callLines().some(l => argvOf(l).startsWith('label remove'))).toBe(false)
 })
+
+test('rig list shows a Linear-opted rig\'s last pull count, or its error (claude-factory-b6c.5)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  writeFileSync(
+    join(home, 'linear-sync.json'),
+    JSON.stringify({ a: { at: Date.now(), fresh: false, pulled: 3, created: 1, updated: 2, stripped: 0 } }),
+  )
+  const pulled = factory(['rig', 'list'])
+  expect(pulled.out).toContain(`linear: ${TEAM} (pulled 3,`)
+
+  writeFileSync(join(home, 'linear-sync.json'), JSON.stringify({ a: { at: Date.now(), fresh: false, error: 'boom' } }))
+  const erred = factory(['rig', 'list'])
+  expect(erred.out).toContain(`linear: ${TEAM} (error`)
+  expect(erred.out).toContain('boom')
+})
+
+// These tests cover tick() (claude-factory-b6c.5). tick() builds the console's view of each opted-in
+// rig's last Linear pull. tick() also sends one manager mail for each new Linear pull error.
+//
+// A fake `beads.lock` blocks a race. The lock holds this test's own pid, which stays alive through the
+// test. The lock stops tick's kickBeads function. kickBeads would start a real `factory beads` pass.
+// That pass would pull again through the fake bd, and so it would race these assertions.
+const blockBeadsKick = () => {
+  mkdirSync(join(home, 'beads.lock'), { recursive: true })
+  writeFileSync(join(home, 'beads.lock', 'pid'), String(process.pid))
+}
+const writeSyncState = (s: unknown) => writeFileSync(join(home, 'linear-sync.json'), JSON.stringify(s))
+const tickJson = () => JSON.parse(factory(['tick']).out)
+
+test("tick's out.rigs carries each opted-in rig's last Linear sync state, for the console", () => {
+  writeRigs([
+    { name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] },
+    { name: 'b', repo: repoB, factory: 'lifecycle' }, // not opted in: no linearSync at all
+  ])
+  blockBeadsKick()
+  const state = { at: Date.now(), fresh: false, pulled: 2, created: 1, updated: 1, stripped: 0 }
+  writeSyncState({ a: state })
+  const out = tickJson()
+  expect(out.rigs.find((r: { name: string }) => r.name === 'a').linearSync).toEqual(state)
+  expect(out.rigs.find((r: { name: string }) => r.name === 'b').linearSync).toBeUndefined()
+})
+
+test('a failing rig mails the manager once; the same error again mails nothing more; success then failure mails again', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  blockBeadsKick()
+  const linearMailOf = (out: { manager: { from: string; text: string; run: string }[] }) =>
+    out.manager.filter(m => m.from === 'linear')
+
+  writeSyncState({ a: { at: Date.now(), fresh: false, error: 'boom' } })
+  const first = linearMailOf(tickJson())
+  expect(first).toHaveLength(1)
+  expect(first[0]!.run).toBe('factory')
+  expect(first[0]!.text).toContain('boom')
+
+  const second = linearMailOf(tickJson()) // the same error, unchanged: no second mail
+  expect(second).toHaveLength(0)
+
+  // a success since the last mail clears the told state
+  writeSyncState({ a: { at: Date.now(), fresh: true, lastPull: '2026-10-15T10:00:00Z' } })
+  const third = linearMailOf(tickJson())
+  expect(third).toHaveLength(0)
+
+  writeSyncState({ a: { at: Date.now(), fresh: false, error: 'boom2' } }) // a new error after a success
+  const fourth = linearMailOf(tickJson())
+  expect(fourth).toHaveLength(1)
+  expect(fourth[0]!.text).toContain('boom2')
+})
