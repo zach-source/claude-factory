@@ -122,7 +122,7 @@ Today a factory assumes that every `factory/...` claim and branch on a rig is it
 
 ## Linear
 
-A rig can turn on a Linear pull loop. This loop copies Linear issues from a team into the
+A rig can turn on a Linear pull loop. The loop copies Linear issues from a team into the
 rig's beads. It uses `bd linear sync --pull-if-stale`. The loop never pushes changes back to
 Linear.
 
@@ -130,23 +130,24 @@ Linear.
 
 1. Find the Linear team's id. The id is a UUID. If a rig already syncs with Linear by hand,
    run `bd config get linear.team_id` to get the id.
-2. Store the Linear API key, or an OAuth app's client id and secret, in a secret manager.
+2. Store the Linear API key, or the client id and secret of an OAuth app, in a secret manager.
    Write a command that prints the value. Put the command in `$FACTORY_HOME/linear.json`:
 
    ```json
    { "apiKey": "op read op://vault/linear/api-key" }
    ```
 
-   or, for an OAuth app:
+   For an OAuth app, use this format:
 
    ```json
    { "clientId": "op read op://vault/linear/client-id", "clientSecret": "op read op://vault/linear/client-secret" }
    ```
 
-   This file holds a command. It never holds the value itself. If a value starts with
-   `lin_api_` or `lin_oauth_`, the factory refuses it, because that is a literal key, not a
-   command. The factory never writes to `linear.json`. The factory never runs `bd config set`
-   with the key.
+   This file holds a command. It never holds the value itself.
+
+   If a value starts with `lin_api_` or `lin_oauth_`, the factory does not accept it. That value is a literal key, not a command.
+
+   The factory never writes to `linear.json`. It never runs `bd config set` with the key.
 
 3. Add the team to the rig:
 
@@ -154,35 +155,34 @@ Linear.
    factory rig add app ~/repos/my-app --linear 04114abf-ddb7-4a6f-bb47-814fd2c44373
    ```
 
-   The `--linear` flag takes one team id, or several team ids separated by commas. If you run
-   `rig add` again with no `--linear` flag, it drops the field and turns the loop off for that
-   rig.
+   The `--linear` flag can have one team id, or several team ids separated by commas.
+
+   If you run `rig add` again with no `--linear` flag, the factory removes the field. It also turns the loop off for that rig.
 
 ### What the loop does
 
 Every 20 minutes, the factory runs `bd linear sync --pull-if-stale --threshold 15m --team
-<ids> --json` in the rig's repo. It does this for each rig with the loop on. The factory
-passes the key, or the OAuth pair, through the environment only. It never puts the key on the
-command line, on disk, or in a bead. To run the sync now, use `factory linear [rig...]
---force`. This command runs the sync for all rigs with the loop on, or only for the rigs you
-name.
+<ids> --json` in the rig's repo. It does this for each rig that has the loop on.
 
-A pull copies Linear labels onto the beads it touches. A Linear label named `factory` can
-start a run on its own. To prevent this, the loop removes the `factory` label after each
-pull. It removes the label from every bead that is new in this pull, that is, a bead with a
-Linear external reference. If a bead already carried the label, it keeps the label. A
-person's queue, not Linear's label, decides what the factory works on.
+The factory passes the key, or the OAuth pair, through the environment only. It never puts the key on the command line, on disk, or in a bead.
+
+To run the sync now, use `factory linear [rig...] --force`. With no rig names, the command runs the sync for all rigs with the loop on. With rig names, it runs the sync only for those rigs.
+
+A pull adds Linear labels to the beads it touches. A Linear label named `factory` can start a run by itself. To prevent this, the loop removes the `factory` label after each pull.
+
+The loop removes the label from every new bead in this pull. A new bead has a Linear external reference. If a bead already had the label before the pull, it keeps the label.
+
+A person's queue, not Linear's label, decides what the factory works on.
 
 ### Checking it
 
-`factory rig list` shows the last pull for each rig with the loop on. This includes the age
-of the pull and what it pulled, or the error. The console's
-[Rigs tab](console.md#rigs-key-4) shows the same line. If a rig's pull fails, the factory
-mails the manager once for that error. If a later pull succeeds, it clears the error. A new
-error after that mails the manager again.
+`factory rig list` shows the last pull for each rig with the loop on. The output shows the age of the pull, and either what it pulled or the error.
 
-`$FACTORY_HOME/linear-sync.json` keeps each rig's last result. The factory clips an error in
-this file to 200 characters. It replaces every secret value with `***`.
+The console's [Rigs tab](console.md#rigs-key-4) shows the same line.
+
+If a rig's pull fails, the factory mails the manager once for that error. If a later pull succeeds, it clears the error. A new error after that mails the manager again.
+
+`$FACTORY_HOME/linear-sync.json` keeps each rig's last result. The factory cuts an error in this file to 200 characters. It replaces every secret value with `***`.
 
 ## Common problems
 

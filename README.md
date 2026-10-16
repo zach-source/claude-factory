@@ -481,6 +481,15 @@ rows = [
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
   stays). `start` and `fork` refuse past `FACTORY_MAX_RUNS` (8) runs holding a worker.
 
+## Releasing claude-factory
+
+[docs/releasing.md](docs/releasing.md) has the full recipe. Run the `release` workflow
+from the Actions tab. Merge its `release/vX.Y.Z` pull request with
+`gh pr merge --match-head-commit`. Then `release-tag.yml` tags the release and publishes
+it on its own. The doc also records the tag-signing decision (gitsign, Sigstore's
+keyless signer) and names which CI checks run, and which skip, in
+`.github/workflows/ci.yml`.
+
 ## Caveats
 
 - Workers run `--dangerously-skip-permissions` by default, each in its own

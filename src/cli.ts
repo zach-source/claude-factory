@@ -56,10 +56,19 @@ import {
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
+import * as selfupdate from './selfupdate'
 import * as memory from './memory'
 import * as ax from './ax'
 import type { Egress } from './ax'
-import { parseLinearTeams, parseSync, readLinearConfig, redact, syncArgs, syncEnv, type LinearConfig } from './linear'
+import {
+  parseLinearTeams,
+  parseSync,
+  readLinearConfig,
+  redact,
+  syncArgs,
+  syncEnv,
+  type LinearConfig,
+} from './linear'
 import * as worker from './worker'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
@@ -253,7 +262,9 @@ export function parsePkgGateMinDays(raw: string | undefined): number | undefined
  * (claude-factory-ei0.22). The old PKG_GATE_ALLOWLIST is refused outright rather than reinterpreted, so a
  * deploy still carrying it fails loudly instead of its meaning silently changing underneath it.
  */
-export function parsePkgGateAllowlist(env: Record<string, string | undefined>): pkggate.Allowlist | undefined {
+export function parsePkgGateAllowlist(
+  env: Record<string, string | undefined>,
+): pkggate.Allowlist | undefined {
   if (env.PKG_GATE_ALLOWLIST)
     fail(
       'PKG_GATE_ALLOWLIST no longer exists (one list covered go, npm and pypi alike, so an entry for one ' +
@@ -266,10 +277,14 @@ export function parsePkgGateAllowlist(env: Record<string, string | undefined>): 
   return go || npm || pypi ? { ...(go && { go }), ...(npm && { npm }), ...(pypi && { pypi }) } : undefined
 }
 
+const HERDR = () => process.env.FACTORY_HERDR ?? 'herdr'
+/** herdr is optional. An AX-only rig, or a box with no local panes (a CI runner, say), may have none installed */
+const herdrInstalled = () => Bun.which(HERDR()) !== null
+
 function herdr(...args: string[]) {
   // a leading space keeps the typed launch out of the person's shell history (zsh HIST_IGNORE_SPACE, atuin)
   if (args[0] === 'pane' && args[1] === 'run') args = [...args.slice(0, 3), ` ${args[3]}`, ...args.slice(4)]
-  const p = Bun.spawnSync(['herdr', ...args])
+  const p = Bun.spawnSync([HERDR(), ...args])
   const out = p.stdout.toString().trim()
   if (p.exitCode !== 0) fail(`herdr ${args.slice(0, 2).join(' ')}: ${p.stderr.toString().trim() || out}`)
   return out.startsWith('{') ? JSON.parse(out).result : out
@@ -287,7 +302,7 @@ function typeLaunch(pane: string, cmd: string) {
 
 /** the pane's agent status and Claude session id, or null once the pane is gone */
 function paneInfo(pane: string): { status: string; agent?: string; session?: string } | null {
-  const p = Bun.spawnSync(['herdr', 'pane', 'get', pane])
+  const p = Bun.spawnSync([HERDR(), 'pane', 'get', pane])
   // herdr answers a missing pane on stderr
   const out = JSON.parse(p.stdout.toString() || p.stderr.toString() || '{}')
   if (out.error?.code === 'pane_not_found') return null
@@ -327,7 +342,11 @@ const seenFile = (run: Run, task: string) => join(runDir(run.id), `${task}.seen`
  * on the old line-count `<task>.cursor` (absent `.seen`) by treating its first `min(cursor, len)` lines, as
  * polled right now, as already replayed -- the only cursor value that file ever held -- then stops touching
  * it; leaving it on disk is harmless (claude-factory-4x1) */
-function loadSeen(run: Run, task: string, lines: string[]): { seen: Record<string, number>; missing: number } {
+function loadSeen(
+  run: Run,
+  task: string,
+  lines: string[],
+): { seen: Record<string, number>; missing: number } {
   const file = seenFile(run, task)
   if (existsSync(file)) return readJson(file)
   const legacy = join(runDir(run.id), `${task}.cursor`)
@@ -577,7 +596,7 @@ const herdrRunner: Runner = {
   launch: launchPane,
   info: (_run, pane) => paneInfo(pane),
   deliver: (pane, text) => (herdr('agent', 'prompt', pane, text), true),
-  close: pane => void Bun.spawnSync(['herdr', 'pane', 'close', pane]), // gone already is fine
+  close: pane => void Bun.spawnSync([HERDR(), 'pane', 'close', pane]), // gone already is fine
   phase: pane => paneInfo(pane)?.status ?? null,
 }
 
@@ -625,8 +644,22 @@ function priorWork(run: Run) {
   return p.exitCode === 0 ? p.stdout.toString().trim() : ''
 }
 
+// Every call here commits to the memory store, not a rig.
+// `factory memory compact` and `dream` must still work on a box with no git identity set, for
+// example a fresh CI runner or a fresh VM.
+// Each call first checks with `git var GIT_AUTHOR_IDENT`.
+// An env var, a repo, a global config or a system config that already names an identity wins.
+// The fallback applies only when none of them name one.
+const MEMORY_GIT_IDENTITY_FALLBACK = {
+  GIT_AUTHOR_NAME: 'factory',
+  GIT_AUTHOR_EMAIL: 'factory@localhost',
+  GIT_COMMITTER_NAME: 'factory',
+  GIT_COMMITTER_EMAIL: 'factory@localhost',
+}
 function git(cwd: string, ...args: string[]) {
-  const p = Bun.spawnSync(['git', '-C', cwd, ...args])
+  const probe = Bun.spawnSync(['git', '-C', cwd, 'var', 'GIT_AUTHOR_IDENT'], { env: process.env })
+  const env = probe.exitCode === 0 ? process.env : { ...process.env, ...MEMORY_GIT_IDENTITY_FALLBACK }
+  const p = Bun.spawnSync(['git', '-C', cwd, ...args], { env })
   return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
 }
 
@@ -1297,7 +1330,12 @@ export const commitIdentity = (home: string) => {
   return {
     env:
       name && email
-        ? { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email }
+        ? {
+            GIT_AUTHOR_NAME: name,
+            GIT_AUTHOR_EMAIL: email,
+            GIT_COMMITTER_NAME: name,
+            GIT_COMMITTER_EMAIL: email,
+          }
         : {},
     rule: coauthor
       ? `\n# Commits\n\nEnd every commit message with this trailer, after a blank line:\n\nCo-authored-by: ${coauthor}\n`
@@ -1593,7 +1631,13 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // it has one (own()/claude.jsonl's fallback -- see worker.ts lastTurn), not gated on this tick having already
   // learned c.session, which lags the runner's own info.session by at least one tick (the SESSION send above)
   // -- gating it left an AX worker's tail empty for its whole first turn too (claude-factory-xq3)
-  const tail = !isClaude ? '' : runner.local ? (c.session ? tailOf(run.worktree, c.session) : '') : (info?.tail ?? '')
+  const tail = !isClaude
+    ? ''
+    : runner.local
+      ? c.session
+        ? tailOf(run.worktree, c.session)
+        : ''
+      : (info?.tail ?? '')
   const hit = limitHit(tail)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
@@ -1684,7 +1728,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // serve already spent its own budget retrying: fail now, named, instead of nudging a known cause
   else if (egressReason && !isAsking && (status === 'idle' || status === 'done'))
     send({ type: 'FAIL', seq: c.seq, reason: egressReason })
-  else if (due === 'fail') send({ type: 'FAIL', seq: c.seq, reason: egressReason ?? `no report within ${timeoutMin} min` })
+  else if (due === 'fail')
+    send({ type: 'FAIL', seq: c.seq, reason: egressReason ?? `no report within ${timeoutMin} min` })
   else if (stall === 'fail') {
     const min = Math.round((now - seen.at) / 60_000)
     const last = tail.trimEnd().split('\n').at(-1) ?? ''
@@ -2259,6 +2304,73 @@ const kickDream = () => {
   }).unref()
 }
 
+const SELF_UPDATE_MS = Number(process.env.FACTORY_SELF_UPDATE_MS) || 5 * 60_000
+/**
+ * Fast-forwards this checkout to origin/main. It does this at most every FACTORY_SELF_UPDATE_MS.
+ * This way, a merge to main goes live here with no manual `git pull` (claude-factory-5h9.8).
+ *
+ * The update itself runs under 'tick.lock', the same lock tick() takes. A concurrent tick() sees
+ * the lock held. That tick() then reports busy, and waits until the update finishes. This way,
+ * no tick runs mid-merge against a half-updated checkout.
+ */
+const kickSelfUpdate = () => {
+  // FACTORY_SELF_UPDATE=0 is a full no-op here, not a recorded refusal: it never spawns, so it
+  // never writes self-update.json and never mails anyone. (A direct `factory self-update` still
+  // checks the same switch itself, and reports the refusal to whoever ran it.)
+  if (process.env.FACTORY_SELF_UPDATE === '0') return
+  const stamp = join(HOME, 'self-update.stamp')
+  const lastAt = existsSync(stamp) ? statSync(stamp).mtimeMs : undefined
+  if (isHeld('tick.lock') || !selfupdate.isDue(lastAt, Date.now(), SELF_UPDATE_MS)) return
+  writeFileSync(stamp, '')
+  spawnChild(CLI, ['self-update'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
+const selfUpdateFile = () => join(HOME, 'self-update.json')
+/** does the actual fast-forward; see kickSelfUpdate's note on why it takes 'tick.lock' */
+function runSelfUpdate(): selfupdate.State | null {
+  const release = hold('tick.lock')
+  if (!release) return null // a tick, or another self-update, is already running: the next kick tries again
+  try {
+    const state = selfupdate.selfUpdate(ROOT, { enabled: process.env.FACTORY_SELF_UPDATE !== '0' })
+    writeJson(selfUpdateFile(), state)
+    return state
+  } finally {
+    release()
+  }
+}
+
+/**
+ * The manager hears of each real outcome once: an update, or a new refusal reason. A no-op stays
+ * quiet. But a no-op also clears the mailed marker (claude-factory-5h9.12, claude-factory-6d9).
+ *
+ * Without this clear, 2 refusals with one no-op between them mailed only the first. The no-op
+ * left the marker untouched. The second refusal's reason matched that old marker, so it looked
+ * already mailed.
+ *
+ * `home` defaults to HOME. A test can pass its own temp dir instead.
+ */
+export function selfUpdateMail(now: number, home = HOME): (Mail & { run: string })[] {
+  const file = join(home, 'self-update.json')
+  if (!existsSync(file)) return []
+  const state = readJson<selfupdate.State>(file)
+  const mailedFile = join(home, 'self-update-mailed.json')
+  if (state.ok && state.from === state.to) {
+    if (existsSync(mailedFile)) rmSync(mailedFile)
+    return [] // already up to date: nothing worth a mail
+  }
+  const last = existsSync(mailedFile) ? readJson<string>(mailedFile) : ''
+  if (state.why === last) return []
+  writeJson(mailedFile, state.why)
+  const text = state.ok
+    ? `factory self-update: ${state.why} (${ROOT})`
+    : `factory self-update did not update ${ROOT}: ${state.why}`
+  return [{ run: 'factory', from: 'factory', text, at: now }]
+}
+
 const CONFIG_SYNC_MS = 10 * 60_000
 // what a home's .gitignore lets in (its config: rigs.json) to its branch, and the memory to the memory branch
 export const CONFIG_SYNC = `git remote get-url origin >/dev/null 2>&1 || exit 0
@@ -2283,7 +2395,7 @@ const SIDEBAR_TTL_MS = 5 * 60_000
 function managerWorkspace(): string | undefined {
   const id = process.env['HERDR_PANE_ID']
   if (!id) return undefined
-  const pane = JSON.parse(Bun.spawnSync(['herdr', 'pane', 'get', id]).stdout.toString() || '{}').result?.pane
+  const pane = JSON.parse(Bun.spawnSync([HERDR(), 'pane', 'get', id]).stdout.toString() || '{}').result?.pane
   const isOurs = pane?.cwd && (factoryAt(pane.cwd) ?? join(ROOT, '.factory-state')) === HOME
   return isOurs ? pane.workspace_id : undefined
 }
@@ -2292,8 +2404,10 @@ function managerWorkspace(): string | undefined {
  * tick from a pane whose directory is this factory's names the manager: a start or fork run for another
  * factory, or a background session forked from a manager, ticks from someone else's pane.
  * Only changes are reported, refreshed before the TTL, so a stopped factory's lapse.
+ * No-op with no herdr installed (an AX-only rig, or a CI box): nothing there can show a sidebar.
  */
 function showInSidebar(rows: Row[], now: number, isPatrol: boolean) {
+  if (!herdrInstalled()) return
   const { byWs, rollup } = tokens(rows)
   const file = join(HOME, 'sidebar.json')
   const was = existsSync(file)
@@ -2304,7 +2418,7 @@ function showInSidebar(rows: Row[], now: number, isPatrol: boolean) {
   const isStale = now - was.at > SIDEBAR_TTL_MS / 2
   const report = (ws: string, token: string[]) =>
     // a workspace closed since is fine: nothing to show it on
-    Bun.spawnSync(['herdr', 'workspace', 'report-metadata', ws, '--source', 'claude-factory', ...token])
+    Bun.spawnSync([HERDR(), 'workspace', 'report-metadata', ws, '--source', 'claude-factory', ...token])
   const changed = Object.entries(want).filter(([ws, text]) => isStale || was.ws[ws] !== text)
   const gone = Object.keys(was.ws).filter(ws => !(ws in want))
   for (const [ws, text] of changed)
@@ -2321,8 +2435,11 @@ type HerdrPane = {
   agent?: string | null
   agent_status?: string
 }
+// no herdr installed: no panes (an AX-only rig, or a CI box, has none to reap)
 const herdrPanes = (): HerdrPane[] =>
-  JSON.parse(Bun.spawnSync(['herdr', 'pane', 'list']).stdout.toString() || '{}').result?.panes ?? []
+  herdrInstalled()
+    ? (JSON.parse(Bun.spawnSync([HERDR(), 'pane', 'list']).stdout.toString() || '{}').result?.panes ?? [])
+    : []
 // herdr reuses workspace ids, so a run's workspace is still its own only while a pane there sits in its worktree
 const isIn = (p: HerdrPane, r: Pick<Run, 'ws' | 'worktree'>) =>
   p.workspace_id === r.ws && !!p.cwd && (p.cwd === r.worktree || p.cwd.startsWith(`${r.worktree}/`))
@@ -2361,8 +2478,8 @@ function reap(rows: Row[]) {
     return [{ ...run, isOver: r.node === 'done' || r.node === 'aborted', pane: r.pane }]
   })
   const { workspaces, panes } = reapable(runs, herdrPanes())
-  for (const ws of workspaces) Bun.spawnSync(['herdr', 'workspace', 'close', ws])
-  for (const pane of panes) Bun.spawnSync(['herdr', 'pane', 'close', pane])
+  for (const ws of workspaces) Bun.spawnSync([HERDR(), 'workspace', 'close', ws])
+  for (const pane of panes) Bun.spawnSync([HERDR(), 'pane', 'close', pane])
   for (const what of [...workspaces.map(w => `workspace ${w}`), ...panes.map(p => `pane ${p}`)])
     console.error(`${new Date().toISOString()} reaped ${what}`)
 }
@@ -2393,6 +2510,7 @@ async function tick(isPatrol = false) {
     }
     out.manager.push(...skillMail(now))
     out.manager.push(...linearMail(now))
+    out.manager.push(...selfUpdateMail(now))
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
     out.runs.push(
       ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
@@ -2410,6 +2528,7 @@ async function tick(isPatrol = false) {
       if (!halted()) kickDream()
       kickDevenv()
       kickConfigSync()
+      kickSelfUpdate()
     }
   }
 }
@@ -2457,7 +2576,19 @@ const linearDue = (state: LinearSyncState | undefined, force: boolean) =>
 /** beads with a Linear external ref that carry the factory label right now, in `repo` */
 function linearLabeled(repo: string): { id: string }[] {
   const p = Bun.spawnSync(
-    ['bd', 'list', '--all', '--brief', '--label', 'factory', '--external-contains', 'linear.app', '--json', '-n', '0'],
+    [
+      'bd',
+      'list',
+      '--all',
+      '--brief',
+      '--label',
+      'factory',
+      '--external-contains',
+      'linear.app',
+      '--json',
+      '-n',
+      '0',
+    ],
     { cwd: repo, env: process.env, timeout: 60_000 },
   )
   if (p.exitCode !== 0) throw new Error(`bd list: ${p.stderr.toString().trim().split('\n')[0] || 'failed'}`)
@@ -2500,7 +2631,14 @@ function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
     }
     state[rig.name] = outcome.fresh
       ? { at, fresh: true, lastPull: outcome.lastPull }
-      : { at, fresh: false, pulled: outcome.pulled, created: outcome.created, updated: outcome.updated, stripped }
+      : {
+          at,
+          fresh: false,
+          pulled: outcome.pulled,
+          created: outcome.created,
+          updated: outcome.updated,
+          stripped,
+        }
   } catch (err) {
     state[rig.name] = { at, fresh: false, error: clip((err as Error).message, 200) }
   }
@@ -2735,7 +2873,9 @@ function linearSyncLine(name: string): string {
   const s = readJson<Record<string, LinearSyncState>>(linearSyncFile())[name]
   if (!s) return ''
   const age = `${Math.round((Date.now() - s.at) / 60_000)}m ago`
-  return s.error ? ` (error ${age}: ${s.error})` : ` (${s.fresh ? 'fresh' : `pulled ${s.pulled ?? 0}`}, ${age})`
+  return s.error
+    ? ` (error ${age}: ${s.error})`
+    : ` (${s.fresh ? 'fresh' : `pulled ${s.pulled ?? 0}`}, ${age})`
 }
 const linearToldFile = () => join(HOME, 'linear-told.json')
 /**
@@ -2752,7 +2892,12 @@ function linearMail(now: number): (Mail & { run: string })[] {
   for (const [name, s] of Object.entries(state)) {
     if (s.error) {
       if (told[name] !== s.error) {
-        mail.push({ run: 'factory', from: 'linear', text: `${name}: Linear pull failed: ${s.error}`, at: now })
+        mail.push({
+          run: 'factory',
+          from: 'linear',
+          text: `${name}: Linear pull failed: ${s.error}`,
+          at: now,
+        })
         told[name] = s.error
         changed = true
       }
@@ -3336,7 +3481,9 @@ async function prs() {
             return [] // one corrupt inbox line must not drop the rest
           }
         })
-        .filter((e): e is { type: 'MAIL'; from: string; to: string; text: string; at: number } => e.type === 'MAIL')
+        .filter(
+          (e): e is { type: 'MAIL'; from: string; to: string; text: string; at: number } => e.type === 'MAIL',
+        )
       let file: PrsFile = { version: 1, prs: [] }
       if (existsSync(prsFile(id))) {
         try {
@@ -3380,7 +3527,9 @@ async function prs() {
   const metaById = new Map(metas.map(m => [m.id, m]))
   return rows.flatMap(({ run: id, prs: all, error }) => {
     const m = metaById.get(id)
-    return m ? [{ run: id, rig: m.rig, bead: m.bead, node: m.node, ended: m.ended, at: m.at, error, prs: all }] : []
+    return m
+      ? [{ run: id, rig: m.rig, bead: m.bead, node: m.node, ended: m.ended, at: m.at, error, prs: all }]
+      : []
   })
 }
 
@@ -3389,7 +3538,8 @@ export type DecisionsRow = { rig: string; factory: string; beads: DecisionBead[]
 export type Proposal = { question: string; options: string[]; at: number }
 
 const decisionsFile = () => join(HOME, 'decisions.json')
-const proposals = (): Record<string, Proposal> => (existsSync(decisionsFile()) ? readJson(decisionsFile()) : {})
+const proposals = (): Record<string, Proposal> =>
+  existsSync(decisionsFile()) ? readJson(decisionsFile()) : {}
 
 /** each rig's open bd decisions: beads flagged for a person and ready, unassigned beads that are their call,
  * never the factory's; a rig's own bd failure is its error, the rest still listed. Plus any proposed options
@@ -3419,7 +3569,8 @@ function decisionsList() {
 /** the person's answer to a bd decision: a human-flagged bead is answered and closed, an owner-only one just
  * gets a comment (queuing or starting it is a separate choice, made in the console or with start --owned) */
 function decisionsAnswer(rigName: string, id: string, text: string) {
-  if (process.env.FACTORY_FROM) fail("a worker cannot answer the person's decisions: mail the manager instead")
+  if (process.env.FACTORY_FROM)
+    fail("a worker cannot answer the person's decisions: mail the manager instead")
   const b = beads(repoOf(rigName), 'factory/person')
   if (b.human().some(x => x.id === id)) b.respond(id, text)
   else b.comment(id, text)
@@ -3430,7 +3581,8 @@ function decisionsAnswer(rigName: string, id: string, text: string) {
  * never for a gate, which only the person decides, and never for a blocked-on-prompt item, which waits on the
  * person looking at the worker's pane rather than on a choice */
 function decisionsPropose(key: string, question: string, optionsLine: string) {
-  if (process.env.FACTORY_FROM) fail("a worker cannot propose the person's decisions: mail the manager instead")
+  if (process.env.FACTORY_FROM)
+    fail("a worker cannot propose the person's decisions: mail the manager instead")
   if (/^gate:/.test(key)) fail('a gate is decided by the person, never proposed options')
   if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
   if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
@@ -3822,6 +3974,11 @@ if (import.meta.main && !outboxCmd)
           ).join('\n'),
         )
         break
+      case 'self-update': {
+        const state = runSelfUpdate()
+        console.log(state ? JSON.stringify(state) : 'a tick, or another self-update, is already running')
+        break
+      }
       case 'skills': {
         const [verb, name, ...why] = args
         if (!verb) console.log(JSON.stringify(memory.pendingSkills(MEMORY), null, 2))

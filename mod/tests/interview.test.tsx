@@ -26,47 +26,51 @@ const TICK = {
   ],
 }
 
-test('the interview tab asks a parked run its question and mails the chosen answer to its station', SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  const ran: string[][] = []
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-    on(event, () => ({ value: undefined }) as never)
-  on('process.run', ($, e) => {
-    ran.push([...e.argv])
-    return {
-      value: {
-        exitCode: 0,
-        stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
-        stderr: '',
-      } as never,
-    }
-  })
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
-  await $.command.run({ command: 'factory', args: 'interview' } as never)
-  const ui = await $.ui.mount({
-    plugin: 'factory',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'factory',
-    props: { bodyColumns: 100, placement: 'dock' } as never,
-    viewport: { columns: 100, rows: 60 },
-  })
-  const drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('Which spec wins?')
-  expect(drawn).toContain('questions (1)')
-  await ui.press({ key: 'iv-opt-iv:r1@1-0' })
-  await clock.settle()
-  const mail = ran.find(a => a.includes('mail'))
-  expect(mail?.slice(-3)).toEqual([
-    'r1',
-    'triage',
-    'Answering "Which spec wins?": The person chose: the ADR.',
-  ])
-  expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
-  await ui.unmount()
-})
+test(
+  'the interview tab asks a parked run its question and mails the chosen answer to its station',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
+          stderr: '',
+        } as never,
+      }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('Which spec wins?')
+    expect(drawn).toContain('questions (1)')
+    await ui.press({ key: 'iv-opt-iv:r1@1-0' })
+    await clock.settle()
+    const mail = ran.find(a => a.includes('mail'))
+    expect(mail?.slice(-3)).toEqual([
+      'r1',
+      'triage',
+      'Answering "Which spec wins?": The person chose: the ADR.',
+    ])
+    expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
+    await ui.unmount()
+  },
+)
 
 // a run at a gate, open from the tick alone (no sweep needed); the sweep adds a rig's human-flagged bead
 const GATE_TICK = {
@@ -79,7 +83,8 @@ const GATE_TICK = {
       node: 'release',
       sub: 'working',
       since: 20,
-      gate: { question: 'Ship it?', outcomes: ['ship', 'hold'] } as { question: string; outcomes: string[] } | undefined,
+      gate: { question: 'Ship it?', outcomes: ['ship', 'hold'] } as
+        { question: string; outcomes: string[] } | undefined,
       agent: undefined as string | undefined,
     },
   ],
@@ -102,118 +107,132 @@ const DECISIONS = {
   proposals: {},
 }
 
-test("'Interview me' sweeps bd into the open list; answering a bead calls decisions answer; a gate decides directly", SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  const ran: string[][] = []
-  // a decided gate's run really would come back from a live tick with no gate: the fake backend mirrors that
-  let runs = GATE_TICK.runs
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-    on(event, () => ({ value: undefined }) as never)
-  on('process.run', ($, e) => {
-    ran.push([...e.argv])
-    if (e.argv.includes('decide')) {
-      const [run, outcome] = e.argv.slice(e.argv.indexOf('decide') + 1)
-      runs = runs.map(r => (r.id === run ? { ...r, gate: undefined, agent: `${outcome} decided` } : r))
-    }
-    const out = e.argv.includes('tick')
-      ? JSON.stringify({ ...GATE_TICK, runs })
-      : e.argv.includes('decisions') && e.argv.includes('answer')
-        ? 'answered api-7'
-        : e.argv.includes('decisions')
-          ? JSON.stringify(DECISIONS)
-          : ''
-    return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-  })
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
-  await $.command.run({ command: 'factory', args: 'interview' } as never)
-  const ui = await $.ui.mount({
-    plugin: 'factory',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'factory',
-    props: { bodyColumns: 100, placement: 'dock' } as never,
-    viewport: { columns: 100, rows: 60 },
-  })
-  // the gate alone, nothing swept yet
-  expect(JSON.stringify(await ui.drawn())).toContain('questions (1)')
+test(
+  "'Interview me' sweeps bd into the open list; answering a bead calls decisions answer; a gate decides directly",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    // a decided gate's run really would come back from a live tick with no gate: the fake backend mirrors that
+    let runs = GATE_TICK.runs
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      if (e.argv.includes('decide')) {
+        const [run, outcome] = e.argv.slice(e.argv.indexOf('decide') + 1)
+        runs = runs.map(r => (r.id === run ? { ...r, gate: undefined, agent: `${outcome} decided` } : r))
+      }
+      const out = e.argv.includes('tick')
+        ? JSON.stringify({ ...GATE_TICK, runs })
+        : e.argv.includes('decisions') && e.argv.includes('answer')
+          ? 'answered api-7'
+          : e.argv.includes('decisions')
+            ? JSON.stringify(DECISIONS)
+            : ''
+      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    // the gate alone, nothing swept yet
+    expect(JSON.stringify(await ui.drawn())).toContain('questions (1)')
 
-  await ui.press({ key: 'iv-sweep' })
-  await clock.settle()
-  expect(ran.some(a => a.includes('decisions') && !a.includes('answer'))).toBe(true)
-  const swept = JSON.stringify(await ui.drawn())
-  expect(swept).toContain('Which DB?')
-  expect(swept).toContain('questions (2)')
+    await ui.press({ key: 'iv-sweep' })
+    await clock.settle()
+    expect(ran.some(a => a.includes('decisions') && !a.includes('answer'))).toBe(true)
+    const swept = JSON.stringify(await ui.drawn())
+    expect(swept).toContain('Which DB?')
+    expect(swept).toContain('questions (2)')
 
-  await ui.press({ key: 'iv-opt-bd:api:api-7-0' }) // 'postgres'
-  await clock.settle()
-  const answer = ran.filter(a => a.includes('decisions') && a.includes('answer')).at(-1)
-  expect(answer?.slice(-5)).toEqual([
-    'decisions',
-    'answer',
-    'api',
-    'api-7',
-    'Answering "Which DB?": The person chose: postgres.',
-  ])
-  const afterAnswer = JSON.stringify(await ui.drawn())
-  expect(afterAnswer).toContain('answered (1)')
-  expect(afterAnswer).toContain('questions (1)') // the bead is gone, the gate remains
+    await ui.press({ key: 'iv-opt-bd:api:api-7-0' }) // 'postgres'
+    await clock.settle()
+    const answer = ran.filter(a => a.includes('decisions') && a.includes('answer')).at(-1)
+    expect(answer?.slice(-5)).toEqual([
+      'decisions',
+      'answer',
+      'api',
+      'api-7',
+      'Answering "Which DB?": The person chose: postgres.',
+    ])
+    const afterAnswer = JSON.stringify(await ui.drawn())
+    expect(afterAnswer).toContain('answered (1)')
+    expect(afterAnswer).toContain('questions (1)') // the bead is gone, the gate remains
 
-  await ui.press({ key: 'decide-r2-ship' })
-  await clock.settle()
-  const decide = ran.filter(a => a.includes('decide')).at(-1)
-  expect(decide?.slice(-3)).toEqual(['decide', 'r2', 'ship'])
-  expect(JSON.stringify(await ui.drawn())).toContain('questions (0)') // the gate is decided and gone
-  await ui.unmount()
-})
+    await ui.press({ key: 'decide-r2-ship' })
+    await clock.settle()
+    const decide = ran.filter(a => a.includes('decide')).at(-1)
+    expect(decide?.slice(-3)).toEqual(['decide', 'r2', 'ship'])
+    expect(JSON.stringify(await ui.drawn())).toContain('questions (0)') // the gate is decided and gone
+    await ui.unmount()
+  },
+)
 
-test("the interview tab shows a rig's own bd error, and a failed sweep itself as a status line", SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  const status: unknown[] = []
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
-  for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
-  let decisionsOk = true
-  on('process.run', ($, e) => {
-    if (e.argv.includes('tick'))
-      return { value: { exitCode: 0, stdout: JSON.stringify({ manager: [], rigs: [], runs: [] }), stderr: '' } as never }
-    if (e.argv.includes('decisions'))
-      return decisionsOk
-        ? {
-            value: {
-              exitCode: 0,
-              stdout: JSON.stringify({
-                rigs: [{ rig: 'api', factory: 'lifecycle', beads: [], error: 'boom: bd ready failed' }],
-                proposals: {},
-              }),
-              stderr: '',
-            } as never,
-          }
-        : { value: { exitCode: 1, stdout: '', stderr: 'bd: connection refused' } as never }
-    return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
-  })
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
-  await $.command.run({ command: 'factory', args: 'interview' } as never)
-  const ui = await $.ui.mount({
-    plugin: 'factory',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'factory',
-    props: { bodyColumns: 100, placement: 'dock' } as never,
-    viewport: { columns: 100, rows: 60 },
-  })
-  await ui.press({ key: 'iv-sweep' })
-  await clock.settle()
-  expect(JSON.stringify(await ui.drawn())).toContain('boom: bd ready failed')
+test(
+  "the interview tab shows a rig's own bd error, and a failed sweep itself as a status line",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const status: unknown[] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
+    for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
+    let decisionsOk = true
+    on('process.run', ($, e) => {
+      if (e.argv.includes('tick'))
+        return {
+          value: {
+            exitCode: 0,
+            stdout: JSON.stringify({ manager: [], rigs: [], runs: [] }),
+            stderr: '',
+          } as never,
+        }
+      if (e.argv.includes('decisions'))
+        return decisionsOk
+          ? {
+              value: {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  rigs: [{ rig: 'api', factory: 'lifecycle', beads: [], error: 'boom: bd ready failed' }],
+                  proposals: {},
+                }),
+                stderr: '',
+              } as never,
+            }
+          : { value: { exitCode: 1, stdout: '', stderr: 'bd: connection refused' } as never }
+      return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    await ui.press({ key: 'iv-sweep' })
+    await clock.settle()
+    expect(JSON.stringify(await ui.drawn())).toContain('boom: bd ready failed')
 
-  decisionsOk = false
-  await ui.press({ key: 'iv-sweep' })
-  await clock.settle()
-  expect(JSON.stringify(status)).toContain('factory decisions failed')
-  await ui.unmount()
-})
+    decisionsOk = false
+    await ui.press({ key: 'iv-sweep' })
+    await clock.settle()
+    expect(JSON.stringify(status)).toContain('factory decisions failed')
+    await ui.unmount()
+  },
+)
 
 // factory 'custom', not 'lifecycle' (the fallback `row?.factory ?? 'lifecycle'` in register.tsx falls back to):
 // a test that expected 'lifecycle' here would pass even if the row's own factory were silently ignored
@@ -228,184 +247,212 @@ const OWNED_DECISIONS = {
   proposals: {},
 }
 
-test("an owner-only bead's 'not now' only comments through decisions answer, never starts it", SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  const ran: string[][] = []
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-    on(event, () => ({ value: undefined }) as never)
-  on('process.run', ($, e) => {
-    ran.push([...e.argv])
-    const out = e.argv.includes('tick')
-      ? JSON.stringify({ manager: [], rigs: [], runs: [] })
-      : e.argv.includes('decisions') && e.argv.includes('answer')
-        ? 'answered api-9'
-        : e.argv.includes('decisions')
-          ? JSON.stringify(OWNED_DECISIONS)
-          : ''
-    return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-  })
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
-  await $.command.run({ command: 'factory', args: 'interview' } as never)
-  const ui = await $.ui.mount({
-    plugin: 'factory',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'factory',
-    props: { bodyColumns: 100, placement: 'dock' } as never,
-    viewport: { columns: 100, rows: 60 },
-  })
-  await ui.press({ key: 'iv-sweep' })
-  await clock.settle()
-  expect(JSON.stringify(await ui.drawn())).toContain('A pilot bead')
-
-  // 'not now': comments through decisions answer, never starts the bead
-  await ui.press({ key: 'iv-opt-own:api:api-9-1' }) // 'not now'
-  await clock.settle()
-  expect(ran.some(a => a.includes('decisions') && a.includes('answer'))).toBe(true)
-  expect(ran.some(a => a.includes('start'))).toBe(false)
-  await ui.unmount()
-})
-
-test("an owner-only bead's 'start now' also runs factory start with the rig's factory", SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  const ran: string[][] = []
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-    on(event, () => ({ value: undefined }) as never)
-  on('process.run', ($, e) => {
-    ran.push([...e.argv])
-    const out = e.argv.includes('tick')
-      ? JSON.stringify({ manager: [], rigs: [], runs: [] })
-      : e.argv.includes('decisions') && e.argv.includes('answer')
-        ? 'answered api-9'
-        : e.argv.includes('decisions')
-          ? JSON.stringify(OWNED_DECISIONS)
-          : e.argv.includes('start')
-            ? 'started lifecycle-xyz'
+test(
+  "an owner-only bead's 'not now' only comments through decisions answer, never starts it",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      const out = e.argv.includes('tick')
+        ? JSON.stringify({ manager: [], rigs: [], runs: [] })
+        : e.argv.includes('decisions') && e.argv.includes('answer')
+          ? 'answered api-9'
+          : e.argv.includes('decisions')
+            ? JSON.stringify(OWNED_DECISIONS)
             : ''
-    return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-  })
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
-  await $.command.run({ command: 'factory', args: 'interview' } as never)
-  const ui = await $.ui.mount({
-    plugin: 'factory',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'factory',
-    props: { bodyColumns: 100, placement: 'dock' } as never,
-    viewport: { columns: 100, rows: 60 },
-  })
-  await ui.press({ key: 'iv-sweep' })
-  await clock.settle()
-  await ui.press({ key: 'iv-opt-own:api:api-9-0' }) // 'start now'
-  await clock.settle()
-  const answer = ran.filter(a => a.includes('decisions') && a.includes('answer')).at(-1)
-  expect(answer?.slice(-5)).toEqual([
-    'decisions',
-    'answer',
-    'api',
-    'api-9',
-    'Answering "api-9: A pilot bead": The person chose: start now.',
-  ])
-  const start = ran.filter(a => a.includes('start')).at(-1)
-  expect(start?.slice(-5)).toEqual(['start', 'custom', 'api', 'api-9', '--owned'])
-  await ui.unmount()
-})
+      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    await ui.press({ key: 'iv-sweep' })
+    await clock.settle()
+    expect(JSON.stringify(await ui.drawn())).toContain('A pilot bead')
 
-test("an owner-only bead's 'start now' stays open when the start fails, instead of vanishing unstarted", SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  const ran: string[][] = []
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-    on(event, () => ({ value: undefined }) as never)
-  on('process.run', ($, e) => {
-    ran.push([...e.argv])
-    if (e.argv.includes('start')) return { value: { exitCode: 1, stdout: '', stderr: 'no room on the rig' } as never }
-    const out = e.argv.includes('tick')
-      ? JSON.stringify({ manager: [], rigs: [], runs: [] })
-      : e.argv.includes('decisions') && e.argv.includes('answer')
-        ? 'answered api-9'
-        : e.argv.includes('decisions')
-          ? JSON.stringify(OWNED_DECISIONS)
-          : ''
-    return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-  })
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
-  await $.command.run({ command: 'factory', args: 'interview' } as never)
-  const ui = await $.ui.mount({
-    plugin: 'factory',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'factory',
-    props: { bodyColumns: 100, placement: 'dock' } as never,
-    viewport: { columns: 100, rows: 60 },
-  })
-  await ui.press({ key: 'iv-sweep' })
-  await clock.settle()
-  await ui.press({ key: 'iv-opt-own:api:api-9-0' }) // 'start now'
-  await clock.settle()
-  // the comment was sent (the bead now knows the person's answer) but the failed start means the item is not
-  // recorded as answered: it stays in the open list rather than silently vanishing while the bead never ran
-  expect(ran.some(a => a.includes('decisions') && a.includes('answer'))).toBe(true)
-  expect(ran.some(a => a.includes('start'))).toBe(true)
-  const drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('questions (1)')
-  expect(drawn).not.toContain('answered (1)')
-  await ui.unmount()
-})
+    // 'not now': comments through decisions answer, never starts the bead
+    await ui.press({ key: 'iv-opt-own:api:api-9-1' }) // 'not now'
+    await clock.settle()
+    expect(ran.some(a => a.includes('decisions') && a.includes('answer'))).toBe(true)
+    expect(ran.some(a => a.includes('start'))).toBe(false)
+    await ui.unmount()
+  },
+)
+
+test(
+  "an owner-only bead's 'start now' also runs factory start with the rig's factory",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      const out = e.argv.includes('tick')
+        ? JSON.stringify({ manager: [], rigs: [], runs: [] })
+        : e.argv.includes('decisions') && e.argv.includes('answer')
+          ? 'answered api-9'
+          : e.argv.includes('decisions')
+            ? JSON.stringify(OWNED_DECISIONS)
+            : e.argv.includes('start')
+              ? 'started lifecycle-xyz'
+              : ''
+      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    await ui.press({ key: 'iv-sweep' })
+    await clock.settle()
+    await ui.press({ key: 'iv-opt-own:api:api-9-0' }) // 'start now'
+    await clock.settle()
+    const answer = ran.filter(a => a.includes('decisions') && a.includes('answer')).at(-1)
+    expect(answer?.slice(-5)).toEqual([
+      'decisions',
+      'answer',
+      'api',
+      'api-9',
+      'Answering "api-9: A pilot bead": The person chose: start now.',
+    ])
+    const start = ran.filter(a => a.includes('start')).at(-1)
+    expect(start?.slice(-5)).toEqual(['start', 'custom', 'api', 'api-9', '--owned'])
+    await ui.unmount()
+  },
+)
+
+test(
+  "an owner-only bead's 'start now' stays open when the start fails, instead of vanishing unstarted",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      if (e.argv.includes('start'))
+        return { value: { exitCode: 1, stdout: '', stderr: 'no room on the rig' } as never }
+      const out = e.argv.includes('tick')
+        ? JSON.stringify({ manager: [], rigs: [], runs: [] })
+        : e.argv.includes('decisions') && e.argv.includes('answer')
+          ? 'answered api-9'
+          : e.argv.includes('decisions')
+            ? JSON.stringify(OWNED_DECISIONS)
+            : ''
+      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    await ui.press({ key: 'iv-sweep' })
+    await clock.settle()
+    await ui.press({ key: 'iv-opt-own:api:api-9-0' }) // 'start now'
+    await clock.settle()
+    // the comment was sent (the bead now knows the person's answer) but the failed start means the item is not
+    // recorded as answered: it stays in the open list rather than silently vanishing while the bead never ran
+    expect(ran.some(a => a.includes('decisions') && a.includes('answer'))).toBe(true)
+    expect(ran.some(a => a.includes('start'))).toBe(true)
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('questions (1)')
+    expect(drawn).not.toContain('answered (1)')
+    await ui.unmount()
+  },
+)
 
 // a stuck run with no Question:/Options: shape of its own: bare until the manager proposes options
 const STUCK_TICK = {
   manager: [],
   rigs: [{ name: 'api', repo: '/w/api', factory: 'lifecycle' }],
-  runs: [{ id: 's1', rig: 'api', node: 'verify', sub: 'stuck', error: 'timed out, no shape to the error', since: 5 }],
+  runs: [
+    {
+      id: 's1',
+      rig: 'api',
+      node: 'verify',
+      sub: 'stuck',
+      error: 'timed out, no shape to the error',
+      since: 5,
+    },
+  ],
 }
 const DECISIONS_WITH_PROPOSAL = {
   rigs: [],
-  proposals: { 'iv:s1@5': { question: 'How should it go on?', options: ['retry it', 'escalate to the person'], at: 9 } },
+  proposals: {
+    'iv:s1@5': { question: 'How should it go on?', options: ['retry it', 'escalate to the person'], at: 9 },
+  },
 }
 
-test("the sweep merges the manager's proposed options into a bare item already open from the tick", SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-    on(event, () => ({ value: undefined }) as never)
-  on('process.run', ($, e) => {
-    const out = e.argv.includes('tick')
-      ? JSON.stringify(STUCK_TICK)
-      : e.argv.includes('decisions')
-        ? JSON.stringify(DECISIONS_WITH_PROPOSAL)
-        : ''
-    return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-  })
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
-  await $.command.run({ command: 'factory', args: 'interview' } as never)
-  const ui = await $.ui.mount({
-    plugin: 'factory',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'factory',
-    props: { bodyColumns: 100, placement: 'dock' } as never,
-    viewport: { columns: 100, rows: 60 },
-  })
-  // the stuck run is open from the tick alone, with no options of its own yet
-  const before = JSON.stringify(await ui.drawn())
-  expect(before).toContain('questions (1)')
-  expect(before).not.toContain('retry it')
+test(
+  "the sweep merges the manager's proposed options into a bare item already open from the tick",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      const out = e.argv.includes('tick')
+        ? JSON.stringify(STUCK_TICK)
+        : e.argv.includes('decisions')
+          ? JSON.stringify(DECISIONS_WITH_PROPOSAL)
+          : ''
+      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    // the stuck run is open from the tick alone, with no options of its own yet
+    const before = JSON.stringify(await ui.drawn())
+    expect(before).toContain('questions (1)')
+    expect(before).not.toContain('retry it')
 
-  await ui.press({ key: 'iv-sweep' })
-  await clock.settle()
-  const swept = JSON.stringify(await ui.drawn())
-  expect(swept).toContain('retry it')
-  expect(swept).toContain('escalate to the person')
+    await ui.press({ key: 'iv-sweep' })
+    await clock.settle()
+    const swept = JSON.stringify(await ui.drawn())
+    expect(swept).toContain('retry it')
+    expect(swept).toContain('escalate to the person')
 
-  await ui.press({ key: 'iv-opt-iv:s1@5-0' }) // 'retry it'
-  await clock.settle()
-  expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
-  await ui.unmount()
-})
+    await ui.press({ key: 'iv-opt-iv:s1@5-0' }) // 'retry it'
+    await clock.settle()
+    expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
+    await ui.unmount()
+  },
+)

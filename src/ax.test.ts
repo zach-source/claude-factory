@@ -174,7 +174,15 @@ test("a task's phase is read from ax get, and a deleted task has none", () => {
   expect(ax.phase('t')).toBe('Suspended')
 })
 
-const AS_WORKER = ['setpriv', '--reuid=worker', '--regid=worker', '--init-groups', 'env', 'HOME=/home/worker', 'USER=worker']
+const AS_WORKER = [
+  'setpriv',
+  '--reuid=worker',
+  '--regid=worker',
+  '--init-groups',
+  'env',
+  'HOME=/home/worker',
+  'USER=worker',
+]
 
 test('poll, prompt and put run as the worker user over ax ssh, the prompt base64 so ax cannot take it for its flags', () => {
   writeFileSync(
@@ -216,7 +224,7 @@ test('FACTORY_AX_CAPABILITIES empty keeps poll, prompt and put as the bare root 
   }
 })
 
-test('a put that fails over ax ssh returns {ok: false} with ax\'s stderr, instead of a bare boolean', () => {
+test("a put that fails over ax ssh returns {ok: false} with ax's stderr, instead of a bare boolean", () => {
   const failer = join(dir, 'ax-failput')
   writeFileSync(
     failer,
@@ -252,6 +260,9 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
     `#!/bin/sh\necho "$*" >> ${dir}/claude.log\necho '{"type":"system","subtype":"init","session_id":"sess-1"}'\n`,
   )
   chmodSync(claude, 0o755)
+  // saved/restored (below): FACTORY_OUTBOX and FACTORY_FROM must not leak into a later test file's own
+  // subprocess calls, which inherit process.env (claude-factory-5h9.4)
+  const saved = { ...process.env }
   Object.assign(process.env, {
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
@@ -259,29 +270,32 @@ test('the worker briefs once, runs queued prompts in the same session, and queue
     FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
     FACTORY_FROM: 'implement',
   })
+  try {
+    await worker.serve('m1', { once: true })
+    worker.prompt(Buffer.from('[factory mail from manager] yes').toString('base64'))
+    expect(worker.poll(0).status).toBe('idle')
+    await worker.serve('m1', { once: true }) // a resumed task: no second brief
+    const turns = readFileSync(join(dir, 'claude.log'), 'utf8').trim().split('\n')
+    expect(turns).toHaveLength(2)
+    expect(turns[0]).toEndWith('--model m1 the brief')
+    expect(turns[1]).toEndWith('--model m1 --resume sess-1 [factory mail from manager] yes')
+    expect(readdirSync(join(own, 'prompts'))).toEqual([])
 
-  await worker.serve('m1', { once: true })
-  worker.prompt(Buffer.from('[factory mail from manager] yes').toString('base64'))
-  expect(worker.poll(0).status).toBe('idle')
-  await worker.serve('m1', { once: true }) // a resumed task: no second brief
-  const turns = readFileSync(join(dir, 'claude.log'), 'utf8').trim().split('\n')
-  expect(turns).toHaveLength(2)
-  expect(turns[0]).toEndWith('--model m1 the brief')
-  expect(turns[1]).toEndWith('--model m1 --resume sess-1 [factory mail from manager] yes')
-  expect(readdirSync(join(own, 'prompts'))).toEqual([])
-
-  worker.queue(['report', 'r1', '1', 'ready', 'done it'])
-  worker.queue(['mail', 'r1', 'manager', 'a question'])
-  const polled = worker.poll(1)
-  expect(polled.session).toBe('sess-1')
-  expect(polled.lines.map(l => JSON.parse(l))).toEqual([
-    {
-      argv: ['mail', 'r1', 'manager', 'a question'],
-      from: 'implement',
-      at: expect.any(Number),
-    },
-  ])
-  expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
+    worker.queue(['report', 'r1', '1', 'ready', 'done it'])
+    worker.queue(['mail', 'r1', 'manager', 'a question'])
+    const polled = worker.poll(1)
+    expect(polled.session).toBe('sess-1')
+    expect(polled.lines.map(l => JSON.parse(l))).toEqual([
+      {
+        argv: ['mail', 'r1', 'manager', 'a question'],
+        from: 'implement',
+        at: expect.any(Number),
+      },
+    ])
+    expect(existsSync(join(own, 'claude.jsonl'))).toBe(true)
+  } finally {
+    process.env = saved
+  }
 })
 
 test("serve starts the devenv's processes and ends the first brief with a [factory] services note (claude-factory-5sn)", async () => {
@@ -582,7 +596,12 @@ echo '{"type":"result","is_error":true,"result":"API Error: 503 upstream connect
   const since = Date.now() - 6000
   writeFileSync(
     join(own, 'state.json'),
-    JSON.stringify({ status: 'idle', session: 's1', pid: process.pid, egress: { since, tries: 3, last: 'old' } }),
+    JSON.stringify({
+      status: 'idle',
+      session: 's1',
+      pid: process.pid,
+      egress: { since, tries: 3, last: 'old' },
+    }),
   )
   worker.prompt(Buffer.from('a reply').toString('base64'))
   try {
@@ -902,8 +921,8 @@ test('a set pkg-gate adds its own rule and strips every registry host, dropping 
     https?: { hostnames: string[]; ports?: { numbers: number[] } }
     http?: { hostnames: string[]; ports?: { numbers: number[] } }
   }[]
-  for (const r of rules) for (const h of r.https?.hostnames ?? r.http?.hostnames ?? [])
-    expect(ax.REGISTRY_HOSTS).not.toContain(h)
+  for (const r of rules)
+    for (const h of r.https?.hostnames ?? r.http?.hostnames ?? []) expect(ax.REGISTRY_HOSTS).not.toContain(h)
   expect(rules).toContainEqual({ http: { hostnames: ['pkg-gate.pkg-gate.svc'], ports: { numbers: [8080] } } })
   // the all-registry rule is gone entirely; the mixed one keeps only its non-registry host
   expect(rules.some(r => r.https?.hostnames.includes('api.openai.com'))).toBe(true)
@@ -1050,10 +1069,9 @@ test("egressFailure finds the egress gateway's known signature in a Claude resul
     'API Error: 503 upstream connect error or disconnect/reset before headers. reset reason: remote connection failure, transport failure reason: TLS_error: ' +
     'X'.repeat(400) +
     ' CERTIFICATE_VERIFY_FAILED'
-  const out = [
-    '{"type":"system","subtype":"init","session_id":"s1"}',
-    resultLine(true, egressText),
-  ].join('\n')
+  const out = ['{"type":"system","subtype":"init","session_id":"s1"}', resultLine(true, egressText)].join(
+    '\n',
+  )
   const hit = worker.egressFailure('claude', out, '')
   expect(hit).not.toBeNull()
   expect(hit!.length).toBeLessThanOrEqual(300)

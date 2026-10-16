@@ -5,7 +5,14 @@
 // every decision here fails closed: an upstream error, a timeout, or a missing or unparseable publish time
 // is a refusal, never a pass-through. See claude-factory-ei0 and docs/remote-runner.md's package age gate.
 
-export type Upstream = { go: string; npm: string; pypi: string; files: string; sumdb: string; goIndex: string }
+export type Upstream = {
+  go: string
+  npm: string
+  pypi: string
+  files: string
+  sumdb: string
+  goIndex: string
+}
 
 /**
  * one list per ecosystem, never one shared list: a shared list let an entry meant for one ecosystem (say,
@@ -105,7 +112,11 @@ function resolve(cfg: GateConfig): Resolved {
   return {
     upstream: cfg.upstream,
     minDays,
-    allowlist: { go: cfg.allowlist?.go ?? [], npm: cfg.allowlist?.npm ?? [], pypi: cfg.allowlist?.pypi ?? [] },
+    allowlist: {
+      go: cfg.allowlist?.go ?? [],
+      npm: cfg.allowlist?.npm ?? [],
+      pypi: cfg.allowlist?.pypi ?? [],
+    },
     now: cfg.now ?? (() => Date.now()),
     fetch: cfg.fetch ?? fetch,
     fetchTimeoutMs: cfg.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
@@ -148,14 +159,26 @@ function evictOverCap<K, V>(map: Map<K, V>, maxEntries: number) {
 /** `code` marks a refusal/error whose body text the caller must word differently from the plain age-based
  * one `decide` returns below; a Go sum.golang.org first-logged refusal is the only user today
  * (claude-factory-8ub.10) */
-type Decision = { decision: 'allow' | 'refuse' | 'error'; reason: string; ageH: number | null; code?: 'go-sumdb-too-new' }
+type Decision = {
+  decision: 'allow' | 'refuse' | 'error'
+  reason: string
+  ageH: number | null
+  code?: 'go-sumdb-too-new'
+}
 
 /** allowlisted, or old enough; a missing or unparseable time is a refusal, same as one still too young */
-function decide(name: string, publishedMs: number | null, now: number, minDays: number, allowlist: string[]): Decision {
+function decide(
+  name: string,
+  publishedMs: number | null,
+  now: number,
+  minDays: number,
+  allowlist: string[],
+): Decision {
   const ageH = publishedMs == null ? null : (now - publishedMs) / 3_600_000
   if (allowlist.includes(name)) return { decision: 'allow', reason: 'allowlisted', ageH }
   if (ageH == null) return { decision: 'refuse', reason: 'missing or unparseable publish time', ageH: null }
-  if (ageH < minDays * 24) return { decision: 'refuse', reason: `published ${Math.floor(ageH)}h ago, minimum ${minDays}d`, ageH }
+  if (ageH < minDays * 24)
+    return { decision: 'refuse', reason: `published ${Math.floor(ageH)}h ago, minimum ${minDays}d`, ageH }
   return { decision: 'allow', reason: 'old enough', ageH }
 }
 
@@ -200,7 +223,9 @@ function logSummary(eco: string, name: string, counts: { allow: number; refuse: 
  * `stats.error`/the log readers of `logDecision` already expect (ei0.20) */
 function logUpstreamError(eco: string, name: string, reason: string, cfg: Resolved) {
   cfg.stats.error++
-  console.log(JSON.stringify({ eco, name, version: null, published: null, ageH: null, decision: 'error', reason }))
+  console.log(
+    JSON.stringify({ eco, name, version: null, published: null, ageH: null, decision: 'error', reason }),
+  )
 }
 
 // a minimal semver reader, just enough to tell a release from a prerelease/pseudo-version and to rank
@@ -228,7 +253,10 @@ function refuse(status: number, text: string) {
   return new Response(text, { status, headers: { 'content-type': 'text/plain' } })
 }
 
-async function fetchText(cfg: Resolved, url: string): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
+async function fetchText(
+  cfg: Resolved,
+  url: string,
+): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
   try {
     const r = await cfg.fetch(url, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
     const text = await r.text()
@@ -240,7 +268,10 @@ async function fetchText(cfg: Resolved, url: string): Promise<{ ok: true; text: 
   }
 }
 
-async function fetchBytes(cfg: Resolved, url: string): Promise<{ ok: true; buf: ArrayBuffer } | { ok: false; status: number }> {
+async function fetchBytes(
+  cfg: Resolved,
+  url: string,
+): Promise<{ ok: true; buf: ArrayBuffer } | { ok: false; status: number }> {
   try {
     const r = await cfg.fetch(url, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
     if (!r.ok) return { ok: false, status: r.status }
@@ -304,7 +335,9 @@ function goModuleEscape(s: string): string {
 function parseGoInfo(text: string): { version: string; time: string } | null {
   try {
     const j = JSON.parse(text)
-    return typeof j.Version === 'string' && typeof j.Time === 'string' ? { version: j.Version, time: j.Time } : null
+    return typeof j.Version === 'string' && typeof j.Time === 'string'
+      ? { version: j.Version, time: j.Time }
+      : null
   } catch {
     return null
   }
@@ -318,7 +351,11 @@ function parseGoInfo(text: string): { version: string; time: string } | null {
  * This function returns `ok:false` on a non-2xx status, a timeout, or a body whose first line is not a
  * plain non-negative integer. It never caches that result, and never treats it as an allow.
  */
-async function goSumdbRecord(cfg: Resolved, mod: string, version: string): Promise<{ ok: true; record: number } | { ok: false }> {
+async function goSumdbRecord(
+  cfg: Resolved,
+  mod: string,
+  version: string,
+): Promise<{ ok: true; record: number } | { ok: false }> {
   const r = await fetchText(cfg, `${cfg.upstream.sumdb}/lookup/${mod}@${version}`)
   if (!r.ok) return { ok: false }
   const line1 = (r.text.split('\n')[0] ?? '').trim()
@@ -380,7 +417,9 @@ function parseGoIndexLine(line: string): GoIndexLine | null {
  * resets to 0 on the next success.
  */
 function noteGoFloorFailure(cfg: Resolved, reason: string) {
-  cfg.goFloorBackoffMs = cfg.goFloorBackoffMs ? Math.min(cfg.goFloorBackoffMs * 2, GO_FLOOR_BACKOFF_MAX_MS) : GO_FLOOR_BACKOFF_MIN_MS
+  cfg.goFloorBackoffMs = cfg.goFloorBackoffMs
+    ? Math.min(cfg.goFloorBackoffMs * 2, GO_FLOOR_BACKOFF_MAX_MS)
+    : GO_FLOOR_BACKOFF_MIN_MS
   cfg.goFloorNextRetryAt = cfg.now() + cfg.goFloorBackoffMs
   console.log(JSON.stringify({ eco: 'go', decision: 'error', reason: `sumdb floor refresh: ${reason}` }))
 }
@@ -405,7 +444,10 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
 async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const t0 = cfg.now() - cfg.minDays * 24 * 3_600_000
   const sinceMs = t0 - GO_FLOOR_WINDOW_MS
-  const r = await fetchText(cfg, `${cfg.upstream.goIndex}/index?since=${encodeURIComponent(new Date(sinceMs).toISOString())}&limit=2000`)
+  const r = await fetchText(
+    cfg,
+    `${cfg.upstream.goIndex}/index?since=${encodeURIComponent(new Date(sinceMs).toISOString())}&limit=2000`,
+  )
   if (!r.ok) return noteGoFloorFailure(cfg, `index.golang.org ${r.status || 'timeout'}`)
   const entries = r.text
     .split('\n')
@@ -424,12 +466,22 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     if (looked.ok && looked.record < latestSize.size) ids.push(looked.record)
   })
   if (ids.length < GO_FLOOR_MIN_SAMPLES)
-    return noteGoFloorFailure(cfg, `only ${ids.length} of ${sample.length} sampled versions answered within the tree size read before lookups, need ${GO_FLOOR_MIN_SAMPLES}`)
+    return noteGoFloorFailure(
+      cfg,
+      `only ${ids.length} of ${sample.length} sampled versions answered within the tree size read before lookups, need ${GO_FLOOR_MIN_SAMPLES}`,
+    )
   const min = Math.min(...ids)
   cfg.goFloor = { record: cfg.goFloor ? Math.max(cfg.goFloor.record, min) : min, at: t0 }
   cfg.goFloorBackoffMs = 0
   cfg.goFloorNextRetryAt = 0
-  console.log(JSON.stringify({ eco: 'go', floor: cfg.goFloor.record, at: new Date(cfg.goFloor.at).toISOString(), samples: ids.length }))
+  console.log(
+    JSON.stringify({
+      eco: 'go',
+      floor: cfg.goFloor.record,
+      at: new Date(cfg.goFloor.at).toISOString(),
+      samples: ids.length,
+    }),
+  )
 }
 
 /**
@@ -450,7 +502,8 @@ async function ensureGoFloor(cfg: Resolved): Promise<Resolved['goFloor']> {
   const t0 = cfg.now() - cfg.minDays * 24 * 3_600_000
   const stale = !cfg.goFloor || cfg.goFloor.at < t0 - GO_FLOOR_WINDOW_MS
   const backedOff = cfg.now() < cfg.goFloorNextRetryAt
-  if (stale && !backedOff && !cfg.goFloorRefreshing) cfg.goFloorRefreshing = refreshGoFloor(cfg).finally(() => (cfg.goFloorRefreshing = null))
+  if (stale && !backedOff && !cfg.goFloorRefreshing)
+    cfg.goFloorRefreshing = refreshGoFloor(cfg).finally(() => (cfg.goFloorRefreshing = null))
   if (!cfg.goFloor && cfg.goFloorRefreshing) await cfg.goFloorRefreshing
   return cfg.goFloor
 }
@@ -473,11 +526,13 @@ async function goSumdbGate(
   infoDecision: Decision,
 ): Promise<Decision> {
   const floor = await ensureGoFloor(cfg)
-  if (!floor) return { decision: 'error', reason: 'sum.golang.org floor unavailable', ageH: infoDecision.ageH }
+  if (!floor)
+    return { decision: 'error', reason: 'sum.golang.org floor unavailable', ageH: infoDecision.ageH }
   let record = cacheEntry?.record
   if (record === undefined) {
     const looked = await goSumdbRecord(cfg, mod, version)
-    if (!looked.ok) return { decision: 'error', reason: 'sum.golang.org lookup failed', ageH: infoDecision.ageH }
+    if (!looked.ok)
+      return { decision: 'error', reason: 'sum.golang.org lookup failed', ageH: infoDecision.ageH }
     record = looked.record
     if (cacheEntry) cacheEntry.record = record
   }
@@ -505,7 +560,15 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
   if (!cached) {
     const r = await fetchText(cfg, `${cfg.upstream.go}/${mod}/@v/${version}.info`)
     if (!r.ok) {
-      logDecision('go', mod, version, null, { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null }, cfg, quiet)
+      logDecision(
+        'go',
+        mod,
+        version,
+        null,
+        { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null },
+        cfg,
+        quiet,
+      )
       return { ok: false as const }
     }
     const parsed = parseGoInfo(r.text)
@@ -524,12 +587,19 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
     cached = entry
   }
   const publishedMs = cached.time ? Date.parse(cached.time) : NaN
-  let d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.go)
+  let d = decide(
+    goModuleUnescape(mod),
+    Number.isNaN(publishedMs) ? null : publishedMs,
+    cfg.now(),
+    cfg.minDays,
+    cfg.allowlist.go,
+  )
   // old enough by .info Time and not merely allowlisted: the time alone is not trustworthy (a module author
   // controls the tagged commit's VCS time), so also check sum.golang.org's first-logged record (claude-factory-8ub).
   // goModuleEscape: `cached.version` is the .info body's raw Version field, not Go-case-escaped the way a
   // sum.golang.org lookup key must be (claude-factory-8ub.8)
-  if (d.decision === 'allow' && d.reason !== 'allowlisted') d = await goSumdbGate(cfg, mod, goModuleEscape(cached.version ?? version), cached, d)
+  if (d.decision === 'allow' && d.reason !== 'allowlisted')
+    d = await goSumdbGate(cfg, mod, goModuleEscape(cached.version ?? version), cached, d)
   logDecision('go', mod, cached.version ?? version, cached.time ?? null, d, cfg, quiet)
   return { ok: true as const, info: cached.info, time: cached.time, decision: d }
 }
@@ -556,7 +626,9 @@ async function goVersion(cfg: Resolved, mod: string, version: string, ext: 'info
   if (ext === 'info') return new Response(r.info, { headers: { 'content-type': 'application/json' } })
   const b = await fetchBytes(cfg, `${cfg.upstream.go}/${mod}/@v/${version}.${ext}`)
   if (!b.ok) return refuse(502, `pkg-gate: ${mod}@${version}.${ext}: upstream error`)
-  return new Response(b.buf, { headers: { 'content-type': ext === 'zip' ? 'application/zip' : 'text/plain; charset=utf-8' } })
+  return new Response(b.buf, {
+    headers: { 'content-type': ext === 'zip' ? 'application/zip' : 'text/plain; charset=utf-8' },
+  })
 }
 
 /** tallies a batch of goDecideVersion results for one summary line (ei0.13); an upstream fetch failure counts as `error` */
@@ -579,7 +651,9 @@ async function goList(cfg: Resolved, mod: string) {
   const decisions = await mapLimit(versions, GO_LIST_CONCURRENCY, v => goDecideVersion(cfg, mod, v, true))
   const kept = versions.filter((_, i) => decisions[i]!.ok && decisions[i]!.decision.decision === 'allow')
   logSummary('go', mod, tallyGo(decisions))
-  return new Response(kept.length ? kept.join('\n') + '\n' : '', { headers: { 'content-type': 'text/plain' } })
+  return new Response(kept.length ? kept.join('\n') + '\n' : '', {
+    headers: { 'content-type': 'text/plain' },
+  })
 }
 
 async function goLatest(cfg: Resolved, mod: string) {
@@ -588,7 +662,13 @@ async function goLatest(cfg: Resolved, mod: string) {
     const parsed = parseGoInfo(latest.text)
     if (parsed) {
       const publishedMs = Date.parse(parsed.time)
-      let d = decide(goModuleUnescape(mod), Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.go)
+      let d = decide(
+        goModuleUnescape(mod),
+        Number.isNaN(publishedMs) ? null : publishedMs,
+        cfg.now(),
+        cfg.minDays,
+        cfg.allowlist.go,
+      )
       if (d.decision === 'allow' && d.reason !== 'allowlisted') {
         // goModuleEscape: `parsed.version` is @latest's own raw Version field (claude-factory-8ub.8).
         // keyed by that same escaped form, so this entry is reachable the same way goDecideVersion's cache
@@ -604,9 +684,17 @@ async function goLatest(cfg: Resolved, mod: string) {
         d = await goSumdbGate(cfg, mod, goModuleEscape(parsed.version), cacheEntry, d)
       }
       logDecision('go', mod, parsed.version, parsed.time, d, cfg)
-      if (d.decision === 'allow') return new Response(latest.text, { headers: { 'content-type': 'application/json' } })
+      if (d.decision === 'allow')
+        return new Response(latest.text, { headers: { 'content-type': 'application/json' } })
     } else {
-      logDecision('go', mod, undefined, null, { decision: 'error', reason: 'unparseable @latest', ageH: null }, cfg)
+      logDecision(
+        'go',
+        mod,
+        undefined,
+        null,
+        { decision: 'error', reason: 'unparseable @latest', ageH: null },
+        cfg,
+      )
     }
   }
   // the real latest is too young, not yet trusted by sum.golang.org, or unreadable: fall back to the newest
@@ -631,7 +719,9 @@ async function goLatest(cfg: Resolved, mod: string) {
   const releaseVersion = highestRelease(candidates.map(c => c.version))
   const top = releaseVersion ? candidates.find(c => c.version === releaseVersion) : candidates[0]
   if (!top) return refuse(404, `pkg-gate: ${mod}: no version old enough (minimum ${cfg.minDays}d)`)
-  return new Response(JSON.stringify({ Version: top.version, Time: top.time }), { headers: { 'content-type': 'application/json' } })
+  return new Response(JSON.stringify({ Version: top.version, Time: top.time }), {
+    headers: { 'content-type': 'application/json' },
+  })
 }
 
 async function handleGo(cfg: Resolved, path: string): Promise<Response> {
@@ -660,7 +750,10 @@ async function handleGo(cfg: Resolved, path: string): Promise<Response> {
     try {
       // redirect: 'manual' blocks a sumdb redirect to an attacker-chosen host. A 3xx reply fails `.ok` and
       // gets the same refusal as any other non-2xx reply, below.
-      upstream = await cfg.fetch(`${cfg.upstream.sumdb}/${sub}`, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs), redirect: 'manual' })
+      upstream = await cfg.fetch(`${cfg.upstream.sumdb}/${sub}`, {
+        signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
+        redirect: 'manual',
+      })
     } catch {
       return refuse(502, 'pkg-gate: sumdb upstream error')
     }
@@ -721,7 +814,14 @@ function parseNpmPath(
 function parsePackument(text: string): NpmPackument | null {
   try {
     const j = JSON.parse(text)
-    if (!j || typeof j !== 'object' || !j.versions || typeof j.versions !== 'object' || !j.time || typeof j.time !== 'object')
+    if (
+      !j ||
+      typeof j !== 'object' ||
+      !j.versions ||
+      typeof j.versions !== 'object' ||
+      !j.time ||
+      typeof j.time !== 'object'
+    )
       return null
     for (const v of Object.values(j.versions)) if (!v || typeof v !== 'object') return null
     return j
@@ -768,7 +868,13 @@ function filterPackument(cfg: Resolved, pkg: string, p: NpmPackument, origin: st
   for (const v of Object.keys(p.versions)) {
     const timeStr = p.time[v]
     const publishedMs = timeStr ? Date.parse(timeStr) : NaN
-    const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.npm)
+    const d = decide(
+      pkg,
+      Number.isNaN(publishedMs) ? null : publishedMs,
+      cfg.now(),
+      cfg.minDays,
+      cfg.allowlist.npm,
+    )
     logDecision('npm', pkg, v, timeStr ?? null, d, cfg, true)
     counts[d.decision]++
     if (d.decision === 'allow') kept.add(v)
@@ -776,7 +882,8 @@ function filterPackument(cfg: Resolved, pkg: string, p: NpmPackument, origin: st
   logSummary('npm', pkg, counts)
   const versions: Record<string, NpmVersion> = {}
   const time: Record<string, string> = {}
-  for (const [k, v] of Object.entries(p.time)) if (k === 'created' || k === 'modified' || kept.has(k)) time[k] = v
+  for (const [k, v] of Object.entries(p.time))
+    if (k === 'created' || k === 'modified' || kept.has(k)) time[k] = v
   for (const v of kept) {
     const vd = p.versions[v]!
     versions[v] = vd.dist?.tarball
@@ -789,7 +896,8 @@ function filterPackument(cfg: Resolved, pkg: string, p: NpmPackument, origin: st
   // dropped (too young/refused), and prefer the highest release semver over newest-by-time, so a nightly,
   // prerelease or old major published more recently never wins over a real release (ei0.11)
   if (!distTags.latest) {
-    const fallback = highestRelease([...kept]) ?? [...kept].sort((a, b) => Date.parse(time[b]!) - Date.parse(time[a]!))[0]
+    const fallback =
+      highestRelease([...kept]) ?? [...kept].sort((a, b) => Date.parse(time[b]!) - Date.parse(time[a]!))[0]
     if (fallback) distTags.latest = fallback
   }
   return { ...p, versions, time, 'dist-tags': distTags }
@@ -807,14 +915,23 @@ async function npmTarball(cfg: Resolved, pkg: string, file: string) {
   const pack = await fetchPackument(cfg, pkg)
   if (!pack.ok) return refuse(pack.status === 404 ? 404 : 502, `pkg-gate: ${pkg}: upstream error`)
   const version = Object.keys(pack.parsed.versions).find(
-    v => pack.parsed.versions[v]!.dist?.tarball && npmTarballFile(pack.parsed.versions[v]!.dist!.tarball!) === file,
+    v =>
+      pack.parsed.versions[v]!.dist?.tarball &&
+      npmTarballFile(pack.parsed.versions[v]!.dist!.tarball!) === file,
   )
   if (!version) return refuse(404, `pkg-gate: ${pkg}/-/${file} not found`)
   const timeStr = pack.parsed.time[version]
   const publishedMs = timeStr ? Date.parse(timeStr) : NaN
-  const d = decide(pkg, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.npm)
+  const d = decide(
+    pkg,
+    Number.isNaN(publishedMs) ? null : publishedMs,
+    cfg.now(),
+    cfg.minDays,
+    cfg.allowlist.npm,
+  )
   logDecision('npm', pkg, version, timeStr ?? null, d, cfg)
-  if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${pkg}@${version} ${ageText(d)}, minimum ${cfg.minDays}d`)
+  if (d.decision !== 'allow')
+    return refuse(404, `pkg-gate: ${pkg}@${version} ${ageText(d)}, minimum ${cfg.minDays}d`)
   const upstreamUrl = pack.parsed.versions[version]!.dist!.tarball!
   // never fetch a tarball URL upstream merely named: it must be http(s) and actually on this ecosystem's
   // configured upstream, or the packument itself could point the gate at file:// or an arbitrary host (ei0.23)
@@ -831,7 +948,9 @@ async function npmTarball(cfg: Resolved, pkg: string, file: string) {
 async function handleNpm(cfg: Resolved, path: string, origin: string): Promise<Response> {
   const parsed = parseNpmPath(path)
   if (!parsed) return refuse(404, 'pkg-gate: not found')
-  return parsed.kind === 'tarball' ? npmTarball(cfg, parsed.pkg, parsed.file) : npmPackument(cfg, parsed.pkg, origin)
+  return parsed.kind === 'tarball'
+    ? npmTarball(cfg, parsed.pkg, parsed.file)
+    : npmPackument(cfg, parsed.pkg, origin)
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -851,7 +970,9 @@ function parsePypiIndex(text: string): PypiIndex | null {
   try {
     const j = JSON.parse(text)
     if (!j || typeof j !== 'object' || !Array.isArray(j.files)) return null
-    for (const f of j.files) if (!f || typeof f !== 'object' || typeof f.filename !== 'string' || typeof f.url !== 'string') return null
+    for (const f of j.files)
+      if (!f || typeof f !== 'object' || typeof f.filename !== 'string' || typeof f.url !== 'string')
+        return null
     return j
   } catch {
     return null
@@ -909,7 +1030,13 @@ function fileDecision(cfg: Resolved, project: string, f: PypiFile, quiet = false
   // `project` already went through pepNormalize (PEP 503: lowercase, -_. runs collapsed); normalize the
   // allowlist entries the same way, so one written in a project's real distribution name (`PyYAML`) still
   // matches (ei0.18)
-  const d = decide(project, Number.isNaN(publishedMs) ? null : publishedMs, cfg.now(), cfg.minDays, cfg.allowlist.pypi.map(pepNormalize))
+  const d = decide(
+    project,
+    Number.isNaN(publishedMs) ? null : publishedMs,
+    cfg.now(),
+    cfg.minDays,
+    cfg.allowlist.pypi.map(pepNormalize),
+  )
   logDecision('pypi', project, f.filename, t ?? null, d, cfg, quiet)
   return d
 }
@@ -925,7 +1052,10 @@ async function pypiSimple(cfg: Resolved, project: string, origin: string) {
       counts[d.decision]++
       return d.decision === 'allow'
     })
-    .map(f => ({ ...f, url: `${origin}/pypi/files/${project}${pypiResolvedFileUrl(cfg, project, f).pathname}` }))
+    .map(f => ({
+      ...f,
+      url: `${origin}/pypi/files/${project}${pypiResolvedFileUrl(cfg, project, f).pathname}`,
+    }))
   logSummary('pypi', project, counts)
   return new Response(JSON.stringify({ ...idx.parsed, files }), {
     headers: { 'content-type': 'application/vnd.pypi.simple.v1+json' },
@@ -947,17 +1077,28 @@ async function pypiFile(cfg: Resolved, project: string, path: string) {
   const file = idx.parsed.files.find(f => pypiResolvedFileUrl(cfg, project, f).pathname === filePath)
   if (!file) return refuse(404, `pkg-gate: ${project}${path} not found`)
   const d = fileDecision(cfg, project, file)
-  if (d.decision !== 'allow') return refuse(404, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''} ${ageText(d)}, minimum ${cfg.minDays}d`)
+  if (d.decision !== 'allow')
+    return refuse(
+      404,
+      `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''} ${ageText(d)}, minimum ${cfg.minDays}d`,
+    )
   const target = pypiResolvedFileUrl(cfg, project, file, isMetadata)
   // never fetch a file URL upstream merely named (or a relative one resolved against the index, ei0.21):
   // it must be http(s) and land on the index's own upstream or the separate files upstream, or the index
   // itself could point the gate at file:// or an arbitrary host (ei0.23)
   if (!isConfiguredUpstream(target, [cfg.upstream.pypi, cfg.upstream.files])) {
     logUpstreamError('pypi', project, 'file url is not http(s) on a configured upstream', cfg)
-    return refuse(502, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''}: upstream error`)
+    return refuse(
+      502,
+      `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''}: upstream error`,
+    )
   }
   const b = await fetchBytes(cfg, target.toString())
-  if (!b.ok) return refuse(b.status === 404 ? 404 : 502, `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''}: upstream error`)
+  if (!b.ok)
+    return refuse(
+      b.status === 404 ? 404 : 502,
+      `pkg-gate: ${project}/${file.filename}${isMetadata ? METADATA_SUFFIX : ''}: upstream error`,
+    )
   return new Response(b.buf)
 }
 
@@ -994,7 +1135,9 @@ export function makeGate(cfg: GateConfig): Gate {
             minDays: resolved.minDays,
             // null until the first successful refresh (claude-factory-8ub); see refreshGoFloor's log line
             // for why a refresh did or did not change this
-            goFloor: resolved.goFloor ? { record: resolved.goFloor.record, at: new Date(resolved.goFloor.at).toISOString() } : null,
+            goFloor: resolved.goFloor
+              ? { record: resolved.goFloor.record, at: new Date(resolved.goFloor.at).toISOString() }
+              : null,
             ...resolved.stats,
           }),
           { headers: { 'content-type': 'application/json' } },
@@ -1013,8 +1156,15 @@ export function makeGate(cfg: GateConfig): Gate {
       // only (never a URL or query string, same as `logDecision`).
       resolved.stats.error++
       const isMalformedRequest = err instanceof URIError
-      console.log(JSON.stringify({ decision: 'error', reason: isMalformedRequest ? 'URIError' : (err as Error)?.name ?? 'Error' }))
-      return isMalformedRequest ? refuse(400, 'pkg-gate: malformed request') : refuse(502, 'pkg-gate: internal error')
+      console.log(
+        JSON.stringify({
+          decision: 'error',
+          reason: isMalformedRequest ? 'URIError' : ((err as Error)?.name ?? 'Error'),
+        }),
+      )
+      return isMalformedRequest
+        ? refuse(400, 'pkg-gate: malformed request')
+        : refuse(502, 'pkg-gate: internal error')
     }
   }) as Gate
   handler.stats = () => ({ ...resolved.stats })

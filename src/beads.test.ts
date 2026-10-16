@@ -141,7 +141,9 @@ test('respond answers a human-flagged bead through bd human respond', () => {
   try {
     const b = beads(tmpdir(), 'factory/person')
     b.respond('fx-7', 'go with postgres')
-    expect(readFileSync(log, 'utf8').trim()).toBe('human respond fx-7 -r go with postgres --actor factory/person')
+    expect(readFileSync(log, 'utf8').trim()).toBe(
+      'human respond fx-7 -r go with postgres --actor factory/person',
+    )
   } finally {
     process.env.PATH = path
   }
@@ -245,7 +247,7 @@ test('create checks a timed-out create against its metadata token before one ret
     '  case "$(cat ' + mode + ')" in',
     '    landed) printf \'%s\' \'[{"id":"landed-1"}]\'; exit 0;;',
     '    list-fails) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
-    '    *) printf \'%s\' \'[]\'; exit 0;;',
+    "    *) printf '%s' '[]'; exit 0;;",
     '  esac;;',
     'esac',
   ].join('\n')

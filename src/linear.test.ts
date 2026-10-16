@@ -48,7 +48,10 @@ test('readLinearConfig reads an apiKey command, or a clientId/clientSecret pair'
   writeFileSync(apiKeyFile, JSON.stringify({ apiKey: 'op read op://vault/item/key' }))
   expect(readLinearConfig(apiKeyFile)).toEqual({ apiKey: 'op read op://vault/item/key' })
   const oauthFile = join(dir, 'oauth.json')
-  writeFileSync(oauthFile, JSON.stringify({ clientId: 'op read op://v/i/id', clientSecret: 'op read op://v/i/s' }))
+  writeFileSync(
+    oauthFile,
+    JSON.stringify({ clientId: 'op read op://v/i/id', clientSecret: 'op read op://v/i/s' }),
+  )
   expect(readLinearConfig(oauthFile)).toEqual({
     clientId: 'op read op://v/i/id',
     clientSecret: 'op read op://v/i/s',
@@ -95,7 +98,10 @@ test('syncEnv runs the apiKey command and sets LINEAR_API_KEY, dropping every in
 })
 
 test('syncEnv runs both OAuth commands and sets the client id and secret, never LINEAR_API_KEY', () => {
-  const env = syncEnv({ clientId: 'printf cid-1', clientSecret: 'printf csecret-1' }, { LINEAR_API_KEY: 'stale' })
+  const env = syncEnv(
+    { clientId: 'printf cid-1', clientSecret: 'printf csecret-1' },
+    { LINEAR_API_KEY: 'stale' },
+  )
   expect(env.LINEAR_OAUTH_CLIENT_ID).toBe('cid-1')
   expect(env.LINEAR_OAUTH_CLIENT_SECRET).toBe('csecret-1')
   expect(env.LINEAR_API_KEY).toBeUndefined()
@@ -106,7 +112,9 @@ test('syncEnv throws when the command fails, naming no value', () => {
 })
 
 test('parseSync reads a fresh skip, a real pull, and an engine error, the three shapes bd 1.3.0 prints', () => {
-  expect(parseSync('{"is_fresh":true,"skipped":true,"last_pull":"2026-10-15T10:00:00Z","age":"5m"}', 0)).toEqual({
+  expect(
+    parseSync('{"is_fresh":true,"skipped":true,"last_pull":"2026-10-15T10:00:00Z","age":"5m"}', 0),
+  ).toEqual({
     fresh: true,
     lastPull: '2026-10-15T10:00:00Z',
   })
@@ -213,7 +221,8 @@ function reset() {
   writeFileSync(mode, 'pulled')
 }
 
-const callLines = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) : [])
+const callLines = () =>
+  existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) : []
 const argvOf = (line: string) => line.split('|')[1]!
 const cwdOf = (line: string) => line.split('|')[3]!
 const keyOf = (line: string) => line.split('|')[5]!
@@ -300,7 +309,7 @@ test('a fresh skip is recorded, with no label strip (nothing new to strip)', () 
   expect(callLines().some(l => argvOf(l).startsWith('label remove'))).toBe(false)
 })
 
-test('rig list shows a Linear-opted rig\'s last pull count, or its error (claude-factory-b6c.5)', () => {
+test("rig list shows a Linear-opted rig's last pull count, or its error (claude-factory-b6c.5)", () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
   writeFileSync(
     join(home, 'linear-sync.json'),
@@ -309,7 +318,10 @@ test('rig list shows a Linear-opted rig\'s last pull count, or its error (claude
   const pulled = factory(['rig', 'list'])
   expect(pulled.out).toContain(`linear: ${TEAM} (pulled 3,`)
 
-  writeFileSync(join(home, 'linear-sync.json'), JSON.stringify({ a: { at: Date.now(), fresh: false, error: 'boom' } }))
+  writeFileSync(
+    join(home, 'linear-sync.json'),
+    JSON.stringify({ a: { at: Date.now(), fresh: false, error: 'boom' } }),
+  )
   const erred = factory(['rig', 'list'])
   expect(erred.out).toContain(`linear: ${TEAM} (error`)
   expect(erred.out).toContain('boom')

@@ -216,7 +216,9 @@ export const isRegistryHost = (h: string) => REGISTRY_HOSTS.includes(normalizeHo
 
 /** an extra rule with every REGISTRY_HOSTS host dropped; a rule left with none is dropped entirely */
 function stripRegistryHosts(extra: Egress[]): Egress[] {
-  return extra.map(e => ({ ...e, hosts: e.hosts.filter(h => !isRegistryHost(h)) })).filter(e => e.hosts.length > 0)
+  return extra
+    .map(e => ({ ...e, hosts: e.hosts.filter(h => !isRegistryHost(h)) }))
+    .filter(e => e.hosts.length > 0)
 }
 
 /** the gate's own egress rule: an https rule for https://, a Substrate HTTPRule ({http: ...}) for http:// */

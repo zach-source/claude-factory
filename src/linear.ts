@@ -44,8 +44,13 @@ export function readLinearConfig(file: string): LinearConfig {
   const cfg = JSON.parse(readFileSync(file, 'utf8'))
   if (cfg && typeof cfg === 'object' && 'apiKey' in cfg) return { apiKey: asCommand('apiKey', cfg.apiKey) }
   if (cfg && typeof cfg === 'object' && ('clientId' in cfg || 'clientSecret' in cfg))
-    return { clientId: asCommand('clientId', cfg.clientId), clientSecret: asCommand('clientSecret', cfg.clientSecret) }
-  throw new Error(`${file}: needs "apiKey", or "clientId" and "clientSecret", each a command that prints the value`)
+    return {
+      clientId: asCommand('clientId', cfg.clientId),
+      clientSecret: asCommand('clientSecret', cfg.clientSecret),
+    }
+  throw new Error(
+    `${file}: needs "apiKey", or "clientId" and "clientSecret", each a command that prints the value`,
+  )
 }
 
 const LINEAR_ENV_KEYS = ['LINEAR_API_KEY', 'LINEAR_OAUTH_CLIENT_ID', 'LINEAR_OAUTH_CLIENT_SECRET']
@@ -78,7 +83,11 @@ export function syncEnv(
   const stripped = Object.fromEntries(Object.entries(base).filter(([k]) => !LINEAR_ENV_KEYS.includes(k)))
   return 'apiKey' in cfg
     ? { ...stripped, LINEAR_API_KEY: resolve(cfg.apiKey) }
-    : { ...stripped, LINEAR_OAUTH_CLIENT_ID: resolve(cfg.clientId), LINEAR_OAUTH_CLIENT_SECRET: resolve(cfg.clientSecret) }
+    : {
+        ...stripped,
+        LINEAR_OAUTH_CLIENT_ID: resolve(cfg.clientId),
+        LINEAR_OAUTH_CLIENT_SECRET: resolve(cfg.clientSecret),
+      }
 }
 
 /** This is the argv for `bd linear sync --pull-if-stale ...`. It pulls only, for the opted-in team IDs.
@@ -119,7 +128,10 @@ export function parseSync(stdout: string, exitCode: number): SyncOutcome {
     json = JSON.parse(stdout)
   } catch {
     return {
-      error: exitCode === 0 ? 'bd linear sync: no JSON on stdout' : stdout.trim() || `bd linear sync exited ${exitCode}`,
+      error:
+        exitCode === 0
+          ? 'bd linear sync: no JSON on stdout'
+          : stdout.trim() || `bd linear sync exited ${exitCode}`,
     }
   }
   const j = json as Record<string, unknown>
