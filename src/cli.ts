@@ -831,7 +831,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
-    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the one question they must answer>\` and, when there are a few clear choices, a line \`Options: <first> | <second> | <third>\`, the one you recommend first: the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
+    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer; add "(recommended)" after the effect of the one you recommend, when there is one): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
@@ -3369,7 +3369,7 @@ async function prs() {
 
 type DecisionBead = { id: string; title: string; description?: string; kind: 'bead' | 'owned' }
 export type DecisionsRow = { rig: string; factory: string; beads: DecisionBead[]; error?: string }
-export type Proposal = { question: string; options: string[]; at: number }
+export type Proposal = { question: string; context?: string; options: string[]; at: number }
 
 const decisionsFile = () => join(HOME, 'decisions.json')
 const proposals = (): Record<string, Proposal> =>
@@ -3411,22 +3411,62 @@ function decisionsAnswer(rigName: string, id: string, text: string) {
   console.log(`answered ${id}`)
 }
 
-/** the manager proposes 2+ options for an item the person would otherwise have to answer in their own words;
- * never for a gate, which only the person decides, and never for a blocked-on-prompt item, which waits on the
- * person looking at the worker's pane rather than on a choice */
-function decisionsPropose(key: string, question: string, optionsLine: string) {
+/** one raw `label: effect` option, split the same way the console's own parser splits it: at the first ": "
+ * into a label and an effect, with the word "recommended" in a parenthetical read as a flag and stripped out
+ * (duplicated from mod/hooks/view.ts's parseChoice: the mod and this CLI ship separately, with no shared
+ * module between them, so this length check and the console's render must each parse the stored string the
+ * same way on their own) */
+function parseOption(raw: string): { label: string; effect?: string; recommended: boolean } {
+  let recommended = false
+  const stripped = raw.replace(/\(([^()]*)\)/g, (whole, inner: string) => {
+    if (!/\brecommended\b/i.test(inner)) return whole
+    recommended = true
+    const rest = inner
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => s && !/^recommended$/i.test(s))
+      .join(', ')
+    return rest ? `(${rest})` : ''
+  })
+  const text = stripped.replace(/\s+/g, ' ').trim()
+  const idx = text.indexOf(': ')
+  const label = idx === -1 ? text : text.slice(0, idx).trim()
+  const effect = idx === -1 ? undefined : text.slice(idx + 2).trim() || undefined
+  return { label, effect, recommended }
+}
+
+/** the manager proposes a short title, an optional context sentence, and 2-4 options for an item the person
+ * would otherwise have to answer in their own words; never for a gate, which only the person decides, and
+ * never for a blocked-on-prompt item, which waits on the person looking at the worker's pane rather than on
+ * a choice. Refuses each field over its limit (named in the error, with its length and the limit) before it
+ * writes anything, so a bad call leaves decisions.json unchanged. */
+function decisionsPropose(key: string, question: string, optionsLine: string, context?: string) {
   if (process.env.FACTORY_FROM)
     fail("a worker cannot propose the person's decisions: mail the manager instead")
   if (/^gate:/.test(key)) fail('a gate is decided by the person, never proposed options')
   if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
   if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
-  const options = optionsLine
+  if (/\n/.test(question)) fail('question has a newline: it must be one line')
+  if (question.length > 160) fail(`question is ${question.length} characters, over the 160 limit`)
+  if (context !== undefined && context.length > 200)
+    fail(`context is ${context.length} characters, over the 200 limit`)
+  const rawOptions = optionsLine
     .split('|')
     .map(s => s.trim())
     .filter(Boolean)
-  if (options.length < 2) fail('give at least two options, separated by |')
+  if (rawOptions.length < 2) fail('give at least two options, separated by |')
+  if (rawOptions.length > 4) fail(`${rawOptions.length} options given, over the 4 limit`)
+  const parsed = rawOptions.map(parseOption)
+  for (const o of parsed) {
+    if (o.label.length > 40)
+      fail(`option label "${o.label}" is ${o.label.length} characters, over the 40 limit`)
+    if (o.effect && o.effect.length > 100)
+      fail(`option effect "${o.effect}" is ${o.effect.length} characters, over the 100 limit`)
+  }
+  const recommended = parsed.filter(o => o.recommended).length
+  if (recommended > 1) fail(`${recommended} options marked recommended, only 1 is allowed`)
   const all = proposals()
-  all[key] = { question, options, at: Date.now() }
+  all[key] = { question, options: rawOptions, at: Date.now(), ...(context ? { context } : {}) }
   mkdirSync(HOME, { recursive: true })
   writeJson(decisionsFile(), all)
   console.log(`proposed options for ${key}`)
@@ -3876,10 +3916,15 @@ if (import.meta.main && !outboxCmd)
           break
         }
         if (sub === 'propose') {
-          const [key, question, optionsLine] = rest
+          const [key, question, optionsLine, ...extra] = rest
           if (!key || !question || !optionsLine)
-            fail('usage: factory decisions propose <key> "<question>" "<a | b>"')
-          decisionsPropose(key!, question!, optionsLine!)
+            fail(
+              'usage: factory decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]',
+            )
+          const ci = extra.indexOf('--context')
+          const context = ci === -1 ? undefined : extra[ci + 1]
+          if (ci !== -1 && !context) fail('usage: ... --context "<sentence>" needs a value')
+          decisionsPropose(key!, question!, optionsLine!, context)
           break
         }
         fail(`unknown decisions command "${sub}": list, answer or propose`)

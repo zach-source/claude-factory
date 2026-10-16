@@ -228,7 +228,7 @@ export const isRepeatFail = (c: Ctx, node: string, reason: string) => {
 
 /** the question a repeated failure puts to the person in the console's Interview tab */
 export const repeatQuestion = (node: string, reason: string) =>
-  `${reason}\nQuestion: ${node} failed twice the same way (${reason}). What should it do?\nOptions: retry | abort`
+  `${reason}\nQuestion: ${node} failed twice the same way (${reason}). What should it do?\nOptions: retry: run ${node} again with your answer | abort: end the run`
 
 /** the pull requests a blocked report names: the runner watches them and mails the station when one changes */
 export const prsIn = (text: string) => [

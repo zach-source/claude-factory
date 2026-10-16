@@ -31,16 +31,14 @@ import {
   type UI,
 } from './views'
 import {
-  beadInterviews,
   interviewAnswer,
   interviewPrompt,
-  interviews,
   line,
   mailKey,
+  openInterviews,
   patrol,
   quickAnswer,
   statusText,
-  withProposals,
   type Interview,
 } from './view'
 
@@ -81,7 +79,7 @@ A message starting "[factory] patrol" is your loop. It lists what is new and the
 2. Gates: show the person the question, the evidence (the pull request, the verify and review summaries) and the outcomes. Gates are their decisions, never yours: run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog; \`${cli} decisions answer\` opens that same confirm dialog, for the same reason).
 3. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), ask them and name the pull request (they can also answer a parked or stuck station's question in the console's Interview tab, \`/factory interview\`): deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them; when it is resolved, mail that station and it wakes at once. \`${cli} waiting\` lists everything that waits on the person, with how to answer each: show it when they ask what they owe the factory.
-A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, human-flagged and owner-only bd beads) that have no options yet. Propose 2 or more short, concrete choices for each with \`${cli} decisions propose <key> "<question>" "<a | b>"\`, using the item's own key exactly as given; never for a \`gate:\` key, which only the person decides, and never for a \`prompt:\` key (a blocked worker waiting on a prompt in its pane): look at it instead.
+A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, human-flagged and owner-only bd beads) that still need a short, clear shape. For each, run \`${cli} decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]\`, using the item's own key exactly as given: a question of 160 characters or fewer that names the decision in plain words, an optional \`--context\` sentence of 200 characters or fewer, and 2-4 options, each "label: effect" with a label of 40 characters or fewer. Mark one option recommended, when there is one, by adding "(recommended)" after its effect. When the answer is already on record (the person decided this elsewhere), mail that station with it instead: never propose for a \`gate:\` key, which only the person decides, and never for a \`prompt:\` key (a blocked worker waiting on a prompt in its pane) -- look at it instead.
 4. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
 5. Finished runs and free room: say what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: pass --owned only when the person names that bead (that start also opens the same confirm dialog as a gate); a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
 6. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped for you. Read each SKILL.md: install it (\`${cli} skills install <name>\`) only when its commands are right and safe for this factory and it saves you real work; otherwise \`${cli} skills reject <name> "<why>"\`. Tell the person what you installed.
@@ -308,9 +306,10 @@ async function sweepDecisions($: EngineInterface) {
 
 /**
  * the 'Interview me' button: refresh bd decisions now (sweepDecisions, also used by the throttled auto-refresh),
- * then once ask the manager to propose options for whatever is still bare after merging any stored proposals
- * (interviewPrompt excludes gates and anything that already has options). Skipped like a patrol: never from a
- * background fork of the manager, and never while one patrol or interview round is already in its turn.
+ * then once ask the manager to propose options for whatever still needs one, the same open list the console
+ * draws (interviewPrompt excludes a gate and a prompt, and anything that already needs no proposal). Skipped
+ * like a patrol: never from a background fork of the manager, and never while one patrol or interview round
+ * is already in its turn.
  */
 async function interviewMe($: EngineInterface) {
   await sweepDecisions($)
@@ -318,10 +317,7 @@ async function interviewMe($: EngineInterface) {
   if (!(await isPaneSession($))) return
   const [b, dec, d] = await Promise.all([read($, board), read($, decisions), read($, draft)])
   const answered = Object.fromEntries((d.interviewed ?? []).map(x => [x.key, x.answer]))
-  const items = withProposals(
-    [...interviews(b.runs, answered), ...beadInterviews(dec.rigs, answered)],
-    dec.proposals,
-  )
+  const items = openInterviews(b.runs, dec.rigs, dec.proposals, answered)
   const text = interviewPrompt(items)
   if (!text) return
   rt.isPatrolling = true
@@ -413,49 +409,56 @@ async function answer($: EngineInterface, m: FactoryMail, kind: 'approve' | 'rej
  * the person's answer to an interview question. A parked or stuck run's answer mails its station, which wakes
  * it; a stuck one is retried with it in its inbox. A bd decision's answer runs `factory decisions answer`,
  * which comments on the bead (and closes it, for a human-flagged one); an owner-only bead's 'start now' also
- * starts it, and a failed start returns before recording the answer, so the item stays open and the person
+ * starts it, and a failed start stops before recording that member's answer, so it stays open and the person
  * can try again rather than it quietly vanishing while the bead never ran. Gate and prompt items never reach
- * here: their buttons act directly (decide, jump). The manager hears of it at its next patrol.
+ * here: their buttons act directly (decide, jump).
+ *
+ * `mergeSame` may have folded other open items into this one (same bead, or the same question in the same
+ * rig): `iv.also`. The same choice goes down each member's own path in turn -- its own mail or decisions
+ * answer, its own retry/abort or start -- and every member's key lands in `draft.interviewed`, so none of
+ * them asks the question again. The manager hears of each at its next patrol.
  */
 async function interview($: EngineInterface, iv: Interview, choice?: string) {
   const typed = (await read($, draft)).replies?.[iv.key] ?? ''
-  const text = interviewAnswer(iv, choice, typed)
-  if (!text) return $.ui.toast('factory: pick an option or type an answer')
-  if (iv.kind === 'bead' || iv.kind === 'owned') {
-    if (!(await act($, ['decisions', 'answer', iv.rig!, iv.bead!, text]))) return
-    if (iv.kind === 'owned' && choice === 'start now') {
-      const row = (await read($, decisions)).rigs.find(r => r.rig === iv.rig)
-      if (!(await act($, ['start', row?.factory ?? 'lifecycle', iv.rig!, iv.bead!, '--owned']))) return
-    }
-  } else {
-    if (!(await act($, ['mail', iv.run!, iv.node!, text]))) return
-    if (iv.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', iv.run!])
-  }
-  const at = await $.clock.now()
-  rt.unsent.push({
-    run: iv.run ?? iv.bead ?? iv.key,
-    from: 'person',
-    text: `answered ${iv.node ?? iv.rig ?? iv.kind}'s question in the console: ${text}`,
-    at,
-  })
-  // not named answer: the mod loader takes any second `answer` in the file for a redeclared hook function
   const given = [choice, typed.trim()].filter(Boolean).join(': ')
+  const at = await $.clock.now()
+  const entries: NonNullable<FactoryDraft['interviewed']> = []
+  for (const member of [iv, ...(iv.also ?? [])]) {
+    const text = interviewAnswer(member, choice, typed)
+    if (!text) return $.ui.toast('factory: pick an option or type an answer')
+    if (member.kind === 'bead' || member.kind === 'owned') {
+      if (!(await act($, ['decisions', 'answer', member.rig!, member.bead!, text]))) return
+      if (member.kind === 'owned' && choice === 'start now') {
+        const row = (await read($, decisions)).rigs.find(r => r.rig === member.rig)
+        if (!(await act($, ['start', row?.factory ?? 'lifecycle', member.rig!, member.bead!, '--owned'])))
+          return
+      }
+    } else {
+      if (!(await act($, ['mail', member.run!, member.node!, text]))) return
+      if (member.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', member.run!])
+    }
+    rt.unsent.push({
+      run: member.run ?? member.bead ?? member.key,
+      from: 'person',
+      text: `answered ${member.node ?? member.rig ?? member.kind}'s question in the console: ${text}`,
+      at,
+    })
+    // not named answer: the mod loader takes any second `answer` in the file for a redeclared hook function
+    entries.push({
+      key: member.key,
+      run: member.run,
+      node: member.node,
+      rig: member.rig,
+      bead: member.bead,
+      question: member.question,
+      answer: given,
+      at,
+    })
+  }
   await update($, draft, d => ({
     ...d,
     replies: { ...d.replies, [iv.key]: '' },
-    interviewed: [
-      ...(d.interviewed ?? []),
-      {
-        key: iv.key,
-        run: iv.run,
-        node: iv.node,
-        rig: iv.rig,
-        bead: iv.bead,
-        question: iv.question,
-        answer: given,
-        at,
-      },
-    ].slice(-100),
+    interviewed: [...(d.interviewed ?? []), ...entries].slice(-100),
   }))
 }
 
