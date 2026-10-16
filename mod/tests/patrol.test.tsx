@@ -189,9 +189,20 @@ test(
       return { text: e.text } as never
     })
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    // the real Bash tool, beneath register.tsx's own tool.call hook
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
+
+    // the engine carries the running loop's id as e.agentId on the subagent's own Bash call
+    // (AgentLoop, absent on the main loop): the patrol's first one lets rt.patrolNow learn its
+    // real id, since agent.spawn's resolved value never carries one back in a mod test
+    await $.tool.call({ tool: 'Bash', command: 'true', agentId: 'patrol-9' } as never)
 
     const own = await $.prompt.submit({
       text: '<task-notification> <task-id>patrol-9</task-id> done',

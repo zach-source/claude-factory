@@ -634,6 +634,15 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    // e.agentId is the subagent's own loop id (AgentLoop), absent on the main loop: the patrol's
+    // first Bash call learns rt.patrolId from it. agent.spawn's resolved value never carries an
+    // id back to the caller in a mod test (a registered agent type always resolves
+    // { model: 'inherit' } there, confirmed live; claude-factory-72v memory), so a test can only
+    // deliver the id this way. In a real session this confirms the id agent.spawn set.
+    if (rt.isPatrolling && rt.patrolId === undefined && e.agentId) {
+      rt.patrolId = e.agentId
+      rt.patrolIds = [...rt.patrolIds, e.agentId].slice(-20)
+    }
     // the model's shell cd's into rigs to read them: its factory commands still work this factory
     const pinned = rt.home ? { ...e, command: `export FACTORY_HOME='${rt.home}'\n${e.command}` } : e
     // a gate, a bd decision answer and an owner-only start are the person's call: the model may run
