@@ -100,6 +100,10 @@ test(
       return { text: e.text } as never
     })
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    // claude-factory-72v.17: the fallback branch (rt.patrolId unset, as agent.spawn delivers no
+    // agentId in this test kit) now also requires isPatrolAgent to confirm 'patrol-1' before
+    // adopting it as this test's own patrol
+    agentListMock(on, ['patrol-1'])
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -162,6 +166,10 @@ test(
     })
     on('prompt.submit', ($, e) => ({ text: e.text }) as never)
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    // claude-factory-72v.17: agent.spawn delivers no agentId for a registered agent type in this
+    // test kit, no matter what this mock answers (claude-factory-72v memory): the cleanup
+    // turn.complete below needs isPatrolAgent to confirm 'patrol-1' before adopting it
+    agentListMock(on, ['patrol-1'])
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -312,6 +320,10 @@ test(
     })
     on('prompt.submit', ($, e) => ({ text: e.text }) as never)
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    // claude-factory-72v.17: agent.spawn delivers no agentId for a registered agent type in this
+    // test kit, no matter what this mock answers (claude-factory-72v memory): the cleanup
+    // turn.complete below needs isPatrolAgent to confirm 'patrol-5' before adopting it
+    agentListMock(on, ['patrol-5'])
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -425,6 +437,9 @@ test(
       { tool: 'Bash' },
       () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
     )
+    // claude-factory-72v.17: agent.spawn delivers no agentId here, so turn.complete's fallback
+    // branch now needs isPatrolAgent to confirm 'patrol-6' before adopting it
+    agentListMock(on, ['patrol-6'])
 
     // the main chat mails r1 directly: this touches r1, holding it out of the next patrol
     await $.tool.call({ tool: 'Bash', command: 'factory mail r1 implement "steer"' } as never)
@@ -581,6 +596,10 @@ test(
       { tool: 'Bash' },
       () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
     )
+    // claude-factory-72v.17: agent.spawn delivers no agentId for a registered agent type in this
+    // test kit, no matter what this mock answers (claude-factory-72v memory): turn.complete's
+    // fallback branch needs isPatrolAgent to confirm 'patrol-51' before adopting it
+    agentListMock(on, ['patrol-51'])
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -638,6 +657,10 @@ test(
       { tool: 'Bash' },
       () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
     )
+    // claude-factory-72v.17: agent.spawn delivers no agentId for a registered agent type in this
+    // test kit, no matter what this mock answers (claude-factory-72v memory): turn.complete's
+    // fallback branch needs isPatrolAgent to confirm 'patrol-1' before adopting it
+    agentListMock(on, ['patrol-1'])
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -694,6 +717,9 @@ test(
     })
     on('prompt.submit', ($, e) => ({ text: e.text }) as never)
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    // claude-factory-72v.17: the fallback branch (rt.patrolId unset) now also requires
+    // isPatrolAgent to confirm 'patrol-8' before adopting it as this test's own patrol
+    agentListMock(on, ['patrol-8'])
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -731,6 +757,62 @@ test(
       turnId: 't2',
       agentId: 'patrol-8',
     } as never)
+  },
+)
+
+test(
+  "an unrelated subagent's own turn.complete, ending first with a never-seen agentId, does not free the patrol or get logged as its report (claude-factory-72v.17)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const status: unknown[] = []
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/home/factory',
+      files,
+    )
+    on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    // agent.spawn delivers no agentId, as in this test kit (claude-factory-72v memory): rt.patrolId
+    // stays undefined, the same gap the fallback branch's isPatrolAgent check must close
+    on('agent.spawn', () => ({ model: 'sonnet' }) as never)
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    // agent.list names only 'patrol-X' as the running factory:patrol agent: 'other-2' is some
+    // other subagent entirely, one isPatrolAgent must refuse to adopt
+    agentListMock(on, ['patrol-X'])
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    // an unrelated subagent's own turn ends first, with a never-seen agentId
+    await $.turn.complete({
+      answer: 'from the other subagent',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 'o1',
+      agentId: 'other-2',
+    } as never)
+    expect(files.get('/home/factory/patrol-log.jsonl')).toBeUndefined()
+    expect(JSON.stringify(status)).not.toContain('other subagent')
+
+    // the real patrol's own turn, confirmed by agent.list, still frees it and is logged
+    await $.turn.complete({
+      answer: 'from the real patrol',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-X',
+    } as never)
+    const log = (files.get('/home/factory/patrol-log.jsonl') ?? '').trim().split('\n').filter(Boolean)
+    expect(log).toHaveLength(1)
+    expect(JSON.parse(log[0]!).report).toBe('from the real patrol')
   },
 )
 
@@ -870,6 +952,10 @@ test(
     on('prompt.submit', ($, e) => ({ text: e.text }) as never)
     // the base implementation beneath register.tsx's own turn.complete hook, or next(e) throws
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    // claude-factory-72v.17: agent.spawn delivers no agentId for a registered agent type in this
+    // test kit, no matter what this mock answers (claude-factory-72v memory): the turn.complete
+    // call below needs isPatrolAgent to confirm 'patrol-11' before adopting it
+    agentListMock(on, ['patrol-11'])
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -888,24 +974,41 @@ test(
 )
 
 test(
-  "[SECURITY] a subagent's command on a run the person just touched is denied too, not only left off its prompt (claude-factory-72v.14)",
+  "[SECURITY] the patrol's own command on a run the person just touched is denied too, not only left off its prompt (claude-factory-72v.14); a different, non-patrol subagent is not held (claude-factory-72v.16)",
   SLOW,
   async ($, on) => {
     const clock = mock.clock(on)
     let ran = 0
-    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-      on(event, () => ({ value: undefined }) as never)
+    let queued: readonly unknown[] = [mail(1)]
+    baseMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    // agent.spawn delivers no agentId for a registered agent type in this test kit, no matter
+    // what this mock answers (claude-factory-72v memory): the patrol's own first Bash call below
+    // learns rt.patrolId through the agentListMock-confirmed adoption path instead
+    // (claude-factory-72v.9), the only way the hold and the gated-command deny can tell the
+    // patrol apart from any other subagent's own agentId.
+    on('agent.spawn', () => ({ model: 'sonnet' }) as never)
+    agentListMock(on, ['patrol-14'])
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
     on('tool.call', { tool: 'Bash' }, () => {
       ran += 1
       return { result: { stdout: 'ok', stderr: '', interrupted: false } }
     })
 
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(ran).toBe(0) // agent.spawn alone runs no Bash call
+
     // the main chat touches r9 directly: this holds it for PATROL_HOLD_MS
     await $.tool.call({ tool: 'Bash', command: 'factory mail r9 implement "steer"' } as never)
     expect(ran).toBe(1)
 
-    // a subagent's own command naming that same, still-held run is denied, with no dialog
+    // the patrol's own command naming that same, still-held run is denied, with no dialog
     const denied = await $.tool.call({
       tool: 'Bash',
       command: 'factory poke r9',
@@ -914,6 +1017,26 @@ test(
     expect(denied.deny).toContain('touched by the person')
     expect(ran).toBe(1) // not run
 
+    // claude-factory-72v.16: a different, non-patrol subagent (one the person started themselves,
+    // e.g. via the manager's own Agent tool) on that same held run must not be denied: the hold is
+    // the patrol's own rule, not a rule for every subagent.
+    const allowed = await $.tool.call({
+      tool: 'Bash',
+      command: 'factory poke r9',
+      agentId: 'other-1',
+    } as never)
+    expect(allowed.deny).toBeUndefined()
+    expect(ran).toBe(2) // ran this time
+
+    // leave no patrol running, so a later test in this file is not blocked by it
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-14',
+    } as never)
     await clock.settle()
   },
 )

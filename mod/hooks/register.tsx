@@ -734,7 +734,18 @@ export const register: Register = (on, options) => {
     // this way only once that list confirms it is really PATROL_TYPE. Most tests never spawn a
     // second subagent, so they never mock agent.list: treat its "no implementation" error the
     // same as "not confirmed", never as "assume yes".
-    if (rt.isPatrolling && rt.patrolId === undefined && e.agentId && (await isPatrolAgent($, e.agentId))) {
+    //
+    // claude-factory-72v.17: this skipped rt.patrolIds, the list of ids already seen. An older
+    // patrol, freed by the watchdog but still running late, could call Bash and get re-adopted as
+    // rt.patrolId, stealing the live patrol's own actions and turn.complete match. Excluding
+    // patrolIds here, the same way turn.complete's own fallback already does, closes that gap.
+    if (
+      rt.isPatrolling &&
+      rt.patrolId === undefined &&
+      e.agentId &&
+      !rt.patrolIds.includes(e.agentId) &&
+      (await isPatrolAgent($, e.agentId))
+    ) {
       rt.patrolId = e.agentId
       rt.patrolIds = [...rt.patrolIds, e.agentId].slice(-20)
     }
@@ -745,27 +756,28 @@ export const register: Register = (on, options) => {
     // (a line continuation or a quoted newline must not hide a run-acting command from either)
     const normalized = e.command.replace(/\\\n/g, '')
 
-    // [SECURITY] a subagent (the patrol, or any other) gets no dialog: nobody is there to answer
-    // it, so this denies a gated command outright. For a non-gated command that acts on one run,
-    // it logs the command (clipped to 200 chars) for the patrol log (claude-factory-72v.5), but
-    // only for this running patrol's own agentId (claude-factory-72v.9): a second, unrelated
-    // subagent's own command must not land in the patrol's log, or move rt.patrolId off this
-    // patrol's own id.
+    // [SECURITY] a subagent gets no dialog, since nobody is there to answer one. This denies a
+    // gated command outright, for every subagent. The run-touched hold below, and the patrol-log
+    // recording, differ: the person can run their own subagent on a run the main chat just
+    // touched (claude-factory-72v.16 keeps the hold off that case). Both checks match only this
+    // running patrol's own agentId (claude-factory-72v.9), never any other e.agentId.
     if (e.agentId) {
       if (gated) return { deny: `${gated.deny} A patrol never decides this: leave it for the person.` }
-      // claude-factory-72v.14: the prompt already leaves a held run's mail out, but that alone
-      // did not stop a subagent's own Bash call from acting on a held run directly. This denies
-      // it too, the same hold PATROL_HOLD_MS already gives the main chat.
-      const target = normalized.match(TOUCH_RE)?.[2]
-      if (target) {
-        const at = rt.touched.get(target)
-        if (at !== undefined && (await $.clock.now()) - at < PATROL_HOLD_MS)
-          return {
-            deny: `${target} was touched by the person in the last few minutes: a patrol must not act on it now.`,
-          }
+      if (e.agentId === rt.patrolId) {
+        // claude-factory-72v.14: the prompt already leaves a held run's mail out, but that alone
+        // did not stop the patrol's own Bash call from acting on a held run directly. This denies
+        // it too, the same hold PATROL_HOLD_MS already gives the main chat.
+        const target = normalized.match(TOUCH_RE)?.[2]
+        if (target) {
+          const at = rt.touched.get(target)
+          if (at !== undefined && (await $.clock.now()) - at < PATROL_HOLD_MS)
+            return {
+              deny: `${target} was touched by the person in the last few minutes: a patrol must not act on it now.`,
+            }
+        }
+        if (PATROL_VERB.test(normalized))
+          rt.patrolActions = [...rt.patrolActions, line(e.command, 200)].slice(-50)
       }
-      if (e.agentId === rt.patrolId && PATROL_VERB.test(normalized))
-        rt.patrolActions = [...rt.patrolActions, line(e.command, 200)].slice(-50)
       return next(pinned)
     }
 
@@ -799,13 +811,21 @@ export const register: Register = (on, options) => {
   // never sets it: a mod's own `$.agent.spawn` call, for a registered agent type, always resolves
   // to `{ model: 'inherit' }` with no `agentId`, even when the test's own hook answers with one.
   // `rt.patrolIds` lists ids already seen. The fallback excludes those ids. This stops a late turn
-  // from an older, already-freed patrol from matching by mistake. Only a fresh, never-seen id
-  // counts as this running patrol's own.
+  // from an older, already-freed patrol from matching by mistake.
+  //
+  // claude-factory-72v.17: excluding seen ids was not enough. An unrelated subagent's own turn,
+  // never seen before, could still end first and match this branch: it would free isPatrolling,
+  // and its own answer would be logged and toasted as the patrol's report. `isPatrolAgent` confirms
+  // the id is really a running `factory:patrol` agent before this branch adopts it, the same check
+  // the Bash hook above already makes.
   on('turn.complete', async ($, e, next) => {
     if (
       rt.isPatrolling &&
       e.agentId &&
-      (e.agentId === rt.patrolId || (rt.patrolId === undefined && !rt.patrolIds.includes(e.agentId)))
+      (e.agentId === rt.patrolId ||
+        (rt.patrolId === undefined &&
+          !rt.patrolIds.includes(e.agentId) &&
+          (await isPatrolAgent($, e.agentId))))
     ) {
       rt.isPatrolling = false
       rt.patrolId = undefined
