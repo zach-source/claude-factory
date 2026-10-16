@@ -3248,15 +3248,37 @@ const repoOf = (arg: string) =>
         })`,
       ))
 
-/** how many more runs may hold a worker in `rig`, given the rigs of the runs that hold one now */
+/** This function marks a run's current station for the caps.
+ *
+ * 'free': the run holds no worker. Three cases give 'free': the node is empty (the run is done
+ * or aborted); the node is a gate (the person answers it); the sub-state is 'waiting'.
+ *
+ * 'rig': the sub-state is 'stuck'. The worker pane stays up. The manager can inspect it (see
+ * machine.ts). On an ax rig, this pane is an AX task. A stuck run still fills its rig's maxRuns.
+ * The person holds a stuck run, like a wait or a gate, so it does not fill the town's
+ * FACTORY_MAX_RUNS.
+ *
+ * 'busy': any other sub-state (working or backoff). A busy run fills both caps. */
+export const slot = (n: { gate?: true } | undefined, sub: string): 'free' | 'rig' | 'busy' => {
+  if (!n || n.gate || sub === 'waiting') return 'free'
+  if (sub === 'stuck') return 'rig'
+  return 'busy'
+}
+
+/** how many more runs may hold a worker in `rig`, given the rigs of the runs that hold one now
+ * (`busy`) and the rigs of the runs merely held there, stuck, costing the rig a slot but not the
+ * town one (`held`) */
 export const room = (
   rig: Pick<Rig, 'name' | 'maxRuns'> | undefined,
   busy: (string | undefined)[],
   max = MAX_BUSY,
+  held: (string | undefined)[] = [],
 ) =>
   Math.min(
     max - busy.length,
-    rig?.maxRuns === undefined ? Infinity : rig.maxRuns - busy.filter(b => b === rig.name).length,
+    rig?.maxRuns === undefined
+      ? Infinity
+      : rig.maxRuns - busy.filter(b => b === rig.name).length - held.filter(h => h === rig.name).length,
   )
 
 /** the rigs' ready `factory` beads become runs while each rig, and the factory, has room */
@@ -3295,7 +3317,7 @@ async function dispatch() {
     return
   writeFileSync(stamp, '')
   const errors: Row[] = []
-  const busy = await busyRigs()
+  const { busy, held } = await busyRigs()
   const { ids: linearIds, rigs: linearRigs } = linearExcluded()
   // live runs only: a finished run's deferred bead, undeferred by a person, is new work again
   const linked = new Set(
@@ -3325,7 +3347,7 @@ async function dispatch() {
       }
       const syncError = synced[rig.repo]?.error
       if (syncError) errors.push({ id: `rig:${rig.name}`, error: syncError }) // dispatch goes on: local beads are still true
-      if (room(rig, busy) <= 0) continue // full: no more bd calls
+      if (room(rig, busy, undefined, held) <= 0) continue // full: no more bd calls
       if (linearRigs.has(rig.name)) {
         // an open Linear baseline: a pull may have labeled a bead here that the listing never confirmed
         // (claude-factory-b6c.16); hold back every ready bead until the retry resolves it
@@ -3342,7 +3364,7 @@ async function dispatch() {
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
-        if (room(rig, busy) <= 0) break
+        if (room(rig, busy, undefined, held) <= 0) break
         let run, def
         try {
           ;({ run, def } = await createTracked(rig.factory, preview.name, rig.repo, goalOf(bead), bead.id))
@@ -3406,7 +3428,7 @@ async function labelPass() {
   if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < LABELS_MS)) return
   writeFileSync(stamp, '')
   const errors: Row[] = []
-  const busy = await busyRigs()
+  const { busy, held } = await busyRigs()
   const fields = 'number,url,headRefName,baseRefName,isCrossRepository,labels'
   const live = runIds()
     .map(id => ({ id, ...current(id) }))
@@ -3480,7 +3502,7 @@ async function labelPass() {
           forge.unlabel(pr, reworkLabels(pr))
           forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
-        } else if (action === 'rework' && room(rig, busy) > 0) {
+        } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
           busy.push(rig.name)
           forge.unlabel(pr, reworkLabels(pr))
@@ -3559,24 +3581,29 @@ async function watchPass() {
   }
 }
 
-async function busyRigs() {
+/** the rig of every run holding a worker (`busy`), and the rig of every run merely held there,
+ * stuck (`held`): see `slot()` for what each state means for the two caps */
+async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string | undefined)[] }> {
   const busy: (string | undefined)[] = []
+  const held: (string | undefined)[] = []
   for (const id of runIds()) {
     const { run, value } = current(id)
     const [node, sub] = where(value)
     const n = (await loadFactory(run.factory)).nodes[node]
-    if (n && !n.gate && sub !== 'waiting') busy.push(rigOf(run.repo)?.name)
+    const s = slot(n, sub)
+    if (s === 'busy') busy.push(rigOf(run.repo)?.name)
+    else if (s === 'rig') held.push(rigOf(run.repo)?.name)
   }
-  return busy
+  return { busy, held }
 }
 
 async function assertRoom(repo: string) {
   if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
-  const busy = await busyRigs()
+  const { busy, held } = await busyRigs()
   const rig = rigOf(repo)
   if (busy.length >= MAX_BUSY)
     fail(`${busy.length} runs are busy (FACTORY_MAX_RUNS=${MAX_BUSY}): finish, abort or rm one first`)
-  if (room(rig, busy) <= 0)
+  if (room(rig, busy, MAX_BUSY, held) <= 0)
     fail(`rig ${rig!.name} has ${rig!.maxRuns} busy runs, its maxRuns: finish, abort or rm one first`)
 }
 
@@ -3773,9 +3800,13 @@ async function show(id: string | undefined) {
 
 /** each rig's work: what the factory will start, and what waits for a person to queue it */
 async function backlog() {
-  const busy = await busyRigs()
+  const { busy, held } = await busyRigs()
   return rigs().map(rig => {
-    const w = { ...rig, busy: busy.filter(b => b === rig.name).length }
+    const w = {
+      ...rig,
+      // a stuck run still fills this rig's maxRuns, so it counts here too (not the town cap)
+      busy: busy.filter(b => b === rig.name).length + held.filter(h => h === rig.name).length,
+    }
     try {
       const b = beads(rig.repo, 'factory')
       // three listings a rig, whatever its size: ready, blocked and every bead (child counts)
@@ -4739,10 +4770,11 @@ if (import.meta.main && !outboxCmd)
           )
           console.log(`removed rig ${name}: nothing new starts there; its runs carry on`)
         } else if (sub === 'list') {
-          const busy = await busyRigs()
+          const { busy, held } = await busyRigs()
           if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
           for (const r of rigs()) {
-            const n = busy.filter(b => b === r.name).length
+            // a stuck run holds this rig's own slot, so it counts here too (not the town's)
+            const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
             console.log(
               `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${(r.sweeps ?? SWEEPS).join(',') || 'none'}`,
             )
@@ -4762,6 +4794,7 @@ if (import.meta.main && !outboxCmd)
               )
             }
           }
+          console.log(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
         } else fail(`unknown rig command "${sub}": add, rm or list`)
         break
       }

@@ -10,6 +10,8 @@ import { afterAll, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createActor } from 'xstate'
+import { compile, where } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `start-${process.pid}`)
@@ -253,4 +255,43 @@ test('--owned starts an owner-only bead for the person, but FACTORY_PATROL refus
   const person = run(['start', factoryFixture(), r, 'acme-1', '--owned'])
   expect(person.code).toBe(0)
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
+})
+
+// claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
+// person must run `factory retry` to free it. A stuck run must not fill FACTORY_MAX_RUNS, the
+// town cap. The person already holds the run, the same way as a wait or a gate. The control
+// below checks the same cap, but on a run that still works.
+test('a stuck run does not count against FACTORY_MAX_RUNS, but a working run does (claude-factory-ytz.1)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'found')
+  const first = run(['start', factoryFixture(), r, 'acme-1'])
+  expect(first.code).toBe(0)
+  const id = readdirSync(join(home, 'runs'))[0]!
+
+  // control: the first run is still at work.working: FACTORY_MAX_RUNS=1 refuses a second start
+  const refused = run(['start', factoryFixture(), r, 'acme-1'], { FACTORY_MAX_RUNS: '1' })
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain('runs are busy')
+
+  // build a work.stuck snapshot the way the machine really reaches it: FAIL twice exhausts retries:1
+  const stuckDef = {
+    name: 'tiny',
+    start: 'work',
+    nodes: { work: { prompt: 'Do it.', next: { ok: 'done' }, retries: 1 } },
+  }
+  const actor = createActor(compile(stuckDef)).start()
+  actor.send({ type: 'FAIL', seq: 1, reason: 'timeout', at: 1000 })
+  actor.send({ type: 'TICK', at: 40_000 })
+  actor.send({ type: 'FAIL', seq: 2, reason: 'went idle', at: 50_000 })
+  expect(where(actor.getSnapshot().value)).toEqual(['work', 'stuck']) // the fixture is really stuck
+  const snapshot = actor.getPersistedSnapshot()
+  writeFileSync(join(home, 'runs', id, 'state.json'), JSON.stringify({ cursor: 0, snapshot }))
+
+  // AC1: the same FACTORY_MAX_RUNS=1 no longer refuses once the run is stuck, not working
+  const allowed = run(['start', factoryFixture(), r, 'acme-1'], { FACTORY_MAX_RUNS: '1' })
+  expect(allowed.code).toBe(0)
+  expect(readdirSync(join(home, 'runs')).length).toBe(2)
 })
