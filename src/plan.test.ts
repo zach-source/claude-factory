@@ -49,6 +49,18 @@ test('sanitize leaves a short, clean string unchanged', () => {
   expect(sanitize('a clean title')).toBe('a clean title')
 })
 
+test('sanitize strips C1 controls, NEL, CSI, line/paragraph separators and bidi overrides (claude-factory-dun.26)', () => {
+  const dirty = 'a\u009bb\u0085c d e‮f⁦g'
+  const clean = sanitize(dirty)
+  expect(clean).not.toContain('\u009b') // 8-bit CSI: a VT500-family parser (xterm, xterm.js) reads this as an escape
+  expect(clean).not.toContain('\u0085') // NEL
+  expect(clean).not.toContain(' ') // line separator
+  expect(clean).not.toContain(' ') // paragraph separator
+  expect(clean).not.toContain('‮') // RLO bidi override: a Trojan Source reorder of displayed text
+  expect(clean).not.toContain('⁦') // LRI bidi isolate
+  expect(clean).toBe('abcdefg')
+})
+
 // ---- rankPlan ----
 
 test('rankPlan: the pm cannot lift a bead over a higher-priority one; it only orders inside a band', () => {

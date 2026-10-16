@@ -25,7 +25,13 @@ export const PLAN_FRESH_MS = 2 * 60 * 60_000
 /** A bead with no priority sorts into the lowest band (4, backlog). It never sorts ahead of a prioritized bead. */
 const prio = (b: Pick<Bead, 'priority'>) => b.priority ?? 4
 
-const stripControl = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+// Covers C0 (minus \n \r \t) and DEL, plus C1 controls (incl. U+0085 NEL, U+009B 8-bit CSI --
+// a VT500-family parser such as xterm or xterm.js treats U+009B as CSI, the same pane escape
+// injection an ESC filter closes), U+2028/U+2029 (line/paragraph separator) and the Unicode
+// bidi overrides/isolates U+202A-U+202E/U+2066-U+2069 (a Trojan Source reorder of displayed
+// text) (claude-factory-dun.26).
+const stripControl = (s: string) =>
+  s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g, '')
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 /**
