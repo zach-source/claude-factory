@@ -156,11 +156,15 @@ const connectHeaders = (creds: ConnectCreds): Record<string, string> => ({
   'CF-Access-Client-Secret': creds.cfSecret,
 })
 
-/** The limit on every Linear-related fetch: the secret broker, and the Linear API itself
- * (claude-factory-b6c.22). `linearPass` holds `beads.lock` while it awaits one rig's pull, so a
- * broker or Linear endpoint that accepts a connection and never answers would stall every rig's
- * dispatch and label pass with no bound. */
-const FETCH_TIMEOUT_MS = 30_000
+/** This is the time limit on each fetch to the secret broker or the Linear API (claude-factory-b6c.22).
+ * A broker or Linear endpoint can accept a connection and never answer. With no limit, that
+ * endpoint can stall every rig's dispatch and label pass. `linearPass` holds `beads.lock` during
+ * the wait.
+ *
+ * `FACTORY_LINEAR_FETCH_TIMEOUT_MS` can override this limit. `FACTORY_SELF_UPDATE_MS` (src/cli.ts)
+ * uses the same pattern. A test can set this override. The override makes the timeout fire fast,
+ * with no 30-second wait. Production code never sets it. */
+const FETCH_TIMEOUT_MS = Number(process.env.FACTORY_LINEAR_FETCH_TIMEOUT_MS) || 30_000
 
 async function connectGet(creds: ConnectCreds, path: string): Promise<unknown> {
   const res = await fetch(`${creds.host}${path}`, {

@@ -458,6 +458,46 @@ async function fakeLinearProcess(issuesFile: string) {
   return { url: `http://127.0.0.1:${port}/graphql`, stop: () => proc.kill() }
 }
 
+/**
+ * This is a fake Linear GraphQL endpoint (claude-factory-b6c.22). It never answers a request for
+ * one team id, `hangTeam`. It answers every other team's request at once, from `fastIssues`. It
+ * reads the request body's own team filter. `fakeLinearProcess` above does not. A test can use
+ * this to prove a timeout on one rig's fetch does not stall another rig's own fetch and pull.
+ */
+async function fakeLinearProcessSlow(hangTeam: string, fastIssues: { ref: string; project?: string }[]) {
+  const script = `
+    const hangTeam = ${JSON.stringify(hangTeam)}
+    const fastIssues = ${JSON.stringify(fastIssues)}
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = await req.json()
+        const teams = body?.variables?.filter?.team?.id?.in ?? []
+        if (teams.includes(hangTeam)) return await new Promise(() => {}) // never answers
+        return Response.json({
+          data: {
+            issues: {
+              nodes: fastIssues.map(i => ({
+                identifier: i.ref,
+                updatedAt: '2026-10-16T00:00:00.000Z',
+                project: i.project ? { name: i.project } : null,
+                labels: { nodes: [] },
+              })),
+              pageInfo: { hasNextPage: false, endCursor: '' },
+            },
+          },
+        })
+      },
+    })
+    console.log(server.port)
+    await new Promise(() => {}) // stay alive until killed
+  `
+  const proc = Bun.spawn(['bun', '-e', script], { stdout: 'pipe', stderr: 'pipe' })
+  const { value } = await proc.stdout.getReader().read()
+  const port = new TextDecoder().decode(value).trim()
+  return { url: `http://127.0.0.1:${port}/graphql`, stop: () => proc.kill() }
+}
+
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const cdir = join(tmpdir(), `linear-cli-${process.pid}`)
 const home = join(cdir, 'home')
@@ -687,6 +727,19 @@ test('a pull error is recorded redacted (no secret value) and clipped, in linear
   expect(state.a.error).toBeTruthy()
   expect(state.a.error).not.toContain('test-key-123')
   expect(state.a.error.length).toBeLessThanOrEqual(201)
+})
+
+test('a pull that reports skipped or errored refs, with exit 0, is recorded as a failure, not a silent "pulled 0" (claude-factory-b6c.21)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
+  writeFileSync(mode, 'skipped') // the fake bd: every ref valid, stats.skipped=2, exit 0 (see fakeBd's doc comment)
+  const out = factory(['linear'])
+  expect(out.code).toBe(0) // the loop itself still exits 0: the failure is this rig's own recorded state
+  const pullCalls = callLines().filter(l => argvOf(l).startsWith('linear pull'))
+  expect(pullCalls).toHaveLength(1) // bd really ran and really answered exit 0
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.error).toBeTruthy()
+  expect(state.a.error).toContain('issue not found')
+  expect(state.a.pulled).toBeUndefined() // never reported as a successful pull
 })
 
 test('a pull error still strips a bead the pull newly labeled before it erred (claude-factory-b6c.8)', () => {
@@ -942,4 +995,41 @@ test('dispatch does not start a run on a bead a label remove failed on (claude-f
   expect(removes.length).toBeGreaterThanOrEqual(2) // the failed attempt, then the retry
   const state2 = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
   expect(state2.a.unstripped).toBeUndefined()
+})
+
+test('a Linear API endpoint that never answers times out within a short bound; that rig records an error, and another rig still pulls (claude-factory-b6c.22)', async () => {
+  const OTHER_TEAM = '11111111-2222-3333-4444-555555555555'
+  const slow = await fakeLinearProcessSlow(TEAM, [{ ref: 'B-1', project: '[b]' }])
+  try {
+    writeRigs([
+      { name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }, // this team hangs
+      { name: 'b', repo: repoB, factory: 'lifecycle', linear: { team: [OTHER_TEAM] } }, // answers right away
+    ])
+    const started = Date.now()
+    const out = factory(['linear'], { LINEAR_API_URL: slow.url, FACTORY_LINEAR_FETCH_TIMEOUT_MS: '300' })
+    const elapsed = Date.now() - started
+    expect(out.code).toBe(0)
+    expect(elapsed).toBeLessThan(10_000) // well inside the bound; the real default wait is 30s
+    const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+    expect(state.a.error).toBeTruthy() // rig a's own fetch timed out
+    expect(state.b.pulled).toBe(2) // rig b's own fetch answered fine, and its pull still ran
+  } finally {
+    slow.stop()
+  }
+})
+
+test("a second due pass sends bd only issues changed since the rig's last good pull; an unchanged issue makes no new pull call (claude-factory-b6c.24)", () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM] } }])
+  factory(['linear']) // first pass: no prior lastGoodAt yet, so it pulls the fixture's one issue
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1)
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.lastGoodAt).toBeTruthy()
+
+  // backdate state.a.at so the pull is due again, with no --force: --force would bypass the
+  // incremental cutoff entirely (cli.ts linearSyncOne), which would hide the bug this test checks.
+  state.a.at = Date.now() - 20 * 60_000 - 1000
+  writeFileSync(join(home, 'linear-sync.json'), JSON.stringify(state))
+
+  factory(['linear']) // due again; the fixture's issue (updatedAt 2026-01-01) predates lastGoodAt
+  expect(callLines().filter(l => argvOf(l).startsWith('linear pull'))).toHaveLength(1) // still just the first
 })
