@@ -266,6 +266,22 @@ async function isPaneSession($: EngineInterface) {
   }
 }
 
+/**
+ * True once `$.agent.list()` names `agentId` as a `PATROL_TYPE` agent. This is the only sure way
+ * to tell the running patrol's own subagent from any other one (claude-factory-72v.9). It
+ * returns false on any error, including "no implementation". Most tests have only one subagent,
+ * so they never need to mock `agent.list`. A missing mock there must read as "not the patrol",
+ * never as "assume yes".
+ */
+async function isPatrolAgent($: EngineInterface, agentId: string) {
+  try {
+    const agents = await $.agent.list()
+    return agents.some(a => a.id === agentId && a.type === PATROL_TYPE)
+  } catch {
+    return false
+  }
+}
+
 /** `<home>/patrol-log.jsonl`, oldest first; `[]` before the first patrol ever wrote one, or with no home yet */
 async function readPatrolLog($: EngineInterface): Promise<FactoryPatrolLogEntry[]> {
   if (!rt.home) return []
@@ -709,7 +725,16 @@ export const register: Register = (on, options) => {
     // id back to the caller in a mod test (a registered agent type always resolves
     // { model: 'inherit' } there, confirmed live; claude-factory-72v memory), so a test can only
     // deliver the id this way. In a real session this confirms the id agent.spawn set.
-    if (rt.isPatrolling && rt.patrolId === undefined && e.agentId) {
+    //
+    // claude-factory-72v.9: "the first Bash call wins" used to adopt any subagent's id, not only
+    // the patrol's own. A second, unrelated subagent could call Bash before the patrol's own
+    // first call. That hijacked rt.patrolId. The real patrol's later actions then went unlogged,
+    // and its own turn.complete stopped matching. $.agent.list() names each agent's real type
+    // (AgentInfo.type). The engine sets this at spawn. Call order cannot fake it. Adopt an id
+    // this way only once that list confirms it is really PATROL_TYPE. Most tests never spawn a
+    // second subagent, so they never mock agent.list: treat its "no implementation" error the
+    // same as "not confirmed", never as "assume yes".
+    if (rt.isPatrolling && rt.patrolId === undefined && e.agentId && (await isPatrolAgent($, e.agentId))) {
       rt.patrolId = e.agentId
       rt.patrolIds = [...rt.patrolIds, e.agentId].slice(-20)
     }

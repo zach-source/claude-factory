@@ -8,6 +8,24 @@ const SLOW = { timeoutMs: 30_000 }
 const RUN = { id: 'r1', rig: 'api', node: 'implement', sub: 'waiting', goal: 'g' }
 const mail = (at: number) => ({ run: 'r1', from: 'implement', text: 'blocked: which DB?', at })
 
+/** Answers `$.agent.list()` with one running `factory:patrol` agent for each id in `patrolIds`.
+ * This lets the tool.call hook's `isPatrolAgent` check (claude-factory-72v.9) confirm a Bash
+ * call's `agentId` is really the patrol, the way a real session's `$.agent.list()` would. */
+function agentListMock(on: On, patrolIds: readonly string[]) {
+  on(
+    'agent.list',
+    () =>
+      ({
+        value: patrolIds.map(id => ({
+          id,
+          type: 'factory:patrol',
+          description: 'factory patrol',
+          status: 'running',
+        })),
+      }) as never,
+  )
+}
+
 /** every mock a patrol test needs beside `agent.spawn`, `turn.complete` and `prompt.submit`, which
  * each test sets up its own way. `manager` is mutable: set it to delivery mail for the next tick,
  * read it is cleared right after, as the real `factory tick` would not resend delivered mail. */
@@ -222,6 +240,7 @@ test(
     )
     on('ui.status', () => ({ value: undefined }) as never)
     on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-9' }) as never)
+    agentListMock(on, ['patrol-9'])
     on('prompt.submit', ($, e) => {
       submits.push(e)
       return { text: e.text } as never
@@ -239,7 +258,9 @@ test(
 
     // the engine carries the running loop's id as e.agentId on the subagent's own Bash call
     // (AgentLoop, absent on the main loop): the patrol's first one lets rt.patrolNow learn its
-    // real id, since agent.spawn's resolved value never carries one back in a mod test
+    // real id, since agent.spawn's resolved value never carries one back in a mod test. The
+    // agentListMock above confirms it (claude-factory-72v.9), the way $.agent.list() would in
+    // a real session.
     await $.tool.call({ tool: 'Bash', command: 'true', agentId: 'patrol-9' } as never)
 
     const own = await $.prompt.submit({
@@ -463,6 +484,7 @@ test(
     on('ui.status', () => ({ value: undefined }) as never)
     on('ui.toast', (_, e) => (toasts.push(e), { value: undefined }) as never)
     on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-1' }) as never)
+    agentListMock(on, ['patrol-1'])
     on('prompt.submit', ($, e) => ({ text: e.text }) as never)
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
     on(
@@ -730,6 +752,10 @@ test(
     on('ui.toast', () => ({ value: undefined }) as never)
     // the real patrol's own id comes back from agent.spawn directly, as in a real session
     on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-A' }) as never)
+    // agent.list says 'patrol-A' is the factory:patrol agent, but has no entry for 'other-1' at
+    // all: isPatrolAgent (claude-factory-72v.9) must read that as "not the patrol", not adopt it
+    // by the old "first Bash call wins" guess, even though 'other-1' calls Bash first below
+    agentListMock(on, ['patrol-A'])
     on('prompt.submit', ($, e) => ({ text: e.text }) as never)
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
     on(
@@ -741,14 +767,7 @@ test(
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
 
-    // NOT YET GREEN (claude-factory-72v handoff): isolated (just this tool.call, then turn.complete,
-    // no other Bash call in between) this passes. Adding this one extra tool.call, with a different
-    // agentId, before turn.complete makes the file end up empty: confirmed by a DEBUG
-    // console.error inside register.tsx's own tool.call and turn.complete hooks, printing
-    // rt.isPatrolling/rt.patrolId at each call -- but the debug lines never printed at all in the
-    // plugin test runner's output (stdout/stderr from the hook body did not surface), so the next
-    // worker must add visibility a different way (write a debug line into `files` itself, or into
-    // the `status` array via the test's own `on('ui.status', ...)` mock) rather than console.error.
+    // a second, unrelated subagent's own Bash call, before the real patrol's first one
     await $.tool.call({
       tool: 'Bash',
       command: 'factory mail r1 implement "from the other agent"',
