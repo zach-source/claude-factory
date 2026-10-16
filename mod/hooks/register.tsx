@@ -13,6 +13,8 @@ import type {
   FactoryDraft,
   FactoryMail,
   FactoryPatrolLogEntry,
+  FactoryPlan,
+  FactoryPmLogEntry,
   FactoryRig,
   FactoryRun,
   FactoryView,
@@ -34,11 +36,13 @@ import {
 import {
   interviewAnswer,
   interviewPrompt,
+  isValidPlan,
   line,
   mailKey,
   openInterviews,
   patrol,
   patrolsText,
+  pmDue,
   quickAnswer,
   statusText,
   type Interview,
@@ -68,6 +72,13 @@ const TOUCH_RE = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|decide)\s+(\S+
 const PATROL_LOG_CAP = 50
 /** how many of the newest log entries a fresh patrol's own prompt carries, and `/factory patrols` prints */
 const PATROL_LOG_RECENT = 10
+const PM_TYPE = 'factory:pm'
+/** a pm turn that never answers (a dead model turn) stops blocking the next one. This mirrors the patrol's own watchdog. */
+const PM_WATCHDOG_MS = 15 * 60_000
+/** pm-log.jsonl keeps at most this many lines, oldest dropped first */
+const PM_LOG_CAP = 50
+/** a denied pm spawn waits this long before the next attempt, instead of asking again every tick */
+const PM_RETRY_MS = 60_000
 /** verbs act()'s own args[0] uses for the same run-acting commands, for the console's buttons */
 const TOUCH_VERBS = new Set(['mail', 'poke', 'retry', 'goto', 'fork', 'abort', 'rm', 'decide'])
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
@@ -89,6 +100,10 @@ const lastPatrol = atom(
   { plugin: 'factory', key: 'lastPatrol' } as const,
   null as FactoryPatrolLogEntry | null,
 )
+/** the pm's last plan, refreshed from `<home>/plan.json` each tick (a cheap fs read); drawn in the
+ * header, the band and the Rigs tab. `null` before the pm ever wrote one, the same convention
+ * `lastPatrol` uses (`$.state.set` only ever stores JSON data, which has no `undefined`). */
+const plan = atom({ plugin: 'factory', key: 'plan' } as const, null as FactoryPlan | null)
 const draft = atom(
   { plugin: 'factory', key: 'draft' } as const,
   {
@@ -102,7 +117,7 @@ const draft = atom(
 const VIEWS = new Set<string>(['board', 'backlog', 'mail', 'prs', 'rigs', 'interview'])
 
 const manual = (cli: string) => `## Software factory manager
-You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff. A hidden patrol subagent, not this session, answers mail, works stuck stations and starts backlog work on its own timer; you see only what is the person's to decide.
+You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff. A hidden patrol subagent, not this session, answers mail, works stuck stations and starts backlog work on its own timer; you see only what is the person's to decide. A hidden pm subagent also ranks each rig's next work on its own timer; its proposals (a priority, a goal or an owner-only change) reach the person as a decision item in the Interview tab, never applied by either of you.
 Gates: when the person asks you to decide one, show them the question, the evidence (the pull request, the verify and review summaries) and the outcomes, then run \`${cli} decide <run> <outcome> "<note>"\` only with the outcome they chose (they confirm it again in a dialog; \`${cli} decisions answer\` opens that same confirm dialog, for the same reason). A gate is always the person's call: never decide one on your own.
 \`${cli} rig add <name> <repo> [factory] [--max n] [--sweeps monitor,maintain,improve|none] [--goal <text>]\` defines or redefines a rig and \`${cli} rig rm <name>\` drops it (its runs carry on); do either only when the person asks. When the person wants the factory's own definition changed, file that as work on \`.factory/\` rather than editing it in this session.
 A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, human-flagged and owner-only bd beads) that still need a short, clear shape. For each, run \`${cli} decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]\`, using the item's own key exactly as given: a question of 160 characters or fewer that names the decision in plain words, an optional \`--context\` sentence of 200 characters or fewer, and 2-4 options, each "label: effect" with a label of 40 characters or fewer and an effect of 100 characters or fewer. Mark at most one option recommended, by adding "(recommended)" after its effect. When the answer is already on record (the person decided this elsewhere), answer it directly instead of proposing: for an \`iv:\` key, mail that station with it; for a \`bd:\` or \`own:\` key, there is no station to mail, so run \`${cli} decisions answer <rig> <bead> "<text>"\` instead. Never propose for a \`gate:\` key, which only the person decides, and never for a \`prompt:\` key (a blocked worker waiting on a prompt in its pane) -- look at it instead. An \`own:\` key (an owner-only bead) keeps its two fixed options, start now and not now: propose only a shorter question or context for it, never new options.
@@ -120,7 +135,7 @@ You get what is new and the board; work through it in this order, acting only th
 2. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), mail that station to report blocked with Question:/Options: as above, naming the pull request if there is one: deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them. \`${cli} waiting\` lists everything that waits on the person, with how to answer each.
 3. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
-4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig.
+4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig. When the prompt carries a Plan, give each rig with room its next work from that list, in order, skipping a bead already in a run or refused; with no Plan, choose as above.
 5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no way to install or reject one yourself, so put it in your report's first line ("N skill proposal(s) need review") instead of your usual line there: this toasts straight to the person, who can ask the manager to work it.
 Never act on a run a board row marks held: the person is on it, leave it for the next patrol.
 Never run \`${cli} decide\`, \`${cli} decisions answer\` or \`${cli} start ... --owned\`: each is denied to you outright. Gates and owner-only beads are the person's alone; report them, never decide them.
@@ -135,6 +150,35 @@ The factory works rigs: named repos, listed by \`${cli} rig\`. A rig's ready bea
 In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. A rig's backlog is its beads: \`${cli} queue <rig> <bead> [station]\` labels one \`factory\`; \`station:<name>\` starts it at that station; sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred.
 A repo owns its factory once \`${cli} adopt <rig>\` copies the template to \`.factory/lifecycle.ts\` and it is committed: each run follows the version its starting commit holds, the improve sweep and postmortems propose changes to it, and those ship through review and the person's merge like any change.
 End your reply with a report of at most 3 lines: the first line says what needs the person, or "nothing" when there is none; the rest say what changed and what you did.`
+
+/** the pm subagent's whole system prompt (claude-factory-dun). It has no Bash, so this prompt, the
+ * facts the manager's own \`agent.spawn\` call carries as its only turn, and its own answer are the
+ * whole of it: it reads and ranks, and changes nothing itself. */
+const PM = (cli: string) => `## Factory pm
+You are the factory manager's pm, a hidden subagent it spawns about once an hour, and again soon
+after a run finishes. You have no \`${cli}\`, no Bash, and no other tool: you cannot read a file or
+run a command outside this turn. Everything you need is in the JSON below, one entry per rig
+(each rig's ready candidates, its open epics and their progress, beads it closed in the last day,
+which beads a live run owns right now, and starvation or plan-gap findings the factory code
+already found). The manager's own code checks your answer by hand, writes \`plan.json\` and files
+any finding or proposal as a bd bead: you change nothing yourself.
+
+For each rig with candidates, put them in the order that best serves its goal. Stay inside the
+priority band bd already gave each one: you reorder only within one priority, and a bead never
+moves ahead of a bead in a numerically lower (higher-value) priority. Give each one a one-line
+why, 120 characters or fewer. Leave a rig with no candidates out of your answer; it then keeps its
+candidates in their own default order with no custom why.
+
+Propose, never decide, any change to a P0 or P1 bead's priority, a rig's goal, or an owner-only
+step: name the rig, the bead if there is one, the change, and why. Nothing applies a proposal; a
+person reads it later as a decision item. Only propose where a fact or finding below calls for it.
+
+End your reply with exactly one fenced \`json\` block and nothing else after it, in this shape:
+\`\`\`json
+{"rigs": {"<rig>": [{"id": "<bead id>", "why": "<120 chars or fewer>"}]}, "proposals": [{"rig": "<rig>", "bead": "<id, optional>", "change": "<what changes>", "why": "<why>"}]}
+\`\`\`
+An id that is not one of that rig's own candidates is dropped, and so is a field in the wrong
+shape. Write no other fenced block, and nothing after this one.`
 
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
 const rt = {
@@ -182,6 +226,28 @@ const rt = {
   patrolActions: [] as string[],
   /** told once that the console sits above the prompt because the layout cannot dock it */
   isInlineTold: false,
+  isPmEnabled: true,
+  /** when the pm last wrote a confirmed plan turn; committed only once a spawn is confirmed, the
+   * same as rt.patrolAt. 0 means never. */
+  pmAt: 0,
+  isPlanning: false,
+  /** the running pm subagent's id. $.agent.spawn sets it; its turn.complete clears it */
+  pmId: undefined as string | undefined,
+  /** the last 20 pm subagent ids, the same reason rt.patrolIds keeps the patrol's own */
+  pmIds: [] as string[],
+  /** when the running pm started, for its watchdog; undefined while none runs. Compared to
+   * undefined, never bare truthiness, since 0 is a real start time too (patrolStartedAt's own
+   * comment explains why). */
+  pmStartedAt: undefined as number | undefined,
+  /** a live->not-live drop this tick, or an earlier one still pending through the debounce window */
+  pmWanted: false,
+  /** the live run ids as of the last pmNow call, to notice a drop (live -> not live) next tick */
+  liveIds: new Set<string>(),
+  /** a denied pm spawn's next attempt; 0 means try at once */
+  pmRetryAt: 0,
+  /** true while `pmNow` awaits `factory plan facts`, before `isPlanning` is set (claude-factory-dun.12):
+   * `tick()` calls `pmNow` with `void`, so a later tick must not start a second facts gather */
+  isGatheringFacts: false,
 }
 
 async function factory($: EngineInterface, args: string[]) {
@@ -225,6 +291,9 @@ async function tick($: EngineInterface) {
     const live = res.runs.filter(isLive)
     const busy = live.filter(r => !r.gate && r.sub !== 'waiting').length
     await update($, history, h => [...h, busy].slice(-120))
+    // cheap (one fs read, no CLI subprocess): refreshed every tick, not gated behind a tab's own view
+    const freshPlan = await readPlan($)
+    await update($, plan, () => freshPlan ?? null)
     // not awaited: a slow tab fetch (backlog, decisions) must not hold the board's next tick
     void refresh($)
 
@@ -242,6 +311,11 @@ async function tick($: EngineInterface) {
       if (!res.halt || rt.unsent.length)
         await patrolNow($, res.halt ? [] : res.runs, res.halt ? [] : (res.rigs ?? []))
     }
+    // the pm runs on its own cadence, independent of autopilot/the patrol: a person driving the
+    // main chat still wants a fresh plan. Halted, nothing runs, not even the pm. Not awaited
+    // (claude-factory-dun.12), the same reason refresh() above is not: `factory plan facts` must
+    // not hold up the next tick's board, mail and patrol.
+    if (!res.halt) void pmNow($, res.runs)
   } catch (err) {
     await tickFailed($, String(err))
   } finally {
@@ -309,6 +383,56 @@ async function appendPatrolLog($: EngineInterface, entry: FactoryPatrolLogEntry)
   await $.fs.write(`${rt.home}/patrol-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
 }
 
+/** True once `$.agent.list()` names `agentId` as a `PM_TYPE` agent, the same check `isPatrolAgent`
+ * makes for the patrol. Returns false on any error, including "no implementation". */
+async function isPmAgent($: EngineInterface, agentId: string) {
+  try {
+    const agents = await $.agent.list()
+    return agents.some(a => a.id === agentId && a.type === PM_TYPE)
+  } catch {
+    return false
+  }
+}
+
+/** `<home>/pm-log.jsonl`, oldest first; `[]` before the first pm turn ever wrote one, or with no home yet */
+async function readPmLog($: EngineInterface): Promise<FactoryPmLogEntry[]> {
+  if (!rt.home) return []
+  const text = await $.fs.read(`${rt.home}/pm-log.jsonl`).catch(() => '')
+  return text
+    .split('\n')
+    .filter(Boolean)
+    .flatMap(l => {
+      try {
+        return [JSON.parse(l) as FactoryPmLogEntry]
+      } catch {
+        return [] // a half-written line from a crashed write: skip it rather than lose the rest
+      }
+    })
+}
+
+/** appends one pm turn's outcome, keeping only the newest PM_LOG_CAP lines */
+async function appendPmLog($: EngineInterface, entry: FactoryPmLogEntry) {
+  if (!rt.home) return
+  const log = [...(await readPmLog($)), entry].slice(-PM_LOG_CAP)
+  await $.fs.write(`${rt.home}/pm-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
+}
+
+/** `<home>/plan.json`, the pm's last ranking; `undefined` with no home yet, no file, invalid
+ * JSON, or a malformed shape (a rig entry missing `items`/`findings`, claude-factory-dun.18).
+ * `patrol()` (view.ts) itself checks freshness, so a stale plan here still reaches it, the same
+ * as a missing one, and the prompt falls back the same way for both. */
+async function readPlan($: EngineInterface): Promise<FactoryPlan | undefined> {
+  if (!rt.home) return undefined
+  const text = await $.fs.read(`${rt.home}/plan.json`).catch(() => '')
+  if (!text) return undefined
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return isValidPlan(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Patrol, one at a time, as a hidden `factory:patrol` subagent. This adds no turn to the main chat.
  * A watchdog clears a patrol stuck past PATROL_WATCHDOG_MS (a dead model turn, a wedged tool). So
@@ -340,7 +464,19 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   const last = now - rt.sigAt < 3_600_000 ? rt.sig : undefined
   // a cold subagent has no memory of earlier patrols: these let it see what they already did
   const log = (await readPatrolLog($)).slice(-PATROL_LOG_RECENT).flatMap(e => e.actions)
-  const due = patrol(runs, rt.unsent, rt.seen, now - rt.patrolAt >= PATROL_MS, rigs, last, hold, log)
+  const plan = await readPlan($)
+  const due = patrol(
+    runs,
+    rt.unsent,
+    rt.seen,
+    now - rt.patrolAt >= PATROL_MS,
+    rigs,
+    last,
+    hold,
+    log,
+    plan,
+    now,
+  )
   // a due heartbeat whose board repeats the last one sent wakes nobody: patrolAt stays put, so a
   // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark
   if (!due) return
@@ -386,6 +522,83 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
       .finally(() => {
         rt.isPatrolling = false
       })
+  }
+}
+
+/**
+ * The pm, one at a time, as a hidden `factory:pm` subagent (claude-factory-dun.5). This runs on its
+ * own cadence (`pmDue`, view.ts), not every patrol: once an hour, and again soon after a run
+ * finishes. It is independent of `rt.isAutopilot`: it is a standing background job, not the main
+ * chat's own patrol loop, so it keeps running even with autopilot off.
+ *
+ * The pm has no Bash. This function gathers its facts itself (`factory plan facts`), spawns the
+ * pm with that output as its one turn, and does nothing else: the pm's own `turn.complete` hook
+ * below reads its answer and runs `factory plan set`. A watchdog clears a pm turn stuck past
+ * PM_WATCHDOG_MS, the same way PATROL_WATCHDOG_MS clears a stuck patrol.
+ *
+ * A denied spawn, or a spawn that throws, leaves `rt.pmAt` untouched, so the next due check tries
+ * again rather than waiting a full PM_INTERVAL_MS. Unlike the patrol, a failed pm spawn has no
+ * `$.prompt.submit` fallback: the main chat has no use for raw plan-facts JSON.
+ *
+ * `tick()` calls this with `void`, not `await` (claude-factory-dun.12): `factory plan facts` can
+ * run several `bd` calls and must never hold up the board, mail or patrol for the next 5s tick.
+ * `rt.isGatheringFacts` guards the gap this opens: without it, a tick that starts while an
+ * earlier `plan facts` call is still running (before `rt.isPlanning` is set, just below) could
+ * start a second one.
+ */
+async function pmNow($: EngineInterface, runs: FactoryRun[]) {
+  if (!rt.isPmEnabled) return
+  const now = await $.clock.now()
+  if (rt.isPlanning && rt.pmStartedAt !== undefined && now - rt.pmStartedAt >= PM_WATCHDOG_MS) {
+    rt.isPlanning = false
+    $.ui.status('factory: a pm turn ran past 15 min with no answer; the watchdog freed the next one')
+  }
+  if (rt.isPlanning || rt.isGatheringFacts) return
+  if (now < rt.pmRetryAt) return
+  if (!(await isPaneSession($))) return
+  // a run dropping live (done or aborted) since the last check wakes the pm again, after a
+  // debounce: committed every call, due or not, so a drop during a long pm turn is not lost
+  const liveIds = new Set(runs.filter(isLive).map(r => r.id))
+  const liveDropped = [...rt.liveIds].some(id => !liveIds.has(id))
+  rt.liveIds = liveIds
+  const plan = await readPlan($)
+  // claude-factory-dun.15: a hot reload or a new session resets rt.pmAt to 0, but the plan on
+  // disk still carries its own `at`. pmDue folds that in, so a fresh plan right after a reload
+  // does not look stale just because this session never ran the pm yet.
+  const { due, wanted } = pmDue(now, rt.pmAt, plan?.at, liveDropped, rt.pmWanted)
+  rt.pmWanted = wanted
+  if (!due) return
+  rt.isGatheringFacts = true
+  const { isOk, out: facts } = await factory($, ['plan', 'facts']).finally(() => {
+    rt.isGatheringFacts = false
+  })
+  if (!isOk) {
+    rt.pmRetryAt = now + PM_RETRY_MS
+    $.ui.status(`factory: plan facts failed: ${line(facts, 160)}`)
+    return
+  }
+  rt.isPlanning = true
+  rt.pmStartedAt = now
+  try {
+    const res = await $.agent.spawn({ subagentType: PM_TYPE, prompt: facts, description: 'factory pm' })
+    if (res.deny) {
+      rt.isPlanning = false
+      rt.pmRetryAt = now + PM_RETRY_MS
+      $.ui.status(`factory: the pm spawn was denied: ${line(res.deny, 160)}`)
+      return
+    }
+    // committed only once the spawn is confirmed, the same reason patrolNow waits for its own
+    rt.pmAt = now
+    rt.pmId = res.agentId
+    if (res.agentId) rt.pmIds = [...rt.pmIds, res.agentId].slice(-20)
+  } catch (err) {
+    // no $.prompt.submit fallback here (unlike the patrol's own catch): raw facts JSON is nothing
+    // the main chat can act on. rt.pmAt stays untouched, so the plan still reads as stale; but a
+    // throw (claude-factory-dun.11, not only `res.deny` above) must still set pmRetryAt, or every
+    // 5s tick re-runs `factory plan facts` and re-throws until the next hour mark.
+    rt.isPlanning = false
+    rt.pmRetryAt = now + PM_RETRY_MS
+    $.ui.status(`factory: the pm spawn failed (${line(String(err), 100)}); it will try again when next due.`)
   }
 }
 
@@ -689,6 +902,7 @@ function actions($: EngineInterface): Actions {
 
 export const register: Register = (on, options) => {
   rt.isAutopilot = options.autopilot !== false
+  rt.isPmEnabled = options.pm !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -714,6 +928,23 @@ export const register: Register = (on, options) => {
       // clue why. Show it: every heartbeat then falls back to $.prompt.submit (the catch block
       // in patrolNow), so a status line here at least explains the first one.
       .catch(err => $.ui.status(`factory: could not register the patrol agent: ${line(String(err), 160)}`))
+    await $.agent
+      .register({
+        name: 'pm',
+        description:
+          "The factory manager's hidden pm: ranks each rig's next work toward its goal, on its own hourly timer.",
+        prompt: PM(rt.cli),
+        // No tool at all (claude-factory-dun.10). A Linear sync can set a bead's title to text we
+        // do not trust. With Read, that text can make the pm copy a local file into a proposal's
+        // `why`. `plan set` then files that text as a bead. `bd sync` can push it to the Dolt
+        // remote. An empty array tells the engine to allow no tool call. Leaving `tools` out
+        // instead gives the pm every tool its parent session has.
+        tools: [],
+        model: 'sonnet',
+        maxTurns: 15,
+        omitClaudeMd: true,
+      })
+      .catch(err => $.ui.status(`factory: could not register the pm agent: ${line(String(err), 160)}`))
     return next(e)
   })
 
@@ -834,6 +1065,8 @@ export const register: Register = (on, options) => {
   // hides PATROL_TYPE from the model's own agent listing and from `subagent_type`: only this plugin's own
   // `$.agent.spawn` of PATROL_TYPE starts it; `agent.offer` never governs that spawn
   on('agent.offer', { agent: PATROL_TYPE }, () => ({ isOffered: false }))
+  // same, for the pm: only pmNow's own `$.agent.spawn` of PM_TYPE starts it
+  on('agent.offer', { agent: PM_TYPE }, () => ({ isOffered: false }))
 
   // Clears patrolNow's one-at-a-time guard once the subagent's own turn ends, win or not. The
   // watchdog in patrolNow also clears it, for a turn that never completes.
@@ -855,6 +1088,9 @@ export const register: Register = (on, options) => {
   // and its own answer would be logged and toasted as the patrol's report. `isPatrolAgent` confirms
   // the id is really a running `factory:patrol` agent before this branch adopts it, the same check
   // the Bash hook above already makes.
+  // one `on('turn.complete', ...)` handles both subagents: the engine refuses a 2nd registration
+  // of the same event with no matcher (there is no per-agent-type matcher for this event, unlike
+  // `agent.offer`'s `{ agent }`), so the patrol's own branch and the pm's own branch share one hook.
   on('turn.complete', async ($, e, next) => {
     if (
       rt.isPatrolling &&
@@ -887,6 +1123,65 @@ export const register: Register = (on, options) => {
       } catch (err) {
         $.ui.status(`factory: failed to write the patrol log: ${line(String(err), 160)}`)
       }
+      return next(e)
+    }
+
+    // Clears pmNow's one-at-a-time guard once the pm's own turn ends, win or not (the same
+    // agentId-confirmation fallback the patrol's own branch above uses for a mod test, which
+    // never sees a real agentId back from `$.agent.spawn`). A pm turn never touches
+    // `rt.isPatrolling`, `rt.patrolId` or patrol-log.jsonl: the two subagents are independent.
+    //
+    // On a match, this takes the LAST fenced ```json block of the answer (the pm's own prompt asks
+    // for exactly one, but a model can still add stray prose or an example before it), writes it
+    // to <home>/plan-answer.json, and runs `factory plan set` on that file -- the pm itself never
+    // runs bd. A missing fence, or a `plan set` failure, is logged as an error and `plan set` is
+    // never called for it, so a bad answer cannot write a half-formed plan.json.
+    if (
+      rt.isPlanning &&
+      e.agentId &&
+      (e.agentId === rt.pmId ||
+        (rt.pmId === undefined && !rt.pmIds.includes(e.agentId) && (await isPmAgent($, e.agentId))))
+    ) {
+      rt.isPlanning = false
+      rt.pmId = undefined
+      rt.pmStartedAt = undefined
+      const base = {
+        at: await $.clock.now(),
+        agentId: e.agentId,
+        reason: e.reason,
+        durationMs: e.durationMs,
+        tokens: e.usage ? e.usage.input_tokens + e.usage.output_tokens : undefined,
+      }
+      const fences = [...e.answer.matchAll(/```json\s*([\s\S]*?)```/g)]
+      const fence = fences.at(-1)?.[1]?.trim()
+      let entry: FactoryPmLogEntry
+      if (!fence) {
+        entry = { ...base, error: "the pm's answer had no fenced json block" }
+      } else if (!rt.home) {
+        entry = { ...base, error: 'no factory home yet' }
+      } else {
+        const answerPath = `${rt.home}/plan-answer.json`
+        try {
+          await $.fs.write(answerPath, fence)
+          const { isOk, out } = await factory($, ['plan', 'set', answerPath])
+          if (!isOk) {
+            entry = { ...base, error: line(out, 300) }
+          } else {
+            const summary = JSON.parse(out) as { items: number; findings: number; filed: number }
+            entry = { ...base, items: summary.items, findings: summary.findings, filed: summary.filed }
+          }
+        } catch (err) {
+          entry = { ...base, error: line(String(err), 300) }
+        }
+      }
+      // a write failure here must not skip next(e): isPlanning is already cleared above, so the
+      // next pm turn still runs either way (mirrors the patrol log's own try/catch, claude-factory-72v.11)
+      try {
+        await appendPmLog($, entry)
+        if (entry.error) $.ui.status(`factory: the pm turn failed: ${line(entry.error, 160)}`)
+      } catch (err) {
+        $.ui.status(`factory: failed to write the pm log: ${line(String(err), 160)}`)
+      }
     }
     return next(e)
   })
@@ -896,7 +1191,8 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'task-notification') {
       const id = e.text.match(/<task-id>([^<]+)<\/task-id>/)?.[1]
-      if (id && rt.patrolIds.includes(id)) return { drop: "a patrol subagent's own task-notification" }
+      if (id && (rt.patrolIds.includes(id) || rt.pmIds.includes(id)))
+        return { drop: "a patrol or pm subagent's own task-notification" }
     }
     return next(e)
   })
@@ -913,7 +1209,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel, lp] = await Promise.all([
+    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel, lp, pl] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
@@ -927,6 +1223,7 @@ export const register: Register = (on, options) => {
       $.clock.now(),
       read($, selected),
       read($, lastPatrol),
+      read($, plan),
     ])
     // a stored view of 'run', from before the Run tab folded into Board, reads as 'board'
     const shown = mapView(rawShown as string)
@@ -946,13 +1243,13 @@ export const register: Register = (on, options) => {
           : shown === 'prs'
             ? prsView(p, pr, b)
             : shown === 'rigs'
-              ? rigsView(p, b)
+              ? rigsView(p, b, pl)
               : shown === 'interview'
                 ? interviewView(p, b, dr, dec)
                 : boardView(p, b, dr, sel, d, tail)
     return (
       <Box flexDirection="column">
-        {header(p, b, samples, shown, lp)}
+        {header(p, b, samples, shown, lp, pl)}
         {body}
         {footer(p)}
       </Box>
@@ -966,6 +1263,6 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || isOpen || !b.runs.some(isLive)) return next(e)
     const ui = $.ui.resolve(e) as unknown as UI
     const p = { ui, act: actions($), width: e.props.bodyColumns, now: await $.clock.now() }
-    return band(p, b, await read($, draft), await read($, lastPatrol))
+    return band(p, b, await read($, draft), await read($, lastPatrol), await read($, plan))
   })
 }

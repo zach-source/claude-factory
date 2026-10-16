@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import {
   brief,
+  clipFactsJson,
   clipReport,
   CONFIG_SYNC,
   deadline,
@@ -44,6 +45,7 @@ import {
   room,
   slot,
   withoutFleet,
+  type RigFacts,
 } from './cli'
 
 test("a factory home's sync pushes what its .gitignore lets in, and its memory to the memory branch", () => {
@@ -824,4 +826,67 @@ test('selfUpdateMail mails a repeated refusal again once a no-op sits between th
   const again = selfUpdateMail(4, home)
   expect(again).toHaveLength(1)
   expect(again[0]!.text).toContain('a dirty tree')
+})
+
+// ---- clipFactsJson (claude-factory-dun.25) ----
+
+const emptyFacts = (extra: Partial<RigFacts> = {}): RigFacts => ({
+  busy: 0,
+  candidates: [],
+  epics: [],
+  closedRecently: [],
+  liveBeadIds: [],
+  findings: [],
+  ...extra,
+})
+
+test('clipFactsJson stays under its byte budget even when a title is far larger than the slice-20/slice-5 steps expect', () => {
+  // the review's own repro: 20 candidates of 8000 characters each, one rig, no other content
+  const candidates = Array.from({ length: 20 }, (_, i) => ({ id: `c-${i}`, title: 'x'.repeat(8000) }))
+  const facts: Record<string, RigFacts> = { a: emptyFacts({ candidates }) }
+  const out = clipFactsJson(facts)
+  expect(Buffer.byteLength(out)).toBeLessThanOrEqual(64 * 1024)
+})
+
+test('clipFactsJson drops findings beyond 10 and liveBeadIds beyond 20, then shrinks candidates/epics to fit', () => {
+  // candidate/epic titles are large enough to force the hard-guarantee loop; finding text stays
+  // the size `plan.ts`'s own `sanitize` already bounds it to in real use, so this test checks the
+  // 10/20 count caps rather than an unbounded finding-text size the guarantee never promised.
+  const bigTitle = 'x'.repeat(4000)
+  const findingText = 'y'.repeat(150)
+  const facts: Record<string, RigFacts> = {}
+  for (const name of ['a', 'b', 'c']) {
+    facts[name] = emptyFacts({
+      candidates: Array.from({ length: 20 }, (_, i) => ({ id: `${name}-c-${i}`, title: bigTitle })),
+      epics: Array.from({ length: 10 }, (_, i) => ({
+        id: `${name}-e-${i}`,
+        title: bigTitle,
+        done: 0,
+        total: 1,
+        lastProgressHoursAgo: 1,
+      })),
+      findings: Array.from({ length: 30 }, (_, i) => ({
+        kind: 'goal-no-plan',
+        rig: name,
+        key: `k-${name}-${i}`,
+        text: findingText,
+      })),
+      liveBeadIds: Array.from({ length: 50 }, (_, i) => `${name}-live-${i}`),
+    })
+  }
+  const out = clipFactsJson(facts)
+  expect(Buffer.byteLength(out)).toBeLessThanOrEqual(64 * 1024)
+  const parsed = JSON.parse(out) as Record<string, RigFacts>
+  for (const rf of Object.values(parsed)) {
+    expect(rf.findings.length).toBeLessThanOrEqual(10)
+    expect(rf.liveBeadIds.length).toBeLessThanOrEqual(20)
+  }
+})
+
+test('clipFactsJson still fits under budget with nothing to drop beyond the normal steps', () => {
+  const facts: Record<string, RigFacts> = {
+    a: emptyFacts({ candidates: [{ id: 'c-1', title: 'short' }] }),
+  }
+  const out = clipFactsJson(facts)
+  expect(JSON.parse(out).a.candidates).toEqual([{ id: 'c-1', title: 'short' }])
 })
