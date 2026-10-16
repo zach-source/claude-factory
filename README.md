@@ -101,6 +101,14 @@ which runs await you, which are stuck, and how many are finished or aborted. A r
 team ([docs/beads.md#linear](docs/beads.md#linear)) shows its last pull too: pulled count and
 age, or an error. Press `backlog` to see only the beads of that rig on the Backlog tab.
 
+When the pm ranks a rig, the Rigs tab shows a line that starts with "Next up". This line
+names up to 3 beads, in order, each as `<id> (P<priority>) <why>`. Under it, a yellow line
+names each finding: a starved epic, a goal with no open bead, or a gap in the plan.
+
+The pane header and the band show the age of the plan too, for example "plan 12m ago · 2
+findings". After 2 hours, both show "plan stale". See
+[The manager drives](#the-manager-drives) for what the pm does and how its plan feeds the patrol.
+
 ### PRs (key 5)
 
 ![The PRs tab: the pull requests and merge requests of each run](docs/images/console-prs.png)
