@@ -3380,6 +3380,7 @@ function isValidPlanShape(p: unknown): p is plan.Plan {
     !!o.rigs &&
     typeof o.rigs === 'object' &&
     !Array.isArray(o.rigs) &&
+    Object.values(o.rigs as Record<string, unknown>).every(plan.isValidRigPlan) &&
     Array.isArray(o.proposals)
   )
 }
@@ -3443,8 +3444,11 @@ async function dispatch() {
       const ready = dispatchable(b.ready(), linked, Infinity).filter(
         x => !isOwned(x) && !openChildren(b, x.id).length && !linearIds.has(x.id),
       )
-      // a fresh plan's order wins inside each priority band; a stale or missing plan changes nothing (claude-factory-dun.3)
-      const candidates = plan.orderByPlan(ready, freshPlan?.rigs[rig.name])
+      // a fresh plan's order wins inside each priority band; a stale or missing plan changes
+      // nothing (claude-factory-dun.3). `rigPlanOf` looks up the rig safely: a plain
+      // `freshPlan.rigs[rig.name]` would resolve a rig named, for example, `constructor` to an
+      // inherited `Object.prototype` value instead of `undefined` (claude-factory-dun.18).
+      const candidates = plan.orderByPlan(ready, plan.rigPlanOf(freshPlan, rig.name))
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {

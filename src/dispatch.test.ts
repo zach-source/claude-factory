@@ -243,6 +243,33 @@ test("a plan.json whose 'proposals' is not an array reads as no plan (claude-fac
   expect(startedBead()).toBe('acme-1')
 })
 
+test("a plan.json whose rig entry has no 'items'/'findings' arrays reads as no plan, not a throw (claude-factory-dun.18)", () => {
+  resetTwo(2, 2)
+  writeFileSync(join(home, 'plan.json'), JSON.stringify({ at: Date.now(), rigs: { a: {} }, proposals: [] }))
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1') // bd order: the malformed plan changed nothing
+  expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
+})
+
+test("a rig named like an Object.prototype member and absent from a valid plan's rigs still falls back to bd order (claude-factory-dun.18)", () => {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(claudeConfig, { recursive: true })
+  writeFileSync(join(claudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(home, { recursive: true })
+  const r = repo()
+  fakeBdTwo(2, 2)
+  fakeHerdr()
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'constructor', repo: r, factory: 'lifecycle', maxRuns: 1 }]),
+  )
+  writeFileSync(join(home, 'plan.json'), JSON.stringify({ at: Date.now(), rigs: {}, proposals: [] }))
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1') // a plain rigs['constructor'] lookup would find Object.prototype.constructor
+})
+
 test('a planned P3 never starts before a real P2: priority always sorts ahead of the plan', () => {
   resetTwo(2, 3) // acme-1 is P2, acme-2 is P3
   writePlan(Date.now(), ['acme-2', 'acme-1']) // the pm ranks the P3 first

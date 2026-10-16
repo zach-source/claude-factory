@@ -4,8 +4,10 @@ import type {
   FactoryMail,
   FactoryPatrolLogEntry,
   FactoryPlan,
+  FactoryPlanItem,
   FactoryPrs,
   FactoryRig,
+  FactoryRigPlan,
   FactoryRun,
 } from '../types'
 
@@ -305,6 +307,62 @@ function isPlanFresh(plan: FactoryPlan | null | undefined, now: number): boolean
   if (!plan || typeof plan.at !== 'number' || !Number.isFinite(plan.at)) return false
   if (plan.at > now) return false
   return now - plan.at < PLAN_FRESH_MS
+}
+
+/** Checks the shape of one rig's plan (mirrors `isValidRigPlan`, src/plan.ts: kept separate since
+ * mod code cannot import from src). `items` and `findings` must both be arrays. Each item must
+ * have a string `id`, a string `title`, a string `why` and a finite `priority`.
+ *
+ * `readPlan` (register.tsx) calls `isValidPlan` below on the whole file before this function
+ * ever runs, so by the time a caller here sees a `FactoryPlan`, every rig entry already passed
+ * this check (claude-factory-dun.18). */
+function isValidRigPlan(x: unknown): x is FactoryRigPlan {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return false
+  const o = x as Record<string, unknown>
+  return (
+    Array.isArray(o.items) &&
+    o.items.every(
+      it =>
+        !!it &&
+        typeof it === 'object' &&
+        typeof (it as Partial<FactoryPlanItem>).id === 'string' &&
+        typeof (it as Partial<FactoryPlanItem>).title === 'string' &&
+        typeof (it as Partial<FactoryPlanItem>).why === 'string' &&
+        Number.isFinite((it as Partial<FactoryPlanItem>).priority),
+    ) &&
+    Array.isArray(o.findings)
+  )
+}
+
+/** Checks the shape of a whole plan read from `plan.json`: a real `at`, a `rigs` object whose
+ * every entry passes `isValidRigPlan`, and a `proposals` array. A hand-edited or truncated file
+ * can fail this; `readPlan` then reads it as no plan, the same as a missing or corrupt file
+ * (claude-factory-dun.18, mirrors `isValidPlanShape`, src/cli.ts). */
+export function isValidPlan(p: unknown): p is FactoryPlan {
+  if (!p || typeof p !== 'object') return false
+  const o = p as Record<string, unknown>
+  return (
+    typeof o.at === 'number' &&
+    !!o.rigs &&
+    typeof o.rigs === 'object' &&
+    !Array.isArray(o.rigs) &&
+    Object.values(o.rigs as Record<string, unknown>).every(isValidRigPlan) &&
+    Array.isArray(o.proposals)
+  )
+}
+
+/** Looks up one rig's plan by name, the way `rigsView` does (mirrors `rigPlanOf`, src/plan.ts).
+ *
+ * Returns `undefined` when `plan` is absent, or when the plan never mentions this rig.
+ *
+ * A plain `plan.rigs[name]` lookup is not safe here. `rigs` is a JSON-parsed plain object. Give
+ * it a name like `constructor` or `toString` (an `Object.prototype` member) that the plan never
+ * mentions, and the lookup still finds that inherited function, not `undefined`. `rp.items` then
+ * throws on a function (claude-factory-dun.18). `Object.hasOwn` checks the plan's own key first,
+ * so it does not make this mistake. */
+export function rigPlanOf(p: FactoryPlan | null | undefined, name: string): FactoryRigPlan | undefined {
+  if (!p || !Object.hasOwn(p.rigs, name)) return undefined
+  return p.rigs[name]
 }
 
 /** the patrol prompt's 'Plan' section: `undefined` with no fresh plan, so the prompt's text then

@@ -1208,7 +1208,7 @@ test(
 )
 
 test(
-  'patrolNow reads <home>/plan.json and carries a fresh plan into the prompt; a corrupt plan.json reads as none, the same as a missing one (claude-factory-dun.4)',
+  'patrolNow reads <home>/plan.json and carries a fresh plan into the prompt; a corrupt or malshaped plan.json reads as none, the same as a missing one (claude-factory-dun.4, .18)',
   SLOW,
   async ($, on) => {
     const clock = mock.clock(on)
@@ -1246,7 +1246,7 @@ test(
       spawns.push(e as never)
       return { model: 'sonnet', agentId: `patrol-${spawns.length}` } as never
     })
-    agentListMock(on, ['patrol-1', 'patrol-2'])
+    agentListMock(on, ['patrol-1', 'patrol-2', 'patrol-3'])
     on('prompt.submit', ($, e) => ({ text: e.text }) as never)
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
 
@@ -1296,6 +1296,24 @@ test(
       reason: 'answer',
       turnId: 't2',
       agentId: 'patrol-2',
+    } as never)
+
+    // a well-formed JSON file, but a malshaped rig entry (no `items`/`findings` arrays):
+    // `isValidPlan` (view.ts) rejects the whole plan, so `readPlan` reads it as none too, instead
+    // of letting a later `.items.map` throw (claude-factory-dun.18).
+    files.set('/home/factory/plan.json', JSON.stringify({ at: 5_000, rigs: { api: {} }, proposals: [] }))
+    queued = [mail(3)]
+    await clock.advance(5_000)
+    expect(spawns).toHaveLength(3)
+    expect(spawns[2]!.prompt).not.toContain('Plan (from the pm,')
+
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't3',
+      agentId: 'patrol-3',
     } as never)
   },
 )

@@ -36,6 +36,7 @@ import {
 import {
   interviewAnswer,
   interviewPrompt,
+  isValidPlan,
   line,
   mailKey,
   openInterviews,
@@ -416,15 +417,17 @@ async function appendPmLog($: EngineInterface, entry: FactoryPmLogEntry) {
   await $.fs.write(`${rt.home}/pm-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
 }
 
-/** `<home>/plan.json`, the pm's last ranking; `undefined` with no home yet, no file, or invalid
- * JSON. `patrol()` (view.ts) itself checks freshness, so a stale or corrupt plan here still
- * reaches it, the same as a missing one, and the prompt falls back the same way for both. */
+/** `<home>/plan.json`, the pm's last ranking; `undefined` with no home yet, no file, invalid
+ * JSON, or a malformed shape (a rig entry missing `items`/`findings`, claude-factory-dun.18).
+ * `patrol()` (view.ts) itself checks freshness, so a stale plan here still reaches it, the same
+ * as a missing one, and the prompt falls back the same way for both. */
 async function readPlan($: EngineInterface): Promise<FactoryPlan | undefined> {
   if (!rt.home) return undefined
   const text = await $.fs.read(`${rt.home}/plan.json`).catch(() => '')
   if (!text) return undefined
   try {
-    return JSON.parse(text) as FactoryPlan
+    const parsed: unknown = JSON.parse(text)
+    return isValidPlan(parsed) ? parsed : undefined
   } catch {
     return undefined
   }

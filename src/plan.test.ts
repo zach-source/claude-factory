@@ -5,9 +5,12 @@ import {
   findings,
   hashOf,
   isFresh,
+  isValidRigPlan,
   orderByPlan,
   PLAN_FRESH_MS,
   rankPlan,
+  rigPlanOf,
+  type Plan,
   type RigInput,
 } from './plan'
 
@@ -81,6 +84,38 @@ test('orderByPlan: inside one priority band, the plan reorders; a candidate the 
   ]
   const plan = { items: [{ id: 'a-2', title: 't', priority: 2, why: 'w' }] }
   expect(orderByPlan(candidates, plan).map(c => c.id)).toEqual(['a-2', 'a-1', 'a-3'])
+})
+
+// ---- isValidRigPlan ----
+
+test('isValidRigPlan: a well-shaped rig plan passes; an item missing a field or a non-array items/findings fails', () => {
+  expect(isValidRigPlan({ items: [], findings: [] })).toBe(true)
+  expect(isValidRigPlan({ items: [{ id: 'a-1', title: 't', priority: 1, why: 'w' }], findings: [] })).toBe(
+    true,
+  )
+  expect(isValidRigPlan({})).toBe(false) // no items/findings at all (claude-factory-dun.18)
+  expect(isValidRigPlan({ items: [], findings: undefined })).toBe(false)
+  expect(isValidRigPlan({ items: 'nope', findings: [] })).toBe(false)
+  expect(isValidRigPlan({ items: [{ id: 'a-1', title: 't', why: 'w' }], findings: [] })).toBe(false) // priority missing
+  expect(isValidRigPlan(null)).toBe(false)
+  expect(isValidRigPlan([])).toBe(false)
+})
+
+// ---- rigPlanOf ----
+
+test('rigPlanOf: returns the named rig, undefined for an absent plan or an unmentioned rig name', () => {
+  const rp = { items: [{ id: 'a-1', title: 't', priority: 1, why: 'w' }], findings: [] }
+  const p: Plan = { at: 0, rigs: { acme: rp }, proposals: [] }
+  expect(rigPlanOf(p, 'acme')).toBe(rp)
+  expect(rigPlanOf(p, 'widget')).toBeUndefined()
+  expect(rigPlanOf(undefined, 'acme')).toBeUndefined()
+})
+
+test('rigPlanOf: a rig named after an Object.prototype member the plan never mentions reads as absent, not the inherited value', () => {
+  const p: Plan = { at: 0, rigs: {}, proposals: [] }
+  expect(rigPlanOf(p, 'constructor')).toBeUndefined()
+  expect(rigPlanOf(p, 'toString')).toBeUndefined()
+  expect(rigPlanOf(p, 'hasOwnProperty')).toBeUndefined()
 })
 
 // ---- findings: starved-epic ----

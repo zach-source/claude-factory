@@ -142,7 +142,7 @@ test(
 /** a `process.run` mock answering `factory tick` with `TICK`, `factory home` with `/home/acme`,
  * and anything else with empty stdout; paired with an `fs.read` backed by `files` (keyed by
  * path), so `<home>/plan.json` reads as a real file (claude-factory-dun.6). */
-function planMocks(on: On, files: Map<string, string>) {
+function planMocks(on: On, files: Map<string, string>, tick: unknown = TICK) {
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
     on(event, () => ({ value: undefined }) as never)
@@ -150,7 +150,7 @@ function planMocks(on: On, files: Map<string, string>) {
   on('process.run', ($, e) => ({
     value: {
       exitCode: 0,
-      stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : e.argv.includes('home') ? '/home/acme' : '',
+      stdout: e.argv.includes('tick') ? JSON.stringify(tick) : e.argv.includes('home') ? '/home/acme' : '',
       stderr: '',
     } as never,
   }))
@@ -202,6 +202,46 @@ test(
     expect(drawn).toContain('api-1 (P1) blocks the rig goal')
     expect(drawn).toContain('api-2 (P2) unblocks api-1')
     expect(drawn).toContain('api-epic: no progress in 30h')
+    await ui.unmount()
+  },
+)
+
+test(
+  'the rigs tab draws a rig named like an Object.prototype member, and a malshaped plan, with no crash (claude-factory-dun.18)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    // "constructor" names a rig the plan never mentions (`plan.rigs['constructor']` would
+    // otherwise resolve through the prototype chain, not read as absent); "api" names a rig
+    // whose own plan entry is malshaped (no `items`/`findings` arrays). Neither must crash the
+    // Rigs tab or draw a "Next up" line.
+    const tick = {
+      ...TICK,
+      rigs: [
+        { name: 'constructor', repo: '/w/ctor', factory: 'lifecycle', maxRuns: 1, goal: 'ship it' },
+        { name: 'api', repo: '/w/api', factory: 'lifecycle', maxRuns: 5, goal: 'ship it' },
+      ],
+      runs: [],
+    }
+    planMocks(on, files, tick)
+    files.set('/home/acme/plan.json', JSON.stringify({ at: 0, rigs: { api: {} }, proposals: [] }))
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'rigs' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('constructor')
+    expect(drawn).toContain('api')
+    expect(drawn).not.toContain('Next up:')
     await ui.unmount()
   },
 )

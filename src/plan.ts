@@ -99,6 +99,47 @@ export function rankPlan(answer: AnswerItem[], candidates: Bead[]): PlanItem[] {
  * Every other candidate keeps its own (bd) order after them.
  * A planned P2 never passes a real P1, because priority always sorts first.
  */
+/** Checks the shape of one rig's plan. `items` and `findings` must both be arrays. Each item must
+ * have a string `id`, a string `title`, a string `why` and a finite `priority`.
+ *
+ * A hand-edited or truncated `plan.json` can leave a rig entry as `{}` or some other shape.
+ * Without this check, `orderByPlan` and `planShowText` (`factory plan`) throw on
+ * `.items.map`/`.items.slice` (claude-factory-dun.18).
+ *
+ * The caller (`isValidPlanShape`, src/cli.ts) treats a plan with any malformed rig entry as no
+ * plan at all, the same as a missing or corrupt file. */
+export function isValidRigPlan(x: unknown): x is RigPlan {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return false
+  const o = x as Record<string, unknown>
+  return (
+    Array.isArray(o.items) &&
+    o.items.every(
+      it =>
+        !!it &&
+        typeof it === 'object' &&
+        typeof (it as Partial<PlanItem>).id === 'string' &&
+        typeof (it as Partial<PlanItem>).title === 'string' &&
+        typeof (it as Partial<PlanItem>).why === 'string' &&
+        Number.isFinite((it as Partial<PlanItem>).priority),
+    ) &&
+    Array.isArray(o.findings)
+  )
+}
+
+/** Looks up one rig's plan by name, the way `dispatch()` and the console do.
+ *
+ * Returns `undefined` when `plan` is absent, or when the plan never mentions this rig.
+ *
+ * A plain `plan.rigs[name]` lookup is not safe here. `rigs` is a JSON-parsed plain object. Give
+ * it a name like `constructor` or `toString` (an `Object.prototype` member) that the plan never
+ * mentions, and the lookup still finds that inherited function, not `undefined`. `orderByPlan`
+ * then throws on `.items.map` of a function (claude-factory-dun.18). `Object.hasOwn` checks the
+ * plan's own key first, so it does not make this mistake. */
+export function rigPlanOf(p: Plan | undefined, name: string): RigPlan | undefined {
+  if (!p || !Object.hasOwn(p.rigs, name)) return undefined
+  return p.rigs[name]
+}
+
 export function orderByPlan(candidates: Bead[], rigPlan: { items: PlanItem[] } | undefined): Bead[] {
   if (!rigPlan) return candidates
   const rank = new Map(rigPlan.items.map((it, i) => [it.id, i]))

@@ -35,6 +35,7 @@ import {
   prName,
   prState,
   progress,
+  rigPlanOf,
   tiers,
   toggled,
   rigStats,
@@ -785,7 +786,7 @@ export function rigsView(p: Base, board: FactoryBoard, plan: FactoryPlan | null)
         const s = rigStats(g, board.runs)
         const sweeps =
           g.sweeps === undefined ? 'all sweeps' : g.sweeps.length ? g.sweeps.join(', ') : 'no sweeps'
-        const rp = plan?.rigs[g.name]
+        const rp = rigPlanOf(plan, g.name)
         return (
           <Box key={`rigs-${g.name}`} flexDirection="column" marginBottom={1}>
             {rule(p, g.name, `${shortPath(g.repo)} · ${shortPath(g.factory)} · ${sweeps}`)}
