@@ -49,6 +49,14 @@ export const LONG_COMMAND_REASON =
   'against a person-only kube context. A command this long can make that check too slow. ' +
   'Split this command into shorter commands and run them one at a time. Do not retry this exact command.'
 
+// claude-factory-epz: anyShellReason recurses once per stacked eval or sh -c word, with no bound.
+// A command built from many stacked eval words can make this guard's own scan too slow, past the
+// 10 s PreToolUse hook timeout, which lets the command run unchecked (fail open). This reason is
+// returned instead, once the recursion goes past MAX_SHELL_DEPTH levels (fail closed).
+export const DEEP_COMMAND_REASON =
+  'The factory denies this command: it nests more than 32 eval or sh -c levels, and the factory ' +
+  'cannot check a command this deep in time. Run the inner command directly. Do not retry this exact command.'
+
 // wrapper commands whose own name we skip to find the command they run
 const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
 

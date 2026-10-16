@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
-import { denyReason, LIVE_REASON, LONG_COMMAND_REASON, REASON } from './worker-hook'
+import { DEEP_COMMAND_REASON, denyReason, LIVE_REASON, LONG_COMMAND_REASON, REASON } from './worker-hook'
 
 const DENY = [
   'rm -rf foo',
@@ -255,6 +255,53 @@ test('denyReason denies a live-apply command behind a stack of eval words, fast 
 test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-factory-25z.17)', () => {
   expect(denyReason(`${STACKED_EVAL}; rm -rf x`)).toBe(REASON)
 }, 500)
+
+// claude-factory-epz: anyShellReason's eval recursion has no depth limit.
+// A command has n stacked eval words. Then it has an `rm -rf`.
+// For n=1000, the time used is 185 ms.
+// For n=2000, the time used is 679 ms.
+// For n=4000, the time used is 4008 ms.
+//
+// This test does not set personOnly. The 8192-character limit applies only when personOnly is set.
+// So it does not apply here.
+//
+// A high load can make more time necessary for this check.
+// The time necessary can then be more than the 10 s time limit of the PreToolUse hook.
+// The hook then fails open. The command runs.
+// This is the problem that this change corrects.
+//
+// A depth limit, MAX_SHELL_DEPTH = 32, corrects this problem.
+// The hook denies a command that has more than 32 levels of eval.
+// It will fail closed.
+// This check is much faster than the 500 ms time limit of this test.
+// This test does not read or measure the time used. `test()`'s own time limit does that check.
+const DEEP_RM_N = 4000
+
+test('denyReason denies a 4000-level stacked eval rm -rf form, fast, no personOnly (claude-factory-epz)', () => {
+  expect(denyReason('eval '.repeat(DEEP_RM_N) + 'rm '.repeat(DEEP_RM_N) + '; rm -rf x')).toBe(
+    DEEP_COMMAND_REASON,
+  )
+}, 500)
+
+test('denyReason denies a command nesting 33 eval levels (claude-factory-epz)', () => {
+  expect(denyReason('eval '.repeat(33) + 'ls')).toBe(DEEP_COMMAND_REASON)
+})
+
+test('denyReason allows a command nesting only 32 eval levels (claude-factory-epz)', () => {
+  expect(denyReason('eval '.repeat(32) + 'ls')).toBeUndefined()
+})
+
+test('denyReason denies a sh -c script that itself nests 32 eval levels, the sh -c wrapper counting as a level (claude-factory-epz)', () => {
+  expect(denyReason(`sh -c "${'eval '.repeat(32)}ls"`)).toBe(DEEP_COMMAND_REASON)
+})
+
+test('denyReason allows a sh -c script that nests only 31 eval levels (claude-factory-epz)', () => {
+  expect(denyReason(`sh -c "${'eval '.repeat(31)}ls"`)).toBeUndefined()
+})
+
+test('denyReason denies a 33-level stacked eval command with personOnly set too (claude-factory-epz)', () => {
+  expect(denyReason('eval '.repeat(33) + 'ls', undefined, ACME)).toBe(DEEP_COMMAND_REASON)
+})
 
 // claude-factory-25z.20: the .17 fix made the scan linear. But a command of n eval words, then n
 // bare kubectl words, then a real apply still costs about n^3. A command built to be about 26 KB
