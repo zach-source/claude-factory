@@ -57,7 +57,7 @@ The check also runs when a live run already holds a ready, unassigned bead. This
 
 `factory queue <rig> <id>` clears a dispatch reject. It clears the reject in the same way as a station reject. A bead that dispatch already rejected (`rejected_by: dispatch`) skips the check. It starts at once. To turn off the check, set `FACTORY_PRECHECK=0`.
 
-If `gh` fails or times out, the check fails open. The run starts anyway. `factory metrics` counts the skipped check. `factory metrics` also prints how many triage rejects there were. It also prints how many of those the pre-check would have caught (`dispatch skipped ... (merged-pr ..., live-run ...)`).
+If `gh` fails or times out, the check fails open. The run starts anyway. `factory metrics` counts this as `gh fail-open`, apart from a real skip. `factory metrics` also prints how many triage rejects there were. It prints how many beads the pre-check did skip before a run can start (`dispatch skipped ... (merged-pr ..., live-run ...)`).
 
 **Priority**: dispatch takes queued beads in `bd ready` order, which is by priority first (`-p 0` is the most urgent, `-p 4` the backlog). Set it with `bd update <id> -p <n>` or `bd priority`.
 

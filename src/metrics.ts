@@ -111,7 +111,7 @@ const h = (x: number | null) => (x === null ? '-' : `${x.toFixed(1)}h`)
 export function render(
   m: ReturnType<typeof metrics>,
   title: string,
-  precheck: { mergedPr: number; liveRun: number } = { mergedPr: 0, liveRun: 0 },
+  precheck: { mergedPr: number; liveRun: number; failOpen?: number } = { mergedPr: 0, liveRun: 0 },
 ) {
   const triageRejects = m.stations.triage?.outcomes.reject ?? 0
   const triageVisits = m.stations.triage?.visits ?? 0
@@ -129,7 +129,8 @@ export function render(
         .join(', ') || 'none'
     }`,
     `  triage rejects ${triageRejects} of ${triageVisits} (${m.triageAlreadyDone} already done); ` +
-      `dispatch skipped ${precheck.mergedPr + precheck.liveRun} (merged-pr ${precheck.mergedPr}, live-run ${precheck.liveRun})`,
+      `dispatch skipped ${precheck.mergedPr + precheck.liveRun} (merged-pr ${precheck.mergedPr}, live-run ${precheck.liveRun}), ` +
+      `gh fail-open ${precheck.failOpen ?? 0}`,
     '  station      visits  failed  median  outcomes',
   ]
   for (const [id, s] of Object.entries(m.stations))
@@ -160,15 +161,20 @@ export function parsePrecheckLines(text: string): PrecheckLine[] {
   return out
 }
 
-/** counts dispatch pre-check skips by kind. A fail-open row (kind 'skip') is not a skip: the run still started */
+/** counts dispatch pre-check skips by kind. A fail-open row (kind 'skip') is not a skip: the run
+ * still started. claude-factory-6as.8: `failOpen` counts those rows on their own. `factory
+ * metrics` can then show how often `gh` failed or timed out, apart from how often the check caught
+ * a hit. */
 export function precheckStats(lines: Pick<PrecheckLine, 'kind'>[]) {
   let mergedPr = 0
   let liveRun = 0
+  let failOpen = 0
   for (const l of lines) {
     if (l.kind === 'merged-pr') mergedPr++
     else if (l.kind === 'live-run') liveRun++
+    else if (l.kind === 'skip') failOpen++
   }
-  return { skipped: mergedPr + liveRun, mergedPr, liveRun }
+  return { skipped: mergedPr + liveRun, mergedPr, liveRun, failOpen }
 }
 
 /** one Claude worker session's spend, from its transcript */

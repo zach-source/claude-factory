@@ -196,14 +196,17 @@ test('parsePrecheckLines reads one JSON object per line and drops a malformed li
   ])
 })
 
-test('precheckStats counts dispatch skips by kind, and excludes a fail-open skip row', () => {
+test('precheckStats counts dispatch skips by kind, and counts a fail-open skip row on its own (claude-factory-6as.8)', () => {
   const line = (kind: string) => ({ at: 0, rig: 'r', bead: 'b', kind, evidence: '' })
-  expect(precheckStats([line('merged-pr'), line('merged-pr'), line('live-run'), line('skip')])).toEqual({
+  expect(
+    precheckStats([line('merged-pr'), line('merged-pr'), line('live-run'), line('skip'), line('skip')]),
+  ).toEqual({
     skipped: 3,
     mergedPr: 2,
     liveRun: 1,
+    failOpen: 2,
   })
-  expect(precheckStats([])).toEqual({ skipped: 0, mergedPr: 0, liveRun: 0 })
+  expect(precheckStats([])).toEqual({ skipped: 0, mergedPr: 0, liveRun: 0, failOpen: 0 })
 })
 
 test('render prints the triage reject rate and dispatch pre-check skip line', () => {
@@ -211,16 +214,16 @@ test('render prints the triage reject rate and dispatch pre-check skip line', ()
     { id: 'r1', node: 'done', createdAt: 0, log: [e('triage', 'reject', 1, 'already merged in #57')] },
     { id: 'r2', node: 'implement', createdAt: 0, log: [e('triage', 'ready', 1)] },
   ])
-  const out = render(m, 'title', { mergedPr: 2, liveRun: 1 })
+  const out = render(m, 'title', { mergedPr: 2, liveRun: 1, failOpen: 4 })
   expect(out).toContain(
-    'triage rejects 1 of 2 (1 already done); dispatch skipped 3 (merged-pr 2, live-run 1)',
+    'triage rejects 1 of 2 (1 already done); dispatch skipped 3 (merged-pr 2, live-run 1), gh fail-open 4',
   )
 })
 
-test('render defaults the dispatch pre-check counts to 0 when no precheck data is given', () => {
+test('render defaults the dispatch pre-check counts, including fail-open, to 0 when no precheck data is given', () => {
   const m = metrics([{ id: 'r1', node: 'implement', createdAt: 0, log: [] }])
   const out = render(m, 'title')
   expect(out).toContain(
-    'triage rejects 0 of 0 (0 already done); dispatch skipped 0 (merged-pr 0, live-run 0)',
+    'triage rejects 0 of 0 (0 already done); dispatch skipped 0 (merged-pr 0, live-run 0), gh fail-open 0',
   )
 })
