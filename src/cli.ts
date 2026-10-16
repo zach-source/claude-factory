@@ -2313,7 +2313,9 @@ async function dream() {
     if (!existsSync(join(MEMORY, '.git'))) {
       git(MEMORY, 'init', '-q')
     }
-    writeFileSync(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl*\n') // caches, not memory
+    // git tracks .usage.jsonl itself, so counts survive a clone or a lost file (claude-factory-503.3).
+    // Only its crash-safe temp file (memory.ts:584-601) and the search index cache stay ignored.
+    writeFileSync(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
     commitMemory('notes since the last dream')
     // the journal since the last dream that finished: a failed one leaves its entries to the next
     const since = Number(git(MEMORY, 'log', '-1', '--grep=^dream:', '--format=%at')) * 1000
