@@ -291,6 +291,24 @@ minor release may change the factory format, the CLI or the run state.
     and `factory memory compact` (`src/cli.ts`) both append this plan to
     `dream.log` before the pass applies it, and `--dry-run` prints the cap
     and the held count.
+- A memory home's `.usage.jsonl` now survives in git, and a dream or
+  `factory memory compact` no longer leaves the memory repo dirty.
+  (claude-factory-503.3)
+  - Cause: the memory `.gitignore` `dream()` writes (`src/cli.ts`) ignored
+    `.usage.jsonl*`, so the append-only usage-count file (about 72 KB) never
+    joined a commit. `memory.compact(renamed)` also ran after each dream or
+    compact commit, so its rewrite of `.usage.jsonl` and its append to
+    `.renames.jsonl` (`src/memory.ts:572-602`) always left `git status`
+    dirty right after the commit that was meant to close out the pass.
+  - Fix: the gitignore line is now `.index.json*\n.usage.jsonl.tmp\n`, so only
+    `compact()`'s crash-safe temp file stays ignored and `.usage.jsonl` joins
+    git. `dream()` (two commit sites) and `factory memory compact` now call
+    `compact()` before `git add -A` and the commit, not after, so its writes
+    land inside that same commit. The dream commit's rename map now reads
+    `git diff -M --name-status --cached` against the staged index instead of
+    `HEAD`, since no commit exists yet to diff against at that point.
+  - Migration: a home with the old gitignore and an untracked `.usage.jsonl`
+    starts tracking the file on its next dream.
 
 ## 0.12.0 (2026-10-15)
 
