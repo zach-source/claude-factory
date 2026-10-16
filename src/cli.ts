@@ -635,8 +635,17 @@ function priorWork(run: Run) {
   return p.exitCode === 0 ? p.stdout.toString().trim() : ''
 }
 
+// every call here commits to the memory store, not a rig: a box with no git identity configured
+// (a fresh CI runner, a fresh VM) must still be able to run `factory memory compact` and `dream`.
+// The env only sets what the caller has not already set, so a real identity still wins.
+const MEMORY_GIT_IDENTITY = {
+  GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'factory',
+  GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || 'factory@localhost',
+  GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || 'factory',
+  GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || 'factory@localhost',
+}
 function git(cwd: string, ...args: string[]) {
-  const p = Bun.spawnSync(['git', '-C', cwd, ...args])
+  const p = Bun.spawnSync(['git', '-C', cwd, ...args], { env: { ...process.env, ...MEMORY_GIT_IDENTITY } })
   return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
 }
 

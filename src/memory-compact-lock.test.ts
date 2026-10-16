@@ -49,3 +49,30 @@ test('factory memory compact --dry-run never takes the lock: it reports only, so
   expect(dry.code).toBe(0)
   expect(dry.out).toContain('nothing to merge or archive')
 })
+
+// a fresh CI runner (ubuntu-latest) has no `git config --global user.name`/`user.email`: PR #45's
+// first real CI run failed this exact way (claude-factory-5h9.17). GIT_CONFIG_GLOBAL/SYSTEM point
+// at a file that does not exist, so git sees no identity anywhere, the same as that runner.
+test('factory memory compact commits even with no git identity configured anywhere (a fresh CI runner)', () => {
+  rmSync(dir, { recursive: true, force: true })
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    GIT_AUTHOR_NAME,
+    GIT_AUTHOR_EMAIL,
+    GIT_COMMITTER_NAME,
+    GIT_COMMITTER_EMAIL,
+    ...laptop
+  } = process.env
+  const p = Bun.spawnSync([CLI, 'memory', 'compact'], {
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      GIT_CONFIG_GLOBAL: join(dir, 'no-such-gitconfig'),
+      GIT_CONFIG_SYSTEM: join(dir, 'no-such-gitconfig'),
+    },
+  })
+  expect(p.exitCode).toBe(0)
+  expect(p.stdout.toString()).toContain('compact: 0 merged, 0 archived')
+  expect(existsSync(join(home, 'memory', '.git'))).toBe(true)
+})
