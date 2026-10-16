@@ -279,6 +279,63 @@ test('a tick on an AX-only rig still runs with no herdr installed (claude-factor
   rmSync(join(home, 'runs', 'r1h'), { recursive: true })
 })
 
+test('reap() closes a finished run\'s workspace through FACTORY_HERDR, not a literal "herdr" (claude-factory-5h9.12)', () => {
+  const seq = launched('r1x')
+  const report = JSON.stringify({
+    argv: ['report', 'r1x', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 1,
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+  factory(['tick']) // 'a' goes idle: the report is replayed
+  const second = factory(['tick']) // the station ends: the run is over
+  expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1x', node: 'done' })
+
+  // This fake binary is herdr-shaped, but its name is not "herdr". A call to the literal
+  // string `Bun.spawnSync(['herdr', ...])` finds nothing on PATH. It throws instead of
+  // running. Its `pane list` answer names a pane in this finished run's own workspace and
+  // worktree. launched() always uses ws 'w1' and worktree join(dir, 'wt'). reap() then has
+  // one workspace to close. The test also sets a minimal PATH (bun, git, realpath, dirname;
+  // no herdr). This proves the fix calls FACTORY_HERDR. It rules out a PATH lookup of
+  // "herdr" that happens to succeed, as it does on this box, where herdr is installed.
+  const worktree = join(dir, 'wt') // the fixed worktree launched() always uses
+  const fakeHerdr = join(dir, 'fakeherdr')
+  const herdrCalls = join(dir, 'herdr-calls.log')
+  rmSync(herdrCalls, { force: true })
+  writeFileSync(
+    fakeHerdr,
+    `#!/bin/sh
+echo "$*" >> ${herdrCalls}
+case "$1 $2" in
+  "pane list") printf '{"result":{"panes":[{"pane_id":"p1","workspace_id":"w1","cwd":"${worktree}"}]}}\\n' ;;
+  *) echo '{}' ;;
+esac
+`,
+  )
+  chmodSync(fakeHerdr, 0o755)
+  const minBin = join(dir, 'minbin')
+  mkdirSync(minBin, { recursive: true })
+  for (const bin of ['bun', 'git']) {
+    const real = Bun.which(bin)
+    if (real) {
+      try {
+        Bun.spawnSync(['ln', '-sf', real, join(minBin, bin)])
+      } catch {
+        // ignore
+      }
+    }
+  }
+  const minPath = `${minBin}:/run/current-system/sw/bin`
+  expect(Bun.spawnSync(['sh', '-c', 'command -v herdr'], { env: { PATH: minPath } }).exitCode).not.toBe(0)
+
+  const third = factory(['tick'], { FACTORY_HERDR: fakeHerdr, PATH: minPath })
+  expect(third.code).toBe(0) // a crash on the literal 'herdr' call would exit non-zero (or throw before exit)
+  const herdrCallLog = existsSync(herdrCalls) ? readFileSync(herdrCalls, 'utf8') : ''
+  expect(herdrCallLog).toContain('pane list')
+  expect(herdrCallLog).toContain('workspace close w1')
+  rmSync(join(home, 'runs', 'r1x'), { recursive: true })
+})
+
 test('a worker waiting on the manager is suspended, and woken by the answer before it is delivered', () => {
   launched('r2')
   const ask = JSON.stringify({ argv: ['mail', 'r2', 'manager', 'which db?'], from: 'a', at: 1 })

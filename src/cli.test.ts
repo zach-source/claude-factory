@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
@@ -28,6 +28,7 @@ import {
   progressSig,
   relaunch,
   reworkGoal,
+  selfUpdateMail,
   stalled,
   swapUntil,
   watchWake,
@@ -534,4 +535,37 @@ test('helpedHint tells a worker to pass --from <run>/<station>, so usage() count
     branch: 'b',
   }
   expect(helpedHint(run, 'implement')).toContain('memory helped --from lifecycle-abc/implement')
+})
+
+test('selfUpdateMail mails a repeated refusal again once a no-op sits between the two (claude-factory-5h9.12, claude-factory-6d9)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'self-update-mail-'))
+  const file = join(home, 'self-update.json')
+  const mailedFile = join(home, 'self-update-mailed.json')
+  const refusalA = { at: 1, from: 'a1b2c3d', to: 'e4f5a6b', ok: false, why: 'a dirty tree' }
+
+  // first refusal: mailed, and the marker records why
+  writeFileSync(file, JSON.stringify(refusalA))
+  const first = selfUpdateMail(1, home)
+  expect(first).toHaveLength(1)
+  expect(first[0]!.text).toContain('a dirty tree')
+  expect(readFileSync(mailedFile, 'utf8')).toContain('a dirty tree')
+
+  // the same refusal again, unchanged: already mailed, stays quiet
+  const repeat = selfUpdateMail(2, home)
+  expect(repeat).toHaveLength(0)
+
+  // a no-op in between (ok, from === to): nothing worth a mail, but it resets the marker
+  writeFileSync(
+    file,
+    JSON.stringify({ at: 3, from: 'e4f5a6b', to: 'e4f5a6b', ok: true, why: 'already up to date' }),
+  )
+  const noop = selfUpdateMail(3, home)
+  expect(noop).toHaveLength(0)
+  expect(existsSync(mailedFile)).toBe(false) // the no-op cleared the stale marker
+
+  // the exact same refusal A a second time: must mail again, since the marker is gone
+  writeFileSync(file, JSON.stringify(refusalA))
+  const again = selfUpdateMail(4, home)
+  expect(again).toHaveLength(1)
+  expect(again[0]!.text).toContain('a dirty tree')
 })
