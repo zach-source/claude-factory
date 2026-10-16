@@ -2353,6 +2353,24 @@ async function dream() {
     writeFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
     if (p.exitCode !== 0) return said
     git(MEMORY, 'add', '-A')
+    // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
+    // through the alias it left on the entry that absorbed it (claude-factory-59r.11).
+    // Read from the staged index (--cached), not HEAD. compact() runs below, before the commit.
+    // git add -A then restages its writes, so they land inside the commit and the repo stays clean
+    // right after it (claude-factory-503.3).
+    const renamed: Record<string, string> = {
+      ...Object.fromEntries(
+        git(MEMORY, 'diff', '-M', '--name-status', '--cached', before)
+          .split('\n')
+          .filter(l => l.startsWith('R'))
+          .map(l => l.split('\t').slice(1)),
+      ),
+      ...memory.longAliasRenames(MEMORY),
+    }
+    // logged before applyTiers runs: applyTiers reads usage fresh, so a note the dream renamed must
+    // already resolve to its new path, or it looks never used and risks archive (claude-factory-59r.10)
+    memory.compact(MEMORY, renamed)
+    git(MEMORY, 'add', '-A')
     // committed even when it changed nothing, and dated when it began: what was journaled meanwhile is the next one's
     git(
       MEMORY,
@@ -2363,20 +2381,6 @@ async function dream() {
       '-m',
       `dream: ${said}`,
     )
-    // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
-    // through the alias it left on the entry that absorbed it (claude-factory-59r.11)
-    const renamed: Record<string, string> = {
-      ...Object.fromEntries(
-        git(MEMORY, 'diff', '-M', '--name-status', before, 'HEAD')
-          .split('\n')
-          .filter(l => l.startsWith('R'))
-          .map(l => l.split('\t').slice(1)),
-      ),
-      ...memory.longAliasRenames(MEMORY),
-    }
-    // logged before applyTiers runs: applyTiers reads usage fresh, so a note the dream renamed must
-    // already resolve to its new path, or it looks never used and risks archive (claude-factory-59r.10)
-    memory.compact(MEMORY, renamed)
     if (process.env.FACTORY_MEMORY_TIERS !== '0') {
       const filesBefore = memory.mdFileCount(MEMORY)
       // the plan reaches dream.log before applyTiers writes or removes anything (claude-factory-503.2):
@@ -2385,6 +2389,7 @@ async function dream() {
         now: start,
         onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
       })
+      memory.compact(MEMORY, tiers.renamed)
       git(MEMORY, 'add', '-A')
       // its own commit, dated with the dream it followed, even when it merged and archived nothing
       git(
@@ -2396,7 +2401,6 @@ async function dream() {
         '-m',
         compactMessage(tiers, filesBefore, memory.mdFileCount(MEMORY)),
       )
-      memory.compact(MEMORY, tiers.renamed)
     }
     return said
   } finally {
@@ -5257,10 +5261,12 @@ if (import.meta.main && !outboxCmd)
               const tiers = memory.applyTiers(MEMORY, {
                 onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
               })
+              // runs before the commit, so its .usage.jsonl/.renames.jsonl writes land inside it and
+              // the repo stays clean right after (claude-factory-503.3)
+              memory.compact(MEMORY, tiers.renamed)
               git(MEMORY, 'add', '-A')
               const message = compactMessage(tiers, filesBefore, memory.mdFileCount(MEMORY))
               git(MEMORY, 'commit', '-q', '--allow-empty', '-m', message)
-              memory.compact(MEMORY, tiers.renamed)
               console.log(message)
             } finally {
               release()

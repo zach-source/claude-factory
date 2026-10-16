@@ -40,9 +40,14 @@ function fakeClaude() {
   const file = join(dir, 'fake-claude.sh')
   writeFileSync(
     file,
-    ['#!/bin/sh', 'set -e', 'mkdir -p topic', 'git mv inbox/x.md topic/x.md', 'echo "filed x.md under topic/x.md"', ''].join(
-      '\n',
-    ),
+    [
+      '#!/bin/sh',
+      'set -e',
+      'mkdir -p topic',
+      'git mv inbox/x.md topic/x.md',
+      'echo "filed x.md under topic/x.md"',
+      '',
+    ].join('\n'),
   )
   chmodSync(file, 0o755)
   return file
@@ -65,6 +70,8 @@ for (const [label, tiersEnv] of [
   ['tiers on (default)', {}],
   ['FACTORY_MEMORY_TIERS=0', { FACTORY_MEMORY_TIERS: '0' }],
 ] as const) {
+  // 30s: dream() loads the embedding model (tierCandidates()) before it spawns the fake claude,
+  // which the default 5s bun:test timeout does not always clear on a cold cache
   test(`factory dream leaves the memory repo clean after it commits (${label})`, () => {
     seedInbox()
     const claude = fakeClaude()
@@ -78,7 +85,14 @@ for (const [label, tiersEnv] of [
     // A3: the gitignore tracks .usage.jsonl and .renames.jsonl; only .index.json* and the compact
     // temp file stay ignored
     expect(readFileSync(join(home, 'memory', '.gitignore'), 'utf8')).toBe('.index.json*\n.usage.jsonl.tmp\n')
-    const ignoreUsage = Bun.spawnSync(['git', '-C', join(home, 'memory'), 'check-ignore', '-q', '.usage.jsonl'])
+    const ignoreUsage = Bun.spawnSync([
+      'git',
+      '-C',
+      join(home, 'memory'),
+      'check-ignore',
+      '-q',
+      '.usage.jsonl',
+    ])
     expect(ignoreUsage.exitCode).toBe(1) // not ignored
     const tracked = gitMemory('ls-files').split('\n')
     expect(tracked).toContain('.usage.jsonl')
@@ -102,7 +116,7 @@ for (const [label, tiersEnv] of [
       expect(compactCommit).not.toBe('')
       expect(compactCommit).not.toBe(dreamCommit)
     }
-  })
+  }, 30_000)
 }
 
 test('factory memory compact leaves the memory repo clean after it merges a note and rewrites .usage.jsonl/.renames.jsonl', () => {
@@ -159,7 +173,10 @@ test('a home with the old gitignore starts tracking .usage.jsonl on its next dre
     'old gitignore',
   ])
   // under the old gitignore this file is excluded, so it was never tracked
-  writeFileSync(join(home, 'memory', '.usage.jsonl'), `${JSON.stringify({ path: 'beads/old.md', shown: 2 })}\n`)
+  writeFileSync(
+    join(home, 'memory', '.usage.jsonl'),
+    `${JSON.stringify({ path: 'beads/old.md', shown: 2 })}\n`,
+  )
   expect(gitMemory('ls-files', '.usage.jsonl')).toBe('')
 
   const result = run(['dream']) // no inbox, no journal: returns early, but the gitignore migration runs first
