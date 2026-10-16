@@ -90,26 +90,35 @@ export function notes(changelog: string, version: string): string {
   return body
 }
 
-// Checks the remote, not the local clone: release.yml's checkout step takes GitHub's default
-// `fetch-tags: false`, so a local `git rev-parse --verify refs/tags/vX` always says "not found" in
-// CI even when the tag is already on GitHub (claude-factory-5h9.15). `git ls-remote` asks origin
-// directly, so it works in any clone shape.
 // cut() moves everything under `## Unreleased` to a new `## X.Y.Z (date)` heading right below it.
 // Right after a cut, `## Unreleased` is empty.
 //
-// A later commit can still land on main before the release PR merges. It can add its own bullet
-// under `## Unreleased`, the normal per-change pattern. Its code ships in the tag that
-// release-tag.yml makes at the merge commit. But `notes()` reads only the already-cut
-// `## X.Y.Z (...)` section. So its bullet never reaches the GitHub release notes
-// (claude-factory-5h9.11).
+// A later commit can still land on main before the release PR merges.
+// It can add its own bullet under `## Unreleased`. This is the normal per-change pattern.
+// But `notes()` reads only the already-cut `## X.Y.Z (...)` section.
+// So that bullet never reaches the GitHub release notes (claude-factory-5h9.11).
 //
-// Call this at the merge commit, after `prepare` has run. A non-empty result means the tag is
-// about to ship undocumented changes.
+// Call this at the merge commit, after `prepare` has run and before the tag is made
+// (release-tag.yml's "refuse a commit merged after the cut" step).
+// A non-empty result must stop that workflow before it tags or releases this version
+// (claude-factory-5h9.20).
+// The code stays on main either way.
+// It reaches a tag only once a later release cuts the still-open `## Unreleased` section into
+// its own heading.
 export function lateUnreleasedBullets(changelog: string): string {
   const { body } = sectionBody(changelog, /^## Unreleased\n\n/m)
   return body.trim()
 }
 
+// Checks the remote, not the local clone: release.yml's checkout step takes GitHub's default
+// `fetch-tags: false`, so a local `git rev-parse --verify refs/tags/vX` always says "not found" in
+// CI even when the tag is already on GitHub (claude-factory-5h9.15). `git ls-remote` asks origin
+// directly, so it works in any clone shape.
+//
+// `git ls-remote --exit-code` returns 0 for a found ref, 2 for a ref that does not exist, and
+// another code (for example 128, with no `origin` remote or no network) for a real failure.
+// Reading every non-zero exit as "not found" (claude-factory-5h9.21) hid a real failure behind a
+// wrong "no tag yet" answer, so only 0 and 2 return a boolean; anything else throws.
 export function tagExists(version: string, cwd = '.'): boolean {
   const p = Bun.spawnSync([
     'git',
@@ -121,7 +130,9 @@ export function tagExists(version: string, cwd = '.'): boolean {
     'origin',
     `refs/tags/v${version}`,
   ])
-  return p.exitCode === 0
+  if (p.exitCode === 0) return true
+  if (p.exitCode === 2) return false
+  throw new Error(`git ls-remote --tags origin failed (exit ${p.exitCode}): ${p.stderr.toString().trim()}`)
 }
 
 function todayUTC(): string {

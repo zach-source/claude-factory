@@ -141,6 +141,19 @@ test('tagExists finds a tag on origin even when the local clone fetched no tags,
   }
 }, 30_000)
 
+// claude-factory-5h9.21: `git ls-remote --exit-code` returns 128 (not 2) with no network or no
+// `origin` remote. The old code read any non-zero exit as "not found", so a network blip in
+// release-tag.yml's check step would wrongly report "no tag yet" instead of failing loudly.
+test('tagExists throws on a real git failure (no origin remote), instead of reporting "not found"', () => {
+  const root = mkdtempSync(join(tmpdir(), 'release-tagexists-noorigin-'))
+  try {
+    git(root, 'init', '-q', '-b', 'main')
+    expect(() => tagExists('1.0.0', root)).toThrow(/git ls-remote.*failed \(exit 128\)/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('checkVersions returns the shared version, or refuses a drift between the two files', () => {
   const pkg = '{"version": "0.12.0"}'
   const plugin = '{"version": "0.12.0"}'

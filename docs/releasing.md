@@ -58,16 +58,28 @@ Do this once. Do it before the first real dispatch of `release.yml`
    [.github/workflows/release-tag.yml](../.github/workflows/release-tag.yml) on its own.
    It does these actions:
    - Read `main`'s current version.
-   - Stop here if a tag for that version exists. A push that is not a release merge
-     leaves the version unchanged. Its tag is already there, so the workflow stops and
-     does nothing else.
+   - Check the tag `vX.Y.Z` and the release `vX.Y.Z` on their own
+     (claude-factory-5h9.19). Stop here, with nothing else to do, only when both
+     already exist.
+     - A push that is not a release merge leaves the version unchanged. Both the tag
+       and the release for it already exist, so the workflow stops.
+     - When only the tag exists (an earlier run pushed the tag, then failed before it
+       published the release), the workflow skips the tagging steps below. It goes
+       straight to `gh release create`.
    - Refuse if `## Unreleased` is not empty at this commit (`bun src/release.ts
-     check-no-late-unreleased`). A commit can land on `main` after the release PR's
-     cut, before the release PR itself merges. It ships in this tag. Its own bullet
-     stays under `## Unreleased`, so the release notes below (read from the
-     already-cut `## X.Y.Z (...)` section) would miss it (claude-factory-5h9.11).
-     When this happens, the fix is a follow-up release for the missed bullet; the tag
-     itself still carries the missed code.
+     check-no-late-unreleased`), unless the tag already exists (see above).
+     - A commit can land on `main` after the release PR's cut, before the release PR
+       itself merges. Its own bullet stays under `## Unreleased`.
+     - The release notes below come from the already-cut `## X.Y.Z (...)` section, so
+       they miss that bullet (claude-factory-5h9.11).
+     - This check runs before the workflow makes the tag. So a refusal here leaves
+       `vX.Y.Z` with no tag and no release, not a tag that ships the missed code.
+     - The code itself stays on `main` either way. It reaches a release only once a
+       later release bumps the version. That release cuts the current `##
+       Unreleased` section, late bullet included, into its own new heading.
+     - Until that later release runs, every push to `main` hits this same refusal.
+       This workflow is not a required check, so a refusal here does not block a
+       merge.
    - Sign the tag `vX.Y.Z` with gitsign.
    - Verify the signature.
    - Push the tag.

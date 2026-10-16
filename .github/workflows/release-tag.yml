@@ -61,14 +61,33 @@ jobs:
           fi
           echo "version=$pkg_version" >> "$GITHUB_OUTPUT"
 
-      - name: skip when this push did not bump to a new, untagged version
+      - name: check what this version already has, tag and release apart
+        # claude-factory-5h9.19: an earlier run can push the tag, then fail before it publishes
+        # the release. Causes: a network blip, or a bad `gh` call.
+        # A rerun that skips on "tag exists" alone would then never publish.
+        # So this step checks the tag and the release on their own.
+        # tag_exists gates the tag steps. skip gates the whole job.
         id: check
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -e
           if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null 2>&1; then
-            echo "tag v$VERSION already exists; this push is not a release merge, nothing to do"
+            echo "tag v$VERSION already exists"
+            tag_exists=1
+          else
+            tag_exists=0
+          fi
+          if gh release view "v$VERSION" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "release v$VERSION already exists"
+            release_exists=1
+          else
+            release_exists=0
+          fi
+          echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
+          if [ "$tag_exists" = "1" ] && [ "$release_exists" = "1" ]; then
+            echo "both the tag and the release for v$VERSION exist; this push is not a release merge, nothing to do"
             echo "skip=1" >> "$GITHUB_OUTPUT"
           else
             echo "skip=0" >> "$GITHUB_OUTPUT"
@@ -76,16 +95,18 @@ jobs:
 
       - name: refuse a commit merged after the cut, with its bullets still under Unreleased
         # A commit can land on main after the release PR's cut, before the release PR itself
-        # merges. It ships in this tag. Its own CHANGELOG bullet stays under "## Unreleased",
-        # so the release notes below (read from the already-cut "## X.Y.Z (...)" section) would
-        # miss it (claude-factory-5h9.11).
-        if: steps.check.outputs.skip == '0'
+        # merges. Its own CHANGELOG bullet stays under "## Unreleased", so the release notes
+        # below (read from the already-cut "## X.Y.Z (...)" section) would miss it
+        # (claude-factory-5h9.11). This step runs before the tag, so a refusal here makes no
+        # tag and no release for this version (claude-factory-5h9.20). The code stays on main;
+        # it ships only once a later release cuts the still-open Unreleased section.
+        if: steps.check.outputs.skip == '0' && steps.check.outputs.tag_exists == '0'
         run: bun src/release.ts check-no-late-unreleased
 
       - name: install gitsign 0.17.1
         # Pinned release binary, checked by its published sha256 (checksums.txt on the v0.17.1
         # GitHub release). gitsign has no GitHub Action of its own.
-        if: steps.check.outputs.skip == '0'
+        if: steps.check.outputs.skip == '0' && steps.check.outputs.tag_exists == '0'
         run: |
           set -e
           curl -sSL -o gitsign https://github.com/sigstore/gitsign/releases/download/v0.17.1/gitsign_0.17.1_linux_amd64
@@ -94,7 +115,7 @@ jobs:
           sudo mv gitsign /usr/local/bin/gitsign
 
       - name: sign the tag
-        if: steps.check.outputs.skip == '0'
+        if: steps.check.outputs.skip == '0' && steps.check.outputs.tag_exists == '0'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           GITSIGN_TOKEN_PROVIDER: github-actions
@@ -107,7 +128,7 @@ jobs:
           git tag -s -m "release v$VERSION" "v$VERSION"
 
       - name: verify the signature, then push the tag
-        if: steps.check.outputs.skip == '0'
+        if: steps.check.outputs.skip == '0' && steps.check.outputs.tag_exists == '0'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -118,6 +139,8 @@ jobs:
           git push origin "v$VERSION"
 
       - name: publish the GitHub release from the moved CHANGELOG section
+        # Runs even on a rerun that finds the tag already pushed (tag_exists == '1'): only
+        # "skip" (both tag and release already exist) stops this step.
         if: steps.check.outputs.skip == '0'
         env:
           GH_TOKEN: ${{ github.token }}
