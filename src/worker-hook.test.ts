@@ -24,6 +24,10 @@ const DENY = [
   "bash -c 'rm -rf x'",
   '(rm -rf x)',
   'timeout 5 rm -rf x',
+  // claude-factory-25z.14: a wrapper with flag args (watch has none here, but hides `sh` from
+  // realCommand because `watch` is not a known wrapper) must not hide an `rm -rf` inside its
+  // quoted script.
+  'watch sh -c "rm -rf /tmp/x"',
 ]
 
 // a $variable or glob target, any rm flags (or none): claude-factory-99d.1
@@ -148,6 +152,21 @@ const DENY_LIVE = [
   // claude-factory-25z.13: helm's uninstall aliases del and un mutate too.
   'helm --kube-context acme del r',
   'helm --kube-context acme un r',
+  // claude-factory-25z.14: a wrapper with flag args (sudo -u, nice -n, timeout -s) or a wrapper
+  // this hook does not know by name (watch, find -exec) can push the sh/bash/eval word past
+  // position 0, where the old check alone looked.
+  'sudo -u root bash -lc "kubectl --context acme apply -f x"',
+  'nice -n 10 eval "kubectl --context acme apply -f x"',
+  'watch sh -c "kubectl --context acme apply -f x"',
+  'timeout -s KILL 60 eval "kubectl --context acme apply -f x"',
+  'find . -name x -exec sh -c "kubectl --context acme apply -f x" \\;',
+  // claude-factory-25z.15: brace expansion and a glob in a --context value are not a literal name.
+  'kubectl --context ac{m,m}e apply -f x',
+  'kubectl --context acme{,} apply -f x',
+  'kubectl --context=ac{m,m}e delete pod x',
+  // claude-factory-25z.16: kubectl exec and attach mutate a live pod too.
+  'kubectl --context acme exec -it pod -- sh -c "reboot"',
+  'kubectl --context acme attach pod -c c -i',
 ]
 
 const ALLOW_LIVE = [

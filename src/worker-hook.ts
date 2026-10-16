@@ -271,6 +271,11 @@ const KUBECTL_MUTATING_VERBS = new Set([
   'run',
   'cp',
   'debug',
+  // claude-factory-25z.16: `exec` runs an arbitrary command inside a live pod; `cp` is itself
+  // built on `exec`, so denying `cp` but allowing `exec` or `attach` is inconsistent. Neither has
+  // a --dry-run flag.
+  'exec',
+  'attach',
 ])
 const KUBECTL_ROLLOUT_MUTATING = new Set(['restart', 'undo', 'pause', 'resume'])
 // claude-factory-25z.11: `auth can-i` only reads; `auth reconcile` writes RBAC objects.
@@ -308,14 +313,20 @@ function flagValue(words: string[], names: Set<string>): string | undefined {
   return result
 }
 
+// the charset `factory rig add --person-only-context` accepts (src/cli.ts:3663): a literal name
+// holds only these characters.
+const CONTEXT_NAME = /^[A-Za-z0-9._@:/-]+$/
+
 /**
- * True when a flag value is not a literal name. A `$` marks a shell expansion. A backtick marks
- * command substitution.
- * claude-factory-25z.9: the hook matches context and cluster names only. It cannot resolve a
- * shell expansion, so it treats that value as unknown and fails closed.
+ * Checks if a flag value is a literal name. Returns true when the value holds a character
+ * outside CONTEXT_NAME: the value is then not a literal name.
+ * claude-factory-25z.9: a `$` marks a shell expansion. A backtick marks command substitution.
+ * claude-factory-25z.15: a brace (`{a,b}`), a glob (`*`, `?`, `[`) or a leading `~` also expands,
+ * before kubectl, ko or helm reads the value. This hook matches context and cluster names only.
+ * It cannot resolve any of these forms, so it treats the value as unknown and fails closed.
  */
 function unknownFlagValue(v: string): boolean {
-  return v.includes('$') || v.includes('`')
+  return !CONTEXT_NAME.test(v)
 }
 
 /**
@@ -460,6 +471,40 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
 }
 
 /**
+ * Looks for a `sh`, `bash`, `zsh`, `dash` or `eval` word at any position in `words`, and recurses
+ * into denyReason on the script it runs.
+ * claude-factory-25z.14: a wrapper this hook does not strip by name (`sudo -u`, `nice -n`,
+ * `timeout -s`, `watch`, `find -exec`) can carry flag words of its own, which push the shell word
+ * past position 0. `realCommand` only strips a wrapper word it knows; it does not know these
+ * flags, so it leaves the shell word in place and `baseWord(cmd[0])` never finds it. This scans
+ * every word position instead, the same fail-closed scan `anyLiveApplyWord` uses.
+ */
+function anyShellReason(
+  words: string[],
+  root: string | undefined,
+  personOnly: string[] | undefined,
+): string | undefined {
+  for (let j = 0; j < words.length; j++) {
+    const bw = baseWord(words[j]!)
+    if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+      const ci = shCFlagIndex(words.slice(j))
+      const scriptWord = ci >= 0 ? words[j + ci + 1] : undefined
+      if (scriptWord !== undefined) {
+        const r = denyReason(scriptWord, root, personOnly)
+        if (r) return r
+      }
+    } else if (bw === 'eval') {
+      const rest = words.slice(j + 1)
+      if (rest.length) {
+        const r = denyReason(rest.join(' '), root, personOnly)
+        if (r) return r
+      }
+    }
+  }
+  return undefined
+}
+
+/**
  * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
  * `root` is the worktree root. An rm operand outside it is risky too (see riskyTarget).
  * `personOnly` is the rig's list of kube contexts a person alone may change (claude-factory-25z).
@@ -477,22 +522,16 @@ export function denyReason(command: string, root?: string, personOnly?: string[]
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
+    // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
+    // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
+    // push past position 0. This recurses into the script it runs, covering both guards above.
+    const shellReason = anyShellReason(words, root, personOnly)
+    if (shellReason) return shellReason
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
     } else if (b === 'cd') {
       hasCd = true
-    } else if (b === 'sh' || b === 'bash' || b === 'zsh' || b === 'dash') {
-      const ci = shCFlagIndex(cmd)
-      if (ci >= 0 && cmd[ci + 1] !== undefined) {
-        const r = denyReason(cmd[ci + 1]!, root, personOnly)
-        if (r) return r
-      }
-    } else if (b === 'eval') {
-      // eval joins its remaining words with a space and runs the result as a new command, the
-      // same as `sh -c`'s quoted script (claude-factory-25z.12).
-      const r = denyReason(cmd.slice(1).join(' '), root, personOnly)
-      if (r) return r
     } else if (b === 'find') {
       for (let i = 0; i < cmd.length; i++) {
         if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
