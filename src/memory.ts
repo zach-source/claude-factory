@@ -884,16 +884,29 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
 }
 
 /**
- * the tiering pass that follows a dream. It gathers each short note's age and usage. It asks decide()
- * what to merge or archive, then does it, unless dryRun is set. A merge appends the note as a LONG.md
- * entry in its topic and removes the short file. An archive appends the note to .archive/<topic>.md and
- * removes it. It returns a rename map (old path -> its LONG.md#id). Pass this to compact() to log it, so
- * a helped note keeps its count. `skipped` names a topic a merge left untouched, and why.
+ * the tiering pass that follows a dream.
+ * It gathers each short note's age and usage, and how many days of usage history the store holds.
+ * It asks decide() what to merge, archive or hold, then does it, unless dryRun is set.
+ *
+ * A merge appends the note as a LONG.md entry in its topic and removes the short file.
+ * An archive appends the note to .archive/<topic>.md and removes it.
+ * It returns a rename map (old path -> its LONG.md#id). Pass this to compact() to log it.
+ * This keeps a helped note's count.
+ * `skipped` names a topic a merge left untouched, and why.
+ *
+ * `opts.archiveCap` sets the pass's archive cap. It falls back to FACTORY_MEMORY_ARCHIVE_CAP, then 25.
+ * `opts.onPlan`, when given, runs once with planLines(). It runs right after decide(), before any
+ * write or rmSync, and on a dry run too. This way, the plan a caller logs always matches what ran.
  */
-export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean } = {}) {
+export function applyTiers(
+  dir: string,
+  opts: { now?: number; dryRun?: boolean; archiveCap?: number; onPlan?: (lines: string[]) => void } = {},
+) {
   const now = opts.now ?? Date.now()
   const { notes } = walk(dir)
   const uses = usage(dir)
+  const historyDays = usageHistoryDays(dir, now, uses)
+  const archiveCap = opts.archiveCap ?? envArchiveCap()
   const short: ShortCandidate[] = notes
     .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
     .map(n => {
@@ -911,7 +924,8 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
         helped: u?.helped ?? 0,
       }
     })
-  const decisions = decide(short, [], [])
+  const decisions = decide(short, [], [], { historyDays, archiveCap })
+  opts.onPlan?.(planLines(decisions, { archiveCap, historyDays }))
   // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
   // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
   // topic this pass, and try again later.
@@ -983,7 +997,8 @@ export function applyTiers(dir: string, opts: { now?: number; dryRun?: boolean }
       // no rename logged: decide() never archives a helped note, so no helped count is owed here
     }
   }
-  return { decisions, renamed, merged, archived, skipped }
+  const held = decisions.filter(d => d.kind === 'held').length
+  return { decisions, renamed, merged, archived, held, skipped, archiveCap, historyDays }
 }
 
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */
