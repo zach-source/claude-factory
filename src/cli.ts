@@ -3369,8 +3369,14 @@ function linearExcluded(): { ids: Set<string>; rigs: Set<string> } {
 const PRECHECK_TIMEOUT_MS = 15_000
 const precheckFile = () => join(HOME, 'precheck.jsonl')
 /** one line per pre-check hit or fail-open, for `factory metrics` and a soak trail independent of bd */
-const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) =>
-  durable(precheckFile(), `${JSON.stringify({ at: Date.now(), rig, bead, kind, evidence })}\n`, 'a')
+/** claude-factory-6as.10: logPrecheck is best effort. A bad precheck.jsonl file must not block the bd comment after it, or the rest of the pass. */
+const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) => {
+  try {
+    durable(precheckFile(), `${JSON.stringify({ at: Date.now(), rig, bead, kind, evidence })}\n`, 'a')
+  } catch {
+    // best effort: see above
+  }
+}
 
 /** `gh pr list --state merged --search <id> ...`, plus `--head <branch>` for up to 3 local run
  * branches of this bead (a PR that closed the bead's own run but never named it in its title) */
@@ -3382,13 +3388,15 @@ async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh
   })
   if (search.code !== 0) throw new Error(clip(search.err.trim().split('\n')[0] || 'gh pr list failed', 200))
   const found = parseMergedPrs(search.out)
+  // claude-factory-6as.9: a failed `--head` call must not discard a hit `--search` already found.
+  // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
+  // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
     const byHead = await gh(['pr', 'list', '--state', 'merged', '--head', branch, '--json', fields], {
       cwd: repo,
       timeout: PRECHECK_TIMEOUT_MS,
     })
-    if (byHead.code !== 0)
-      throw new Error(clip(byHead.err.trim().split('\n')[0] || 'gh pr list --head failed', 200))
+    if (byHead.code !== 0) continue
     found.push(...parseMergedPrs(byHead.out))
   }
   return found
@@ -3457,6 +3465,10 @@ async function dispatch() {
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
   const { ids: linearIds, rigs: linearRigs } = linearExcluded()
+  // claude-factory-6as.9: one hung gh call already proved gh broken for this pass (4 calls, up to
+  // 15s each). The other candidates, in this rig or the next, must fail open with no further gh
+  // calls, not wait out the same timeout again.
+  let ghFailed = false
   // live runs only: a finished run's deferred bead, undeferred by a person, is new work again.
   // claude-factory-6as.3: a Map, not a Set, so dispatch can name the run working a bead that is
   // still `ready` and unassigned (it lost its own claim on the bead), for one comment.
@@ -3547,8 +3559,15 @@ async function dispatch() {
           })
           .slice(0, 3)
           .map(id => `factory/${id}`)
-        const { skip, error } = await precheckSkip(rig, bead, b, runBranches, spawnGh)
-        if (error) errors.push({ id: bead.id, error })
+        // claude-factory-6as.9: skip the gh calls outright once this pass already proved gh broken;
+        // the first candidate's row in precheck.jsonl already covers the fail-open for the rest.
+        const { skip, error } = ghFailed
+          ? { skip: false, error: undefined }
+          : await precheckSkip(rig, bead, b, runBranches, spawnGh)
+        if (error) {
+          errors.push({ id: bead.id, error })
+          ghFailed = true
+        }
         if (skip) continue
         let run, def
         try {

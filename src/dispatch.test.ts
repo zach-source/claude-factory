@@ -198,17 +198,45 @@ function fakePrecheckBd(extra: Record<string, unknown> = {}) {
   chmodSync(join(pbin, 'bd'), 0o755)
 }
 
-/** fake gh: every call is logged; `$GH_FAIL` set makes it fail like a timeout or a rate limit; else it
- * answers `$GH_JSON` (a `gh pr list --json ...` shaped array, or `[]`) on stdout */
+/** fake gh: it logs every call. `$GH_FAIL` set makes every call fail, like a timeout or a rate
+ * limit. `$GH_FAIL_HEAD` set makes only a `--head` call fail (claude-factory-6as.9). Else it answers
+ * `$GH_JSON` (a `gh pr list --json ...` shaped array, or `[]`) on stdout. */
 function fakeGh() {
   const script = [
     '#!/bin/sh',
     `echo "gh $*" >> "${ghCallsLog}"`,
     'if [ -n "$GH_FAIL" ]; then echo "gh: rate limited" >&2; exit 1; fi',
+    'case "$*" in',
+    '  *--head*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi;;',
+    'esac',
     'printf \'%s\' "$GH_JSON"',
   ].join('\n')
   writeFileSync(join(pbin, 'gh'), script)
   chmodSync(join(pbin, 'gh'), 0o755)
+}
+
+/** fake bd: `ready` answers two beads, `acme-1` and `acme-2`, both unassigned and labeled `factory`
+ * (claude-factory-6as.9's 2-candidate pass). Otherwise the same as `fakePrecheckBd`. */
+function fakePrecheckBdTwo() {
+  mkdirSync(pbin, { recursive: true })
+  const beadsJson = JSON.stringify(
+    ['acme-1', 'acme-2'].map(id => ({ id, title: 'fix it', labels: ['factory'] })),
+  )
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${bdCallsLog}"`,
+    'case "$1" in',
+    `  ready) printf '%s' '${beadsJson}';;`,
+    "  children) printf '%s' '[]';;",
+    '  update)',
+    `    case " $* " in *" --add-label rejected "*) : > "${rejectedFlag}";; esac`,
+    '    exit 0;;',
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'bd'), script)
+  chmodSync(join(pbin, 'bd'), 0o755)
 }
 
 /** fake herdr: only `worktree create` answers, as `fakeHerdr` above does */
@@ -315,6 +343,34 @@ test('gh failing (or timing out) fails open: the run still starts, with one disp
   expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped/.test(r.error ?? ''))).toBe(true)
 })
 
+// claude-factory-6as.9: a hung or rate-limited gh costs up to 4 calls of 15s, for each candidate.
+// One candidate can already prove gh broken for this pass. Dispatch must not pay that cost again
+// for the rest. It must fail every other candidate open, with no further gh call.
+test('a gh failure for the first candidate fails every later candidate open with no further gh call (claude-factory-6as.9)', () => {
+  precheckReset()
+  fakePrecheckBdTwo()
+  const out = pfactory(['beads'], { GH_FAIL: '1' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(2) // both acme-1 and acme-2 start: gh broken fails every candidate open
+  const ghCalls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
+  expect(ghCalls).toHaveLength(1) // only the first candidate's own (failed) gh call; the second makes none
+})
+
+// claude-factory-6as.9: a `--head` call is a supplementary lookup, for a PR with no bead id in its
+// title. A failed `--head` call must not discard a hit `--search` already found for the same bead.
+test('a --search hit still rejects the bead even when a --head call for its run branch fails (claude-factory-6as.9)', () => {
+  precheckReset()
+  endedRun('ended-run', 'acme-1')
+  const out = pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-1 lands the thing'), GH_FAIL_HEAD: '1' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toEqual(['ended-run']) // no new run started for acme-1
+  const bdCalls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(bdCalls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(bdCalls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
+  const ghCalls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
+  expect(ghCalls.some(l => l.includes('--head'))).toBe(true) // the --head call ran, and failed
+})
+
 test('a person-requeued bead (rejected_by=dispatch metadata) starts, with 0 gh calls', () => {
   precheckReset({ metadata: { rejected_by: 'dispatch' } })
   const out = pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-1 lands the thing') })
@@ -382,6 +438,21 @@ test('a ready, unassigned bead a live run already holds gets one comment, and st
     .split('\n')
     .map(l => JSON.parse(l))
   expect(lines.filter((l: { kind: string }) => l.kind === 'live-run')).toHaveLength(1)
+})
+
+// claude-factory-6as.10: logPrecheck runs between bd's landed write and the comment that explains
+// it. A bad precheck.jsonl (here, a directory in its place, so the durable append throws EISDIR)
+// must cost `factory metrics` one row, never the bd comment.
+test('an unwritable precheck.jsonl still leaves the live-run comment (claude-factory-6as.10)', () => {
+  precheckReset()
+  liveRun('other-run', 'acme-1')
+  mkdirSync(join(phome, 'precheck.jsonl'))
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toEqual(['other-run'])
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
+  expect(calls.some(l => /^bd update\b/.test(l) && l.includes('dispatch_skip=other-run'))).toBe(true)
 })
 
 test('a second pass adds 0 new comments for a bead a live run already holds', () => {
