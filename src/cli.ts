@@ -1056,11 +1056,15 @@ const denyHook = (bun: string, file: string) => ({
 })
 
 /**
- * the part of `workerFlags` that holds in a VM: worker system prompt, no auto memory, a compaction backstop.
- * It also keeps the same tools; it skips the laptop's own settings and project-level mods.
- * Left out, as they are the laptop's: the user's hooks and env, its plugin dirs, its global `CLAUDE.md`.
- * So a VM worker gets no `asd-ste100` plugin and no STE env either; `claude-factory-fxu` tracks that gap.
- * `disableBundledSkills` keeps `Skill`'s bundled-skill listing off, since the VM has no skill worth it yet.
+ * The part of `workerFlags` that applies in a VM sets the worker system prompt. It turns off auto memory. It sets a compaction backstop.
+ * It keeps the same tools. It does not use the laptop's own settings or project-level mods.
+ *
+ * It leaves out the laptop's own items: the user's hooks, the user's env, the plugin dirs, the global `CLAUDE.md`.
+ * So a VM worker gets no `asd-ste100` plugin and no STE env. claude-factory-fxu tracks that gap.
+ * `disableBundledSkills` turns off the bundled-skill list of `Skill`. No skill in the VM earns that cost yet.
+ *
+ * It gets one hook. The hook is the same deny-rm-rf PreToolUse hook that a laptop worker gets (claude-factory-cr6).
+ * The VM image runs its own copy of `worker-hook.ts`, at `${ax.FACTORY_DIR}/src/worker-hook.ts`.
  */
 export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
   if (process.env.FACTORY_LEAN === '0') return []
@@ -1070,6 +1074,7 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
     disableBundledSkills: true,
+    hooks: { PreToolUse: [denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`)] },
   }
   return [
     ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
