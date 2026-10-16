@@ -33,6 +33,13 @@ on:
   push:
     branches: [main]
 
+# Two pushes to main close together would start two runs of this job at once. Both can read the
+# same version and race to make the same tag. A shared group queues the second run instead
+# (cancel-in-progress: false): a release in progress must finish, not get cancelled mid-tag.
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
