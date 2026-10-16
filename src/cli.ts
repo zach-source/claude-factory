@@ -778,10 +778,16 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
  * under this cap. This const guards the few spots that pasted a report's `.summary` or a mail's `.text` whole.
  */
 export const REPORT_MAX = 32_000
+// text.slice(0, max) can stop between the two UTF-16 code units of a surrogate pair (an emoji, say),
+// leaving a lone lead surrogate. Back off by one unit in that case, so the cut never splits a pair.
+const sliceWhole = (text: string, max: number) => {
+  const lead = text.charCodeAt(max - 1)
+  return text.slice(0, lead >= 0xd800 && lead <= 0xdbff ? max - 1 : max)
+}
 export const clipReport = (text: string) =>
   text.length <= REPORT_MAX
     ? text
-    : `${text.slice(0, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
+    : `${sliceWhole(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 /**

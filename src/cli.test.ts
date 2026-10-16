@@ -584,6 +584,15 @@ test('clipReport leaves a short report alone and caps a long one at REPORT_MAX p
   expect(big.startsWith('x'.repeat(REPORT_MAX))).toBe(true)
 })
 
+test('clipReport never splits a UTF-16 surrogate pair at the cut, even when the pair straddles REPORT_MAX (claude-factory-kcg.7)', () => {
+  // the emoji (a surrogate pair, 2 UTF-16 code units) sits right at the REPORT_MAX boundary
+  const text = 'x'.repeat(REPORT_MAX - 1) + '\u{1F600}' + 'y'.repeat(50)
+  const clipped = clipReport(text)
+  const body = clipped.slice(0, clipped.indexOf('\n[clipped:'))
+  const last = body.charCodeAt(body.length - 1)
+  expect(last < 0xd800 || last > 0xdbff).toBe(true) // never ends on an unpaired lead surrogate
+})
+
 test("brief() clips a 200_000-char inbox mail instead of pasting it whole (the oversized text that made a worker's turn die with ENAMETOOLONG; claude-factory-kcg.2)", () => {
   const run = {
     id: 'r1',
