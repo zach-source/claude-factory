@@ -201,6 +201,39 @@ test("a proposal becomes a 'human'-labeled bead; the argv log has no update and 
   expect(log.split(/\s+/)).not.toContain('-p')
 })
 
+test('plan set labels starved-epic and goal-no-beads human; epic-done-open and goal-no-plan stay unlabeled (claude-factory-dun.16, pins HUMAN_FINDING_KINDS)', () => {
+  reset()
+  writeFacts({
+    findings: [
+      { kind: 'goal-no-plan', rig: 'a', key: 'goal-no-plan:a:aaa', text: 'no ranked work to act on' },
+      { kind: 'starved-epic', rig: 'a', bead: 'fx-8', key: 'starved-epic:a:fx-8', text: 'fx-8 is starved' },
+      { kind: 'goal-no-beads', rig: 'a', key: 'goal-no-beads:a:bbb', text: 'no open leaf' },
+      { kind: 'epic-done-open', rig: 'a', bead: 'fx-9', key: 'epic-done-open:a:fx-9', text: 'fx-9 is done' },
+    ],
+  })
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath, { proposals: [] })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  const firstCreates = createCalls()
+  writeFileSync(join(bin, 'calls.log'), '') // the cap is 3/run: the 4th files on a second pass
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  const all = [...firstCreates, ...createCalls()]
+  expect(all).toHaveLength(4)
+  const lineFor = (titleWords: string) => all.find(l => l.includes(titleWords))
+  const starved = lineFor('starved epic, no progress')
+  const goalNoBeads = lineFor('has no open bead driving it')
+  const epicDoneOpen = lineFor('children are all closed')
+  const goalNoPlan = lineFor('has no ranked work to act on')
+  expect(starved).toBeDefined()
+  expect(goalNoBeads).toBeDefined()
+  expect(epicDoneOpen).toBeDefined()
+  expect(goalNoPlan).toBeDefined()
+  expect(starved).toContain('-l human')
+  expect(goalNoBeads).toContain('-l human')
+  expect(epicDoneOpen).not.toContain('-l human')
+  expect(goalNoPlan).not.toContain('-l human')
+})
+
 test('stale plan-facts.json refuses: exit 1, plan.json untouched', () => {
   reset()
   writeFacts()
