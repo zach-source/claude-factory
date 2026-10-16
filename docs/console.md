@@ -166,22 +166,34 @@ needs a look.
 ## Interview (key 6)
 
 The Interview tab lists questions that only you can answer. Its data comes from runs that
-are at a gate, parked, stuck, or waiting on a pane prompt, plus `factory decisions`
-(each rig's bd beads flagged for a person, and its unassigned ready beads, refreshed at
-most once every 60 seconds), plus any options the manager has proposed for a bare item.
+are at a gate, parked, stuck, or waiting on a pane prompt. It also comes from `factory decisions`:
+each rig's bd beads flagged for a person, and its unassigned ready beads. The `factory decisions`
+data refreshes at most one time in 60 seconds. The tab also shows the options that the manager
+proposed for a bare item.
+
+Each item has a short title: the run or bead id and the decision in plain words, for example
+"ama-gs2: will you merge PR #68 now?" Below the title is one line of context that shows what
+is true at this time. Below the context are 2-4 option buttons. Each button has a short label.
+Next to each button is one line on its effect.
+
+When the manager marks one option recommended, that button says so and stands out. The full
+raw report sits behind a `details` toggle, and the collapsed row never shows it. Two open
+items that ask the same decision fold into one row. This applies to the same bead, or to the
+same question in the same rig. Answering that row answers every run or bead it stands for.
 
 | Key or button | What it does |
 | --- | --- |
 | `6` | Switch to the Interview tab. |
-| `Interview me` | Sweep every rig for new gates, parked or stuck runs, blocked workers, and bd decisions, and ask the manager to propose options for the bare ones. |
+| `Interview me` | Sweep every rig for new gates, parked or stuck runs, blocked workers, and bd decisions, and ask the manager to propose a title, context and options for the items that still need them. |
 | `questions (n)` / `answered (n)` | Switch sub-tab. |
 | `open run` | Open the item's run on Board. |
 | A gate's outcome buttons | Decide the run's gate. Shows for a gate item. |
 | `open pane` | Jump to the run's pane. Shows for a worker waiting on a prompt. |
+| `details ▸` / `details ▾` | Show or hide the full raw report behind the short title and context. |
 | An answer input | Type an answer in your own words. Shows for a parked, stuck, bd-bead, or owner-only item. |
-| An option button | Pick one of the manager's proposed answers. The first option is primary. |
+| An option button | Pick one of the options. The recommended one, when there is one, stands out and says "(recommended)"; with no marked option, none is singled out. |
 | `send answer` | Send the typed answer. Shows once you have typed something. |
 | `abort run` | Abort the item's run. |
 
-Use Interview when you want one list of every open question across every rig, instead of
-checking Board, Mail, and Rigs in turn.
+Use Interview to see every open question across every rig in one list, instead of checking
+Board, Mail, and Rigs in turn.
