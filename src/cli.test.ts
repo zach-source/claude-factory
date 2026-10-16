@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import {
+  brief,
+  clipReport,
   CONFIG_SYNC,
   deadline,
   haltStep,
@@ -28,6 +30,7 @@ import {
   progressNow,
   progressSig,
   relaunch,
+  REPORT_MAX,
   reworkGoal,
   ruleLines,
   selfUpdateMail,
@@ -570,6 +573,66 @@ test('ruleLines carries the rig goal, when one is given, under its own section a
 
   expect(ruleLines({}, axGoal).join('\n')).not.toContain('## House rules')
   expect(ruleLines({})).toEqual([])
+})
+
+test('clipReport leaves a short report alone and caps a long one at REPORT_MAX plus a marker naming both sizes (claude-factory-kcg.2)', () => {
+  expect(clipReport('short')).toBe('short')
+  expect(clipReport('x'.repeat(REPORT_MAX))).toBe('x'.repeat(REPORT_MAX)) // at the limit: still untouched
+  const big = clipReport('x'.repeat(200_000))
+  expect(big.length).toBeLessThanOrEqual(REPORT_MAX + '\n[clipped: 32000 of 200000 chars]'.length)
+  expect(big).toContain(`[clipped: ${REPORT_MAX} of 200000 chars]`)
+  expect(big.startsWith('x'.repeat(REPORT_MAX))).toBe(true)
+})
+
+test('clipReport never splits a UTF-16 surrogate pair at the cut, even when the pair straddles REPORT_MAX (claude-factory-kcg.7)', () => {
+  // the emoji (a surrogate pair, 2 UTF-16 code units) sits right at the REPORT_MAX boundary
+  const text = 'x'.repeat(REPORT_MAX - 1) + '\u{1F600}' + 'y'.repeat(50)
+  const clipped = clipReport(text)
+  const body = clipped.slice(0, clipped.indexOf('\n[clipped:'))
+  const last = body.charCodeAt(body.length - 1)
+  expect(last < 0xd800 || last > 0xdbff).toBe(true) // never ends on an unpaired lead surrogate
+})
+
+test("brief() clips a 200_000-char inbox mail instead of pasting it whole (the oversized text that made a worker's turn die with ENAMETOOLONG; claude-factory-kcg.2)", () => {
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-kcg-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-kcg-test',
+    branch: 'b',
+  }
+  const def = {
+    name: 'f',
+    start: 'implement',
+    nodes: { implement: { prompt: 'do the thing', next: { ready: 'verify' } } },
+  }
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const text = brief(run, def, 'implement', c, [
+    { from: 'verify', text: 'x'.repeat(200_000), at: Date.now() },
+  ])
+  // well under the unclipped size (200_000 plus the brief's own framing): this repo's own memory notes
+  // add to that framing, so the bound is loose, not tied to today's exact byte count
+  expect(text.length).toBeLessThan(100_000)
+  expect(text).toContain('[clipped: 32000 of 200000 chars]')
+  expect(text).not.toContain('x'.repeat(40_000))
 })
 
 test('ruleLines names a rig’s person-only contexts under the Rig goal section (claude-factory-25z.3)', () => {

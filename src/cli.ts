@@ -770,6 +770,24 @@ const post = (id: string, e: Input) =>
 
 const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.delayMin} min`)
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+/**
+ * the cap on one prior report or mail placed whole into a station's brief or a delivered mid-run mail. A
+ * report that pastes a diff or a log can run past 128 KiB. That broke two things: a station's own argv
+ * (`claude -p <prompt>`) and a VM's base64'd `factory worker prompt` argv. Both sit under an OS or kernel
+ * limit, Linux's MAX_ARG_STRLEN (131072 bytes) (claude-factory-kcg). A 1500-char journal line already fits
+ * under this cap. This const guards the few spots that pasted a report's `.summary` or a mail's `.text` whole.
+ */
+export const REPORT_MAX = 32_000
+// text.slice(0, max) can stop between the two UTF-16 code units of a surrogate pair (an emoji, say),
+// leaving a lone lead surrogate. Back off by one unit in that case, so the cut never splits a pair.
+const sliceWhole = (text: string, max: number) => {
+  const lead = text.charCodeAt(max - 1)
+  return text.slice(0, lead >= 0xd800 && lead <= 0xdbff ? max - 1 : max)
+}
+export const clipReport = (text: string) =>
+  text.length <= REPORT_MAX
+    ? text
+    : `${sliceWhole(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 /**
@@ -796,7 +814,7 @@ export function ruleLines(def: Pick<Factory, 'rules'>, rigGoal?: string, personO
   ]
 }
 
-function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
+export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
   const parked = isParked(c, node) ? c.log.at(-1) : undefined
@@ -834,20 +852,20 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
             ),
         ]
       : []),
-    ...(lastFail ? ['', '## The previous attempt failed', lastFail.summary] : []),
+    ...(lastFail ? ['', '## The previous attempt failed', clipReport(lastFail.summary)] : []),
     ...(handedOff
       ? [
           '',
           '## You take over from a worker that handed off',
           'Its context grew too long, so it stopped and left you these notes. Its commits are on the branch; check git status for anything it left uncommitted, and carry on from where it stopped.',
-          handedOff.summary,
+          clipReport(handedOff.summary),
         ]
       : []),
     ...(parked
       ? [
           '',
           '## The previous worker was blocked',
-          parked.summary,
+          clipReport(parked.summary),
           'Check whether that still holds before anything else; if it does, report blocked again.',
         ]
       : []),
@@ -862,7 +880,7 @@ function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
     ...(committed
       ? ['', '## Already committed on this branch (build on it, do not redo it)', committed]
       : []),
-    ...(inbox.length ? ['', '## Inbox', ...inbox.map(m => `- from ${m.from}: ${m.text}`)] : []),
+    ...(inbox.length ? ['', '## Inbox', ...inbox.map(m => `- from ${m.from}: ${clipReport(m.text)}`)] : []),
     '',
     '## Reporting (required)',
     'When you are finished, report exactly once and then stop:',
@@ -1830,7 +1848,12 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const text = `[factory] This station's ${timeoutMin} ${TIME_UP}. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail
   } else if (inbox.length && status !== 'blocked') {
-    if (runner.deliver(c.pane, inbox.map(m => `[factory mail from ${m.from}] ${m.text}`).join('\n\n')))
+    if (
+      runner.deliver(
+        c.pane,
+        inbox.map(m => `[factory mail from ${m.from}] ${clipReport(m.text)}`).join('\n\n'),
+      )
+    )
       send({ type: 'READ', box: node, seen: c.mail[node]!.length })
   } else if (isAsking && status === 'idle' && runner.suspend) {
     runner.suspend(c.pane)
