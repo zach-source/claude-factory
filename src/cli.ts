@@ -2277,6 +2277,28 @@ function closedBeads() {
 }
 
 /**
+ * one compact commit's message. Both the dream's compact step and `memory compact` use it.
+ * It reads "N merged, M archived, F1 files -> F2 files".
+ * It adds ", H held by the archive cap" right after the archived count.
+ * It adds that clause only when the cap held notes back this pass.
+ * It keeps the trailing skipped-topics clause unchanged.
+ */
+function compactMessage(
+  tiers: { merged: number; archived: number; held: number; skipped: { topic: string; reason: string }[] },
+  filesBefore: number,
+  filesAfter: number,
+): string {
+  return (
+    `compact: ${tiers.merged} merged, ${tiers.archived} archived` +
+    (tiers.held ? `, ${tiers.held} held by the archive cap` : '') +
+    `, ${filesBefore} files -> ${filesAfter} files` +
+    (tiers.skipped.length
+      ? `, ${tiers.skipped.length} topic(s) skipped: ${tiers.skipped.map(s => `${s.topic} (${s.reason})`).join('; ')}`
+      : '')
+  )
+}
+
+/**
  * grooms the memory with a headless worker that can only edit inside it: files the inbox under topics,
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
@@ -2353,7 +2375,12 @@ async function dream() {
     memory.compact(MEMORY, renamed)
     if (process.env.FACTORY_MEMORY_TIERS !== '0') {
       const filesBefore = memory.mdFileCount(MEMORY)
-      const tiers = memory.applyTiers(MEMORY, { now: start })
+      // the plan reaches dream.log before applyTiers writes or removes anything (claude-factory-503.2):
+      // appended, since line 2327 above already overwrote it with this dream's own exit text
+      const tiers = memory.applyTiers(MEMORY, {
+        now: start,
+        onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
+      })
       git(MEMORY, 'add', '-A')
       // its own commit, dated with the dream it followed, even when it merged and archived nothing
       git(
@@ -2363,10 +2390,7 @@ async function dream() {
         '--allow-empty',
         `--date=@${Math.floor(start / 1000)}`,
         '-m',
-        `compact: ${tiers.merged} merged, ${tiers.archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files` +
-          (tiers.skipped.length
-            ? `, ${tiers.skipped.length} topic(s) skipped: ${tiers.skipped.map(s => `${s.topic} (${s.reason})`).join('; ')}`
-            : ''),
+        compactMessage(tiers, filesBefore, memory.mdFileCount(MEMORY)),
       )
       memory.compact(MEMORY, tiers.renamed)
     }
@@ -4590,9 +4614,12 @@ const usage = `factory — herdr software factories on xstate
   memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping
   memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
-  memory compact [--dry-run]        merge old, used short notes into LONG.md and archive stale ones now;
-                                     --dry-run only prints the plan (a dream runs this itself, after it files
-                                     the inbox, unless FACTORY_MEMORY_TIERS=0)
+  memory compact [--dry-run]        merge old, used short notes into LONG.md; archive one that was never
+                                     shown and is 14+ days old, or never helped and unused 30+ days (both
+                                     wait for 14 days of usage history first); FACTORY_MEMORY_ARCHIVE_CAP
+                                     caps archives per pass (default 25), oldest first, the rest held;
+                                     --dry-run only prints the plan (a dream runs this itself, after it
+                                     files the inbox, unless FACTORY_MEMORY_TIERS=0)
   memory eval                       search quality (recall@5, MRR) over the fixed query set in
                                      <memory>/.eval.jsonl, and which queries missed
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
@@ -4791,13 +4818,14 @@ if (import.meta.main && !outboxCmd)
           console.log(`noted: ${paths.join(', ')}`)
         } else if (sub === 'compact') {
           const dryRun = words.includes('--dry-run')
-          const describe = (d: memory.Decision) => ('path' in d ? d.path : `${d.a} ~ ${d.b}`)
           if (dryRun) {
-            const { decisions, skipped } = memory.applyTiers(MEMORY, { dryRun: true })
+            const { decisions, skipped, archiveCap, historyDays } = memory.applyTiers(MEMORY, {
+              dryRun: true,
+            })
             console.log(
               [
                 decisions.length
-                  ? decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`).join('\n')
+                  ? memory.planLines(decisions, { archiveCap, historyDays }).join('\n')
                   : 'nothing to merge or archive',
                 ...skipped.map(s => `skip  ${s.topic}: ${s.reason}`),
               ].join('\n'),
@@ -4815,15 +4843,14 @@ if (import.meta.main && !outboxCmd)
               mkdirSync(MEMORY, { recursive: true })
               if (!existsSync(join(MEMORY, '.git'))) git(MEMORY, 'init', '-q')
               const filesBefore = memory.mdFileCount(MEMORY)
-              const { renamed, merged, archived, skipped } = memory.applyTiers(MEMORY)
+              // the plan reaches dream.log before applyTiers writes or removes anything (claude-factory-503.2)
+              const tiers = memory.applyTiers(MEMORY, {
+                onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
+              })
               git(MEMORY, 'add', '-A')
-              const message =
-                `compact: ${merged} merged, ${archived} archived, ${filesBefore} files -> ${memory.mdFileCount(MEMORY)} files` +
-                (skipped.length
-                  ? `, ${skipped.length} topic(s) skipped: ${skipped.map(s => `${s.topic} (${s.reason})`).join('; ')}`
-                  : '')
+              const message = compactMessage(tiers, filesBefore, memory.mdFileCount(MEMORY))
               git(MEMORY, 'commit', '-q', '--allow-empty', '-m', message)
-              memory.compact(MEMORY, renamed)
+              memory.compact(MEMORY, tiers.renamed)
               console.log(message)
             } finally {
               release()
