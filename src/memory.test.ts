@@ -28,6 +28,7 @@ import {
   outline,
   parse,
   parseLong,
+  patrolActivity,
   pendingSkills,
   rank,
   rejectSkill,
@@ -439,6 +440,32 @@ test("the manager's activity: what it was asked and ran since, and every skill's
     '- 2026-10-11 12:08 Skill: triage-stuck',
   ])
   expect(used.get('triage-stuck')).toEqual({ n: 2, last: Date.parse(at(8)) })
+})
+
+test("the dream's manager activity includes patrol-log lines, newest since kept, bad JSON skipped", () => {
+  const at = (m: number) => Date.parse(`2026-10-11T12:${String(m).padStart(2, '0')}:00.000Z`)
+  const lines = [
+    JSON.stringify({
+      at: at(1),
+      reason: 'answer',
+      durationMs: 1000,
+      actions: ['factory nudge r-1'],
+      report: 'old patrol, before since',
+    }),
+    'not json',
+    JSON.stringify({
+      at: at(5),
+      reason: 'answer',
+      durationMs: 2000,
+      actions: ['factory nudge r-2', 'factory status r-3'],
+      report: 'two runs nudged',
+    }),
+  ]
+  expect(patrolActivity(lines, at(3))).toEqual([
+    '- 2026-10-11 12:05 patrol: factory nudge r-2',
+    '- 2026-10-11 12:05 patrol: factory status r-3',
+    '- 2026-10-11 12:05 patrol report: two runs nudged',
+  ])
 })
 
 test('a skill the dream proposes waits for the manager, who installs or rejects it', () => {

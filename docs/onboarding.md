@@ -112,15 +112,20 @@ The manager is a lean Claude session. It has Bash and file tools. It has no MCP 
    To bring back a manager session, add `--resume <session>`.
 4. In the manager session, type `/factory`. The console opens beside the chat.
 
-With `autopilot` on (the default), the manager wakes on a `[factory] patrol`. A patrol starts when:
+If `autopilot` is on (the default), the hidden `patrol` subagent wakes on a `[factory] patrol`
+prompt. The manager's main chat never receives this prompt. You can type in the main chat during
+a patrol. A patrol starts when:
 
-- the manager has mail (a question, a stuck station, a gate, a finished run);
+- the factory has mail for the manager (a question, a stuck station, a gate, a finished run);
 - a worker waits on a prompt;
-- 10 minutes pass while workers run, or while a rig with a goal has room, and the board or the
-  rig goals changed since the last patrol (time in station does not count as a change).
+- 10 minutes pass while workers run, or while a rig with a goal has room.
+  In addition, the board or the rig goals changed since the last patrol. Time in station does
+  not count as a change.
 
-An unchanged board still goes out in full once an hour, so a manager that compacted it away
-from its context gets it back.
+A new patrol has no memory of the last one. So its prompt always carries the full board, the
+rig goals, and the actions of the last few patrols. The factory reads those actions from
+`<home>/patrol-log.jsonl`. `/factory patrols` lists the last 10 patrols in that file. The pane
+header and band show how long ago the last patrol ran.
 
 Between patrols, the runtime ticks every 5 seconds. A tick starts and resumes workers. It nudges an idle worker two times, and then retries with backoff. Run only one manager session for each factory.
 

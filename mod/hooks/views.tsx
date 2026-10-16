@@ -12,6 +12,7 @@ import type {
   FactoryDraft,
   FactoryEdge,
   FactoryMail,
+  FactoryPatrolLogEntry,
   FactoryRun,
   FactoryView,
 } from '../types'
@@ -28,6 +29,7 @@ import {
   mailKey,
   mailTabs,
   openInterviews,
+  patrolAgo,
   prName,
   prState,
   progress,
@@ -192,10 +194,17 @@ function gate(p: Base, r: FactoryRun, draft: FactoryDraft, isFocused = false) {
   )
 }
 
-export function header(p: Base, board: FactoryBoard, history: number[], view: FactoryView) {
+export function header(
+  p: Base,
+  board: FactoryBoard,
+  history: number[],
+  view: FactoryView,
+  lastPatrol: FactoryPatrolLogEntry | null,
+) {
   const { Box, Text, Button } = p.ui
   const live = board.runs.filter(isLive)
   const { working, gates, stuck, waiting } = counts(board.runs)
+  const agoText = patrolAgo(p.now, lastPatrol)
   const stat = (n: number, color: string, label: string) =>
     n > 0 && (
       <Text>
@@ -217,6 +226,7 @@ export function header(p: Base, board: FactoryBoard, history: number[], view: Fa
         {stat(stuck, 'red', 'stuck')}
         {stat(waiting, 'blue', 'waiting')}
         {live.length === 0 && !board.halt && <Text dimColor>idle</Text>}
+        {agoText && <Text dimColor>{agoText}</Text>}
         {board.staleSince !== undefined && (
           <Text bold color="red">
             ! stale since {clockOf(board.staleSince)}
@@ -1209,11 +1219,17 @@ export function footer(p: Base) {
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */
-export function band(p: Base, board: FactoryBoard, draft: FactoryDraft) {
+export function band(
+  p: Base,
+  board: FactoryBoard,
+  draft: FactoryDraft,
+  lastPatrol: FactoryPatrolLogEntry | null,
+) {
   const { Box, Text, Button } = p.ui
   const live = board.runs.filter(isLive)
   const first = live.find(r => r.gate)
   const n = counts(board.runs)
+  const agoText = patrolAgo(p.now, lastPatrol)
   return (
     <Box key="band" flexDirection="column">
       <Box gap={1}>
@@ -1224,6 +1240,7 @@ export function band(p: Base, board: FactoryBoard, draft: FactoryDraft) {
         {n.gates > 0 && <Text color="yellow">· {String(n.gates)} awaiting you</Text>}
         {n.stuck > 0 && <Text color="red">· {String(n.stuck)} stuck</Text>}
         {n.waiting > 0 && <Text color="blue">· {String(n.waiting)} waiting</Text>}
+        {agoText && <Text dimColor>· {agoText}</Text>}
         <Text dimColor>·</Text>
         <Button key="band-open" label="open console" dimColor onPress={() => p.act.show('board')} />
       </Box>
