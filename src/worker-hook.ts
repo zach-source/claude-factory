@@ -24,6 +24,10 @@
  * GitHub's admin bypass lets a worker merge, even under a ruleset that needs a review.
  * Before this guard, two pull requests merged before their review ran (ax-aw1).
  *
+ * It also denies `gh pr ready` outside the release station (claude-factory-zl5.2).
+ * Implement opens a pull request as a draft. Only release marks it ready for review, once verify,
+ * review and security pass. `gh pr ready --undo` (back to draft) is always allowed.
+ *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
  * claude-factory-9wu rejected another design: a hook that approves `rm -rf`, which is a safety regression.

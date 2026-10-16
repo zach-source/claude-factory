@@ -1,6 +1,13 @@
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
-import { denyReason, LIVE_REASON, LONG_COMMAND_REASON, MERGE_REASON, REASON } from './worker-hook'
+import {
+  denyReason,
+  LIVE_REASON,
+  LONG_COMMAND_REASON,
+  MERGE_REASON,
+  READY_REASON,
+  REASON,
+} from './worker-hook'
 
 const DENY = [
   'rm -rf foo',
@@ -416,3 +423,51 @@ const STACKED_EVAL_MERGE = Array(24).fill('eval').join(' ')
 test('denyReason denies a merge command behind a stack of eval words, fast', () => {
   expect(denyReason(`${STACKED_EVAL_MERGE}; gh pr merge 5`)).toBe(MERGE_REASON)
 }, 500)
+
+// claude-factory-zl5.2: only the release station marks a pull request ready for review. implement,
+// review, verify and no station at all (undefined) all deny it the same way.
+const NON_RELEASE_STATIONS = [undefined, 'implement', 'review', 'verify']
+const READY_COMMANDS = [
+  'gh pr ready 5',
+  'gh pr ready',
+  'gh api graphql -f query=\'mutation { markPullRequestReadyForReview(input: {id: "x"}) { clientMutationId } }\'',
+  'sudo gh pr ready 5',
+  "bash -lc 'gh pr ready 5'",
+]
+
+for (const station of NON_RELEASE_STATIONS) {
+  test.each(READY_COMMANDS)(`denyReason denies %j at station ${station}`, cmd => {
+    expect(denyReason(cmd, undefined, undefined, { station })).toBe(READY_REASON)
+  })
+}
+
+test.each(READY_COMMANDS)('denyReason allows %j at the release station', cmd => {
+  expect(denyReason(cmd, undefined, undefined, { station: 'release' })).toBeUndefined()
+})
+
+// claude-factory-zl5.2: gh pr ready --undo (back to draft) is always allowed, at every station.
+const UNDO_COMMANDS = ['gh pr ready --undo', 'gh pr ready 5 --undo', 'gh pr ready --undo 5']
+for (const station of [...NON_RELEASE_STATIONS, 'release']) {
+  test.each(UNDO_COMMANDS)(`denyReason allows %j at station ${station}`, cmd => {
+    expect(denyReason(cmd, undefined, undefined, { station })).toBeUndefined()
+  })
+}
+
+// claude-factory-zl5.2: main() reads the running station from FACTORY_FROM and carries it into the
+// gate, so `gh pr ready` denies with no FACTORY_FROM set and allows at the release station.
+test('run as `bun src/worker-hook.ts`, gh pr ready denies with FACTORY_FROM unset and allows at release', async () => {
+  const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'gh pr ready 5' } })
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.FACTORY_FROM
+  const denied = await run(input, env)
+  expect(denied.code).toBe(0)
+  expect(JSON.parse(denied.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: READY_REASON,
+    },
+  })
+  const allowed = await run(input, { ...env, FACTORY_FROM: 'release' })
+  expect(allowed).toEqual({ out: '', code: 0 })
+}, 10_000)
