@@ -59,6 +59,7 @@ import * as devenv from './devenv'
 import * as memory from './memory'
 import * as ax from './ax'
 import type { Egress } from './ax'
+import { parseLinearTeams, parseSync, readLinearConfig, redact, syncArgs, syncEnv, type LinearConfig } from './linear'
 import * as worker from './worker'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
@@ -2616,8 +2617,30 @@ export type Rig = {
   beadsRemote?: { name: string; url: string; user: string }
   /** the factory's params, set for this rig (`--param name=value`) */
   params?: Record<string, string>
+  /** opts this rig into the Linear pull loop (claude-factory-b6c): the Linear team ids it pulls from */
+  linear?: string[]
 }
 const rigsFile = () => join(HOME, 'rigs.json')
+/** `$FACTORY_HOME/linear-sync.json`'s per-rig state, keyed by rig name, after each Linear pull attempt */
+export type LinearSyncState = {
+  at: number
+  fresh: boolean
+  lastPull?: string
+  pulled?: number
+  created?: number
+  updated?: number
+  stripped?: number
+  error?: string
+}
+export const linearSyncFile = () => join(HOME, 'linear-sync.json')
+/** `factory rig list`'s one line of a rig's last Linear pull: its age, what it pulled, or its error */
+function linearSyncLine(name: string): string {
+  if (!existsSync(linearSyncFile())) return ''
+  const s = readJson<Record<string, LinearSyncState>>(linearSyncFile())[name]
+  if (!s) return ''
+  const age = `${Math.round((Date.now() - s.at) / 60_000)}m ago`
+  return s.error ? ` (error ${age}: ${s.error})` : ` (${s.fresh ? 'fresh' : `pulled ${s.pulled ?? 0}`}, ${age})`
+}
 const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
 const expand = (path: string) => resolve(path.replace(/^~(?=\/|$)/, homedir()))
@@ -2949,6 +2972,7 @@ async function defineRig(
     mcp,
     params,
     egress,
+    linear,
   }: {
     max?: string
     sweeps?: string
@@ -2958,6 +2982,7 @@ async function defineRig(
     mcp?: string
     params?: string[]
     egress?: string[]
+    linear?: string
   },
 ) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
@@ -3022,6 +3047,13 @@ async function defineRig(
       fail(
         `no sweep ${unknown.join(', ')} in ${def.name}: ${SWEEPS.filter(s => def.nodes[s]).join(', ') || 'none'}`,
       )
+  }
+  if (linear !== undefined) {
+    try {
+      rig.linear = parseLinearTeams(linear)
+    } catch (err) {
+      fail((err as Error).message)
+    }
   }
   return rig
 }
@@ -3371,12 +3403,15 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id]] [--goal text...] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
                                      the MCP servers in a Claude-shaped mcpServers file; --egress (repeatable, runner ax) lets the VM reach
-                                     those hosts, injecting the agent-vault credential KEY for them
+                                     those hosts, injecting the agent-vault credential KEY for them; --linear opts the rig into the
+                                     Linear pull loop, for these Linear team ids
+  linear [rig...] [--force]         pulls each opted-in rig's Linear issues into its beads now, instead of waiting for
+                                     the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
   show <run> | backlog | prs         JSON for the manager's views
@@ -3889,12 +3924,13 @@ if (import.meta.main && !outboxCmd)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
-        const [max, sweeps, runner, agent, mcp] = [
+        const [max, sweeps, runner, agent, mcp, linear] = [
           opt('--max'),
           opt('--sweeps'),
           opt('--runner'),
           opt('--agent'),
           opt('--mcp'),
+          opt('--linear'),
         ]
         const params: string[] = []
         while (args.includes('--param')) params.push(opt('--param') ?? '')
@@ -3904,7 +3940,7 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id]] [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
@@ -3915,6 +3951,7 @@ if (import.meta.main && !outboxCmd)
             mcp,
             params,
             egress,
+            linear,
           })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
@@ -3954,6 +3991,7 @@ if (import.meta.main && !outboxCmd)
             if (r.agent) console.log(`  agent: ${r.agent}`)
             if (r.mcp) console.log(`  mcp: ${r.mcp}`)
             for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
+            if (r.linear) console.log(`  linear: ${r.linear.join(',')}${linearSyncLine(r.name)}`)
           }
         } else fail(`unknown rig command "${sub}": add, rm or list`)
         break
