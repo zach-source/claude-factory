@@ -26,14 +26,15 @@ minor release may change the factory format, the CLI or the run state.
     `PUT`/`POST`/`DELETE .../contents/<path>`, `createCommitOnBranch`, `updateRef(s)`,
     `deleteRef`, or `git -c alias.<x>=push`. A protected branch is `main`, `master`, a rig's
     own `protectedBranches` list, or its `origin/HEAD` target. The hook reads `origin/HEAD`
-    live from the worktree, and denies the push when that read fails.
+    and the current branch live from the worktree, and denies the push when either read
+    fails: a timeout, a detached `HEAD`, or no `origin` remote.
   - Added: `factory rig add <rig> <repo> --protected-branch <name>` (repeat the flag for
     more than one branch). Use it for a rig whose default branch is not `main` or `master`,
     for example `factory rig add ax ~/repos/ax --protected-branch acme-deploy`. A rig with
     the list gets its own `worker-settings-<rig>.json` file, the same pattern the
     `--person-only-context` flag already uses.
-  - `rollback` keeps its existing, narrower right to push straight to the default branch.
-    No other station gets one.
+  - No station, `rollback` included, pushes straight to the default branch any more.
+    `rollback` now opens a pull request that reverts the merge instead.
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
