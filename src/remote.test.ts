@@ -862,6 +862,21 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: 300_000,
     disableBundledSkills: true, // mv9: Skill alone would add ~2.2k tokens/turn of bundled-skill listings
+    // claude-factory-cr6: the same deny-rm-rf PreToolUse hook a laptop worker gets, run from the VM image
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: 'Bash',
+          hooks: [
+            {
+              type: 'command',
+              command: "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'",
+              timeout: 10,
+            },
+          ],
+        },
+      ],
+    },
   })
   expect(flags.at(-1)).toBe('/opt/factory/src/worker-system.md')
 })
