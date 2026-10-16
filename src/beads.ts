@@ -20,6 +20,10 @@ export type Bead = {
   metadata?: Record<string, unknown>
   /** `bd blocked` only: the beads whose open work holds this one back */
   blocked_by?: string[]
+  /** ISO timestamps `bd show`/`bd list --json` carry; plan.ts's findings read these for progress */
+  created_at?: string
+  started_at?: string
+  closed_at?: string
   /** `bd linear pull` writes this to the issue's Linear URL; a person-made bead never carries one */
   external_ref?: string
 }
