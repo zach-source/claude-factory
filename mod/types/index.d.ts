@@ -75,6 +75,19 @@ export type FactoryRig = {
   maxRuns?: number
   sweeps?: string[]
   goal?: string
+  /** this rig's Linear routing (claude-factory-b6c, claude-factory-b6c.18); absent when the rig has no Linear pull */
+  linear?: { team: string[]; projects?: string[]; labels?: string[] }
+  /** this rig's last Linear pull, added by `factory tick` from `linear-sync.json` */
+  linearSync?: {
+    at: number
+    pulled?: number
+    created?: number
+    updated?: number
+    stripped?: number
+    /** issues this rig's team(s) listed that no opted-in rig claimed; never pulled */
+    unrouted?: number
+    error?: string
+  }
 }
 
 // what `factory backlog` prints

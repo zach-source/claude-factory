@@ -120,6 +120,175 @@ Workers on the [AX runner](remote-runner.md#beads-in-the-vm) run in VMs with a c
 
 Today a factory assumes that every `factory/...` claim and branch on a rig is its own, and it claims beads on its local store before it syncs. Two factories on one rig can both start the same bead, and can both act on the same pull request labels. Give each rig to one factory until [spec 002](../specs/002-multi-factory-beads/plan.md) lands. A person can still use beads on another machine at the same time: the factory never starts a bead that someone holds.
 
+## Linear
+
+A rig can turn on a Linear pull loop. The loop copies Linear issues from a team into the
+rig's beads. The loop never pushes changes back to Linear.
+
+`bd` has no project or label filter of its own. A plain `bd linear sync` pull copies every
+issue of a team into every rig that pulls from it.
+
+So the loop does its own filtering, in 3 steps:
+
+1. It lists each team's issues itself, with a read-only call to the Linear API.
+2. It routes each issue to at most one opted-in rig (see "Route issues to a rig" below).
+3. For each rig, it asks `bd` to pull only that rig's routed issues: `bd linear pull
+   <issue-identifier...>`, for example `bd linear pull STI-123`. `bd` checks a pull ref
+   against the issue's own identifier. It never checks a URL.
+
+An issue that matches no rig never goes to any rig. The loop counts it as "unrouted".
+
+### Turn it on
+
+1. Find the Linear team's id. The id is a UUID.
+   If a rig already syncs with Linear by hand, run `bd config get linear.team_id` to get the id.
+2. Give the factory a secret broker (claude-factory-b6c.17): a REST service with a `/v1/vaults`
+   API, behind Cloudflare Access. Do this once per machine. After this setup, the loop reads
+   the Linear API key on demand, with no approval step at each sync.
+
+   The factory ships no default host or vault. Both name private infrastructure. This doc does
+   not name them either. Set both yourself, per machine, in the factory's own environment:
+
+   ```sh
+   export OP_CONNECT_HOST="https://your-connect-server"      # the broker's own URL
+   export OP_CONNECT_VAULT="your-vault-name"                 # the vault that holds the Linear key
+   ```
+
+   Next, store the broker's 3 header values in the macOS Keychain. Do this once, with one
+   interactive approval. Use service `claude-factory`:
+
+   ```sh
+   for a in "op-connect-token:op://<vault>/<item>/credential" \
+            "cf-access-client-id:op://<vault>/<item>/client_id" \
+            "cf-access-client-secret:op://<vault>/<item>/client_secret"; do
+     security add-generic-password -U -s claude-factory -a "${a%%:*}" -w "$(op read "${a#*:}")"
+   done
+   ```
+
+   Replace `<vault>` and `<item>` above with the vault and item that hold the broker's own
+   token and its Cloudflare Access client id and secret. This is a different vault and item
+   than the one `OP_CONNECT_VAULT` names: that one holds the Linear key itself.
+
+   This command stores 3 values in the Keychain: accounts `op-connect-token`,
+   `cf-access-client-id`, and `cf-access-client-secret`. The loop reads them from there on
+   every pull. It never asks for an interactive `op` or Touch ID approval again.
+
+   On a machine with no Keychain (for example CI), set the same 3 values as environment
+   variables instead: `OP_CONNECT_TOKEN`, `CF_ACCESS_CLIENT_ID`, and `CF_ACCESS_CLIENT_SECRET`.
+   The loop checks the environment first.
+
+   The loop fetches the Linear API key itself from the broker named by `OP_CONNECT_HOST`. It
+   reads the vault named by `OP_CONNECT_VAULT`. In that vault, it reads item
+   `LinearBotsApiKey`, field `credential`.
+
+   The loop holds the key in memory only, for one pull. It caches only the vault id and the
+   item id. It never caches the key. It never writes the key to disk.
+
+   A rig's pull can fail two ways: the environment lacks `OP_CONNECT_HOST` or
+   `OP_CONNECT_VAULT`, or neither the environment nor the Keychain has all 3 header values.
+   Either way, the error message names this setup step. The loop never falls back to an
+   interactive `op` call.
+
+3. Add the team to the rig:
+
+   ```sh
+   factory rig add app ~/repos/my-app --linear 04114abf-ddb7-4a6f-bb47-814fd2c44373
+   ```
+
+   The `--linear` flag can have one team id, or several team ids separated by commas.
+
+   Use `--linear-projects` or `--linear-labels` to name the exact Linear project names, or
+   label names, that route an issue to this rig. See "Route issues to a rig" below. Each flag
+   takes one name, or several names separated by commas. Both flags need `--linear` too.
+
+   `rig add` with no `--linear` flag removes the field and turns the loop off for that rig.
+
+### Route issues to a rig
+
+Two or more rigs can share one Linear team. The loop checks two rules in this order.
+Each issue of that team goes to at most one rig:
+
+1. **Bracket prefix.** Check a project name that starts with `[<rig-name>]`. Route the issue
+   to the rig with that exact name. This rule needs no setup. It works from the rig's name
+   alone.
+
+   For example, route a project named `[app] Billing work` to the rig named `app`.
+
+   This rule is final. A bracket that names no opted-in rig routes to no rig. The issue never
+   goes to rule 2, even when some rig's own `projects` or `labels` list would otherwise match.
+2. **Configured project or label.** Check a project name, or a label name, against the
+   `--linear-projects` or `--linear-labels` list of each rig. Route the issue to the first rig
+   in add order whose list names a match. This rule runs only for a project name with no
+   `[...]` prefix at all.
+
+Route an issue that matches neither rule to no rig. The loop never pulls that issue.
+Count the issue instead in the "unrouted" total for that pull (see "Checking it" below).
+
+### What the loop does
+
+The factory does these 3 steps every 20 minutes for each rig with the loop on:
+
+1. Fetch a fresh key from the secret broker. List the issues of the rig's team from the Linear
+   API with that key. This call is read-only. It never changes a Linear issue.
+
+   Find the rig's last good pull. Move the cutoff back 5 minutes from that time.
+   Keep only the routed issues of this rig that Linear's own `updatedAt` marks as changed
+   since the cutoff.
+
+   The 5-minute buffer covers clock drift. The factory's own clock and Linear's clock can
+   differ. Without the buffer, the cutoff can skip an issue for good. Linear can mark that
+   issue as updated shortly before the last good pull.
+
+   Exception: `--force`, or the first pass of a rig, skips the cutoff. Each reads every
+   routed issue.
+
+   The listing stops after 50 pages (5,000 issues). When a team has more, `factory rig list` and
+   the console show `list truncated at the 50-page cap`. Treat the unrouted count and the
+   incremental cutoff as undercounts until a person narrows that team's scope.
+2. Route each issue to a rig, by the rules above.
+3. Run `bd linear pull <issue-identifier...> --json` in the rig's repo. Name only the
+   issues that the routing step found for this rig, and only those that changed since its last
+   good pull. Do not call `bd` at all for a rig with no issues to pull in this pass.
+
+The factory passes the key to `bd` only through the environment, as `LINEAR_API_KEY`. The
+factory also passes the rig's own team id(s) through the environment, as `LINEAR_TEAM_IDS`.
+
+`bd linear pull` needs a configured team even to pull named refs. This method stops a stale
+team id, or another rig's, from reaching `bd` by accident. The factory never puts the key or
+the team ids on the command line, on disk, or in a bead.
+
+`bd` counts a ref it could not find, or a ref whose fetch failed, in its own pull stats. A
+pull that reports either count is a factory-side error, even with exit code 0. A silent
+"pulled 0" would hide a routing or auth bug that imports nothing.
+
+Each fetch to the secret broker or to the Linear API has a 30-second time limit. A broker
+or Linear endpoint that accepts a connection and never answers cannot stall the loop past
+that limit.
+
+To run the loop now, run `factory linear [rig...] --force`. With no rig names, the command
+runs for every rig with the loop on. With rig names, it runs only for those rigs. `--force`
+also reads every routed issue again, with no incremental cutoff.
+
+A pull adds Linear labels to the beads it touches. A Linear label named `factory` can start a run by itself. To prevent this, the loop removes the `factory` label after each pull.
+
+The loop checks every bead that now carries the `factory` label for the first time. This can be a new bead, or an old bead the pull updated. If a bead already had the label before the pull, it keeps the label.
+
+The loop also checks for this label after a pull that errors or times out. The pull can label a bead before it fails.
+
+Sometimes the factory cannot confirm that it removed a label. This can happen when `bd label remove` fails, or when the check after it fails. The factory tries that bead first on the next pass, before any bead the new pass finds. The factory retries that check on every pass, not only every 20 minutes. It does not start a run in that rig until the retry confirms the strip. During this time, a person's own `factory` label on another bead in that rig may also get removed by the retry.
+
+A person's queue, not Linear's label, decides what the factory works on.
+
+### Checking it
+
+`factory rig list` shows the last pull for each rig with the loop on. The output shows the age of the pull, and either what it pulled and its unrouted count, or the error.
+
+The console's [Rigs tab](console.md#rigs-key-4) shows the same line.
+
+If a rig's pull fails, the factory mails the manager once for that error. If a later pull succeeds, it clears the error. A new error after that mails the manager again.
+
+`$FACTORY_HOME/linear-sync.json` keeps each rig's last result. The factory cuts an error in this file to 200 characters. It replaces every secret value with `***`.
+
 ## Common problems
 
 | Symptom                                                     | Cause and fix                                                                                                                                                                                                                                      |

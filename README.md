@@ -97,8 +97,9 @@ outcome buttons of the gate. Press `open run` to see the run on the Board.
 
 The Rigs tab shows each rig with a capacity bar, which is its busy count against its cap. It
 also shows the sweeps and the goal of the rig, and the number of runs at each station. It shows
-which runs await you, which are stuck, and how many are finished or aborted. Press `backlog` to
-see only the beads of that rig on the Backlog tab.
+which runs await you, which are stuck, and how many are finished or aborted. A rig with a Linear
+team ([docs/beads.md#linear](docs/beads.md#linear)) shows its last pull too: pulled count and
+age, or an error. Press `backlog` to see only the beads of that rig on the Backlog tab.
 
 ### PRs (key 5)
 
@@ -195,6 +196,10 @@ because the worker does not know its current context.
 A worker's brief carries this rule too, in the Rig goal section. The worker reports blocked
 with the exact command, instead of running it. The guard does not cover a person's own
 session or the manager's session. A person runs the live change.
+
+`--linear <team id[,team id]>` opts a rig into the Linear pull loop. Every 20 minutes the
+factory pulls that team's Linear issues into the rig's beads. The loop then strips the
+`factory` label back off each pulled bead ([docs/beads.md#linear](docs/beads.md#linear)).
 
 ### Harnesses and MCP servers
 
