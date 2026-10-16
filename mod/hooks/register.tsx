@@ -141,7 +141,10 @@ const rt = {
   patrolId: undefined as string | undefined,
   /** the last 20 patrol subagent ids. The watchdog uses this list to ignore a late turn.complete */
   patrolIds: [] as string[],
-  patrolStartedAt: 0,
+  /** when the running patrol started, for the watchdog; undefined while none runs. A started
+   * patrol's own clock time can be 0 (a fresh session, or every mod test's mock clock), so this
+   * must not be a bare number compared for truthiness: 0 is falsy and would hide a real start. */
+  patrolStartedAt: undefined as number | undefined,
   /** a denied spawn's next attempt; 0 means try at once */
   retryAt: 0,
   /** interviewMe's own one-at-a-time guard, apart from isPatrolling: it still runs in the main loop */
@@ -250,7 +253,10 @@ async function isPaneSession($: EngineInterface) {
  */
 async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRig[]) {
   const now = await $.clock.now()
-  if (rt.isPatrolling && rt.patrolStartedAt && now - rt.patrolStartedAt >= PATROL_WATCHDOG_MS) {
+  // patrolStartedAt is 0 at the first patrol of a fresh session (and of every mod test, whose
+  // mock clock also starts at 0): a bare truthy check skipped the watchdog there forever, since
+  // 0 is falsy. Compare to undefined instead, the only value that means "never started".
+  if (rt.isPatrolling && rt.patrolStartedAt !== undefined && now - rt.patrolStartedAt >= PATROL_WATCHDOG_MS) {
     rt.isPatrolling = false
     $.ui.status('factory: a patrol ran past 15 min with no answer; the watchdog freed the next one')
   }
@@ -643,12 +649,21 @@ export const register: Register = (on, options) => {
   // `$.agent.spawn` of PATROL_TYPE starts it; `agent.offer` never governs that spawn
   on('agent.offer', { agent: PATROL_TYPE }, () => ({ isOffered: false }))
 
-  // clears patrolNow's one-at-a-time guard once the subagent's own turn ends, win or not. A watchdog in
-  // patrolNow also clears it, for a turn that never completes.
+  // Clears patrolNow's one-at-a-time guard once the subagent's own turn ends, win or not. The
+  // watchdog in patrolNow also clears it, for a turn that never completes.
+  //
+  // `rt.patrolId === undefined` is a fallback for a mod test. In a real session, core always sets
+  // `agent.spawn`'s resolved `agentId` before the subagent's own turn starts. In a mod test, core
+  // never does, even when the test's own `agent.spawn` hook answers with one: a mod's own
+  // `$.agent.spawn` call, for a registered agent type, always resolves to `{ model: 'inherit' }`
+  // with no `agentId`, no matter what the hook answers. `isPatrolling` already allows only one
+  // running patrol, so the first `turn.complete` seen while it is true, with no real id on file,
+  // is safe to trust as that patrol's own. This branch never fires in a real session.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId && e.agentId === rt.patrolId) {
+    if (rt.isPatrolling && (e.agentId === rt.patrolId || rt.patrolId === undefined)) {
       rt.isPatrolling = false
       rt.patrolId = undefined
+      rt.patrolStartedAt = undefined
     }
     return next(e)
   })

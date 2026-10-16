@@ -74,7 +74,9 @@ test(
     } as never)
     queued = [mail(2)]
     await clock.advance(5_000)
-    expect(JSON.stringify(status)).toBe(JSON.stringify(spawns.length))
+    // freed, and new mail due: the next tick spawns a second patrol, carrying that mail
+    expect(spawns).toHaveLength(2)
+    expect(spawns[1]!.prompt).toContain('which DB?')
 
     // leave no patrol running, so a later test in this file is not blocked by it
     await $.turn.complete({
