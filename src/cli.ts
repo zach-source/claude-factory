@@ -3325,6 +3325,18 @@ const liveBeadIdSet = () =>
     }),
   )
 
+/** the pm's plan, read once per `dispatch()` pass: missing, corrupt or stale (`!plan.isFresh`)
+ * all read as no plan, so dispatch falls back to today's order (claude-factory-dun.3). */
+function freshPlanOrUndefined(): plan.Plan | undefined {
+  if (!existsSync(planFile())) return undefined
+  try {
+    const p: plan.Plan = JSON.parse(readFileSync(planFile(), 'utf8'))
+    return plan.isFresh(p, Date.now()) ? p : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
   if (halted() || !rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS))
@@ -3334,6 +3346,7 @@ async function dispatch() {
   const busy = await busyRigs()
   const { ids: linearIds, rigs: linearRigs } = linearExcluded()
   const linked = liveBeadIdSet()
+  const freshPlan = freshPlanOrUndefined()
   // a sync's error stands until the next sync: dispatch passes every 30 s would clear it
   const synced = existsSync(syncFile())
     ? readJson<Record<string, { at: number; error?: string }>>(syncFile())
@@ -3366,9 +3379,11 @@ async function dispatch() {
         continue
       }
       // children are looked up only for the candidates, until the rig is full
-      const candidates = dispatchable(b.ready(), linked, Infinity).filter(
+      const ready = dispatchable(b.ready(), linked, Infinity).filter(
         x => !isOwned(x) && !openChildren(b, x.id).length && !linearIds.has(x.id),
       )
+      // a fresh plan's order wins inside each priority band; a stale or missing plan changes nothing (claude-factory-dun.3)
+      const candidates = plan.orderByPlan(ready, freshPlan?.rigs[rig.name])
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {

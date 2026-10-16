@@ -132,3 +132,101 @@ test('a station:<name> label a person wrote by hand (no Linear external_ref) sti
   expect(gotos).toHaveLength(1)
   expect(gotos[0]!.node).toBe('deploy') // the control: proves dispatch really reaches stationOf here
 })
+
+// dispatch() orders its candidates by the pm's plan, when one is fresh (claude-factory-dun.3).
+// `bd ready` here always lists acme-1 then acme-2. The rig's maxRuns is 1.
+// So dispatch starts exactly one of them each pass. Which one shows whether the plan's order won.
+
+/** fake bd: `ready` lists acme-1 then acme-2, top-level `factory` beads, each with the given
+ * priority. `children` is always empty (claude-factory-dun.3). */
+function fakeBdTwo(p1: number, p2: number) {
+  mkdirSync(bin, { recursive: true })
+  const beads = JSON.stringify([
+    { id: 'acme-1', title: 't1', labels: ['factory'], priority: p1 },
+    { id: 'acme-2', title: 't2', labels: ['factory'], priority: p2 },
+  ])
+  const script = [
+    '#!/bin/sh',
+    'case "$1" in',
+    `  ready) printf '%s' '${beads}';;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+}
+
+function resetTwo(p1: number, p2: number) {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(claudeConfig, { recursive: true })
+  writeFileSync(join(claudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(home, { recursive: true })
+  const r = repo()
+  fakeBdTwo(p1, p2)
+  fakeHerdr()
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', maxRuns: 1 }]),
+  )
+}
+
+/** the one run dispatch started (maxRuns 1): which bead it holds, from its run.json */
+function startedBead(): string | undefined {
+  const runsDir = join(home, 'runs')
+  if (!existsSync(runsDir)) return undefined
+  const id = readdirSync(runsDir)[0]
+  if (!id) return undefined
+  return (JSON.parse(readFileSync(join(runsDir, id, 'run.json'), 'utf8')) as { bead?: string }).bead
+}
+
+const writePlan = (at: number, ids: string[]) =>
+  writeFileSync(
+    join(home, 'plan.json'),
+    JSON.stringify({
+      at,
+      rigs: { a: { items: ids.map(id => ({ id, title: id, priority: 0, why: '' })), findings: [] } },
+      proposals: [],
+    }),
+  )
+
+test('a fresh plan ranking acme-2 first: dispatch starts acme-2, not the bd-order acme-1 (claude-factory-dun.3)', () => {
+  resetTwo(2, 2)
+  writePlan(Date.now(), ['acme-2', 'acme-1'])
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-2')
+})
+
+test('a plan exactly 2h old (and older) is stale: dispatch falls back to bd order (acme-1 first)', () => {
+  resetTwo(2, 2)
+  writePlan(Date.now() - 2 * 60 * 60_000 - 1000, ['acme-2', 'acme-1'])
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1')
+})
+
+test('no plan.json: dispatch uses bd order (acme-1 first)', () => {
+  resetTwo(2, 2)
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1')
+})
+
+test("a corrupt plan.json ('not json') reads as no plan: acme-1 starts, dispatch.json carries no new error", () => {
+  resetTwo(2, 2)
+  writeFileSync(join(home, 'plan.json'), 'not json')
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1')
+  expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
+})
+
+test('a planned P3 never starts before a real P2: priority always sorts ahead of the plan', () => {
+  resetTwo(2, 3) // acme-1 is P2, acme-2 is P3
+  writePlan(Date.now(), ['acme-2', 'acme-1']) // the pm ranks the P3 first
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1') // P2 still wins
+})
