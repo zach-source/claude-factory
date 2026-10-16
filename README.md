@@ -247,6 +247,10 @@ A worker's PreToolUse hook denies these commands:
   `createCommitOnBranch`, `updateRef`, `updateRefs` and `deleteRef` GraphQL mutations)
 - `gh pr ready`, except in the release station
 
+The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
+read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook
+denies the push outright: it has no branch name, or no `origin/HEAD` name, to check.
+
 This rule applies whatever the list holds. Only a person can merge a pull request or push the default branch. A worker pushes its own run branch and opens a pull request.
 
 A worker's brief carries this rule too, in the Rig goal section. The worker reports blocked

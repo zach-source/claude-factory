@@ -713,7 +713,12 @@ test.each(ALLOW_API_PUSH)('denyReason allows %j', cmd => {
 test('denyReason denies a gh api branch write to any branch when a wired gate.originHead cannot read it', () => {
   const gate = { originHead: () => undefined }
   expect(
-    denyReason('gh api -X PATCH repos/o/r/git/refs/heads/factory/x -f sha=abc123', undefined, undefined, gate),
+    denyReason(
+      'gh api -X PATCH repos/o/r/git/refs/heads/factory/x -f sha=abc123',
+      undefined,
+      undefined,
+      gate,
+    ),
   ).toBe(PUSH_REASON)
   expect(
     denyReason(
