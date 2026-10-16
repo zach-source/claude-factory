@@ -207,6 +207,23 @@ test('poll, prompt and put run as the worker user over ax ssh, the prompt base64
   ])
 })
 
+test("ax.prompt keeps its base64 argv under Linux's 131072-byte MAX_ARG_STRLEN: a long mail is clipped by bytes, never split mid-character (claude-factory-kcg.3)", () => {
+  writeFileSync(join(dir, 'ssh'), 'ok')
+  // a 3-byte UTF-8 character ('€'), repeated: 200_000 of them is 600_000 bytes, well past PROMPT_MAX_BYTES
+  const big = '€'.repeat(200_000)
+  ax.prompt('t', big)
+  const call = logged().at(-1)!
+  const arg = call.split(' ').at(-1)!
+  expect(arg.length).toBeLessThan(131_072)
+  const decoded = Buffer.from(arg, 'base64')
+  const text = decoded.toString('utf8')
+  // re-encoding what toString('utf8') decoded must round-trip to the same bytes: a split multi-byte
+  // character would decode to a U+FFFD replacement char, which re-encodes to different bytes
+  expect(Buffer.from(text, 'utf8').equals(decoded)).toBe(true)
+  expect(text).not.toContain('�')
+  expect(text).toMatch(/\[clipped: \d+ of \d+ bytes\]$/)
+})
+
 test('FACTORY_AX_CAPABILITIES empty keeps poll, prompt and put as the bare root command, for a VM where serve stayed root', () => {
   process.env.FACTORY_AX_CAPABILITIES = ''
   try {
