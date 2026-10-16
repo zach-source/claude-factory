@@ -557,6 +557,9 @@ test('interviewPrompt asks the manager to propose options only for items that ne
   expect(text).toContain('200 characters or fewer') // an optional context sentence
   expect(text).toContain('at most one option recommended')
   expect(text).toContain('own: key keeps its two fixed options')
+  // mailing a station only drops an iv: item; a bd: or own: item has no station (claude-factory-9f6.19)
+  expect(text).toContain('for an `iv:` key, mail that station')
+  expect(text).toContain('decisions answer <rig> <bead>')
 })
 
 test('interviewPrompt quotes a bare title and its details as untrusted data, escaping any quote already inside', () => {
