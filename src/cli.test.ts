@@ -15,6 +15,7 @@ import {
   labelAction,
   lastContext,
   limitHit,
+  managerCommand,
   needsSwap,
   nextAccount,
   servedAt,
@@ -417,6 +418,12 @@ test('a worker gets the asd-ste100 plugin alone, with bundled skills off, so it 
 
 test('WORKER_TOOLS carries Skill, so a worker can load the asd-ste100 skill', () => {
   expect(WORKER_TOOLS.split(',')).toContain('Skill')
+})
+
+test("the manager's --tools carries Agent, so the mod can spawn a patrol subagent", () => {
+  const i = managerCommand().indexOf('--tools')
+  expect(i).toBeGreaterThanOrEqual(0)
+  expect(managerCommand()[i + 1]!.split(',')).toContain('Agent')
 })
 
 test("workers commit as the factory home's own git identity, crediting factory.coauthor", () => {

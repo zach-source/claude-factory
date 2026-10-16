@@ -16,12 +16,12 @@ const dir = join(tmpdir(), `start-${process.pid}`)
 const home = join(dir, 'home')
 const bin = join(dir, 'bin')
 const calls = join(dir, 'calls.log')
-const showMode = join(dir, 'show-mode') // found | notfound | timeout | query-timeout | store-missing
+const showMode = join(dir, 'show-mode') // found | owned | notfound | timeout | query-timeout | store-missing
 const claudeConfig = join(dir, 'claude-config')
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-const run = (args: string[]) => {
+const run = (args: string[], env: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
@@ -35,6 +35,7 @@ const run = (args: string[]) => {
       // and mail the manager "branch is ..., not main" -- a distinct, new refusal reason that
       // would land in `home` on a later tick and inflate manager-mail assertions (claude-factory-5h9.8)
       FACTORY_SELF_UPDATE: '0',
+      ...env,
     },
   })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
@@ -59,6 +60,7 @@ function fakeBd(prefix: string) {
     `    m=$(cat ${showMode} 2>/dev/null || echo found)`,
     '    case "$m" in',
     '      found) printf \'%s\' \'[{"id":"acme-1","title":"t"}]\';;',
+    '      owned) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"owner_decisions":{}}}]\';;',
     '      notfound) echo "Issue $2 not found" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
     '      timeout) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
     '      query-timeout) echo "Error fetching $2: dial tcp 127.0.0.1:3308: i/o timeout" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
@@ -234,5 +236,21 @@ test('a goal naming a bead bd finds still starts a run on it, as before', () => 
   expect(out.code).toBe(0)
   const log = readFileSync(calls, 'utf8')
   expect(log).not.toContain('create ')
+  expect(readdirSync(join(home, 'runs')).length).toBe(1)
+})
+
+test('--owned starts an owner-only bead for the person, but FACTORY_PATROL refuses it even with --owned (claude-factory-72v.19)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'owned')
+  const patrol = run(['start', factoryFixture(), r, 'acme-1', '--owned'], { FACTORY_PATROL: '1' })
+  expect(patrol.code).not.toBe(0)
+  expect(patrol.err).toContain('a patrol cannot start it')
+  expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
+
+  const person = run(['start', factoryFixture(), r, 'acme-1', '--owned'])
+  expect(person.code).toBe(0)
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
 })

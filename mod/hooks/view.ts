@@ -1,5 +1,12 @@
 // Pure layout helpers for the factory console: no `$`, no elements.
-import type { FactoryBead, FactoryMail, FactoryPrs, FactoryRig, FactoryRun } from '../types'
+import type {
+  FactoryBead,
+  FactoryMail,
+  FactoryPatrolLogEntry,
+  FactoryPrs,
+  FactoryRig,
+  FactoryRun,
+} from '../types'
 
 /** one station on a run's path: how often it ran, and whether the run is there now */
 export type Stop = { id: string; runs: number; isCurrent: boolean }
@@ -288,21 +295,34 @@ export function runFacts(
 }
 
 /**
- * The manager's loop. This builds the message to wake this session's model with. It returns null
- * when nothing calls for a wake. New mail and a newly blocked worker wake it at once. `isDue` adds
- * a heartbeat while a worker runs, or a rig with a goal has room for more runs. `keys` lists the
- * blocked workers this patrol reports. The caller must add them to `seen`.
+ * The manager's loop. This builds the message to wake the patrol subagent with.
+ * It returns null when nothing calls for a wake.
+ * New mail and a newly blocked worker wake it at once.
+ * `isDue` adds a heartbeat while a worker runs, or a rig with a goal has room for more runs.
+ * `keys` lists the blocked workers this patrol reports. The caller must add them to `seen`.
  *
- * The board and rig goals go out in full only when their `sig` differs from `lastSig`. `lastSig`
- * is the `sig` an earlier patrol returned. `sig` drops time-elapsed facts: time in station, and
- * the quiet minute count. A worker that keeps running, with no other change, does not change `sig`.
- * Take this case: no mail, no new blocked worker, no new idle rig, and `sig` equal to `lastSig`.
- * In this case the heartbeat wakes nobody. It does not send a shrunk 'unchanged' message.
+ * `sig` decides the heartbeat skip. It drops time-elapsed facts: time in station, and the
+ * quiet minute count. So a worker that keeps running, with no other change, does not change
+ * `sig`. Take this case: no mail, no new blocked worker, no new idle rig, and `sig` equal to
+ * `lastSig`. In this case the heartbeat wakes nobody.
+ * But whenever a patrol does wake, `text` always carries the full board and rig goals.
+ * A fresh subagent has no memory of the last patrol, so it cannot compare an 'unchanged' line.
  *
- * When a patrol does wake the manager, line 2 of `text` is a short per-rig summary (for example
- * `Rigs: web busy 2/3, 1 at the person, 1 stuck; api busy 0/2.`), ahead of the `New:` or
- * `Heartbeat:` line. It lists each rig in `rigs` that has a live run or a goal. Compaction that
- * trims the end of the message keeps this summary.
+ * `hold` lists run ids the main chat touched inside the last few minutes.
+ * A held run's board row says so.
+ * Its mail and blocked-worker report are left out of `text` and out of `keys`.
+ * This keeps a blocked report un-marked by `seen`, so it fires again once the hold clears.
+ * Held mail comes back in `kept`. The caller must keep it queued instead of clearing it.
+ * A patrol whose only news is held wakes nobody.
+ *
+ * `log` is the last few patrol-log entries' actions.
+ * It lets a cold subagent see what earlier patrols already did.
+ *
+ * When a patrol does wake the manager, line 2 of `text` is a short per-rig summary. For example:
+ * `Rigs: web busy 2/3, 1 at the person, 1 stuck; api busy 0/2.`
+ * This line comes ahead of the `New:` or `Heartbeat:` line.
+ * It lists each rig in `rigs` that has a live run or a goal.
+ * Compaction that trims the end of the message keeps this summary.
  */
 export function patrol(
   runs: readonly FactoryRun[],
@@ -311,22 +331,28 @@ export function patrol(
   isDue: boolean,
   rigs: readonly FactoryRig[] = [],
   lastSig?: string,
+  hold: ReadonlySet<string> = new Set(),
+  log: readonly string[] = [],
 ) {
   const live = runs.filter(isRunLive)
-  const blocked = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
+  const blockedAll = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
+  const blocked = blockedAll.filter(r => !hold.has(r.id))
+  const mailOut = mail.filter(m => !hold.has(m.run))
+  const kept = mail.filter(m => hold.has(m.run))
   const isWorking = live.some(r => r.sub === 'working' && !r.gate)
   const busy = (g: FactoryRig) => rigStats(g, runs).busy
   const goals = rigs.filter(g => g.goal)
   const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
   // ponytail: told once per rig for the session; a rig that idles again later waits for a restart or other news
   const idle = runs.filter(r => r.idle && !seen.has(idleKey(r)))
-  const noNews = !mail.length && !blocked.length && !idle.length
+  const noNews = !mailOut.length && !blocked.length && !idle.length
   if (noNews && !(isDue && (isWorking || hasRoom))) return null
 
+  const held = (r: FactoryRun) => (hold.has(r.id) ? ', held: the person is on it, leave it' : '')
   const rows = (facts: (r: FactoryRun) => string) =>
     live.map(
       r =>
-        `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : facts(r)}: ${line(r.goal ?? '', 100)}`,
+        `- ${r.id}${r.rig ? ` (rig ${r.rig})` : ''} at ${r.node}/${r.sub}${r.gate ? ', awaiting the person' : facts(r)}${held(r)}: ${line(r.goal ?? '', 100)}`,
     )
   const goalLines = goals.length
     ? [
@@ -344,7 +370,7 @@ export function patrol(
 
   const news = [
     // the whole report is a `factory show` away; a parked station's can run to pages
-    ...mail.map(m => `- ${m.run} / ${m.from}: ${line(m.text, 300)}`),
+    ...mailOut.map(m => `- ${m.run} / ${m.from}: ${line(m.text, 300)}`),
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
     ...idle.map(r => `- rig ${r.rig}: idle, ${r.idle}. Set it a goal or queue beads for it.`),
   ]
@@ -364,9 +390,30 @@ export function patrol(
     news.length
       ? `New:\n${news.join('\n')}`
       : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
-    sig === lastSig ? 'Board and rig goals: unchanged since the last patrol.' : state,
+    state,
+    ...(log.length ? [`Earlier patrols:\n${log.map(a => `- ${a}`).join('\n')}`] : []),
   ].join('\n')
-  return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state, sig }
+  return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state, sig, kept }
+}
+
+/** "patrol 3m ago", drawn in the header and the band; '' before any patrol has run */
+export function patrolAgo(now: number, lastPatrol: FactoryPatrolLogEntry | null) {
+  return lastPatrol ? `patrol ${dur(Math.max(0, now - lastPatrol.at))} ago` : ''
+}
+
+/** `/factory patrols`: the newest 10 entries of `<home>/patrol-log.jsonl`, oldest first */
+export function patrolsText(log: readonly FactoryPatrolLogEntry[]) {
+  const recent = log.slice(-10)
+  if (!recent.length) return 'No patrol has run yet.'
+  return recent
+    .map(e => {
+      const cost = [dur(e.durationMs), e.tokens !== undefined ? `${e.tokens} tok` : undefined]
+        .filter(Boolean)
+        .join(', ')
+      const acts = e.actions.length ? ` Actions: ${e.actions.join('; ')}.` : ''
+      return `- ${clockOf(e.at)} (${e.reason}, ${cost}): ${line(e.report, 300)}${acts}`
+    })
+    .join('\n')
 }
 
 /** what an open pull request waits on, worst first: conflicts, failing checks, a review, then the merge */
