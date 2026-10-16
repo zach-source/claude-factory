@@ -180,6 +180,8 @@ export type FactoryDraft = {
   backlogOpen?: string[]
   /** the one rig the Backlog shows; all of them when unset */
   backlogRig?: string
+  /** the interview items whose details toggle the person opened, by key; collapsed by default */
+  interviewOpen?: string[]
 }
 
 /** `factory decisions`' shape (src/cli.ts decisionsList): each rig's open bd decisions, or what stopped
@@ -191,7 +193,7 @@ export type FactoryDecisions = {
     beads: { id: string; title: string; description?: string; kind: 'bead' | 'owned' }[]
     error?: string
   }[]
-  proposals: Record<string, { question: string; options: string[]; at: number }>
+  proposals: Record<string, { question: string; context?: string; options: string[]; at: number }>
 }
 
 declare module 'claude-code' {

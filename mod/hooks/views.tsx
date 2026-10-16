@@ -18,17 +18,16 @@ import type {
 import {
   BEAD_TYPES,
   bar,
-  beadInterviews,
   byState,
   blockers,
   clockOf,
   counts,
   dur,
   isLive,
-  interviews,
   line,
   mailKey,
   mailTabs,
+  openInterviews,
   prName,
   prState,
   progress,
@@ -39,7 +38,6 @@ import {
   sparkline,
   stateOf,
   track,
-  withProposals,
   type Interview,
   type TierRow,
 } from './view'
@@ -953,11 +951,9 @@ export function interviewView(
 ) {
   const { Box, Text, Button, Input } = p.ui
   const answered = Object.fromEntries((draft.interviewed ?? []).map(d => [d.key, d.answer]))
-  const open = withProposals(
-    [...interviews(board.runs, answered), ...beadInterviews(decisions.rigs, answered)],
-    decisions.proposals,
-  )
+  const open = openInterviews(board.runs, decisions.rigs, decisions.proposals, answered)
   const done = [...(draft.interviewed ?? [])].reverse()
+  const isOpenDetails = (key: string) => draft.interviewOpen?.includes(key) ?? false
   const tab = draft.interviewTab ?? 'open'
   return (
     <Box key="interview" flexDirection="column">
@@ -1019,11 +1015,34 @@ export function interviewView(
               ) : (
                 <Box flexDirection="column">
                   <Text color="yellow" bold wrap="wrap">
-                    ? {iv.question}
+                    ? {iv.title}
                   </Text>
-                  <Text dimColor wrap="wrap">
-                    {line(iv.context, 600)}
-                  </Text>
+                  {iv.context && (
+                    <Text dimColor wrap="wrap">
+                      {iv.context}
+                    </Text>
+                  )}
+                  {iv.also && iv.also.length > 0 && (
+                    <Text dimColor wrap="wrap">
+                      {`also: ${iv.also.map(m => m.run ?? m.bead ?? m.key).join(', ')}`}
+                    </Text>
+                  )}
+                  {iv.details && (
+                    <Box flexDirection="column">
+                      <Button
+                        key={`iv-details-${iv.key}`}
+                        label={isOpenDetails(iv.key) ? 'details ▾' : 'details ▸'}
+                        plain
+                        dimColor
+                        onPress={() => p.act.draft({ interviewOpen: toggled(draft.interviewOpen, iv.key) })}
+                      />
+                      {isOpenDetails(iv.key) && (
+                        <Text dimColor wrap="wrap">
+                          {iv.details}
+                        </Text>
+                      )}
+                    </Box>
+                  )}
                 </Box>
               )}
               {iv.kind === 'prompt' &&
@@ -1050,12 +1069,15 @@ export function interviewView(
                   )}
                   <Box gap={1}>
                     {iv.options.map((o, j) => (
-                      <Button
-                        key={`iv-opt-${iv.key}-${j}`}
-                        label={o}
-                        variant={j === 0 ? 'primary' : undefined}
-                        onPress={() => p.act.interview(iv, o)}
-                      />
+                      <Box key={`iv-opt-box-${iv.key}-${j}`} gap={1}>
+                        <Button
+                          key={`iv-opt-${iv.key}-${j}`}
+                          label={o.recommended ? `${o.label} (recommended)` : o.label}
+                          variant={o.recommended ? 'primary' : undefined}
+                          onPress={() => p.act.interview(iv, o.label)}
+                        />
+                        {o.effect && <Text dimColor>{o.effect}</Text>}
+                      </Box>
                     ))}
                     {typed.trim() && (
                       <Button

@@ -347,7 +347,9 @@ test('a repeated silent failure parks the run with a question instead of spendin
   const s = send({ type: 'FAIL', seq: 2, reason: 'stalled: no output for 41 min', at: 12_000 })
   expect(where(s.value)).toEqual(['implement', 'stuck']) // attempt 2 of 3: not retried
   expect(s.context.error).toContain('Question: implement failed twice the same way')
-  expect(s.context.error).toContain('Options: retry | abort')
+  expect(s.context.error).toContain(
+    'Options: retry: run implement again with your answer | abort: end the run',
+  )
   expect(s.context.mail.manager?.[0]?.text).toContain('stuck after 2 attempt(s)')
 })
 
