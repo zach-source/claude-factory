@@ -344,7 +344,9 @@ test('an awaitsPr pre-launch park wakes at once on a merge or close, even one th
   // still open, no activity: no wake, even long after the park (AC2)
   expect(watchWake([pr('OPEN', '2026-10-11T09:00:00Z')], at, at + 9 * 3600_000, 60, true)).toBeUndefined()
   // merged after the park: wakes at once, same as a worker's own park
-  expect(watchWake([pr('MERGED', '2026-10-11T10:05:00Z')], at, at + 600_000, 60, true)).toContain('it is merged')
+  expect(watchWake([pr('MERGED', '2026-10-11T10:05:00Z')], at, at + 600_000, 60, true)).toContain(
+    'it is merged',
+  )
   // merged (or closed) before the park ever started: a worker's own park would wait out plainMin, but a
   // pre-launch park spent no worker on that wait, so it wakes at the very next pass
   expect(watchWake([pr('MERGED', '2026-10-11T09:00:00Z')], at, at + 1000, 60, true)).toContain('None of')
@@ -709,7 +711,15 @@ test('brief() tells an awaitsPr pre-launch park apart from a worker-reported blo
     'deploy',
     {
       ...baseC,
-      log: [{ node: 'deploy', attempt: 0, outcome: 'blocked', summary: `no worker yet: waiting for ${PR}`, at: 1 }],
+      log: [
+        {
+          node: 'deploy',
+          attempt: 0,
+          outcome: 'blocked',
+          summary: `no worker yet: waiting for ${PR}`,
+          at: 1,
+        },
+      ],
     },
     [],
   )
@@ -719,7 +729,9 @@ test('brief() tells an awaitsPr pre-launch park apart from a worker-reported blo
     'deploy',
     {
       ...baseC,
-      log: [{ node: 'deploy', attempt: 1, outcome: 'blocked', summary: `still waiting on review ${PR}`, at: 1 }],
+      log: [
+        { node: 'deploy', attempt: 1, outcome: 'blocked', summary: `still waiting on review ${PR}`, at: 1 },
+      ],
     },
     [],
   )

@@ -108,7 +108,8 @@ function mailOf(id: string): { text: string }[] {
     .filter(e => e.type === 'MAIL')
 }
 
-const ghCallCount = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) : [])
+const ghCallCount = () =>
+  existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) : []
 
 test('an open pull request with no activity since the park gets no mail (AC2)', () => {
   reset()

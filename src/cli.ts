@@ -3580,7 +3580,11 @@ export function watchWake(
   const changed = prs.find(p => Date.parse(p.updatedAt) > parkedAt)
   if (changed)
     return `[factory] ${changed.url} changed since you parked: it is ${changed.state.toLowerCase()}, updated ${changed.updatedAt}. Check where it stands now.`
-  if (prs.length && !prs.some(p => p.state === 'OPEN') && (isPreLaunch || now - parkedAt >= plainMin * 60_000))
+  if (
+    prs.length &&
+    !prs.some(p => p.state === 'OPEN') &&
+    (isPreLaunch || now - parkedAt >= plainMin * 60_000)
+  )
     return `[factory] None of the pull requests you linked is open, so they will not change: check again whether what you wait on is done.`
 }
 
@@ -3607,7 +3611,10 @@ async function watchPass() {
     // and every later run that names the same URL reuses the one answer, with no second call
     const viewGh = async (url: string, cwd: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
-      const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state,updatedAt'], { cwd, timeout: 60_000 })
+      const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state,updatedAt'], {
+        cwd,
+        timeout: 60_000,
+      })
       const v: WatchedPr | null = p.exitCode === 0 ? { url, ...JSON.parse(p.stdout.toString()) } : null
       if (p.exitCode !== 0) errors++
       cache.set(url, v)
@@ -3616,7 +3623,8 @@ async function watchPass() {
     const viewMr = async (url: string, cwd: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
       const r = await gitlabForge(spawnGlab).view(url, cwd)
-      const v: WatchedPr | null = 'viewed' in r ? { url, state: r.viewed.state, updatedAt: r.viewed.updatedAt } : null
+      const v: WatchedPr | null =
+        'viewed' in r ? { url, state: r.viewed.state, updatedAt: r.viewed.updatedAt } : null
       if (!('viewed' in r)) errors++
       cache.set(url, v)
       return v

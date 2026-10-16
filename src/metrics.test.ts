@@ -63,12 +63,12 @@ test('metrics count ship rate, time to ship, the approve wait, review loops and 
 })
 
 test('fate only counts deploy deployed or published as shipped, never blocked/changes/hold', () => {
-  expect(
-    fate({ id: 'a', node: 'deploy', createdAt: 0, log: [e('deploy', 'blocked', 1)] }),
-  ).toBe('running@deploy')
-  expect(
-    fate({ id: 'a', node: 'implement', createdAt: 0, log: [e('deploy', 'changes', 1)] }),
-  ).toBe('running@implement')
+  expect(fate({ id: 'a', node: 'deploy', createdAt: 0, log: [e('deploy', 'blocked', 1)] })).toBe(
+    'running@deploy',
+  )
+  expect(fate({ id: 'a', node: 'implement', createdAt: 0, log: [e('deploy', 'changes', 1)] })).toBe(
+    'running@implement',
+  )
   expect(fate({ id: 'a', node: 'done', createdAt: 0, log: [e('deploy', 'hold', 1)] })).toBe('closed')
 })
 
