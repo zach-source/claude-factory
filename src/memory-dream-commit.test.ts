@@ -119,6 +119,8 @@ for (const [label, tiersEnv] of [
   }, 30_000)
 }
 
+// 30s: compact() runs applyTiers() -> tierCandidates(), which loads the embedding model cold, like
+// dream() above; the default 5s bun:test timeout does not always clear that on a cold cache.
 test('factory memory compact leaves the memory repo clean after it merges a note and rewrites .usage.jsonl/.renames.jsonl', () => {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
@@ -149,7 +151,7 @@ test('factory memory compact leaves the memory repo clean after it merges a note
   const usage = readFileSync(join(home, 'memory', '.usage.jsonl'), 'utf8')
   expect(usage).toContain('"path":"beads/LONG.md#')
   expect(usage).not.toContain('"path":"beads/x.md"')
-})
+}, 30_000)
 
 // A5: a home whose memory repo already tracked notes under the OLD gitignore ('.index.json*\n.usage.jsonl*\n')
 // starts tracking .usage.jsonl the next time it dreams, even on a day with nothing new to file.
