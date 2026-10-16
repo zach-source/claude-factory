@@ -213,8 +213,18 @@ const KUBECTL_VALUE_FLAGS = new Set([
   '--kubeconfig',
   '--cluster',
   '--user',
+  '--username',
+  '--password',
   '--token',
   '--server',
+  '-s',
+  '-v',
+  '--v',
+  '--certificate-authority',
+  '--client-certificate',
+  '--client-key',
+  '--tls-server-name',
+  '--cache-dir',
   '-o',
   '--output',
   '--request-timeout',
@@ -222,7 +232,23 @@ const KUBECTL_VALUE_FLAGS = new Set([
   '--as-group',
 ])
 const KO_VALUE_FLAGS = new Set(['--context'])
-const HELM_VALUE_FLAGS = new Set(['--kube-context', '-n', '--namespace', '--kubeconfig'])
+const HELM_VALUE_FLAGS = new Set([
+  '--kube-context',
+  '-n',
+  '--namespace',
+  '--kubeconfig',
+  '--kube-apiserver',
+  '--kube-token',
+  '--kube-as-user',
+  '--kube-as-group',
+  '--kube-ca-file',
+  '--kube-tls-server-name',
+  '--registry-config',
+  '--repository-cache',
+  '--repository-config',
+  '--burst-limit',
+  '--qps',
+])
 
 const KUBECTL_MUTATING_VERBS = new Set([
   'apply',
@@ -259,50 +285,86 @@ function flagValue(words: string[], names: Set<string>): string | undefined {
   return undefined
 }
 
-/** the index of the first non-flag word in `words`. It steps past a global flag. When the flag is in `valueFlags` and has no `=`, it also steps past the flag's own value word. */
-function firstVerbIndex(words: string[], valueFlags: Set<string>): number {
+/**
+ * Get the index of the first non-flag word in `words`.
+ * Step past a known global flag. If the flag is in `valueFlags` and has no `=`, step past its
+ * value word too. Return `uncertain: true` when a flag has no `=` and is not in `valueFlags`
+ * (claude-factory-25z.6): this function then does not know if the flag takes a value word.
+ */
+function firstVerbIndex(words: string[], valueFlags: Set<string>): { index: number; uncertain: boolean } {
+  let uncertain = false
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (w.startsWith('-')) {
-      if (!w.includes('=') && valueFlags.has(w)) i++
+    if (w.startsWith('-') && w !== '-') {
+      if (w.includes('=')) continue
+      if (valueFlags.has(w)) {
+        i++
+        continue
+      }
+      uncertain = true
       continue
     }
-    return i
+    return { index: i, uncertain }
   }
-  return -1
+  return { index: -1, uncertain }
+}
+
+/** true when some word in `words`, before a literal `--` separator (if any), is in `verbs`. */
+function hasMutatingWordBeforeDashDash(words: string[], verbs: Set<string>): boolean {
+  for (const w of words) {
+    if (w === '--') return false
+    if (verbs.has(w)) return true
+  }
+  return false
 }
 
 /**
- * true when `cmd` (a kubectl, ko or helm invocation) mutates state at a context in `personOnly`, or at
- * no named context at all (fail closed: the current context is unknown to this hook).
+ * Check if `cmd` (a kubectl, ko or helm command) changes state at a context in `personOnly`.
+ * Return true for that case, and for a command with no named context (fail closed: this function
+ * does not know the current context).
+ * Also return true when an unknown flag makes the verb search uncertain, and a later word before
+ * `--` names a mutating verb (claude-factory-25z.6). This hook does not know every global flag that
+ * takes a value word. An unknown flag must not hide a mutating verb that follows it.
  */
 function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
   const b = baseWord(cmd[0]!)
   const tail = cmd.slice(1)
   if (b === 'kubectl') {
-    const vi = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS)
-    if (vi < 0) return false
-    const verb = tail[vi]!
-    const sub = tail[vi + 1]
-    if (verb === 'apply') {
-      const dryRun = flagValue(cmd, new Set(['--dry-run']))
-      if (dryRun === 'client' || dryRun === 'server') return false
+    const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS)
+    const verb = vi >= 0 ? tail[vi]! : undefined
+    const sub = vi >= 0 ? tail[vi + 1] : undefined
+    let mutating =
+      verb === undefined
+        ? false
+        : verb === 'rollout'
+          ? !!sub && KUBECTL_ROLLOUT_MUTATING.has(sub)
+          : KUBECTL_MUTATING_VERBS.has(verb)
+    if (!mutating && uncertain) {
+      mutating =
+        hasMutatingWordBeforeDashDash(tail, KUBECTL_MUTATING_VERBS) ||
+        hasMutatingWordBeforeDashDash(tail, KUBECTL_ROLLOUT_MUTATING)
     }
-    const mutating =
-      verb === 'rollout' ? !!sub && KUBECTL_ROLLOUT_MUTATING.has(sub) : KUBECTL_MUTATING_VERBS.has(verb)
     if (!mutating) return false
+    // claude-factory-25z.7: --dry-run=client|server exempts every mutating kubectl verb, not only
+    // apply. A bare --dry-run or --dry-run=none still mutates and stays denied.
+    const dryRun = flagValue(cmd, new Set(['--dry-run']))
+    if (dryRun === 'client' || dryRun === 'server') return false
     const ctx = flagValue(cmd, new Set(['--context']))
     return ctx === undefined || personOnly.includes(ctx)
   }
   if (b === 'ko') {
-    const vi = firstVerbIndex(tail, KO_VALUE_FLAGS)
-    if (vi < 0 || !KO_MUTATING_VERBS.has(tail[vi]!)) return false
+    const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS)
+    let mutating = vi >= 0 && KO_MUTATING_VERBS.has(tail[vi]!)
+    if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, KO_MUTATING_VERBS)
+    if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--context']))
     return ctx === undefined || personOnly.includes(ctx)
   }
   if (b === 'helm') {
-    const vi = firstVerbIndex(tail, HELM_VALUE_FLAGS)
-    if (vi < 0 || !HELM_MUTATING_VERBS.has(tail[vi]!)) return false
+    const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS)
+    let mutating = vi >= 0 && HELM_MUTATING_VERBS.has(tail[vi]!)
+    if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, HELM_MUTATING_VERBS)
+    if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--kube-context']))
     return ctx === undefined || personOnly.includes(ctx)
   }

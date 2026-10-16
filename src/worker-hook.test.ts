@@ -112,6 +112,14 @@ const DENY_LIVE = [
   'env KUBECONFIG=k timeout 30 kubectl --context acme apply -f -',
   'ko resolve -f c | kubectl --context acme apply -f -',
   'helm --kube-context acme upgrade r c',
+  // claude-factory-25z.6: a global value flag ahead of the verb must not hide the verb.
+  'kubectl -v 6 --context acme apply -f x',
+  'kubectl -s https://h --context acme apply -f x',
+  'kubectl --kubeconfig k -v 6 apply -f x',
+  'helm --kube-token t --kube-context acme upgrade r c',
+  'helm --kube-apiserver u upgrade r c',
+  // claude-factory-25z.7: --dry-run=none still mutates.
+  'kubectl --context acme create -f x --dry-run=none',
 ]
 
 const ALLOW_LIVE = [
@@ -120,6 +128,9 @@ const ALLOW_LIVE = [
   'kubectl --context acme diff -f x',
   'kubectl --context kind-kind apply -f x', // an explicit, non-listed context
   'kubectl --context acme apply --dry-run=server -f x',
+  // claude-factory-25z.7: --dry-run=client|server exempts every mutating verb, not only apply.
+  'kubectl create secret generic s --dry-run=client -o yaml',
+  'kubectl --context acme delete pod x --dry-run=server',
 ]
 
 test.each(DENY_LIVE)('denyReason denies a live-apply command %j with personOnly acme', cmd => {
