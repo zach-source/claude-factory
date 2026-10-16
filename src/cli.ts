@@ -2597,50 +2597,106 @@ function linearLabeled(repo: string): { id: string }[] {
 }
 
 /**
- * one rig's Linear pull: `bd linear sync --pull-if-stale`, never `--push`, with the key or OAuth pair by
- * env only. Labels a Linear pull landed are copied onto the bead (bd's own mapping), so a bead with a
- * Linear external ref that is newly labeled `factory` here had that label stripped right back off: a
- * person, not a Linear label, decides what the factory works. A bead already labeled before this pull
- * keeps it. Writes `state[rig.name]`; never throws, so one rig's failure does not stop the others.
+ * This function removes the `factory` label from each id in `ids`, in `repo`.
+ * It checks the exit code of each `bd label remove` call.
+ * When a call does not exit 0, the function does not count that id as stripped.
+ * It puts that id in `unstripped` instead, so the next pass tries it again first (claude-factory-b6c.9).
+ */
+function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; unstripped: string[] } {
+  let stripped = 0
+  const unstripped: string[] = []
+  for (const id of ids) {
+    const p = Bun.spawnSync(['bd', 'label', 'remove', id, 'factory'], {
+      cwd: repo,
+      env: process.env,
+      timeout: 30_000,
+    })
+    if (p.exitCode === 0) stripped++
+    else unstripped.push(id)
+  }
+  return { stripped, unstripped }
+}
+
+/**
+ * This function makes one rig's Linear pull.
+ * It runs `bd linear sync --pull-if-stale`, never `--push`.
+ * It passes the key, or the OAuth pair, by env only.
+ *
+ * `bd` copies each Linear label onto the bead it maps. A new bead, or an updated one, can carry the
+ * `factory` label the moment the pull lands it. This function strips that label right back off. A
+ * person, not a Linear label, must decide what the factory works. A bead that already carried the
+ * label before this pull keeps it.
+ *
+ * The strip runs after every pull that reaches `bd`. It also runs after a pull that then errors or
+ * times out (claude-factory-b6c.8), because the pull can label beads before it fails. When `bd label
+ * remove`, or the listing call after the pull, fails on an id, this function puts that id in
+ * `unstripped`. The next pass tries that id again first (claude-factory-b6c.9).
+ *
+ * This function writes `state[rig.name]`. It never throws, so one rig's failure does not stop the others.
  */
 function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>) {
   const at = Date.now()
+  const retry = state[rig.name]?.unstripped ?? []
+  let secrets: string[] = []
   try {
     const cfg = readLinearConfig(linearConfigFile())
     const env = syncEnv(cfg)
-    const secrets = [env.LINEAR_API_KEY, env.LINEAR_OAUTH_CLIENT_ID, env.LINEAR_OAUTH_CLIENT_SECRET].filter(
+    secrets = [env.LINEAR_API_KEY, env.LINEAR_OAUTH_CLIENT_ID, env.LINEAR_OAUTH_CLIENT_SECRET].filter(
       (s): s is string => !!s,
     )
     const before = new Set(linearLabeled(rig.repo).map(b => b.id))
     const p = Bun.spawnSync(['bd', ...syncArgs(rig.linear!)], { cwd: rig.repo, env, timeout: 120_000 })
-    const outcome = parseSync(p.stdout.toString(), p.exitCode ?? 1)
-    if ('error' in outcome) {
-      state[rig.name] = { at, fresh: false, error: redact(outcome.error, secrets) }
-      return
-    }
-    let stripped = 0
-    if (!outcome.fresh) {
-      for (const b of linearLabeled(rig.repo).filter(x => !before.has(x.id))) {
-        Bun.spawnSync(['bd', 'label', 'remove', b.id, 'factory'], {
-          cwd: rig.repo,
-          env: process.env,
-          timeout: 30_000,
-        })
-        stripped++
+    const outcome = parseSync(p.stdout.toString(), p.exitCode ?? 1, p.stderr.toString())
+
+    // a listing failure here must not lose the pull's own outcome below: it is caught on its own, and
+    // every id the listing could not confirm stays queued (as `retry`) for the next pass.
+    let toStrip = retry
+    let listErr: string | undefined
+    if (!('fresh' in outcome) || !outcome.fresh) {
+      try {
+        const newly = linearLabeled(rig.repo)
+          .filter(x => !before.has(x.id))
+          .map(x => x.id)
+        toStrip = [...new Set([...retry, ...newly])]
+      } catch (err) {
+        listErr = redact((err as Error).message, secrets)
       }
     }
+    const strip = toStrip.length ? stripFactoryLabel(rig.repo, toStrip) : { stripped: 0, unstripped: [] }
+
+    if ('error' in outcome) {
+      state[rig.name] = {
+        at,
+        fresh: false,
+        error: redact(outcome.error, secrets),
+        ...(strip.unstripped.length && { unstripped: strip.unstripped }),
+      }
+      return
+    }
     state[rig.name] = outcome.fresh
-      ? { at, fresh: true, lastPull: outcome.lastPull }
+      ? {
+          at,
+          fresh: true,
+          lastPull: outcome.lastPull,
+          ...(strip.unstripped.length && { unstripped: strip.unstripped }),
+        }
       : {
           at,
           fresh: false,
           pulled: outcome.pulled,
           created: outcome.created,
           updated: outcome.updated,
-          stripped,
+          stripped: strip.stripped,
+          ...(strip.unstripped.length && { unstripped: strip.unstripped }),
+          ...(listErr && { error: redact(`label list after the pull: ${listErr}`, secrets) }),
         }
   } catch (err) {
-    state[rig.name] = { at, fresh: false, error: clip((err as Error).message, 200) }
+    state[rig.name] = {
+      at,
+      fresh: false,
+      error: clip(redact((err as Error).message, secrets), 200),
+      ...(retry.length && { unstripped: retry }),
+    }
   }
 }
 
@@ -2662,12 +2718,13 @@ function linearPass(names: string[] = [], force = false) {
     if (!linearDue(state[rig.name], force)) continue
     linearSyncOne(rig, state)
     const s = state[rig.name]!
+    const left = s.unstripped?.length ? `, ${s.unstripped.length} still labeled, retried next pass` : ''
     lines.push(
       s.error
-        ? `${rig.name}: error, ${s.error}`
+        ? `${rig.name}: error, ${s.error}${left}`
         : s.fresh
-          ? `${rig.name}: fresh (last pull ${s.lastPull ?? 'unknown'})`
-          : `${rig.name}: pulled ${s.pulled}, created ${s.created}, updated ${s.updated}, stripped ${s.stripped} factory label(s)`,
+          ? `${rig.name}: fresh (last pull ${s.lastPull ?? 'unknown'})${left}`
+          : `${rig.name}: pulled ${s.pulled}, created ${s.created}, updated ${s.updated}, stripped ${s.stripped} factory label(s)${left}`,
     )
   }
   if (lines.length) writeJson(linearSyncFile(), state)
@@ -2864,6 +2921,8 @@ export type LinearSyncState = {
   created?: number
   updated?: number
   stripped?: number
+  /** ids the strip cannot confirm off (a failed `bd label remove` or listing call); tried again first */
+  unstripped?: string[]
   error?: string
 }
 export const linearSyncFile = () => join(HOME, 'linear-sync.json')
@@ -3966,14 +4025,24 @@ if (import.meta.main && !outboxCmd)
           ).join('\n'),
         )
         break
-      case 'linear':
-        console.log(
-          linearPass(
-            args.filter(a => a !== '--force'),
-            args.includes('--force'),
-          ).join('\n'),
-        )
+      case 'linear': {
+        if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
+        const names = args.filter(a => a !== '--force')
+        for (const name of names) {
+          const rig = rigs().find(r => r.name === name) ?? fail(`factory linear: no rig "${name}"`)
+          if (!rig.linear?.length)
+            fail(
+              `factory linear: rig "${name}" is not opted into the Linear pull loop (no --linear team ids)`,
+            )
+        }
+        const release = hold('beads.lock') ?? fail('factory linear: beads.lock is held; try again shortly')
+        try {
+          console.log(linearPass(names, args.includes('--force')).join('\n'))
+        } finally {
+          release()
+        }
         break
+      }
       case 'self-update': {
         const state = runSelfUpdate()
         console.log(state ? JSON.stringify(state) : 'a tick, or another self-update, is already running')

@@ -41,12 +41,20 @@ function asCommand(name: string, value: unknown): string {
 
 export function readLinearConfig(file: string): LinearConfig {
   if (!existsSync(file)) throw new Error(`no ${file}: see docs/beads.md`)
-  const cfg = JSON.parse(readFileSync(file, 'utf8'))
-  if (cfg && typeof cfg === 'object' && 'apiKey' in cfg) return { apiKey: asCommand('apiKey', cfg.apiKey) }
-  if (cfg && typeof cfg === 'object' && ('clientId' in cfg || 'clientSecret' in cfg))
+  let cfg: unknown
+  try {
+    cfg = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    // Bun's own parse error echoes the bad text (for example an unquoted `lin_api_...` token). Throw a
+    // fixed message instead: this error can reach linear-sync.json, mail, `rig list`, and the console.
+    throw new Error(`${file}: invalid JSON`)
+  }
+  const c = cfg as Record<string, unknown> | null
+  if (c && typeof c === 'object' && 'apiKey' in c) return { apiKey: asCommand('apiKey', c.apiKey) }
+  if (c && typeof c === 'object' && ('clientId' in c || 'clientSecret' in c))
     return {
-      clientId: asCommand('clientId', cfg.clientId),
-      clientSecret: asCommand('clientSecret', cfg.clientSecret),
+      clientId: asCommand('clientId', c.clientId),
+      clientSecret: asCommand('clientSecret', c.clientSecret),
     }
   throw new Error(
     `${file}: needs "apiKey", or "clientId" and "clientSecret", each a command that prints the value`,
@@ -71,8 +79,9 @@ function resolve(cmd: string): string {
  * It puts the resolved key, or the OAuth pair, only in environment variables.
  * It does not put them on disk, in the command-line arguments, or in a bead.
  *
- * A `LINEAR_*` variable from a previous operation can stay in this environment.
- * The function removes each `LINEAR_*` variable first.
+ * `LINEAR_API_KEY`, `LINEAR_OAUTH_CLIENT_ID`, or `LINEAR_OAUTH_CLIENT_SECRET` from a previous operation
+ * can stay in this environment.
+ * The function removes each of these three variables first.
  * Then it adds the new value from the rig's own `linear.json`.
  * No OAuth pair from a previous operation can override this value.
  */
@@ -120,9 +129,12 @@ export type SyncOutcome =
  * The third shape is an engine error.
  * It has an `error` field and a nonzero exit code.
  *
- * A nonzero exit code that has none of these shapes is also an error.
+ * A nonzero exit code that has none of these shapes is also an error. `stderr` is optional: when stdout
+ * has no usable detail, the error message falls back to stderr's first line, so a crash with empty stdout
+ * still names what failed.
  */
-export function parseSync(stdout: string, exitCode: number): SyncOutcome {
+export function parseSync(stdout: string, exitCode: number, stderr = ''): SyncOutcome {
+  const errDetail = () => stderr.trim().split('\n')[0]
   let json: unknown
   try {
     json = JSON.parse(stdout)
@@ -131,12 +143,17 @@ export function parseSync(stdout: string, exitCode: number): SyncOutcome {
       error:
         exitCode === 0
           ? 'bd linear sync: no JSON on stdout'
-          : stdout.trim() || `bd linear sync exited ${exitCode}`,
+          : stdout.trim() || errDetail() || `bd linear sync exited ${exitCode}`,
     }
   }
   const j = json as Record<string, unknown>
   if (j?.error) return { error: String(j.error) }
-  if (exitCode !== 0) return { error: `bd linear sync exited ${exitCode}` }
+  if (exitCode !== 0)
+    return {
+      error: errDetail()
+        ? `bd linear sync exited ${exitCode}: ${errDetail()}`
+        : `bd linear sync exited ${exitCode}`,
+    }
   if (j?.skipped) return { fresh: true, ...(j.last_pull !== undefined && { lastPull: String(j.last_pull) }) }
   const s = (j?.stats as Record<string, number>) ?? {}
   return { fresh: false, pulled: s.pulled ?? 0, created: s.created ?? 0, updated: s.updated ?? 0 }

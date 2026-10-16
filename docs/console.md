@@ -139,9 +139,12 @@ A rig with no live runs says so. Runs that belong to no rig get their own list, 
 any rig".
 
 A rig can opt into the [Linear pull loop](beads.md#linear) with `rig add ... --linear <team id>`.
-Such a rig shows one more line. After a pull, the line is dim: "linear · pulled N · \<age\> ago".
-When the last pull failed, the line is red: "linear: \<error\>". A rig with no `--linear` team
-shows no line.
+Such a rig shows one more line.
+
+- After a pull that found new or updated beads, the dim line reads "linear · pulled N · \<age\> ago".
+- After a pull that found nothing new (the data was already fresh), the dim line reads "linear · fresh · \<age\> ago".
+- When the last pull failed, the red line reads "linear: \<error\>".
+- A rig with no `--linear` team shows no line.
 
 Use Rigs to see how full each rig is and whether any of its runs need you.
 

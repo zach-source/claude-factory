@@ -170,7 +170,11 @@ To run the sync now, use `factory linear [rig...] --force`. With no rig names, t
 
 A pull adds Linear labels to the beads it touches. A Linear label named `factory` can start a run by itself. To prevent this, the loop removes the `factory` label after each pull.
 
-The loop removes the label from every new bead in this pull. A new bead has a Linear external reference. If a bead already had the label before the pull, it keeps the label.
+The loop checks every bead that now carries the `factory` label for the first time. This can be a new bead, or an old bead the pull updated. If a bead already had the label before the pull, it keeps the label.
+
+The loop also checks for this label after a pull that errors or times out. The pull can label a bead before it fails.
+
+Sometimes the factory cannot confirm that it removed a label. This can happen when `bd label remove` fails, or when the check after it fails. The factory tries that bead first on the next pass, before any bead the new pass finds.
 
 A person's queue, not Linear's label, decides what the factory works on.
 

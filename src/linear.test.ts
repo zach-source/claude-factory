@@ -75,6 +75,22 @@ test('readLinearConfig refuses a literal key or secret, and the message does not
   rmSync(dir, { recursive: true, force: true })
 })
 
+test('readLinearConfig refuses invalid JSON, and the message does not echo an unquoted literal key', () => {
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, 'malformed.json')
+  // invalid JSON: the value needs quotes. Bun's own parse error names this literal text; bd 1.3.0 never
+  // writes malformed JSON, but a person can paste an unquoted key by hand.
+  writeFileSync(file, '{"apiKey": lin_api_fixtureNOTREAL}')
+  expect(() => readLinearConfig(file)).toThrow('invalid JSON')
+  try {
+    readLinearConfig(file)
+    throw new Error('did not throw')
+  } catch (err) {
+    expect((err as Error).message).not.toContain('lin_api_fixtureNOTREAL')
+  }
+  rmSync(dir, { recursive: true, force: true })
+})
+
 test('readLinearConfig refuses a file with neither shape', () => {
   mkdirSync(dir, { recursive: true })
   const file = join(dir, 'bad.json')
@@ -134,6 +150,15 @@ test('parseSync treats a nonzero exit with no parseable error field as an error 
   expect(parseSync('{"stats":{}}', 1)).toMatchObject({ error: expect.any(String) })
 })
 
+test('parseSync falls back to stderr when stdout has no usable detail', () => {
+  expect(parseSync('', 1, 'panic: dial tcp timeout\nmore lines')).toEqual({
+    error: 'panic: dial tcp timeout',
+  })
+  expect(parseSync('{"stats":{}}', 1, 'panic: dial tcp timeout')).toEqual({
+    error: 'bd linear sync exited 1: panic: dial tcp timeout',
+  })
+})
+
 test('redact blanks every secret value in the text and clips it to 200 chars', () => {
   const long = `failed: key lin_api_SECRETVALUE rejected ${'x'.repeat(250)}`
   const out = redact(long, ['lin_api_SECRETVALUE'])
@@ -159,6 +184,7 @@ const bin = join(cdir, 'bin')
 const calls = join(cdir, 'calls.log')
 const mode = join(cdir, 'mode') // fresh | pulled | error, read by the fake bd's `linear sync`
 const listTurn = join(cdir, 'list-turn') // counts `bd list` calls, so before/after differ
+const failLabel = join(cdir, 'fail-label') // an id `bd label remove` exits 1 for, when this file names it
 
 const TEAM = '04114abf-ddb7-4a6f-bb47-814fd2c44373'
 const repoA = join(cdir, 'repo-a')
@@ -174,10 +200,14 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 
-/** fake bd: `linear sync` answers from $mode (fresh|pulled|error); `list` answers [] the first time (no
- * bead carries the label yet) and one newly-labeled bead the second time, so the strip step has exactly
- * one new id to act on; `label remove` and anything else just logs and exits 0. Every call appends one
- * line: its argv, its cwd, and the three LINEAR_* env vars it saw (empty when unset). */
+/**
+ * This is the fake bd.
+ * `linear sync` answers from $mode: fresh, pulled, or error.
+ * `list` answers [] the first time. No bead carries the label yet.
+ * `list` answers one newly-labeled bead the second time. The strip step then has exactly one new id to act on.
+ * `label remove` exits 1 for the id named in $failLabel. It exits 0 for every other id, and for every other call.
+ * Every call appends one line to the log: its argv, its cwd, and the three LINEAR_* env vars it saw (empty when unset).
+ */
 function fakeBd() {
   mkdirSync(bin, { recursive: true })
   const script = [
@@ -197,7 +227,10 @@ function fakeBd() {
     '      1) printf \'%s\' \'[{"id":"acme-old"}]\';;',
     '      *) printf \'%s\' \'[{"id":"acme-old"},{"id":"acme-new"}]\';;',
     '    esac;;',
-    '  label) exit 0;;',
+    '  label)',
+    `    f=$(cat ${failLabel} 2>/dev/null || echo "")`,
+    '    [ "$2" = "remove" ] && [ -n "$f" ] && [ "$3" = "$f" ] && exit 1',
+    '    exit 0;;',
     '  *) exit 0;;',
     'esac',
   ].join('\n')
@@ -298,6 +331,37 @@ test('a sync error is recorded redacted (no secret value) and clipped, in linear
   expect(state.a.error.length).toBeLessThanOrEqual(201)
 })
 
+test('a sync error still strips a bead the pull newly labeled before it erred (claude-factory-b6c.8)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  linearJson({ apiKey: 'printf test-key-123' })
+  writeFileSync(mode, 'error')
+  factory(['linear'])
+  const removes = callLines().filter(l => argvOf(l).startsWith('label remove'))
+  expect(removes).toHaveLength(1)
+  expect(argvOf(removes[0]!)).toBe('label remove acme-new factory')
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.error).toBeTruthy()
+  expect(state.a.unstripped).toBeUndefined() // the strip succeeded: nothing left to retry
+})
+
+test('a bead whose label remove fails is queued and retried first next pass (claude-factory-b6c.9)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  linearJson({ apiKey: 'printf test-key-123' })
+  writeFileSync(failLabel, 'acme-new')
+  factory(['linear'])
+  let state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.unstripped).toEqual(['acme-new']) // the attempt failed: recorded, not counted as stripped
+  expect(state.a.stripped).toBe(0)
+
+  rmSync(failLabel, { force: true })
+  factory(['linear', '--force'])
+  const removes = callLines().filter(l => argvOf(l).startsWith('label remove acme-new'))
+  expect(removes.length).toBeGreaterThanOrEqual(2) // the failed attempt, then the retry
+  state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.unstripped).toBeUndefined()
+  expect(state.a.stripped).toBeGreaterThanOrEqual(1)
+})
+
 test('a fresh skip is recorded, with no label strip (nothing new to strip)', () => {
   writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
   linearJson({ apiKey: 'printf test-key-123' })
@@ -377,4 +441,52 @@ test('a failing rig mails the manager once; the same error again mails nothing m
   const fourth = linearMailOf(tickJson())
   expect(fourth).toHaveLength(1)
   expect(fourth[0]!.text).toContain('boom2')
+})
+
+test('factory beads runs the Linear pass too, not only factory linear (claude-factory-b6c.11)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  linearJson({ apiKey: 'printf test-key-123' })
+  factory(['beads'])
+  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(1)
+  const state = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+  expect(state.a.pulled).toBe(2)
+})
+
+test("factory linear holds beads.lock, so it never races a tick's beadsPass (claude-factory-b6c.10)", () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  linearJson({ apiKey: 'printf test-key-123' })
+  blockBeadsKick() // simulates a live beadsPass already holding the lock
+  const out = factory(['linear'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('beads.lock')
+  expect(callLines().filter(l => argvOf(l).startsWith('linear sync'))).toHaveLength(0)
+})
+
+test('factory linear fails naming an unknown rig, and a rig not opted into the loop, writing nothing (claude-factory-b6c.12)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle' }]) // no --linear: not opted in
+  linearJson({ apiKey: 'printf test-key-123' })
+
+  const unknown = factory(['linear', 'nope'])
+  expect(unknown.code).not.toBe(0)
+  expect(unknown.err).toContain('no rig "nope"')
+
+  const notOptedIn = factory(['linear', 'a'])
+  expect(notOptedIn.code).not.toBe(0)
+  expect(notOptedIn.err).toContain('"a"')
+  expect(notOptedIn.err).toContain('not opted')
+
+  expect(callLines()).toHaveLength(0)
+})
+
+test('factory linear fails, naming why, when the factory is halted (claude-factory-b6c.12)', () => {
+  writeRigs([{ name: 'a', repo: repoA, factory: 'lifecycle', linear: [TEAM] }])
+  linearJson({ apiKey: 'printf test-key-123' })
+  writeFileSync(
+    join(home, 'halt.json'),
+    JSON.stringify({ state: 'stopping', at: Date.now(), told: {}, closed: {} }),
+  )
+  const out = factory(['linear'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('stopping')
+  expect(callLines()).toHaveLength(0)
 })
