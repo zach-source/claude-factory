@@ -6,6 +6,17 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: the worker `PreToolUse` hook in `src/worker-hook.ts` (claude-factory-cr6)
+  denied only `rm -r`/`rm -rf` and a `cd`+`rm` chain. A worker can still run a plain
+  `rm` on a `$variable` path or a glob, or on a path outside the worktree. One such
+  run (`rm -i "$TMPDIR_EVAL"/*`) stalled about 2 minutes on Claude Code's own
+  "possibly-empty variable path" prompt. Nobody answers that prompt. Claude Code
+  denies the command on its own, after the delay. `denyReason` now also denies any
+  `rm` (with any flags, or none) whose operand has one of these: a `$` or `~`
+  expansion, a glob character (`*`, `?`, `[`), or a path outside the worktree root.
+  `main()` picks the root from `CLAUDE_PROJECT_DIR`, then the hook input's `cwd`,
+  then `process.cwd()`. The reason text stays the same one `REASON` constant. The
+  hook still only denies a command; it never approves one. (claude-factory-99d)
 - The console's Interview tab now shows a short item for each question. Each item has a
   title (the run or bead id, and the decision in plain words). Each item has one line of
   context, and 2-4 options. Each option has a label and an effect. A `details` toggle holds
