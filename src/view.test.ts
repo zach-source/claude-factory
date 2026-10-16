@@ -106,7 +106,8 @@ test('patrol skips a due heartbeat with an unchanged board, but still caps a lon
   expect(patrol([{ ...working, node: 'verify' }], [], new Set(), true, [], beat.sig)!.text).toContain(
     'r1 at verify',
   )
-  // mail wakes the manager even when the board is unchanged; the text says so instead of repeating it
+  // mail wakes the manager even when the board is unchanged; a cold subagent has no memory of the
+  // last patrol, so the full board goes out every time regardless of sig
   const mail = patrol(
     [working],
     [{ run: 'r1', from: 'plan', text: 'Redis OK?', at: 2 }],
@@ -115,8 +116,8 @@ test('patrol skips a due heartbeat with an unchanged board, but still caps a lon
     [],
     beat.sig,
   )!
-  expect(mail.text).toContain('Board and rig goals: unchanged')
-  expect(mail.text).not.toContain('Add /health')
+  expect(mail.text).not.toContain('Board and rig goals: unchanged')
+  expect(mail.text).toContain('Add /health')
   const long = patrol(
     [working],
     [{ run: 'r1', from: 'plan', text: 'x'.repeat(5000), at: 2 }],
@@ -124,6 +125,56 @@ test('patrol skips a due heartbeat with an unchanged board, but still caps a lon
     false,
   )!
   expect(long.text.length).toBeLessThan(600)
+})
+
+test('patrol holds a run the main chat touched: marks its row, keeps its mail, drops its key', () => {
+  const working = { id: 'r1', node: 'implement', sub: 'working', goal: 'Add /health', since: 1 }
+  const hold = new Set(['r1'])
+
+  // held mail alone, with no heartbeat due, wakes nobody
+  expect(
+    patrol(
+      [working],
+      [{ run: 'r1', from: 'plan', text: 'Redis OK?', at: 2 }],
+      new Set(),
+      false,
+      [],
+      undefined,
+      hold,
+    ),
+  ).toBeNull()
+
+  // a heartbeat still carries the board, with the held run's row marked
+  const beat = patrol([working], [], new Set(), true, [], undefined, hold)!
+  expect(beat.text).toContain('- r1 at implement/working, held: the person is on it, leave it: Add /health')
+
+  // mail for an unheld run still wakes the patrol; the held run's mail is kept, not reported, and
+  // a held blocked worker's key is dropped so it is reported again once the hold clears
+  const blocked = { ...working, agent: 'blocked', pane: 'w1:p2' }
+  const other = { id: 'r2', node: 'implement', sub: 'working', goal: 'Add metrics', since: 1 }
+  const mail = patrol(
+    [blocked, other],
+    [
+      { run: 'r1', from: 'plan', text: 'Redis OK?', at: 2 },
+      { run: 'r2', from: 'plan', text: 'DB OK?', at: 3 },
+    ],
+    new Set(),
+    false,
+    [],
+    undefined,
+    hold,
+  )!
+  expect(mail.text).toContain('DB OK?')
+  expect(mail.text).not.toContain('Redis OK?')
+  expect(mail.kept).toEqual([{ run: 'r1', from: 'plan', text: 'Redis OK?', at: 2 }])
+  expect(mail.keys).not.toContain('r1:implement:1')
+})
+
+test('patrol lists earlier patrols, so a cold subagent knows what already happened', () => {
+  const working = { id: 'r1', node: 'implement', sub: 'working', goal: 'Add /health', since: 1 }
+  const log = ['mailed implement: a nudge', 'answered a gate: ship']
+  const beat = patrol([working], [], new Set(), true, [], undefined, new Set(), log)!
+  expect(beat.text).toContain('Earlier patrols:\n- mailed implement: a nudge\n- answered a gate: ship')
 })
 
 test('patrol skips a heartbeat when only time facts moved, but wakes on any real change', () => {
@@ -154,7 +205,8 @@ test('patrol skips a heartbeat when only time facts moved, but wakes on any real
   expect(patrol([run(), run({ id: 'r2' })], [], new Set(), true, [rig], beat.sig)).not.toBeNull()
   // lastSig undefined always wakes a due heartbeat with the whole board
   expect(patrol([run()], [], new Set(), true, [rig])).not.toBeNull()
-  // mail still wakes even with an equal sig, but says the board is unchanged
+  // mail still wakes even with an equal sig, and still carries the full board: a cold subagent has
+  // no memory of the last patrol to compare 'unchanged' against
   const mail = patrol(
     [run()],
     [{ run: 'r1', from: 'plan', text: 'Redis OK?', at: 2 }],
@@ -163,7 +215,8 @@ test('patrol skips a heartbeat when only time facts moved, but wakes on any real
     [rig],
     beat.sig,
   )!
-  expect(mail.text).toContain('Board and rig goals: unchanged')
+  expect(mail.text).not.toContain('Board and rig goals: unchanged')
+  expect(mail.text).toContain('Add /health')
 
   // quietMin moving from absent to present wakes once, on its own
   const quiet = patrol([run({ quietMin: undefined })], [], new Set(), true, [rig])!
