@@ -26,6 +26,19 @@ const DENY = [
   'timeout 5 rm -rf x',
 ]
 
+// a $variable or glob target, any rm flags (or none): claude-factory-99d.1
+const DENY_VAR_OR_GLOB = [
+  'rm -i "$X"/*',
+  'rm $X',
+  'rm "${X}"',
+  'rm -- $X',
+  'rm -f .scratch/*.md',
+  'rm a?.md',
+  'rm [ab].md',
+  'rm $(ls)',
+  "bash -c 'rm $X'",
+]
+
 const ALLOW = [
   'git -C .scratch/x status',
   'rm -f .scratch/a.md',
@@ -41,18 +54,51 @@ const ALLOW = [
   '',
 ]
 
+// stay allowed even though they mention $ or a glob char, because none is an rm operand: claude-factory-99d.1
+const ALLOW_VAR_OR_GLOB = ['echo $X', 'ls *.md', "git rm '*.md'"]
+
+const ROOT = '/w'
+
+// an rm operand outside ROOT, checked with denyReason(cmd, ROOT): claude-factory-99d.2
+const DENY_OUTSIDE_ROOT = ['rm -f /tmp_x', 'rm -f ../x', 'rm ~/x', 'rm /w/../etc/x', 'rm /w']
+
+// an rm operand inside ROOT, checked with denyReason(cmd, ROOT): claude-factory-99d.2
+const ALLOW_INSIDE_ROOT = [
+  'rm -f .scratch/a.md',
+  'rm .scratch/a.md',
+  'rm /w/.scratch/a.md',
+  'rm -f a.md',
+  'rm -- -r',
+]
+
 test.each(DENY)('denyReason denies %j', cmd => {
   expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each(DENY_VAR_OR_GLOB)('denyReason denies an rm with a $variable or glob target %j', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each(DENY_OUTSIDE_ROOT)('denyReason denies an rm outside the root %j', cmd => {
+  expect(denyReason(cmd, ROOT)).toBe(REASON)
 })
 
 test.each(ALLOW)('denyReason allows %j (fails open to the normal prompt)', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
 
+test.each(ALLOW_VAR_OR_GLOB)('denyReason allows %j (no rm operand)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test.each(ALLOW_INSIDE_ROOT)('denyReason allows an rm inside the root %j', cmd => {
+  expect(denyReason(cmd, ROOT)).toBeUndefined()
+})
+
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
-async function run(stdin: string) {
-  const p = Bun.spawn(['bun', HOOK], { stdin: new Response(stdin), stdout: 'pipe', stderr: 'pipe' })
+async function run(stdin: string, env?: Record<string, string | undefined>) {
+  const p = Bun.spawn(['bun', HOOK], { stdin: new Response(stdin), stdout: 'pipe', stderr: 'pipe', env })
   const out = await new Response(p.stdout).text()
   const code = await p.exited
   return { out, code }
@@ -78,4 +124,26 @@ test('run as `bun src/worker-hook.ts`, an allow command, a non-Bash tool or bad 
   expect(other).toEqual({ out: '', code: 0 })
   const bad = await run('not json')
   expect(bad).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-factory-99d.2', async () => {
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  const deny = await run(
+    JSON.stringify({ tool_name: 'Bash', cwd: '/w', tool_input: { command: 'rm -f /tmp_x' } }),
+    env,
+  )
+  expect(deny.code).toBe(0)
+  expect(JSON.parse(deny.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: REASON,
+    },
+  })
+  const allow = await run(
+    JSON.stringify({ tool_name: 'Bash', cwd: '/w', tool_input: { command: 'rm -f /w/a.md' } }),
+    env,
+  )
+  expect(allow).toEqual({ out: '', code: 0 })
 }, 10_000)

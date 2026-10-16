@@ -1,21 +1,28 @@
 /**
- * This is a Claude Code PreToolUse hook for Bash.
- * It denies `rm -r` and `rm -rf`, in any spelling or wrapper.
- * It also denies a chain of commands that holds both a `cd` and an `rm`.
- * It gives a reason immediately. The worker reads the reason and continues.
+ * This PreToolUse hook for Bash denies `rm -r` and `rm -rf` in all spellings or wrappers.
+ * It denies a chain of commands that holds a `cd` command and an `rm` command.
+ * It denies an `rm` command with a target that holds a `$variable` expansion or a glob.
+ * It denies an `rm` command with a target that resolves to a path external to the worktree root (claude-factory-99d).
+ * It gives the reason at once, and the worker reads it and goes on.
  * The worker does not wait 2 minutes for Claude Code's own permission prompt.
  *
  * The prompt-only fix of claude-factory-9wu (src/worker-system.md) was not enough.
- * Two workers stopped at the prompt after PR #38 merged: lifecycle-mva1ki70a9 and lifecycle-mva7smkfhf.
+ * After PR #38 merged, two workers stopped at the prompt: lifecycle-mva1ki70a9 and lifecycle-mva7smkfhf.
+ * A later worker (lifecycle-mvaf3xiato) stopped the same way on `rm -i "$X"/*`.
+ * The -r/-rf check alone did not catch a variable or glob target with no recursive flag.
  *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
- * claude-factory-9wu rejected another design as a safety regression: a hook that approves `rm -rf`.
- * If a parse error occurs, the hook fails open. It prints nothing. Claude Code's own prompt stays the backstop.
+ * claude-factory-9wu rejected another design: a hook that approves `rm -rf`, which is a safety regression.
+ * If a parse error occurs, the hook fails open and prints nothing.
+ * Claude Code's own prompt stays the backstop.
  */
 
+import { resolve as resolvePath } from 'node:path'
+
 export const REASON =
-  'The factory denies this command: do not run rm -r or rm -rf, and do not chain cd with rm. ' +
+  'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
+  'rm a $variable path, a glob, or a path outside the worktree. ' +
   'Leave .scratch as is, use a new subfolder (for example .scratch/<name>-2): git ignores .scratch/. ' +
   'Use absolute paths or git -C <dir> in place of cd. Do not retry this command.'
 
@@ -118,6 +125,43 @@ function isRecursiveRm(words: string[]): boolean {
   return false
 }
 
+/**
+ * Returns the operands of an rm command. `words[0]` is the rm word itself.
+ * An operand is a non-flag word before a `--`, or any word after a `--`
+ * (a word there can start with `-` and still be a path).
+ */
+function rmTargets(words: string[]): string[] {
+  const targets: string[] = []
+  let afterDashDash = false
+  for (const w of words.slice(1)) {
+    if (afterDashDash) {
+      targets.push(w)
+      continue
+    }
+    if (w === '--') {
+      afterDashDash = true
+      continue
+    }
+    if (!w.startsWith('-')) targets.push(w)
+  }
+  return targets
+}
+
+/**
+ * Checks rm target `t` for risk.
+ * A `$` expansion, a glob char (`*`, `?`, `[`), or a leading `~` makes `t` risky.
+ * A path that resolves outside `root` also makes `t` risky, when the caller passes `root`.
+ * `root` itself counts as outside, so `rm <root>` is risky too.
+ * When the caller omits `root`, an absolute path or a path with a `..` segment is risky instead.
+ */
+function riskyTarget(t: string, root?: string): boolean {
+  if (/[$*?[]/.test(t) || t.startsWith('~')) return true
+  if (root === undefined) return t.startsWith('/') || t.split('/').includes('..')
+  const base = root.endsWith('/') ? root.slice(0, -1) : root
+  const resolved = resolvePath(base, t)
+  return !resolved.startsWith(base + '/')
+}
+
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   let w = words
@@ -147,8 +191,11 @@ function realCommand(words: string[]): string[] {
   }
 }
 
-/** the reason to deny `command`, or undefined to let Claude Code's own prompt decide */
-export function denyReason(command: string): string | undefined {
+/**
+ * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
+ * `root` is the worktree root; an rm operand outside it is risky too (see riskyTarget).
+ */
+export function denyReason(command: string, root?: string): string | undefined {
   if (!command) return undefined
   let hasRm = false
   let hasCd = false
@@ -157,14 +204,14 @@ export function denyReason(command: string): string | undefined {
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     if (b === 'rm') {
-      if (isRecursiveRm(cmd)) return REASON
+      if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'sh' || b === 'bash' || b === 'zsh' || b === 'dash') {
       const ci = cmd.indexOf('-c')
       if (ci >= 0 && cmd[ci + 1] !== undefined) {
-        const r = denyReason(cmd[ci + 1]!)
+        const r = denyReason(cmd[ci + 1]!, root)
         if (r) return r
       }
     } else if (b === 'find') {
@@ -186,9 +233,12 @@ async function main() {
   } catch {
     return
   }
-  const i = input as { tool_name?: string; tool_input?: { command?: string } }
+  const i = input as { tool_name?: string; cwd?: string; tool_input?: { command?: string } }
   if (i?.tool_name !== 'Bash') return
-  const reason = denyReason(i.tool_input?.command ?? '')
+  // Claude Code sets CLAUDE_PROJECT_DIR to the worktree root for a hook; input.cwd can be a
+  // subdir of it after a `cd`, so it is only the second choice for root.
+  const root = process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd()
+  const reason = denyReason(i.tool_input?.command ?? '', root)
   if (!reason) return
   console.log(
     JSON.stringify({

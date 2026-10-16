@@ -1083,7 +1083,10 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   return address
 }
 
-/** A PreToolUse entry that runs `bun` on `file`. It denies rm -r/-rf and cd+rm chains. It gives a reason. */
+/**
+ * A PreToolUse entry that runs `bun` on `file`. It denies rm -r/-rf, a cd+rm chain, an rm with a
+ * $variable or glob target, and an rm outside the worktree root. It gives a reason.
+ */
 const denyHook = (bun: string, file: string) => ({
   matcher: 'Bash',
   hooks: [{ type: 'command', command: `${sq(bun)} ${sq(file)}`, timeout: 10 }],
@@ -1097,7 +1100,7 @@ const denyHook = (bun: string, file: string) => ({
  * So a VM worker gets no `asd-ste100` plugin and no STE env. claude-factory-fxu tracks that gap.
  * `disableBundledSkills` turns off the bundled-skill list of `Skill`. No skill in the VM earns that cost yet.
  *
- * It gets one hook. The hook is the same deny-rm-rf PreToolUse hook that a laptop worker gets (claude-factory-cr6).
+ * It gets one hook. The hook is the same deny-rm PreToolUse hook that a laptop worker gets (claude-factory-cr6, claude-factory-99d).
  * The VM image runs its own copy of `worker-hook.ts`, at `${ax.FACTORY_DIR}/src/worker-hook.ts`.
  */
 export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
@@ -1332,7 +1335,7 @@ function runTokenSwap(
  * It compacts well past the handoff limit too, only as a backstop.
  * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
  * One plugin stays in: `asd-ste100`, so the worker still writes in ASD-STE100; `disableBundledSkills` keeps its skill alone.
- * `hooks.PreToolUse` keeps the user's own entries first and adds the deny-rm-rf hook last (claude-factory-cr6).
+ * `hooks.PreToolUse` keeps the user's own entries first and adds the deny-rm hook last (claude-factory-cr6, claude-factory-99d).
  */
 export const workerSettings = (
   user: {
