@@ -181,6 +181,23 @@ test('herdr installed but its call fails: no launch script removed (AC5)', () =>
   expect(out.out).toContain('removed no launch script')
 })
 
+// Here herdr prints a well-formed, empty pane list, then exits with code 1.
+// The exit code alone must set the result to null. The shape of stdout must not change this.
+// An empty list and a missing exit check give the same safe result here, by chance.
+// The real risk is a herdr that exits nonzero after it drops a pane that is in fact live.
+// This test pins the exit code as the one true signal.
+test('herdr exits nonzero even with a well-formed pane list on stdout: no launch script removed (AC5)', () => {
+  reset()
+  const f = writeLaunchScript('deadpane', 2 * 3_600_000)
+  const badHerdr = join(dir, 'bad-herdr-2')
+  writeFileSync(badHerdr, `#!/bin/sh\nprintf '{"result":{"panes":[]}}\\n'\nexit 1\n`)
+  chmodSync(badHerdr, 0o755)
+  const out = factory(['gc'], { FACTORY_HERDR: badHerdr })
+  expect(out.code).toBe(0)
+  expect(existsSync(f)).toBe(true)
+  expect(out.out).toContain('removed no launch script')
+})
+
 test('a working herdr: a dead pane old enough is removed, a live one and a young dead one are kept (AC5)', () => {
   reset()
   const dead = writeLaunchScript('dead', 2 * 3_600_000) // 2h dead: past LAUNCH_MIN_AGE_MS (1h)
