@@ -20,6 +20,8 @@ export type Bead = {
   metadata?: Record<string, unknown>
   /** `bd blocked` only: the beads whose open work holds this one back */
   blocked_by?: string[]
+  /** `bd linear pull` writes this to the issue's Linear URL; a person-made bead never carries one */
+  external_ref?: string
 }
 
 export const LABEL = 'factory'
@@ -38,9 +40,22 @@ export const goalOf = (b: Bead) =>
 /** its owner recorded decisions governing it (fabriek's pilots): the owner hands it out, not the factory */
 export const isOwned = (b: Bead) => !!b.metadata?.owner_decisions
 
-/** a `station:<name>` label starts the run there instead of at the factory's start */
+/**
+ * True when `bd linear pull` set this bead's `external_ref` to a Linear issue URL.
+ * `bd` copies every Linear label onto the bead, with no filter.
+ * Anyone with Linear write access can set such a label (claude-factory-b6c.27).
+ */
+export const linearSourced = (b: Bead) => !!b.external_ref?.toLowerCase().includes('linear.app')
+
+/**
+ * A `station:<name>` label starts the run there, not at the factory's start station.
+ * A person adds this label by hand: `bd create ... -l station:<name>`.
+ * A Linear-sourced bead (`linearSourced`) never uses this label to pick a station.
+ * A Linear-side label must never skip the stations before the named one (claude-factory-b6c.27).
+ * A person can still send such a run to a chosen station, with `factory fork <run> <station>`.
+ */
 export const stationOf = (b: Bead) =>
-  b.labels?.find(l => l.startsWith('station:'))?.slice('station:'.length) || undefined
+  (!linearSourced(b) && b.labels?.find(l => l.startsWith('station:'))?.slice('station:'.length)) || undefined
 
 /** a bead's parent: bd's parent-child edge, else the id's own `<parent>.<n>` */
 export const parentOf = (b: Bead) =>

@@ -6,6 +6,22 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Added: a Linear pull loop (claude-factory-b6c). A rig opts in with `factory rig add
+  ... --linear <team_id[,team_id]>` (or a `rigs.json` `linear.team` field, plus optional
+  `projects`/`labels` for routing). `tick()` runs `bd linear sync` for each opted-in rig
+  about every 20 minutes (`--pull-if-stale`, debounced). `src/linear.ts` lists each rig's
+  team on the Linear GraphQL API by issue identifier, never a URL. It routes each issue to
+  a rig by a `[<rig-name>] ...` project-name prefix, or by a configured project or label
+  match. It pulls only the routed issues, changed since the last good pull, into `bd`. The
+  loop never pushes. The Linear API key comes from a secret broker's Connect-style REST API,
+  read at run time. It reads the broker's 3 header values by env (`OP_CONNECT_TOKEN`,
+  `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`) or from the macOS Keychain service
+  `claude-factory`. The key never sits in a committed file. `bd linear pull` copies the `factory` and `station:*`
+  labels onto each pulled bead. The loop strips both labels. A failed strip holds dispatch,
+  so a Linear label can never pick a run's start station or start a run before the person
+  adds the `factory` label. `factory rig` and the console Rigs tab show each rig's last
+  pull time, its pulled, skipped and unrouted counts, and its last error. Each new error
+  reports once, not on every tick. See `docs/beads.md` for the full design.
 - Fixed: the worker `PreToolUse` hook in `src/worker-hook.ts` (claude-factory-cr6)
   denied only `rm -r`/`rm -rf` and a `cd`+`rm` chain. A worker can still run a plain
   `rm` on a `$variable` path or a glob, or on a path outside the worktree. One such

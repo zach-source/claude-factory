@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { backlogOf, beads, dispatchable, goalOf, isOwned, stationOf, type Bead } from './beads'
+import { backlogOf, beads, dispatchable, goalOf, isOwned, linearSourced, stationOf, type Bead } from './beads'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 
@@ -63,6 +63,18 @@ test('a bead becomes a goal and may name its station', () => {
   expect(stationOf(b)).toBe('incident')
   expect(stationOf(bead('fx-8', { labels: ['factory'] }))).toBeUndefined()
   expect(goalOf(bead('fx-7'))).toBe('fx-7: title fx-7')
+})
+
+test('a station label from a Linear pull never picks the start station (claude-factory-b6c.27)', () => {
+  const pulled = bead('fx-10', {
+    labels: ['factory', 'station:deploy'],
+    external_ref: 'https://linear.app/acme/issue/STI-1',
+  })
+  expect(linearSourced(pulled)).toBe(true)
+  expect(stationOf(pulled)).toBeUndefined() // a Linear-side label must not steer the start station
+  const byHand = bead('fx-11', { labels: ['factory', 'station:deploy'] })
+  expect(linearSourced(byHand)).toBe(false)
+  expect(stationOf(byHand)).toBe('deploy') // a person's own label still works
 })
 
 test("a bead carrying its owner's decisions is theirs, not the factory's", () => {

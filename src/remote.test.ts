@@ -815,6 +815,37 @@ test('rig add --egress warns on a mixed-case registry host too, since parseEgres
   expect(warned.err).toContain('PyPI.org is a package registry host')
 })
 
+test('rig add --linear writes team UUIDs to rigs.json, refuses a non-UUID naming it, and omits the key when absent', () => {
+  const r = repo()
+  const id1 = '04114abf-ddb7-4a6f-bb47-814fd2c44373'
+  const id2 = '11111111-2222-3333-4444-555555555555'
+  const before = existsSync(join(home, 'rigs.json'))
+    ? readFileSync(join(home, 'rigs.json'), 'utf8')
+    : undefined
+  const bad = factory(['rig', 'add', 'x', r, '--linear', 'not-a-uuid'])
+  expect(bad.code).not.toBe(0)
+  expect(bad.err).toContain('"not-a-uuid"')
+  expect(
+    existsSync(join(home, 'rigs.json')) ? readFileSync(join(home, 'rigs.json'), 'utf8') : undefined,
+  ).toBe(before)
+  const ok = factory(['rig', 'add', 'x', r, '--linear', `${id1},${id2}`])
+  expect(ok.code).toBe(0)
+  const rigged = JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8')).find(
+    (x: { name: string }) => x.name === 'x',
+  )
+  expect(rigged).toMatchObject({ linear: { team: [id1, id2] } })
+  const list = factory(['rig', 'list'])
+  expect(list.out).toContain(`linear: team ${id1},${id2}`)
+
+  // redefining the rig with no --linear drops the field: `rig add` replaces, it never merges
+  const plain = factory(['rig', 'add', 'x', r])
+  expect(plain.code).toBe(0)
+  const replaced = JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8')).find(
+    (x: { name: string }) => x.name === 'x',
+  )
+  expect(replaced.linear).toBeUndefined()
+})
+
 test("inside a VM Claude keeps the worker's tools and prompt but none of the laptop's settings", () => {
   const flags = vmClaudeFlags({ maxContextK: 150 })
   expect(flags.slice(0, 4)).toEqual([
