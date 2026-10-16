@@ -166,8 +166,26 @@ const connectHeaders = (creds: ConnectCreds): Record<string, string> => ({
  * with no 30-second wait. Production code never sets it. */
 const FETCH_TIMEOUT_MS = Number(process.env.FACTORY_LINEAR_FETCH_TIMEOUT_MS) || 30_000
 
+/**
+ * This is `fetch`, with `redirect: 'error'`. A 3xx response fails. It never forwards a request, or
+ * its secret headers, to the redirect's own target host (claude-factory-b6c.28). Neither the secret
+ * broker nor Linear's GraphQL endpoint sends a legitimate redirect.
+ *
+ * Bun's own error for this case names the request URL. `url` can be the secret broker's own private
+ * host. This function replaces that error with a fixed, generic one. It keeps the URL out of a
+ * caller's error text, out of a log, a bead, and mail (the same rule `redact()` applies elsewhere here).
+ */
+async function noRedirectFetch(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, redirect: 'error' })
+  } catch (err) {
+    if ((err as { code?: string }).code === 'UnexpectedRedirect') throw new Error('unexpected redirect')
+    throw err
+  }
+}
+
 async function connectGet(creds: ConnectCreds, path: string): Promise<unknown> {
-  const res = await fetch(`${creds.host}${path}`, {
+  const res = await noRedirectFetch(`${creds.host}${path}`, {
     headers: connectHeaders(creds),
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   })
@@ -373,7 +391,9 @@ export async function fetchLinearIssues(
   let after: string | undefined
   let truncated = false
   for (let page = 0; page < 50; page++) {
-    const res = await fetch(endpoint, {
+    // claude-factory-b6c.28: a redirect would forward the Authorization header (the Linear API key)
+    // to whatever host it names. Linear's own GraphQL endpoint never sends a legitimate redirect.
+    const res = await noRedirectFetch(endpoint, {
       method: 'POST',
       headers: { Authorization: apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({

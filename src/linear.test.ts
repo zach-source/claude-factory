@@ -219,6 +219,41 @@ test('resolveLinearApiKey fails with a generic message, naming neither the vault
   }
 })
 
+test('resolveLinearApiKey refuses a redirect from the secret broker, and never calls the redirect target (claude-factory-b6c.28)', async () => {
+  let targetCalls = 0
+  const target = Bun.serve({
+    port: 0,
+    fetch() {
+      targetCalls++
+      return Response.json([{ id: 'vault-1', name: 'test-vault' }])
+    },
+  })
+  const broker = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/v1/vaults') return Response.redirect(`${target.url}v1/vaults`, 302)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  try {
+    const creds = { host: broker.url.toString(), vault: 'test-vault', token: 't', cfId: 'i', cfSecret: 's' }
+    await expect(resolveLinearApiKey(creds)).rejects.toThrow()
+    try {
+      await resolveLinearApiKey(creds)
+      throw new Error('did not throw')
+    } catch (err) {
+      // the error must name neither server's own URL (claude-factory-b6c.28, same rule as .14)
+      expect((err as Error).message).not.toContain(broker.url.toString())
+      expect((err as Error).message).not.toContain(target.url.toString())
+    }
+    expect(targetCalls).toBe(0) // the redirect was never followed: the broker's secret headers never left it
+  } finally {
+    broker.stop(true)
+    target.stop(true)
+  }
+})
+
 test('syncEnv sets LINEAR_API_KEY and LINEAR_TEAM_IDS, dropping every inherited LINEAR_* first (claude-factory-b6c.20)', () => {
   const base = {
     LINEAR_API_KEY: 'stale',
@@ -298,6 +333,25 @@ test('fetchLinearIssues reports truncated when a team has more than 50 pages (cl
     expect(issues).toHaveLength(50) // the cap: it reads exactly 50 pages, never the 51st
   } finally {
     fake.stop()
+  }
+})
+
+test('fetchLinearIssues refuses a redirect from the Linear API, and never calls the redirect target (claude-factory-b6c.28)', async () => {
+  let targetCalls = 0
+  const target = Bun.serve({
+    port: 0,
+    fetch() {
+      targetCalls++
+      return Response.json({ data: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: '' } } } })
+    },
+  })
+  const api = Bun.serve({ port: 0, fetch: () => Response.redirect(target.url.toString(), 302) })
+  try {
+    await expect(fetchLinearIssues('test-key', ['team-1'], api.url.toString())).rejects.toThrow()
+    expect(targetCalls).toBe(0) // the redirect was never followed: the Authorization header never left the API's own host
+  } finally {
+    api.stop(true)
+    target.stop(true)
   }
 })
 
