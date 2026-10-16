@@ -2744,8 +2744,13 @@ function gcPass(days: number, dryRun: boolean) {
   for (const r of plan.runs) {
     if (r.paths.includes('prompts')) {
       const dir = join(runDir(r.id), 'prompts')
-      // sessionsOf() still names each session's station after this, from the names this held
-      writeJson(promptsListFile(r.id), existsSync(dir) ? readdirSync(dir) : [])
+      const listFile = promptsListFile(r.id)
+      // Union with any names prompts.list already held (claude-factory-503.1.7): a goto revive
+      // after an earlier gc can have refilled prompts/ with only its new names, and overwriting
+      // the list here would lose the old station names sessionsOf() still needs.
+      const old = existsSync(listFile) ? readJson<string[]>(listFile) : []
+      const current = existsSync(dir) ? readdirSync(dir) : []
+      writeJson(listFile, [...new Set([...old, ...current])])
     }
     appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(r.id)) + '\n')
     for (const p of r.paths) rmSync(join(runDir(r.id), p), { recursive: true, force: true })

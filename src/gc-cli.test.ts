@@ -360,3 +360,25 @@ test('a half-made run dir beside an eligible run does not stop the pass (claude-
   expect(existsSync(join(d, 'prompts'))).toBe(false) // the eligible run was still pruned
   expect(out.err).toContain('zz-half-made') // the skipped dir is named, not silently dropped
 })
+
+// PR #59 review round 2 finding (claude-factory-503.1.7).
+// Before the fix, gcPass() wrote prompts.list = readdirSync(prompts/). This overwrote the old list.
+//
+// A goto revive can refill prompts/ with only its new names. A second gc pass must keep the old
+// names too. It must union the old prompts.list with the current prompts/ dir.
+test('a second prune after a revive keeps the old station names in prompts.list (claude-factory-503.1.7)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  const firstNames = readdirSync(join(d, 'prompts'))
+  expect(factory(['gc', '--days', '1']).code).toBe(0)
+  expect(JSON.parse(readFileSync(join(d, 'prompts.list'), 'utf8')).sort()).toEqual(firstNames.sort())
+
+  // a goto revive would recreate prompts/ with only its own new name; fake that directly
+  mkdirSync(join(d, 'prompts'), { recursive: true })
+  writeFileSync(join(d, 'prompts', '2-verify.md'), 'the second brief')
+
+  expect(factory(['gc', '--days', '1']).code).toBe(0)
+  const names = JSON.parse(readFileSync(join(d, 'prompts.list'), 'utf8'))
+  expect(names.sort()).toEqual([...firstNames, '2-verify.md'].sort())
+})
