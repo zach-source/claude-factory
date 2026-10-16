@@ -252,3 +252,42 @@ test('a second gc that finds gc.lock already held exits 0 with a note, deleting 
   expect(out.out).toContain('already running')
   expect(existsSync(join(d, 'prompts'))).toBe(true)
 })
+
+// PR #59 review finding 1 (claude-factory-503.1.5). gc removes runs/<id>/prompts/. `goto` can then
+// revive the run. spawn() and resumeFile() write into prompts/ with no mkdir. The revived run must
+// still start a worker, with no ENOENT.
+test('a goto revive after gc recreates prompts/ and starts a worker with no ENOENT (claude-factory-503.1.5)', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  expect(factory(['gc', '--days', '1']).code).toBe(0)
+  expect(existsSync(join(d, 'prompts'))).toBe(false) // gc removed it
+
+  expect(factory(['goto', id, 'implement']).code).toBe(0) // queues a GOTO; the next tick drains it
+
+  const okHerdr = join(dir, 'ok-herdr-revive')
+  writeFileSync(
+    okHerdr,
+    [
+      '#!/bin/sh',
+      'case "$1 $2" in',
+      '  "tab create") printf \'{"result":{"root_pane":{"pane_id":"p1"}}}\\n\' ;;',
+      '  "pane run") exit 0 ;;',
+      "  *) echo '{}' ;;",
+      'esac',
+    ].join('\n'),
+  )
+  chmodSync(okHerdr, 0o755)
+  const out = factory(['tick'], {
+    FACTORY_HERDR: okHerdr,
+    // no .claude.json at this path: isTrusted() hits its catch branch and reads as trusted, so the
+    // worker starts instead of parking at "awaiting trust" (see start.test.ts for the opposite case)
+    CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+  })
+  expect(out.code).toBe(0)
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === id)
+  expect(row.error).toBeFalsy()
+  expect(row.pane).toBe('p1')
+  expect(existsSync(join(d, 'prompts'))).toBe(true) // recreated, not left missing
+  expect(readdirSync(join(d, 'prompts'))).toContain('2-implement.md')
+})

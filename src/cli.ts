@@ -972,7 +972,11 @@ const runnerOfStation = (run: Run, def: Factory, node: string) =>
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   const full = () => brief(run, def, node, c, c.mail[node] ?? [])
-  if (!session) writeFileSync(file, full())
+  // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
+  if (!session) {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, full())
+  }
   return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
 }
 
@@ -1170,6 +1174,8 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
 /** the note a resumed worker is sent, written where its launch reads it */
 function resumeFile(run: Run, node: string, c: Ctx) {
   const file = promptOf(run, node, c).replace(/\.md$/, '-resume.md')
+  // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
+  mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, resumeNote(run, node, c))
   return file
 }
@@ -4299,12 +4305,15 @@ function sessionsOf(run: Run): Session[] {
   if (!existsSync(dir)) return []
   const prompts = join(runDir(run.id), 'prompts')
   const listFile = promptsListFile(run.id)
-  // gc can have removed prompts/ already; it leaves prompts.list with the names that were in it
-  const names = existsSync(prompts)
-    ? readdirSync(prompts)
-    : existsSync(listFile)
-      ? readJson<string[]>(listFile)
-      : []
+  // gc can have removed prompts/, leaving prompts.list with the names that were in it. A goto
+  // revive after gc recreates prompts/ with only the new names: union both so old station names
+  // survive the revive (claude-factory-503.1.5).
+  const names = [
+    ...new Set([
+      ...(existsSync(listFile) ? readJson<string[]>(listFile) : []),
+      ...(existsSync(prompts) ? readdirSync(prompts) : []),
+    ]),
+  ]
   const nodes = new Map(
     names.flatMap(f => {
       const m = /^(\d+)-(.+)\.md$/.exec(f)
