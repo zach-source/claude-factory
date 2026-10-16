@@ -478,6 +478,13 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * past position 0. `realCommand` only strips a wrapper word it knows; it does not know these
  * flags, so it leaves the shell word in place and `baseWord(cmd[0])` never finds it. This scans
  * every word position instead, the same fail-closed scan `anyLiveApplyWord` uses.
+ * claude-factory-25z.17: the `eval` case reads every word from `j + 1` on. The `sh -c` case reads
+ * the one script word. A later loop step must not read those same words again in a new recursion.
+ * The old code did read them again at each later `j`. Each extra read doubled the work of the one
+ * before it. A command with many stacked `eval` words then took exponential time. It could time
+ * out the 10 s hook, instead of a deny or an allow. So a shell or `eval` word now consumes every
+ * word after it. The loop moves `j` past the script, or (for `eval`) stops: no word after a bare
+ * `eval` has a use outside its own joined rest.
  */
 function anyShellReason(
   words: string[],
@@ -492,6 +499,8 @@ function anyShellReason(
       if (scriptWord !== undefined) {
         const r = denyReason(scriptWord, root, personOnly)
         if (r) return r
+        j += ci + 1
+        continue
       }
     } else if (bw === 'eval') {
       const rest = words.slice(j + 1)
@@ -499,6 +508,7 @@ function anyShellReason(
         const r = denyReason(rest.join(' '), root, personOnly)
         if (r) return r
       }
+      break
     }
   }
   return undefined

@@ -205,6 +205,23 @@ test.each([...DENY_LIVE, ...ALLOW_LIVE])(
   },
 )
 
+// claude-factory-25z.17: a stack of `eval` words timed out the 10 s hook. The old anyShellReason
+// re-read the same words at each later loop step. Each re-read doubled the cost of the one
+// before it. 24 stacked `eval` words took 5 seconds on this machine, pre-fix. After the fix, this
+// takes a few milliseconds. The test gives bun a short timeout, so the old code shows red (a
+// reported timeout) instead of a slow pass, and the fixed code shows green well inside the
+// timeout. This test does not read or assert the elapsed time: `test()`'s own timeout does the
+// check.
+const STACKED_EVAL = Array(24).fill('eval').join(' ')
+
+test('denyReason denies a live-apply command behind a stack of eval words, fast (claude-factory-25z.17)', () => {
+  expect(denyReason(`${STACKED_EVAL}; kubectl --context acme apply -f x`, undefined, ACME)).toBe(LIVE_REASON)
+}, 500)
+
+test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-factory-25z.17)', () => {
+  expect(denyReason(`${STACKED_EVAL}; rm -rf x`)).toBe(REASON)
+}, 500)
+
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
 async function run(stdin: string, env?: Record<string, string | undefined>, argv: string[] = []) {

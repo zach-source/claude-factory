@@ -195,6 +195,12 @@ the worker does not know its current context. The hook matches context and clust
 It cannot resolve a shell expansion. So it also refuses a `--context` or a kubectl `--cluster`
 value that is not a literal name, such as `$CTX` or a backtick.
 
+The hook reads only the command text Claude Code is about to run, so it stops a worker that
+runs the command directly. It cannot read a script that reaches a shell by another path: a pipe
+(`echo "kubectl --context acme apply -f x" | bash`), a here-string, `env -S`, `su -c`,
+`nix-shell --run`, or a variable or `$(...)` that holds the real command. The brief's own rule
+still applies there.
+
 A worker's brief carries this rule too, in the Rig goal section. The worker reports blocked
 with the exact command, instead of running it. The guard does not cover a person's own
 session or the manager's session. A person runs the live change.
