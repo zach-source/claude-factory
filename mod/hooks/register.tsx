@@ -427,27 +427,30 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
   const given = [choice, typed.trim()].filter(Boolean).join(': ')
   const at = await $.clock.now()
   const entries: NonNullable<FactoryDraft['interviewed']> = []
-  const record = async () =>
+  // Clear the typed reply only when every member succeeds. If a member's mail, decisions answer, or
+  // start fails, keep the typed reply. The person does not lose their text when part of the round
+  // fails. Still flush `entries`: a member that already succeeded this round does not ask again.
+  const flush = async (clearReply: boolean) =>
     update($, draft, d => ({
       ...d,
-      replies: { ...d.replies, [iv.key]: '' },
+      replies: clearReply ? { ...d.replies, [iv.key]: '' } : d.replies,
       interviewed: [...(d.interviewed ?? []), ...entries].slice(-100),
     }))
   for (const member of [iv, ...(iv.also ?? [])]) {
     const text = interviewAnswer(member, choice, typed)
     if (!text) {
-      await record()
+      await flush(false)
       return $.ui.toast('factory: pick an option or type an answer')
     }
     if (member.kind === 'bead' || member.kind === 'owned') {
-      if (!(await act($, ['decisions', 'answer', member.rig!, member.bead!, text]))) return await record()
+      if (!(await act($, ['decisions', 'answer', member.rig!, member.bead!, text]))) return await flush(false)
       if (member.kind === 'owned' && choice === 'start now') {
         const row = (await read($, decisions)).rigs.find(r => r.rig === member.rig)
         if (!(await act($, ['start', row?.factory ?? 'lifecycle', member.rig!, member.bead!, '--owned'])))
-          return await record()
+          return await flush(false)
       }
     } else {
-      if (!(await act($, ['mail', member.run!, member.node!, text]))) return await record()
+      if (!(await act($, ['mail', member.run!, member.node!, text]))) return await flush(false)
       if (member.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', member.run!])
     }
     rt.unsent.push({
@@ -468,7 +471,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
       at,
     })
   }
-  await record()
+  await flush(true)
 }
 
 /** herdr focuses the worker's pane: the person takes over that terminal */

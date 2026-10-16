@@ -601,3 +601,53 @@ test(
     await ui.unmount()
   },
 )
+
+test(
+  'a failed mail on the only member keeps the typed reply, instead of wiping it (claude-factory-9f6.16)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      // the station is gone from the board between tick and send, as a real mail failure would be
+      if (e.argv.includes('mail'))
+        return { value: { exitCode: 1, stdout: '', stderr: 'no such run' } as never }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
+          stderr: '',
+        } as never,
+      }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    // type a note (onInput only, no submit) before picking an option
+    await ui.input({ key: 'iv-reply-iv:r1@1', text: 'my note', kind: 'change' } as never)
+    await clock.settle()
+    await ui.press({ key: 'iv-opt-iv:r1@1-0' }) // 'the ADR'
+    await clock.settle()
+    expect(ran.some(a => a.includes('mail'))).toBe(true)
+    const drawn = JSON.stringify(await ui.drawn())
+    // the mail failed, so the item is not recorded as answered, and the typed note is not wiped
+    expect(drawn).toContain('questions (1)')
+    expect(drawn).not.toContain('answered (1)')
+    expect(drawn).toContain(
+      '"key":"iv-reply-iv:r1@1","placeholder":"pick an option, add a note, or answer in your words","value":"my note"',
+    )
+    await ui.unmount()
+  },
+)
