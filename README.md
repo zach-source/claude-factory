@@ -5,7 +5,7 @@ stations; a run is an xstate machine over that graph whose snapshot is persisted
 on every tick. Each station is worked by its own Claude session in a herdr tab of
 the run's git worktree, and the outcome it reports routes the run along the graph.
 A Claude mod turns one session into the manager: it ticks every run, draws the
-board, and wakes the manager model with mail and toward each rig's goal.
+board, and runs a hidden patrol subagent that wakes on mail and works each rig's goal.
 
 New to claude-factory? Start with [docs/onboarding.md](docs/onboarding.md).
 
@@ -17,8 +17,8 @@ bin/factory init ~/my-factory   # a new factory: a directory for its rigs and ru
 cd ~/my-factory
 # the manager session, in a herdr pane: a session started in a factory's directory works it
 # fullscreen layout: the console docks right of the chat (herdr and tmux default to the main screen)
-# it runs lean (Bash and file tools, no MCP servers, connectors or Chrome: each patrol re-reads every tool
-# definition) and without the herdr-fleet mod, since the runner owns its workers' panes
+# it runs lean (Bash and file tools, no MCP servers, connectors or Chrome: each call in the main chat
+# re-reads every tool definition) and without the herdr-fleet mod, since the runner owns its workers' panes
 ~/repos/workspaces/claude-factory/bin/factory manager   # add --resume <session> to bring one back
 ```
 
@@ -130,18 +130,29 @@ Press `Interview me` to sweep the rigs. After that, the manager proposes a title
 
 ## The manager drives
 
-You talk to the manager session; it runs the factory. With `autopilot` on (the default),
-the mod wakes the manager model with a `[factory] patrol`. A patrol wakes it at once for new
-mail (a worker's question, a stuck station, a gate, a finished run) or a worker blocked on a
-prompt. It also wakes the manager every 10 minutes while workers run or a rig with a goal has
-room, but only when the board or the rig goals changed; time spent in a station does not count
-as a change. An unchanged board still goes out in full once an hour, so a manager that
-compacted it away from its context gets it back. A patrol answers mail, unsticks runs
-(`retry`, `goto`, `fork`, `abort`), pokes workers (`factory poke <run> [steer]`), takes the
-next work from the backlog when there is room, brings gates to you, and ends with a report
-of at most three lines. Underneath, the runtime stays mechanical: it ticks every 5 s,
-launches and resumes workers, nudges an idle one twice and retries with backoff, so a
-quiet manager never stalls a run.
+You talk to the manager session. The manager session runs the factory. The main chat is only for
+you. The main chat never carries a patrol's own turns. So you can still enter input while a patrol
+runs.
+
+When `autopilot` is on (the default), a hidden `patrol` subagent wakes on its own timer, and its
+prompt starts with `[factory] patrol`. The patrol wakes at once for new mail, for example a
+worker's question, a stuck station, a gate or a finished run. It also wakes at once when a worker
+waits at a prompt. It also wakes every 10 minutes while workers run, or while a rig with a
+goal has room. A heartbeat wake also needs a change to the board or the rig goals since the last
+patrol. Time spent in a station does not count as a change.
+
+A fresh patrol has no memory of the last one. So its prompt always carries the full board, the rig
+goals, and the actions of the last few patrols. The actions come from `<home>/patrol-log.jsonl`.
+
+A patrol answers mail and moves stuck runs on with `retry`, `goto`, `fork` or `abort`. It pokes
+workers with `factory poke <run> [steer]`. It takes the next work from the backlog when there is
+room. It brings owner decisions to you through the Interview tab. It never decides a gate or an
+owner-only command, so those stay for you. It ends with a report of at most three lines.
+
+`/factory patrols` lists the last 10 patrols. The pane header and the band show how long ago the
+last patrol ran. Underneath, the runtime stays mechanical. It ticks every 5 s, launches and resumes
+workers, and nudges an idle worker twice before it retries with backoff. So a quiet manager never
+stalls a run.
 
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats

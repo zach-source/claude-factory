@@ -1433,9 +1433,12 @@ function launch(run: Run, def: Factory, node: string, prompt: string, session?: 
  * CLAUDE_CODE_PLUGIN_DIRS in the user's settings env, which the shell cannot override: --settings can.
  */
 /**
- * The manager drives the factory through Bash and the factory CLI, and every call it makes re-reads its
- * whole tool list: a session with the user's MCP servers, connectors, Chrome and every built-in carried
- * ~130k tokens of tool definitions into each patrol. So it starts with only what it uses.
+ * The manager drives the factory. It uses Bash and the factory CLI. Every call re-reads the whole
+ * tool list. The user's MCP servers, connectors, Chrome and every built-in tool would add about 130k
+ * tokens of tool definitions to each call. The manager starts with only the tools it uses.
+ *
+ * A patrol runs in its own hidden subagent (claude-factory-72v). This subagent has a smaller tool
+ * list: Bash, Read, Grep and Glob. The manager's own short list still bounds the cost of a person's turn.
  */
 // Agent: the mod spawns a patrol subagent through $.agent.spawn; without it, the spawn rejects
 const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill,Agent'
