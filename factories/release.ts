@@ -21,6 +21,7 @@ const LAPTOP = 'herdr'
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Follow the release recipe in the journal exactly; where it is silent, do what the repo's last release did and say so.
 - Only a person merges a pull request; only rollout and rollback touch production, and rollback alone may revert on a release branch or the default branch; nobody force-pushes.
+- Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when the bead's description, a person's own comment on it, or a [factory mail] from the manager says the person approved that exact step; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: "parked, waiting on: <the owner step and the exact command>". Reads, and watching a pipeline the person's merge started, stay allowed.
 - On a retry or a resumed worker, first find out what earlier attempts already did (journal, git log, tags, pull requests, pipelines) and never repeat an external action that already happened.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
 - Your report summary is the next station's whole briefing: concrete and complete, links over descriptions.`
@@ -68,6 +69,7 @@ Report ready with the release pull request or tag link, the CI status, and exact
       timeoutMin: 120,
       parkMin: 30,
       prompt: `Roll the release out by the recipe once a person has approved it: their merge of the release pull request (or the approval the recipe names) is the go, and you never merge it yourself. First check what is already done (merged? tagged? which environments have it?) and do only what is not.
+That approval covers the release it carries, not an owner-only step (see House rules): a hand-run kubectl or helm apply, an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential change. Do every other step, then park with "parked, waiting on: <the owner step and the exact command>" and a \`Question:\` line asking the person to run it or to approve you running it.
 Not approved yet: report blocked with the link and what it waits for; if a person closed it, report hold with their reason.
 Approved: record the production baseline it will be compared against from the window just before, then run or watch each environment's rollout in the recipe's order to the end, verify it (pipeline status, the deployed version, rollout status) and run a smoke check.
 Report deployed with the version, the environments, the time and the baseline; published when the release has no running service to watch; failed when a rollout did not complete.`,
