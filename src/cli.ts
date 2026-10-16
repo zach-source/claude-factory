@@ -1437,7 +1437,8 @@ function launch(run: Run, def: Factory, node: string, prompt: string, session?: 
  * whole tool list: a session with the user's MCP servers, connectors, Chrome and every built-in carried
  * ~130k tokens of tool definitions into each patrol. So it starts with only what it uses.
  */
-const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill'
+// Agent: the mod spawns a patrol subagent through $.agent.spawn; without it, the spawn rejects
+const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill,Agent'
 export const managerCommand = (extra: string[] = []) => [
   'claude',
   '--model',
