@@ -133,7 +133,8 @@ So the loop does its own filtering, in 3 steps:
 1. It lists each team's issues itself, with a read-only call to the Linear API.
 2. It routes each issue to at most one opted-in rig (see "Route issues to a rig" below).
 3. For each rig, it asks `bd` to pull only that rig's routed issues: `bd linear pull
-   <issue-url...>`.
+   <issue-identifier...>`, for example `bd linear pull STI-123`. `bd` checks a pull ref
+   against the issue's own identifier. It never checks a URL.
 
 An issue that matches no rig never goes to any rig. The loop counts it as "unrouted".
 
@@ -204,35 +205,63 @@ An issue that matches no rig never goes to any rig. The loop counts it as "unrou
 
 ### Route issues to a rig
 
-Two or more rigs can share one Linear team. The loop checks two rules, in this order, to
-send each issue of that team to at most one rig:
+Two or more rigs can share one Linear team. The loop checks two rules in this order.
+Each issue of that team goes to at most one rig:
 
 1. **Bracket prefix.** Check a project name that starts with `[<rig-name>]`. Route the issue
-   to the rig of that exact name. This rule needs no setup: it works from the rig's name
-   alone. For example, route a project named `[app] Billing work` to the rig named `app`.
-2. **Configured project or label.** Check a project name, or a label name, against each
-   rig's own `--linear-projects` or `--linear-labels` list. Route the issue to the first rig,
-   in add order, whose list names a match.
+   to the rig with that exact name. This rule needs no setup. It works from the rig's name
+   alone.
 
-Route an issue that matches neither rule to no rig. The loop never pulls it. Count it
-instead toward that pull's "unrouted" total (see "Checking it" below).
+   For example, route a project named `[app] Billing work` to the rig named `app`.
+
+   This rule is final. A bracket that names no opted-in rig routes to no rig. The issue never
+   goes to rule 2, even when some rig's own `projects` or `labels` list would otherwise match.
+2. **Configured project or label.** Check a project name, or a label name, against the
+   `--linear-projects` or `--linear-labels` list of each rig. Route the issue to the first rig
+   in add order whose list names a match. This rule runs only for a project name with no
+   `[...]` prefix at all.
+
+Route an issue that matches neither rule to no rig. The loop never pulls that issue.
+Count the issue instead in the "unrouted" total for that pull (see "Checking it" below).
 
 ### What the loop does
 
-Every 20 minutes, for each rig with the loop on, the factory does 3 steps:
+The factory does these 3 steps every 20 minutes for each rig with the loop on:
 
-1. Fetch a fresh key from the secret broker. List the rig's team's issues from the Linear
-   API with that key. This is a read-only call: it never changes a Linear issue.
+1. Fetch a fresh key from the secret broker. List the issues of the rig's team from the Linear
+   API with that key. This call is read-only. It never changes a Linear issue.
+
+   Keep only the routed issues of this rig that Linear's own `updatedAt` marks as changed since
+   the last good pull of the rig.
+
+   Exception: with `--force` or on the first pass of a rig, read every routed issue.
+
+   The listing stops after 50 pages (5,000 issues). When a team has more, `factory rig list` and
+   the console show `list truncated at the 50-page cap`. Treat the unrouted count and the
+   incremental cutoff as undercounts until a person narrows that team's scope.
 2. Route each issue to a rig, by the rules above.
-3. Run `bd linear pull <issue-url...> --json` in the rig's repo. Name only the issues this
-   rig's own routing step found. Make no `bd` call at all for a rig with no routed issues
-   this pass.
+3. Run `bd linear pull <issue-identifier...> --json` in the rig's repo. Name only the
+   issues that the routing step found for this rig, and only those that changed since its last
+   good pull. Do not call `bd` at all for a rig with no issues to pull in this pass.
 
-The factory passes the key to `bd` through the environment only, as `LINEAR_API_KEY`. It
-never puts the key on the command line, on disk, or in a bead.
+The factory passes the key to `bd` only through the environment, as `LINEAR_API_KEY`. The
+factory also passes the rig's own team id(s) through the environment, as `LINEAR_TEAM_IDS`.
 
-Use `factory linear [rig...] --force` to run this now. With no rig names, the command runs
-for every rig with the loop on. With rig names, it runs only for those rigs.
+`bd linear pull` needs a configured team even to pull named refs. This method stops a stale
+team id, or another rig's, from reaching `bd` by accident. The factory never puts the key or
+the team ids on the command line, on disk, or in a bead.
+
+`bd` counts a ref it could not find, or a ref whose fetch failed, in its own pull stats. A
+pull that reports either count is a factory-side error, even with exit code 0. A silent
+"pulled 0" would hide a routing or auth bug that imports nothing.
+
+Each fetch to the secret broker or to the Linear API has a 30-second time limit. A broker
+or Linear endpoint that accepts a connection and never answers cannot stall the loop past
+that limit.
+
+To run the loop now, run `factory linear [rig...] --force`. With no rig names, the command
+runs for every rig with the loop on. With rig names, it runs only for those rigs. `--force`
+also reads every routed issue again, with no incremental cutoff.
 
 A pull adds Linear labels to the beads it touches. A Linear label named `factory` can start a run by itself. To prevent this, the loop removes the `factory` label after each pull.
 
