@@ -295,9 +295,10 @@ test('reap() closes a finished run\'s workspace through FACTORY_HERDR, not a lit
   // string `Bun.spawnSync(['herdr', ...])` finds nothing on PATH. It throws instead of
   // running. Its `pane list` answer names a pane in this finished run's own workspace and
   // worktree. launched() always uses ws 'w1' and worktree join(dir, 'wt'). reap() then has
-  // one workspace to close. The test also sets a minimal PATH (bun, git, realpath, dirname;
-  // no herdr). This proves the fix calls FACTORY_HERDR. It rules out a PATH lookup of
-  // "herdr" that happens to succeed, as it does on this box, where herdr is installed.
+  // one workspace to close. The test also sets a minimal PATH built from this box's own
+  // bun/git/dirname/realpath (so it works on any OS), with no herdr in it. This proves the
+  // fix calls FACTORY_HERDR. It rules out a PATH lookup of "herdr" that happens to succeed,
+  // as it does on a box where herdr is installed.
   const worktree = join(dir, 'wt') // the fixed worktree launched() always uses
   const fakeHerdr = join(dir, 'fakeherdr')
   const herdrCalls = join(dir, 'herdr-calls.log')
@@ -315,25 +316,24 @@ esac
   chmodSync(fakeHerdr, 0o755)
   const minBin = join(dir, 'minbin')
   mkdirSync(minBin, { recursive: true })
-  for (const bin of ['bun', 'git']) {
+  // bin/factory's shebang needs dirname and realpath; cli.ts itself needs bun on PATH. Symlink
+  // this box's own copies, so the test works on any OS, without picking up herdr from the same
+  // directory those tools happen to live in.
+  for (const bin of ['bun', 'git', 'dirname', 'realpath']) {
     const real = Bun.which(bin)
-    if (real) {
-      try {
-        Bun.spawnSync(['ln', '-sf', real, join(minBin, bin)])
-      } catch {
-        // ignore
-      }
-    }
+    if (real) Bun.spawnSync(['ln', '-sf', real, join(minBin, bin)])
   }
-  const minPath = `${minBin}:/run/current-system/sw/bin`
-  expect(Bun.spawnSync(['sh', '-c', 'command -v herdr'], { env: { PATH: minPath } }).exitCode).not.toBe(0)
+  expect(Bun.which('herdr', { PATH: minBin })).toBeNull()
 
-  const third = factory(['tick'], { FACTORY_HERDR: fakeHerdr, PATH: minPath })
-  expect(third.code).toBe(0) // a crash on the literal 'herdr' call would exit non-zero (or throw before exit)
-  const herdrCallLog = existsSync(herdrCalls) ? readFileSync(herdrCalls, 'utf8') : ''
-  expect(herdrCallLog).toContain('pane list')
-  expect(herdrCallLog).toContain('workspace close w1')
-  rmSync(join(home, 'runs', 'r1x'), { recursive: true })
+  try {
+    const third = factory(['tick'], { FACTORY_HERDR: fakeHerdr, PATH: minBin })
+    expect(third.code).toBe(0) // a crash on the literal 'herdr' call would exit non-zero (or throw before exit)
+    const herdrCallLog = existsSync(herdrCalls) ? readFileSync(herdrCalls, 'utf8') : ''
+    expect(herdrCallLog).toContain('pane list')
+    expect(herdrCallLog).toContain('workspace close w1')
+  } finally {
+    rmSync(join(home, 'runs', 'r1x'), { recursive: true, force: true })
+  }
 })
 
 test('a worker waiting on the manager is suspended, and woken by the answer before it is delivered', () => {
