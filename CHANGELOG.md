@@ -6,6 +6,29 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Dispatch now checks a ready bead before it starts a run for it, and skips a bead a merged
+  pull request or a live run already covers. (claude-factory-6as)
+  - Cause: a 3-day review (2026-10-13 to 16) found 40 of 319 triage visits (12.5%) were
+    rejects, and 30 of those (9.4% of all visits) were beads already done: a merged pull
+    request had done the work before triage ever saw the bead. Each one still cost a run,
+    a worktree and a triage session.
+  - Fix: `citesBead` and `alreadyDone` (`src/prs.ts`) are a pure check. They test a bead's
+    exact id, or a dotted child id of a bead with no open children, against the titles of
+    the rig's merged pull requests. `precheckSkip` (`src/cli.ts`) calls them right before
+    `dispatch()` hands a candidate bead to `createTracked`. It uses `gh pr list --state
+    merged --search <id>` (plus the bead's own run branches) in the rig's repo. On a hit,
+    it rejects the bead (`rejected_by: dispatch`, with the pull request's evidence in the
+    reject reason) and leaves one comment; it never closes the bead. `FACTORY_PRECHECK=0`
+    turns the check off. `rejected_by: dispatch` plus a `factory queue` requeue also skips
+    the check, so a person's override costs no `gh` call. A `gh` failure or timeout fails
+    open: the run starts, and `HOME/precheck.jsonl` gets a `skip` row.
+  - The same pass also stops a second run for a ready, unassigned bead a live run already
+    holds (it lost its own claim). Dispatch leaves one comment naming the run, deduped by
+    a `dispatch_skip` metadata stamp, and starts no second run.
+  - `factory metrics` (`src/metrics.ts`) now prints the triage reject rate and how many of
+    those rejects say the work was already done (`ALREADY_DONE`), plus how many runs the
+    pre-check skipped, by kind, from `HOME/precheck.jsonl`: `triage rejects R of V (D
+    already done); dispatch skipped S (merged-pr M, live-run L)`.
 - Deploy no longer starts a worker against an unmerged pull request. (claude-factory-960)
   - Cause: a run reached `deploy` as soon as release reported, so a worker always launched
     even when the pull request was still open. The worker then found nothing to do and
