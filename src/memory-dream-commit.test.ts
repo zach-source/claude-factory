@@ -153,8 +153,10 @@ test('factory memory compact leaves the memory repo clean after it merges a note
   expect(usage).not.toContain('"path":"beads/x.md"')
 }, 30_000)
 
-// A5: a home whose memory repo already tracked notes under the OLD gitignore ('.index.json*\n.usage.jsonl*\n')
-// starts tracking .usage.jsonl the next time it dreams, even on a day with nothing new to file.
+// A5: a home with a memory repo tracked under the OLD gitignore ('.index.json*\n.usage.jsonl*\n').
+// It must start to track .usage.jsonl at its next dream, even on a day with no new note to file.
+// 30s timeout: run(['dream']) starts the full `factory` CLI. Under load, this can take more than
+// 5s (bun:test's default timeout), even on this early-return path, like the other tests in this file.
 test('a home with the old gitignore starts tracking .usage.jsonl on its next dream', () => {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(home, 'memory'), { recursive: true })
@@ -188,4 +190,4 @@ test('a home with the old gitignore starts tracking .usage.jsonl on its next dre
   expect(gitMemory('ls-files', '.usage.jsonl')).toBe('.usage.jsonl')
   expect(readFileSync(join(home, 'memory', '.gitignore'), 'utf8')).toBe('.index.json*\n.usage.jsonl.tmp\n')
   expect(gitMemory('status', '--porcelain')).toBe('')
-})
+}, 30_000)
