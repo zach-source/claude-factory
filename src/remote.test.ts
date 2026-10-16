@@ -833,9 +833,9 @@ test('rig add --linear writes team UUIDs to rigs.json, refuses a non-UUID naming
   const rigged = JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8')).find(
     (x: { name: string }) => x.name === 'x',
   )
-  expect(rigged).toMatchObject({ linear: [id1, id2] })
+  expect(rigged).toMatchObject({ linear: { team: [id1, id2] } })
   const list = factory(['rig', 'list'])
-  expect(list.out).toContain(`linear: ${id1},${id2}`)
+  expect(list.out).toContain(`linear: team ${id1},${id2}`)
 
   // redefining the rig with no --linear drops the field: `rig add` replaces, it never merges
   const plain = factory(['rig', 'add', 'x', r])
