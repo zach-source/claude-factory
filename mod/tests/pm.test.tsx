@@ -23,7 +23,12 @@ function agentListMock(on: On, patrolIds: readonly string[], pmIds: readonly str
     () =>
       ({
         value: [
-          ...patrolIds.map(id => ({ id, type: 'factory:patrol', description: 'factory patrol', status: 'running' })),
+          ...patrolIds.map(id => ({
+            id,
+            type: 'factory:patrol',
+            description: 'factory patrol',
+            status: 'running',
+          })),
           ...pmIds.map(id => ({ id, type: 'factory:pm', description: 'factory pm', status: 'running' })),
         ],
       }) as never,
@@ -59,7 +64,8 @@ function pmMocks(
 ) {
   const files = opts.files ?? new Map<string, string>()
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.toast', 'ui.status'] as const) on(event, () => ({ value: undefined }) as never)
+  for (const event of ['ui.open', 'ui.toast', 'ui.status'] as const)
+    on(event, () => ({ value: undefined }) as never)
   on('session.id', () => ({ value: 'me' }) as never)
   on('process.run', ($, e) => {
     opts.calls?.push(e.argv as string[])
@@ -263,7 +269,9 @@ test(
     const planSet = calls.find(a => a.includes('plan') && a.includes('set'))
     expect(planSet).toBeDefined()
     const answerPath = planSet!.at(-1)!
-    expect(files.get(answerPath)).toBe('{"rigs":{"acme":[{"id":"acme-1","why":"fits the goal"}]},"proposals":[]}')
+    expect(files.get(answerPath)).toBe(
+      '{"rigs":{"acme":[{"id":"acme-1","why":"fits the goal"}]},"proposals":[]}',
+    )
 
     const log = logOf(files)
     expect(log).toHaveLength(1)
