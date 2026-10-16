@@ -187,8 +187,11 @@ function realCommand(words: string[]): string[] {
   }
 }
 
-/** the reason to deny `command`, or undefined to let Claude Code's own prompt decide */
-export function denyReason(command: string): string | undefined {
+/**
+ * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
+ * `root` is the worktree root; an rm operand outside it is risky too (see riskyTarget).
+ */
+export function denyReason(command: string, root?: string): string | undefined {
   if (!command) return undefined
   let hasRm = false
   let hasCd = false
@@ -197,14 +200,14 @@ export function denyReason(command: string): string | undefined {
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     if (b === 'rm') {
-      if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t))) return REASON
+      if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'sh' || b === 'bash' || b === 'zsh' || b === 'dash') {
       const ci = cmd.indexOf('-c')
       if (ci >= 0 && cmd[ci + 1] !== undefined) {
-        const r = denyReason(cmd[ci + 1]!)
+        const r = denyReason(cmd[ci + 1]!, root)
         if (r) return r
       }
     } else if (b === 'find') {
@@ -226,9 +229,12 @@ async function main() {
   } catch {
     return
   }
-  const i = input as { tool_name?: string; tool_input?: { command?: string } }
+  const i = input as { tool_name?: string; cwd?: string; tool_input?: { command?: string } }
   if (i?.tool_name !== 'Bash') return
-  const reason = denyReason(i.tool_input?.command ?? '')
+  // Claude Code sets CLAUDE_PROJECT_DIR to the worktree root for a hook; input.cwd can be a
+  // subdir of it after a `cd`, so it is only the second choice for root.
+  const root = process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd()
+  const reason = denyReason(i.tool_input?.command ?? '', root)
   if (!reason) return
   console.log(
     JSON.stringify({
