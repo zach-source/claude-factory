@@ -264,6 +264,33 @@ minor release may change the factory format, the CLI or the run state.
   shows each rig's top 3 next-up items and its findings; the header and the band
   show the plan's own age, or "plan stale" past 2 hours. `pm` in the plugin's
   `userConfig` turns the pm off. (claude-factory-dun)
+- `decide()` now archives a never-shown short note after 14 days, caps how many
+  notes one tiering pass can archive, and logs the plan before it writes
+  anything. (claude-factory-503.2)
+  - Cause: a tiering pass only archived a note at `helped===0` and 30 days old.
+    A note nobody read, but nobody marked unhelpful either, can sit for up
+    to 30 days, then age out all at once. One pass already archived about 190
+    notes in one go; a person had to revert an earlier 139-merge pass for the
+    same reason.
+  - Fix: `decide()` (`src/memory.ts`) adds a 14-day never-shown rule: a short
+    note with `shown===0` and `helped===0` at 14 or more days old archives,
+    with the reason "never shown, N days old". Both this rule and the
+    existing 30-day `helped===0` rule stop while `opts.historyDays` (the
+    oldest usage record's age) is under 14 days, so a store with little usage
+    history archives nothing on either rule; a `superseded` archive is exempt
+    from this guard. `applyTiers()` (`src/memory.ts`) now caps archives at
+    `opts.archiveCap`, 25 by default, or `FACTORY_MEMORY_ARCHIVE_CAP` (a whole
+    number 0 or more; any other value falls back to 25). The cap keeps the
+    oldest notes first, by `ageDays` descending and tied by path; a note past
+    the cap becomes a new `held` decision instead, with the reason "over the
+    archive cap of N this pass", and the cap counts `superseded` archives
+    too.
+  - `applyTiers()` now calls a new `onPlan(lines)` callback, built from the
+    new `planLines()` export, once right after `decide()` and before any
+    write or `rmSync`, on a dry run and on an empty plan as well. `dream()`
+    and `factory memory compact` (`src/cli.ts`) both append this plan to
+    `dream.log` before the pass applies it, and `--dry-run` prints the cap
+    and the held count.
 
 ## 0.12.0 (2026-10-15)
 
