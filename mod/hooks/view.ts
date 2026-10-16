@@ -295,6 +295,35 @@ export function runFacts(
     .join('')
 }
 
+/** a plan this old or older is stale (mirrors `PLAN_FRESH_MS`, src/plan.ts): the patrol then
+ * chooses as it did before the pm existed, the same as with no plan at all. */
+const PLAN_FRESH_MS = 2 * 60 * 60_000
+
+/** true only for a plan whose `at` is a real, non-future time less than `PLAN_FRESH_MS` old
+ * (mirrors `isFresh`, src/plan.ts: kept separate since mod code cannot import from src) */
+function isPlanFresh(plan: FactoryPlan | null | undefined, now: number): boolean {
+  if (!plan || typeof plan.at !== 'number' || !Number.isFinite(plan.at)) return false
+  if (plan.at > now) return false
+  return now - plan.at < PLAN_FRESH_MS
+}
+
+/** the patrol prompt's 'Plan' section: `undefined` with no fresh plan, so the prompt's text then
+ * stays byte-identical to a patrol with no plan at all. Lists, per rig with an item or a finding,
+ * the top 5 ranked beads in order and every open finding. */
+function planSection(plan: FactoryPlan | undefined, now: number): string | undefined {
+  if (!isPlanFresh(plan, now)) return undefined
+  const rigs = Object.entries(plan!.rigs).filter(([, rp]) => rp.items.length || rp.findings.length)
+  if (!rigs.length) return undefined
+  const rigText = rigs
+    .map(([rig, rp]) => {
+      const items = rp.items.slice(0, 5).map((it, i) => `  ${i + 1}. ${it.id} (P${it.priority}) ${it.why}`)
+      const findings = rp.findings.map(f => `  - ${f.text}`)
+      return [`${rig}:`, ...items, ...findings].join('\n')
+    })
+    .join('\n')
+  return `Plan (from the pm, ${dur(now - plan!.at)} old): for a rig with room, start from it in order\n${rigText}`
+}
+
 /**
  * The manager's loop. This builds the message to wake the patrol subagent with.
  * It returns null when nothing calls for a wake.
@@ -325,35 +354,6 @@ export function runFacts(
  * It lists each rig in `rigs` that has a live run or a goal.
  * Compaction that trims the end of the message keeps this summary.
  */
-/** a plan this old or older is stale (mirrors `PLAN_FRESH_MS`, src/plan.ts): the patrol then
- * chooses as it did before the pm existed, the same as with no plan at all. */
-const PLAN_FRESH_MS = 2 * 60 * 60_000
-
-/** true only for a plan whose `at` is a real, non-future time less than `PLAN_FRESH_MS` old
- * (mirrors `isFresh`, src/plan.ts: kept separate since mod code cannot import from src) */
-function isPlanFresh(plan: FactoryPlan | null | undefined, now: number): boolean {
-  if (!plan || typeof plan.at !== 'number' || !Number.isFinite(plan.at)) return false
-  if (plan.at > now) return false
-  return now - plan.at < PLAN_FRESH_MS
-}
-
-/** the patrol prompt's 'Plan' section: `undefined` with no fresh plan, so the prompt's text then
- * stays byte-identical to a patrol with no plan at all. Lists, per rig with an item or a finding,
- * the top 5 ranked beads in order and every open finding. */
-function planSection(plan: FactoryPlan | undefined, now: number): string | undefined {
-  if (!isPlanFresh(plan, now)) return undefined
-  const rigs = Object.entries(plan!.rigs).filter(([, rp]) => rp.items.length || rp.findings.length)
-  if (!rigs.length) return undefined
-  const rigText = rigs
-    .map(([rig, rp]) => {
-      const items = rp.items.slice(0, 5).map((it, i) => `  ${i + 1}. ${it.id} (P${it.priority}) ${it.why}`)
-      const findings = rp.findings.map(f => `  - ${f.text}`)
-      return [`${rig}:`, ...items, ...findings].join('\n')
-    })
-    .join('\n')
-  return `Plan (from the pm, ${dur(now - plan!.at)} old): for a rig with room, start from it in order\n${rigText}`
-}
-
 export function patrol(
   runs: readonly FactoryRun[],
   mail: readonly FactoryMail[],

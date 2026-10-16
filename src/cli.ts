@@ -3368,12 +3368,30 @@ const liveBeadIdSet = () =>
     }),
   )
 
-/** the pm's plan, read once per `dispatch()` pass: missing, corrupt or stale (`!plan.isFresh`)
- * all read as no plan, so dispatch falls back to today's order (claude-factory-dun.3). */
+/** Checks `plan.json`'s shape before any caller reads `rigs` or `proposals`.
+ * A hand-edited or truncated file can miss one of these fields.
+ * Without this check, `orderByPlan` or `planShowText` would then throw (claude-factory-dun.17d).
+ * `plan set` itself always writes the full shape. */
+function isValidPlanShape(p: unknown): p is plan.Plan {
+  if (!p || typeof p !== 'object') return false
+  const o = p as Record<string, unknown>
+  return (
+    typeof o.at === 'number' &&
+    !!o.rigs &&
+    typeof o.rigs === 'object' &&
+    !Array.isArray(o.rigs) &&
+    Array.isArray(o.proposals)
+  )
+}
+
+/** the pm's plan, read once per `dispatch()` pass: missing, corrupt, malshaped or stale
+ * (`!plan.isFresh`) all read as no plan, so dispatch falls back to today's order
+ * (claude-factory-dun.3, .17d). */
 function freshPlanOrUndefined(): plan.Plan | undefined {
   if (!existsSync(planFile())) return undefined
   try {
-    const p: plan.Plan = JSON.parse(readFileSync(planFile(), 'utf8'))
+    const p: unknown = JSON.parse(readFileSync(planFile(), 'utf8'))
+    if (!isValidPlanShape(p)) return undefined
     return plan.isFresh(p, Date.now()) ? p : undefined
   } catch {
     return undefined
@@ -3747,12 +3765,14 @@ function planSetCmd(answerPath?: string) {
 function planShowText(): string {
   if (!existsSync(planFile()))
     return 'no plan.json yet: `factory plan facts` then `factory plan set <file>`, or wait for the pm'
-  let p: plan.Plan
+  let raw: unknown
   try {
-    p = JSON.parse(readFileSync(planFile(), 'utf8'))
+    raw = JSON.parse(readFileSync(planFile(), 'utf8'))
   } catch (err) {
     return `plan.json: ${(err as Error).message}`
   }
+  if (!isValidPlanShape(raw)) return 'plan.json: missing or malformed rigs/proposals'
+  const p: plan.Plan = raw
   const now = Date.now()
   const age = Math.round((now - p.at) / 60_000)
   const lines = [`plan ${age}m ago${plan.isFresh(p, now) ? '' : ' (stale)'}`]

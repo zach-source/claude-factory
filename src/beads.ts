@@ -357,7 +357,7 @@ export const beads = (repo: string, actor: string) => ({
         '-d',
         description,
         '--metadata',
-        `{"pm_finding":"${key}"}`,
+        JSON.stringify({ pm_finding: key }),
         ...(human ? ['-l', 'human'] : []),
       ),
       'create',

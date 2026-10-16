@@ -401,3 +401,33 @@ test('fileFinding creates with the pm_finding metadata and no factory label; hum
     process.env.PATH = path
   }
 })
+
+test('fileFinding JSON-encodes a key with a quote or backslash, instead of breaking the metadata JSON (claude-factory-dun.17a)', () => {
+  const bin = join(tmpdir(), `fake-bd-filefinding-escape-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  // one argv element per line (not `$*`, which would collapse a key's own spaces into the join)
+  const script = [
+    '#!/bin/sh',
+    `printf '%s\\n' "$@" > ${log}`,
+    'echo --- >> ' + log,
+    'case "$1" in',
+    '  create) echo new-1;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    const key = 'starved-epic:a:fx "9"\\x'
+    writeFileSync(log, '')
+    b.fileFinding('t', 'd', key)
+    const argv = readFileSync(log, 'utf8').split('\n')
+    const metaIdx = argv.indexOf('--metadata')
+    expect(JSON.parse(argv[metaIdx + 1]!)).toEqual({ pm_finding: key })
+  } finally {
+    process.env.PATH = path
+  }
+})

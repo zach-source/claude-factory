@@ -411,3 +411,11 @@ test('plan show prints the plan as text, or says there is none', () => {
   expect(shown.out).toContain('fx-9 is done')
   expect(shown.out).toMatch(/plan \d+m ago/)
 })
+
+test("plan show reports a plan.json missing 'rigs' or 'proposals', instead of throwing (claude-factory-dun.17d)", () => {
+  reset()
+  writeFileSync(planJson(), JSON.stringify({ at: Date.now(), proposals: [] }))
+  const out = factory(['plan'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain('plan.json: missing or malformed')
+})

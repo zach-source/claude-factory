@@ -223,6 +223,26 @@ test("a corrupt plan.json ('not json') reads as no plan: acme-1 starts, dispatch
   expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
 })
 
+test("a plan.json missing 'rigs' reads as no plan: acme-1 starts, dispatch.json carries no new error (claude-factory-dun.17d)", () => {
+  resetTwo(2, 2)
+  writeFileSync(join(home, 'plan.json'), JSON.stringify({ at: Date.now(), proposals: [] }))
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1')
+  expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
+})
+
+test("a plan.json whose 'proposals' is not an array reads as no plan (claude-factory-dun.17d)", () => {
+  resetTwo(2, 2)
+  writeFileSync(
+    join(home, 'plan.json'),
+    JSON.stringify({ at: Date.now(), rigs: { a: { items: [], findings: [] } }, proposals: 'nope' }),
+  )
+  const out = factory(['beads'])
+  expect(out.code).toBe(0)
+  expect(startedBead()).toBe('acme-1')
+})
+
 test('a planned P3 never starts before a real P2: priority always sorts ahead of the plan', () => {
   resetTwo(2, 3) // acme-1 is P2, acme-2 is P3
   writePlan(Date.now(), ['acme-2', 'acme-1']) // the pm ranks the P3 first
