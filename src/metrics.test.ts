@@ -89,6 +89,27 @@ test('deploySessionsPerShippedRun counts deploy sessions (not pre-launch PR park
   expect(m.deploySessionsPerShippedRun).toBe(1.5)
 })
 
+test('a pre-launch PR park is not a deploy station visit and does not move the wait clock', () => {
+  const prWait = (h: number) => ({ node: 'deploy', attempt: 0, outcome: 'blocked', summary: 'x', at: h * H })
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      log: [e('release', 'ready', 1), prWait(2), e('deploy', 'blocked', 2.5), e('deploy', 'deployed', 5)],
+    },
+  ])
+  // the pre-launch park must not count as a station visit or a blocked outcome
+  expect(m.stations.deploy).toEqual({
+    visits: 2,
+    failed: 0,
+    outcomes: { blocked: 1, deployed: 1 },
+    // prev stays at the release entry (hour 1) through the skipped park, so the real blocked
+    // entry's wait is 2.5 - 1 = 1.5h, not 2.5 - 2 = 0.5h as it would be if the park moved prev
+    medianHours: 1.5,
+  })
+})
+
 test("a run's id carries its creation time", () => {
   const t = 1791286012157
   expect(createdAt(`lifecycle-${t.toString(36)}x9`)).toBe(t)

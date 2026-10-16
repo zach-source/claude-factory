@@ -52,6 +52,9 @@ export function metrics(records: RunRecord[]) {
     fates[f] = (fates[f] ?? 0) + 1
     let prev = r.createdAt
     for (const e of r.log) {
+      // a pre-launch PR park (isPrWait) spent no worker: skip it so it is not a station visit,
+      // and leave prev at the entry before it so the next real visit's wait time is still correct
+      if (isPrWait(e)) continue
       const s = (stations[e.node] ??= { visits: 0, failed: 0, outcomes: {}, hours: [] })
       s.visits++
       s.outcomes[e.outcome] = (s.outcomes[e.outcome] ?? 0) + 1
