@@ -26,6 +26,12 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 
+// `factory metrics --tokens` prints a "station visits" table from the run's own log (unrelated to
+// sessionsOf) above the "tokens:" section that sessionsOf() feeds. A station visited once shows
+// "<node>  1" in that first table regardless of sessionsOf, so a test on sessionsOf's output must
+// check the tokens section alone, or it passes even when sessionsOf has a bug.
+const tokensSection = (out: string) => out.slice(out.indexOf('tokens:'))
+
 const DEF: Factory = {
   name: 'ship',
   start: 'implement',
@@ -102,7 +108,7 @@ test("a session's station still resolves from prompts.list once gc has removed p
 
   const out = factory(['metrics', '--tokens'], { CLAUDE_CONFIG_DIR: claudeHome })
   expect(out.code).toBe(0)
-  expect(out.out).toMatch(/implement\s+1/) // not '?': the station name came from prompts.list
+  expect(tokensSection(out.out)).toMatch(/implement\s+1/) // not '?': the name came from prompts.list
 })
 
 // PR #59 review finding 1 (claude-factory-503.1.5). A `goto` revive after gc recreates prompts/, but
@@ -157,6 +163,6 @@ test('sessionsOf() names both an old session (from prompts.list) and a revived o
 
   const out = factory(['metrics', '--tokens'], { CLAUDE_CONFIG_DIR: claudeHome })
   expect(out.code).toBe(0)
-  expect(out.out).toMatch(/implement\s+1/) // from prompts.list alone
-  expect(out.out).toMatch(/verify\s+1/) // from the recreated prompts/ alone
+  expect(tokensSection(out.out)).toMatch(/implement\s+1/) // from prompts.list alone
+  expect(tokensSection(out.out)).toMatch(/verify\s+1/) // from the recreated prompts/ alone
 })
