@@ -815,6 +815,28 @@ test('rig add --egress warns on a mixed-case registry host too, since parseEgres
   expect(warned.err).toContain('PyPI.org is a package registry host')
 })
 
+// claude-factory-25z.2: a rig's personOnlyContexts, repeatable --person-only-context, validated and
+// stored; defineRig refuses a comma or space in the value, so a worker can never comma-split one into many
+test('rig add --person-only-context stores Rig.personOnlyContexts; a bad value fails with a usage error', () => {
+  const r = repo()
+  const add = (...a: string[]) => factory(['rig', 'add', 'x', r, ...a])
+  expect(add('--person-only-context', 'acme').code).toBe(0)
+  expect(JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0]).toMatchObject({
+    personOnlyContexts: ['acme'],
+  })
+  const two = add('--person-only-context', 'acme', '--person-only-context', 'other')
+  expect(two.code).toBe(0)
+  expect(JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0]).toMatchObject({
+    personOnlyContexts: ['acme', 'other'],
+  })
+  const comma = add('--person-only-context', 'acme,other')
+  expect(comma.code).not.toBe(0)
+  expect(comma.err).toContain('--person-only-context is a kube context name')
+  const space = add('--person-only-context', 'acme other')
+  expect(space.code).not.toBe(0)
+  expect(space.err).toContain('--person-only-context is a kube context name')
+})
+
 test("inside a VM Claude keeps the worker's tools and prompt but none of the laptop's settings", () => {
   const flags = vmClaudeFlags({ maxContextK: 150 })
   expect(flags.slice(0, 4)).toEqual([
@@ -848,6 +870,17 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     },
   })
   expect(flags.at(-1)).toBe('/opt/factory/src/worker-system.md')
+})
+
+// claude-factory-25z.2: vmClaudeFlags carries the rig's personOnlyContexts to the VM hook's own argv too
+test("vmClaudeFlags carries a rig's personOnlyContexts on the deny hook's own argv", () => {
+  const flags = vmClaudeFlags({ maxContextK: 150 }, ['acme'])
+  const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
+  expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --person-only-contexts 'acme'",
+  )
+  // no list: today's command, unchanged
+  expect(vmClaudeFlags({ maxContextK: 150 })).toEqual(vmClaudeFlags({ maxContextK: 150 }, []))
 })
 
 test("Claude's trust dialog does not hold an AX rig's run: the VM runs the agent headless", () => {

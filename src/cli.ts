@@ -1035,7 +1035,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     model: ax.modelOf(agent),
     harness: harness!,
     provider: ax.providerOf(agent),
-    claudeFlags: harness === 'claude' ? vmClaudeFlags(def) : undefined,
+    claudeFlags: harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig)) : undefined,
     gitlabHost,
     env: {
       ...env,
@@ -1071,10 +1071,19 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 /**
  * A PreToolUse entry that runs `bun` on `file`. It denies rm -r/-rf, a cd+rm chain, an rm with a
  * $variable or glob target, and an rm outside the worktree root. It gives a reason.
+ * `contexts` is the rig's list of kube contexts a person alone may change (claude-factory-25z).
+ * When the list is non-empty, the hook's own argv carries it in: `--person-only-contexts a,b`.
+ * An older VM image's hook copy ignores this unknown argv.
  */
-const denyHook = (bun: string, file: string) => ({
+const denyHook = (bun: string, file: string, contexts?: string[]) => ({
   matcher: 'Bash',
-  hooks: [{ type: 'command', command: `${sq(bun)} ${sq(file)}`, timeout: 10 }],
+  hooks: [
+    {
+      type: 'command',
+      command: `${sq(bun)} ${sq(file)}${contexts?.length ? ` --person-only-contexts ${sq(contexts.join(','))}` : ''}`,
+      timeout: 10,
+    },
+  ],
 })
 
 /**
@@ -1088,7 +1097,7 @@ const denyHook = (bun: string, file: string) => ({
  * It gets one hook. The hook is the same deny-rm PreToolUse hook that a laptop worker gets (claude-factory-cr6, claude-factory-99d).
  * The VM image runs its own copy of `worker-hook.ts`, at `${ax.FACTORY_DIR}/src/worker-hook.ts`.
  */
-export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
+export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: string[]) {
   if (process.env.FACTORY_LEAN === '0') return []
   const settings = {
     autoMemoryEnabled: false,
@@ -1096,7 +1105,9 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>) {
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
     disableBundledSkills: true,
-    hooks: { PreToolUse: [denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`)] },
+    hooks: {
+      PreToolUse: [denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts)],
+    },
   }
   return [
     ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
@@ -1330,13 +1341,14 @@ export const workerSettings = (
   },
   maxContextK: number,
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
+  personOnly?: string[],
 ) => {
   const ste = Object.entries(user.enabledPlugins ?? {}).filter(([k, v]) => v && k.startsWith('asd-ste100@'))
   const hooks: Record<string, unknown[]> = {
     ...user.hooks,
     PreToolUse: [
       ...(user.hooks?.PreToolUse ?? []),
-      denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts')),
+      denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly),
     ],
   }
   return {
@@ -1383,8 +1395,17 @@ export const commitIdentity = (home: string) => {
 // Skill lets a worker run the asd-ste100 skill (workerSettings carries that one plugin over)
 export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch,ToolSearch,Skill'
 
-/** the flags that give a Claude worker its own settings, system prompt and tools; FACTORY_LEAN=0 turns them off */
-function workerFlags(def: Factory) {
+/**
+ * the flags that give a Claude worker its own settings, system prompt and tools; FACTORY_LEAN=0 turns them off.
+ * A rig with `personOnlyContexts` gets its own `worker-settings-<rig.name>.json` (claude-factory-25z):
+ * one shared `worker-settings.json` for every rig's launch would let another rig's launch, which writes
+ * the same file with no argv, overwrite this rig's hook argv before its own worker reads it.
+ */
+export function workerFlags(
+  def: Pick<Factory, 'maxContextK'>,
+  rig?: Pick<Rig, 'name' | 'personOnlyContexts'>,
+  home = HOME,
+) {
   if (process.env.FACTORY_LEAN === '0') return ` --settings '${JSON.stringify(withoutFleet())}'`
   let user = {}
   try {
@@ -1392,11 +1413,12 @@ function workerFlags(def: Factory) {
   } catch {
     // no user settings: nothing to carry over
   }
-  const file = join(HOME, 'worker-settings.json')
-  const settings = workerSettings(user, def.maxContextK ?? 200)
-  const id = commitIdentity(HOME)
+  const contexts = personOnlyContexts(rig)
+  const file = join(home, contexts?.length ? `worker-settings-${rig!.name}.json` : 'worker-settings.json')
+  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts)
+  const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
-  const prompt = join(HOME, 'worker-system.md')
+  const prompt = join(home, 'worker-system.md')
   writeFileSync(prompt, readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') + id.rule)
   // --tools first: it takes every word up to the next flag, so last it would swallow the prompt
   return ` --tools ${WORKER_TOOLS} --setting-sources project,local --settings ${sq(file)} --system-prompt-file ${sq(prompt)}`
@@ -1404,7 +1426,7 @@ function workerFlags(def: Factory) {
 
 function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
-  const extra = workerFlags(def)
+  const extra = workerFlags(def, rig)
   return command(agentOfNode(run, def, node), prompt, {
     session,
     extra,
@@ -2772,10 +2794,22 @@ export type Rig = {
   beadsRemote?: { name: string; url: string; user: string }
   /** the factory's params, set for this rig (`--param name=value`) */
   params?: Record<string, string>
+  /**
+   * kube contexts a person alone may change here (claude-factory-25z).
+   * Set them with `factory rig add --person-only-context <ctx>` (repeatable).
+   * A worker's deny hook refuses a kubectl, ko or helm mutation at one of these contexts.
+   * It also refuses one that names no context at all (fail closed).
+   */
+  personOnlyContexts?: string[]
 }
 const rigsFile = () => join(HOME, 'rigs.json')
 const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
+/** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
+const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
+  Array.isArray(rig?.personOnlyContexts) && rig.personOnlyContexts.every(c => typeof c === 'string')
+    ? rig.personOnlyContexts
+    : undefined
 const expand = (path: string) => resolve(path.replace(/^~(?=\/|$)/, homedir()))
 const toplevel = (path: string) => git(expand(path), 'rev-parse', '--show-toplevel')
 /** a rig's name stands for its repo wherever a command takes one; a path says so (`/`, `.` or `~`) */
@@ -3105,6 +3139,7 @@ async function defineRig(
     mcp,
     params,
     egress,
+    personOnlyContext,
   }: {
     max?: string
     sweeps?: string
@@ -3114,6 +3149,7 @@ async function defineRig(
     mcp?: string
     params?: string[]
     egress?: string[]
+    personOnlyContext?: string[]
   },
 ) {
   if (!/^[a-z0-9][\w-]*$/i.test(name)) fail(`a rig's name is letters, digits, - and _ (not "${name}")`)
@@ -3178,6 +3214,12 @@ async function defineRig(
       fail(
         `no sweep ${unknown.join(', ')} in ${def.name}: ${SWEEPS.filter(s => def.nodes[s]).join(', ') || 'none'}`,
       )
+  }
+  if (personOnlyContext?.length) {
+    const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
+    if (bad.length)
+      fail(`--person-only-context is a kube context name, letters/digits/._@:/- (not "${bad[0]}")`)
+    rig.personOnlyContexts = personOnlyContext
   }
   return rig
 }
@@ -4140,11 +4182,14 @@ if (import.meta.main && !outboxCmd)
         while (args.includes('--param')) params.push(opt('--param') ?? '')
         const egress: string[] = []
         while (args.includes('--egress')) egress.push(opt('--egress') ?? '')
+        const personOnlyContext: string[] = []
+        while (args.includes('--person-only-context'))
+          personOnlyContext.push(opt('--person-only-context') ?? '')
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
@@ -4155,6 +4200,7 @@ if (import.meta.main && !outboxCmd)
             mcp,
             params,
             egress,
+            personOnlyContext,
           })
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
@@ -4192,6 +4238,8 @@ if (import.meta.main && !outboxCmd)
             )
             if (r.goal) console.log(`  goal: ${r.goal}`)
             if (r.agent) console.log(`  agent: ${r.agent}`)
+            if (personOnlyContexts(r)?.length)
+              console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
             if (r.mcp) console.log(`  mcp: ${r.mcp}`)
             for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
           }

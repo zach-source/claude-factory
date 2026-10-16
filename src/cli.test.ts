@@ -33,6 +33,7 @@ import {
   stalled,
   swapUntil,
   watchWake,
+  workerFlags,
   workerSettings,
   WORKER_TOOLS,
   commitIdentity,
@@ -355,6 +356,39 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   expect(w).toMatchObject({ autoMemoryEnabled: false })
   expect(workerSettings({}, 200, '/h/.claude/CLAUDE.md').claudeMdExcludes).toEqual(['/h/.claude/CLAUDE.md'])
   expect(workerSettings({}, 30).autoCompactWindow).toBe(100_000) // Claude Code's floor
+})
+
+// claude-factory-25z.2: a rig with personOnlyContexts gets its own worker-settings-<rig>.json, so a
+// launch for a different rig (which writes the shared file with no argv) never overwrites its hook argv
+test("workerFlags writes a rig's own worker-settings-<rig>.json when it has personOnlyContexts, else the shared worker-settings.json", () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-flags-'))
+  const acme = { name: 'acme', personOnlyContexts: ['acme-ctx'] }
+  const web = { name: 'web' }
+  const extraAcme = workerFlags({ maxContextK: 200 }, acme, home)
+  const extraWeb = workerFlags({ maxContextK: 200 }, web, home)
+  expect(extraAcme).toContain(join(home, 'worker-settings-acme.json'))
+  expect(extraWeb).toContain(join(home, 'worker-settings.json'))
+  expect(existsSync(join(home, 'worker-settings-acme.json'))).toBe(true)
+  expect(existsSync(join(home, 'worker-settings.json'))).toBe(true)
+  const acmeSettings = JSON.parse(readFileSync(join(home, 'worker-settings-acme.json'), 'utf8'))
+  const webSettings = JSON.parse(readFileSync(join(home, 'worker-settings.json'), 'utf8'))
+  expect(acmeSettings.hooks.PreToolUse.at(-1).hooks[0].command).toContain("--person-only-contexts 'acme-ctx'")
+  expect(webSettings.hooks.PreToolUse.at(-1).hooks[0].command).not.toContain('--person-only-contexts')
+})
+
+// claude-factory-25z.2: a rig's personOnlyContexts reaches the deny hook's own argv, so it can refuse a
+// kubectl, ko or helm mutation there even with no live rig policy anywhere else in the worker's settings
+test("workerSettings carries a rig's personOnlyContexts on the deny hook's own argv", () => {
+  const withList = workerSettings({}, 200, undefined, ['acme'])
+  const pre = withList.hooks.PreToolUse as { hooks: { command: string }[] }[]
+  expect(pre.at(-1)!.hooks[0]!.command).toMatch(/--person-only-contexts 'acme'$/)
+  // no list, or an empty one: today's command, unchanged
+  const withNone = workerSettings({}, 200)
+  const withEmpty = workerSettings({}, 200, undefined, [])
+  expect(withNone).toEqual(withEmpty)
+  expect((withNone.hooks.PreToolUse as { hooks: { command: string }[] }[]).at(-1)!.hooks[0]!.command).toMatch(
+    /worker-hook\.ts'$/,
+  )
 })
 
 // mv9: a worker still gets no plugin but asd-ste100 -- its skill and SessionStart STE brief are lean
