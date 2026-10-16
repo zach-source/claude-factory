@@ -42,6 +42,7 @@ import {
   WORKER_TOOLS,
   commitIdentity,
   room,
+  slot,
   withoutFleet,
 } from './cli'
 
@@ -128,6 +129,24 @@ test("a rig has room under its own cap and the town's", () => {
   expect(room({ name: 'api' }, busy, 8)).toBe(4) // no cap of its own: the town's
   expect(room({ name: 'api', maxRuns: 5 }, busy, 5)).toBe(1) // the town fills first
   expect(room(undefined, busy, 8)).toBe(4) // a run outside any rig
+})
+
+test('slot: a gate, no node, or a waiting sub costs nothing; a stuck sub holds the rig only; else it holds both', () => {
+  expect(slot(undefined, '')).toBe('free') // done or aborted: no live node
+  expect(slot({ gate: true }, 'working')).toBe('free') // a gate: the person answers it, no worker
+  expect(slot({}, 'waiting')).toBe('free') // a timed edge or a blocked park
+  expect(slot({}, 'stuck')).toBe('rig') // held for the person, but its pane (an AX task) stays up
+  expect(slot({}, 'working')).toBe('busy')
+  expect(slot({}, 'backoff')).toBe('busy')
+})
+
+test('room: a stuck run (held) still fills its rig, but never the town', () => {
+  const busy = ['web']
+  const held = ['web', 'web']
+  expect(room({ name: 'web', maxRuns: 3 }, busy, 8, held)).toBe(0) // 1 busy + 2 held == maxRuns
+  expect(room({ name: 'web', maxRuns: 4 }, busy, 8, held)).toBe(1)
+  expect(room(undefined, busy, 8, held)).toBe(7) // held never counts against the town
+  expect(room({ name: 'web', maxRuns: 3 }, busy, 8)).toBe(2) // no held argument: unaffected
 })
 
 test('a launch the shell swallowed gets Enter, then the command again, then fails', () => {

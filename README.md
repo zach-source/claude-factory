@@ -522,7 +522,11 @@ rows = [
   from their Claude transcripts.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
-  stays). `start` and `fork` refuse past `FACTORY_MAX_RUNS` (8) runs holding a worker.
+  stays). `start` and `fork` refuse past `FACTORY_MAX_RUNS` (16) runs holding a worker.
+  Three kinds of run cost no slot in this cap: a run parked at a gate; a run that waits on
+  a timed edge or a blocked report; a stuck run, held for a person after `FAIL` used up
+  its retries. A stuck run still costs a slot in its own rig's `--max`, because its worker
+  pane stays up.
 
 ## Releasing claude-factory
 
