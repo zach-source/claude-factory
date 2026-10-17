@@ -419,6 +419,35 @@ test("compact() keeps a LONG.md entry's usage under its #id, and drops it only w
   expect(usage(dir).get('beads/LONG.md#lock')?.helped).toBe(1)
 })
 
+// claude-factory-5o7: noteExists()'s no-'#' branch was only existsSync(join(dir,path)), so a
+// directory ('beads', '.' -> '') or any non-.md file passed. walk() only ever lists .md files
+// (memory.ts's walk()), so a real note path always ends in .md.
+test('noteExists refuses a topic directory, ".", and a non-.md file; a real note still passes', () => {
+  const dir = join(tmpdir(), `memory-note-exists-dir-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'a short note', body: 'body' }))
+  writeFileSync(join(dir, 'beads', 'notes.txt'), 'plain text, not a note\n')
+  expect(noteExists(dir, 'beads')).toBe(false)
+  expect(noteExists(dir, '')).toBe(false)
+  expect(noteExists(dir, 'beads/notes.txt')).toBe(false)
+  expect(noteExists(dir, 'beads/x.md')).toBe(true)
+})
+
+test('compact() drops a usage line logged against a directory path, and keeps a real note', () => {
+  const dir = join(tmpdir(), `memory-compact-dir-usage-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'a short note', body: 'body' }))
+  // simulate the pre-fix bug's bad usage line: a 'helped' event logged against a bare directory
+  use(dir, ['beads'], 'helped')
+  use(dir, ['beads/x.md'], 'helped')
+  expect(usage(dir).get('beads')?.helped).toBe(1)
+  compact(dir, {})
+  expect(usage(dir).get('beads')).toBeUndefined()
+  expect(usage(dir).get('beads/x.md')?.helped).toBe(1)
+})
+
 test('noteExists and compact() know a CORE.md#<hash> fact note, and drop it once its bullet is gone (claude-factory-59r.12)', () => {
   const dir = join(tmpdir(), `memory-core-usage-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })

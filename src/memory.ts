@@ -778,7 +778,10 @@ export const usage = (dir: string, renamed?: Record<string, string>) =>
 export function noteExists(dir: string, path: string): boolean {
   if (path.startsWith('CORE.md#')) return coreNotes(dir).some(n => n.path === path)
   const i = path.indexOf('#')
-  if (i < 0) return existsSync(join(dir, path))
+  if (i < 0) {
+    const f = join(dir, path)
+    return path.endsWith('.md') && existsSync(f) && statSync(f).isFile()
+  }
   const file = join(dir, path.slice(0, i))
   if (!existsSync(file) || !statSync(file).isFile()) return false
   return parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))

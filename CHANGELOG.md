@@ -22,9 +22,15 @@ minor release may change the factory format, the CLI or the run state.
     verdict, so a caller that skips it keeps its old output; a date marker is always judged.
   - `src/cli.ts`: new `untilDeps()` looks up a bead through the rig whose bd prefix matches it
     (longest match first) and `gh pr view <url> --json state` for a PR, each memoized for one pass
-    and capped at 50 `gh` calls. `dream()` and both `memory compact` paths (`--dry-run` and real)
-    now pass it to `applyTiers()`. `compactMessage()` adds `, N retired` and `, N flagged` clauses
-    when either count is over 0.
+    and capped at 50 `gh` calls. A rig whose own prefix lookup fails is set apart. That rig cannot
+    rule out owning an id, so the lookup reads "lookup failed" for it, never "not found". `dream()`
+    and both `memory compact` paths (`--dry-run` and real) now pass it to `applyTiers()`.
+    `compactMessage()` adds `, N retired` and `, N flagged` clauses when either count is over 0.
+- `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
+  `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
+  path. `memory compact` now removes such a usage line. (claude-factory-5o7)
+  - `src/memory.ts`: `noteExists()` for a path with no `#` now needs
+    `path.endsWith('.md') && statSync().isFile()`, the same `.md`-only rule as `walk()`.
 - Each memory topic now has a cap of 15 short notes (`TOPIC_CAP`). Set
   `FACTORY_MEMORY_TOPIC_CAP` to override it. `decide()` merges a topic's oldest notes once the
   topic holds more notes than the cap. `dream` and `memory compact` name topics still over the
