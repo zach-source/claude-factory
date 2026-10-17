@@ -2198,6 +2198,9 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
+    // the prior ending is moot once revived: a goto past a requeue edge, then a later close, must not
+    // count as a requeue (claude-factory-wnm.21)
+    if (!t.isSettled) delete t.requeued
   } else if (!isOver) beat(run, t, now)
 }
 

@@ -891,6 +891,33 @@ test('a retried tick whose requeue already landed for this run skips the REQUEUE
   expect(trackOf('run-6')).toMatchObject({ isSettled: true, requeued: true })
 })
 
+test('a run revived with GOTO after a requeue ending drops the stale requeued flag, so a later close does not count as a requeue (claude-factory-wnm.21)', () => {
+  const showJson = JSON.stringify([
+    { id: 'acme-1', title: 't', labels: ['factory', 'factory:lifecycle', 'station:implement'] },
+  ])
+  reqReset(showJson)
+  requeuedRun('run-7', 'acme-1', 'ship')
+  pfactory(['beads']) // first pass: the run ends on a requeue edge and settles
+  expect(trackOf('run-7')).toMatchObject({ isSettled: true, requeued: true })
+
+  // a person revives the ended run with a GOTO back into a working node
+  const actor = createActor(compile(REQ)).start()
+  actor.send({ type: 'TICK', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  actor.send({ type: 'DONE', seq, outcome: 'ship', summary: 'moved on', at: 1 })
+  actor.send({ type: 'GOTO', node: 'implement', at: 2 })
+  writeFileSync(
+    join(phome, 'runs', 'run-7', 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+
+  const out = pfactory(['beads'])
+  expect(out.code).toBe(0)
+  const t = trackOf('run-7')
+  expect(t.isSettled).toBe(false) // reopen() succeeded against the fake bd
+  expect(t.requeued).toBeUndefined() // the stale flag from the ended run must not survive the revive
+})
+
 // claude-factory-wnm (A4, A6, A7): the `factory:<name>` dispatch label.
 // A bead's `factory:<name>` label picks a different factory to compile the run from.
 // `station:<name>` (already honored, claude-factory-b6c.27) still picks where in it to start.
