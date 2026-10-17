@@ -23,10 +23,16 @@ minor release may change the factory format, the CLI or the run state.
     read-only `--slo` hash-and-skip-on-no-change check. `sweepFiler(b)` reads a bead's
     `created_by` field to tell a sweep-filed bead from a person's bead.
 
-  - `sweepGuard` is the flood guard. It lets at most 5 sweep-filed beads (`sweep:<name>`
-    label) for each rig in each 24 hour window. If the count is above the cap, a bead does not
-    keep the `factory` label and waits for a person. The bead starts on its own only when it has
-    `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`.
+  - `sweepGuard` is a guard against too many sweep-filed beads. It sets a maximum of 5
+    sweep-filed beads for each rig in each 24 hour window.
+
+    `sweepGuard` identifies a sweep-filed bead by its `created_by` field. It uses `sweepFiler`
+    to read that field. It does not use the `sweep:<name>` label. A worker can set that label on
+    a bead itself.
+
+    A bead above the cap loses the `factory` label. It then waits for a person. The bead starts
+    by itself only if it has one of these labels: `sweep-queue:incident`,
+    `sweep-queue:main-ci-red`, or `sweep-queue:critical-advisory`.
 
   - `guardHandled`, `markGuardHandled` and `pruneGuardState` keep the guard's "already scored"
     mark in `$FACTORY_HOME/sweep-guard.json`, not on the bead itself. A sweep worker's own
@@ -55,9 +61,27 @@ minor release may change the factory format, the CLI or the run state.
     the mail channel (claude-factory-8pc.23, .26).
 
   - `src/worker-hook.ts` now denies a command that sets, clears, exports, unsets or declares
-    `BEADS_ACTOR`. This includes `env -u`, `env -i` and `export -n` forms. `sweepFiler` trusts the
-    bead's `created_by` field. `BEADS_ACTOR` controls that field. This guard closes the gap
-    (claude-factory-8pc.24, .27).
+    `BEADS_ACTOR`. This includes these forms: `env -u`, `env -i` and `export -n`. `sweepFiler`
+    trusts the bead's `created_by` field. `BEADS_ACTOR` controls that field.
+
+    This denial is defense in depth only. It covers only the forms that the guard knows. A
+    worker can still bypass it in other ways. The gap stays open
+    (claude-factory-8pc.24, .27, .28).
+
+- A hidden `briefer` subagent writes an evidence brief into each gate's decision item. The
+  manager no longer needs to read the pull request and the journal itself. (claude-factory-2u2)
+  - `src/gatebrief.ts`: `gateKey()` and `clipBrief()`. `src/cli.ts`: `factory gate-brief facts
+    <run>` prints the pull request, the verify and review summaries, and the run's goal as
+    JSON, only at a live gate; `factory gate-brief set <key> <file>` checks the key against
+    the live gate, strips control characters, keeps 8 lines of 200 characters or fewer each,
+    and stores the brief in `<home>/gate-briefs.json`; `row()` adds `gate.brief`.
+  - `mod/hooks/view.ts`: `briefContext()` and `interviews()` put the brief into the gate
+    Interview item: `context` is a redacted one-line summary, `details` is the whole brief.
+  - `mod/hooks/register.tsx`: a new `factory:briefer` subagent (`BRIEFER_TYPE`), spawned once
+    for each gate visit by `briefNow()`, with no tools at all. Its `turn.complete` writes the
+    brief through `gate-brief set` and logs one line to `<home>/brief-log.jsonl`. `tool.call`
+    denies every Bash call from a briefer agent, `factory decide` included. The person still
+    decides every gate. `userConfig.briefer` (default `true`) turns the briefer off.
 - A station at its round cap now re-plans once with the round's findings instead of holding for a
   hand goto, and a repeated red on the same acceptance criterion mails the manager on its own.
   (claude-factory-qgz)

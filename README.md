@@ -180,6 +180,26 @@ A manager session can start with no `Agent` tool in its `--tools` list, so each 
 
 An earlier claude-factory-dun session named the wrong cause for this gap. It rolled the pm's `userConfig` default back to `false`. The default is `true` again now. See CHANGELOG for the corrected cause.
 
+A hidden `briefer` subagent starts once for each gate visit. It has no tool at all.
+
+Run `factory gate-brief facts <run>` first. The command collects these facts:
+
+- The pull request's title, state, diff stat and CI checks.
+- The last verify and review (or security) summaries.
+- The run's own goal.
+
+The briefer reads that JSON. It writes a brief of 8 lines or fewer. The command
+`factory gate-brief set <key> <file>` cleans that brief and keeps it in `<home>/gate-briefs.json`.
+It also writes one line per attempt to `<home>/brief-log.jsonl`.
+
+The gate's Interview item then shows the brief. You do not need to read anything first.
+The manager's own "Gates" prompt line reads the brief from the `gate.brief` field that
+`factory show <run>` shows. It reads the raw pull request and journal only when that field is
+missing, or when you ask for more.
+
+A person still decides every gate, with `factory decide`. The briefer cannot run it.
+`tool.call` denies it outright. To turn off the briefer, set `briefer` to `false` in the plugin's `userConfig`.
+
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats
 (a fresh session per visit, a durable identity in the run), each repo the factory works is

@@ -12,7 +12,7 @@ export type FactoryRun = {
   error?: string | null
   last?: FactoryEntry
   /** set while the run waits at a gate for the person */
-  gate?: { question: string; outcomes: string[] }
+  gate?: { question: string; outcomes: string[]; brief?: string }
   /** the bead the run works, in a repo tracked with beads */
   bead?: string
   /** the rig whose repo it works */
@@ -225,6 +225,23 @@ export type FactoryPmLogEntry = {
   items?: number
   findings?: number
   filed?: number
+  error?: string
+}
+
+/** one briefer subagent attempt's outcome. register.tsx's briefer `turn.complete` branch, and
+ * `briefNow` itself on a failed facts gather, spawn deny or spawn throw, append one of these to
+ * `<home>/brief-log.jsonl`, capped at 50 lines (claude-factory-2u2). `key` is the gate visit's own
+ * key (`gateKey()`, src/gatebrief.ts). `error` is set instead of a clean write when the facts call,
+ * the spawn, or `factory gate-brief set` failed. */
+export type FactoryBriefLogEntry = {
+  at: number
+  key: string
+  agentId?: string
+  reason?: string
+  durationMs: number
+  /** input + output tokens the briefer's turn cost; absent when the turn reported none, or when
+   * this entry was written before a turn ever ran (a facts-gather or a spawn-deny/throw) */
+  tokens?: number
   error?: string
 }
 

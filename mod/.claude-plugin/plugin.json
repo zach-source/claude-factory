@@ -18,6 +18,12 @@
       "title": "Let a hidden pm subagent rank each rig's next work",
       "description": "On: a hidden 'pm' subagent ranks each rig's ready work into a plan once an hour, and again soon after a run finishes. It has no Bash: it only ranks and explains, and the factory CLI writes the plan and files any finding. The patrol and dispatch then use that plan while it is fresh (under 2 hours old). Off: they keep today's order. A manager session that started before Agent joined the engine's own tool list cannot spawn the pm. With no Agent tool, the pm stops at once, shows a red line on the Rigs tab, and writes one pm-log.jsonl entry; restarting the manager clears this (see CHANGELOG, claude-factory-dun).",
       "default": true
+    },
+    "briefer": {
+      "type": "boolean",
+      "title": "Let a hidden briefer subagent write each gate's evidence brief",
+      "description": "On: once for each gate visit, a hidden 'briefer' subagent reads the pull request, the verify and review summaries, and the run's goal, then writes a brief of 8 lines or fewer into the gate's decision item. It has no Bash: the factory CLI gathers the facts first and stores the cleaned brief after. The person still runs `factory decide`; the briefer never can. Off: the Interview tab's gate item shows no brief.",
+      "default": true
     }
   }
 }
