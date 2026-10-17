@@ -476,10 +476,13 @@ parks the run with no worker; `goto` skips the wait.
 carries the round's findings to that node. A second capped report in the same run still goes to
 the manager, and the mail names the earlier re-plan. Lifecycle's review sets `onRounds` to `plan`.
 
-`repeatMail` names an outcome in `next`. Suppose a station reports this outcome twice in a row with
-the same `AC<n>` id in both reports. Then the machine mails the manager from `'factory'`. The mail
-names the station, the shared ids and both report times. The run still follows the normal edge.
-With no shared id, there is no mail. Lifecycle's verify sets `repeatMail` to `red`.
+`repeatMail` names an outcome in `next`. A station can report this outcome twice in a row, each
+report naming an `AC<n>` id on its own `Failing: AC2, AC6` line. An id named only as passing
+elsewhere in a report does not count. When both reports name the same failing id, the machine
+mails the manager from `'factory'`, naming the station, the shared ids and both report times; the
+run still follows the normal edge. With no shared failing id, or with a re-plan between the two
+reports, the machine sends no mail. Lifecycle's verify sets `repeatMail` to `red` and its prompt
+asks for the `Failing:` line.
 
 `onTimeout: { timeoutMin, prompt? }` gives the attempt right after a timeout fail a longer limit
 than the station's own `timeoutMin`, plus an extra brief section carrying `prompt`, instead of the
