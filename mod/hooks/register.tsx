@@ -774,6 +774,12 @@ async function briefNow($: EngineInterface, runs: FactoryRun[]) {
   if (rt.isBriefing && rt.briefStartedAt !== undefined && now - rt.briefStartedAt >= BRIEFER_WATCHDOG_MS) {
     rt.isBriefing = false
     rt.briefKey = undefined
+    // Clear `rt.briefId` and `rt.briefStartedAt` too (claude-factory-2u2.7): the freed gate's
+    // briefer can send a late turn-complete event, and the next gate's spawn sets `rt.briefKey`
+    // right away but sets `rt.briefId` only once `await $.agent.spawn` returns, so in that gap a
+    // late event would wrongly match `rt.briefId` below and store its answer under the new key.
+    rt.briefId = undefined
+    rt.briefStartedAt = undefined
     $.ui.status('factory: a briefer ran past 10 min with no answer; the watchdog freed the next one')
   }
   if (rt.isBriefing || rt.isGatheringBrief) return
