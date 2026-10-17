@@ -5597,7 +5597,14 @@ function records(): RunRecord[] {
 }
 function record(id: string): RunRecord {
   const { run, value, c } = current(id)
-  return { id, rig: rigOf(run.repo)?.name, node: where(value)[0], createdAt: createdAt(id), log: c.log }
+  return {
+    id,
+    rig: rigOf(run.repo)?.name,
+    node: where(value)[0],
+    createdAt: createdAt(id),
+    log: c.log,
+    ...(trackOf(id).requeued && { requeued: true }),
+  }
 }
 
 async function status(id: string | undefined) {
