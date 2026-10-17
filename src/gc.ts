@@ -106,3 +106,191 @@ export function gcPlan(
     },
   }
 }
+
+// ---- `factory gc --worktrees` (claude-factory-l38). This removes a finished run's worktree. It
+// also removes the run's factory/* branch (local and remote) once a tick has merged every tip.
+// This half is pure too. src/cli.ts alone shells out to git, gh, bd and herdr. It then feeds the
+// plan below their answers, as plain facts.
+
+/** a finished run's worktree survives this long, so a run that just ended keeps its worktree a while
+ * (a person opening it right after "done", a retry close behind it). */
+export const WORKTREE_MIN_AGE_MS = 3_600_000
+/** a dirty worktree whose untracked files exceed this is kept whole, never snapshotted (claude-factory-l38 AC6) */
+export const UNTRACKED_MAX_BYTES = 50 * 1024 * 1024
+
+/** one `git worktree list --porcelain` entry, as the caller reads it (no symlink resolved) */
+export type WorktreeFact = {
+  path: string
+  /** the branch it has checked out, or null when detached */
+  branch: string | null
+  locked: boolean
+  /** clean: no uncommitted or untracked change; small: under UNTRACKED_MAX_BYTES, snapshot first; large: kept whole */
+  dirty: 'clean' | 'small' | 'large'
+  bytes: number
+}
+
+/** one factory/* branch's local and/or remote tip, and whether each is an ancestor of origin/<default> */
+export type BranchFact = {
+  name: string
+  local: string | null
+  remote: string | null
+  localMerged: boolean
+  remoteMerged: boolean
+}
+
+export type PrFact = { state: 'OPEN' | 'MERGED' | 'CLOSED'; headRefName: string; headRefOid: string }
+
+/** a run, as worktreePlan() needs it: enough to decide ownership, liveness and bead state */
+export type RunRef = { id: string; node: string; finishedAt: number; worktree: string; bead?: string }
+
+/** one rig's facts for one pass. `branches` and `prs` are null on any read failure for this rig
+ * (git fetch/ls-remote, or gh/non-GitHub): worktreePlan() then deletes no branch in it (AC5). */
+export type RigWorktreeFacts = {
+  name: string
+  worktrees: WorktreeFact[]
+  branches: BranchFact[] | null
+  prs: PrFact[] | null
+  /** keyed by bead id; a bead missing here counts as open (AC5: a failed bd read counts as open) */
+  beadClosed: Record<string, boolean>
+}
+
+export type WorktreeRemoval = { runId: string; path: string; bytes: number; snapshot: boolean }
+export type BranchRemoval = { runId: string; name: string; local: string | null; remote: string | null }
+export type Kept = { kind: 'worktree' | 'branch'; runId: string | null; name: string; reason: string }
+export type RigWorktreePlan = {
+  rig: string
+  removeWorktrees: WorktreeRemoval[]
+  removeBranches: BranchRemoval[]
+  keep: Kept[]
+  /** a worktree or branch whose owner run this pass could name */
+  owned: number
+  /** of those, how many belong to a run that is not done/aborted */
+  live: number
+  /** a worktree on a non-factory branch no run's path matches, or a factory/* branch no run's id matches */
+  unowned: number
+}
+
+const isLive = (r: RunRef) => !['done', 'aborted'].includes(r.node)
+
+/** the run whose id is the longest match of `factory/<id>` or `factory/<id>-*`: a live fork's longer id
+ * always wins over the finished run it forked from (claude-factory-l38 test 13) */
+function ownerByBranch(name: string | null, runs: RunRef[]): RunRef | null {
+  if (!name?.startsWith('factory/')) return null
+  const id = name.slice('factory/'.length)
+  const matches = runs.filter(r => id === r.id || id.startsWith(`${r.id}-`))
+  return matches.length ? matches.reduce((a, b) => (b.id.length > a.id.length ? b : a)) : null
+}
+const ownerOfPath = (path: string, branch: string | null, runs: RunRef[]): RunRef | null =>
+  runs.find(r => r.worktree === path) ?? ownerByBranch(branch, runs)
+
+/** whether one existing tip (a sha that is really there, local or remote) is covered: an ancestor of
+ * the default branch, the headRefOid of a MERGED PR, or of a CLOSED one whose run's bead is closed */
+function coverTip(sha: string, mergedAncestor: boolean, prs: PrFact[], branch: string, beadClosed: boolean) {
+  if (mergedAncestor) return 'covered' as const
+  const hit = prs.filter(p => p.headRefName === branch && p.headRefOid === sha)
+  if (hit.some(p => p.state === 'MERGED')) return 'covered' as const
+  if (hit.some(p => p.state === 'CLOSED')) return beadClosed ? ('covered' as const) : ('bead-open' as const)
+  return 'uncovered' as const
+}
+
+/**
+ * For each rig, this picks two things. First, which finished run's worktree to remove (with a
+ * snapshot first when it is dirty-small). Second, which factory/* branch to delete, local and
+ * remote, once a tick has covered every tip of it.
+ *
+ * This plan never touches a live run's worktree or branch (AC2). `panes` is the strict herdr
+ * read: on any failure it is null, and gc then keeps every worktree (AC5). gc also keeps a locked
+ * worktree, and one a pane's cwd sits inside. gc never deletes a branch a kept worktree still has
+ * checked out (AC3), one with an OPEN pull request, or one whose rig returned null branch or PR
+ * facts (AC5, AC8).
+ */
+export function worktreePlan(
+  rigs: RigWorktreeFacts[],
+  runs: RunRef[],
+  panes: { cwd: string }[] | null,
+  now: number,
+): RigWorktreePlan[] {
+  return rigs.map(rig => {
+    const keep: Kept[] = []
+    const removeWorktrees: WorktreeRemoval[] = []
+    let owned = 0
+    let live = 0
+    let unowned = 0
+    const keptBranches = new Set<string>()
+    for (const w of rig.worktrees) {
+      const owner = ownerOfPath(w.path, w.branch, runs)
+      if (!owner) {
+        unowned++
+        keep.push({ kind: 'worktree', runId: null, name: w.path, reason: 'unowned' })
+        if (w.branch) keptBranches.add(w.branch)
+        continue
+      }
+      owned++
+      if (isLive(owner)) live++
+      const paneInside = panes?.some(p => p.cwd === w.path || p.cwd.startsWith(`${w.path}/`)) ?? false
+      const reason =
+        panes === null
+          ? 'herdr-unknown'
+          : paneInside
+            ? 'pane-open'
+            : w.locked
+              ? 'locked'
+              : isLive(owner)
+                ? 'live'
+                : now - owner.finishedAt < WORKTREE_MIN_AGE_MS
+                  ? 'recent'
+                  : w.dirty === 'large'
+                    ? 'dirty-large'
+                    : null
+      if (reason) {
+        keep.push({ kind: 'worktree', runId: owner.id, name: w.path, reason })
+        if (w.branch) keptBranches.add(w.branch)
+        continue
+      }
+      removeWorktrees.push({ runId: owner.id, path: w.path, bytes: w.bytes, snapshot: w.dirty === 'small' })
+    }
+    const removeBranches: BranchRemoval[] = []
+    const noFacts = rig.branches === null || rig.prs === null
+    for (const b of rig.branches ?? []) {
+      const owner = ownerByBranch(b.name, runs)
+      if (!owner) {
+        unowned++
+        keep.push({ kind: 'branch', runId: null, name: b.name, reason: 'unowned' })
+        continue
+      }
+      if (isLive(owner)) {
+        keep.push({ kind: 'branch', runId: owner.id, name: b.name, reason: 'live' })
+        continue
+      }
+      if (keptBranches.has(b.name)) {
+        keep.push({ kind: 'branch', runId: owner.id, name: b.name, reason: 'checked-out' })
+        continue
+      }
+      if (noFacts) {
+        keep.push({ kind: 'branch', runId: owner.id, name: b.name, reason: 'facts-unavailable' })
+        continue
+      }
+      const prs = rig.prs!
+      if (prs.some(p => p.headRefName === b.name && p.state === 'OPEN')) {
+        keep.push({ kind: 'branch', runId: owner.id, name: b.name, reason: 'open-pr' })
+        continue
+      }
+      const beadClosed = owner.bead ? (rig.beadClosed[owner.bead] ?? false) : false
+      const tips = [
+        b.local && { sha: b.local, merged: b.localMerged },
+        b.remote && { sha: b.remote, merged: b.remoteMerged },
+      ].filter((t): t is { sha: string; merged: boolean } => !!t)
+      const covers = tips.map(t => coverTip(t.sha, t.merged, prs, b.name, beadClosed))
+      if (covers.every(c => c === 'covered')) {
+        removeBranches.push({ runId: owner.id, name: b.name, local: b.local, remote: b.remote })
+      } else if (covers.every(c => c !== 'uncovered') && covers.some(c => c === 'bead-open')) {
+        keep.push({ kind: 'branch', runId: owner.id, name: b.name, reason: 'bead-open' })
+      } else if (tips.length === 2 && tips[0]!.sha !== tips[1]!.sha) {
+        keep.push({ kind: 'branch', runId: owner.id, name: b.name, reason: 'diverged' })
+      } else {
+        keep.push({ kind: 'branch', runId: owner.id, name: b.name, reason: 'unmerged' })
+      }
+    }
+    return { rig: rig.name, removeWorktrees, removeBranches, keep, owned, live, unowned }
+  })
+}

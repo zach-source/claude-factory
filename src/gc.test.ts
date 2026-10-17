@@ -2,7 +2,20 @@
 // tests drive it straight, proving the keep-set vs delete-set rules the acceptance criteria name
 // (AC2-AC5), with no CLI or real run directory involved.
 import { expect, test } from 'bun:test'
-import { gcPlan, LAUNCH_MIN_AGE_MS, type FileFact, type LaunchFact, type RunFact } from './gc'
+import {
+  gcPlan,
+  LAUNCH_MIN_AGE_MS,
+  worktreePlan,
+  WORKTREE_MIN_AGE_MS,
+  type BranchFact,
+  type FileFact,
+  type LaunchFact,
+  type PrFact,
+  type RigWorktreeFacts,
+  type RunFact,
+  type RunRef,
+  type WorktreeFact,
+} from './gc'
 
 const DAY = 24 * 3_600_000
 const NOW = 1_700_000_000_000
@@ -115,4 +128,231 @@ test('a live pane keeps its script however old (AC5)', () => {
   const launch: LaunchFact[] = [{ pane: 'live', bytes: 10, mtimeMs: NOW - 30 * DAY }]
   const plan = gcPlan([], launch, new Set(['live']), NOW, 7)
   expect(plan.launch).toEqual([])
+})
+
+// ---- worktreePlan() (claude-factory-l38): the pure half of `factory gc --worktrees` ----
+
+const OLD = NOW - 2 * WORKTREE_MIN_AGE_MS
+const ref = (id: string, node: string, worktree = `/wt/${id}`, extra: Partial<RunRef> = {}): RunRef => ({
+  id,
+  node,
+  finishedAt: OLD,
+  worktree,
+  ...extra,
+})
+const wt = (path: string, branch: string | null, extra: Partial<WorktreeFact> = {}): WorktreeFact => ({
+  path,
+  branch,
+  locked: false,
+  dirty: 'clean',
+  bytes: 1_000,
+  ...extra,
+})
+const branch = (name: string, extra: Partial<BranchFact> = {}): BranchFact => ({
+  name,
+  local: 'aaa',
+  remote: 'aaa',
+  localMerged: false,
+  remoteMerged: false,
+  ...extra,
+})
+const rigFacts = (extra: Partial<RigWorktreeFacts> = {}): RigWorktreeFacts => ({
+  name: 'r',
+  worktrees: [],
+  branches: [],
+  prs: [],
+  beadClosed: {},
+  ...extra,
+})
+const planOf = (rig: RigWorktreeFacts, runs: RunRef[], panes: { cwd: string }[] | null = []) =>
+  worktreePlan([rig], runs, panes, NOW)[0]!
+
+test('1: a live run with a merged branch plans nothing', () => {
+  const runs = [ref('r1', 'implement.working')]
+  const rig = rigFacts({
+    worktrees: [wt('/wt/r1', 'factory/r1')],
+    branches: [branch('factory/r1', { localMerged: true, remoteMerged: true })],
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([])
+  expect(p.removeBranches).toEqual([])
+})
+
+test('2: a finished clean run with a merged branch removes the worktree and deletes both tips', () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({
+    worktrees: [wt('/wt/r1', 'factory/r1')],
+    branches: [branch('factory/r1', { local: 'aaa', remote: 'bbb', localMerged: true, remoteMerged: true })],
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([{ runId: 'r1', path: '/wt/r1', bytes: 1_000, snapshot: false }])
+  expect(p.removeBranches).toEqual([{ runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'bbb' }])
+})
+
+test('3: unmerged with no PR keeps the branch, but still removes the worktree', () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({
+    worktrees: [wt('/wt/r1', 'factory/r1')],
+    branches: [branch('factory/r1')],
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toHaveLength(1)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'unmerged' })
+})
+
+test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the merge is kept', () => {
+  const runs = [ref('r1', 'done'), ref('r2', 'done')]
+  const prs: PrFact[] = [{ state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa' }]
+  const r1 = rigFacts({
+    worktrees: [],
+    branches: [branch('factory/r1', { local: 'aaa', remote: 'aaa' })],
+    prs,
+  })
+  expect(planOf(r1, runs).removeBranches).toEqual([
+    { runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'aaa' },
+  ])
+  const prs2: PrFact[] = [{ state: 'MERGED', headRefName: 'factory/r2', headRefOid: 'aaa' }]
+  const r2 = rigFacts({
+    worktrees: [],
+    branches: [branch('factory/r2', { local: 'ccc', remote: 'aaa' })],
+    prs: prs2,
+  })
+  expect(planOf(r2, runs).removeBranches).toEqual([])
+})
+
+test('5: a CLOSED PR with the bead closed deletes; open or unknown bead keeps', () => {
+  const runs = [ref('r1', 'done', '/wt/r1', { bead: 'b-1' }), ref('r2', 'done', '/wt/r2', { bead: 'b-2' })]
+  const prs: PrFact[] = [
+    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa' },
+    { state: 'CLOSED', headRefName: 'factory/r2', headRefOid: 'aaa' },
+  ]
+  const rig = rigFacts({
+    worktrees: [],
+    branches: [branch('factory/r1'), branch('factory/r2')],
+    prs,
+    beadClosed: { 'b-1': true },
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([{ runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'aaa' }])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r2', name: 'factory/r2', reason: 'bead-open' })
+})
+
+test('6: an OPEN PR with an ancestor tip keeps', () => {
+  const runs = [ref('r1', 'done')]
+  const prs: PrFact[] = [{ state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa' }]
+  const rig = rigFacts({
+    worktrees: [],
+    branches: [branch('factory/r1', { localMerged: true, remoteMerged: true })],
+    prs,
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'open-pr' })
+})
+
+test('7: a diverged, uncovered remote tip keeps both', () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({
+    worktrees: [],
+    branches: [branch('factory/r1', { local: 'aaa', remote: 'bbb', localMerged: true, remoteMerged: false })],
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'diverged' })
+})
+
+test('8: null branch or PR facts delete no branch in that rig', () => {
+  const runs = [ref('r1', 'done')]
+  const noBranches = planOf(rigFacts({ branches: null }), runs)
+  expect(noBranches.removeBranches).toEqual([])
+  const noPrs = planOf(
+    rigFacts({ branches: [branch('factory/r1', { localMerged: true, remoteMerged: true })], prs: null }),
+    runs,
+  )
+  expect(noPrs.removeBranches).toEqual([])
+  expect(noPrs.keep).toContainEqual({
+    kind: 'branch',
+    runId: 'r1',
+    name: 'factory/r1',
+    reason: 'facts-unavailable',
+  })
+})
+
+test('9: panes null removes no worktree; a pane cwd in a subdirectory keeps it', () => {
+  const runs = [ref('r1', 'done'), ref('r2', 'done', '/wt/r2')]
+  const rig = rigFacts({ worktrees: [wt('/wt/r1', 'factory/r1'), wt('/wt/r2', 'factory/r2')] })
+  const nullPanes = planOf(rig, runs, null)
+  expect(nullPanes.removeWorktrees).toEqual([])
+  const sub = planOf(rig, runs, [{ cwd: '/wt/r2/sub/dir' }])
+  expect(sub.removeWorktrees.map(r => r.runId)).toEqual(['r1'])
+  expect(sub.keep).toContainEqual({ kind: 'worktree', runId: 'r2', name: '/wt/r2', reason: 'pane-open' })
+})
+
+test('10: a small dirty worktree is removed with a snapshot; a large one is kept', () => {
+  const runs = [ref('r1', 'done'), ref('r2', 'done', '/wt/r2')]
+  const rig = rigFacts({
+    worktrees: [
+      wt('/wt/r1', 'factory/r1', { dirty: 'small' }),
+      wt('/wt/r2', 'factory/r2', { dirty: 'large' }),
+    ],
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([{ runId: 'r1', path: '/wt/r1', bytes: 1_000, snapshot: true }])
+  expect(p.keep).toContainEqual({ kind: 'worktree', runId: 'r2', name: '/wt/r2', reason: 'dirty-large' })
+})
+
+test('11: a locked worktree is kept', () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({ worktrees: [wt('/wt/r1', 'factory/r1', { locked: true })] })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'worktree', runId: 'r1', name: '/wt/r1', reason: 'locked' })
+})
+
+test('12: a codex/* worktree and an unowned factory/x branch are never planned, counted unowned', () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({
+    worktrees: [wt('/wt/codex', 'codex/abc')],
+    branches: [branch('factory/x', { localMerged: true, remoteMerged: true })],
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([])
+  expect(p.removeBranches).toEqual([])
+  expect(p.unowned).toBe(2)
+})
+
+test('13: longest id prefix gives a side worktree to the live fork, not the finished parent', () => {
+  const runs = [ref('r1', 'done'), ref('r1-2', 'implement.working', '/wt/r1-2')]
+  const rig = rigFacts({ worktrees: [wt('/wt/side', 'factory/r1-2-sidework')] })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'worktree', runId: 'r1-2', name: '/wt/side', reason: 'live' })
+})
+
+test('14: a run finished under an hour ago keeps its worktree', () => {
+  const runs = [ref('r1', 'done', '/wt/r1', { finishedAt: NOW - 10 * 60_000 })]
+  const rig = rigFacts({ worktrees: [wt('/wt/r1', 'factory/r1')] })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'worktree', runId: 'r1', name: '/wt/r1', reason: 'recent' })
+})
+
+test('15: a branch checked out in a kept worktree is not deleted', () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({
+    worktrees: [wt('/wt/r1', 'factory/r1', { locked: true })],
+    branches: [branch('factory/r1', { localMerged: true, remoteMerged: true })],
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'checked-out' })
+})
+
+test('16: a non-factory branch on a run worktree path removes the worktree, never the branch', () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({ worktrees: [wt('/wt/r1', 'main')] })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([{ runId: 'r1', path: '/wt/r1', bytes: 1_000, snapshot: false }])
+  expect(p.removeBranches).toEqual([])
 })
