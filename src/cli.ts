@@ -984,6 +984,9 @@ function tracking(run: Run, node: string) {
   return [
     '## Tracking (beads)',
     `This run is bead ${b} (bd show ${b}); its tasks are the bead's children. Your bd writes are recorded as ${actorOf(run.id)}/${node}.`,
+    // claude-factory-wnm: a requeue edge can hand this same bead to a later run, in another
+    // factory or station. Its comments are those earlier runs' reports: read them first.
+    `- Read ${b}'s comments first (bd show ${b}): they are earlier runs' reports on this bead.`,
     `- The plan's tasks: bd children ${b}; the unblocked ones: bd ready --parent ${b}`,
     `- Add a task: bd create "<title>" --parent ${b} -t task|bug -p <0-4> -d "<what, and how to verify it>"; order two with bd dep <first> --blocks <second>`,
     `- Work a task: bd update <id> -s in_progress, then bd close <id> --reason "<what changed, the commit>"`,
