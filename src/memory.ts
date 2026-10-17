@@ -1431,7 +1431,9 @@ export function applyTiers(
       )
       rmSync(join(dir, note.path))
       rewriteReadmeLink(dir, topic, note.path, `../.archive/${topic}.md`)
-      // no rename logged: decide() never archives or retires a helped note, so this keeps no helped count
+      // no rename logged: a superseded archive or a retire can drop a note at any helped count
+      // (FR-016), so there is no helped count here to keep. Only the "never helped, stale" archive
+      // rule requires helped === 0.
     }
   }
   const flagged = decisions.filter(d => d.kind === 'flag').length

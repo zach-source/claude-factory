@@ -2,7 +2,7 @@
 // AC10/AC11). A past date always ends a marker. A bead or PR marker ends only once a fake bd or
 // gh on PATH answers it that way.
 import { afterAll, afterEach, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -32,7 +32,8 @@ const gitMemory = (...args: string[]) =>
 /**
  * A fake `bd` on PATH.
  *
- * `config get issue_prefix` answers BD_PREFIX. The default is "acme-widget".
+ * `config get issue_prefix` answers BD_PREFIX. The default is "acme-widget". When BD_CONFIG_MODE
+ * is "fail", it exits 1 instead, like bd down or timed out. Then `prefixStrict()` throws.
  *
  * `show <id> --json` answers BD_SHOW_MODE. The value is one of closed, open, notfound or timeout.
  *
@@ -45,6 +46,7 @@ function fakeBd() {
     '#!/bin/sh',
     'case "$1" in',
     'config)',
+    '  if [ "$BD_CONFIG_MODE" = "fail" ]; then echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1; fi',
     '  printf \'%s\' "${BD_PREFIX:-acme-widget}"; exit 0;;',
     'show)',
     '  case "$BD_SHOW_MODE" in',
@@ -82,6 +84,57 @@ function seedRig() {
   mkdirSync(home, { recursive: true })
   writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ name: 'acme', repo, factory: 'lifecycle' }]))
   fakeBd()
+  fakeGh()
+}
+
+/**
+ * Two rigs in two repos: "acme" (prefix "acme") and "acme-widget" (prefix "acme-widget").
+ * untilDeps() runs `bd` with `cwd: repo`. The fake `bd` reads $PWD to tell the two repos apart.
+ *
+ * In the acme-widget repo, `show` answers BD_SHOW_MODE. In the acme repo, `show` always answers
+ * "open". A test can use this gap to see which rig untilDeps() picked for an id that starts with
+ * both prefixes.
+ */
+function seedTwoRigs() {
+  rmSync(dir, { recursive: true, force: true })
+  const repoAcme = join(dir, 'rig-repo-acme')
+  const repoWidget = join(dir, 'rig-repo-acme-widget')
+  mkdirSync(join(repoAcme, '.beads'), { recursive: true })
+  mkdirSync(join(repoWidget, '.beads'), { recursive: true })
+  mkdirSync(home, { recursive: true })
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([
+      { name: 'acme', repo: repoAcme, factory: 'lifecycle' },
+      { name: 'acme-widget', repo: repoWidget, factory: 'lifecycle' },
+    ]),
+  )
+  mkdirSync(bin, { recursive: true })
+  // Bun's `cwd` option resolves a symlinked path (for example macOS's /tmp -> /private/tmp) before
+  // the child starts, so the shell's own $PWD holds the resolved path, not the one this test built.
+  // realpathSync() here gives the fake bd script the same resolved form to compare against.
+  const realAcme = realpathSync(repoAcme)
+  const realWidget = realpathSync(repoWidget)
+  const script = [
+    '#!/bin/sh',
+    'case "$1" in',
+    'config)',
+    `  if [ "$PWD" = "${realWidget}" ]; then printf '%s' 'acme-widget'; exit 0; fi`,
+    `  if [ "$PWD" = "${realAcme}" ]; then printf '%s' 'acme'; exit 0; fi`,
+    '  exit 1;;',
+    'show)',
+    `  if [ "$PWD" = "${realWidget}" ]; then`,
+    '    case "$BD_SHOW_MODE" in',
+    '      closed) printf \'%s\' \'[{"id":"\'"$2"\'","status":"closed"}]\'; exit 0;;',
+    '      notfound) echo "Issue $2 not found" >&2; exit 1;;',
+    '    esac',
+    '  else',
+    '    printf \'%s\' \'[{"id":"\'"$2"\'","status":"open"}]\'; exit 0',
+    '  fi;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
   fakeGh()
 }
 
@@ -127,6 +180,33 @@ test('memory compact --dry-run flags, and never retires, a note whose bead looku
   expect(dry.out).not.toContain('retire  ')
 })
 
+test('memory compact --dry-run flags, and never retires, a note whose bead is not found', () => {
+  seedRig()
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(
+    join(home, 'memory', 'beads', 'cites-bead.md'),
+    '---\nsummary: a fact that cites a bead\nuntil: acme-widget-h7c\n---\nbody text\n',
+  )
+  const dry = run(['memory', 'compact', '--dry-run'], { BD_SHOW_MODE: 'notfound' })
+  expect(dry.code).toBe(0)
+  expect(dry.out).toContain('flag  beads/cites-bead.md: bead acme-widget-h7c not found')
+  expect(dry.out).not.toContain('retire  ')
+})
+
+test('memory compact --dry-run flags, and never retires, a note whose rig prefix lookup fails', () => {
+  // claude-factory-3u1.1.4.5: a down "bd config get" must read "lookup failed", never "not found"
+  seedRig()
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(
+    join(home, 'memory', 'beads', 'cites-bead.md'),
+    '---\nsummary: a fact that cites a bead\nuntil: acme-widget-h7c\n---\nbody text\n',
+  )
+  const dry = run(['memory', 'compact', '--dry-run'], { BD_CONFIG_MODE: 'fail' })
+  expect(dry.code).toBe(0)
+  expect(dry.out).toContain('flag  beads/cites-bead.md: bead acme-widget-h7c lookup failed')
+  expect(dry.out).not.toContain('retire  ')
+})
+
 test('memory compact --dry-run retires a note whose PR until marker merged, through a fake gh', () => {
   seedRig()
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
@@ -165,4 +245,34 @@ test('memory compact (not dry) commits a retired note and names it in the commit
   expect(gitMemory('status', '--porcelain')).toBe('')
   const log = readFileSync(join(home, 'dream.log'), 'utf8')
   expect(log).toContain('retire  beads/stale.md: date 2026-01-01 passed')
+  const subject = gitMemory('log', '-1', '--format=%s')
+  expect(subject).toContain('1 retired')
+})
+
+test('memory compact --dry-run: the longest matching rig prefix wins (acme-widget over acme)', () => {
+  seedTwoRigs()
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(
+    join(home, 'memory', 'beads', 'cites-bead.md'),
+    '---\nsummary: a fact that cites a bead\nuntil: acme-widget-h7c\n---\nbody text\n',
+  )
+  // acme-widget-h7c starts with both "acme-" and "acme-widget-": only the acme-widget repo answers
+  // "closed" for BD_SHOW_MODE=closed; the acme repo always answers "open". A retire here proves
+  // untilDeps() picked the longer, acme-widget, prefix.
+  const dry = run(['memory', 'compact', '--dry-run'], { BD_SHOW_MODE: 'closed' })
+  expect(dry.code).toBe(0)
+  expect(dry.out).toContain('retire  beads/cites-bead.md: bead acme-widget-h7c closed')
+})
+
+test('memory compact --dry-run: a bead id matching no rig\'s prefix reads "not found"', () => {
+  seedTwoRigs()
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(
+    join(home, 'memory', 'beads', 'cites-bead.md'),
+    '---\nsummary: a fact that cites a bead\nuntil: zzz-9a1\n---\nbody text\n',
+  )
+  const dry = run(['memory', 'compact', '--dry-run'])
+  expect(dry.code).toBe(0)
+  expect(dry.out).toContain('flag  beads/cites-bead.md: bead zzz-9a1 not found')
+  expect(dry.out).not.toContain('retire  ')
 })

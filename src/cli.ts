@@ -2343,43 +2343,74 @@ function closedBeads() {
 }
 
 /**
- * The bd and gh lookups that untilStatus() needs for the `until` marker of a short note (claude-factory-3u1.1.4).
+ * untilStatus() needs the bd and gh lookups for the `until` marker of a short note (claude-factory-3u1.1.4).
  * dream() and `memory compact` give these lookups to applyTiers(). Each pass checks a bead or PR marker
  * against the real tracker. It does not check only the date.
  *
- * `bead(id)` selects the rig whose bd prefix matches `${prefix}-`. The longest prefix wins. For example,
- * "acme-widget" wins over "acme", because two rigs can share a short prefix.
+ * `bead(id)` needs the prefix of every bead-tracking rig. It loads that list on the first call. So
+ * a pass with no bead marker at all runs no `bd config get` command.
  *
- * Then `bead(id)` calls `beads(repo, 'factory/dream').lookup(id)`. If no rig matches, bead(id) returns
- * null, the same as bd's own "not found" result.
+ * `bead(id)` uses `prefixStrict()`, not the lenient `prefix()`. A rig's own prefix lookup can fail
+ * (bd down, a timeout). `prefixStrict()` throws in that case, instead of reading it as "no prefix"
+ * by mistake. `bead(id)` sets that rig apart, as a rig it cannot speak for.
  *
- * If bd is down or slow, bd throws an error. untilStatus() then returns "unknown", never "ended" (AC2).
+ * `bead(id)` then picks the healthy rig whose prefix matches `${prefix}-`. The longest prefix wins.
+ * For example, "acme-widget" wins over "acme", because two rigs can share a short prefix.
  *
- * `pr(url)` runs `gh pr view <url> --json state` with a 30 s timeout. If the exit code is 0, pr(url)
- * parses `.state`. Any other exit code returns null.
+ * Two cases give no matching healthy rig. First: every prefix lookup worked, and the id belongs to
+ * no rig. Then `bead(id)` returns null, the same result bd itself gives for "not found" (AC2).
+ * Second: a rig's prefix lookup failed, so `bead(id)` cannot tell whether that rig would have
+ * matched. Then `bead(id)` throws, instead of a wrong guess of "not found". untilStatus() reports
+ * "lookup failed" for this case, never "ended".
  *
- * One pass makes at most 50 calls. A PR after that stays unmatched (null). untilStatus() flags that PR
- * and does not guess (AC11).
+ * When `bead(id)` finds a healthy owner, it calls `beads(repo, 'factory/dream').lookup(id)`. A
+ * throw there (bd down or slow, after the prefix call worked) reaches untilStatus() the same way.
  *
- * Both lookups memoize by value for the one pass that calls this function. A marker that two notes
- * share costs one bd or gh call, not two.
+ * The `bd()` helper in `beads.ts` sets no timeout. A hung bd process hangs this pass, and the
+ * dream.lock that it runs under, instead of throwing. Only a bd process that exits non-zero, or
+ * exits 0 with an answer untilStatus() cannot use, throws or returns null here.
+ *
+ * `pr(url)` runs `gh pr view <url> --json state` with a 30 s timeout. If the exit code is 0,
+ * `pr(url)` reads the `.state` value from the output. Any other exit code returns null.
+ *
+ * One pass makes at most 50 gh calls. The worst case is 50 x 30 s = 25 min, when every call hangs
+ * to its timeout. A PR after the 50th stays unmatched (null). untilStatus() flags that PR, and
+ * does not guess (AC11).
+ *
+ * Both lookups keep each result by value, for the one pass that calls this function. A marker
+ * that two notes share costs one bd or gh call, not two.
  */
 function untilDeps(): memory.UntilDeps {
   const beadCache = new Map<string, 'closed' | 'open' | null>()
   const prCache = new Map<string, PrState | null>()
   let ghCalls = 0
-  // every bead-tracking rig's prefix, longest first, so "acme-widget" wins over "acme" for an id
-  // that starts with both
-  const owners = rigs()
-    .filter(r => hasBeads(r.repo))
-    .map(r => ({ repo: r.repo, prefix: beads(r.repo, 'factory/dream').prefix() }))
-    .filter(r => r.prefix)
-    .sort((a, b) => b.prefix.length - a.prefix.length)
+  // loaded on the first bead() call, not here: a pass with no bead marker runs no bd command
+  let owners: { repo: string; prefix: string }[] | null = null
+  let someRigPrefixFailed = false
+  const loadOwners = () => {
+    if (owners) return
+    const healthy: { repo: string; prefix: string }[] = []
+    for (const r of rigs().filter(r => hasBeads(r.repo))) {
+      try {
+        healthy.push({ repo: r.repo, prefix: beads(r.repo, 'factory/dream').prefixStrict() })
+      } catch {
+        someRigPrefixFailed = true // this rig cannot be ruled out as the owner of an unmatched id
+      }
+    }
+    // longest prefix first, so "acme-widget" wins over "acme" for an id that starts with both
+    owners = healthy.sort((a, b) => b.prefix.length - a.prefix.length)
+  }
   return {
     bead: (id: string) => {
       if (beadCache.has(id)) return beadCache.get(id)!
-      const owner = owners.find(o => id.startsWith(`${o.prefix}-`))
-      const bead = owner ? beads(owner.repo, 'factory/dream').lookup(id) : null
+      loadOwners()
+      const owner = owners!.find(o => id.startsWith(`${o.prefix}-`))
+      if (!owner) {
+        if (someRigPrefixFailed) throw new Error(`bead ${id}: a rig's prefix lookup failed`)
+        beadCache.set(id, null)
+        return null
+      }
+      const bead = beads(owner.repo, 'factory/dream').lookup(id)
       const result: 'closed' | 'open' | null =
         bead === null ? null : bead.status === 'closed' ? 'closed' : 'open'
       beadCache.set(id, result)
