@@ -486,13 +486,27 @@ parks the run with no worker; `goto` skips the wait.
 carries the round's findings to that node. A second capped report in the same run still goes to
 the manager, and the mail names the earlier re-plan. Lifecycle's review sets `onRounds` to `plan`.
 
-`repeatMail` names an outcome in `next`. A station can report this outcome twice in a row, each
-report naming an `AC<n>` id on its own `Failing: AC2, AC6` line. An id named only as passing
-elsewhere in a report does not count. When both reports name the same failing id, the machine
-mails the manager from `'factory'`, naming the station, the shared ids and both report times; the
-run still follows the normal edge. With no shared failing id, or with a re-plan between the two
-reports, the machine sends no mail. Lifecycle's verify sets `repeatMail` to `red` and its prompt
-asks for the `Failing:` line.
+`repeatMail` names an outcome in `next`. A station can report this outcome two times in a row.
+
+Each report must name the same `AC<n>` id on its own `Failing: AC2, AC6` line. An id named only as
+passing elsewhere in a report does not count.
+
+When both reports share a failing id, the machine mails the manager from `'factory'`. The mail
+names the station, the shared ids and both report times.
+
+The run still follows the outcome's normal edge in every case. With no shared failing id, the
+machine sends no mail.
+
+A re-plan between the two reports also sends no mail, because a re-plan can renumber the acceptance
+criteria.
+
+A re-plan has two cases. In the first case, the capped node's own `onRounds` jump occurs. Its log
+entry carries `replan: true`.
+
+In the second case, a manager `goto` reaches a node that another node's `onRounds` names. That node
+then reports in between. It has no `replan` entry of its own.
+
+Lifecycle's verify sets `repeatMail` to `red`. Its prompt asks for the `Failing:` line.
 
 `onTimeout: { timeoutMin, prompt? }` gives the attempt right after a timeout fail a longer limit
 than the station's own `timeoutMin`, plus an extra brief section carrying `prompt`, instead of the

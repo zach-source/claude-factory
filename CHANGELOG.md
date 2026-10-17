@@ -26,6 +26,14 @@ minor release may change the factory format, the CLI or the run state.
     `failingAcIds`, `prevReport`, `repeatMailText` and `capReplanMail`. `validate()` refuses an
     `onRounds` with no `rounds`, or one that names an unknown node, `'done'`, or the node itself;
     it refuses a `repeatMail` that is not a key of `next`.
+
+  - A manager `goto` command writes no log entry. A hand `goto plan` after a repeat mail left no
+    `replan: true` entry (claude-factory-qgz, review round 2, finding .11).
+
+    The streak check now also breaks on an entry for a `replanTargets` node between the two
+    reports. A `replanTargets` node is a node named in a different node's `onRounds` field.
+    `replanTargets` is a new export in `src/machine.ts`.
+
   - `factories/lifecycle.ts`: `review` sets `onRounds: 'plan'` (`rounds` stays 3); `verify` sets
     `repeatMail: 'red'` and its prompt now asks for one fixed `Failing: AC2, AC6` line naming only
     the still-failing ids. `plan`'s prompt numbers acceptance criteria `AC1`, `AC2`, ....

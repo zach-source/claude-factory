@@ -42,12 +42,29 @@ export type Node = {
    */
   onRounds?: string
   /**
-   * Set this to an outcome, a key of `next`, that mails the manager on a repeat.
-   * The station must report this outcome twice in a row, on the same acceptance-criterion id:
-   * both summaries must cite the same `AC<n>` or `AC-<n>` id.
-   * A `fail`, `blocked` or `handoff` report in between does not break the streak.
-   * The run still follows the outcome's normal edge.
-   * Example: verify's `red`, where a repeat on one criterion needs a person's steer, not a silent retry.
+   * Set this field to an outcome. The outcome must be a key of `next`.
+   * The factory mails the manager when the station reports this outcome two times in a row.
+   *
+   * Both reports must share a failing acceptance-criterion id.
+   * The `failingAcIds` function reads only the `Failing: AC2, AC6` line in each report (machine.ts:302).
+   * A passing AC named elsewhere in the report text does not count.
+   *
+   * A `fail`, `blocked` or `handoff` report between the two reports does not change the count.
+   * A re-plan starts the count again in two cases.
+   *
+   * In the first case, the node at its `rounds` limit moves the run to its `onRounds` target.
+   * The log entry for this move carries `replan: true`.
+   * The second case is a manager `goto` to a re-plan target.
+   * A re-plan target is a node that another node names in its `onRounds` field.
+   * This target then reports in between.
+   *
+   * Each case changes the numbers of the acceptance criteria.
+   * A shared id across a re-plan is a coincidence, not a real repeat.
+   *
+   * The run still follows the normal edge of the outcome.
+   * For example, verify reports `red`.
+   * A repeat on one criterion needs direction from a person.
+   * It does not get an automatic second attempt.
    * `validate` refuses a `repeatMail` value that is not a key of `next`.
    */
   repeatMail?: string
@@ -315,6 +332,16 @@ export const prevReport = (log: Entry[], node: string, next: Record<string, unkn
   return undefined
 }
 
+/** every node some other node's `onRounds` names: a manager `goto` to one of these, that then
+ * reports, is a re-plan too, even with no `replan: true` entry (claude-factory-qgz, review round 2
+ * finding .11: a manager `goto plan` writes no log entry itself, only `plan`'s own later report) */
+export const replanTargets = (def: Factory): Set<string> =>
+  new Set(
+    Object.values(def.nodes)
+      .map(n => n.onRounds)
+      .filter((x): x is string => !!x),
+  )
+
 /** the manager mail a repeated outcome on the same acceptance-criterion id sends (claude-factory-qgz AC6) */
 export const repeatMailText = (node: string, outcome: string, ids: string[], prevAt: number, at: number) =>
   `${node} reported ${outcome} again on ${ids.join(', ')}: first at ${new Date(prevAt).toISOString()}, ` +
@@ -568,8 +595,13 @@ export function compile(def: Factory) {
                   if (node.repeatMail === outcome) {
                     const prev = prevReport(context.log, id, node.next)
                     // a re-plan between the two reports renumbers acceptance criteria, so a shared
-                    // id across it is coincidence, not a real repeat (claude-factory-qgz finding .9)
-                    const replanned = !!prev && context.log.some(e => e.replan && e.at > prev.at)
+                    // id across it is coincidence, not a real repeat (claude-factory-qgz finding .9).
+                    // a manager `goto` to a re-plan target writes no entry itself, only that
+                    // target's later report, so check both the `replan` flag and the target's own
+                    // node id (claude-factory-qgz, review round 2 finding .11)
+                    const targets = replanTargets(def)
+                    const replanned =
+                      !!prev && context.log.some(e => e.at > prev.at && (e.replan || targets.has(e.node)))
                     if (prev?.outcome === outcome && !replanned) {
                       const shared = failingAcIds(summary).filter(x => failingAcIds(prev.summary).includes(x))
                       if (shared.length)

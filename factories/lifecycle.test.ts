@@ -424,3 +424,41 @@ test("verify's repeated red on the same AC id mails the manager; a different AC 
   noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2\nFailing: AC2', at: 2000 })
   expect(noShare.getSnapshot().context.mail.manager).toBeUndefined()
 })
+
+// claude-factory-qgz, review round 2 finding .11.
+// Review runs only after verify's green outcome. A review re-plan, with its `replan: true` log entry,
+// cannot sit between two verify reds.
+//
+// A manager `goto plan` after the first repeat mail writes no log entry.
+// Only the later report from `plan` writes one.
+// `plan` is review's `onRounds` target. The streak must break there too.
+//
+// A re-plan renumbers the acceptance criteria.
+// A shared id after a re-plan is a false repeat.
+// With no fix, the renumbered AC2 in the post-replan red looks like the same repeat again.
+test('a manager goto plan between two verify reds breaks the repeat streak (claude-factory-qgz finding .11)', () => {
+  const actor = createActor(compile(lifecycle)).start()
+  actor.send({ type: 'GOTO', node: 'verify', at: 0 })
+  let seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2\nFailing: AC2', at: 1000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+
+  actor.send({ type: 'GOTO', node: 'verify', at: 1000 })
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'still fails AC2\nFailing: AC2', at: 2000 })
+  expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1) // the 1st repeat mail
+
+  // the manager's hand goto plan, with the findings; the run re-plans and goes on as usual
+  actor.send({ type: 'GOTO', node: 'plan', at: 2000 })
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 're-planned', at: 3000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 'fixed', at: 4000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('verify')
+
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2 again\nFailing: AC2', at: 5000 })
+  // the re-plan renumbered AC2, so this is not a real repeat: still only the 1st mail
+  expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
+})

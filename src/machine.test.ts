@@ -546,6 +546,47 @@ test('repeatMail does not fire across a re-plan, even when the failing id is the
   expect(s.context.mail.manager?.filter(m => m.from === 'factory') ?? []).toHaveLength(0)
 })
 
+// claude-factory-qgz, review round 2 finding .11.
+// A manager GOTO writes no log entry of its own.
+// A hand `goto plan` after a repeat mail leaves no `replan: true` entry to find.
+//
+// `plan` is still a re-plan target: it is review's `onRounds` value.
+// So `plan`'s own later report must break the streak too.
+test('a manager GOTO to a re-plan target breaks the repeatMail streak, with no replan:true entry', () => {
+  const graph: Factory = {
+    name: 'goto-then-repeat',
+    start: 'verify',
+    nodes: {
+      verify: { prompt: 'verify', next: { red: 'implement', green: 'review' }, repeatMail: 'red' },
+      implement: { prompt: 'implement', next: { ready: 'verify' } },
+      review: {
+        prompt: 'review',
+        next: { changes: 'implement', approve: 'done' },
+        rounds: 1,
+        onRounds: 'plan',
+      },
+      plan: { prompt: 'plan', next: { planned: 'implement' } },
+    },
+  }
+  const { send } = run(graph)
+  let s = send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC2', at: 1 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  s = send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+  expect(where(s.value)).toEqual(['verify', 'working'])
+  s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'still fails\nFailing: AC2', at: 3 })
+  expect(s.context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1) // the 1st repeat mail
+
+  // no `replan: true` entry anywhere: this re-plan is a hand GOTO, not review's own onRounds jump
+  s = send({ type: 'GOTO', node: 'plan', at: 3 })
+  expect(s.context.log.some(e => e.replan)).toBe(false)
+  s = send({ type: 'DONE', seq: s.context.seq, outcome: 'planned', summary: 're-planned', at: 4 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  s = send({ type: 'DONE', seq: s.context.seq, outcome: 'ready', summary: 'fixed again', at: 5 })
+  expect(where(s.value)).toEqual(['verify', 'working'])
+  s = send({ type: 'DONE', seq: s.context.seq, outcome: 'red', summary: 'fails again\nFailing: AC2', at: 6 })
+  expect(s.context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1) // still just the 1st
+})
+
 test('acIdsIn normalizes AC ids, failingAcIds reads only the Failing: line, and prevReport skips outcomes that are not a key of next', () => {
   expect(acIdsIn('fails AC2, AC-3 and ac4')).toEqual(['AC2', 'AC3', 'AC4'])
   expect(acIdsIn('no ids here')).toEqual([])
