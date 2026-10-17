@@ -288,21 +288,26 @@ factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egr
 
 [`factories/lifecycle.ts`](factories/lifecycle.ts) is the whole software lifecycle in one graph:
 
-| Loop                         | Stations                                                                                           |
-| ---------------------------- | -------------------------------------------------------------------------------------------------- |
-| build                        | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
-| optimize (performance, cost) | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
-| refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
-| operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
-| incident                     | incident → rollback or plan → … → postmortem, which files the action items                         |
+| Loop                          | Stations                                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- |
+| build                         | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
+| small (docs, test-only, tiny) | triage → quick ⇄ check (→ security only when flagged) → release → deploy (**you merge**)           |
+| optimize (performance, cost)  | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
+| refactor                      | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
+| operate                       | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
+| incident                      | incident → rollback or plan → … → postmortem, which files the action items                         |
 
-Lifecycle holds no sweep stations: see [Sweeps](#sweeps) for monitor, maintain and improve.
+The lifecycle factory has no sweep stations. For the monitor, maintain and improve sweeps, see [Sweeps](#sweeps).
 
-**Your merge is the gate**: release marks the pull request ready, and deploy parks on it
-until you merge it on GitHub, then deploys and watches the rollout. It never merges itself.
-Request changes on the pull request to send the run back to implement; close it to end the
-run with its bead deferred. Models follow the tiers: Sonnet executes, Opus plans and reviews,
-Fable reviews security. `factories/lifecycle.test.ts` walks every loop through the machine.
+**Your merge is the gate.** Release marks the pull request ready. Deploy waits for your merge on GitHub. After your merge, deploy starts and monitors the rollout. Deploy does not merge the pull request.
+
+If you request changes on the pull request, the run goes back to implement. If you close the pull request, the run ends and the factory defers its bead.
+
+Sonnet does the implement work. Opus does the plan work and the review work. Fable does the security review.
+
+Triage selects `small` for a change that is docs-only, test-only, or tiny. A tiny change has about 50 changed lines or fewer. It changes 3 files or fewer. It has no new dependency, no migration, and no public API change. Triage does not select `small` when the change is security-sensitive or when it changes a factory definition.
+
+The `small` loop skips the Opus plan step. It adds the security station only when `check` flags the change. Deploy reports `published`, with no soak, for a docs-only or test-only change. The same applies to a library or to a change to `.factory/` only. The test `factories/lifecycle.test.ts` walks every loop through the machine.
 
 `bin/factory help` lists every command; the manager model uses the same CLI.
 
