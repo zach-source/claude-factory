@@ -633,9 +633,16 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
   for (const line of lines.filter(Boolean)) {
     const u: Partial<Use> & { path: string; at: number; by?: string; keys?: string[] } = JSON.parse(line)
     const path = renamed[u.path] ?? u.path
-    const t =
-      out.get(path) ??
-      { path, shown: 0, helped: 0, confirmed: 0, contradicted: 0, at: 0, runsBase: 0, keys: new Set<string>() }
+    const t = out.get(path) ?? {
+      path,
+      shown: 0,
+      helped: 0,
+      confirmed: 0,
+      contradicted: 0,
+      at: 0,
+      runsBase: 0,
+      keys: new Set<string>(),
+    }
     t.shown += u.shown ?? 0
     t.helped += u.helped ?? 0
     t.confirmed += u.confirmed ?? 0

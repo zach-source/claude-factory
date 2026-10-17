@@ -384,7 +384,7 @@ test('tally counts each of the 4 kinds (shown, helped, confirmed, contradicted),
   })
 })
 
-test("compact() keeps confirmed and contradicted in its folded line: compact then tally gives the same counts", () => {
+test('compact() keeps confirmed and contradicted in its folded line: compact then tally gives the same counts', () => {
   const dir = join(tmpdir(), `memory-compact-4kinds-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(dir, 'beads'), { recursive: true })

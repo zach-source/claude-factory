@@ -1238,7 +1238,7 @@ test('memory add --supersedes replaces an already-superseded line instead of add
   expect(after).toBe(`---\nsummary: an old short note\nsuperseded: inbox/${files[0]}\n---\nold body text\n`)
 }, 30_000)
 
-test('memory add --supersedes follows a rename log to the note\'s current path', () => {
+test("memory add --supersedes follows a rename log to the note's current path", () => {
   const home = freshMemoryAddHome('supersedes-rename')
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
   writeFileSync(join(home, 'memory', 'beads', 'new-name.md'), '---\nsummary: moved note\n---\nbody\n')
