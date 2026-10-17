@@ -1598,3 +1598,52 @@ test('denyReason denies GIT_DIR and GIT_COMMON_DIR paired with a git word (claud
 test('denyReason allows HOME set with no git word (claude-factory-zl5.45)', () => {
   expect(denyReason('HOME=d echo hi')).toBeUndefined()
 })
+
+// claude-factory-c63: gitReason reads the current branch one time, at scan time, through
+// gate.headOf. One command can change the branch. The same command can push HEAD.
+//
+// The branch changes after the scan. A check against the old branch name does not find the push.
+// This guard now denies by default. If one command has a branch-change word and a later push to HEAD, it denies the command.
+// The denial uses PUSH_REASON. The guard does not need to know the new branch name.
+const C63_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+
+const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
+  'git checkout main; git push o HEAD',
+  'git branch -M main && git push o HEAD',
+  'git branch -m main; git push',
+  'git branch --move factory/x main && git push o @',
+  'git switch main && git push',
+  'git switch -c main && git push -u o HEAD',
+  'git symbolic-ref HEAD refs/heads/main; git push o head',
+  'git push o HEAD && git checkout main',
+  'git -C . checkout main; git push o +HEAD',
+  'git-checkout main; git push o HEAD',
+  "bash -c 'git checkout main'; git push o HEAD",
+  'git checkout main; bash -c "git push o HEAD"',
+  'gh pr checkout 5 && git push',
+  'git checkout main; git send-pack o HEAD',
+]
+
+test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(
+  'denyReason denies %j (claude-factory-c63: a same-command branch change then a HEAD push fails closed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, C63_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+const ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH = [
+  'git checkout other && git status',
+  'git branch -a && git push o HEAD',
+  'git symbolic-ref --short HEAD && git push o HEAD',
+  'git checkout main; git push o factory/x',
+  'git checkout main; git push o HEAD:factory/x',
+  'git checkout main; git push -n o HEAD',
+  'git push o HEAD',
+]
+
+test.each(ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH)(
+  'denyReason allows %j (claude-factory-c63: no branch change, or the push names an explicit, unprotected target)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, C63_GATE)).toBeUndefined()
+  },
+)
