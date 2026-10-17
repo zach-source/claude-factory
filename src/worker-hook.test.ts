@@ -1551,7 +1551,7 @@ const DENY_ENV_SPLIT_VAR = [
 
 test.each(DENY_ENV_SPLIT_VAR)(
   'denyReason denies %j (claude-factory-z1p, env -S with a dollar sign hides the real command)',
-  (cmd) => {
+  cmd => {
     expect(denyReason(cmd)).toBe(ENV_SPLIT_VAR_REASON)
   },
 )
