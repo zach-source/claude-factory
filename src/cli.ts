@@ -5794,11 +5794,13 @@ if (import.meta.main && !outboxCmd)
           }
           const dup = isAnyway ? null : await memory.same(MEMORY, note)
           if (dup) {
-            // a hit, not a new note: the copy would only crowd search results until a dream merged it
-            memory.use(MEMORY, [dup.note.path], 'helped', Date.now(), from)
+            // a hit, not a new note: the copy would only crowd search results until a dream merged it.
+            // It logs 'confirmed', not 'helped' (claude-factory-3u1.1.2, FR-008): 'helped' means a
+            // worker found and used the note; a duplicate add only confirms it is still true.
+            memory.use(MEMORY, [dup.note.path], 'confirmed', Date.now(), from)
             console.log(
               `already noted (${dup.score.toFixed(2)}): ${join(MEMORY, dup.note.path)}\n  ${dup.note.summary}\n` +
-                `counted as helping instead. If yours adds something it lacks, add it again with --anyway.`,
+                `counted as a confirmation instead. If yours adds something it lacks, add it again with --anyway.`,
             )
           } else {
             const at = new Date().toISOString().slice(0, 10)
