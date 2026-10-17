@@ -6,6 +6,21 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `factory gc --worktrees` now reclaims a merged `factory/*` branch on a rig with 1000 or more
+  pull requests. `prFacts()` used to call `gh pr list --limit 1000`. A rig with more pull
+  requests than the cap always read as facts-unavailable. So gc never removed a branch on a
+  large rig (one real rig has about 3058 pull requests). (claude-factory-ph8)
+  - `src/cli.ts`: `prFacts()` now runs `gh api graphql --paginate` once per rig. Its query reads
+    `number`, `state`, `headRefName`, `headRefOid` and `isCrossRepository` for every pull
+    request, ordered by `CREATED_AT`. It passes `owner` and `name` with `-f`, not `-F`
+    (claude-factory-ph8.5). `-F` reads a value as a JSON type, or as a file path. So a repo
+    named `2048`, or one that starts with `@`, broke the query forever.
+  - `src/gc.ts`: new export `parsePrPages(stdout)` parses the paginated NDJSON stdout into
+    `PrFact[]`. It returns `null` on any doubt: a line that fails to parse, a wrong shape, a
+    missing or non-boolean `isCrossRepository`, or a count of distinct pull request numbers
+    under the first page's `totalCount` (a lost page). This keeps the `isCrossRepository` guard
+    from claude-factory-ulv working: the query, `PrPageNode` and `isPrPageNode` all need it
+    as a boolean, and fail closed on a missing or wrong-typed value (claude-factory-ph8.4).
 - A hidden `briefer` subagent writes an evidence brief into each gate's decision item. The
   manager no longer needs to read the pull request and the journal itself. (claude-factory-2u2)
   - `src/gatebrief.ts`: `gateKey()` and `clipBrief()`. `src/cli.ts`: `factory gate-brief facts

@@ -148,6 +148,81 @@ export type PrFact = {
   isCrossRepository: boolean
 }
 
+type PrPageNode = {
+  number: number
+  state: 'OPEN' | 'MERGED' | 'CLOSED'
+  headRefName: string
+  headRefOid: string
+  isCrossRepository: boolean
+}
+type PrPage = { totalCount: number; nodes: PrPageNode[] }
+
+function isPrPageNode(n: unknown): n is PrPageNode {
+  if (!n || typeof n !== 'object') return false
+  const o = n as Record<string, unknown>
+  return (
+    typeof o.number === 'number' &&
+    (o.state === 'OPEN' || o.state === 'MERGED' || o.state === 'CLOSED') &&
+    typeof o.headRefName === 'string' &&
+    typeof o.headRefOid === 'string' &&
+    // a missing or non-boolean isCrossRepository (an older `gh`, a malformed entry) must fail
+    // closed (claude-factory-ph8.4): trusting a fork PR as same-repo can cover an unmerged tip
+    typeof o.isCrossRepository === 'boolean'
+  )
+}
+function isPrPage(p: unknown): p is PrPage {
+  if (!p || typeof p !== 'object') return false
+  const o = p as Record<string, unknown>
+  return typeof o.totalCount === 'number' && Array.isArray(o.nodes) && o.nodes.every(isPrPageNode)
+}
+
+/**
+ * Parses the stdout of `gh api graphql --paginate`. The `prFacts()` function in cli.ts builds the query and the
+ * `--jq` filter that prints this stdout. Each page is one JSON line with the shape `{totalCount, nodes}`.
+ * `nodes` holds one entry for each pull request on that page. `totalCount` is the total PR count of the repo.
+ * It is the same on every page.
+ *
+ * This function returns null, never a partial list, when it has any doubt (claude-factory-ph8):
+ * - No line is present, or a line fails to parse
+ * - A line does not match the shape of `PrPage`: `totalCount` or `nodes` is missing or has the
+ *   wrong type (for example, a null `repository` causes this)
+ * - A node's `state` is not `OPEN`, `MERGED` or `CLOSED`
+ * - A node's `number` is not a number, or its `headRefName` or `headRefOid` is not a string
+ * - A node's `isCrossRepository` is missing or not a boolean (claude-factory-ph8.4): coverTip()
+ *   must never trust a fork PR's branch as ours to have merged
+ * - Across all pages, the count of distinct PR numbers is less than the first page's `totalCount`
+ *
+ * A lost or incomplete page can hide an OPEN PR. This can make gc delete a branch that still has
+ * an open review (AC5, AC8). A PR number repeats across pages only when two page requests overlap.
+ * Remove duplicate entries by number to keep the plan small and correct.
+ */
+export function parsePrPages(stdout: string): PrFact[] | null {
+  const lines = stdout.split('\n').filter(l => l.trim() !== '')
+  if (lines.length === 0) return null
+  const byNumber = new Map<number, PrFact>()
+  let totalCount: number | undefined
+  for (const line of lines) {
+    let page: unknown
+    try {
+      page = JSON.parse(line)
+    } catch {
+      return null
+    }
+    if (!isPrPage(page)) return null
+    if (totalCount === undefined) totalCount = page.totalCount
+    for (const n of page.nodes) {
+      byNumber.set(n.number, {
+        state: n.state,
+        headRefName: n.headRefName,
+        headRefOid: n.headRefOid,
+        isCrossRepository: n.isCrossRepository,
+      })
+    }
+  }
+  if (totalCount === undefined || byNumber.size < totalCount) return null
+  return [...byNumber.values()]
+}
+
 /** a run, as worktreePlan() needs it: enough to decide ownership, liveness and bead state */
 export type RunRef = { id: string; node: string; finishedAt: number; worktree: string; bead?: string }
 
