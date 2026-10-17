@@ -394,21 +394,17 @@ function firstVerbIndex(words: string[], valueFlags: Set<string>): { index: numb
 }
 
 /**
- * Index of a short-flag cluster that holds `c` (for example `-c`, `-lc`, `-ec`), used to find the
- * `-c "script"` argument of a `sh`, `bash`, `zsh` or `dash` call.
+ * true when `w` is a short-flag cluster that holds `c` (for example `-c`, `-lc`, `-ec`).
+ * This finds the `-c "script"` argument of a `sh`, `bash`, `zsh` or `dash` call.
+ *
  * claude-factory-25z.10: `bash -lc "..."` and `sh -ec "..."` bundle other short flags with `c`.
- * A plain `cmd.indexOf('-c')` misses them, which also hides an `rm -rf` or a live-apply command
- * inside the quoted script from both guards.
- * Skips a long flag (`--context`) and stops at a literal `--`. Returns -1 when no cluster matches.
+ * A plain `cmd.indexOf('-c')` misses them. That also hides an `rm -rf` or a live-apply command
+ * that sits inside the quoted script, from both guards.
+ *
+ * This is false for a long flag (`--context`) and for a literal `--`, since both start with `--`.
  */
-function shCFlagIndex(words: string[]): number {
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]!
-    if (w === '--') return -1
-    if (w.startsWith('--')) continue
-    if (w.startsWith('-') && w.length > 1 && /c/.test(w.slice(1))) return i
-  }
-  return -1
+function isShCCluster(w: string): boolean {
+  return !w.startsWith('--') && w.startsWith('-') && w.length > 1 && /c/.test(w.slice(1))
 }
 
 /** true when some word in `words`, before a literal `--` separator (if any), is in `verbs`. */
@@ -541,6 +537,24 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * claude-factory-epz: `depth` counts how many eval/sh -c levels denyAt has already recursed
  * through to reach `words`. Each recursive call below passes `depth + 1`, so denyAt can fail
  * closed past MAX_SHELL_DEPTH levels instead of recursing without a bound.
+ *
+ * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
+ * pointers that only move up.
+ *
+ * `nc` holds the next index at or after the current `j` whose word passes `isShCCluster`.
+ * `nd` holds the next index at or after `j` whose word is a literal `--`.
+ *
+ * Each pointer keeps its old value until `j` moves past it. Then the code scans forward from `j`
+ * to find the pointer's new value; it never scans from the start. So over the whole call, each
+ * pointer crosses each word at most once: O(n) in total. The old code called
+ * `shCFlagIndex(words.slice(j))` at every `j`. Its slice copy and its scan each cost O(n-j). That
+ * was the O(n^2) bug this change fixes.
+ *
+ * A cluster counts only when it comes before the next `--` (`nc < nd`). That is why
+ * `sh foo -- bash -c "..."` still finds the cluster after the `--`, and `sh -- ...` still finds
+ * none before it. This is an exact match for the old `shCFlagIndex` return value, not an
+ * approximation: see src/worker-hook.test.ts for the differential checks and for the two
+ * regression shapes that a blind jump past a miss would break.
  */
 function anyShellReason(
   words: string[],
@@ -548,12 +562,21 @@ function anyShellReason(
   personOnly: string[] | undefined,
   depth: number,
 ): string | undefined {
+  let nc = -1
+  let nd = -1
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
-      const ci = shCFlagIndex(words.slice(j))
-      if (ci < 0) continue
-      let k = j + ci + 1
+      if (nc < j) {
+        nc = j
+        while (nc < words.length && !isShCCluster(words[nc]!)) nc++
+      }
+      if (nd < j) {
+        nd = j
+        while (nd < words.length && words[nd] !== '--') nd++
+      }
+      if (nc >= nd) continue
+      let k = nc + 1
       let found: string | undefined
       for (; k < words.length; k++) {
         const w = words[k]!

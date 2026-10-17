@@ -1,10 +1,11 @@
 /**
  * This script is a benchmark for claude-factory-1by.
  *
- * The function `anyShellReason` (`src/worker-hook.ts:545-583`) scans a segment for the shell words sh, bash, zsh and dash.
- * For each word with no `-c` cluster, the function scans the rest of the segment again with `shCFlagIndex` (`words.slice(j)`).
- * The function then moves forward by only one word.
- * As a result, the scan runs in `O(n^2)` time, where n is the word count.
+ * The function `anyShellReason` (`src/worker-hook.ts:559-606`) scans a segment for the shell words sh, bash, zsh and dash.
+ * Before the claude-factory-1by fix, the function scanned the rest of the segment again at each such word, with `shCFlagIndex(words.slice(j))`.
+ * The function then moved forward by only one word.
+ * As a result, the scan ran in `O(n^2)` time, where n is the word count.
+ * The fix replaces that per-word rescan with two forward pointers (`nc`, `nd`) that each cross the segment once, for `O(n)` total.
  *
  * Run this script by hand with this command: `bun run src/worker-hook.bench.ts`.
  * The command `bun test src factories` does not run this script, because the script name does not end in `.test.ts`.
