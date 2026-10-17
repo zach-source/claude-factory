@@ -27,10 +27,30 @@ export type Node = {
   /** minutes before a silent worker counts as failed (default 60) */
   timeoutMin?: number
   /**
-   * times the station may report one outcome in a run (review's changes, say) before the next such report
-   * is held for the manager instead of followed: a loop that has not converged by then needs a person
+   * The station can report one outcome this many times in a run. Review's `changes` is one example.
+   * When `onRounds` is set, the next such report re-plans the run.
+   * With no `onRounds`, the next report holds for the manager instead.
+   * A loop that does not converge by then needs a new design, or a person.
    */
   rounds?: number
+  /**
+   * A capped round re-plans to this node (lifecycle's review re-plans to 'plan').
+   * This node gets one mail, which holds every round's summary.
+   * A loop that misses `rounds` needs a new design, not another hand goto.
+   * A second cap in the same run still holds for the manager, as it does today with no `onRounds`.
+   * `validate` refuses an `onRounds` with no `rounds`, or one that names an unknown node, `'done'`, or the node itself.
+   */
+  onRounds?: string
+  /**
+   * Set this to an outcome, a key of `next`, that mails the manager on a repeat.
+   * The station must report this outcome twice in a row, on the same acceptance-criterion id:
+   * both summaries must cite the same `AC<n>` or `AC-<n>` id.
+   * A `fail`, `blocked` or `handoff` report in between does not break the streak.
+   * The run still follows the outcome's normal edge.
+   * Example: verify's `red`, where a repeat on one criterion needs a person's steer, not a silent retry.
+   * `validate` refuses a `repeatMail` value that is not a key of `next`.
+   */
+  repeatMail?: string
   /** worker command for this node, overrides the factory's */
   agent?: string
   /**
@@ -187,6 +207,17 @@ export function validate(def: Factory): Factory {
           !(node.onTimeout.timeoutMin > (node.timeoutMin ?? 60)) &&
           `${id}: onTimeout.timeoutMin must be greater than timeoutMin (${node.timeoutMin ?? 60})`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
+        node.onRounds !== undefined && node.rounds === undefined && `${id}: onRounds needs rounds`,
+        node.onRounds === id && `${id}: onRounds must not be the node itself`,
+        node.onRounds === 'done' && `${id}: onRounds must not be "done"`,
+        node.onRounds !== undefined &&
+          node.onRounds !== id &&
+          node.onRounds !== 'done' &&
+          !ids.includes(node.onRounds) &&
+          `${id}: onRounds goes to unknown node "${node.onRounds}"`,
+        node.repeatMail !== undefined &&
+          !Object.keys(node.next ?? {}).includes(node.repeatMail) &&
+          `${id}: repeatMail "${node.repeatMail}" is not an outcome in next`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&
@@ -247,6 +278,44 @@ export const isRepeatFail = (c: Ctx, node: string, reason: string) => {
 /** the question a repeated failure puts to the person in the console's Interview tab */
 export const repeatQuestion = (node: string, reason: string) =>
   `${reason}\nQuestion: ${node} failed twice the same way (${reason}). What should it do?\nOptions: retry: run ${node} again with your answer | abort: end the run`
+
+/** every acceptance-criterion id a text cites (`AC3`, `AC-3`, case-insensitive), normalized to `AC<n>` */
+export const acIdsIn = (text: string): string[] => [
+  ...new Set([...text.matchAll(/\bAC-?(\d+)\b/gi)].map(m => `AC${m[1]}`)),
+]
+
+/** a node's previous report whose outcome is one `next` names: `repeatMail` compares the arriving
+ * report against this one, not any log entry, so a `fail`, `blocked` or `handoff` in between does
+ * not break the streak (those outcomes are never a key of `next`) */
+export const prevReport = (log: Entry[], node: string, next: Record<string, unknown>): Entry | undefined => {
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i]!
+    if (e.node === node && e.outcome in next) return e
+  }
+  return undefined
+}
+
+/** the manager mail a repeated outcome on the same acceptance-criterion id sends (claude-factory-qgz AC6) */
+export const repeatMailText = (node: string, outcome: string, ids: string[], prevAt: number, at: number) =>
+  `${node} reported ${outcome} again on ${ids.join(', ')}: first at ${new Date(prevAt).toISOString()}, ` +
+  `again at ${new Date(at).toISOString()}. Read both reports and either mail implement a concrete steer ` +
+  `or goto plan; never goto implement with no new direction.`
+
+/** the mail a capped round's re-plan sends: every round's own-outcome summary so far, oldest first,
+ * each clipped so the whole message stays near 24000 chars (claude-factory-qgz AC2) */
+export function capReplanMail(prior: Entry[], node: string, outcome: string, latest: string): string {
+  const summaries = [
+    ...prior.filter(e => e.node === node && e.outcome === outcome).map(e => e.summary),
+    latest,
+  ]
+  const cap = Math.floor(24_000 / summaries.length)
+  const clip = (s: string) => (s.length > cap ? `${s.slice(0, cap)} [clipped]` : s)
+  const rounds = summaries.map((s, i) => `### ${node} round ${i + 1}\n${clip(s)}`).join('\n\n')
+  return (
+    `${node} hit its round cap reporting ${outcome} again. Find the cause the rounds missed, then ` +
+    `change the design, narrow the scope or split the work.\n\n${rounds}`
+  )
+}
 
 /**
  * whether the node's own run of log entries, read back from the end, holds a timeout fail. A fresh
@@ -398,20 +467,54 @@ export function compile(def: Factory) {
               guard: isCurrent,
               actions: assign(({ event }) => ({ nudges: 0, nudgedAt: event.at })),
             },
+            // a round is one report of the same outcome. `n` below counts rounds already in the
+            // log, before the one arriving now.
             DONE: [
               ...(node.rounds
                 ? [
+                    // onRounds only: the (R+1)th same-outcome report re-plans instead of holding
+                    ...(node.onRounds
+                      ? [
+                          {
+                            guard: ({ context, event }: { context: Ctx; event: Ev }) =>
+                              isCurrent({ context, event }) &&
+                              event.type === 'DONE' &&
+                              context.log.filter(e => e.node === id && e.outcome === event.outcome).length ===
+                                node.rounds!,
+                            target: `#factory.${node.onRounds}`,
+                            reenter: true,
+                            actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
+                              const { outcome, summary, at } = event as Extract<Ev, { type: 'DONE' }>
+                              const log = [
+                                ...context.log,
+                                { node: id, attempt: context.attempt, outcome, summary, at },
+                              ]
+                              const text = capReplanMail(context.log, id, outcome, summary)
+                              return {
+                                log,
+                                mail: post(context.mail, node.onRounds!, { from: id, text, at }),
+                                pane: null,
+                              }
+                            }),
+                          },
+                        ]
+                      : []),
+                    // held for the manager: past `rounds` with no onRounds, or past `2*rounds + 1`
+                    // once onRounds already sent this run through one re-plan
                     {
-                      guard: ({ context, event }: { context: Ctx; event: Ev }) =>
-                        isCurrent({ context, event }) &&
-                        event.type === 'DONE' &&
-                        context.log.filter(e => e.node === id && e.outcome === event.outcome).length >=
-                          node.rounds!,
+                      guard: ({ context, event }: { context: Ctx; event: Ev }) => {
+                        if (!isCurrent({ context, event }) || event.type !== 'DONE') return false
+                        const n = context.log.filter(e => e.node === id && e.outcome === event.outcome).length
+                        return node.onRounds ? n > 2 * node.rounds! : n >= node.rounds!
+                      },
                       target: 'stuck',
                       actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
                         const { outcome, summary, at } = event as Extract<Ev, { type: 'DONE' }>
                         const reason = `${id} reported ${outcome} more than ${node.rounds} times`
-                        const text = `${reason}: held instead of going to ${edgeTo(node.next[outcome]!)}. goto a station to go on, retry for a fresh ${id}, or abort. Its report: ${summary}`
+                        const already = node.onRounds
+                          ? ` ${id} already re-planned once, to ${node.onRounds}.`
+                          : ''
+                        const text = `${reason}:${already} held instead of going to ${edgeTo(node.next[outcome]!)}. goto a station to go on, retry for a fresh ${id}, or abort. Its report: ${summary}`
                         return {
                           log: [...context.log, { node: id, attempt: context.attempt, outcome, summary, at }],
                           mail: post(context.mail, 'manager', { from: id, text, at }),
@@ -432,7 +535,21 @@ export function compile(def: Factory) {
                   const log = [...context.log, { node: id, attempt: context.attempt, outcome, summary, at }]
                   const toId = edgeTo(edge)
                   const to = toId === 'done' ? 'manager' : toId
-                  const mail = post(context.mail, to, { from: id, text: summary, at })
+                  let mail = post(context.mail, to, { from: id, text: summary, at })
+                  // a repeated miss on the same acceptance criterion (claude-factory-qgz AC6): mail the
+                  // manager from 'factory', never from `id` (cli.ts's isAsking keys on from === node)
+                  if (node.repeatMail === outcome) {
+                    const prev = prevReport(context.log, id, node.next)
+                    if (prev?.outcome === outcome) {
+                      const shared = acIdsIn(summary).filter(x => acIdsIn(prev.summary).includes(x))
+                      if (shared.length)
+                        mail = post(mail, 'manager', {
+                          from: 'factory',
+                          text: repeatMailText(id, outcome, shared, prev.at, at),
+                          at,
+                        })
+                    }
+                  }
                   const delay = delayOf(edge)
                   // an awaitsPr station holds its worker back when the report names a pull or merge
                   // request. It parks like a worker's own blocked report. It spends no attempt.
