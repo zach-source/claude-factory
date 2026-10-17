@@ -735,6 +735,31 @@ function reqReset(showJson: string, childrenJson = '[]') {
   fakeRequeueBd(showJson, childrenJson) // no rigs.json: dispatch()/linearPass()/labelPass() no-op
 }
 
+/** fake bd whose `show` fails like a real query-time error (not bd's own "not found") */
+function fakeRequeueBdShowFails() {
+  mkdirSync(pbin, { recursive: true })
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${bdCallsLog}"`,
+    'case "$1" in',
+    '  show) echo "Error fetching acme-1: dial tcp: i/o timeout" >&2; exit 1;;',
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'bd'), script)
+  chmodSync(join(pbin, 'bd'), 0o755)
+}
+
+function reqResetShowFails() {
+  rmSync(pdir, { recursive: true, force: true })
+  mkdirSync(pClaudeConfig, { recursive: true })
+  writeFileSync(join(pClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(phome, { recursive: true })
+  fakeRequeueBdShowFails()
+}
+
 /** run.json + state.json for a run that just ended on outcome `ship` or `again`, both requeue edges */
 function requeuedRun(id: string, bead: string, outcome: 'ship' | 'again') {
   const f = join(pdir, 'req.json')
@@ -830,6 +855,38 @@ test('REQUEUE_MAX (5) stops the loop: a bead already requeued 5 times is deferre
   expect(calls.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0) // no label swap: deferred, not requeued
   expect(trackOf('run-4')).toMatchObject({ isSettled: true })
   expect(trackOf('run-4').requeued).toBeUndefined()
+})
+
+test('a bd show failure during the REQUEUE_MAX check leaves the run unsettled for a retry, not deferred (claude-factory-wnm.10)', () => {
+  reqResetShowFails()
+  requeuedRun('run-5', 'acme-1', 'ship')
+  const out = pfactory(['beads'])
+  expect(out.code).toBe(0)
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => /^bd defer\b/.test(l))).toHaveLength(0) // never read the failure as 0 requeues
+  expect(calls.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0) // never requeued either
+  const t = trackOf('run-5')
+  expect(t.isSettled).toBeFalsy() // unsettled: the next pass retries the same check
+  expect(t.error).toContain('Error fetching acme-1')
+})
+
+test('a retried tick whose requeue already landed for this run skips the REQUEUE_MAX cap (claude-factory-wnm.10)', () => {
+  const showJson = JSON.stringify([
+    {
+      id: 'acme-1',
+      title: 't',
+      labels: ['factory', 'factory:release', 'station:deploy'],
+      metadata: { requeued_from: 'run-6', requeues: 5 },
+    },
+  ])
+  reqReset(showJson)
+  requeuedRun('run-6', 'acme-1', 'ship')
+  const out = pfactory(['beads'])
+  expect(out.code).toBe(0)
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer\b/.test(l))).toBe(false) // the cap never fires for this run's own hop
+  expect(calls.some(l => l.startsWith('bd update acme-1'))).toBe(true) // requeue() ran again (idempotent)
+  expect(trackOf('run-6')).toMatchObject({ isSettled: true, requeued: true })
 })
 
 // claude-factory-wnm (A4, A6, A7): the `factory:<name>` dispatch label.
