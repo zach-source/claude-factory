@@ -316,8 +316,30 @@ Security's first review round found 5 more disguised forms. The hook now denies 
 - `git --config-env=<name>=<envvar>`, the same `alias.*`, `remote.*.push` and `push.default`
   check `-c <name>=<value>` already runs. The hook can read `<name>`, but not the text of the
   environment variable `<envvar>` names, so it denies the write outright.
-- `git send-pack`, the plumbing command `git push` itself calls. It has no `push` word on its
-  own command line, so the hook now checks its refspecs the same way it checks `git push`'s.
+- `git send-pack`, the plumbing command that `git push` calls. It has no `push` word on its own
+  command line. So the hook now checks its refspecs as it checks `git push`'s.
+
+A review round after security's first round found 3 sibling forms of those 5. Each earlier fix
+closed one exact form. Real git still moved `main` through a nearby form. The hook now denies
+these forms too:
+
+- an `xargs` value flag with its value as a separate word (`xargs -n 1 git push origin`). Or a
+  wrapper between `xargs` and `git` or `gh` (`xargs env git push origin`, `xargs sudo ...`,
+  `xargs timeout 5 ...`). The hook does not parse the flags of `xargs`. It denies the command when
+  a `git` or `gh` word appears after `xargs` in the same segment.
+- `git send-pack` with no ref at all. Real git confirmed that it pushes every local branch to a
+  remote branch with the same name. It does not push `HEAD` alone. It has the same broad reach as
+  `push.default=matching`. The hook now denies `--stdin` (refs read from the command's own stdin)
+  and `--mirror` (the same broad reach as `--all`, with deletes) outright too.
+- `git -c remote.<name>.mirror=<value>` or `git config remote.<name>.mirror <value>`. Either one
+  makes a later, plain push to that remote act like `--mirror`.
+- `include.path` and `includeIf.<cond>.path`. Either one loads another config file that the hook
+  cannot read. That file can set any key that the hook already denies.
+- a command that sets `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`,
+  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` (a plain
+  assignment or an `export`), and that has a `git` word anywhere in the same command text, even on
+  a later, `;`-separated line. The hook denies it. These environment variables replace git's own
+  config lookup outright. No value stays on the command line for the hook to check.
 
 The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
 read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook

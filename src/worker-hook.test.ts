@@ -1319,8 +1319,11 @@ test('denyReason allows xargs with a flag ahead of a command that is not git or 
 // `HEAD` alone, and ignored `--stdin` and `--mirror`. Real git moved `main` for each row below.
 const DENY_SEND_PACK_BROAD = [
   'git send-pack ../remote.git',
-  'echo refs/heads/main | git send-pack --stdin ../remote.git',
-  'git send-pack --mirror ../remote.git',
+  // these 2 rows also name an explicit, otherwise-safe ref (a run branch), so each one isolates
+  // its own flag check: with the flag check removed, the explicit ref alone would read as safe
+  // and this guard would allow the call.
+  'echo refs/heads/main | git send-pack --stdin ../remote.git refs/heads/feature',
+  'git send-pack --mirror ../remote.git refs/heads/feature',
 ]
 
 test.each(DENY_SEND_PACK_BROAD)(
@@ -1347,8 +1350,12 @@ const DENY_CONFIG_WRITE_SIBLINGS = [
   'git config include.path /x/cfg',
   'git -c include.path=/x/cfg push origin',
   'git config includeIf.onbranch:main.path /x/cfg',
-  'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.default GIT_CONFIG_VALUE_0=matching git push origin',
+  // each row below sets exactly one GIT_CONFIG_* env name, so each one tests its own branch of
+  // DANGEROUS_GIT_CONFIG_ENV on its own: a row with 2 or more names together cannot show that
+  // either one, alone, still denies.
   'export GIT_CONFIG_COUNT=1; git push origin',
+  'GIT_CONFIG_KEY_0=push.default git push origin',
+  'GIT_CONFIG_VALUE_0=matching git push origin',
   'GIT_CONFIG_PARAMETERS="count=1 key0=push.default value0=matching" git push origin',
   'GIT_CONFIG=/x/cfg git push origin',
   'GIT_CONFIG_GLOBAL=/x/cfg git push origin',

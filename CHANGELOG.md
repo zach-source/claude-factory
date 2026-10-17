@@ -99,6 +99,27 @@ minor release may change the factory format, the CLI or the run state.
     - `git send-pack`, the plumbing command `git push` calls, now goes through the same
       refspec and protected-branch check as `git push` itself. It had no `push` word of its
       own for the hook's verb search to find.
+  - A review round after security's first round found 3 sibling bypasses of those 5. The hook
+    now closes each one too.
+    - `xargs` denies on a `git` or `gh` word anywhere after it in the same segment, not only
+      the word right after `xargs`'s own flags. Real git moved `main` through a value flag
+      with its value as a separate word (`xargs -n 1 git push origin`) and a wrapper between
+      `xargs` and `git` (`xargs env git push origin`, `xargs sudo ...`, `xargs timeout 5 ...`).
+    - `git send-pack` with no ref denies the command. Real git confirmed this pushes every
+      local branch to a same-named remote branch, the same broad reach as
+      `push.default=matching`, not a push of `HEAD` alone. `--stdin` (refs read from the
+      command's own stdin) and `--mirror` (the same broad reach as `--all`, with deletes)
+      now deny outright too.
+    - `git -c remote.<name>.mirror=<value>` and `git config remote.<name>.mirror <value>` now
+      deny the command, the same as the existing `remote.*.push` check. `include.path` and
+      `includeIf.<cond>.path` deny too: either one loads another config file the hook cannot
+      read, and that file can set any key the hook already denies. The hook also denies a
+      command that sets `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`,
+      `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` (a
+      plain assignment or an `export`) together with a `git` word anywhere in the command
+      text, even on a later, `;`-separated line. These environment variables replace git's
+      own config lookup outright, with no value left on the command line for the hook to
+      check.
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
