@@ -12,6 +12,7 @@ import {
   coreFor,
   coreNotes,
   decide,
+  type Decision,
   dreamPrompt,
   envTopicCap,
   type EvalCase,
@@ -34,6 +35,7 @@ import {
   overCapTopics,
   parse,
   parseLong,
+  planLines,
   patrolActivity,
   pendingSkills,
   rank,
@@ -48,6 +50,8 @@ import {
   tally,
   tierCandidates,
   TOPIC_CAP,
+  type UntilDeps,
+  untilStatus,
   usage,
   usageLines,
   use,
@@ -954,6 +958,104 @@ test('decide() with no topicCap (default Infinity) gives the same output as befo
   expect(decide(cands, [], [], {})).toEqual([])
 })
 
+// AC5: an expired note retires at any age or usage count, even under 7 days old.
+test('decide() retires an expired note, at any age or usage count, even under 7 days old', () => {
+  expect(
+    decide([short({ expired: true, expiredReason: 'date 2026-01-01 passed', helped: 5, ageDays: 1 })], []),
+  ).toEqual([{ kind: 'retire', path: 'beads/x.md', reason: 'date 2026-01-01 passed' }])
+})
+
+test('decide() never retires an inbox note, however expired', () => {
+  expect(
+    decide([short({ topic: 'inbox', expired: true, expiredReason: 'date 2026-01-01 passed' })], []),
+  ).toEqual([])
+})
+
+test('decide() archives, not retires, an expired note that is also superseded: superseded wins', () => {
+  expect(
+    decide([short({ expired: true, expiredReason: 'date 2026-01-01 passed', superseded: 'beads/y.md' })], []),
+  ).toEqual([{ kind: 'archive', path: 'beads/x.md', reason: 'superseded by beads/y.md' }])
+})
+
+// AC6: a flag never blocks another rule. Other rules still run and can add their own decision.
+test('decide() flags an untilFlag note, and still archives it under the normal archive rule', () => {
+  expect(
+    decide([short({ untilFlag: 'bead acme-widget-h7c not found', helped: 0, staleDays: 31 })], [], [], {
+      historyDays: 100,
+    }),
+  ).toEqual([
+    { kind: 'flag', path: 'beads/x.md', reason: 'bead acme-widget-h7c not found' },
+    { kind: 'archive', path: 'beads/x.md', reason: 'never helped, unused for 31 days' },
+  ])
+})
+
+test('decide() flags an untilFlag note alone, when no other rule fires', () => {
+  expect(decide([short({ untilFlag: 'no lookup' })], [])).toEqual([
+    { kind: 'flag', path: 'beads/x.md', reason: 'no lookup' },
+  ])
+})
+
+// AC7: the archive cap treats a retire the same as an archive: the oldest note keeps its kind.
+test('decide() archive cap treats a retire the same as an archive: the older note keeps its kind', () => {
+  const decisions = decide(
+    [
+      short({ path: 'beads/old.md', ageDays: 40, expired: true, expiredReason: 'date passed' }),
+      short({ path: 'beads/new.md', ageDays: 20, shown: 0, helped: 0, staleDays: 35 }),
+    ],
+    [],
+    [],
+    { historyDays: 100, archiveCap: 1 },
+  )
+  expect(decisions).toEqual([
+    { kind: 'retire', path: 'beads/old.md', reason: 'date passed' },
+    { kind: 'held', path: 'beads/new.md', reason: 'over the archive cap of 1 this pass' },
+  ])
+})
+
+// AC7: the topic cap counts a retire as removed from the topic, the same as an archive or a merge.
+test('decide() topic cap counts a retire as removed from the topic, same as an archive or merge', () => {
+  const notes = [
+    short({ path: 'beads/a.md', expired: true, expiredReason: 'date passed' }),
+    ...Array.from({ length: 14 }, (_, i) => short({ path: `beads/n${i}.md` })),
+  ]
+  const decisions = decide(notes, [], [], { topicCap: 14 })
+  expect(decisions.filter(d => d.kind === 'retire')).toHaveLength(1)
+  expect(decisions.filter(d => d.kind === 'merge')).toHaveLength(0)
+})
+
+// AC7: a flag is not a decision for the topic cap, like a promote or a dedupe. It never stops the
+// cap from picking that same note for a merge.
+test('decide() topic cap still merges an untilFlag note: the flag does not block it', () => {
+  const notes = [
+    short({ path: 'beads/a.md', untilFlag: 'no lookup', ageDays: 10, staleDays: 10 }),
+    ...Array.from({ length: 15 }, (_, i) => short({ path: `beads/n${i}.md` })),
+  ]
+  const decisions = decide(notes, [], [], { topicCap: 15 })
+  expect(decisions).toContainEqual({ kind: 'flag', path: 'beads/a.md', reason: 'no lookup' })
+  expect(decisions).toContainEqual({
+    kind: 'merge',
+    path: 'beads/a.md',
+    reason: 'topic beads over the short-note cap of 15 (16 short notes)',
+  })
+})
+
+// AC9: the header counts retire and flag too, and each line still reads `kind  path: reason`.
+test('planLines() header counts retire and flag, and each line reads kind  path: reason', () => {
+  const decisions: Decision[] = [
+    { kind: 'merge', path: 'a/a.md', reason: 'r1' },
+    { kind: 'archive', path: 'a/b.md', reason: 'r2' },
+    { kind: 'retire', path: 'a/c.md', reason: 'r3' },
+    { kind: 'held', path: 'a/d.md', reason: 'r4' },
+    { kind: 'flag', path: 'a/e.md', reason: 'r5' },
+  ]
+  const lines = planLines(decisions, { archiveCap: 25, historyDays: 10 })
+  expect(lines[0]).toBe(
+    'tier plan: 1 merge, 1 archive, 1 retire, 1 held (cap 25), 1 flag, usage history 10 days',
+  )
+  expect(lines).toContain('retire  a/c.md: r3')
+  expect(lines).toContain('flag  a/e.md: r5')
+})
+
 test('mdFileCount counts CORE.md and every topic README, LONG.md and short note, never .archive', () => {
   const dir = join(tmpdir(), `memory-count-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
@@ -1058,7 +1160,9 @@ test('applyTiers() caps a mass of never-shown notes at 25, holds the rest, and p
   expect(archiveCap).toBe(25)
   expect(Math.floor(historyDays)).toBe(20)
   expect(plans).toHaveLength(1)
-  expect(plans[0]![0]).toBe('tier plan: 0 merge, 25 archive, 5 held (cap 25), usage history 20 days')
+  expect(plans[0]![0]).toBe(
+    'tier plan: 0 merge, 25 archive, 0 retire, 5 held (cap 25), 0 flag, usage history 20 days',
+  )
   expect(plans[0]!.filter(l => l.startsWith('archive  ')).length).toBe(25)
   expect(plans[0]!.filter(l => l.startsWith('held  ')).length).toBe(5)
 
@@ -1526,6 +1630,82 @@ test('applyTiers() ages a note with no at: from the commit that added it, not th
   ])
 })
 
+test('applyTiers() retires a note whose date until marker passed, and writes it to .archive like an archive', () => {
+  const dir = join(tmpdir(), `memory-apply-retire-date-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'stale-fact.md'),
+    format({ summary: 'a fact that holds only until a date', until: '2026-01-01', body: 'body' }),
+  )
+  const { retired, archived, merged, decisions } = applyTiers(dir, { now })
+  expect(retired).toBe(1)
+  expect(archived).toBe(0)
+  expect(merged).toBe(0)
+  expect(decisions).toEqual([
+    { kind: 'retire', path: 'beads/stale-fact.md', reason: 'date 2026-01-01 passed' },
+  ])
+  expect(existsSync(join(dir, 'beads', 'stale-fact.md'))).toBe(false)
+  expect(readFileSync(join(dir, '.archive', 'beads.md'), 'utf8')).toContain(
+    'a fact that holds only until a date',
+  )
+})
+
+test('applyTiers() dry run counts a retire but writes nothing', () => {
+  const dir = join(tmpdir(), `memory-apply-retire-dry-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'stale-fact.md'),
+    format({ summary: 'a fact that holds only until a date', until: '2026-01-01', body: 'body' }),
+  )
+  const { retired } = applyTiers(dir, { now, dryRun: true })
+  expect(retired).toBe(1)
+  expect(existsSync(join(dir, 'beads', 'stale-fact.md'))).toBe(true)
+  expect(existsSync(join(dir, '.archive', 'beads.md'))).toBe(false)
+})
+
+test('applyTiers() flags, and keeps, a bead-until note whose lookup throws', () => {
+  const dir = join(tmpdir(), `memory-apply-flag-throw-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'cites-bead.md'),
+    format({ summary: 'a fact that cites a bead', until: 'acme-widget-h7c', body: 'body' }),
+  )
+  const untilDeps: UntilDeps = {
+    bead: () => {
+      throw new Error('secret-e2e: bd down')
+    },
+  }
+  const { retired, flagged, decisions } = applyTiers(dir, { now, untilDeps })
+  expect(retired).toBe(0)
+  expect(flagged).toBe(1)
+  expect(decisions).toEqual([
+    { kind: 'flag', path: 'beads/cites-bead.md', reason: 'bead acme-widget-h7c lookup failed' },
+  ])
+  expect(existsSync(join(dir, 'beads', 'cites-bead.md'))).toBe(true)
+})
+
+test('applyTiers() with no untilDeps at all leaves a bead-until note untouched, with no flag', () => {
+  const dir = join(tmpdir(), `memory-apply-no-untildeps-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'cites-bead.md'),
+    format({ summary: 'a fact that cites a bead', until: 'acme-widget-h7c', body: 'body' }),
+  )
+  const { retired, flagged, decisions } = applyTiers(dir, { now })
+  expect(retired).toBe(0)
+  expect(flagged).toBe(0)
+  expect(decisions).toEqual([])
+  expect(existsSync(join(dir, 'beads', 'cites-bead.md'))).toBe(true)
+})
+
 test('tally keys a run by its id before the slash, so two stations of one run count as one run, not two (claude-factory-59r.16)', () => {
   const at = Date.parse('2026-10-06T12:00:00Z')
   const lines = [
@@ -1784,6 +1964,103 @@ test('isUntil() refuses a fake date, the wrong date format, and plain words', ()
   expect(isUntil('12/31/2026')).toBe(false)
   expect(isUntil('soon')).toBe(false)
   expect(isUntil('#5')).toBe(false)
+})
+
+// AC1: a date ends at 00:00Z the day after it. "Today" (UTC) stays live, and so does a later date.
+test('untilStatus() date: ends the day after it passes, at 00:00Z, not before', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  expect(untilStatus('2026-10-16', now)).toEqual({ state: 'ended', reason: 'date 2026-10-16 passed' })
+  expect(untilStatus('2026-10-17', now)).toEqual({ state: 'live' })
+  expect(untilStatus('2026-10-18', now)).toEqual({ state: 'live' })
+})
+
+// AC2: closed ends it; any other status is live; null (not found) and a throw give different reasons;
+// a missing deps.bead gives "no lookup", never a verdict.
+test('untilStatus() bead: closed ends it, open is live, not-found and a lookup failure differ', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  const id = 'acme-widget-h7c'
+  expect(untilStatus(id, now, { bead: () => 'closed' })).toEqual({
+    state: 'ended',
+    reason: `bead ${id} closed`,
+  })
+  expect(untilStatus(id, now, { bead: () => 'open' })).toEqual({ state: 'live' })
+  expect(untilStatus(id, now, { bead: () => null })).toEqual({
+    state: 'unknown',
+    reason: `bead ${id} not found`,
+  })
+  expect(
+    untilStatus(id, now, {
+      bead: () => {
+        throw new Error('secret-e2e')
+      },
+    }),
+  ).toEqual({ state: 'unknown', reason: `bead ${id} lookup failed` })
+  expect(untilStatus(id, now, {})).toEqual({ state: 'unknown', reason: 'no lookup' })
+})
+
+// AC3: both spellings look up the same URL form; MERGED/CLOSED end it; OPEN is live; UNKNOWN, null and
+// a throw all read as a lookup failure; a missing deps.pr gives "no lookup".
+test('untilStatus() PR: owner/repo#N and the pull URL resolve to the same lookup, by state', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  const url = 'https://github.com/acme/widget/pull/12'
+  for (const ref of ['acme/widget#12', url]) {
+    const seen: string[] = []
+    const pr = (u: string) => {
+      seen.push(u)
+      return 'MERGED' as const
+    }
+    expect(untilStatus(ref, now, { pr })).toEqual({ state: 'ended', reason: `PR ${ref} merged` })
+    expect(seen).toEqual([url]) // both spellings call deps.pr with the https URL form
+  }
+  expect(untilStatus(url, now, { pr: () => 'CLOSED' })).toEqual({
+    state: 'ended',
+    reason: `PR ${url} closed`,
+  })
+  expect(untilStatus(url, now, { pr: () => 'OPEN' })).toEqual({ state: 'live' })
+  expect(untilStatus(url, now, { pr: () => 'UNKNOWN' })).toEqual({
+    state: 'unknown',
+    reason: `PR ${url} lookup failed`,
+  })
+  expect(untilStatus(url, now, { pr: () => null })).toEqual({
+    state: 'unknown',
+    reason: `PR ${url} lookup failed`,
+  })
+  expect(
+    untilStatus(url, now, {
+      pr: () => {
+        throw new Error('secret-e2e')
+      },
+    }),
+  ).toEqual({ state: 'unknown', reason: `PR ${url} lookup failed` })
+  expect(untilStatus(url, now, {})).toEqual({ state: 'unknown', reason: 'no lookup' })
+})
+
+// AC4: a value isUntil() refuses is always unknown, no matter what deps the caller gives.
+test('untilStatus() refuses a value isUntil() refuses, regardless of deps', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  expect(untilStatus('soon', now, { bead: () => 'closed', pr: () => 'MERGED' })).toEqual({
+    state: 'unknown',
+    reason: 'not a valid until value',
+  })
+})
+
+// no reason ever carries a thrown error's own message: fixed text only.
+test('untilStatus() reasons never leak a thrown error message', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  const deps: UntilDeps = {
+    bead: () => {
+      throw new Error('secret-e2e')
+    },
+    pr: () => {
+      throw new Error('secret-e2e')
+    },
+  }
+  const beadResult = untilStatus('acme-widget-h7c', now, deps)
+  const prResult = untilStatus('acme/widget#12', now, deps)
+  expect(beadResult.state).toBe('unknown')
+  expect(prResult.state).toBe('unknown')
+  expect((beadResult as { reason: string }).reason).not.toContain('secret-e2e')
+  expect((prResult as { reason: string }).reason).not.toContain('secret-e2e')
 })
 
 test('gate() refuses a note with no --kind, naming --kind and all three kinds', () => {
