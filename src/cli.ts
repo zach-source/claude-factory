@@ -3240,45 +3240,47 @@ export function githubSlug(url: string): string | null {
   const parts = remote.path.split('/')
   return parts.length === 2 && parts[0] && parts[1] ? `${parts[0]}/${parts[1]}` : null
 }
-/** `gh pr list`, called once per rig, not once per branch. The plan for claude-factory-l38
- * rejected the per-branch call: it would run about 700 calls on the first pass. This function
- * returns null on a non-GitHub forge, or on any `gh` failure (AC5).
+/** the GraphQL query `prFacts()` sends. On the first page, `$endCursor` has no value. On every
+ * page after, `gh --paginate` sets `$endCursor` from the last page's `pageInfo.endCursor`.
+ * `orderBy: CREATED_AT ASC` keeps the page order the same across a run. */
+const PR_FACTS_QUERY =
+  'query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){' +
+  'pullRequests(first:100,after:$endCursor,orderBy:{field:CREATED_AT,direction:ASC}){' +
+  'totalCount nodes{number state headRefName headRefOid isCrossRepository} pageInfo{hasNextPage endCursor}}}}'
+
+/** `gh api graphql --paginate`, called once per rig, not once per branch. The plan for
+ * claude-factory-l38 rejected the per-branch call: it would run about 700 calls on the first
+ * pass. This function returns null on a non-GitHub forge, or on any `gh` failure (AC5).
  *
- * `-R` names the repo. Without it, `gh` can read the `upstream` remote instead of `origin` on a
- * fork rig, and return the wrong repo's pull requests (claude-factory-l38.13). A result with
- * exactly `--limit` entries counts as incomplete: it returns null, not "no more results". An
- * older open PR that a shorter list would show stays hidden past the cap otherwise. */
+ * `gh pr list --limit 1000` (claude-factory-l38.13) capped a rig's pull requests at 1000. A rig
+ * with more PRs than that always read as incomplete (claude-factory-ph8: a rig with over 3000
+ * pull requests is a real case). So gc never reclaimed a branch on it. GraphQL's `totalCount`
+ * proves a read is complete. `gc.parsePrPages()` checks it against the number of distinct PR
+ * numbers read, and returns null, never a partial list, on any mismatch. */
 function prFacts(repo: string): gc.PrFact[] | null {
   const url = originConfigUrl(repo)
   const slug = url ? githubSlug(url) : null
   if (!slug) return null
+  const [owner, name] = slug.split('/')
   const p = Bun.spawnSync(
     [
       'gh',
-      'pr',
-      'list',
-      '-R',
-      slug,
-      '--state',
-      'all',
-      '--limit',
-      '1000',
-      '--json',
-      'number,state,headRefName,headRefOid,isCrossRepository',
+      'api',
+      'graphql',
+      '--paginate',
+      '-f',
+      `owner=${owner}`,
+      '-f',
+      `name=${name}`,
+      '-f',
+      `query=${PR_FACTS_QUERY}`,
+      '--jq',
+      '.data.repository.pullRequests | {totalCount, nodes} | tojson',
     ],
-    { cwd: repo, timeout: 60_000 },
+    { cwd: repo, timeout: 300_000 },
   )
   if (p.exitCode !== 0) return null
-  try {
-    const list = JSON.parse(p.stdout.toString())
-    if (!Array.isArray(list) || list.length >= 1000) return null
-    // a missing or non-boolean isCrossRepository (an older `gh`, a malformed entry) must fail
-    // closed (AC4/AC5): trusting a fork PR as same-repo can cover an unmerged tip
-    if (!list.every(it => typeof it?.isCrossRepository === 'boolean')) return null
-    return list
-  } catch {
-    return null
-  }
+  return gc.parsePrPages(p.stdout.toString())
 }
 
 type GcRunRef = gc.RunRef & { repo: string }

@@ -62,9 +62,20 @@ const noPanes = () => {
   return join(bin, 'herdr')
 }
 
-/** a fake gh: `pr list --json ...` answers the given PRs; it logs the call for a count assertion.
- * `isCrossRepository` is optional so a test can omit it on a PR entry to simulate an older `gh` or a
- * malformed answer (claude-factory-ulv): `JSON.stringify` drops an `undefined` key from the body. */
+/** A fake `gh` answers `api graphql --paginate` with the given PRs. It splits the PRs into
+ * NDJSON pages. Each page has up to 100 nodes.
+ *
+ * A real `gh --paginate` run sends many HTTP requests. This fake sends the data in one process
+ * call. The call log shows exactly 1 call.
+ *
+ * The default value of `totalCount` is `prs.length`. If you set a higher value, a page reports
+ * fewer nodes than `totalCount`. Then parsePrPages() must return null (AC4).
+ *
+ * `isCrossRepository` is optional on a PR entry. If you omit it, the fake shows an older `gh`
+ * answer, or an incorrect answer (claude-factory-ulv).
+ *
+ * `JSON.stringify` removes an `undefined` key from the body. Then parsePrPages() must reject
+ * that entry (fail closed, claude-factory-ph8.4). */
 function fakeGh(
   prs: {
     number: number
@@ -73,12 +84,18 @@ function fakeGh(
     headRefOid: string
     isCrossRepository?: boolean
   }[],
+  opts: { totalCount?: number } = {},
 ) {
   mkdirSync(bin, { recursive: true })
-  const body = JSON.stringify(prs).replaceAll("'", "'\\''")
+  const totalCount = opts.totalCount ?? prs.length
+  const pages: string[] = []
+  for (let i = 0; i < prs.length || pages.length === 0; i += 100) {
+    pages.push(JSON.stringify({ totalCount, nodes: prs.slice(i, i + 100) }))
+  }
+  const body = pages.join('\n').replaceAll("'", "'\\''")
   writeFileSync(
     join(bin, 'gh'),
-    `#!/bin/sh\necho "$*" >> ${join(dir, 'gh-calls.log')}\nif [ "$1" = "pr" ] && [ "$2" = "list" ]; then printf '%s' '${body}'; else exit 1; fi\n`,
+    `#!/bin/sh\necho "$*" >> ${join(dir, 'gh-calls.log')}\nif [ "$1" = "api" ] && [ "$2" = "graphql" ]; then printf '%s' '${body}'; else exit 1; fi\n`,
   )
   chmodSync(join(bin, 'gh'), 0o755)
 }
@@ -816,31 +833,69 @@ test('q: an unknown --rig name fails, naming the known rigs, and never holds the
   expect(existsSync(join(home, 'gc-worktrees.lock'))).toBe(false)
 })
 
-test('r: gh pr list passes -R to the origin repo, and a result at the --limit cap counts as incomplete (claude-factory-l38.13)', () => {
+test('r: gh api graphql reads every PR of the origin repo in one call, past the old 1000-PR cap (claude-factory-ph8)', () => {
   reset()
   const { repo } = makeRig('r1')
-  const id = freshId('ship')
-  const { branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: false, bead: 'acme-1' })
+  const mergedId = freshId('ship')
+  const openId = freshId('open')
+  const { branch: mergedBranch } = writeRun(repo, mergedId, {
+    outcome: 'done',
+    finishedAt: OLD,
+    merged: false,
+  })
+  const { branch: openBranch } = writeRun(repo, openId, { outcome: 'done', finishedAt: OLD, merged: true })
   writeRigs([{ name: 'r1', repo }])
   const herdr = noPanes()
-  const head = git(repo, 'rev-parse', branch)
-  // 1000 entries, exactly `--limit`: an older open PR past the cap would stay invisible, so this
-  // branch's CLOSED PR must never be trusted as the complete picture (claude-factory-l38.13)
-  const prs = Array.from({ length: 1000 }, (_, i) => ({
+  const mergedHead = git(repo, 'rev-parse', mergedBranch)
+  // There are 1050 PRs, in 11 pages of up to 100 each. The MERGED PR that kills the branch and
+  // the OPEN PR that saves the branch both sit past index 1000. The old `gh pr list --limit
+  // 1000` call was blind past that index.
+  const prs = Array.from({ length: 1050 }, (_, i) => ({
     number: i,
-    state: i === 0 ? 'CLOSED' : 'OPEN',
-    headRefName: i === 0 ? branch : `factory/other-${i}`,
-    headRefOid: i === 0 ? head : '0'.repeat(40),
+    state: i === 1005 ? 'MERGED' : i === 1010 ? 'OPEN' : 'CLOSED',
+    headRefName: i === 1005 ? mergedBranch : i === 1010 ? openBranch : `factory/other-${i}`,
+    headRefOid: i === 1005 ? mergedHead : '0'.repeat(40),
     isCrossRepository: false,
   }))
   fakeGh(prs)
-  const { closeBead } = fakeBd()
-  closeBead('acme-1')
   const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
   expect(out.code).toBe(0)
-  const calls = readFileSync(join(dir, 'gh-calls.log'), 'utf8')
-  expect(calls).toContain('-R acme/widget')
-  // a closed PR plus a closed bead would delete this branch outright; a capped list must not count
+  const calls = readFileSync(join(dir, 'gh-calls.log'), 'utf8').trim().split('\n')
+  expect(calls.length).toBe(1)
+  // the call must read the whole origin repo with --paginate and -f (never -F: claude-factory-ph8.5,
+  // `-F` would read a repo named, for example, "2048" as a JSON number and break the GraphQL query forever)
+  expect(calls[0]).toContain('--paginate')
+  expect(calls[0]).toContain('-f owner=acme')
+  expect(calls[0]).toContain('-f name=widget')
+  // a MERGED PR past index 1000, head matching the branch tip: covered, so gc deletes the branch
+  expect(git(repo, 'branch', '--list', mergedBranch)).toBe('')
+  // a merged-ancestor branch with an OPEN PR past index 1000 on the same name: gc keeps it anyway
+  expect(git(repo, 'branch', '--list', openBranch)).not.toBe('')
+})
+
+test('u: a page that reports fewer nodes than totalCount keeps every branch facts-unavailable (AC4)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  // the page's own node count (1) is less than its claimed totalCount (2): parsePrPages() must
+  // return null rather than trust a partial page (AC4), so gc deletes no branch on this rig
+  fakeGh(
+    [
+      {
+        number: 1,
+        state: 'CLOSED',
+        headRefName: 'factory/other',
+        headRefOid: '0'.repeat(40),
+        isCrossRepository: false,
+      },
+    ],
+    { totalCount: 2 },
+  )
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
   expect(git(repo, 'branch', '--list', branch)).not.toBe('')
 })
 
