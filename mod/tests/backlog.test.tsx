@@ -89,6 +89,18 @@ test('beads labeled sweep:<name> group under their own heading, apart from the p
   expect(t.tiers.filter(g => g.priority === 2).flatMap(g => g.rows.map(r => r.bead.id))).toEqual(['a-4'])
 })
 
+test("a sweep heading counts the group's own beads, not its drawn rows (claude-factory-8pc.15)", () => {
+  const list = [
+    { id: 's-1', title: 'drift found', type: 'bug', labels: ['sweep:maintain'] },
+    { id: 's-1.1', title: 'a child of it', type: 'task', parent: 's-1', labels: ['sweep:maintain'] },
+  ]
+  const t = tiers(list)
+  const sweepTiers = t.tiers.filter(g => g.tier.startsWith('sweep:'))
+  // one root bead in the group: "(1)", even though its family draws 2 rows
+  expect(sweepTiers.map(g => g.tier)).toEqual(['sweep:maintain (1)'])
+  expect(sweepTiers[0]!.rows.map(r => r.bead.id)).toEqual(['s-1', 's-1.1'])
+})
+
 test('the backlog tab draws the picked type with a child nested under its parent', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)

@@ -64,20 +64,24 @@ export function sweepGuard(
   cap = 5,
   windowMs = 24 * 60 * 60 * 1000,
 ): GuardVerdict[] {
-  return beads
-    .flatMap(b => {
-      const station = sweepFiler(b)
-      return station ? [{ b, station }] : []
-    })
-    .map(x => ({ ...x, at: x.b.created_at ? new Date(x.b.created_at).getTime() : 0 }))
-    .filter(x => now - x.at < windowMs)
-    .sort((a, c) => a.at - c.at)
-    .map((x, i) => ({
-      id: x.b.id,
-      station: x.station,
-      kept: i < cap,
-      allowed: i < cap && !!x.b.labels?.some(l => SWEEP_QUEUE_LABELS.includes(l)),
-    }))
+  return (
+    beads
+      .flatMap(b => {
+        const station = sweepFiler(b)
+        return station ? [{ b, station }] : []
+      })
+      // claude-factory-8pc.13(c): a bead with no `created_at` must stay inside the window (as if
+      // filed now), not fall out of it at epoch 0 and so escape the cap and the defer below.
+      .map(x => ({ ...x, at: x.b.created_at ? new Date(x.b.created_at).getTime() : now }))
+      .filter(x => now - x.at < windowMs)
+      .sort((a, c) => a.at - c.at)
+      .map((x, i) => ({
+        id: x.b.id,
+        station: x.station,
+        kept: i < cap,
+        allowed: i < cap && !!x.b.labels?.some(l => SWEEP_QUEUE_LABELS.includes(l)),
+      }))
+  )
 }
 
 /** A deterministic fingerprint of a monitor pass's command output (claude-factory-8pc.6). `sweep()`

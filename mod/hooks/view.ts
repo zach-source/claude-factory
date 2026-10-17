@@ -98,7 +98,9 @@ export function tiers(
       else more++
     }
     drawn += rows.length
-    if (rows.length) out.push({ tier: `sweep:${name} (${rows.length})`, rows })
+    // claude-factory-8pc.15: the heading counts the group's own beads, not `rows.length` (each
+    // bead's child rows count too there, so one bead with one child showed "(2)")
+    if (rows.length) out.push({ tier: `sweep:${name} (${sweepGroups.get(name)!.length})`, rows })
   }
   return { tiers: out, total: list.length, drawn, more }
 }

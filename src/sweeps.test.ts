@@ -142,6 +142,24 @@ test('an unrelated label never allows a kept bead to auto-start', () => {
   expect(sweepGuard([b], now)).toEqual([{ id: 'b0', station: 'maintain', kept: true, allowed: false }])
 })
 
+test('a sweep-filed bead with no created_at stays inside the window, not at epoch 0 (claude-factory-8pc.13)', () => {
+  const now = Date.now()
+  // 5 old, clearly-dated beads already fill the cap; a 6th with no created_at at all must still be
+  // counted (and so dropped, past the cap) -- not fall out of the 24h window at `new Date(0)` and so
+  // escape the guard altogether
+  const recent = Array.from({ length: 5 }, (_, i) =>
+    filed(`b${i}`, 'maintain', new Date(now - (4 - i) * 60_000).toISOString()),
+  )
+  const noDate = { id: 'nodate', created_by: 'factory/sweeps-nodaterun/maintain', labels: [] }
+  const verdicts = sweepGuard([...recent, noDate], now)
+  expect(verdicts.find(v => v.id === 'nodate')).toEqual({
+    id: 'nodate',
+    station: 'maintain',
+    kept: false,
+    allowed: false,
+  })
+})
+
 test('sweepGuard is idempotent: the same beads give the same verdicts on a second call', () => {
   const now = Date.now()
   const beads = Array.from({ length: 6 }, (_, i) =>
