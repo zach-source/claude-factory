@@ -465,6 +465,38 @@ test('requeue releases the claim, swaps factory:*/station:* labels when told to,
   }
 })
 
+test('requeue with only to.station removes station:* but keeps factory:* (claude-factory-wnm.20)', () => {
+  const bin = join(tmpdir(), `fake-bd-requeue-station-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const show = join(bin, 'show.json')
+  const script = ['#!/bin/sh', `echo "$*" >> ${log}`, 'case "$1" in', `  show) cat ${show};;`, 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    writeFileSync(
+      show,
+      JSON.stringify([
+        { id: 'fx-1', title: 't', labels: ['factory', 'factory:lifecycle', 'station:deploy'] },
+      ]),
+    )
+    writeFileSync(log, '')
+    b.requeue('fx-1', 'run-1', { station: 'implement' })
+    const calls = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls[2]).toContain('--remove-label station:deploy')
+    expect(calls[2]).not.toContain('--remove-label factory:lifecycle')
+    expect(calls[2]).toContain('--add-label station:implement')
+    expect(calls[2]).not.toContain('--add-label factory:')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
 test('requeue throws on a bd show failure, instead of writing requeues=1 and dropping no old label (claude-factory-wnm.9)', () => {
   const bin = join(tmpdir(), `fake-bd-requeue-fail-${process.pid}`)
   mkdirSync(bin, { recursive: true })

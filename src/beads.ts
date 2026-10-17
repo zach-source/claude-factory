@@ -389,9 +389,10 @@ export const beads = (repo: string, actor: string) => ({
    * ready and `factory`-labeled; it never closes or defers it. The next dispatch starts a new run for
    * the bead.
    *
-   * With `to`, it removes every existing `factory:*`/`station:*` label, then adds
-   * `factory:<to.factory>` and `station:<to.station>`. With no `to`, the labels the worker set stay as
-   * they are.
+   * With `to.factory`, it removes every existing `factory:*` label, then adds `factory:<to.factory>`.
+   * With `to.station`, it does the same for `station:*` and `station:<to.station>`. Each kind of label
+   * moves on its own: `to: { station }` alone leaves `factory:*` untouched. With no `to`, the labels
+   * the worker set stay as they are.
    *
    * Metadata counts the hop: `requeued_from=<runId>`, `requeued_at`, `requeues=<n+1>`. A retried tick
    * that calls this again with the same `runId` leaves the count alone, because `requeued_from` already
@@ -406,9 +407,9 @@ export const beads = (repo: string, actor: string) => ({
     const b = lookupBead(repo, actor, id)
     const already = b?.metadata?.requeued_from === runId
     const requeues = already ? Number(b?.metadata?.requeues ?? 0) : Number(b?.metadata?.requeues ?? 0) + 1
-    const oldLabels = to
-      ? (b?.labels ?? []).filter(l => l.startsWith('factory:') || l.startsWith('station:'))
-      : []
+    const oldLabels = (b?.labels ?? []).filter(
+      l => (to?.factory && l.startsWith('factory:')) || (to?.station && l.startsWith('station:')),
+    )
     const newLabels = to
       ? [to.factory && `factory:${to.factory}`, to.station && `station:${to.station}`].filter(
           (l): l is string => !!l,
