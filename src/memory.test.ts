@@ -1143,6 +1143,23 @@ test('applyTiers() topic cap: a skipped merge into an unsafe LONG.md leaves the 
   expect(overCap).toEqual([{ topic: 'beads', count: 18 }])
 })
 
+test('envTopicCap() reads FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
+  const prev = process.env.FACTORY_MEMORY_TOPIC_CAP
+  try {
+    delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    expect(envTopicCap()).toBe(15)
+    process.env.FACTORY_MEMORY_TOPIC_CAP = '7'
+    expect(envTopicCap()).toBe(7)
+    for (const bad of ['0', '-1', '1.5', '']) {
+      process.env.FACTORY_MEMORY_TOPIC_CAP = bad
+      expect(envTopicCap()).toBe(15)
+    }
+  } finally {
+    if (prev === undefined) delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    else process.env.FACTORY_MEMORY_TOPIC_CAP = prev
+  }
+})
+
 test('applyTiers() reads the topic cap from FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
   const dir = join(tmpdir(), `memory-apply-topiccap-env-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
