@@ -5,7 +5,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
-import { httpsRemote, overwritten, progressSig, replayable, rigBeadsSync, vmClaudeFlags } from './cli'
+import {
+  githubSlug,
+  httpsRemote,
+  overwritten,
+  progressSig,
+  replayable,
+  rigBeadsSync,
+  vmClaudeFlags,
+} from './cli'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
 
@@ -49,6 +57,30 @@ test('git remotes become https remotes the VM clones', () => {
   expect(httpsRemote('git@github.com:o/app.git')).toBe('https://github.com/o/app.git')
   expect(httpsRemote('ssh://git@github.com/o/app.git')).toBe('https://github.com/o/app.git')
   expect(httpsRemote('https://github.com/o/app.git')).toBe('https://github.com/o/app.git')
+})
+
+// claude-factory-0u0: githubSlug must anchor the host at exactly github.com, not merely a URL
+// that contains "github.com" somewhere, and must still accept userinfo (a token or username
+// before the @) since this host's rigs use that form.
+test('githubSlug accepts only an exact github.com origin, with or without userinfo', () => {
+  for (const url of [
+    'https://github.com/acme/widget',
+    'https://github.com/acme/widget.git',
+    'git@github.com:acme/widget.git',
+    'ssh://git@github.com/acme/widget.git',
+    'https://user@github.com/acme/widget.git',
+    'https://x-access-token:e2e@github.com/acme/widget.git',
+  ])
+    expect(githubSlug(url)).toBe('acme/widget')
+  for (const url of [
+    'https://mygithub.com/acme/widget',
+    'git@mygithub.com:acme/widget.git',
+    'ssh://git@notgithub.com/acme/widget.git',
+    'https://github.com.evil.example/acme/widget',
+    'https://evil.example/github.com/acme/widget',
+    'https://github.com/acme/widget/extra',
+  ])
+    expect(githubSlug(url)).toBeNull()
 })
 
 test("inside a VM, a worker's report and mail wait in the outbox instead of touching a run", () => {
