@@ -42,6 +42,7 @@ import {
   skillsDir,
   skillSources,
   search,
+  supersede,
   tally,
   tierCandidates,
   usage,
@@ -427,6 +428,74 @@ test('noteExists and compact() know a CORE.md#<hash> fact note, and drop it once
   writeFileSync(join(dir, 'CORE.md'), '- a different lesson entirely\n')
   compact(dir, {})
   expect(usage(dir).has(bullet!.path)).toBe(false) // dropped: that bullet is gone
+})
+
+test('supersede() writes one superseded: line, byte-exact on every other line, keeping an unknown frontmatter key', () => {
+  const dir = join(tmpdir(), `memory-supersede-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const before = '---\nsummary: a short note\nunknown: kept as is\n---\nbody text\n'
+  writeFileSync(join(dir, 'beads', 'x.md'), before)
+  expect(supersede(dir, 'beads/x.md', 'inbox/y.md')).toEqual({ marked: true })
+  expect(readFileSync(join(dir, 'beads', 'x.md'), 'utf8')).toBe(
+    '---\nsummary: a short note\nunknown: kept as is\nsuperseded: inbox/y.md\n---\nbody text\n',
+  )
+})
+
+test('supersede() replaces an old superseded: line instead of adding a second one', () => {
+  const dir = join(tmpdir(), `memory-supersede-replace-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(
+    join(dir, 'beads', 'x.md'),
+    '---\nsummary: a short note\nsuperseded: inbox/old.md\n---\nbody text\n',
+  )
+  supersede(dir, 'beads/x.md', 'inbox/new.md')
+  expect(readFileSync(join(dir, 'beads', 'x.md'), 'utf8')).toBe(
+    '---\nsummary: a short note\nsuperseded: inbox/new.md\n---\nbody text\n',
+  )
+})
+
+test('supersede() prepends a frontmatter block to a note with none', () => {
+  const dir = join(tmpdir(), `memory-supersede-nofm-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'inbox'), { recursive: true })
+  writeFileSync(join(dir, 'inbox', 'x.md'), 'no frontmatter\nmore body\n')
+  supersede(dir, 'inbox/x.md', 'inbox/y.md')
+  expect(readFileSync(join(dir, 'inbox', 'x.md'), 'utf8')).toBe(
+    '---\nsuperseded: inbox/y.md\n---\nno frontmatter\nmore body\n',
+  )
+})
+
+test('supersede() changes no file for a LONG.md#id or CORE.md#hash path, and says so', () => {
+  const dir = join(tmpdir(), `memory-supersede-hash-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([{ id: 'lock', summary: 'bd init locks every repo', body: 'merged' }]),
+  )
+  writeFileSync(join(dir, 'CORE.md'), '- a core lesson\n')
+  const longBefore = readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')
+  const coreBefore = readFileSync(join(dir, 'CORE.md'), 'utf8')
+  expect(supersede(dir, 'beads/LONG.md#lock', 'inbox/y.md')).toEqual({ marked: false })
+  expect(supersede(dir, 'CORE.md#deadbeef', 'inbox/y.md')).toEqual({ marked: false })
+  expect(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).toBe(longBefore)
+  expect(readFileSync(join(dir, 'CORE.md'), 'utf8')).toBe(coreBefore)
+})
+
+test('applyTiers dry run archives a note supersede() just marked', () => {
+  const dir = join(tmpdir(), `memory-supersede-applytiers-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'old.md'), format({ summary: 'an old note', body: 'body' }))
+  supersede(dir, 'beads/old.md', 'inbox/new.md')
+  const { decisions } = applyTiers(dir, { dryRun: true })
+  expect(decisions).toContainEqual({
+    kind: 'archive',
+    path: 'beads/old.md',
+    reason: 'superseded by inbox/new.md',
+  })
 })
 
 test('compact() logs a rename so a later `helped <old path>` still resolves, even through a chain', () => {

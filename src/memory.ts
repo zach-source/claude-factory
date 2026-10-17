@@ -680,6 +680,48 @@ export function noteExists(dir: string, path: string): boolean {
   return existsSync(file) && parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))
 }
 
+/**
+ * Mark oldPath as replaced by newPath (claude-factory-3u1.1.2, FR-009's `--supersedes`).
+ *
+ * For a short note (a plain file path with no `#`), this function writes one frontmatter line:
+ * `superseded: <newPath>`. The newPath is relative to dir, the same shape that noteExists() and
+ * resolvePath() use. The function returns `{ marked: true }`, and decide() archives the note on the
+ * next tiering pass with the reason "superseded by <newPath>". See the `n.superseded` branch in
+ * this file.
+ *
+ * A LONG.md path uses `#id`. A CORE.md path uses `#hash`.
+ * A CORE.md bullet is one line in CORE.md, not a frontmatter block. A LONG.md entry schema has no
+ * superseded field. For either path, this function changes no file and returns `{ marked: false }`.
+ *
+ * The caller must log a 'contradicted' usage event for that path. claude-factory-3u1.3.3 reads that
+ * event to demote a core fact.
+ *
+ * This function edits the frontmatter block as text. It does not use parse() and format() together.
+ * The format() function writes only the fields that the Note type knows. A round trip through
+ * parse() and format() drops, without a warning, any frontmatter key that this schema does not yet
+ * define.
+ */
+export function supersede(dir: string, oldPath: string, newPath: string): { marked: boolean } {
+  if (oldPath.includes('#')) return { marked: false }
+  const file = join(dir, oldPath)
+  const text = readFileSync(file, 'utf8')
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)
+  const line = `superseded: ${newPath}`
+  let out: string
+  if (m) {
+    const metaLines = m[1]!.split('\n')
+    const already = metaLines.findIndex(l => /^superseded:/.test(l))
+    if (already >= 0) metaLines[already] = line
+    else metaLines.push(line)
+    out = `---\n${metaLines.join('\n')}\n---\n${text.slice(m[0].length)}`
+  } else {
+    out = `---\n${line}\n---\n${text}`
+  }
+  writeFileSync(`${file}.tmp`, out)
+  renameSync(`${file}.tmp`, file)
+  return { marked: true }
+}
+
 const renamesFile = (dir: string) => join(dir, '.renames.jsonl')
 /** every rename a dream or a tiering pass has ever made, oldest first: old path -> its newest known path */
 function renameLog(dir: string): Record<string, string> {
