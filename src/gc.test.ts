@@ -5,6 +5,7 @@ import { expect, test } from 'bun:test'
 import {
   gcPlan,
   LAUNCH_MIN_AGE_MS,
+  parsePrPages,
   worktreePlan,
   WORKTREE_MIN_AGE_MS,
   type BranchFact,
@@ -363,4 +364,100 @@ test('16: a non-factory branch on a run worktree path removes the worktree, neve
   const p = planOf(rig, runs)
   expect(p.removeWorktrees).toEqual([{ runId: 'r1', path: '/wt/r1', bytes: 1_000, snapshot: false }])
   expect(p.removeBranches).toEqual([])
+})
+
+// parsePrPages() parses the stdout of `gh api graphql --paginate` (claude-factory-ph8): one JSON
+// line per page, each `{totalCount, nodes}`. These tests prove it never returns a partial list.
+const node = (
+  number: number,
+  state: 'OPEN' | 'MERGED' | 'CLOSED',
+  headRefName: string,
+  headRefOid: string,
+) => ({
+  number,
+  state,
+  headRefName,
+  headRefOid,
+})
+const pageLine = (totalCount: number, nodes: unknown[]) => JSON.stringify({ totalCount, nodes })
+
+test('parsePrPages: a single page returns every PR as a PrFact', () => {
+  const stdout = pageLine(2, [node(1, 'MERGED', 'factory/r1', 'aaa'), node(2, 'OPEN', 'factory/r2', 'bbb')])
+  expect(parsePrPages(stdout)).toEqual([
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa' },
+    { state: 'OPEN', headRefName: 'factory/r2', headRefOid: 'bbb' },
+  ])
+})
+
+test('parsePrPages: an 11-page, 1050-PR stdout returns every PR, none dropped', () => {
+  const pages: string[] = []
+  for (let page = 0; page < 11; page++) {
+    const size = page < 10 ? 100 : 50
+    const nodes = Array.from({ length: size }, (_, i) => {
+      const n = page * 100 + i
+      return node(n, 'OPEN', `factory/r${n}`, `sha${n}`)
+    })
+    pages.push(pageLine(1050, nodes))
+  }
+  const out = parsePrPages(pages.join('\n'))
+  expect(out).not.toBeNull()
+  expect(out!.length).toBe(1050)
+  expect(out).toContainEqual({ state: 'OPEN', headRefName: 'factory/r1049', headRefOid: 'sha1049' })
+})
+
+test('parsePrPages: empty stdout (no line) returns null', () => {
+  expect(parsePrPages('')).toBeNull()
+  expect(parsePrPages('\n\n')).toBeNull()
+})
+
+test('parsePrPages: a line that fails to parse returns null', () => {
+  expect(parsePrPages('not json')).toBeNull()
+})
+
+test('parsePrPages: a null page (a null `repository`) returns null', () => {
+  expect(parsePrPages('null')).toBeNull()
+})
+
+test('parsePrPages: totalCount not a number returns null', () => {
+  expect(
+    parsePrPages(JSON.stringify({ totalCount: '2', nodes: [node(1, 'OPEN', 'factory/r1', 'aaa')] })),
+  ).toBeNull()
+})
+
+test('parsePrPages: nodes not an array returns null', () => {
+  expect(parsePrPages(JSON.stringify({ totalCount: 1, nodes: 'nope' }))).toBeNull()
+})
+
+test('parsePrPages: a node with a state outside OPEN/MERGED/CLOSED returns null', () => {
+  expect(parsePrPages(pageLine(1, [node(1, 'DRAFT' as never, 'factory/r1', 'aaa')]))).toBeNull()
+})
+
+test('parsePrPages: a node with a non-number `number` returns null', () => {
+  const bad = { number: '1', state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa' }
+  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
+})
+
+test('parsePrPages: a node with a non-string headRefName returns null', () => {
+  const bad = { number: 1, state: 'OPEN', headRefName: 7, headRefOid: 'aaa' }
+  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
+})
+
+test('parsePrPages: a node with a non-string headRefOid returns null', () => {
+  const bad = { number: 1, state: 'OPEN', headRefName: 'factory/r1', headRefOid: 7 }
+  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
+})
+
+test('parsePrPages: fewer distinct PR numbers than the first page totalCount returns null (a lost page)', () => {
+  const stdout = pageLine(2, [node(1, 'OPEN', 'factory/r1', 'aaa')])
+  expect(parsePrPages(stdout)).toBeNull()
+})
+
+test('parsePrPages: a repeated PR number across pages is deduped, not double-counted', () => {
+  const p1 = pageLine(2, [node(1, 'OPEN', 'factory/r1', 'aaa')])
+  const p2 = pageLine(2, [node(1, 'MERGED', 'factory/r1', 'bbb'), node(2, 'OPEN', 'factory/r2', 'ccc')])
+  const out = parsePrPages([p1, p2].join('\n'))
+  expect(out).toEqual([
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'bbb' },
+    { state: 'OPEN', headRefName: 'factory/r2', headRefOid: 'ccc' },
+  ])
 })
