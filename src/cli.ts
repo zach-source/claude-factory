@@ -4468,6 +4468,11 @@ async function dispatch() {
         scored.add(v.id)
         const current = all.find(x => x.id === v.id)
         if (!current) continue
+        // claude-factory-8pc.22: sweepGuard above still counts a closed bead for the cap. A
+        // closed bead needs no bd write. pruneGuardState (src/sweeps.ts) drops a closed bead's
+        // mark each pass: this pass's open-ids set never names it. With no check here, a closed
+        // in-window sweep bead would get a fresh bd defer or bd update call every pass, forever.
+        if (current.status === 'closed') continue
         if (guardHandled(guardState, rig.name, v.id)) continue // scored before: leave it alone
         if (!v.kept || !v.allowed) excluded.add(v.id) // never start this pass, win or lose the call below
         const hasFactory = !!current.labels?.includes(LABEL)
@@ -4496,6 +4501,7 @@ async function dispatch() {
       for (const current of all) {
         const station = sweepFiler(current)
         if (!station || scored.has(current.id) || guardHandled(guardState, rig.name, current.id)) continue
+        if (current.status === 'closed') continue // claude-factory-8pc.22: no bd write on a closed bead
         excluded.add(current.id)
         const hasFactory = !!current.labels?.includes(LABEL)
         try {

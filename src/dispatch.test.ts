@@ -1114,3 +1114,73 @@ test('claude-factory-8pc.21: a sweep bead aged out of the guard window unscored 
   expect(calls.some(l => /^bd update acme-1\b.*--remove-label factory\b/.test(l))).toBe(true)
   expect(calls.some(l => /^bd update acme-1\b.*--add-label sweep:maintain\b/.test(l))).toBe(true)
 })
+
+/** 7 CLOSED sweep-filed beads for rig `a`:
+ * - `acme-aged`: 25h old, past `sweepGuard`'s own 24h window, no mark in `sweep-guard.json`. Only
+ *   the aged-out loop (`src/cli.ts` near line 4496) ever sees it.
+ * - `acme-1`..`acme-6`: inside the 24h window, each with a mark already in `sweep-guard.json`. An
+ *   earlier pass scored each one while it was still open. Each bead closed after that.
+ * `list` (`b.every()`) answers all 7 beads, each with `status: 'closed'`. `ready` answers none: a
+ * closed bead is never ready. */
+function fakeClosedBd() {
+  mkdirSync(gbin, { recursive: true })
+  const aged = {
+    id: 'acme-aged',
+    created_by: 'factory/sweeps-run1/maintain',
+    created_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    status: 'closed',
+    labels: ['sweep:maintain'],
+  }
+  const inWindow = (i: number) => ({
+    id: `acme-${i}`,
+    created_by: `factory/sweeps-run${i}/maintain`,
+    created_at: new Date(Date.now() - (7 - i) * 60_000).toISOString(),
+    status: 'closed',
+    labels: ['sweep:maintain'],
+  })
+  const all = [aged, ...[1, 2, 3, 4, 5, 6].map(inWindow)]
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify(all)}';;`,
+    "  ready) printf '%s' '[]';;", // a closed bead is never ready
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('claude-factory-8pc.22: the flood guard does no bd write on a closed sweep bead', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeClosedBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  // An earlier pass scored acme-1..acme-6 while each was still open. sweep-guard.json carries
+  // their marks. `pruneGuardState` drops a mark when its id is not in this pass's open-ids set
+  // (`claude-factory-8pc.21`). These 6 beads are closed, so this pass's open-ids set never names
+  // them. Without this station's fix, pass 1 drops their marks, and pass 2's scoring loop writes
+  // to them again.
+  writeFileSync(
+    join(ghome, 'sweep-guard.json'),
+    JSON.stringify({
+      a: Object.fromEntries([1, 2, 3, 4, 5, 6].map(i => [`acme-${i}`, Date.now() - 60_000])),
+    }),
+  )
+  gfactory(['beads'])
+  rmSync(join(ghome, 'dispatch.stamp'), { force: true }) // the 30s throttle would else skip pass 2
+  gfactory(['beads'])
+  expect(existsSync(join(ghome, 'runs'))).toBe(false) // no closed bead ever starts
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  for (const id of ['acme-aged', 'acme-1', 'acme-2', 'acme-3', 'acme-4', 'acme-5', 'acme-6']) {
+    expect(calls.some(l => new RegExp(`^bd defer ${id}\\b`).test(l))).toBe(false)
+    expect(calls.some(l => new RegExp(`^bd update ${id}\\b.*--(add|remove)-label\\b`).test(l))).toBe(false)
+  }
+})
