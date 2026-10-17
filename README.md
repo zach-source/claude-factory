@@ -255,6 +255,21 @@ A worker's PreToolUse hook denies these commands:
   `createCommitOnBranch`, `updateRef`, `updateRefs` and `deleteRef` GraphQL mutations)
 - `gh pr ready`, except in the release station
 
+The hook also denies an equivalent, disguised form of each command above:
+
+- a `gh api` call whose endpoint is `/graphql` or a full `https://.../graphql` URL, not only
+  the bare word `graphql`
+- a `gh api` field pair in any pflag form (`-f name=value`, `--field=name=value`,
+  `-fname=value`, `-f=name=value`), and a clustered short flag such as `-iXPUT` or `-if`
+- a `$name` or a `` `cmd` `` shell expansion inside a `gh api` field value or path segment:
+  the hook cannot read the shell's own expansion, so it denies the command instead
+- a `git push` refspec of `@` or `head` (any letter case), or with a `heads/<branch>` prefix:
+  these name the same branch as `HEAD` or `refs/heads/<branch>`
+- `git -c remote.<name>.push=<value>` or `git config remote.<name>.push <value>`: either one
+  can send a later, plain `git push` to a protected branch with no refspec of its own
+- `gh alias set <name> "<expansion>"` when the expansion's own text denies, and
+  `gh alias import`, since the hook cannot read the imported file
+
 The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
 read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook
 denies the push outright: it has no branch name, or no `origin/HEAD` name, to check.

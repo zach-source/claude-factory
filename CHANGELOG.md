@@ -35,6 +35,23 @@ minor release may change the factory format, the CLI or the run state.
     `--person-only-context` flag already uses.
   - No station, `rollback` included, pushes straight to the default branch any more.
     `rollback` now opens a pull request that reverts the merge instead.
+  - A round-2 review found 8 more bypasses. The hook now closes each one.
+    - `gh api` now reads a `-p`/`--preview` value word. The real endpoint can no longer hide
+      behind it.
+    - `gh api` now reads a `-f`/`-F` field pair in its `-f=name=value` form. It also splits a
+      clustered short flag, such as `-iXPUT` or `-if`, into separate flags first.
+    - The hook treats `/graphql` and a full `https://.../graphql` URL the same as a bare
+      `graphql` endpoint.
+    - A `$name` or a `` `cmd` `` in a field value or a path segment now denies the command.
+      The hook reads only the command's own text. It cannot read what the shell puts there
+      later.
+    - A `git push` refspec of `@` or `head`, in any letter case, now denies the same as the
+      current branch name would. A `heads/<branch>` refspec denies the same as
+      `refs/heads/<branch>`.
+    - `git -c remote.<name>.push=<value>` and `git config remote.<name>.push <value>` now
+      deny the command outright, next to the existing `alias.<name>=push` check.
+    - `gh alias set <name> "<expansion>"` now denies the command when the expansion's own
+      text would deny it. `gh alias import` denies the command outright.
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
