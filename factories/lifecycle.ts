@@ -180,7 +180,7 @@ Report approve; or changes with one numbered list of every failure and finding, 
     // ── the outer loop: ship it, watch it, undo it ───────────────────────────
     release: {
       timeoutMin: 75,
-      prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and update the pull request implement opened (open one if there is none). Release is the only station that marks it ready for review: do that now. Its description carries the plan's summary (triage's on a small run), the verification evidence and the rollback plan. Wait for CI and read every failing check.
+      prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and update the pull request implement opened (open one if there is none). Release is the only station that can mark it ready for review: do that now. Its description carries the plan's summary (triage's on a small run), the verification evidence and the rollback plan. Wait for CI and read every failing check.
 Report ready with the pull request link, the CI status and exactly what shipping will do; or red with the failures.`,
       next: { ready: 'deploy', red: 'implement' },
     },
