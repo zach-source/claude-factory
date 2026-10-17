@@ -6,6 +6,32 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A station at its round cap now re-plans once with the round's findings instead of holding for a
+  hand goto, and a repeated red on the same acceptance criterion mails the manager on its own.
+  (claude-factory-qgz)
+  - Cause: a run review found 40% of reviews send work back, but a run held at its round cap most
+    often got a hand goto to implement, so the loop kept going (one run: 8 review rounds, 10
+    implement passes).
+  - `src/machine.ts`: `Node.onRounds` names the node a capped report re-plans to, carrying every
+    round's own-outcome summary (oldest first, each clipped to fit near 24,000 characters). The
+    first report past `rounds` re-plans; a second cap in the same run still holds for the manager,
+    now naming the earlier re-plan. With no `onRounds`, a station's rounds cap holds for the
+    manager exactly as before. `Node.repeatMail` names an outcome in `next`; when a station
+    reports it twice in a row and both reports cite the same `AC<n>` id, the machine mails the
+    manager from `'factory'`, naming the station, the shared ids and both report times, and the
+    run still follows the normal edge. New exports `acIdsIn`, `prevReport`, `repeatMailText` and
+    `capReplanMail`. `validate()` refuses an `onRounds` with no `rounds`, or one that names an
+    unknown node, `'done'`, or the node itself; it refuses a `repeatMail` that is not a key of
+    `next`.
+  - `factories/lifecycle.ts`: `review` sets `onRounds: 'plan'` (`rounds` stays 3); `verify` sets
+    `repeatMail: 'red'`. `plan`'s prompt numbers acceptance criteria `AC1`, `AC2`, ...; `verify`'s
+    prompt names the AC id each red failure fails.
+  - `mod/hooks/register.tsx`: the manager's patrol prompt now forbids a goto to implement past a
+    station's round cap (it already re-plans once on its own), and tells the manager to steer
+    implement or goto plan on a repeat-red notice, never goto implement with no new direction.
+  - `src/metrics.ts`: `metrics()` adds `runsWith3PlusReviewRounds`, `implementPassesPerShippedRun`
+    (null at 0 shipped runs; skips `handoff`, `blocked` and a pre-launch PR park) and `capReplans`
+    (adjacent log pairs `review` -> `plan`). `render()` prints them on one line.
 - Each memory topic now has a cap of 15 short notes (`TOPIC_CAP`). Set
   `FACTORY_MEMORY_TOPIC_CAP` to override it. `decide()` merges a topic's oldest notes once the
   topic holds more notes than the cap. `dream` and `memory compact` name topics still over the

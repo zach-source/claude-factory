@@ -227,3 +227,75 @@ test('render defaults the dispatch pre-check counts, including fail-open, to 0 w
     'triage rejects 0 of 0 (0 already done); dispatch skipped 0 (merged-pr 0, live-run 0), gh fail-open 0',
   )
 })
+
+// claude-factory-qgz AC9: a run with 3 or more review 'changes' reports counts once, however many
+// stations it visits; a run with only 2 does not.
+test('runsWith3PlusReviewRounds counts a run once at 3+ review changes, not at 2', () => {
+  const capped = [e('review', 'changes', 1), e('review', 'changes', 2), e('review', 'changes', 3)]
+  const notCapped = [e('review', 'changes', 1), e('review', 'changes', 2)]
+  const m = metrics([
+    { id: 'r1', node: 'done', createdAt: 0, log: capped },
+    { id: 'r2', node: 'done', createdAt: 0, log: notCapped },
+  ])
+  expect(m.runsWith3PlusReviewRounds).toBe(1)
+  expect(m.reviewLoops).toBe(5) // every review changes, capped or not
+})
+
+// claude-factory-qgz AC9: implement passes per shipped run skips handoff, blocked and a pre-launch
+// PR park, and counts only shipped runs; a run that never ships does not divide in at all.
+test('implementPassesPerShippedRun skips handoff, blocked and isPrWait, and is null with no shipped run', () => {
+  const prWait = { node: 'implement', attempt: 0, outcome: 'blocked', summary: 'x', at: 0 }
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      log: [
+        prWait,
+        e('implement', 'ready', 1),
+        e('implement', 'handoff', 2),
+        e('implement', 'blocked', 3),
+        e('implement', 'ready', 4),
+        e('deploy', 'deployed', 5),
+      ],
+    },
+    { id: 'r2', node: 'implement', createdAt: 0, log: [e('implement', 'ready', 1)] }, // never ships
+  ])
+  // r1: 2 real implement passes ('ready' x2); handoff, blocked and the pre-launch park do not count
+  expect(m.implementPassesPerShippedRun).toBe(2)
+  expect(metrics([{ id: 'r', node: 'done', createdAt: 0, log: [] }]).implementPassesPerShippedRun).toBeNull()
+})
+
+// claude-factory-qgz AC9: a capped round's re-plan puts plan right after review's own log entry,
+// with no station in between; this counts it, and an ordinary review -> implement does not.
+test('capReplans counts an adjacent review -> plan log pair, not review -> implement', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'plan',
+      createdAt: 0,
+      log: [e('review', 'changes', 1), e('plan', 'ready', 2), e('review', 'changes', 3)],
+    },
+    { id: 'r2', node: 'implement', createdAt: 0, log: [e('review', 'changes', 1)] },
+  ])
+  expect(m.capReplans).toBe(1)
+})
+
+test('render prints the round-cap and implement-passes line', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      log: [
+        e('review', 'changes', 1),
+        e('review', 'changes', 2),
+        e('review', 'changes', 3),
+        e('plan', 'ready', 4),
+        e('deploy', 'deployed', 5),
+      ],
+    },
+  ])
+  const out = render(m, 'title')
+  expect(out).toContain('3+ review rounds 1 runs; cap re-plans 1; implement passes per shipped run 0.00')
+})
