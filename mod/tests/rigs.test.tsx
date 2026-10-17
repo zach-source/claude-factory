@@ -404,3 +404,67 @@ test("a rig's backlog button opens the Backlog on that rig, and all rigs clears 
   expect(all).toContain('work in api')
   await ui.unmount()
 })
+
+// ---- claude-factory-dun.30: a red line on the Rigs tab while the pm is blocked ----
+
+test(
+  'the rigs tab draws a red "pm blocked" line while the manager has no Agent tool',
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    planMocks(on, files)
+    on('tool.list', () => ({ value: [{ name: 'Bash', description: '', mcp: false }] }) as never)
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'rigs' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('pm blocked')
+    expect(drawn).toContain('Agent tool')
+    await ui.unmount()
+  },
+)
+
+test(
+  'the rigs tab draws no "pm blocked" line while the manager has the Agent tool',
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    planMocks(on, files)
+    on(
+      'tool.list',
+      () =>
+        ({
+          value: [
+            { name: 'Bash', description: '', mcp: false },
+            { name: 'Agent', description: '', mcp: false },
+          ],
+        }) as never,
+    )
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'rigs' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).not.toContain('pm blocked')
+    await ui.unmount()
+  },
+)

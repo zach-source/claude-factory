@@ -3836,6 +3836,28 @@ async function dispatch() {
 // The pm itself never calls `bd`.
 const planFactsFile = () => join(HOME, 'plan-facts.json')
 const planFile = () => join(HOME, 'plan.json')
+const pmLogFile = () => join(HOME, 'pm-log.jsonl')
+
+/** Finds the newest `pm-log.jsonl` entry that has an `error` field (claude-factory-dun.31).
+ * Returns `undefined` with no file, no entries, or no entry with an error. `pm-log.jsonl` holds
+ * one JSON object per line, oldest first (the mod's own `appendPmLog`). So the newest entry is
+ * the last line. A bad line must not hide another line's error. This function skips a line it
+ * cannot parse, instead of throwing. */
+function lastPmError(): { at: number; error: string } | undefined {
+  if (!existsSync(pmLogFile())) return undefined
+  const lines = readFileSync(pmLogFile(), 'utf8').split('\n').filter(Boolean)
+  for (const line of lines.reverse()) {
+    let entry: unknown
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const e = entry as { at?: unknown; error?: unknown }
+    if (typeof e.at === 'number' && typeof e.error === 'string') return { at: e.at, error: e.error }
+  }
+  return undefined
+}
 
 /** one rig's facts for the pm: its ready candidates, open epics, recently closed work, the ids
  * a live run there owns now, and the code findings (src/plan.ts's `findings`) already computed
@@ -4153,8 +4175,13 @@ function planSetCmd(answerPath?: string) {
 
 /** `factory plan` (or `plan show`): the plan as text, for a person or `/factory plan` */
 function planShowText(): string {
-  if (!existsSync(planFile()))
-    return 'no plan.json yet: `factory plan facts` then `factory plan set <file>`, or wait for the pm'
+  if (!existsSync(planFile())) {
+    let text = 'no plan.json yet: `factory plan facts` then `factory plan set <file>`, or wait for the pm'
+    const lastError = lastPmError()
+    if (lastError)
+      text += `\nlast pm attempt ${new Date(lastError.at).toISOString()}: ${plan.sanitize(lastError.error)}`
+    return text
+  }
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(planFile(), 'utf8'))

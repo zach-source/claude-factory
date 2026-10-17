@@ -527,3 +527,68 @@ test('plan show reports a rig entry with a null finding, instead of throwing (cl
   expect(out.code).toBe(0)
   expect(out.out).toContain('plan.json: missing or malformed')
 })
+
+const pmLogJsonl = () => join(home, 'pm-log.jsonl')
+
+test('plan show with no plan.json and no pm-log.jsonl holds no "last pm attempt" line (claude-factory-dun.31)', () => {
+  reset()
+  const out = factory(['plan'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain('no plan.json yet')
+  expect(out.out).not.toContain('last pm attempt')
+})
+
+test('plan show with no plan.json reports the newest pm-log.jsonl error and its time (claude-factory-dun.31)', () => {
+  reset()
+  const at = Date.UTC(2026, 9, 16, 23, 51, 0)
+  writeFileSync(
+    pmLogJsonl(),
+    [
+      JSON.stringify({
+        at: at - 60_000,
+        reason: 'spawn-failed',
+        durationMs: 0,
+        error: 'older, must be skipped',
+      }),
+      JSON.stringify({ at, reason: 'blocked', durationMs: 0, error: 'this manager has no Agent tool' }),
+    ].join('\n') + '\n',
+  )
+  const out = factory(['plan'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain('no plan.json yet')
+  expect(out.out).toContain('last pm attempt 2026-10-16T23:51:00.000Z: this manager has no Agent tool')
+  expect(out.out).not.toContain('older, must be skipped')
+})
+
+test('plan show with no plan.json and a garbage last pm-log.jsonl line falls back with no crash (claude-factory-dun.31)', () => {
+  reset()
+  const at = Date.UTC(2026, 9, 16, 23, 0, 0)
+  writeFileSync(
+    pmLogJsonl(),
+    [
+      JSON.stringify({ at, reason: 'blocked', durationMs: 0, error: 'this manager has no Agent tool' }),
+      '{not json',
+    ].join('\n') + '\n',
+  )
+  const out = factory(['plan'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain('no plan.json yet')
+  expect(out.out).toContain('last pm attempt 2026-10-16T23:00:00.000Z: this manager has no Agent tool')
+})
+
+test('plan show sanitizes and clips a long, dirty pm-log error before printing it (claude-factory-dun.31)', () => {
+  reset()
+  const at = Date.UTC(2026, 9, 16, 23, 0, 0)
+  const dirty = `\x1b[31m${'x'.repeat(300)}\nnewline`
+  writeFileSync(
+    pmLogJsonl(),
+    JSON.stringify({ at, reason: 'spawn-failed', durationMs: 0, error: dirty }) + '\n',
+  )
+  const out = factory(['plan'])
+  expect(out.code).toBe(0)
+  expect(out.out).not.toContain('\x1b')
+  expect(out.out).not.toContain('\nnewline')
+  const line = out.out.split('\n').find(l => l.includes('last pm attempt'))
+  expect(line).toBeDefined()
+  expect(line!.length).toBeLessThan(220)
+})
