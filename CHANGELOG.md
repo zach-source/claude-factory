@@ -422,6 +422,29 @@ minor release may change the factory format, the CLI or the run state.
   - `sh eval rm -rf x`, `sh foo -- bash -c "rm -rf x"`, and `sh -x -lc "rm
     -rf x"` still deny. A trailing bare `-c` with no script still allows.
     All 230 `worker-hook.test.ts` tests pass.
+- `factory memory add` now logs a duplicate hit as `confirmed`, not `helped`.
+  It also takes a new `--supersedes <note path>` flag. (claude-factory-3u1.1.2)
+  - When `memory.same()` finds a note that is already there, `src/cli.ts`
+    logs `confirmed` in `.usage.jsonl`. `memory.use()`, `tallyRaw()` and
+    `tally()` (`src/memory.ts`) now carry `confirmed` and `contradicted`
+    counts per note, next to `shown` and `helped`. Each count defaults to
+    0. `compact()` folds `confirmed` and `contradicted` into each note's
+    line. A compact, then a tally, give the same counts.
+  - `--supersedes <note path>` resolves the path through `resolvePath()`
+    (the rename log). It writes the new note, adds one `superseded: <new
+    note path>` frontmatter line to the old note, and logs a
+    `contradicted` event on the old note.
+  - The flag refuses with exit 2 and writes nothing in each of these
+    cases: the path is missing a value; the path starts with `--` or
+    `..`; the path has a dot segment (such as `.archive`); the path names
+    a topic's whole `README.md`, `LONG.md` or `CORE.md` with no `#`; the
+    path is a directory; or the path is a `#` path whose file part is a
+    directory.
+  - PR #73 first shipped the last two refusals above as a crash
+    (`EISDIR`, exit 1) that left a note behind with no `superseded:`
+    marker. PR #76 fixed the directory-as-`--supersedes` case. PR #78
+    fixed the `#`-path case (for example `beads#x`, where `beads` is a
+    directory).
 
 ## 0.12.0 (2026-10-15)
 
