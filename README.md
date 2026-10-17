@@ -262,9 +262,149 @@ command nested this deep can make the hook's own scan too slow too.
 
 The hook reads only the command text Claude Code is about to run, so it stops a worker that
 runs the command directly. It cannot read a script that reaches a shell by another path: a pipe
-(`echo "kubectl --context acme apply -f x" | bash`), a here-string, `env -S`, `su -c`,
-`nix-shell --run`, or a variable or `$(...)` that holds the real command. The brief's own rule
-still applies there.
+(`echo "kubectl --context acme apply -f x" | bash`), a here-string, `su -c`, `nix-shell --run`,
+or a variable or `$(...)` that holds the real command. The brief's own rule still applies there.
+(`env -S`/`env --split-string` is not in this list: the hook reads that value off the command
+line itself and checks it the same way it checks an `eval` or `sh -c` argument.)
+
+A rig can name branches that only a person may push, in addition to `main` and `master`.
+Use `--protected-branch` to add one branch. Repeat the flag to add more branches.
+
+```sh
+factory rig add ax ~/repos/ax --protected-branch acme-deploy
+```
+
+A worker's PreToolUse hook denies these commands:
+
+- a `git push` to a protected branch, to `main` or `master`, or to the branch that `origin/HEAD` names
+- a `git -c alias.<name>=push` definition: a worker never needs a throwaway push alias
+- `gh pr merge`, also with `--auto` and `--admin`
+- the GraphQL mutation that turns on a pull request's auto-merge
+- a REST or GraphQL call that writes a ref or a file straight to a protected branch (a `git/refs`
+  update or delete, a `contents` write with no `branch` field or a protected one, and the
+  `createCommitOnBranch`, `updateRef`, `updateRefs` and `deleteRef` GraphQL mutations)
+- `gh pr ready`, except in the release station
+
+The hook also denies an equivalent, disguised form of each command above:
+
+- a `gh api` call whose endpoint is `/graphql` or a full `https://.../graphql` URL, not only
+  the bare word `graphql`
+- a `gh api` field pair in any pflag form (`-f name=value`, `--field=name=value`,
+  `-fname=value`, `-f=name=value`), and a clustered short flag such as `-iXPUT` or `-if`
+- a `$name` or a `` `cmd` `` shell expansion inside a `gh api` field value or path segment:
+  the hook cannot read the shell's own expansion, so it denies the command instead
+- a `git push` refspec of `@` or `head` (any letter case), or with a `heads/<branch>` prefix:
+  these name the same branch as `HEAD` or `refs/heads/<branch>`
+- `git -c remote.<name>.push=<value>` or `git config remote.<name>.push <value>`: either one
+  can send a later, plain `git push` to a protected branch with no refspec of its own
+- `gh alias set <name> "<expansion>"` and `gh alias import <file>`: the hook denies every one
+  of these calls (see the round-3 bullet below), not only a call whose own expansion text
+  contains a denied command
+
+A round-3 review found 5 more disguised forms. The hook now denies these too:
+
+- a `gh api graphql --input <file>` call whose JSON body names a mutation through a
+  backslash-u escape, for example `merge\u0050ullRequest` for `mergePullRequest`. The hook
+  parses the body as JSON and reads its own `query` string, not the raw file text. A body
+  that is not correct JSON makes the hook deny the command.
+- a `#fragment` on a `gh api` endpoint, for example `pulls/5/merge#x` or `graphql#x`. The hook
+  removes the `#fragment` first, then the `?query` and a trailing `/`. Only then does it read the endpoint.
+- a `git/refs/heads/<branch>` path where the branch name has a slash, for example
+  `acme/deploy`, or is percent-encoded. The hook also denies the singular `git/ref/heads/` path
+  and a `contents` write whose `branch` field has a `refs/heads/` or `heads/` prefix.
+- every `gh alias set` and `gh alias import` call, not only a call whose own expansion text
+  contains a denied command. The text scan misses a denied command in these cases:
+  - a `!shell` expansion
+  - a `-` stdin expansion
+  - a later call that adds more words to the new alias name
+- a `git -c alias.<name>=<value>` or `git config alias.<name> <value>` write with any value,
+  not only a literal `push` value. A `!shell` value runs too, such as `!git push`.
+  The hook also denies a `push.default` value of `upstream` or `tracking`.
+  The hook denies git 2.46's `git config set <name> <value>` subcommand form, for every one of these checks and the existing `remote.*.push` check.
+
+A round-4 review found 1 more disguised form. The hook now denies this too:
+
+- a percent-encoded slash in a `gh api` path, for example `git/refs/heads%2Fmain`. GitHub reads
+  this as the same branch that `heads/main` names. The hook now decodes the whole path once,
+  before it reads any REST pattern. A raw-text match against the still-encoded path missed
+  this match outright. A bad encoding denies the command, the rule the branch-name check
+  already used.
+
+Security's first review round found 5 more disguised forms. The hook now denies these too:
+
+- `git -c push.default=matching`, `git config push.default matching`, or any other
+  `push.default` value the hook does not know. Real git confirmed `matching` sends every local
+  branch to a remote branch of the same name, with no refspec on that later command line. Only
+  `current`, `simple` and `nothing` stay allowed; every other value fails closed.
+- a bare `:` refspec, for example `git push origin :`. Real git confirmed it pushes every
+  matching branch, the same broad reach as `--all`.
+- `xargs` right before a `git` or `gh` word, for example `echo main | xargs git push origin`.
+  `xargs` can read its own operand from stdin, a push refspec or a `gh` verb, after the text
+  already on the command line. The hook cannot read that operand before `xargs` does.
+- `git --config-env=<name>=<envvar>`, the same `alias.*`, `remote.*.push` and `push.default`
+  check `-c <name>=<value>` already runs. The hook can read `<name>`, but not the text of the
+  environment variable `<envvar>` names, so it denies the write outright.
+- `git send-pack`, the plumbing command that `git push` calls. It has no `push` word on its own
+  command line. So the hook now checks its refspecs as it checks `git push`'s.
+
+A review after the first security review found 3 forms similar to those 5. Each earlier change
+closed one exact form. Real git moved `main` through a similar form anyway. The hook also denies
+these forms:
+
+- an `xargs` value flag with its value as a separate word (`xargs -n 1 git push origin`).
+
+  Or a wrapper between `xargs` and `git` or `gh` (`xargs env git push origin`, `xargs sudo ...`,
+  `xargs timeout 5 ...`).
+
+  The hook does not parse the flags of `xargs`. It denies the command when a `git` or `gh` word
+  comes after `xargs` in the same segment.
+
+- `git send-pack` with no ref at all. Real git confirmed that it pushes every local branch to a
+  remote branch with the same name. It does not push `HEAD` alone, and it has the same broad effect
+  as `push.default=matching`. The hook also denies `--stdin` (refs read from the command's own stdin)
+  and `--mirror` (the same broad effect as `--all`, with deletes) outright.
+
+- `git -c remote.<name>.mirror=<value>` or `git config remote.<name>.mirror <value>`. Each one
+  makes a later, plain push to that remote act like `--mirror`.
+
+- `include.path` and `includeIf.<cond>.path`. Each one loads another config file that the hook
+  cannot read. That file can set any key that the hook denies.
+
+- a command that sets `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`,
+  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` (a plain
+  assignment or an `export`). The hook denies it when a `git` word appears anywhere in the same
+  command text, even on a later, `;`-separated line.
+
+  These environment variables replace git's own config lookup outright. No value stays on the
+  command line for the hook to check.
+
+A later review found 4 more disguised forms. The hook now denies these too:
+
+- `env -S '<command>'` or `env --split-string='<command>'`. This also covers a short-flag
+  cluster, for example `-vS`, and the attached form `-S'<command>'`. BSD and GNU `env` split
+  `<command>` into words and run it. This is the same hazard as `eval`. The hook reads that
+  value off the command line. It checks the value the same way it checks an `eval` or `sh -c`
+  argument.
+- a dashed git-core binary name, for example `git-push` or `git-send-pack`. A real shell finds
+  one of these on `PATH` or under `git --exec-path`. It runs the same code as `git push` or
+  `git send-pack`. No `git` word appears anywhere in the command line. The hook now reads a
+  `git-<verb>` basename as `git <verb>`.
+- a `nice -n 5`, `command -p` or `stdbuf -o0` wrapper ahead of `git push`, paired with one of
+  the `GIT_CONFIG_*` environment variables above. The same pairing also applies behind an
+  `eval` or `bash -c` argument, or a separate `export` statement. The check for this pairing
+  used to read only one segment's own first word, past wrapper-stripping. It now reads a `git`
+  word anywhere in the full raw command text.
+- `HOME=<dir>` or `XDG_CONFIG_HOME=<dir>`, paired with a `git` word. Git reads
+  `$HOME/.gitconfig` as its own global config. Git reads `$XDG_CONFIG_HOME/git/config` the same
+  way. Each one is the same unreadable-file hazard as `GIT_CONFIG_GLOBAL`. `GIT_DIR=<dir>` and
+  `GIT_COMMON_DIR=<dir>` point git at a different repository. That repository's config file
+  denies the same way.
+
+The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
+read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook
+denies the push outright: it has no branch name, or no `origin/HEAD` name, to check.
+
+This rule applies whatever the list holds. Only a person can merge a pull request or push the default branch. A worker pushes its own run branch and opens a pull request.
 
 A worker's brief carries this rule too, in the Rig goal section. The worker reports blocked
 with the exact command, instead of running it. The guard does not cover a person's own

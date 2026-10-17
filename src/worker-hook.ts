@@ -17,6 +17,29 @@
  * the second station.
  * This hook receives the rig's list in its own argv: `--person-only-contexts a,b`.
  *
+ * It also denies `gh pr merge` and `gh repo sync` (claude-factory-zl5).
+ * It denies a GraphQL or REST call that merges a pull request.
+ * It denies a GraphQL or REST call that turns on a pull request's auto-merge.
+ * The owner decided that only a person merges a pull request.
+ * GitHub's admin bypass lets a worker merge, even under a ruleset that needs a review.
+ * Before this guard, two pull requests merged before their review ran (ax-aw1).
+ *
+ * It also denies `gh pr ready` outside the release station (claude-factory-zl5.2).
+ * Implement opens a pull request as a draft. Only release marks it ready for review, once verify,
+ * review and security pass. `gh pr ready --undo` (back to draft) is always allowed.
+ *
+ * It also denies a `git push` to a protected branch (claude-factory-zl5.3).
+ * A protected branch is main or master: the rig's default branch.
+ * A protected branch is also the branch that `origin/HEAD` points to.
+ * A rig can also set a protected branch with `--protected-branch`.
+ * This hook reads that list from its own argv, as `--protected-branches a,b`.
+ *
+ * A worker must push its own run branch, and open a pull request for it.
+ * Only a person can push a protected branch.
+ * The owner made the same rule for a merge: only a person can merge.
+ * `git push -n` is a dry run: it does not push anything.
+ * The hook allows a dry run at all times.
+ *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
  * claude-factory-9wu rejected another design: a hook that approves `rm -rf`, which is a safety regression.
@@ -24,6 +47,7 @@
  * Claude Code's own prompt stays the backstop.
  */
 
+import { readFileSync, statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 
 export const REASON =
@@ -48,6 +72,62 @@ export const LONG_COMMAND_REASON =
   'The factory denies this command: it is longer than 8192 characters, and this rig checks commands ' +
   'against a person-only kube context. A command this long can make that check too slow. ' +
   'Split this command into shorter commands and run them one at a time. Do not retry this exact command.'
+
+// claude-factory-zl5
+export const MERGE_REASON =
+  'The factory denies this command: a worker never merges a pull request and never turns its ' +
+  'auto-merge on. Only a person merges, by owner decision. This covers gh pr merge, gh repo sync, ' +
+  'and a GraphQL or REST call that merges a pull request or a branch, or marks it for auto-merge. ' +
+  'Report the pull request link and what it waits on; leave it open. Do not retry this command.'
+
+// claude-factory-zl5.2
+export const READY_REASON =
+  'The factory denies this command: only the release station marks a pull request ready for ' +
+  'review. Keep the pull request a draft here; report its link in your summary. Release marks it ' +
+  'ready after verify, review and security pass. Do not retry this command.'
+
+// claude-factory-zl5.22
+export const ALIAS_REASON =
+  'The factory denies this command: gh alias set and git config alias.<name> name another ' +
+  'command, and this hook checks one command at a time, with no memory of an alias a prior ' +
+  'command set. It denies an alias whose own text already denies, and gh alias import outright: ' +
+  'that command reads a file of aliases this hook cannot check. Run the full command directly, ' +
+  'with no alias. Do not retry this command.'
+
+// claude-factory-zl5.3
+export const PUSH_REASON =
+  'The factory denies this command: a worker never pushes straight to a protected branch, by ' +
+  'owner decision. A protected branch is main, master, the branch origin/HEAD names, or a branch ' +
+  'the rig names with --protected-branch. Push your run branch instead, and open a pull request ' +
+  'for the change, or a revert pull request for a rollback. Only a person pushes or merges a ' +
+  'protected branch. Do not retry this command.'
+
+// claude-factory-zl5.33
+export const XARGS_REASON =
+  'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
+  'its own operand, read from its own stdin, such as a push refspec or a gh verb. This guard ' +
+  'checks the text of this command line, so it cannot read that operand before xargs does. ' +
+  'Run the git or gh command directly, with every argument in the command line itself. ' +
+  'Do not retry this exact command.'
+
+/**
+ * `gate` carries the context this guard needs for the merge-gate checks (claude-factory-zl5): the
+ * running station's name, the rig's protected branch names, and small reads of the live repo and
+ * filesystem a unit test can fake out. `main()` wires the real ones; a test passes its own.
+ */
+export interface HookGate {
+  /** the running station, from FACTORY_FROM. Only the release station may mark a pull request ready. */
+  station?: string
+  /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
+  protectedBranches?: string[]
+  /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any error */
+  headOf?: (dir?: string) => string | undefined
+  /** the short branch name the repo's `origin/HEAD` points to, or undefined on any error */
+  originHead?: () => string | undefined
+  /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
+   * resolved relative to the tool call's own cwd; undefined when it cannot be read */
+  readFile?: (path: string) => string | undefined
+}
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
 // limit. A command with many stacked eval words can make this guard's own scan too slow. The scan
@@ -304,6 +384,91 @@ function touchesBeadsActor(words: string[]): boolean {
   return envClearsAll && runsBd
 }
 
+/**
+ * True when `words` has an `xargs` word, with a `git` or `gh` word after it in the same segment.
+ *
+ * claude-factory-zl5.33: xargs can read its own operand from stdin. It appends that operand after
+ * every word on this command line. That operand can be a push refspec or a gh verb. This guard
+ * reads only the command text. It cannot read an operand xargs adds at run time. So it denies the
+ * whole command: it does not trust text that can be incomplete.
+ *
+ * claude-factory-zl5.39: an earlier version of this guard skipped only a fixed list of prefixes,
+ * then xargs's own flags, then read one word after that. Real git moved `main` through 3 forms
+ * this missed: a value flag with its value as a separate word (`xargs -n 1 git push origin`), a
+ * wrapper between xargs and git (`xargs env git push origin`, `xargs sudo ...`), and a long flag
+ * with no value (`xargs -L 1 git push origin`). This guard no longer parses xargs's own flags. It
+ * denies on a `git` or `gh` word anywhere after `xargs` in the same segment, flag, wrapper or
+ * value word included.
+ */
+function xargsHidesOperand(words: string[]): boolean {
+  for (let i = 0; i < words.length; i++) {
+    if (baseWord(words[i]!) !== 'xargs') continue
+    for (let j = i + 1; j < words.length; j++) {
+      const b = baseWord(words[j]!)
+      if (b === 'git' || b === 'gh') return true
+    }
+  }
+  return false
+}
+
+// claude-factory-zl5.41: these environment variables replace git's own config lookup.
+// Real git reads `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` as a config
+// list of any length. `GIT_CONFIG_PARAMETERS` holds the same list in git's own internal format.
+// `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` each name a config file this guard
+// cannot read. Each name can set a key that `isPushConfigWrite` denies, for example
+// `push.default=matching`. The command line shows no such value for this guard to check.
+//
+// claude-factory-zl5.45: `HOME` and `XDG_CONFIG_HOME` name the same kind of unreadable file.
+// Git reads `$HOME/.gitconfig` as its own global config, with no `GIT_CONFIG_*` name in sight.
+// Git reads `$XDG_CONFIG_HOME/git/config` the same way. `GIT_DIR` and `GIT_COMMON_DIR` point git
+// at a different repository. That repository's config file counts too.
+const DANGEROUS_GIT_CONFIG_ENV =
+  /^(GIT_CONFIG(_GLOBAL|_SYSTEM|_COUNT|_PARAMETERS|_KEY_\d+|_VALUE_\d+)?|HOME|XDG_CONFIG_HOME|GIT_DIR|GIT_COMMON_DIR)$/
+
+/**
+ * True when `words` has a plain `NAME=value` word, or an `export NAME=value` word, that sets one
+ * of the `DANGEROUS_GIT_CONFIG_ENV` names, anywhere in the segment.
+ *
+ * claude-factory-zl5.41: a plain assignment right before a git word sets that one git call's own
+ * environment. An `export` sets a shell variable that stays set for every later command in the
+ * same shell, including a git call on a later, `;`-separated line. This check reads either form
+ * the same way: it does not track which statement runs `export`, so a export in one segment and a
+ * git call in another still deny, through `hasDangerousConfigEnv` in `denyAt`.
+ */
+function setsDangerousGitConfigEnv(words: string[]): boolean {
+  for (const w of words) {
+    const eq = w.indexOf('=')
+    if (eq <= 0) continue
+    if (DANGEROUS_GIT_CONFIG_ENV.test(w.slice(0, eq))) return true
+  }
+  return false
+}
+
+/**
+ * True when any word in the raw `command` text has baseWord `git` or `git-<verb>`
+ * (claude-factory-zl5.44).
+ *
+ * This reads the unparsed text, not one segment's `words` array. A quoted argument to `eval` or
+ * `bash -c` stays one `segments()` word with its own spaces inside (for example `'git push
+ * origin'`), so a `baseWord` check on that one word never matches `git`. A wrapper flag
+ * `realCommand` does not know by name (`nice -n 5`, `command -p`, `stdbuf -o0`) can also push a
+ * `git` word past a cheap `cmd[0]` check. This scan instead splits the whole raw text on
+ * whitespace and quote characters, so it reads a `git` word at any depth: inside a quoted
+ * recursion argument, behind an unknown wrapper, or set by a separate `export` statement earlier
+ * in the same command.
+ *
+ * `denyAt` calls this only when `hasDangerousConfigEnv` is already true, so a stray `git`-shaped
+ * word in an unrelated value only matters alongside one of the `DANGEROUS_GIT_CONFIG_ENV` names.
+ */
+function commandHasGitWord(command: string): boolean {
+  for (const w of command.split(/['"`\s;&|()<>]+/)) {
+    if (!w) continue
+    const b = baseWord(w)
+    if (b === 'git' || /^git-/.test(b)) return true
+  }
+  return false
+}
+
 // claude-factory-25z: global flags that take a separate value word, so the verb search can step past
 // them even when they come before the verb (`kubectl -n ax --context acme rollout restart ...`)
 const KUBECTL_VALUE_FLAGS = new Set([
@@ -402,9 +567,20 @@ function flagValue(words: string[], names: Set<string>): string | undefined {
       result = words[i + 1]
       continue
     }
+    let matched = false
     for (const n of names) {
       if (w.startsWith(`${n}=`)) {
         result = w.slice(n.length + 1)
+        matched = true
+        break
+      }
+    }
+    if (matched) continue
+    // claude-factory-zl5.7: a 2-character short flag (`-X`) can take its value with no separator.
+    // For example, `-XPUT` sets the value to PUT. curl does the same. A long flag (`--method`) never takes this form.
+    for (const n of names) {
+      if (n.length === 2 && n[1] !== '-' && w.startsWith(n) && w.length > n.length) {
+        result = w.slice(n.length)
         break
       }
     }
@@ -546,6 +722,981 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
   return false
 }
 
+// claude-factory-zl5: gh's own global flags that take a value word. The verb search steps past
+// them. This matters when they come before the verb (`gh -R o/r pr merge 5`).
+const GH_VALUE_FLAGS = new Set(['-R', '--repo', '--hostname'])
+// `gh api` flags that take a value word. The endpoint search steps past them.
+// claude-factory-zl5.15: `-p` and `--preview` also take a value word. That value is a
+// comma-separated preview name list. Without this, the endpoint search read the value word as the
+// endpoint. The real endpoint and the method after it were not checked.
+const GH_API_VALUE_FLAGS = new Set([
+  '-X',
+  '--method',
+  '-H',
+  '--header',
+  '-f',
+  '--raw-field',
+  '-F',
+  '--field',
+  '--input',
+  '--hostname',
+  '--cache',
+  '-t',
+  '--template',
+  '-q',
+  '--jq',
+  '-p',
+  '--preview',
+])
+
+// claude-factory-zl5.16: a boolean `gh api` short flag with no value of its own. Only `-i`
+// (`--include`) is known here.
+const GH_API_BOOL_SHORT = new Set(['i'])
+// claude-factory-zl5.16: a `gh api` short flag that takes a value, by its single character.
+// pflag lets a caller cluster these with a leading run of GH_API_BOOL_SHORT chars, the attached
+// value (if any) coming right after. For example `-iXPUT` is `-i` plus `-XPUT`.
+const GH_API_VALUE_SHORT = new Set(['X', 'f', 'F', 't', 'q', 'p', 'H'])
+
+/**
+ * Splits a clustered `gh api` short flag word, for example `-iXPUT` or `-if`, into separate words
+ * that `flagValue` and `ghApiFields` already read.
+ * claude-factory-zl5.16: pflag lets a caller write boolean short flags, then at most one
+ * value-taking short flag, as one word.
+ *
+ * For `-iXPUT`, the result is `-i` and `-XPUT`, with the value `PUT` attached.
+ * For `-if`, the result is `-i` and a bare `-f`.
+ * The value of `-f` is the next word, unchanged.
+ *
+ * A word with an unknown short flag character returns as is.
+ * This function splits only a cluster that it reads in full.
+ */
+function expandGhShortClusters(words: string[]): string[] {
+  const out: string[] = []
+  for (const w of words) {
+    if (!w.startsWith('-') || w.startsWith('--') || w.length < 2) {
+      out.push(w)
+      continue
+    }
+    const chars = w.slice(1)
+    const expanded: string[] = []
+    let i = 0
+    let ok = true
+    while (i < chars.length) {
+      const c = chars[i]!
+      if (GH_API_BOOL_SHORT.has(c)) {
+        expanded.push(`-${c}`)
+        i++
+        continue
+      }
+      if (GH_API_VALUE_SHORT.has(c)) {
+        expanded.push(`-${chars.slice(i)}`)
+        i = chars.length
+        continue
+      }
+      ok = false
+      break
+    }
+    if (!ok || !expanded.length) {
+      out.push(w)
+      continue
+    }
+    out.push(...expanded)
+  }
+  return out
+}
+// a GraphQL mutation name that merges a pull request or a branch
+const MERGE_MUTATIONS = ['enablePullRequestAutoMerge', 'mergePullRequest', 'mergeBranch']
+// a GraphQL mutation name that marks a pull request ready for review (claude-factory-zl5.2)
+const READY_MUTATIONS = ['markPullRequestReadyForReview']
+// claude-factory-zl5.10: a GraphQL mutation name that writes a ref (a branch), or a commit on one.
+// This guard denies any call that names one of these mutations.
+// It does not read the mutation input for a branch name. The REST checks below do read one.
+// Few tools outside release tooling use these names. A simple, strict rule is safe here.
+const PUSH_MUTATIONS = ['createCommitOnBranch', 'updateRef', 'updateRefs', 'deleteRef']
+
+/**
+ * Collects every `-f`/`--raw-field`/`-F`/`--field` name=value pair in `words`, a `gh api` call's
+ * own arguments. It stops at a literal `--`.
+ * `gh api` repeats these flags, one per field. This reads every one, not only the last.
+ * `flagValue` differs: it reads a flag that `gh`, `kubectl`, `ko` or `helm` itself takes once.
+ *
+ * claude-factory-zl5.6: `gh` reads a name=value pair in 3 forms.
+ * Form 1: `-f name=value` is 2 words.
+ * Form 2: `--raw-field=name=value` is 1 word. The long flag and the pair join with `=`.
+ * Form 3: `-fname=value` is 1 word. The short flag and the pair join with no separator.
+ * `--field` and `-F` take the same 3 forms.
+ */
+function ghApiFields(words: string[]): { name: string; value: string }[] {
+  const fields: { name: string; value: string }[] = []
+  const addPair = (v: string | undefined) => {
+    const eq = v?.indexOf('=') ?? -1
+    if (v !== undefined && eq >= 0) fields.push({ name: v.slice(0, eq), value: v.slice(eq + 1) })
+  }
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--') break
+    if (w === '-f' || w === '-F' || w === '--raw-field' || w === '--field') {
+      addPair(words[i + 1])
+      i++
+      continue
+    }
+    if (w.startsWith('--raw-field=')) {
+      addPair(w.slice('--raw-field='.length))
+      continue
+    }
+    if (w.startsWith('--field=')) {
+      addPair(w.slice('--field='.length))
+      continue
+    }
+    // claude-factory-zl5.16: a 4th form, `-f=name=value` or `-F=name=value`: the short flag and
+    // the pair join with `=`, one char later than form 3 (`-fname=value`). Check this form first,
+    // since form 3's `w.length > 2` check below would otherwise also match it and misread the
+    // leading `=` as part of the field name.
+    if (w.startsWith('-f=') || w.startsWith('-F=')) {
+      addPair(w.slice(3))
+      continue
+    }
+    if ((w.startsWith('-f') || w.startsWith('-F')) && w.length > 2) {
+      addPair(w.slice(2))
+    }
+  }
+  return fields
+}
+
+// claude-factory-zl5.18: a `$` or a backtick marks a shell expansion that this hook cannot read.
+// That expansion can sit in a field value, a REST path segment, or a `-c name=value` pair.
+// The hook reads the command's own text, not what the shell later puts there.
+//
+// `$Q` or `` `cmd` `` stays as literal text here, so a check that reads it as the final value
+// misses the real one.
+//
+// This follows the rule of `REFSPEC_UNSAFE` for a `git push` refspec, narrowed to the two
+// characters a field value can carry.
+const SHELL_UNSAFE = /[$`]/
+
+/**
+ * Reads the text of every `query` or `input` field of a `gh api graphql` call.
+ * It also reads the call's `--input` file, when set.
+ *
+ * A field value that starts with `@` names a file.
+ * `gate.readFile` reads that file, relative to the tool call's own cwd.
+ *
+ * `unresolved` is true when this cannot read a file's text.
+ * It is also true for a shell expansion in a field value that this hook cannot read
+ * (claude-factory-zl5.18, `SHELL_UNSAFE`).
+ * The caller then fails closed, because the real query text is unknown here.
+ */
+function graphqlTexts(apiArgs: string[], gate: HookGate): { texts: string[]; unresolved: boolean } {
+  const texts: string[] = []
+  let unresolved = false
+  const take = (v: string) => {
+    if (SHELL_UNSAFE.test(v)) {
+      unresolved = true
+      return
+    }
+    if (!v.startsWith('@')) {
+      texts.push(v)
+      return
+    }
+    const content = gate.readFile?.(v.slice(1))
+    if (content === undefined) unresolved = true
+    else texts.push(content)
+  }
+  // claude-factory-zl5.24: The `--input` flag sends the whole JSON request body to `gh api`
+  // for the GraphQL call. The body is not raw query text.
+  //
+  // GitHub decodes a backslash-u escape in the `query` string. The decoded name can be
+  // `mergePullRequest`.
+  //
+  // A scan of the raw file bytes as plain text does not find this escape. In the raw bytes,
+  // the escape stays as literal characters.
+  //
+  // This function reads the body as JSON first. It reads only the `query` string in the
+  // body. GitHub uses that string for the call.
+  //
+  // If the body is not correct JSON, this function cannot read the query. The function
+  // then fails closed and sets `unresolved`.
+  const takeInputBody = (v: string) => {
+    if (SHELL_UNSAFE.test(v)) {
+      unresolved = true
+      return
+    }
+    const content = v.startsWith('@') ? gate.readFile?.(v.slice(1)) : undefined
+    if (content === undefined) {
+      unresolved = true
+      return
+    }
+    try {
+      const body: unknown = JSON.parse(content)
+      if (body && typeof body === 'object' && typeof (body as { query?: unknown }).query === 'string') {
+        texts.push((body as { query: string }).query)
+      }
+    } catch {
+      unresolved = true
+    }
+  }
+  for (const f of ghApiFields(apiArgs)) if (f.name === 'query' || f.name === 'input') take(f.value)
+  const inputFile = flagValue(apiArgs, new Set(['--input']))
+  if (inputFile !== undefined) takeInputBody(`@${inputFile}`)
+  return { texts, unresolved }
+}
+
+/** true when a `gh api graphql` call's query text names one of `mutations`, or its text is unknown */
+function hasGraphqlMutation(apiArgs: string[], gate: HookGate, mutations: string[]): boolean {
+  const { texts, unresolved } = graphqlTexts(apiArgs, gate)
+  if (unresolved) return true
+  return texts.some(t => mutations.some(m => new RegExp(`\\b${m}\\b`).test(t)))
+}
+
+/**
+ * Strips a trailing `#fragment`, then a trailing `?query`, then a trailing `/`, from `endpoint`
+ * (claude-factory-zl5.25).
+ *
+ * The real `gh` tool drops a `#fragment` before it sends the request. A check that reads the
+ * raw endpoint text, fragment and all, can miss a path this function's callers must catch:
+ * `pulls/5/merge#x`, `merges#x`, `git/refs#x`, `git/refs/heads/main#x` and `graphql#x` all reach
+ * the same real endpoint as the same path with no fragment.
+ *
+ * Every endpoint check in this file (`isGraphqlEndpoint`, `ghApiMergeDenied`, `ghApiPushDenied`)
+ * must read this one normalized form, not the raw endpoint text.
+ */
+function normalizeEndpoint(endpoint: string): string {
+  return endpoint.split('#')[0]!.split('?')[0]!.replace(/\/+$/, '')
+}
+
+/**
+ * True when `endpoint` names the GraphQL endpoint, in any form that `gh api` accepts
+ * (claude-factory-zl5.17).
+ * The bare word `graphql` is the common form.
+ * A leading slash (`/graphql`) or a full URL (`https://api.github.com/graphql`, or an enterprise
+ * host's own `.../api/graphql`) names the same endpoint.
+ *
+ * Each form skips the merge, ready and push mutation checks, unless this function reads it.
+ * A trailing slash, query string or `#fragment` does not change the endpoint
+ * (claude-factory-zl5.25).
+ */
+function isGraphqlEndpoint(endpoint: string): boolean {
+  const path = normalizeEndpoint(endpoint)
+  if (path === 'graphql' || path === '/graphql') return true
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/.*\/graphql$/.test(path)
+}
+
+/**
+ * True when a `gh api` call merges a pull request or a branch through the REST or GraphQL API.
+ * `apiArgs` is the call's own arguments, after the `api` word.
+ *
+ * REST: `PUT .../pulls/<n>/merge` merges a pull request. `POST .../merges` merges a branch.
+ * `gh api` sends POST on its own when a caller gives `-f`, `-F` or `--input` data and names no
+ * other method with `-X` or `--method`. So a merges call with no explicit method still counts.
+ *
+ * GraphQL: the `graphql` endpoint's query or `--input` body names `enablePullRequestAutoMerge`,
+ * `mergePullRequest` or `mergeBranch`.
+ *
+ * claude-factory-zl5.18: the `<n>` in `/pulls/<n>/merge` can be any text without a slash.
+ * A shell variable or command substitution that has not expanded yet reads as its own literal,
+ * unresolved text here, for example `$N`.
+ *
+ * This guard does not need the real number.
+ * A `PUT` to any `/pulls/<x>/merge` path still merges a pull request.
+ */
+function ghApiMergeDenied(apiArgs: string[], gate: HookGate): boolean {
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  if (!endpoint) return false
+  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, MERGE_MUTATIONS)
+  // claude-factory-zl5.25: gh drops a `#fragment` before it sends the request, so this guard
+  // must read the normalized path, not the raw endpoint text.
+  const path = normalizeEndpoint(endpoint)
+  const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
+  const hasData = ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
+  const effective = method || (hasData ? 'POST' : 'GET')
+  if (effective === 'PUT' && /\/pulls\/[^/?#]+\/merge$/.test(path)) return true
+  return (effective === 'POST' || effective === 'PUT') && /\/merges$/.test(path)
+}
+
+/**
+ * True when a `gh api` call's `graphql` endpoint marks a pull request ready for review
+ * (claude-factory-zl5.2): its query or `--input` body names `markPullRequestReadyForReview`.
+ */
+function ghApiReadyDenied(apiArgs: string[], gate: HookGate): boolean {
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  return (
+    endpoint !== undefined &&
+    isGraphqlEndpoint(endpoint) &&
+    hasGraphqlMutation(apiArgs, gate, READY_MUTATIONS)
+  )
+}
+
+// claude-factory-zl5.10: a REST path can update or delete an existing branch ref.
+// Like the merge check above, this reads the tail of the path, for example `/pulls/<n>/merge`.
+// The `/repos/<owner>/<repo>/` prefix is optional. An endpoint can be a full URL or a short path.
+//
+// claude-factory-zl5.26: this pattern captures all characters up to a `?` or `#`. It does not stop at the first `/`.
+// A branch name can contain a slash, for example `acme/deploy`. The old pattern read only `acme`.
+// GitHub also accepts the singular `git/ref/heads/<branch>` path for the same read and write. So this pattern matches `refs?`.
+//
+// claude-factory-zl5.30: this pattern reads an already-decoded path (`decodeApiPath` below).
+// So a percent-encoded slash after `heads` (`heads%2Fmain`) matches the same as a literal one (`heads/main`).
+// The raw, still-encoded path has no `/` there. A match against the raw text misses this path.
+const REF_HEADS_PATH = /\/git\/refs?\/heads\/([^?#]+)/
+// a REST path that creates a new ref. The caller names the new ref in a `ref` field.
+// claude-factory-zl5.25: `normalizeEndpoint` already strips a `?query` and `#fragment`, so this
+// pattern no longer needs to match one.
+const REFS_CREATE_PATH = /\/git\/refs\/?$/
+// a REST path that creates or replaces a file. It commits to a branch. It does not use `git push`.
+const CONTENTS_PATH = /\/contents\/.+/
+
+/**
+ * Decodes a percent-encoded REST path once, in full (claude-factory-zl5.30).
+ *
+ * GitHub decodes the whole path before it reads it. A percent-encoded slash (`heads%2Fmain`)
+ * names the same path segment as a literal one (`heads/main`).
+ * A pattern that reads the raw, encoded text can miss that match. It does not only read the wrong branch name.
+ * So every REST pattern in `ghApiPushDenied` (`REF_HEADS_PATH`, `REFS_CREATE_PATH`, `CONTENTS_PATH`) must read this decoded form.
+ *
+ * Returns undefined when the text is not valid percent-encoding. The caller then fails closed.
+ * This is the same rule that `SHELL_UNSAFE` uses for a shell expansion that this hook cannot read.
+ */
+function decodeApiPath(raw: string): string | undefined {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * True when a `gh api` call writes to a protected branch through the REST or GraphQL API.
+ * The command line has no `git push` word (claude-factory-zl5.10).
+ *
+ * REST: `PATCH` or `DELETE .../git/refs/heads/<branch>` updates or deletes that branch's ref.
+ * `POST .../git/refs` creates a new ref. The `ref` field, not the URL, names the branch.
+ * `PUT`, `POST` or `DELETE .../contents/<path>` commits a file to a branch.
+ * The `branch` field names that branch. If there is no `branch` field, the call uses the default branch.
+ *
+ * GraphQL: this guard denies a `graphql` endpoint. Its query or `--input` body names a `PUSH_MUTATIONS` entry.
+ * The entries are `createCommitOnBranch`, `updateRef`, `updateRefs` and `deleteRef`.
+ *
+ * If this guard cannot read a branch name (no `ref` or `branch` field), it denies the call.
+ * claude-factory-zl5.13: it also denies when `protectedBranchSet` reports `unresolved`.
+ * In that case, it cannot check the branch name against the rig's real default branch.
+ *
+ * claude-factory-zl5.18: it also denies when the `ref` or `branch` field is a shell expansion.
+ * This hook cannot read that expansion (`SHELL_UNSAFE`).
+ * A check against a literal, unresolved `$BRANCH` finds no match.
+ * So the call passes, but this guard must deny it.
+ *
+ * claude-factory-zl5.30: it also denies when the URL path has malformed percent-encoding (`decodeApiPath` fails).
+ * This hook cannot read the real path then.
+ */
+function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  if (!endpoint) return false
+  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, PUSH_MUTATIONS)
+  // claude-factory-zl5.25: read the normalized path, which has no `#fragment` or `?query`, for every REST pattern below.
+  // claude-factory-zl5.30: then decode the whole path once. Do this before any pattern reads it.
+  // GitHub decodes a percent-encoded slash in the path. `heads%2Fmain` names the same path as `heads/main`.
+  // A raw-text match against the still-encoded form misses that match.
+  const normalized = normalizeEndpoint(endpoint)
+  const path = decodeApiPath(normalized)
+  if (path === undefined) return true
+  const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
+  const fields = ghApiFields(apiArgs)
+  const hasData = fields.length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
+  const effective = method || (hasData ? 'POST' : 'GET')
+  const { branches: protectedSet, unresolved } = protectedBranchSet(gate)
+  const refMatch = REF_HEADS_PATH.exec(path)
+  if (refMatch) {
+    if (effective !== 'PATCH' && effective !== 'DELETE') return false
+    if (unresolved) return true
+    // claude-factory-zl5.30: `path`, and so `refMatch[1]`, is already decoded in full above.
+    // Strip a `refs/heads/` or `heads/` prefix that the decode reveals. Do this before the check against the protected set.
+    return protectedSet.has(stripRefsHeads(refMatch[1]!))
+  }
+  if (REFS_CREATE_PATH.test(path) && effective === 'POST') {
+    const ref = fields.find(f => f.name === 'ref')?.value
+    return ref === undefined || unresolved || SHELL_UNSAFE.test(ref) || protectedSet.has(stripRefsHeads(ref))
+  }
+  if (CONTENTS_PATH.test(path) && (effective === 'PUT' || effective === 'POST' || effective === 'DELETE')) {
+    // claude-factory-zl5.26: strip a `refs/heads/` or `heads/` prefix here too, the same as the
+    // `ref` field above. Without this, `branch=refs/heads/main` and `branch=heads/main` named
+    // the protected branch `main`, but matched no entry in the protected set.
+    const branch = fields.find(f => f.name === 'branch')?.value
+    return (
+      branch === undefined ||
+      unresolved ||
+      SHELL_UNSAFE.test(branch) ||
+      protectedSet.has(stripRefsHeads(branch))
+    )
+  }
+  return false
+}
+
+/**
+ * The reason to deny `cmd`, a command that starts with a `gh` word, or undefined to allow it.
+ * claude-factory-zl5.1: `gh pr merge` and `gh repo sync` always deny. A GraphQL or REST call that
+ * merges a pull request or a branch, found through `ghApiMergeDenied`, denies the same way.
+ * claude-factory-zl5.2: `gh pr ready` and a GraphQL `markPullRequestReadyForReview` call deny
+ * outside the release station; `gh pr ready --undo` (back to draft) is always allowed.
+ * claude-factory-25z.6: an unknown global flag before the verb makes the verb search uncertain.
+ * This then falls back to a plain word scan for `merge`, `sync` or `ready` before a literal `--`,
+ * the same fail-closed rule the live-apply guard uses for an unknown kubectl/ko/helm flag.
+ */
+function ghReason(cmd: string[], gate: HookGate): string | undefined {
+  const tail = cmd.slice(1)
+  const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
+  const verb = vi >= 0 ? tail[vi] : undefined
+  const sub = vi >= 0 ? tail[vi + 1] : undefined
+  if (verb === 'pr' && sub === 'merge') return MERGE_REASON
+  if (verb === 'repo' && sub === 'sync') return MERGE_REASON
+  if (verb === 'pr' && sub === 'ready') {
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['--undo']))) return undefined
+    return gate.station === 'release' ? undefined : READY_REASON
+  }
+  if (verb === 'api') {
+    // claude-factory-zl5.16: this splits a clustered short flag (`-iXPUT`, `-if`) into separate
+    // words. Every check below already reads these words, so this runs first.
+    const apiArgs = expandGhShortClusters(tail.slice(vi + 1))
+    if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
+    if (ghApiReadyDenied(apiArgs, gate)) return gate.station === 'release' ? undefined : READY_REASON
+    if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
+    return undefined
+  }
+  if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
+  if (uncertain) {
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
+      return gate.station === 'release' ? undefined : READY_REASON
+  }
+  return undefined
+}
+
+/**
+ * The reason to deny `subArgs`, a `gh alias` call's own arguments after the `alias` word.
+ * Returns undefined to allow the call.
+ *
+ * `gh alias set <name> <expansion>` defines a short name for another command. A later
+ * `gh <name> ...` call runs that command, with no `gh pr merge` or similar word of its own.
+ * This hook checks one command line at a time. It has no memory of an alias that a prior
+ * command set, so it cannot catch that later call.
+ *
+ * claude-factory-zl5.27: an expansion text scan cannot catch every way `set` can hide a denied
+ * command. Real gh and real git confirmed 3 such gaps: a `!` shell-command expansion (gh runs it
+ * with the shell, not as a `gh` subcommand, so it has no `gh pr merge` word for a text scan to
+ * find); the `-` form, which reads the expansion from stdin, a stream this hook cannot read; and
+ * a later call to the new short name with its own extra arguments, for example `gh p merge 5`
+ * after `gh alias set p pr`, where `merge` sits on a command line this guard never sees.
+ *
+ * So this guard denies every `gh alias set` call outright, not only one whose own expansion
+ * text already denies.
+ *
+ * `gh alias import <file>` reads a whole file of aliases. This hook cannot see that file.
+ * The hook denies that call outright too, with the same `ALIAS_REASON`.
+ */
+function ghAliasDenied(subArgs: string[]): string | undefined {
+  const sub = subArgs[0]
+  return sub === 'set' || sub === 'import' ? ALIAS_REASON : undefined
+}
+
+/**
+ * True when a word in `words` is a bare `gh` token, from which the words start a command this
+ * guard denies (claude-factory-zl5). Scans every position, the same fail-closed rule
+ * `anyLiveApplyWord` uses for kubectl, ko and helm, so a wrapper this hook does not strip by name
+ * cannot hide a `gh` word that follows it.
+ */
+function anyGhReason(words: string[], gate: HookGate): string | undefined {
+  for (let j = 0; j < words.length; j++) {
+    if (baseWord(words[j]!) === 'gh') {
+      const r = ghReason(words.slice(j), gate)
+      if (r) return r
+    }
+  }
+  return undefined
+}
+
+// claude-factory-zl5.3: git's own global flags that take a value word (`git -C dir push ...`).
+// The verb search steps past them. GH_VALUE_FLAGS does the same for `gh`.
+const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
+// `git push`'s own flags that take a value word. The operand search steps past them.
+const GIT_PUSH_VALUE_FLAGS = new Set(['--repo', '-o', '--push-option', '--receive-pack', '--exec'])
+// A `git push` flag that pushes every branch, or deletes a remote branch with no local match.
+// Each flag can reach a protected branch with no refspec that names it. This guard denies these flags outright.
+const PUSH_BROAD_FLAGS = new Set(['--all', '--branches', '--mirror', '--prune'])
+// A refspec that has a `$variable`, a backtick, a glob (`*`, `?`, `[`, `]`) or a brace (`{`, `}`).
+// This guard cannot resolve any of these before git does. It treats the refspec as unknown and
+// fails closed. It denies the push.
+const REFSPEC_UNSAFE = /[$`*?[\]{}]/
+
+/**
+ * Removes a leading `refs/heads/` or `heads/` from `ref`.
+ * After this, `refs/heads/main`, `heads/main` and `main` compare equal.
+ *
+ * claude-factory-zl5.20: real `git push` resolves an unqualified `<dst>` by trying it under
+ * `refs/` first.
+ * So `heads/main` matches the real `refs/heads/main`, which a bare `main` also matches.
+ * Real git confirmed that both forms reach `main`.
+ */
+function stripRefsHeads(ref: string): string {
+  if (ref.startsWith('refs/heads/')) return ref.slice('refs/heads/'.length)
+  if (ref.startsWith('heads/')) return ref.slice('heads/'.length)
+  return ref
+}
+
+/**
+ * True when `s` is a way to spell `HEAD`, the ref that names the current branch.
+ * claude-factory-zl5.19: `@` is a short alias for `HEAD`.
+ * On a case-insensitive filesystem, such as the macOS default, git's own loose-ref lookup also
+ * resolves `head`, in any letter case, to the same `HEAD` file.
+ *
+ * Real git confirmed that `git push origin @` and `git push origin head` both push the current
+ * branch there.
+ * This guard reads `s` the same way, so it does not miss either form.
+ * A push to the current branch therefore cannot pass through unchecked.
+ */
+function isHeadAlias(s: string): boolean {
+  return s === '@' || s.toUpperCase() === 'HEAD'
+}
+
+/**
+ * Returns the remote branch name that a push `refspec` updates.
+ * Returns undefined when the refspec names no branch (an unresolved `HEAD`, see below).
+ * `unsafe` is true when this guard cannot read the name. The guard then fails closed.
+ * It uses the same rule as `unknownFlagValue` for a kube context.
+ *
+ * A refspec has the form `[+]<src>[:<dst>]`. This guard removes the leading `+` (force) first.
+ * After a colon, `<dst>` names the remote branch.
+ * claude-factory-zl5.11: an empty `<src>` (`:main`) deletes the remote branch that `<dst>` names.
+ *
+ * In this example, that branch is `main`.
+ * An empty `<dst>` (`main:`) names no branch of its own.
+ * This guard reads the text of `<src>` instead. Here that text is `main`, as for a bare `main`.
+ *
+ * With no colon, the whole text names the remote branch, except a bare `HEAD`.
+ *
+ * A bare `HEAD` makes git push the current branch to a remote branch of the same name.
+ * So this guard reads `currentBranch` for that case.
+ *
+ * `currentBranch` can have the value `undefined`. `gate.headOf` sets it to `undefined`
+ * on a timeout, or on a detached `HEAD`. claude-factory-zl5.12: in that case this guard
+ * fails closed. It has no branch name to check against the protected list. It denies the push.
+ */
+function refspecTarget(
+  spec: string,
+  currentBranch: string | undefined,
+): { target?: string; unsafe: boolean } {
+  const s = spec.startsWith('+') ? spec.slice(1) : spec
+  if (REFSPEC_UNSAFE.test(s)) return { unsafe: true }
+  // claude-factory-zl5.32: Real git confirmed that a bare `:` refspec pushes every branch that has
+  // the same name at both ends, with the same broad reach as `--all`.
+  //
+  // Earlier, this guard read `:` as an empty source and an empty destination. It then used the text
+  // of the no-colon branch, which is also empty, so it named no branch at all. That let a push with
+  // this refspec pass unchecked. Now this guard reads `:` as unsafe, the same fail-closed result that
+  // `PUSH_BROAD_FLAGS` gives for `--all`.
+  if (s === ':') return { unsafe: true }
+  const ci = s.indexOf(':')
+  if (ci < 0) {
+    if (isHeadAlias(s)) {
+      if (currentBranch === undefined) return { unsafe: true }
+      return { target: currentBranch, unsafe: false }
+    }
+    return { target: stripRefsHeads(s), unsafe: false }
+  }
+  const dst = s.slice(ci + 1)
+  return { target: stripRefsHeads(dst === '' ? s.slice(0, ci) : dst), unsafe: false }
+}
+
+/**
+ * Parses `tail`, which holds the arguments of a `git push` call after the `push` word.
+ * `operands` holds every non-flag word, in order.
+ * `operands[0]` is the remote, when named. The rest are refspecs.
+ *
+ * `broad` is true for these flags: `--all`, `--branches`, `--mirror` and `--prune`.
+ * Each one can push or prune every branch with no refspec that names one.
+ * `tags` is true for `--tags`.
+ *
+ * `dryRun` is true for `-n` or `--dry-run`.
+ * This never pushes, so the caller allows it outright.
+ */
+function pushOperands(tail: string[]): {
+  operands: string[]
+  broad: boolean
+  tags: boolean
+  dryRun: boolean
+} {
+  const operands: string[] = []
+  let broad = false
+  let tags = false
+  let dryRun = false
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
+    if (w === '--') continue
+    if (w.startsWith('-') && w !== '-') {
+      if (w.includes('=')) continue
+      if (GIT_PUSH_VALUE_FLAGS.has(w)) {
+        i++
+        continue
+      }
+      if (PUSH_BROAD_FLAGS.has(w)) broad = true
+      else if (w === '--tags') tags = true
+      else if (w === '-n' || w === '--dry-run') dryRun = true
+      continue
+    }
+    operands.push(w)
+  }
+  return { operands, broad, tags, dryRun }
+}
+
+/**
+ * This guard denies a direct write to: `main`, `master`, `gate.protectedBranches`,
+ * and the branch that `gate.originHead` names.
+ *
+ * claude-factory-zl5.3: a rig's real default branch can differ from both. For example, acme/deploy.
+ * claude-factory-zl5.10: `gitPushDenied` and `ghApiPushDenied` use this same set.
+ * An API ref write or file write reaches the same protected branches as a `git push`.
+ *
+ * The rig sets `gate.originHead` when it reads the real `origin/HEAD`. `unresolved` is true
+ * when that read fails: a timeout, or no `origin` remote.
+ *
+ * claude-factory-zl5.13: on `unresolved`, a caller must deny outright. It cannot check a
+ * branch name against the rig's real default branch, since it does not know that name.
+ *
+ * `unresolved` stays false when the rig sets no `gate.originHead` at all. The rig then never
+ * reads `origin/HEAD`, but `main`, `master` and `protectedBranches` still apply.
+ */
+function protectedBranchSet(gate: HookGate): { branches: Set<string>; unresolved: boolean } {
+  const branches = new Set(['main', 'master', ...(gate.protectedBranches ?? [])])
+  let unresolved = false
+  if (gate.originHead) {
+    const originHead = gate.originHead()
+    if (originHead) branches.add(originHead)
+    else unresolved = true
+  }
+  return { branches, unresolved }
+}
+
+/**
+ * Returns true when `tail` reaches a protected branch.
+ * `tail` holds the arguments of a `git push` call.
+ *
+ * `currentBranch` is the branch that the push starts from. `gate.headOf` reads it when needed.
+ * A bare `git push` and `git push <remote> HEAD` both push the current branch.
+ * For these, this guard reads `currentBranch`.
+ */
+function gitPushDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
+  const { operands, broad, tags, dryRun } = pushOperands(tail)
+  if (dryRun) return false
+  if (broad) return true
+  const refspecs = operands.slice(1)
+  // claude-factory-zl5.3: --tags with no refspec pushes only tags, not the current branch.
+  const specs = refspecs.length ? refspecs : tags ? [] : ['HEAD']
+  if (specs.length === 0) return false
+  const { branches: protectedSet, unresolved } = protectedBranchSet(gate)
+  // claude-factory-zl5.13: an unresolved origin/HEAD read means this guard cannot tell the
+  // rig's real default branch from any other. It denies every branch-targeting push outright.
+  if (unresolved) return true
+  for (const spec of specs) {
+    const { target, unsafe } = refspecTarget(spec, currentBranch)
+    if (unsafe) return true
+    if (target !== undefined && protectedSet.has(target)) return true
+  }
+  return false
+}
+
+// claude-factory-zl5.21: a `remote.<name>.push` config key sets the default push refspec for that
+// remote. A later bare `git push <name>` sends there, not to the current branch.
+// That later command line has no refspec of its own for this guard to read.
+function isRemotePushName(name: string): boolean {
+  return /^remote\.[^.]+\.push$/i.test(name)
+}
+
+// claude-factory-zl5.41: a `remote.<name>.mirror` config key makes a later push to that remote
+// act like `git push --mirror`. It sends and deletes refs to match the local repo. That later
+// push has no refspec of its own. Real git confirmed `git config remote.origin.mirror true`,
+// then `git push origin`, moves `main`.
+function isRemoteMirrorName(name: string): boolean {
+  return /^remote\.[^.]+\.mirror$/i.test(name)
+}
+
+// claude-factory-zl5.41: an `include.path` or `includeIf.<cond>.path` key loads another config
+// file into this one. That file can set any key this guard already denies, such as
+// `push.default = matching`. This guard cannot read that file. So it denies the write itself, on
+// any value, the same way `isRemotePushName` does.
+function isIncludeName(name: string): boolean {
+  return /^include\.path$/i.test(name) || /^includeif\.[^.]+\.path$/i.test(name)
+}
+
+// claude-factory-zl5.21: an `alias.<name>` config key. The name has no dot and no `=`.
+function isAliasName(name: string): boolean {
+  return /^alias\.[^.=]+$/i.test(name)
+}
+
+// claude-factory-zl5.28: the `push.default` config key. Its value picks the remote branch a bare
+// `git push` reaches, with no refspec of its own on that later command line.
+function isPushDefaultName(name: string): boolean {
+  return name.toLowerCase() === 'push.default'
+}
+
+// claude-factory-zl5.28: Real git confirmed that `upstream` and `tracking`, its older name, make a
+// bare `git push` reach the upstream branch of the current branch. For example, that branch is `main`.
+//
+// claude-factory-zl5.31: Real git also confirmed that `matching` sends every local branch to a
+// remote branch with the same name. That later command line has no refspec. A local `main` branch
+// reaches the remote `main`, whatever branch is current.
+//
+// `current`, `simple` (the git default since 2.0) and `nothing` only reach the branch that this
+// guard already checks through `currentBranch`. They stay allowed. Any other value fails closed,
+// the same rule that `REFSPEC_UNSAFE` uses for a refspec that this guard cannot read in full.
+const PUSH_DEFAULT_SAFE_VALUES = new Set(['current', 'simple', 'nothing'])
+function isUpstreamPushDefaultValue(value: string): boolean {
+  return !PUSH_DEFAULT_SAFE_VALUES.has(value.toLowerCase())
+}
+
+/**
+ * True when `name` and `value` together set up a later push to a branch this guard cannot check
+ * on that later command line (claude-factory-zl5.21, extended by claude-factory-zl5.28).
+ *
+ * An `alias.<name>` key denies on any value. Real git confirmed that a `!` shell command value,
+ * for example `!git push`, runs a push the same way a plain `push` value does. A scan for only
+ * the word `push` in the value missed that form, so this guard no longer reads the value at all:
+ * any `alias.<name>` write denies.
+ *
+ * A `remote.<name>.push` key denies on any value. A `push.default` key denies only on the value
+ * `upstream` or `tracking` (claude-factory-zl5.28).
+ *
+ * A `remote.<name>.mirror` key, `include.path` and `includeIf.<cond>.path` deny on any value, the
+ * same way `remote.<name>.push` does (claude-factory-zl5.41).
+ *
+ * `value` is undefined for a read with no value operand. This guard allows that: it only denies
+ * a write.
+ */
+function isPushConfigWrite(name: string, value: string | undefined): boolean {
+  if (isRemotePushName(name) || isRemoteMirrorName(name) || isIncludeName(name)) return true
+  if (value === undefined) return false
+  if (isAliasName(name)) return true
+  return isPushDefaultName(name) && isUpstreamPushDefaultValue(value)
+}
+
+/**
+ * True when `tail` sets a config key `isPushConfigWrite` denies, through a `-c name=value` flag
+ * (claude-factory-zl5.10, extended by claude-factory-zl5.21 and claude-factory-zl5.28).
+ * For example, `git -c alias.p=push p origin main` runs a push. The command line has no `push` word.
+ * `git -c remote.origin.push=HEAD:refs/heads/main push` sends a bare `push` to `main`.
+ * That push has no refspec of its own.
+ *
+ * This guard does not read the branch that a `remote.*.push` value names, or the one a push
+ * alias reaches. A worker has no normal reason to set any of these 3 keys. So this guard denies
+ * the write itself.
+ *
+ * It uses the same fail-closed rule as `REFSPEC_UNSAFE`, for a value that this guard does not
+ * read in full.
+ */
+// claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` from the text of the
+// environment variable named `<envvar>`. It sets the same key that `-c <name>=<value>` sets from
+// the command line. Real git accepts only this one attached form, with `=` right after `--config-env`.
+const CONFIG_ENV_PREFIX = '--config-env='
+
+function gitDashCPushDenied(tail: string[]): boolean {
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
+    if (w === '--') break
+    if (w.startsWith(CONFIG_ENV_PREFIX)) {
+      // claude-factory-zl5.34: This guard can read the name of `<envvar>`, but not the text of the
+      // environment variable that it names.
+      //
+      // It cannot check that text against the `push.default` value rule in `isPushConfigWrite`.
+      // So this guard denies any of these keys that this flag sets: `alias.*`, `remote.*.push`,
+      // `remote.*.mirror`, `push.default`, `include.path`, `includeIf.*.path`
+      // (claude-factory-zl5.41 adds the mirror and include keys). It checks no value, so it
+      // fails closed.
+      const rest = w.slice(CONFIG_ENV_PREFIX.length)
+      const eq = rest.indexOf('=')
+      if (eq < 0) continue
+      const name = rest.slice(0, eq)
+      if (
+        isRemotePushName(name) ||
+        isRemoteMirrorName(name) ||
+        isAliasName(name) ||
+        isPushDefaultName(name) ||
+        isIncludeName(name)
+      )
+        return true
+      continue
+    }
+    // real git reads `-c name=value` only as 2 separate words: no `=` form, no `--config` form.
+    if (w !== '-c') continue
+    const pair = tail[i + 1]
+    const eq = pair?.indexOf('=') ?? -1
+    if (pair === undefined || eq < 0) continue
+    if (isPushConfigWrite(pair.slice(0, eq), pair.slice(eq + 1))) return true
+  }
+  return false
+}
+
+// claude-factory-zl5.21: `git config` flags that take a value word of their own. The operand
+// search below steps past them, the same way `GIT_PUSH_VALUE_FLAGS` does for `git push`.
+const GIT_CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '-t', '--type', '--default'])
+
+/**
+ * True when `configArgs`, the arguments of a `git config` call after the `config` word, sets a
+ * key `isPushConfigWrite` denies. This is the `git config` form of the `-c` write that
+ * `gitDashCPushDenied` already denies. For example, `git config alias.p push` replaces
+ * `git -c alias.p=push`.
+ *
+ * claude-factory-zl5.28: git 2.46 adds a `set` subcommand: `git config set <name> <value>`. Real
+ * git confirmed this new form writes the same key as the old, subcommand-less
+ * `git config <name> <value>`. Without a check for the leading `set` word, this guard read it as
+ * the key name, and the real key name as the value, so it checked the wrong pair and let the
+ * write through. This guard now skips one leading `set` word before it reads the key and value.
+ */
+function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
+  const operands: string[] = []
+  for (let i = 0; i < configArgs.length; i++) {
+    const w = configArgs[i]!
+    if (w === '--') {
+      operands.push(...configArgs.slice(i + 1))
+      break
+    }
+    if (w.startsWith('-') && w !== '-') {
+      if (w.includes('=')) continue
+      if (GIT_CONFIG_VALUE_FLAGS.has(w)) i++
+      continue
+    }
+    operands.push(w)
+  }
+  const start = operands[0] === 'set' ? 1 : 0
+  const name = operands[start]
+  if (name === undefined) return false
+  return isPushConfigWrite(name, operands[start + 1])
+}
+
+// claude-factory-zl5.35: `git send-pack` is the plumbing command that `git push` itself calls.
+// It moves refs to a remote over the same transports that `push` uses, such as ssh.
+//
+// It has no `push` word of its own, and its synopsis is `git send-pack [--all] [--dry-run]
+// [--mirror] [--stdin] [<host>:]<directory> [<ref>...]`. The first word that is not a flag is
+// the destination, not a refspec. The other words use the same refspec syntax that
+// `gitPushDenied` already reads. So this guard reuses `refspecTarget` on each one.
+//
+// claude-factory-zl5.40: an earlier version of this guard read no ref as a push of `HEAD` alone.
+// Real git confirmed the real rule: with no ref and no `--all`, send-pack pushes every local
+// branch to a same-named remote branch, the same broad reach as `push.default=matching`.
+//
+// This guard also ignored 2 flags. `--stdin` reads refs from its own stdin, text this guard
+// cannot read. `--mirror` has the same broad reach as `--all`, and also deletes refs.
+//
+// This guard now denies outright on `--mirror`, `--stdin`, or no ref at all. It still checks a
+// named ref against the protected branch set, the same as before.
+function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
+  const operands: string[] = []
+  let broad = false
+  let dryRun = false
+  let stdin = false
+  for (const w of tail) {
+    if (w === '--') continue
+    if (w.startsWith('-') && w !== '-') {
+      if (w === '--all' || w === '--mirror') broad = true
+      else if (w === '--dry-run' || w === '-n') dryRun = true
+      else if (w === '--stdin') stdin = true
+      else if (w === '--no-stdin') stdin = false
+      continue
+    }
+    operands.push(w)
+  }
+  if (dryRun) return false
+  if (broad || stdin) return true
+  const refspecs = operands.slice(1)
+  // claude-factory-zl5.40: no ref means a broad, matching-style push. This guard cannot name
+  // every branch that reaches, so it denies the whole call (fail closed) instead of defaulting
+  // to `HEAD`.
+  if (refspecs.length === 0) return true
+  const { branches: protectedSet, unresolved } = protectedBranchSet(gate)
+  if (unresolved) return true
+  for (const spec of refspecs) {
+    const { target, unsafe } = refspecTarget(spec, currentBranch)
+    if (unsafe) return true
+    if (target !== undefined && protectedSet.has(target)) return true
+  }
+  return false
+}
+
+/**
+ * Returns the reason to deny `cmd`, a command that starts with a `git` word.
+ * Returns undefined to allow `cmd`.
+ *
+ * claude-factory-zl5.3: this finds the `push` verb past git's own global flags.
+ * Those flags are `-C`, `-c`, `--git-dir`, `--work-tree` and `--namespace`.
+ * It uses the same method that `ghReason` uses to find the verb of `gh`.
+ * `dir` is the value of `-C` when given. Otherwise, `dir` is `root`.
+ * `gate.headOf(dir)` reads the current branch there.
+ *
+ * claude-factory-zl5.35: This guard checks `send-pack` in the same way as `push`, through `sendPackDenied`.
+ */
+function gitReason(cmd: string[], root: string | undefined, gate: HookGate): string | undefined {
+  const tail = cmd.slice(1)
+  if (gitDashCPushDenied(tail)) return PUSH_REASON
+  const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS)
+  // claude-factory-zl5.21: the `git config` subcommand's own form of the same two writes.
+  if (vi >= 0 && tail[vi] === 'config' && gitConfigSubcommandPushDenied(tail.slice(vi + 1))) {
+    return PUSH_REASON
+  }
+  let pushTail: string[] | undefined
+  let isSendPack = false
+  if (vi >= 0 && tail[vi] === 'push') {
+    pushTail = tail.slice(vi + 1)
+  } else if (vi >= 0 && tail[vi] === 'send-pack') {
+    pushTail = tail.slice(vi + 1)
+    isSendPack = true
+  } else if (uncertain && hasMutatingWordBeforeDashDash(tail, new Set(['push', 'send-pack']))) {
+    const pi = tail.indexOf('push')
+    const si = tail.indexOf('send-pack')
+    if (pi >= 0 && (si < 0 || pi < si)) {
+      pushTail = tail.slice(pi + 1)
+    } else if (si >= 0) {
+      pushTail = tail.slice(si + 1)
+      isSendPack = true
+    }
+  }
+  if (!pushTail) return undefined
+  const dir = flagValue(tail, new Set(['-C'])) ?? root
+  const currentBranch = gate.headOf?.(dir)
+  if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? PUSH_REASON : undefined
+  return gitPushDenied(pushTail, currentBranch, gate) ? PUSH_REASON : undefined
+}
+
+// claude-factory-zl5.43: a dashed git-core binary name (`git-push`, `git-send-pack`, and so on)
+// runs the same code as `git <verb>`, with the verb baked into the binary name instead of a
+// separate argument. `git --exec-path` holds one such binary per verb, and a real shell finds
+// them there or on PATH with no `git` word anywhere in the command line. The capture group is the
+// verb itself: `git-push origin main` reads the same as `git push origin main`.
+const GIT_DASHED_BINARY = /^git-(.+)$/
+
+/**
+ * Returns true when a word in `words` is a bare `git` token, or a dashed git-core binary name
+ * (claude-factory-zl5.43). From that word, the words start a command that this guard denies
+ * (claude-factory-zl5.3). The function scans every position, with the same fail-closed rule as
+ * `anyGhReason` for `gh`. A wrapper that this hook does not strip by name cannot hide a `git`
+ * word that follows it.
+ */
+function anyGitReason(words: string[], root: string | undefined, gate: HookGate): string | undefined {
+  for (let j = 0; j < words.length; j++) {
+    const b = baseWord(words[j]!)
+    if (b === 'git') {
+      const r = gitReason(words.slice(j), root, gate)
+      if (r) return r
+      continue
+    }
+    const dashed = GIT_DASHED_BINARY.exec(b)
+    if (dashed) {
+      const r = gitReason(['git', dashed[1]!, ...words.slice(j + 1)], root, gate)
+      if (r) return r
+    }
+  }
+  return undefined
+}
+
 /**
  * True when a word in `words` is a bare `kubectl`, `ko` or `helm` token. From that word on, the
  * words must start a mutating command denied by `personOnly`.
@@ -597,6 +1748,12 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * through to reach `words`. Each recursive call below passes `depth + 1`, so denyAt can fail
  * closed past MAX_SHELL_DEPTH levels instead of recursing without a bound.
  *
+ * claude-factory-zl5.42: `env -S STRING` (GNU and BSD) splits `STRING` into words at run time and
+ * runs it, the same shape of hazard as `eval`. `envSplitStringValue` reads `STRING` off the `env`
+ * word's own flags: the plain `-S`/`--split-string` form with the value as a separate word, the
+ * attached form (`-S'git push origin main'`, tokenized with the quote stripped as one word
+ * `-Sgit push origin main`), a short-flag cluster (`-vS`), and `--split-string=...`.
+ *
  * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
  * pointers that only move up.
  *
@@ -615,16 +1772,46 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * approximation: see src/worker-hook.test.ts for the differential checks and for the two
  * regression shapes that a blind jump past a miss would break.
  */
+/**
+ * Reads the value an `env -S`/`env --split-string` word at `words[j]` would split and run, or
+ * undefined when no such flag is present (claude-factory-zl5.42). Stops and returns undefined at
+ * the first word that does not start with `-`: that word is `env`'s own command, and `-S` did not
+ * appear before it.
+ */
+function envSplitStringValue(words: string[], j: number): string | undefined {
+  for (let k = j + 1; k < words.length; k++) {
+    const w = words[k]!
+    if (w === '-S' || w === '--split-string') return words[k + 1]
+    const longEq = /^--split-string=([\s\S]*)$/.exec(w)
+    if (longEq) return longEq[1]
+    // a short-flag cluster carrying `S`: `-vS` (value is the next word), or the attached form
+    // `-Sgit push origin main` (the tokenizer already dropped the quote around the value, so the
+    // value sits right after the `S` in this one word).
+    const shortCluster = /^-[a-zA-Z]*S([\s\S]*)$/.exec(w)
+    if (shortCluster) return shortCluster[1] || words[k + 1]
+    if (!w.startsWith('-')) return undefined
+  }
+  return undefined
+}
+
 function anyShellReason(
   words: string[],
   root: string | undefined,
   personOnly: string[] | undefined,
+  gate: HookGate,
   depth: number,
 ): string | undefined {
   let nc = -1
   let nd = -1
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
+    if (bw === 'env') {
+      const val = envSplitStringValue(words, j)
+      if (val === undefined) continue
+      const r = denyAt(val, root, personOnly, gate, depth + 1)
+      if (r) return r
+      break
+    }
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
       if (nc < j) {
         nc = j
@@ -641,11 +1828,11 @@ function anyShellReason(
         const w = words[k]!
         if (w === '--') {
           k++
-          if (k < words.length) found = denyAt(words[k]!, root, personOnly, depth + 1)
+          if (k < words.length) found = denyAt(words[k]!, root, personOnly, gate, depth + 1)
           break
         }
         if (w.startsWith('-')) continue
-        found = denyAt(w, root, personOnly, depth + 1)
+        found = denyAt(w, root, personOnly, gate, depth + 1)
         if (found) break
       }
       if (found) return found
@@ -655,7 +1842,7 @@ function anyShellReason(
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {
-        const r = denyAt(rest.join(' '), root, personOnly, depth + 1)
+        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1)
         if (r) return r
       }
       break
@@ -670,9 +1857,17 @@ function anyShellReason(
  * `personOnly` is the rig's list of kube contexts a person alone may change (claude-factory-25z).
  * A non-empty list also denies a kubectl, ko or helm mutation there.
  * It also denies one that names no --context at all.
+ * `gate` carries the merge-gate checks' own context (claude-factory-zl5): the running station, the
+ * rig's protected branches, and small reads of the live repo a test can fake out. These checks
+ * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
  */
-export function denyReason(command: string, root?: string, personOnly?: string[]): string | undefined {
-  return denyAt(command, root, personOnly, 0)
+export function denyReason(
+  command: string,
+  root?: string,
+  personOnly?: string[],
+  gate?: HookGate,
+): string | undefined {
+  return denyAt(command, root, personOnly, gate ?? {}, 0)
 }
 
 /**
@@ -684,6 +1879,7 @@ function denyAt(
   command: string,
   root: string | undefined,
   personOnly: string[] | undefined,
+  gate: HookGate,
   depth: number,
 ): string | undefined {
   if (!command) return undefined
@@ -695,23 +1891,41 @@ function denyAt(
   // past the 10 s PreToolUse hook timeout, which lets the command run unchecked. When a
   // person-only context list is set, deny a command this long outright instead of scanning it.
   if (personOnly?.length && command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
+  const g = gate
   let hasRm = false
   let hasCd = false
+  // claude-factory-zl5.41: this flag accumulates across every segment of `command`, not one
+  // segment alone. An `export GIT_CONFIG_COUNT=1` and a later, `;`-separated `git push` are 2
+  // different segments, and either order still denies, through the `commandHasGitWord` check
+  // below (claude-factory-zl5.44: that check reads the whole raw `command` text, not one segment).
+  let hasDangerousConfigEnv = false
   for (const words of segments(command)) {
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
     if (touchesBeadsActor(words)) return BEADS_ACTOR_REASON
+    // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
+    // check denies is exactly what realCommand's own strip would otherwise hide.
+    if (xargsHidesOperand(words)) return XARGS_REASON
+    if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
+    // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
+    // timeout) can push past position 0.
+    const ghFound = anyGhReason(words, g)
+    if (ghFound) return ghFound
+    // claude-factory-zl5.3: the same any-position scan, for a git word a wrapper can push past
+    // position 0.
+    const gitFound = anyGitReason(words, root, g)
+    if (gitFound) return gitFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
-    const shellReason = anyShellReason(words, root, personOnly, depth)
+    const shellReason = anyShellReason(words, root, personOnly, g, depth)
     if (shellReason) return shellReason
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
@@ -730,7 +1944,43 @@ function denyAt(
       }
     }
   }
+  if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
+}
+
+// claude-factory-zl5.3: runs `git symbolic-ref`, with a 2 s cap.
+// The 2 s cap stops a stuck or missing git from blocking the 10 s PreToolUse hook.
+// It returns undefined on an error, a non-zero exit, or empty output.
+// `gate.headOf` and `gate.originHead` then treat the branch as unknown.
+function gitSymbolicRef(args: string[]): string | undefined {
+  try {
+    const p = Bun.spawnSync(['git', ...args], { timeout: 2000 })
+    if (p.exitCode !== 0) return undefined
+    return p.stdout.toString().trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+// claude-factory-zl5.8: this caps the file size that `gate.readFile` reads.
+// The cap stops one very large file from making the 10 s PreToolUse hook pass its timeout.
+const MAX_GRAPHQL_FILE_BYTES = 65536
+
+// claude-factory-zl5.8: reads a small file for `gate.readFile`. It resolves the path against `cwd`.
+// `cwd` is the tool call's own cwd, `i.cwd`, not the worktree root. A relative `@file` path
+// then resolves as `gh` resolves it, from where the command runs.
+// It returns undefined on any error. It also returns undefined for a file over
+// MAX_GRAPHQL_FILE_BYTES, or for a file that is not plain.
+// `graphqlTexts` then treats the file text as unknown. It fails closed and denies.
+function readSmallFile(path: string, cwd: string): string | undefined {
+  try {
+    const resolved = resolvePath(cwd, path)
+    const stat = statSync(resolved)
+    if (!stat.isFile() || stat.size > MAX_GRAPHQL_FILE_BYTES) return undefined
+    return readFileSync(resolved, 'utf8')
+  } catch {
+    return undefined
+  }
 }
 
 async function main() {
@@ -749,7 +1999,23 @@ async function main() {
   // claude-factory-25z: the rig's person-only kube contexts, carried on this hook's own argv
   const argi = process.argv.indexOf('--person-only-contexts')
   const personOnly = argi >= 0 ? process.argv[argi + 1]?.split(',').filter(Boolean) : undefined
-  const reason = denyReason(i.tool_input?.command ?? '', root, personOnly)
+  // claude-factory-zl5.3: the rig's protected branch names, carried on this hook's own argv
+  const argp = process.argv.indexOf('--protected-branches')
+  const protectedBranches = argp >= 0 ? process.argv[argp + 1]?.split(',').filter(Boolean) : undefined
+  const gate: HookGate = {
+    station: process.env.FACTORY_FROM,
+    protectedBranches,
+    headOf: dir => gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD']),
+    originHead: () =>
+      gitSymbolicRef(['-C', root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])?.replace(
+        /^origin\//,
+        '',
+      ),
+    // claude-factory-zl5.8: this resolves against the tool call's own cwd, not `root`.
+    // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`.
+    readFile: path => readSmallFile(path, i.cwd || root),
+  }
+  const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
   if (!reason) return
   console.log(
     JSON.stringify({

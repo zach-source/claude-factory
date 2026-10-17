@@ -27,7 +27,7 @@ const LAPTOP = 'herdr'
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
-- Never commit secrets. Only a person merges a pull request; only deploy and rollback touch production, and rollback alone may revert on the default branch; nobody force-pushes.
+- Never commit secrets. Only a person merges a pull request; only deploy and rollback touch production. Nobody pushes the default branch directly; a rollback that reverts code opens a pull request for a person to merge instead. Nobody force-pushes.
 - Production is read-only for every station but deploy and rollback.
 - Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when the bead's description, a person's own comment on it, or a [factory mail] from the manager says the person approved that exact step; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: "parked, waiting on: <the owner step and the exact command>". Reads, and watching a pipeline the person's merge started, stay allowed.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
