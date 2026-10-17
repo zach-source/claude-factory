@@ -3439,7 +3439,7 @@ type SweepLogEntry = {
   at: number
   rig: string
   sweep: string
-  action: 'started' | 'no-room' | 'unchanged' | 'error'
+  action: 'started' | 'no-room' | 'unchanged' | 'error' | 'no-beads'
   run?: string
 }
 const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.stringify(e) + '\n')
@@ -3491,7 +3491,20 @@ async function sweep() {
       )
       continue
     }
-    for (const station of dueSweeps(preview, rig, state, live, Date.now())) {
+    // claude-factory-8pc.19: a rig with no .beads has no bd for the flood guard to read at all
+    // (tracking() tells a worker on such a rig to `factory start` work with no bead, and no
+    // guard). Today every rig in rigs.json has .beads, so this is latent, not live. Skip it, one
+    // log line per due station, instead of starting a sweep run the guard can never see.
+    const due = dueSweeps(preview, rig, state, live, Date.now())
+    if (due.length && !hasBeads(rig.repo)) {
+      for (const station of due)
+        logSweep({ at: Date.now(), rig: rig.name, sweep: station, action: 'no-beads' })
+      console.error(
+        `${new Date().toISOString()} sweeps for rig ${rig.name}: no .beads directory: the flood guard needs bd`,
+      )
+      continue
+    }
+    for (const station of due) {
       const at = Date.now()
       const goal = sweepGoal(station)
       // monitor reads before it ever asks for a slot: unchanged needs no run, so it must cost no

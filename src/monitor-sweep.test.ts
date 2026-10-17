@@ -42,7 +42,18 @@ function fakeHerdr() {
   chmodSync(join(bin, 'herdr'), 0o755)
 }
 
-/** a plain repo, deliberately with no `.beads`: beadFor skips bd for it */
+/** a minimal fake `bd`: `create` answers one fixed id (claude-factory-8pc.19: sweep() now refuses
+ * a due sweep with no bd to read at all, so monitor's own tests need one too). */
+function fakeBd() {
+  mkdirSync(bin, { recursive: true })
+  const script = ['#!/bin/sh', 'case "$1" in', "  create) printf 'acme-1';;", '  *) exit 0;;', 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+}
+
+/** a repo with a `.beads` dir: the flood guard can read bd for it, so a due sweep may start */
 function repo() {
   const r = join(dir, 'repo')
   mkdirSync(r, { recursive: true })
@@ -61,6 +72,7 @@ function repo() {
     '-m',
     'init',
   ])
+  mkdirSync(join(r, '.beads'), { recursive: true })
   return r
 }
 
@@ -72,6 +84,7 @@ function reset(markerText: string, priorSig?: string) {
   mkdirSync(home, { recursive: true })
   const r = repo()
   fakeHerdr()
+  fakeBd()
   writeFileSync(marker, markerText)
   writeFileSync(
     join(home, 'rigs.json'),

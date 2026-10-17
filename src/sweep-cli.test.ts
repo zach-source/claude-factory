@@ -2,8 +2,9 @@
 // It must start one run for each due (rig, sweep) pair, under factory "sweeps" (factories/sweeps.ts).
 // It must post no GOTO when the due station is that factory's own start ('maintain').
 // A second call inside the same window must start no run.
-// The rig's repo here has no `.beads`. So beadFor skips bd outright (src/cli.ts:3880).
-// The test needs no fake bd. It needs only a fake herdr, for the worktree-create call createRun always makes.
+// The rig's repo carries a `.beads` dir and a minimal fake `bd` (claude-factory-8pc.19): the flood
+// guard needs bd to cap sweep-filed beads, so sweep() now refuses to run a due sweep with no bd at
+// all. A separate repo with no `.beads` (noBeadsRepo below) proves that refusal.
 import { afterEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -40,9 +41,20 @@ function fakeHerdr() {
   chmodSync(join(bin, 'herdr'), 0o755)
 }
 
-/** a plain repo, deliberately with no `.beads`: beadFor skips bd for it (claude-factory-8pc.3) */
-function repo() {
-  const r = join(dir, 'repo')
+/** a minimal fake `bd`: `create` answers one fixed id, anything else is a harmless no-op. sweep()
+ * itself only ever calls `beadFor`'s `bd create` for a goal shaped like `sweep: <station>`
+ * (never a bead id, so `lookup` and `prefixStrict` are never reached). */
+function fakeBd() {
+  mkdirSync(bin, { recursive: true })
+  const script = ['#!/bin/sh', 'case "$1" in', "  create) printf 'acme-1';;", '  *) exit 0;;', 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+}
+
+function gitRepo(name: string) {
+  const r = join(dir, name)
   mkdirSync(r, { recursive: true })
   Bun.spawnSync(['git', '-C', r, 'init', '-q'])
   Bun.spawnSync([
@@ -62,11 +74,25 @@ function repo() {
   return r
 }
 
+/** a repo with a `.beads` dir: the flood guard can read bd for it, so a due sweep may start */
+function repo() {
+  const r = gitRepo('repo')
+  mkdirSync(join(r, '.beads'), { recursive: true })
+  return r
+}
+
+/** a repo with no `.beads` at all (claude-factory-8pc.19): the flood guard has no bd to read, so a
+ * due sweep must not start for it. */
+function noBeadsRepo() {
+  return gitRepo('repo-no-beads')
+}
+
 function reset(sweeps: string[]) {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(home, { recursive: true })
   const r = repo()
   fakeHerdr()
+  fakeBd()
   writeFileSync(
     join(home, 'rigs.json'),
     JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', sweeps }]),
@@ -137,4 +163,24 @@ test("rig.sweepsFactory naming a factory whose own `name` is not 'sweeps' is ref
   expect(existsSync(join(home, 'runs'))).toBe(false) // refused: the flood guard cannot see its beads
   expect(journal()).toHaveLength(0) // refused before any (rig, sweep) pass, same as a bad spec
   expect(out.err).toContain("'acme-sweeps', not 'sweeps'")
+})
+
+// claude-factory-8pc.19: with no `.beads` at all, the flood guard has no bd to cap sweep-filed
+// beads with, and a worker's own `tracking()` brief falls back to `factory start` with no guard at
+// all. `factory sweep` must refuse to start a due sweep for such a rig, logging 'no-beads' instead.
+test('a rig with no .beads starts no sweep run: the flood guard has no bd to read for it', () => {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(home, { recursive: true })
+  const r = noBeadsRepo()
+  fakeHerdr()
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', sweeps: ['maintain'] }]),
+  )
+  const out = factory(['sweep'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(home, 'runs'))).toBe(false)
+  const lines = journal()
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toMatchObject({ rig: 'a', sweep: 'maintain', action: 'no-beads' })
 })
