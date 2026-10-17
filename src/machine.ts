@@ -44,6 +44,13 @@ export type Node = {
    * any later activity. `validate` refuses this field on a gate: a gate has no worker to hold back.
    */
   awaitsPr?: true
+  /**
+   * The attempt right after a timeout. This attempt gets a longer limit and an extra brief section,
+   * not the plain retry every other failure gets. `timeoutMin` must exceed the node's own (default 60).
+   * The brief adds `prompt`, so the retried worker can start from a summary, not read everything again.
+   * `validate` refuses this field on a gate: a gate has no worker to time out.
+   */
+  onTimeout?: { timeoutMin: number; prompt?: string }
 }
 
 export type Factory = {
@@ -175,6 +182,10 @@ export function validate(def: Factory): Factory {
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
         node.gate && node.runner && `${id}: a gate has no worker, so no runner`,
         node.gate && node.awaitsPr && `${id}: a gate has no worker, so nothing to hold back`,
+        node.gate && node.onTimeout && `${id}: a gate has no worker, so no onTimeout`,
+        node.onTimeout &&
+          !(node.onTimeout.timeoutMin > (node.timeoutMin ?? 60)) &&
+          `${id}: onTimeout.timeoutMin must be greater than timeoutMin (${node.timeoutMin ?? 60})`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
@@ -236,6 +247,24 @@ export const isRepeatFail = (c: Ctx, node: string, reason: string) => {
 /** the question a repeated failure puts to the person in the console's Interview tab */
 export const repeatQuestion = (node: string, reason: string) =>
   `${reason}\nQuestion: ${node} failed twice the same way (${reason}). What should it do?\nOptions: retry: run ${node} again with your answer | abort: end the run`
+
+/**
+ * whether the node's own run of log entries, read back from the end, holds a timeout fail. A fresh
+ * arrival from elsewhere ends that run at once: its last entry belongs to another station. A backoff
+ * retry, a handoff, or the manager's RETRY all keep the timeout entry in the log, so each still sees
+ * it as true. A later fail of another kind at the same node does not end the run either: the timeout
+ * entry is still in it, so this stays true until the node is left for a different one.
+ */
+export const afterTimeout = (c: Ctx, node: string) => {
+  for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node; i--) {
+    if (c.log[i]?.outcome === 'fail' && failClass(c.log[i]!.summary) === 'timeout') return true
+  }
+  return false
+}
+
+/** the timeout minutes a node's next launch gets: its `onTimeout` limit once its tail shows a timeout fail, else its own */
+export const timeoutOf = (node: Node, c: Ctx, id: string) =>
+  node.onTimeout && afterTimeout(c, id) ? node.onTimeout.timeoutMin : (node.timeoutMin ?? 60)
 
 /** the pull requests a blocked report names: the runner watches them and mails the station when one changes */
 export const prsIn = (text: string) => [
