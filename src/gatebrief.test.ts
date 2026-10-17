@@ -36,3 +36,12 @@ test('clipBrief returns empty for text that is only blank lines or control chara
   expect(clipBrief('   \n\n\t\t\n')).toBe('')
   expect(clipBrief('\x00\x07')).toBe('')
 })
+
+test('clipBrief treats a mid-line CR as a line break and a tab as one space (claude-factory-2u2.9)', () => {
+  // A raw CR must not survive: in a terminal it moves the cursor to column 0
+  // and lets later text overwrite earlier text on the same row.
+  const out = clipBrief('first\rsecond\r\nthird\tfourth')
+  expect(out).not.toContain('\r')
+  expect(out).not.toContain('\t')
+  expect(out).toBe('first\nsecond\nthird fourth')
+})

@@ -19,17 +19,22 @@ const stripControl = (s: string) =>
 export const gateKey = (runId: string, startedAt: number) => `gate:${runId}@${startedAt}`
 
 /**
- * Cleans the briefer's raw answer for the console.
+ * This function cleans the briefer's raw answer for the console.
  * It removes control characters other than `\n`.
- * It drops blank lines.
- * It shortens each remaining line to `maxLineLen` characters.
+ * It treats CRLF and a lone CR as a line break too.
+ * This stops a mid-line carriage return from moving the cursor to column 0 and
+ * overwriting earlier text in a terminal (claude-factory-2u2.9).
+ * It changes each tab to one space, and it drops blank lines.
+ *
+ * It cuts each remaining line to `maxLineLen` characters.
  * It keeps at most `maxLines` lines, oldest first.
  * It returns `''` when no real text remains.
  */
 export function clipBrief(raw: string, maxLines = 8, maxLineLen = 200): string {
   return stripControl(raw)
+    .replace(/\r\n?/g, '\n')
     .split('\n')
-    .map(l => l.trim())
+    .map(l => l.replace(/\t/g, ' ').trim())
     .filter(Boolean)
     .slice(0, maxLines)
     .map(l => (l.length > maxLineLen ? `${l.slice(0, maxLineLen - 1)}…` : l))
