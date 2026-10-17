@@ -13,6 +13,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, w
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
+import { deleteBranchCas } from './cli'
 import { compile, type Factory } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
@@ -99,6 +100,24 @@ function fakeBd() {
   )
   chmodSync(join(bin, 'bd'), 0o755)
   return { closeBead: (id: string) => writeFileSync(join(closedDir, id), '') }
+}
+
+/** a `git` shim on PATH that logs every fetch/ls-remote/push call (with GIT_TERMINAL_PROMPT) to
+ * `logFile`, then runs the real git so every other call in the test still works (claude-factory-l38.12) */
+const REAL_GIT = Bun.spawnSync(['which', 'git']).stdout.toString().trim()
+function spyGit(logFile: string) {
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(
+    join(bin, 'git'),
+    [
+      '#!/bin/sh',
+      'if [ "$3" = "fetch" ] || [ "$3" = "ls-remote" ] || [ "$3" = "push" ]; then',
+      `  printf '%s GIT_TERMINAL_PROMPT=%s\\n' "$*" "$GIT_TERMINAL_PROMPT" >> '${logFile}'`,
+      'fi',
+      `exec '${REAL_GIT}' "$@"`,
+    ].join('\n'),
+  )
+  chmodSync(join(bin, 'git'), 0o755)
 }
 
 /** a bare "origin" and a clone the test treats as the rig's own repo, with `main` as the one commit
@@ -700,4 +719,44 @@ test('t: goto after gc says the fetch failed, not that gc did this, when origin 
   expect(row.error).toContain('fetch')
   expect(row.error).not.toContain('factory gc --worktrees removed')
   expect(row.pane).toBeFalsy()
+})
+
+test('s: deleteBranchCas refuses a local ref and a remote ref that both moved since the read (claude-factory-l38.14, AC7)', () => {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const branch = 'factory/cas-test'
+  git(repo, 'branch', branch, 'main')
+  const oldSha = git(repo, 'rev-parse', branch)
+  git(repo, 'push', '-q', 'origin', `${branch}:${branch}`)
+  const wt2 = join(dir, 'wt2')
+  git(repo, 'worktree', 'add', '-q', wt2, '-b', 'tmp2', 'main')
+  writeFileSync(join(wt2, 'extra.txt'), 'x')
+  git(wt2, 'add', 'extra.txt')
+  git(wt2, 'commit', '-q', '-m', 'extra')
+  const newSha = git(wt2, 'rev-parse', 'HEAD')
+  git(repo, 'worktree', 'remove', wt2)
+  git(repo, 'update-ref', `refs/heads/${branch}`, newSha)
+  git(repo, 'push', '-q', '-f', 'origin', `${newSha}:refs/heads/${branch}`)
+  const { localOk, remoteOk } = deleteBranchCas(repo, branch, oldSha, oldSha)
+  expect(localOk).toBe(false)
+  expect(remoteOk).toBe(false)
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('')
+  expect(git(origin, 'branch', '--list', branch)).not.toBe('')
+})
+
+test("u: branchFacts' fetch and ls-remote, and deleteBranchCas' push, run with GIT_TERMINAL_PROMPT=0 (claude-factory-l38.12)", () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  const logFile = join(dir, 'git-calls.log')
+  spyGit(logFile)
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes(), GIT_TERMINAL_PROMPT: '1' })
+  expect(out.code).toBe(0)
+  const lines = readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean)
+  expect(lines.find(l => l.includes(' fetch '))).toContain('GIT_TERMINAL_PROMPT=0')
+  expect(lines.find(l => l.includes(' ls-remote '))).toContain('GIT_TERMINAL_PROMPT=0')
+  expect(lines.find(l => l.includes(' push '))).toContain('GIT_TERMINAL_PROMPT=0')
 })
