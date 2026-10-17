@@ -2419,6 +2419,7 @@ async function dream() {
       duplicates,
       unsafe,
       overCap,
+      memory.envTopicCap(),
     )
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(

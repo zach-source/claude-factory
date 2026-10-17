@@ -1573,8 +1573,15 @@ test('dreamPrompt names the long tier and the id rule, and adds the promotion, d
   expect(empty).toContain('## Unsafe LONG.md files')
   expect(empty).toContain('## Topics over the short-note cap')
   expect(empty).toContain('(none)')
-  expect(empty).toContain(`3 to ${TOPIC_CAP} notes each`) // names the TOPIC_CAP value, not a bare "15"
+  expect(empty).toContain(`3 to ${TOPIC_CAP} notes each`) // defaults to TOPIC_CAP when no topicCap is passed
   expect(empty).toContain(`holds ${TOPIC_CAP} or fewer`) // step 9 tells the dream to merge or drop to the cap
+  expect(empty).toContain('already over the cap') // step 1: the list below holds only topics over the cap
+  expect(empty).toContain('7 days old or more, used or not') // step 9: the cap merge does not require use
+
+  const withCap = dreamPrompt('/tmp/memory', [], [], [], undefined, [], [], [], [], 10)
+  expect(withCap).toContain('3 to 10 notes each') // a non-default topicCap is named, not the TOPIC_CAP constant
+  expect(withCap).toContain('holds 10 or fewer')
+  expect(withCap).not.toContain(`3 to ${TOPIC_CAP} notes each`)
 
   const filled = dreamPrompt(
     '/tmp/memory',
