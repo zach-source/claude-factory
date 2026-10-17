@@ -994,6 +994,66 @@ test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, a push t
   expect(withoutArgv).toEqual({ out: '', code: 0 })
 }, 10_000)
 
+// claude-factory-dts: a long multi-push command must deny fast, inside the hook's 10 s timeout.
+// The old code ran one spawn per push segment, with no cache: 583 segments took 10527 ms at
+// load 52, past the timeout, so the hook failed open. memoGate caches each spawn, so the fix
+// denies the same command well under 10 s.
+test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, 583 stacked push segments deny with PUSH_REASON, under 10s (claude-factory-dts)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-push-long-multi-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  delete env.FACTORY_OUTBOX
+  delete env.FACTORY_FROM
+  env.FACTORY_SELF_UPDATE = '0'
+  const command = 'git push o b; '.repeat(583) + 'git push origin main'
+  expect(command.length).toBe(8182)
+  const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command } })
+  const start = Date.now()
+  const { out, code } = await run(input, env, ['--protected-branches', 'acme/deploy'])
+  const elapsedMs = Date.now() - start
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+  expect(elapsedMs).toBeLessThan(10_000)
+}, 30_000)
+
+// claude-factory-dts: this command has 1500 push segments, 21020 characters, over the
+// MAX_COMMAND_LENGTH cap of 8192. The hook now denies it with LONG_COMMAND_REASON on every rig,
+// not only one with --person-only-contexts set. Before the fix, a rig with no
+// --person-only-contexts scanned the whole command, which took 25876 ms at load 52, past the
+// hook's 10 s timeout.
+test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, 1500 stacked push segments deny with LONG_COMMAND_REASON (claude-factory-dts)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-push-too-long-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  delete env.FACTORY_OUTBOX
+  delete env.FACTORY_FROM
+  env.FACTORY_SELF_UPDATE = '0'
+  const command = 'git push o b; '.repeat(1500) + 'git push origin main'
+  expect(command.length).toBe(21020)
+  const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command } })
+  const { out, code } = await run(input, env, ['--protected-branches', 'acme/deploy'])
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: LONG_COMMAND_REASON,
+    },
+  })
+}, 30_000)
+
 // claude-factory-zl5.10: a REST or GraphQL call can write a ref or a file through the API. This
 // can commit to, or delete, a protected branch with no `git push` word on the command line.
 // `git -c alias.<name>=push` is the same trick for plain `git push`: it runs `push` under a
