@@ -58,6 +58,7 @@ import {
   type Bead,
 } from './beads'
 import * as plan from './plan'
+import { dueSweeps, sweepGoal, sweepNames, type SweepState } from './sweeps'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
@@ -3342,6 +3343,28 @@ const kickGcWorktrees = () => {
   }).unref()
 }
 
+const SWEEP_MS = Number(process.env.FACTORY_SWEEP_MS) || 300_000
+/**
+ * A sweep pass (`factory sweep`) runs at most every FACTORY_SWEEP_MS (default 5 min). Set
+ * FACTORY_SWEEPS=0 to turn this off: tick then spawns no pass. Its lock is sweeps.lock.
+ *
+ * The first tick with no sweeps.stamp file only writes the stamp. It starts the window and spawns
+ * no pass. This way a fresh FACTORY_HOME starts no run on its own first tick. `dueSweeps` (per rig,
+ * per sweep) still gates which stations a spawned pass starts.
+ */
+const kickSweeps = () => {
+  if (halted() || process.env.FACTORY_SWEEPS === '0') return
+  const stamp = join(HOME, 'sweeps.stamp')
+  if (!existsSync(stamp)) return void writeFileSync(stamp, '') // seed only: the window starts now
+  const age = Date.now() - statSync(stamp).mtimeMs
+  if (isHeld('sweeps.lock') || age < SWEEP_MS) return
+  spawnChild(CLI, ['sweep'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 async function tick(isPatrol = false) {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
@@ -3390,40 +3413,72 @@ async function tick(isPatrol = false) {
       kickSelfUpdate()
       kickGc()
       kickGcWorktrees()
+      kickSweeps()
     }
   }
 }
 
-// ponytail: lifecycle's sweep stations by name; a node flag if another factory grows its own
-const SWEEPS = ['monitor', 'maintain', 'improve']
-const sweepGoal = (station: string) => `sweep: ${station}`
+const sweepStateFile = () => join(HOME, 'sweeps.json')
+const sweepLogFile = () => join(HOME, 'sweeps.jsonl')
+const sweepState = (): SweepState => (existsSync(sweepStateFile()) ? readJson(sweepStateFile()) : {})
+type SweepLogEntry = {
+  at: number
+  rig: string
+  sweep: string
+  action: 'started' | 'no-room' | 'unchanged' | 'error'
+  run?: string
+}
+const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.stringify(e) + '\n')
 
-export const missingSweeps = (
-  def: Factory,
-  rig: Pick<Rig, 'repo' | 'sweeps'>,
-  runs: { repo: string; goal: string }[],
-) =>
-  (rig.sweeps ?? SWEEPS).filter(
-    s => def.nodes[s] && !runs.some(r => r.repo === rig.repo && r.goal === sweepGoal(s)),
-  )
-
-/** each rig keeps one run per sweep it asks for: abort one to stop it, rm it to let it start again */
+/**
+ * one run per due (rig, sweep) pass (src/sweeps.ts's `dueSweeps`), under factory "sweeps" (or a
+ * rig's own `sweepsFactory`), parked at that station by GOTO when it is not the factory's start.
+ * `factory tick`'s `kickSweeps` calls this, detached, under its own cadence; `factory sweep` calls it
+ * by hand. Every attempt, started or not, gets one line in sweeps.jsonl.
+ */
 async function sweep() {
   if (halted()) return
-  const runs = runIds().map(id => loadRun(id))
-  for (const rig of rigs()) {
+  const live = runIds().flatMap(id => {
     try {
-      const preview = await loadFactory(factorySource(rig.factory, rig.repo))
-      for (const station of missingSweeps(preview, rig, runs)) {
-        const goal = sweepGoal(station)
-        await assertRoom(rig.repo)
-        const linked = beadFor(rig.repo, goal)
-        const { run, def } = await createTracked(rig.factory, preview.name, rig.repo, goal, linked.bead)
-        if (station !== def.start) post(run.id, { type: 'GOTO', node: station })
-        console.log(`${new Date().toISOString()} sweep ${station} for rig ${rig.name} → ${run.id}`)
-      }
+      const { run, value } = current(id)
+      return ['done', 'aborted'].includes(where(value)[0]) ? [] : [{ repo: run.repo, goal: run.goal }]
+    } catch {
+      return [] // the run ended between runIds() and here: treat it as gone, not live
+    }
+  })
+  let state = sweepState()
+  for (const rig of rigs()) {
+    let preview: Factory
+    const spec = rig.sweepsFactory ?? 'sweeps'
+    try {
+      preview = await loadFactory(factorySource(spec, rig.repo))
     } catch (err) {
       console.error(`${new Date().toISOString()} sweeps for rig ${rig.name}: ${(err as Error).message}`)
+      continue
+    }
+    for (const station of dueSweeps(preview, rig, state, live, Date.now())) {
+      const at = Date.now()
+      const goal = sweepGoal(station)
+      try {
+        await assertRoom(rig.repo)
+      } catch {
+        logSweep({ at, rig: rig.name, sweep: station, action: 'no-room' })
+        continue
+      }
+      try {
+        const linked = beadFor(rig.repo, goal)
+        const { run, def } = await createTracked(spec, preview.name, rig.repo, goal, linked.bead)
+        if (station !== def.start) post(run.id, { type: 'GOTO', node: station })
+        state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
+        writeJson(sweepStateFile(), state)
+        logSweep({ at, rig: rig.name, sweep: station, action: 'started', run: run.id })
+        console.log(`${new Date(at).toISOString()} sweep ${station} for rig ${rig.name} → ${run.id}`)
+      } catch (err) {
+        logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+        console.error(
+          `${new Date().toISOString()} sweep ${station} for rig ${rig.name}: ${(err as Error).message}`,
+        )
+      }
     }
   }
 }
@@ -3721,10 +3776,10 @@ async function linearPass(names: string[] = [], force = false) {
   return lines
 }
 
-/** ticks forever, so runs advance, the rigs dispatch and their sweeps stay running with no console open */
+/** ticks forever, so runs advance and the rigs dispatch with no console open. Each tick's own
+ * kickSweeps starts a due sweep pass; this loop no longer calls sweep() itself. */
 async function loop(intervalMs: number) {
   for (;;) {
-    await sweep()
     await tick()
     await Bun.sleep(intervalMs)
   }
@@ -3884,6 +3939,8 @@ export type Rig = {
   factory: string
   maxRuns?: number
   sweeps?: string[]
+  /** a sweep station's factory, in place of the built-in "sweeps" (factories/sweeps.ts) */
+  sweepsFactory?: string
   /** what the manager works toward there while the rig has room */
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
@@ -5092,11 +5149,11 @@ async function defineRig(
   }
   if (sweeps !== undefined) {
     rig.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
-    const unknown = rig.sweeps.filter(s => !SWEEPS.includes(s) || !def.nodes[s])
+    const sweepsDef = await loadFactory(factorySource(rig.sweepsFactory ?? 'sweeps', repo))
+    const names = sweepNames(sweepsDef)
+    const unknown = rig.sweeps.filter(s => !names.includes(s))
     if (unknown.length)
-      fail(
-        `no sweep ${unknown.join(', ')} in ${def.name}: ${SWEEPS.filter(s => def.nodes[s]).join(', ') || 'none'}`,
-      )
+      fail(`no sweep ${unknown.join(', ')} in ${sweepsDef.name}: ${names.join(', ') || 'none'}`)
   }
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
@@ -5626,6 +5683,11 @@ const usage = `factory — herdr software factories on xstate
                                      never a live run or an unmerged branch; --dry-run only prints
                                      what it would remove (each tick starts one, at most daily,
                                      FACTORY_GC_WORKTREES_MS; FACTORY_GC_WORKTREES=0 turns it off)
+  sweep                              one run per due (rig, sweep) pass, under factory "sweeps"
+                                     (factories/sweeps.ts), parked at that station; writes
+                                     sweeps.json and sweeps.jsonl (each tick starts one, at most
+                                     every FACTORY_SWEEP_MS (default 300000); FACTORY_SWEEPS=0 turns
+                                     it off)
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
@@ -6241,8 +6303,16 @@ if (import.meta.main && !outboxCmd)
           for (const r of rigs()) {
             // a stuck run holds this rig's own slot, so it counts here too (not the town's)
             const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
+            let sweepsLine = r.sweeps
+            if (sweepsLine === undefined) {
+              try {
+                sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
+              } catch {
+                sweepsLine = []
+              }
+            }
             console.log(
-              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${(r.sweeps ?? SWEEPS).join(',') || 'none'}`,
+              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
             )
             if (r.goal) console.log(`  goal: ${r.goal}`)
             if (r.agent) console.log(`  agent: ${r.agent}`)
@@ -6310,6 +6380,19 @@ if (import.meta.main && !outboxCmd)
         try {
           writeFileSync(join(HOME, 'gc.stamp'), '') // a failed pass waits for the next window too, not every tick
           gcPass(days, dryRun)
+        } finally {
+          release()
+        }
+        break
+      }
+      case 'sweep': {
+        const release = hold('sweeps.lock')
+        if (!release) {
+          console.log('a sweep pass is already running: skipped this one')
+          break
+        }
+        try {
+          await sweep()
         } finally {
           release()
         }

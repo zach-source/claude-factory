@@ -24,7 +24,6 @@ import {
   parsePkgGateMinDays,
   prOwner,
   loadFactory,
-  missingSweeps,
   ownCopy,
   paramsOf,
   reapable,
@@ -109,19 +108,6 @@ test("a repo's own copy loads without this project and says how it is changed", 
   // what reads or changes production needs the laptop, whatever runner the rig sends its workers to
   const pinned = Object.keys(def.nodes).filter(id => def.nodes[id]!.runner === 'herdr')
   expect(pinned.sort()).toEqual(['baseline', 'deploy', 'incident', 'monitor', 'rollback', 'soak'])
-})
-
-test('the loop starts only the sweeps a repo has no run for', async () => {
-  const def = (await import('../factories/lifecycle.ts')).default
-  const runs = [
-    { repo: '/a', goal: 'sweep: monitor' },
-    { repo: '/b', goal: 'sweep: maintain' },
-    { repo: '/a', goal: 'add a feature' },
-  ]
-  expect(missingSweeps(def, { repo: '/a' }, runs)).toEqual(['maintain', 'improve'])
-  expect(missingSweeps(def, { repo: '/a', sweeps: ['maintain'] }, runs)).toEqual(['maintain'])
-  expect(missingSweeps(def, { repo: '/a', sweeps: [] }, runs)).toEqual([])
-  expect(missingSweeps({ ...def, nodes: { triage: def.nodes.triage } }, { repo: '/a' }, [])).toEqual([])
 })
 
 test("a rig has room under its own cap and the town's", () => {
