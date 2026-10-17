@@ -2,11 +2,15 @@ import { expect, test } from 'bun:test'
 import {
   clipUtf8,
   dueSweeps,
+  guardHandled,
+  markGuardHandled,
+  pruneGuardState,
   sigOf,
   sweepFiler,
   sweepGoal,
   sweepGuard,
   sweepNames,
+  type SweepGuardState,
   type SweepState,
 } from './sweeps'
 import type { Factory } from './machine'
@@ -209,4 +213,45 @@ test('mutation check: the cap and the allowlist both matter, not just "keep the 
   expect(sweepGuard([allowed], now)[0]!.allowed).toBe(true)
   const notAllowed = filed('not-allowed', 'monitor', new Date(now).toISOString(), ['sweep-queue:bogus'])
   expect(sweepGuard([notAllowed], now)[0]!.allowed).toBe(false) // an unlisted queue label must not pass
+})
+
+// --- sweep-guard state (claude-factory-8pc.18): a mark the bead's own labels cannot forge ---
+
+test('guardHandled is false for an id never marked, true once markGuardHandled records it', () => {
+  const now = Date.now()
+  let state: SweepGuardState = {}
+  expect(guardHandled(state, 'a', 'acme-1')).toBe(false)
+  state = markGuardHandled(state, 'a', 'acme-1', now)
+  expect(guardHandled(state, 'a', 'acme-1')).toBe(true)
+  // the mark does not spread to a different rig or a different id
+  expect(guardHandled(state, 'b', 'acme-1')).toBe(false)
+  expect(guardHandled(state, 'a', 'acme-2')).toBe(false)
+})
+
+test('markGuardHandled is idempotent: marking the same id twice keeps one entry', () => {
+  const now = Date.now()
+  let state: SweepGuardState = {}
+  state = markGuardHandled(state, 'a', 'acme-1', now)
+  state = markGuardHandled(state, 'a', 'acme-1', now + 1000)
+  expect(Object.keys(state.a!)).toHaveLength(1)
+})
+
+test('pruneGuardState drops a mark past maxAgeMs and keeps one still inside it', () => {
+  const now = Date.now()
+  const twoDaysAgo = now - 49 * 60 * 60 * 1000
+  const anHourAgo = now - 60 * 60 * 1000
+  let state: SweepGuardState = {}
+  state = markGuardHandled(state, 'a', 'stale', twoDaysAgo)
+  state = markGuardHandled(state, 'a', 'fresh', anHourAgo)
+  const pruned = pruneGuardState(state, now)
+  expect(guardHandled(pruned, 'a', 'stale')).toBe(false)
+  expect(guardHandled(pruned, 'a', 'fresh')).toBe(true)
+})
+
+test('pruneGuardState drops a rig entirely once every one of its marks is stale', () => {
+  const now = Date.now()
+  let state: SweepGuardState = {}
+  state = markGuardHandled(state, 'a', 'stale', now - 49 * 60 * 60 * 1000)
+  const pruned = pruneGuardState(state, now)
+  expect(pruned.a).toBeUndefined()
 })

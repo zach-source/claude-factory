@@ -46,6 +46,45 @@ export const SWEEP_QUEUE_LABELS = [
 export type GuardedBead = { id: string; created_by?: string; created_at?: string; labels?: string[] }
 export type GuardVerdict = { id: string; station: string; kept: boolean; allowed: boolean }
 
+/** sweep-guard state (claude-factory-8pc.18): for each rig, the sweep-filed bead ids the flood
+ * guard scored, and when. A sweep worker can file a bead with the label sweep colon station on it
+ * already (guardNote names that label). A person can add the label by hand too. So dispatch must
+ * not trust that label as an already-handled mark: the filer, or any other bd caller, can set it.
+ * This state lives under FACTORY_HOME, where a sweep worker's bd calls never reach. Only dispatch's
+ * own guard writes it. */
+export type SweepGuardState = Record<string, Record<string, number>>
+
+/** True once dispatch()'s guard has scored `id` for `rig` before: a defer-and-relabel, a kept-and-
+ * allowed no-op, or a kept-but-unclassed relabel. The caller must then leave the bead alone, the same
+ * as `claude-factory-8pc.12`'s rule for a person's re-queue. */
+export const guardHandled = (state: SweepGuardState, rig: string, id: string): boolean =>
+  state[rig]?.[id] !== undefined
+
+export function markGuardHandled(
+  state: SweepGuardState,
+  rig: string,
+  id: string,
+  now: number,
+): SweepGuardState {
+  return { ...state, [rig]: { ...(state[rig] ?? {}), [id]: now } }
+}
+
+/** Drops marks older than `maxAgeMs` (default 48h, twice the flood guard's 24h cap window): once a
+ * bead ages out of `sweepGuard`'s own window it is never scored again regardless, so its mark here
+ * is dead weight. This keeps sweep-guard.json from growing forever. */
+export function pruneGuardState(
+  state: SweepGuardState,
+  now: number,
+  maxAgeMs = 48 * 60 * 60 * 1000,
+): SweepGuardState {
+  const out: SweepGuardState = {}
+  for (const [rig, ids] of Object.entries(state)) {
+    const kept = Object.fromEntries(Object.entries(ids).filter(([, at]) => now - at < maxAgeMs))
+    if (Object.keys(kept).length) out[rig] = kept
+  }
+  return out
+}
+
 /**
  * This is the flood guard (claude-factory-8pc.5). At most `cap` (default 5) sweep-filed beads per
  * rig stay inside any rolling `windowMs` (default 24h) window. It keeps the oldest ones first, by

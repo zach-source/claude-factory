@@ -62,11 +62,15 @@ import * as plan from './plan'
 import {
   clipUtf8,
   dueSweeps,
+  guardHandled,
+  markGuardHandled,
+  pruneGuardState,
   sigOf,
   sweepFiler,
   sweepGoal,
   sweepGuard,
   sweepNames,
+  type SweepGuardState,
   type SweepState,
 } from './sweeps'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
@@ -4181,6 +4185,9 @@ export const room = (
 /** what the last dispatch could not do, per rig: the board shows it as rows */
 const dispatchFile = () => join(HOME, 'dispatch.json')
 const syncFile = () => join(HOME, 'sync.json')
+/** the flood guard's own "already handled" marks (claude-factory-8pc.18): a sweep worker's bd
+ * labels never reach this file, so they cannot forge the mark the way `sweep:<station>` can. */
+const sweepGuardFile = () => join(HOME, 'sweep-guard.json')
 
 /** a rig with room that dispatch has nothing to start for and no goal to steer the manager by sits unnoticed unless the board says so */
 export const idle = (rig: Pick<Rig, 'goal'>, ready: number) => !rig.goal && ready === 0
@@ -4373,6 +4380,11 @@ async function dispatch() {
   const synced = existsSync(syncFile())
     ? readJson<Record<string, { at: number; error?: string }>>(syncFile())
     : {}
+  // the flood guard's own "already handled" marks (claude-factory-8pc.18): read once per pass,
+  // written back once at the end. A sweep worker's bd labels never reach this file.
+  let guardState: SweepGuardState = existsSync(sweepGuardFile())
+    ? readJson<SweepGuardState>(sweepGuardFile())
+    : {}
   for (const rig of rigs()) {
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
@@ -4400,16 +4412,20 @@ async function dispatch() {
         })
         continue
       }
-      // the flood guard (claude-factory-8pc.5), before b.ready(): a deferred or unlabeled bead must
-      // never show up as ready work this same pass. It must fail closed.
+      // the flood guard (claude-factory-8pc.5), before b.ready(). A deferred or unlabeled bead must
+      // never show up as ready work this same pass. The guard must fail closed.
       //
-      // claude-factory-8pc.12: a bead that already carries `sweep:<station>` got the guard's one
-      // call already (kept, or held). The code below skips it. So a person's `factory queue` on a
-      // held bead stands; the guard does not undo it again within 30s.
+      // claude-factory-8pc.12 and .18: `guardHandled` reads sweep-guard.json. It never reads the
+      // bead's own `sweep:<station>` label. dispatch marks a bead only after its own guard scores
+      // it, and the defer-or-relabel call below lands. A sweep worker cannot forge this mark by
+      // filing a bead with the label already on it: dispatch still scores that bead the first time
+      // it sees it. Once dispatch marks a bead, a person's `factory queue` on a held bead stands.
+      // The guard does not undo that re-queue.
       //
-      // claude-factory-8pc.13: (a) when `b.every()` throws, `continue` skips the rest of this rig:
-      // no ready bead starts for it this pass. (b) the code drops from `ready` each bead the guard
-      // did not keep and allow, so a failed `defer` or `relabel` call still cannot start that bead.
+      // claude-factory-8pc.13: two failure paths must fail closed. (a) When `b.every()` throws,
+      // `continue` skips the rest of this rig: no ready bead starts for it this pass. (b) The code
+      // drops from `ready` each bead the guard did not keep and allow. So a failed `defer` or
+      // `relabel` call still cannot start that bead.
       let all: Bead[]
       try {
         all = b.every()
@@ -4421,8 +4437,7 @@ async function dispatch() {
       for (const v of sweepGuard(all, Date.now())) {
         const current = all.find(x => x.id === v.id)
         if (!current) continue
-        const hasStationLabel = !!current.labels?.includes(`sweep:${v.station}`)
-        if (hasStationLabel) continue // handled once already: leave a person's own decision alone
+        if (guardHandled(guardState, rig.name, v.id)) continue // scored before: leave it alone
         if (!v.kept || !v.allowed) excluded.add(v.id) // never start this pass, win or lose the call below
         const hasFactory = !!current.labels?.includes(LABEL)
         try {
@@ -4436,22 +4451,23 @@ async function dispatch() {
             const remove = v.allowed || !hasFactory ? [] : [LABEL]
             b.relabel(v.id, { add: [`sweep:${v.station}`], remove })
           }
+          guardState = markGuardHandled(guardState, rig.name, v.id, Date.now()) // only on success: a failed call retries next pass
         } catch (err) {
           errors.push({ id: v.id, error: (err as Error).message })
         }
       }
-      // claude-factory-8pc.17: a sweep pass can file a new bead. This can happen between the
-      // `b.every()` read above and the `b.ready()` read below. The loop above never scores this
-      // bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and no
-      // allowlist check. Drop it here too, unless it already carries `sweep:<station>`. That
-      // label means a person re-queued it: the loop above keeps the same rule.
+      // claude-factory-8pc.17 and .18: a sweep pass can file a new bead. This can happen between
+      // the `b.every()` read above and the `b.ready()` read below. The loop above never scores
+      // this bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and
+      // no allowlist check. Drop it here too: a bead this fresh cannot already carry a sweep-guard
+      // mark from an earlier pass (`guardHandled` below), whatever label it was born with.
       const seen = new Set(all.map(x => x.id))
       const ready = b.ready().filter(x => {
         if (excluded.has(x.id)) return false
         if (seen.has(x.id)) return true // the guard above already scored this bead
         const station = sweepFiler(x)
         if (!station) return true // not a sweep-filed bead: not this guard's concern
-        return !!x.labels?.includes(`sweep:${station}`)
+        return guardHandled(guardState, rig.name, x.id) // only a mark from an earlier pass lets it start
       })
       // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
       // lost its own claim on the bead, to a reaper, say). `dispatchable` below drops this bead from
@@ -4530,6 +4546,7 @@ async function dispatch() {
       errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
     }
   }
+  writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now()))
   writeJson(dispatchFile(), errors)
 }
 
