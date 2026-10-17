@@ -1,7 +1,17 @@
 import { isPrWait, type Entry } from './machine'
 
-/** one run as metrics see it: live from its state, or kept in metrics.jsonl after factory rm */
-export type RunRecord = { id: string; rig?: string; node: string; createdAt: number; log: Entry[] }
+/** one run, as metrics see it. It is live from its state, or kept in metrics.jsonl after `factory
+ * rm`. `requeued` is set when the run ended on a requeue edge (claude-factory-wnm). It copies
+ * track.json's own field of that name. An older metrics.jsonl line has no such field. It reads as
+ * `undefined`. `fate` then falls back to the node, as it did before this field existed. */
+export type RunRecord = {
+  id: string
+  rig?: string
+  node: string
+  createdAt: number
+  log: Entry[]
+  requeued?: boolean
+}
 
 const FAILED = new Set(['fail', 'failed', 'abandon', 'red'])
 /** deploy's only outcomes that mean the change shipped; blocked, changes and hold are not a ship */
@@ -19,9 +29,11 @@ const median = (xs: number[]) => {
 const p90 = (xs: number[]) =>
   xs.length ? [...xs].sort((a, b) => a - b)[Math.ceil(xs.length * 0.9) - 1]! : null
 
-/** a run's fate: shipped (deploy succeeded), rejected (triage turned it down), closed, aborted, or where it is */
+/** a run's fate: shipped (deploy succeeded), requeued (claude-factory-wnm, a bead moved on to
+ * another factory or station), rejected (triage turned it down), closed, aborted, or where it is */
 export function fate(r: RunRecord) {
   if (r.log.some(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))) return 'shipped'
+  if (r.requeued) return 'requeued'
   if (r.log[0]?.node === 'triage' && r.log[0].outcome === 'reject') return 'rejected'
   if (r.node === 'done') return 'closed'
   if (r.node === 'aborted') return 'aborted'
