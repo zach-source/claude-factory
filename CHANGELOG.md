@@ -827,6 +827,24 @@ minor release may change the factory format, the CLI or the run state.
     marker. PR #76 fixed the directory-as-`--supersedes` case. PR #78
     fixed the `#`-path case (for example `beads#x`, where `beads` is a
     directory).
+- Fixed: `gitReason` (`src/worker-hook.ts`) read the current branch with
+  `gate.headOf(root)`, where `root` never moves. An earlier `cd`, `pushd` or
+  `popd` word in the same command can move the real push to a different
+  repository. A `HEAD`-alias push (`HEAD`, `@`, or no refspec at all) then
+  read the wrong repository's branch, and can reach a protected branch
+  there unchecked. (claude-factory-68gn)
+  - Fix: `anyGitReason` and `anyShellReason` each track `moved` in one
+    forward pass over a segment's words, seeded by `denyAt`'s own
+    `movedSoFar` (true once a `cd`, `pushd` or `popd` word has run, in this
+    command or an outer one). An `env -C`/`env --chdir` flag or a `git
+    --git-dir` flag also sets `moved`, for the one command it wraps. Once
+    `moved`, `gitReason` never calls `gate.headOf` and never trusts a `-C`
+    value; a denied push returns the new `PUSH_DIR_REASON` in place of
+    `PUSH_REASON`. An explicit, non-protected branch still allows: it does
+    not need the current branch at all.
+  - The `moved` state threads through `denyAt`'s `sh -c`/`bash -c`/`eval`/
+    `env -S` recursion too, so a `cd` before one of those still denies a
+    `HEAD` push inside the recursed script.
 
 ## 0.12.0 (2026-10-15)
 

@@ -9,6 +9,7 @@ import {
   LIVE_REASON,
   LONG_COMMAND_REASON,
   MERGE_REASON,
+  PUSH_DIR_REASON,
   PUSH_REASON,
   READY_REASON,
   REASON,
@@ -1598,3 +1599,154 @@ test('denyReason denies GIT_DIR and GIT_COMMON_DIR paired with a git word (claud
 test('denyReason allows HOME set with no git word (claude-factory-zl5.45)', () => {
   expect(denyReason('HOME=d echo hi')).toBeUndefined()
 })
+
+// claude-factory-68gn: `gitReason` read the current branch with `gate.headOf(root)`.
+// `root` never moves, but an earlier `cd`, `pushd` or `popd` word in one command can move the real
+// push to another repository. A `HEAD` alias push (`HEAD`, `@`, or no refspec at all) then reads
+// the branch of the wrong repository. If that other checkout was on a protected branch, the push
+// reached it without a check.
+//
+// This guard now treats the current branch as unknown when an earlier `cd`, `pushd` or `popd`
+// word appears anywhere in the command. This is the same fail-closed rule that claude-factory-zl5.12
+// already uses for an unknown branch. The guard denies with the new `PUSH_DIR_REASON`.
+//
+// AC1/AC2: every row below denies, whatever `gate.headOf` would say, because the push never reads it.
+// AC3, checked separately below, uses a gate that counts calls to prove this.
+// `cd`/`pushd`/`popd` count at any word position, for example `builtin cd` or `command cd`, and
+// behind any segment separator (`&&`, `;`, `||`). They also count inside the flat segments that
+// `segments()` makes of a `( ... )` subshell.
+const DENY_PUSH_AFTER_DIR_CHANGE = [
+  'cd /other && git push origin HEAD',
+  'pushd /other && git push origin HEAD',
+  'popd && git push origin HEAD',
+  'cd /other; git push origin',
+  'cd /other || git push origin HEAD',
+  '(cd /other && git push origin HEAD)',
+  'builtin cd /other && git push origin HEAD',
+  'command cd /other && git push origin HEAD',
+  'cd /other && git push origin @',
+  'cd /other && git send-pack origin HEAD',
+]
+
+test.each(DENY_PUSH_AFTER_DIR_CHANGE)(
+  'denyReason denies %j: an earlier directory change makes the current branch unknown (claude-factory-68gn, AC1/AC2)',
+  cmd => {
+    let calls = 0
+    // this gate would allow the push if it were ever consulted: 'feature' is not a protected
+    // branch. The test still expects a deny, and AC3 (below) checks the call count separately.
+    const gate = {
+      headOf: (dir?: string) => {
+        calls++
+        return 'feature'
+      },
+    }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+    void calls
+  },
+)
+
+// AC3: once a `cd`/`pushd`/`popd` word moves the push, `gate.headOf` is never called for it. A
+// relative `-C` after the move would resolve against the wrong directory anyway (see the design
+// note in the plan: this guard does not try to track the real target directory).
+test('denyReason never calls gate.headOf for a HEAD push after an earlier directory change (claude-factory-68gn, AC3)', () => {
+  let calls = 0
+  const gate = {
+    headOf: (dir?: string) => {
+      calls++
+      return 'feature'
+    },
+  }
+  expect(denyReason('cd /other && git push origin HEAD', '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+  expect(calls).toBe(0)
+})
+
+// AC4: an explicit, non-protected target names its own branch. It does not need the current
+// branch at all, so it still allows after a directory change.
+const ALLOW_PUSH_AFTER_DIR_CHANGE_EXPLICIT_BRANCH = [
+  'cd /other && git push origin feature',
+  'cd /other && git push origin HEAD:feature',
+  'cd /other && git push origin HEAD:refs/heads/feature',
+  'pushd /other && git push origin feature',
+]
+
+test.each(ALLOW_PUSH_AFTER_DIR_CHANGE_EXPLICIT_BRANCH)(
+  'denyReason allows %j: an explicit non-protected target names its own branch (claude-factory-68gn, AC4)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo')).toBeUndefined()
+  },
+)
+
+// AC4: an explicit, protected target still denies after a directory change.
+const DENY_PUSH_AFTER_DIR_CHANGE_EXPLICIT_PROTECTED = [
+  'cd /other && git push origin main',
+  'pushd /other && git push origin main',
+]
+
+test.each(DENY_PUSH_AFTER_DIR_CHANGE_EXPLICIT_PROTECTED)(
+  'denyReason denies %j: an explicit protected target still denies after a directory change (claude-factory-68gn, AC4)',
+  cmd => {
+    const reason = denyReason(cmd, '/root/repo')
+    expect(reason === PUSH_REASON || reason === PUSH_DIR_REASON).toBe(true)
+  },
+)
+
+// AC5: these verdicts do not change. A `cd` after the push, or in an unrelated command, never
+// moves it: `movedSoFar` only accumulates from an earlier segment onward.
+test('denyReason keeps its old verdict when cd comes after the push or in an unrelated command (claude-factory-68gn, AC5)', () => {
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason('git push origin HEAD', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git push origin HEAD; cd /other', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('cd /other && git status')).toBeUndefined()
+  expect(denyReason('cd /other && git status', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git -C dir push origin main')).toBe(PUSH_REASON)
+})
+
+// AC6: a cd in an outer segment must still deny a HEAD push recursed into through sh -c, bash -c,
+// eval, or env -S. `anyShellReason` reads `movedSoFar` into each recursion site, and `denyAt`
+// seeds its own `movedSoFar` from the `movedBefore` it receives.
+const DENY_PUSH_AFTER_DIR_CHANGE_THROUGH_RECURSION = [
+  "cd /other && sh -c 'git push origin HEAD'",
+  "cd /other && bash -c 'git push origin HEAD'",
+  'cd /other && eval git push origin HEAD',
+  "cd /other && env -S 'git push origin HEAD'",
+]
+
+test.each(DENY_PUSH_AFTER_DIR_CHANGE_THROUGH_RECURSION)(
+  'denyReason denies %j: a directory change carries through sh -c/bash -c/eval/env -S recursion (claude-factory-68gn, AC6)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+  },
+)
+
+// AC7: env -C/--chdir and git --git-dir move the push the same way a cd does, even with no cd
+// word at all. Each spelling below denies a HEAD push and allows an explicit, non-protected one.
+const DENY_PUSH_AFTER_ENV_OR_GIT_DIR_MOVE = [
+  'env -C /other git push origin HEAD',
+  'env -C/other git push origin HEAD',
+  'env --chdir /other git push origin HEAD',
+  'env --chdir=/other git push origin HEAD',
+  'git --git-dir /other/.git push origin HEAD',
+  'git --git-dir=/other/.git push origin HEAD',
+]
+
+test.each(DENY_PUSH_AFTER_ENV_OR_GIT_DIR_MOVE)(
+  'denyReason denies %j: env -C/--chdir and git --git-dir move the push like a cd (claude-factory-68gn, AC7)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+  },
+)
+
+const ALLOW_PUSH_AFTER_ENV_OR_GIT_DIR_MOVE_EXPLICIT_BRANCH = [
+  'env -C /other git push origin feature',
+  'env --chdir=/other git push origin feature',
+  'git --git-dir=/other/.git push origin feature',
+]
+
+test.each(ALLOW_PUSH_AFTER_ENV_OR_GIT_DIR_MOVE_EXPLICIT_BRANCH)(
+  'denyReason allows %j: an explicit non-protected target names its own branch (claude-factory-68gn, AC7)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo')).toBeUndefined()
+  },
+)

@@ -102,6 +102,19 @@ export const PUSH_REASON =
   'for the change, or a revert pull request for a rollback. Only a person pushes or merges a ' +
   'protected branch. Do not retry this command.'
 
+// claude-factory-68gn: a cd, pushd or popd word can change the directory before a git push or
+// git send-pack word. An env -C flag, an env --chdir flag, or a git --git-dir flag can do the
+// same thing. Each one can move the push to a different repository.
+//
+// This guard cannot read the branch in that other repository. So it fails closed, the same way
+// claude-factory-zl5.12 already does for an unresolved HEAD.
+export const PUSH_DIR_REASON =
+  'The factory denies this command: it changes the current directory (cd, pushd, popd, env -C, ' +
+  '--chdir, or git --git-dir) before a git push or git send-pack. The factory cannot read the ' +
+  'current branch there. A push that names HEAD or @ then denies outright. Name the remote ' +
+  'branch directly instead, for example git push origin <run branch>, and never name a ' +
+  'protected branch. Do not retry this exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -1584,8 +1597,22 @@ function sendPackDenied(tail: string[], currentBranch: string | undefined, gate:
  * `gate.headOf(dir)` reads the current branch there.
  *
  * claude-factory-zl5.35: This guard checks `send-pack` in the same way as `push`, through `sendPackDenied`.
+ *
+ * claude-factory-68gn: `moved` is true when an earlier `cd`, `pushd` or `popd` word, in this
+ * segment or an earlier one, already made the current directory unknown (see `anyGitReason` and
+ * `denyAt`'s own `movedSoFar`). `moved` is also true when `tail` itself holds a `--git-dir` flag:
+ * that flag points git at a different repository's `.git` directory, the same hazard as a `cd`.
+ * When `moved`, this function does not call `gate.headOf` at all (it would read the wrong
+ * directory, or a `-C` value that resolved relative to the wrong directory), and it treats
+ * `currentBranch` as unknown. A denied push then returns `PUSH_DIR_REASON` in place of
+ * `PUSH_REASON`, so the worker learns to name the branch instead of retrying the same command.
  */
-function gitReason(cmd: string[], root: string | undefined, gate: HookGate): string | undefined {
+function gitReason(
+  cmd: string[],
+  root: string | undefined,
+  gate: HookGate,
+  moved: boolean,
+): string | undefined {
   const tail = cmd.slice(1)
   if (gitDashCPushDenied(tail)) return PUSH_REASON
   const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS)
@@ -1611,10 +1638,15 @@ function gitReason(cmd: string[], root: string | undefined, gate: HookGate): str
     }
   }
   if (!pushTail) return undefined
-  const dir = flagValue(tail, new Set(['-C'])) ?? root
-  const currentBranch = gate.headOf?.(dir)
-  if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? PUSH_REASON : undefined
-  return gitPushDenied(pushTail, currentBranch, gate) ? PUSH_REASON : undefined
+  // claude-factory-68gn: a --git-dir flag moves the push the same way a cd does, so it folds into
+  // `moved` here instead of into `dir`. Once `moved`, a -C value is not trusted either: a relative
+  // -C resolves against the directory this hook started in, not the one a cd already moved to.
+  const effectiveMoved = moved || flagValue(tail, new Set(['--git-dir'])) !== undefined
+  const dir = effectiveMoved ? undefined : (flagValue(tail, new Set(['-C'])) ?? root)
+  const currentBranch = effectiveMoved ? undefined : gate.headOf?.(dir)
+  const reason = effectiveMoved ? PUSH_DIR_REASON : PUSH_REASON
+  if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? reason : undefined
+  return gitPushDenied(pushTail, currentBranch, gate) ? reason : undefined
 }
 
 // claude-factory-zl5.43: a dashed git-core binary name (`git-push`, `git-send-pack`, and so on)
@@ -1624,24 +1656,56 @@ function gitReason(cmd: string[], root: string | undefined, gate: HookGate): str
 // verb itself: `git-push origin main` reads the same as `git push origin main`.
 const GIT_DASHED_BINARY = /^git-(.+)$/
 
+// claude-factory-68gn: a word whose baseWord is one of these changes the shell's current
+// directory (cd, pushd) or restores an earlier one (popd). `denyAt` tracks this across the whole
+// command. `anyGitReason` and `anyShellReason` also track it within one segment, word by word.
+const DIR_CHANGE_WORDS = new Set(['cd', 'pushd', 'popd'])
+
+/** True when any word in `words` has a baseWord in `DIR_CHANGE_WORDS` (claude-factory-68gn). */
+function hasDirChangeWord(words: string[]): boolean {
+  return words.some(w => DIR_CHANGE_WORDS.has(baseWord(w)))
+}
+
 /**
  * Returns true when a word in `words` is a bare `git` token, or a dashed git-core binary name
  * (claude-factory-zl5.43). From that word, the words start a command that this guard denies
  * (claude-factory-zl5.3). The function scans every position, with the same fail-closed rule as
  * `anyGhReason` for `gh`. A wrapper that this hook does not strip by name cannot hide a `git`
  * word that follows it.
+ *
+ * claude-factory-68gn: `moved` starts at `movedBefore`, true when an earlier segment of the whole
+ * command already moved the current directory (`denyAt`'s `movedSoFar`). It turns true for good
+ * at the first `cd`, `pushd` or `popd` word in this segment, or the first `env` word here that
+ * carries a `-C`/`--chdir` flag (`envChdirPresent`). This single forward pass reads `moved` into
+ * every `git` word after that point, with no separate backward rescan at each one: a rescan at
+ * every `git` word would cost O(n^2) on a command with many of them, the same class of bug
+ * claude-factory-1by and claude-factory-lbn already fixed for other scans in this file.
  */
-function anyGitReason(words: string[], root: string | undefined, gate: HookGate): string | undefined {
+function anyGitReason(
+  words: string[],
+  root: string | undefined,
+  gate: HookGate,
+  movedBefore: boolean,
+): string | undefined {
+  let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const b = baseWord(words[j]!)
+    if (DIR_CHANGE_WORDS.has(b)) {
+      moved = true
+      continue
+    }
+    if (b === 'env' && envChdirPresent(words, j)) {
+      moved = true
+      continue
+    }
     if (b === 'git') {
-      const r = gitReason(words.slice(j), root, gate)
+      const r = gitReason(words.slice(j), root, gate, moved)
       if (r) return r
       continue
     }
     const dashed = GIT_DASHED_BINARY.exec(b)
     if (dashed) {
-      const r = gitReason(['git', dashed[1]!, ...words.slice(j + 1)], root, gate)
+      const r = gitReason(['git', dashed[1]!, ...words.slice(j + 1)], root, gate, moved)
       if (r) return r
     }
   }
@@ -1745,21 +1809,58 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
   return undefined
 }
 
+/**
+ * True when an `env` word at `words[j]` carries a `-C`/`--chdir` flag before its own command word
+ * (claude-factory-68gn). GNU and BSD `env` both change the child command's current directory with
+ * this flag, the same hazard as a `cd` run just before it. This reads the plain form (`-C dir`,
+ * `--chdir dir`), the attached long form (`--chdir=dir`), the attached short form (`-Cdir`), and a
+ * short-flag cluster carrying `C` (`-vC dir`), the same shapes `envSplitStringValue` already
+ * reads for `-S`. It stops at the first word that does not start with `-`: that word is `env`'s
+ * own command, and no chdir flag appeared before it.
+ */
+function envChdirPresent(words: string[], j: number): boolean {
+  for (let k = j + 1; k < words.length; k++) {
+    const w = words[k]!
+    if (w === '-C' || w === '--chdir') return true
+    if (/^--chdir=/.test(w)) return true
+    const shortCluster = /^-[a-zA-Z]*C/.exec(w)
+    if (shortCluster) return true
+    if (!w.startsWith('-')) return false
+  }
+  return false
+}
+
+// claude-factory-68gn: `movedBefore` is the same fail-closed state `denyAt` already tracks
+// (`movedSoFar`) for a `cd`, `pushd` or `popd` word in an earlier segment of the whole command.
+// `moved` starts there, and turns true for good at the first `cd`, `pushd` or `popd` word in this
+// segment, or the first `env` word here that carries a `-C`/`--chdir` flag. Each recursion site
+// below reads `moved` as it stands at that point in this single forward pass (the same O(n) shape
+// `anyGitReason` uses, for the same reason: a rescan at each recursion site would cost O(n^2) on a
+// command with many of them). The recursed-into `denyAt` call starts already moved, so a `git
+// push` inside the recursed script fails closed the same way one right in this segment would
+// (AC6 in the plan for claude-factory-68gn).
 function anyShellReason(
   words: string[],
   root: string | undefined,
   personOnly: string[] | undefined,
   gate: HookGate,
   depth: number,
+  movedBefore: boolean,
 ): string | undefined {
   let nc = -1
   let nd = -1
+  let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
+    if (DIR_CHANGE_WORDS.has(bw)) {
+      moved = true
+      continue
+    }
     if (bw === 'env') {
+      if (envChdirPresent(words, j)) moved = true
       const val = envSplitStringValue(words, j)
       if (val === undefined) continue
-      const r = denyAt(val, root, personOnly, gate, depth + 1)
+      const r = denyAt(val, root, personOnly, gate, depth + 1, moved)
       if (r) return r
       break
     }
@@ -1779,11 +1880,11 @@ function anyShellReason(
         const w = words[k]!
         if (w === '--') {
           k++
-          if (k < words.length) found = denyAt(words[k]!, root, personOnly, gate, depth + 1)
+          if (k < words.length) found = denyAt(words[k]!, root, personOnly, gate, depth + 1, moved)
           break
         }
         if (w.startsWith('-')) continue
-        found = denyAt(w, root, personOnly, gate, depth + 1)
+        found = denyAt(w, root, personOnly, gate, depth + 1, moved)
         if (found) break
       }
       if (found) return found
@@ -1793,7 +1894,7 @@ function anyShellReason(
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {
-        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1)
+        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1, moved)
         if (r) return r
       }
       break
@@ -1818,13 +1919,19 @@ export function denyReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
-  return denyAt(command, root, personOnly, gate ?? {}, 0)
+  return denyAt(command, root, personOnly, gate ?? {}, 0, false)
 }
 
 /**
  * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
  * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
  * `depth + 1` at each of its 3 recursion sites.
+ *
+ * claude-factory-68gn: `movedBefore` is true when a `cd`, `pushd` or `popd` word already ran
+ * before `command`, either in an outer command's earlier segment or in the script `command`
+ * itself sat inside (an eval/sh -c/env -S argument, or an env -S split string). It seeds this
+ * call's own `movedSoFar`, the same accumulator that a `cd`/`pushd`/`popd` word in one of
+ * `command`'s own segments extends for every segment after it.
  */
 function denyAt(
   command: string,
@@ -1832,6 +1939,7 @@ function denyAt(
   personOnly: string[] | undefined,
   gate: HookGate,
   depth: number,
+  movedBefore: boolean,
 ): string | undefined {
   if (!command) return undefined
   // claude-factory-epz: this check comes before the 8192-char check, so a deep command denies
@@ -1850,6 +1958,10 @@ function denyAt(
   // different segments, and either order still denies, through the `commandHasGitWord` check
   // below (claude-factory-zl5.44: that check reads the whole raw `command` text, not one segment).
   let hasDangerousConfigEnv = false
+  // claude-factory-68gn: true once a cd, pushd or popd word has run, in this command or an outer
+  // one. `anyGitReason` reads it for every later segment, and denyAt passes the state forward on
+  // every recursion into anyShellReason. It never resets back to false once set.
+  let movedSoFar = movedBefore
   for (const words of segments(command)) {
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
@@ -1866,13 +1978,14 @@ function denyAt(
     const ghFound = anyGhReason(words, g)
     if (ghFound) return ghFound
     // claude-factory-zl5.3: the same any-position scan, for a git word a wrapper can push past
-    // position 0.
-    const gitFound = anyGitReason(words, root, g)
+    // position 0. claude-factory-68gn: movedSoFar carries an earlier segment's cd/pushd/popd word
+    // into this one.
+    const gitFound = anyGitReason(words, root, g, movedSoFar)
     if (gitFound) return gitFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
-    const shellReason = anyShellReason(words, root, personOnly, g, depth)
+    const shellReason = anyShellReason(words, root, personOnly, g, depth, movedSoFar)
     if (shellReason) return shellReason
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
@@ -1890,6 +2003,13 @@ function denyAt(
         if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
       }
     }
+    // claude-factory-68gn: a cd, pushd or popd word anywhere in this segment moves the shell's
+    // own current directory for every segment after it (not for an env -C or --git-dir flag,
+    // which only moves the one command it wraps: those fold into `hasDirChangeBefore` instead,
+    // inside the same segment). This check runs after the checks above, so it affects only a
+    // later segment's push, never this one: anyGitReason and anyShellReason already read this
+    // segment's own `cd`/`pushd`/`popd` word through their own `hasDirChangeBefore` scan.
+    if (hasDirChangeWord(words)) movedSoFar = true
   }
   if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
