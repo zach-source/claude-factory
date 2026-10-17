@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
@@ -890,3 +890,99 @@ test('clipFactsJson still fits under budget with nothing to drop beyond the norm
   const out = clipFactsJson(facts)
   expect(JSON.parse(out).a.candidates).toEqual([{ id: 'c-1', title: 'short' }])
 })
+
+// claude-factory-3u1.1.1.3: `factory memory add`'s write gate. These spawn the real CLI binary, like
+// memory-add-dup-from.test.ts, and strip the worker-only env vars so the test runs as a laptop call.
+const MEMORY_ADD_CLI = join(import.meta.dir, '..', 'bin', 'factory')
+const memoryAddHome = (tag: string) => join(tmpdir(), `cli-memory-add-${tag}-${process.pid}`)
+const runMemoryAdd = (home: string, args: string[]) => {
+  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const p = Bun.spawnSync([MEMORY_ADD_CLI, 'memory', 'add', ...args], {
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+  })
+  return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
+}
+const inboxFiles = (home: string) =>
+  existsSync(join(home, 'memory', 'inbox')) ? readdirSync(join(home, 'memory', 'inbox')) : []
+const freshMemoryAddHome = (tag: string) => {
+  const home = memoryAddHome(tag)
+  rmSync(home, { recursive: true, force: true })
+  mkdirSync(home, { recursive: true })
+  return home
+}
+
+test('memory add with no --kind exits 2 and writes nothing', () => {
+  const home = freshMemoryAddHome('no-kind')
+  const r = runMemoryAdd(home, ['a plain summary', 'a plain body'])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--kind')
+  expect(r.err).toContain('fact')
+  expect(r.err).toContain('rule')
+  expect(r.err).toContain('recipe')
+  expect(inboxFiles(home)).toEqual([])
+}, 30_000)
+
+test('memory add with an invalid --kind exits 2 naming the flag and the bad value', () => {
+  const home = freshMemoryAddHome('bad-kind')
+  const r = runMemoryAdd(home, ['--kind', 'Fact', 'a plain summary', 'a plain body'])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--kind')
+  expect(r.err).toContain('Fact')
+}, 30_000)
+
+test('memory add that cites a bead, --kind fact, no --until, exits 2 naming --until', () => {
+  const home = freshMemoryAddHome('cites-no-until')
+  const r = runMemoryAdd(home, ['--kind', 'fact', 'acme-1x2.3 taught us this', 'a plain body'])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--until')
+  expect(r.err).toContain('acme-1x2.3')
+  expect(inboxFiles(home)).toEqual([])
+}, 30_000)
+
+test('memory add that cites a bead, --kind fact, no --until, --anyway: still exits 2, the gate runs before dedupe', () => {
+  const home = freshMemoryAddHome('cites-anyway')
+  const r = runMemoryAdd(home, ['--kind', 'fact', '--anyway', 'acme-1x2.3 taught us this', 'a plain body'])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--until')
+}, 30_000)
+
+test('memory add --kind recipe that cites a bead with no --until is accepted', () => {
+  const home = freshMemoryAddHome('recipe-ok')
+  const r = runMemoryAdd(home, ['--kind', 'recipe', 'acme-1x2.3 taught us this', 'a plain body'])
+  expect(r.code).toBe(0)
+  expect(inboxFiles(home)).toHaveLength(1)
+}, 30_000)
+
+test('memory add --kind rule --until <bead id> is accepted and the file carries both fields', () => {
+  const home = freshMemoryAddHome('rule-until-ok')
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'rule',
+    '--until',
+    'acme-1x2.3',
+    'acme-1x2.3 taught us this',
+    'a plain body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  expect(files).toHaveLength(1)
+  const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(text).toContain('kind: rule')
+  expect(text).toContain('until: acme-1x2.3')
+}, 30_000)
+
+test('memory add with a bad --until value exits 2 naming --until', () => {
+  const home = freshMemoryAddHome('bad-until')
+  const r = runMemoryAdd(home, ['--kind', 'fact', '--until', 'soon', 'a plain summary', 'a plain body'])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--until')
+  expect(r.err).toContain('soon')
+  expect(inboxFiles(home)).toEqual([])
+}, 30_000)
+
+test('memory add that cites nothing needs no --until', () => {
+  const home = freshMemoryAddHome('no-cite-ok')
+  const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body'])
+  expect(r.code).toBe(0)
+  expect(inboxFiles(home)).toHaveLength(1)
+}, 30_000)

@@ -27,6 +27,8 @@ test('a duplicate `memory add` logs the finding run under its own note, not with
     'fabriek',
     '--from',
     'run1/implement',
+    '--kind',
+    'fact',
     'fabriek has no CHANGELOG file or per-PR version bump convention',
     'checked the whole history',
   ])
@@ -39,6 +41,8 @@ test('a duplicate `memory add` logs the finding run under its own note, not with
     'fabriek',
     '--from',
     'run2/verify',
+    '--kind',
+    'fact',
     'no changelog or version bump convention exists in fabriek',
     'hit the same thing',
   ])

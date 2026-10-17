@@ -5550,6 +5550,10 @@ async function status(id: string | undefined) {
   }
 }
 
+// shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
+// message, so the three never drift apart (claude-factory-3u1.1.1)
+const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] <summary> [body...]`
+
 const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
 
@@ -5586,8 +5590,9 @@ const usage = `factory — herdr software factories on xstate
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
   memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
-  memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]   save a learning to the memory's
-                                     inbox; one an existing note already says counts as that note helping
+  memory add ${MEMORY_ADD_USAGE}   save a learning to the memory's
+                                     inbox; one an existing note already says counts as that note helping;
+                                     a note that names a bead or PR needs --until unless --kind recipe
   memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
   memory compact [--dry-run]        merge old, used short notes into LONG.md; archive one that was never
                                      shown and is 14+ days old, or never helped and unused 30+ days (both
@@ -5752,7 +5757,7 @@ if (import.meta.main && !outboxCmd)
       case 'memory': {
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
-        const [rig, from] = [opt('--rig'), opt('--from')]
+        const [rig, from, kind, until] = [opt('--rig'), opt('--from'), opt('--kind'), opt('--until')]
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
           const found = await memory.search(MEMORY, words.join(' '), { rig })
@@ -5777,7 +5782,16 @@ if (import.meta.main && !outboxCmd)
         } else if (sub === 'add' && words[0]) {
           const isAnyway = words.includes('--anyway')
           const [summary, ...body] = words.filter(w => w !== '--anyway')
-          const note = { summary: summary!, body: body.join(' '), rig }
+          const note = { summary: summary!, body: body.join(' '), rig, kind, until }
+          // gate() first, so a refusal costs no embedding and logs no helped/confirmed event; --anyway
+          // skips memory.same()'s dedupe below, never this gate (claude-factory-3u1.1.1)
+          const refusal = memory.gate(note)
+          if (!refusal.ok) {
+            console.error(`factory memory add: ${refusal.reason}`)
+            console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+            process.exitCode = 2
+            break
+          }
           const dup = isAnyway ? null : await memory.same(MEMORY, note)
           if (dup) {
             // a hit, not a new note: the copy would only crowd search results until a dream merged it
@@ -5788,7 +5802,8 @@ if (import.meta.main && !outboxCmd)
             )
           } else {
             const at = new Date().toISOString().slice(0, 10)
-            console.log(memory.add(MEMORY, { ...note, from, at }))
+            // gate() above already confirmed kind is one of memory.NOTE_KINDS
+            console.log(memory.add(MEMORY, { ...note, kind: kind as memory.NoteKind, from, at }))
           }
         } else if (sub === 'helped' && words.length) {
           const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
@@ -5853,7 +5868,7 @@ if (import.meta.main && !outboxCmd)
           )
         } else
           fail(
-            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped [--from run/station] <note path...> | compact [--dry-run] | eval',
+            `usage: factory memory search [--rig r] <query...> | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval`,
           )
         break
       }
