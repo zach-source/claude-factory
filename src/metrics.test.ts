@@ -40,6 +40,38 @@ test("a run's fate: shipped, rejected, closed, aborted or where it is", () => {
   expect(fate({ id: 'a', node: 'verify', createdAt: 0, log: [] })).toBe('running@verify')
 })
 
+// claude-factory-wnm (A9): a run that ended on a requeue edge carries `requeued: true` (copied
+// from its track.json). `fate` reports it as 'requeued', ahead of 'rejected'/'closed', and behind
+// 'shipped'. An older record with no `requeued` field still reads as 'closed' (or 'rejected'), as
+// it always did: this field is new, and optional.
+test("a requeued run's fate is 'requeued', ahead of rejected/closed, behind shipped", () => {
+  expect(
+    fate({ id: 'a', node: 'done', createdAt: 0, log: [e('implement', 'ship', 1)], requeued: true }),
+  ).toBe('requeued')
+  expect(fate({ id: 'a', node: 'done', createdAt: 0, log: [e('triage', 'reject', 1)], requeued: true })).toBe(
+    'requeued',
+  )
+  expect(
+    fate({
+      id: 'a',
+      node: 'soak',
+      createdAt: 0,
+      log: [e('deploy', 'deployed', 1)],
+      requeued: true,
+    }),
+  ).toBe('shipped') // shipped wins over requeued
+  expect(fate({ id: 'a', node: 'done', createdAt: 0, log: [e('implement', 'ship', 1)] })).toBe('closed')
+})
+
+test('metrics counts a requeued ending in fates.requeued, out of the shipRate ended sum', () => {
+  const m = metrics([
+    { id: 'r1', node: 'done', createdAt: 0, log: [e('implement', 'ship', 1)], requeued: true },
+    { id: 'r2', node: 'done', createdAt: 0, log: [e('implement', 'ready', 1)] },
+  ])
+  expect(m.fates).toEqual({ requeued: 1, closed: 1 })
+  expect(m.shipRate).toBe(0) // requeued is not an ended run: only r2 (closed) counts
+})
+
 test('metrics count ship rate, time to ship, the approve wait, review loops and failures by kind', () => {
   const m = metrics([
     {

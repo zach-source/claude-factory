@@ -53,9 +53,11 @@ import {
   backlogOf,
   beads,
   dispatchable,
+  factoryOf,
   goalOf,
   hasBeads,
   isOwned,
+  linearSourced,
   parentOf,
   stationOf,
   type Bead,
@@ -179,6 +181,8 @@ const STOP_NOTE =
 const DREAM_SOON_MS = 2 * 3600_000
 const INBOX_FULL = 12
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
+/** a bead requeued this many times gets deferred instead: a factory that always requeues never loops forever */
+const REQUEUE_MAX = 5
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const STALL_MS = 20 * 60_000 // a working worker whose tail and branch head stand still this long is nudged, then failed
 const NUDGES = 4 // ...this many times, each wait twice the last (90s to 24 min), then fails
@@ -211,9 +215,9 @@ type Saved = {
   /** where bead bookkeeping was kept before it moved to track.json */
   track?: Track
 }
-/** bead bookkeeping, the beads pass's own file: journal entries mirrored, last heartbeat, whether the run's
- * end was recorded, and what last went wrong */
-type Track = { mirrored: number; beatAt: number; isSettled: boolean; error?: string }
+/** bead bookkeeping, the beads pass's own file: journal entries mirrored, last heartbeat, whether track()
+ * recorded the run's end, whether that ending was a requeue, and what last went wrong */
+type Track = { mirrored: number; beatAt: number; isSettled: boolean; requeued?: boolean; error?: string }
 type Input = Ev extends infer E ? (E extends Ev ? Omit<E, 'at'> : never) : never
 export type Row = {
   id: string
@@ -712,6 +716,17 @@ function factorySource(spec: string, checkout: string) {
     join(ROOT, 'factories', `${spec}.ts`)
   )
 }
+/**
+ * The factory that a bead's `factory:<name>` label names (claude-factory-wnm), by name only. It
+ * checks `repo`'s own `.factory/<name>.ts`, then this project's own `factories/<name>.ts`. It
+ * returns undefined when neither holds the name.
+ *
+ * Unlike `factorySource`, it never takes a literal path. `factoryOf` already limits a label's name
+ * to `NAME` (no path). This function stays name-only too, so a label can never pick an arbitrary
+ * file on disk.
+ */
+const namedFactorySource = (name: string, repo: string) =>
+  findIn(join(repo, OWN), name) ?? findIn(join(ROOT, 'factories'), name)
 /** what `extends` names, from the extending file's directory: a path, a sibling, else a built-in; never itself */
 function baseSource(spec: string, file: string) {
   const at = resolve(dirname(file), spec)
@@ -973,6 +988,9 @@ function tracking(run: Run, node: string) {
   return [
     '## Tracking (beads)',
     `This run is bead ${b} (bd show ${b}); its tasks are the bead's children. Your bd writes are recorded as ${actorOf(run.id)}/${node}.`,
+    // claude-factory-wnm: a requeue edge can hand this same bead to a later run, in another
+    // factory or station. Its comments are those earlier runs' reports: read them first.
+    `- Read ${b}'s comments first (bd show ${b}): they are earlier runs' reports on this bead.`,
     `- The plan's tasks: bd children ${b}; the unblocked ones: bd ready --parent ${b}`,
     `- Add a task: bd create "<title>" --parent ${b} -t task|bug -p <0-4> -d "<what, and how to verify it>"; order two with bd dep <first> --blocks <second>`,
     `- Work a task: bd update <id> -s in_progress, then bd close <id> --reason "<what changed, the commit>"`,
@@ -2172,13 +2190,47 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     }
     // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
     else if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
-    else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
+    // A requeue edge keeps the bead ready and factory-labeled for the next dispatch, in the factory
+    // and station the edge names. REQUEUE_MAX stops a loop, because a factory that always requeues
+    // must not run forever. `lookup` throws on a real bd failure, but `show` returns null instead.
+    // A retried tick can misread that null as zero requeues so far (claude-factory-wnm.10). A retried
+    // tick whose requeue already landed skips the cap, because `requeued_from` already names this
+    // run. `b.requeue` below is idempotent for that case.
+    else if (typeof edge === 'object' && edge.requeue) {
+      const current = b.lookup(id)
+      // dispatch never reads a factory:/station: label off a Linear-sourced bead (beads.ts
+      // linearSourced, claude-factory-b6c.27). A requeue of that bead would restart the whole rig
+      // factory at its own start station, not the edge's target, up to REQUEUE_MAX times in a row.
+      // Defer it for a person instead (claude-factory-wnm.22).
+      if (current && linearSourced(current)) {
+        b.defer(
+          id,
+          `run ${run.id} ended on a requeue edge, but this bead is Linear-sourced: dispatch cannot read a factory:/station: label off it`,
+        )
+      } else {
+        const already = current?.metadata?.requeued_from === run.id
+        const requeues = Number(current?.metadata?.requeues ?? 0)
+        // The cap defer must reset the counter. Without this reset, a person's undefer sends the bead
+        // straight into a new defer on its next requeue. `requeues` would still read 5 or more
+        // (claude-factory-wnm.17).
+        if (!already && requeues >= REQUEUE_MAX) {
+          b.defer(id, `requeued ${REQUEUE_MAX} times`)
+          b.setMetadata(id, { requeues: '0' })
+        } else {
+          b.requeue(id, run.id, edge.requeue === true ? undefined : edge.requeue)
+          t.requeued = true
+        }
+      }
+    } else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
+    // the prior ending is moot once revived: a goto past a requeue edge, then a later close, must not
+    // count as a requeue (claude-factory-wnm.21)
+    if (!t.isSettled) delete t.requeued
   } else if (!isOver) beat(run, t, now)
 }
 
@@ -4414,6 +4466,12 @@ async function precheckSkip(
 ): Promise<{ skip: boolean; error?: string }> {
   if (process.env.FACTORY_PRECHECK === '0') return { skip: false }
   if (bead.metadata?.rejected_by === 'dispatch') return { skip: false }
+  // claude-factory-wnm: a requeue edge already proved an earlier run's PR landed. The pre-check
+  // must not reject this bead for that same, already-landed PR. This exemption covers one dispatch
+  // pass only. The candidate loop below clears `requeued_from` right after it starts the run this
+  // exemption was for (claude-factory-wnm.13). A later, unrelated pickup of this bead then goes
+  // through the pre-check like any other.
+  if (bead.metadata?.requeued_from) return { skip: false }
   if (!/^[\w.-]+$/.test(bead.id)) return { skip: false }
   if (originRef(rig.repo)?.forge !== 'github') return { skip: false }
   let merged: MergedPr[]
@@ -4545,6 +4603,56 @@ async function dispatch() {
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
         if (room(rig, busy, undefined, held) <= 0) break
+        // claude-factory-wnm: a `factory:<name>` label on the bead picks a different factory to
+        // compile this run from, in place of the rig's own `rig.factory`. A `station:<name>` label
+        // picks where in it to start. A bad label must defer only this bead, never throw:
+        // - two factory: or two station: labels on the bead (claude-factory-wnm.11)
+        // - an unknown factory name, or a factory file that fails to load (claude-factory-wnm.14)
+        // - a station the named factory lacks (claude-factory-wnm.15)
+        // A throw here hits the rig-level catch below, which skips every later candidate too.
+        const deferCandidate = (msg: string) => {
+          errors.push({ id: bead.id, error: msg })
+          try {
+            b.defer(bead.id, msg)
+          } catch (err) {
+            errors.push({ id: bead.id, error: (err as Error).message })
+          }
+        }
+        let named: string | undefined
+        let at: string | undefined
+        try {
+          named = factoryOf(bead)
+          at = stationOf(bead)
+        } catch (err) {
+          deferCandidate((err as Error).message)
+          continue
+        }
+        let spec = rig.factory
+        let name = preview.name
+        let nodes = preview.nodes
+        if (named) {
+          const source = namedFactorySource(named, rig.repo)
+          if (!source) {
+            deferCandidate(`no factory ${named}`)
+            continue
+          }
+          let loaded: Factory
+          try {
+            loaded = await loadFactory(source)
+          } catch (err) {
+            deferCandidate(`factory ${named} failed to load: ${(err as Error).message}`)
+            continue
+          }
+          name = loaded.name
+          nodes = loaded.nodes
+          spec = source
+        }
+        // a station the chosen factory lacks would otherwise start the run quietly at its own
+        // first station (`def.start`, below), with no sign anywhere that the label was wrong
+        if (at && !nodes[at]) {
+          deferCandidate(`station ${at} not in factory ${name}`)
+          continue
+        }
         const runBranches = runIds()
           .filter(id => {
             try {
@@ -4567,12 +4675,20 @@ async function dispatch() {
         if (skip) continue
         let run, def
         try {
-          ;({ run, def } = await createTracked(rig.factory, preview.name, rig.repo, goalOf(bead), bead.id))
+          ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id))
         } catch (err) {
           if (/already claimed/.test((err as Error).message)) continue // lost the race to another worker
           throw err
         }
-        const at = stationOf(bead)
+        // claude-factory-wnm.13: this run is the one the pre-check's `requeued_from` exemption
+        // (above) was for. Clear it now, so a later, unrelated pickup of this bead is not exempt.
+        if (bead.metadata?.requeued_from) {
+          try {
+            b.unsetMetadata(bead.id, 'requeued_from', 'requeued_at')
+          } catch (err) {
+            errors.push({ id: bead.id, error: (err as Error).message })
+          }
+        }
         if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
         busy.push(rig.name)
       }
@@ -5853,7 +5969,14 @@ function records(): RunRecord[] {
 }
 function record(id: string): RunRecord {
   const { run, value, c } = current(id)
-  return { id, rig: rigOf(run.repo)?.name, node: where(value)[0], createdAt: createdAt(id), log: c.log }
+  return {
+    id,
+    rig: rigOf(run.repo)?.name,
+    node: where(value)[0],
+    createdAt: createdAt(id),
+    log: c.log,
+    ...(trackOf(id).requeued && { requeued: true }),
+  }
 }
 
 async function status(id: string | undefined) {

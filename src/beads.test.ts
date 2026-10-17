@@ -2,7 +2,17 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { backlogOf, beads, dispatchable, goalOf, isOwned, linearSourced, stationOf, type Bead } from './beads'
+import {
+  backlogOf,
+  beads,
+  dispatchable,
+  factoryOf,
+  goalOf,
+  isOwned,
+  linearSourced,
+  stationOf,
+  type Bead,
+} from './beads'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 
@@ -63,6 +73,18 @@ test('a bead becomes a goal and may name its station', () => {
   expect(stationOf(b)).toBe('incident')
   expect(stationOf(bead('fx-8', { labels: ['factory'] }))).toBeUndefined()
   expect(goalOf(bead('fx-7'))).toBe('fx-7: title fx-7')
+})
+
+test('factoryOf reads a factory:<name> label, never one from a Linear pull, a path, or the bare factory label', () => {
+  expect(factoryOf(bead('fx-1', { labels: ['factory', 'factory:release'] }))).toBe('release')
+  expect(factoryOf(bead('fx-2', { labels: ['factory'] }))).toBeUndefined()
+  expect(factoryOf(bead('fx-3', { labels: ['factory:../x'] }))).toBeUndefined()
+  expect(factoryOf(bead('fx-4', { labels: ['factory:/tmp/x'] }))).toBeUndefined()
+  const pulled = bead('fx-5', {
+    labels: ['factory:release'],
+    external_ref: 'https://linear.app/acme/issue/STI-1',
+  })
+  expect(factoryOf(pulled)).toBeUndefined()
 })
 
 test('a station label from a Linear pull never picks the start station (claude-factory-b6c.27)', () => {
@@ -306,7 +328,16 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
   const bin = join(tmpdir(), `fake-bd-reject-${process.pid}`)
   mkdirSync(bin, { recursive: true })
   const log = join(bin, 'calls')
-  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho "$*" >> ${log}\n`)
+  // `queue` now reads the bead first, to drop any stale factory:*/station:* label (claude-factory-wnm.12);
+  // this fixture bead carries none, so that step changes nothing else queue() does
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    `  show) printf '%s' '[{"id":"fx-1","title":"t","labels":["rejected"]}]';;`,
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
   chmodSync(join(bin, 'bd'), 0o755)
   const path = process.env.PATH
   process.env.PATH = `${bin}:${path}`
@@ -314,7 +345,7 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     const b = beads(tmpdir(), 'factory/run-1')
     b.reject('fx-1', 'run-1/triage', 'already tracked by fx-2')
     b.queue('fx-1')
-    const [unclaim, update, queue] = readFileSync(log, 'utf8').trim().split('\n')
+    const [unclaim, update, show, queue] = readFileSync(log, 'utf8').trim().split('\n')
     expect(unclaim).toBe('unclaim fx-1 --actor factory/run-1')
     expect(update).toStartWith(
       'update fx-1 --remove-label factory --add-label rejected --set-metadata rejected_by=run-1/triage',
@@ -324,7 +355,204 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     )
     // nothing closes it: still open and ready for a person
     expect(readFileSync(log, 'utf8')).not.toContain('close')
+    expect(show).toBe('show fx-1 --json --actor factory/run-1')
     expect(queue).toBe('update fx-1 --add-label factory --remove-label rejected --actor factory/run-1')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('queue removes a stale factory:*/station:* label before adding the station it was given (claude-factory-wnm.12)', () => {
+  const bin = join(tmpdir(), `fake-bd-queue-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    `  show) printf '%s' '[{"id":"fx-1","title":"t","labels":["factory:release","station:deploy"]}]';;`,
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    b.queue('fx-1', 'implement')
+    const update = readFileSync(log, 'utf8')
+      .trim()
+      .split('\n')
+      .find(l => l.startsWith('update'))!
+    expect(update).toContain('--remove-label factory:release')
+    expect(update).toContain('--remove-label station:deploy')
+    expect(update).toContain('--add-label factory --remove-label rejected')
+    expect(update).toContain('--add-label station:implement')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('requeue releases the claim, swaps factory:*/station:* labels when told to, and counts once per run', () => {
+  const bin = join(tmpdir(), `fake-bd-requeue-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const show = join(bin, 'show.json')
+  const script = ['#!/bin/sh', `echo "$*" >> ${log}`, 'case "$1" in', `  show) cat ${show};;`, 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+
+    // requeue into a new factory and station: old factory:*/station:* labels removed, new ones added
+    writeFileSync(
+      show,
+      JSON.stringify([
+        { id: 'fx-1', title: 't', labels: ['factory', 'factory:lifecycle', 'station:deploy'] },
+      ]),
+    )
+    writeFileSync(log, '')
+    b.requeue('fx-1', 'run-1', { factory: 'release', station: 'implement' })
+    const calls = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls[0]).toBe('unclaim fx-1 --actor factory/run-1')
+    expect(calls[1]).toBe('show fx-1 --json --actor factory/run-1')
+    expect(calls[2]).toContain('--remove-label factory:lifecycle')
+    expect(calls[2]).toContain('--remove-label station:deploy')
+    expect(calls[2]).toContain('--add-label factory --remove-label rejected')
+    expect(calls[2]).toContain('--add-label factory:release')
+    expect(calls[2]).toContain('--add-label station:implement')
+    expect(calls[2]).toMatch(
+      /--set-metadata requeued_from=run-1 --set-metadata requeued_at=\S+ --set-metadata requeues=1/,
+    )
+
+    // a retried tick, same runId: the count does not move again
+    writeFileSync(
+      show,
+      JSON.stringify([
+        { id: 'fx-1', title: 't', labels: ['factory'], metadata: { requeued_from: 'run-1', requeues: 1 } },
+      ]),
+    )
+    writeFileSync(log, '')
+    b.requeue('fx-1', 'run-1')
+    const calls2 = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls2[2]).toContain('update fx-1 --add-label factory --remove-label rejected')
+    expect(calls2[2]).not.toContain('--set-metadata')
+
+    // requeue: true (no `to`): the labels the worker set stay; a new run counts again
+    writeFileSync(
+      show,
+      JSON.stringify([
+        {
+          id: 'fx-1',
+          title: 't',
+          labels: ['factory', 'factory:release', 'station:implement'],
+          metadata: { requeued_from: 'run-1', requeues: 1 },
+        },
+      ]),
+    )
+    writeFileSync(log, '')
+    b.requeue('fx-1', 'run-2')
+    const calls3 = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls3[2]).not.toContain('--remove-label factory:release')
+    expect(calls3[2]).not.toContain('--remove-label station:implement')
+    expect(calls3[2]).toContain('--set-metadata requeues=2')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('requeue with only to.station removes station:* but keeps factory:* (claude-factory-wnm.20)', () => {
+  const bin = join(tmpdir(), `fake-bd-requeue-station-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const show = join(bin, 'show.json')
+  const script = ['#!/bin/sh', `echo "$*" >> ${log}`, 'case "$1" in', `  show) cat ${show};;`, 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    writeFileSync(
+      show,
+      JSON.stringify([
+        { id: 'fx-1', title: 't', labels: ['factory', 'factory:lifecycle', 'station:deploy'] },
+      ]),
+    )
+    writeFileSync(log, '')
+    b.requeue('fx-1', 'run-1', { station: 'implement' })
+    const calls = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls[2]).toContain('--remove-label station:deploy')
+    expect(calls[2]).not.toContain('--remove-label factory:lifecycle')
+    expect(calls[2]).toContain('--add-label station:implement')
+    expect(calls[2]).not.toContain('--add-label factory:')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('requeue throws on a bd show failure, instead of writing requeues=1 and dropping no old label (claude-factory-wnm.9)', () => {
+  const bin = join(tmpdir(), `fake-bd-requeue-fail-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    '  show) echo "Error fetching fx-1: dial tcp: i/o timeout" >&2; exit 1;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    expect(() => b.requeue('fx-1', 'run-1', { factory: 'release', station: 'implement' })).toThrow(
+      /Error fetching fx-1/,
+    )
+    // unclaim still ran (it is best-effort and comes first); no update ever landed on the failed read
+    const calls = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls.some(l => l.startsWith('unclaim fx-1'))).toBe(true)
+    expect(calls.some(l => l.startsWith('update fx-1'))).toBe(false)
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('factoryOf and stationOf refuse a bead with two factory: or two station: labels (claude-factory-wnm.11)', () => {
+  expect(() => factoryOf(bead('fx-1', { labels: ['factory:release', 'factory:lifecycle'] }))).toThrow(
+    /ambiguous factory labels/,
+  )
+  expect(() => stationOf(bead('fx-2', { labels: ['station:deploy', 'station:implement'] }))).toThrow(
+    /ambiguous station labels/,
+  )
+  // one of each, no ambiguity: both still read fine
+  expect(factoryOf(bead('fx-3', { labels: ['factory:release', 'station:deploy'] }))).toBe('release')
+  expect(stationOf(bead('fx-3', { labels: ['factory:release', 'station:deploy'] }))).toBe('deploy')
+})
+
+test('unsetMetadata removes each named key, with no other change (claude-factory-wnm.13)', () => {
+  const bin = join(tmpdir(), `fake-bd-unsetmeta-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho "$*" >> ${log}\n`)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    b.unsetMetadata('fx-1', 'requeued_from', 'requeued_at')
+    const call = readFileSync(log, 'utf8').trim()
+    expect(call).toBe(
+      'update fx-1 --unset-metadata requeued_from --unset-metadata requeued_at --actor factory/run-1',
+    )
   } finally {
     process.env.PATH = path
   }
