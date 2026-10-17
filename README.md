@@ -325,11 +325,12 @@ since the last pass; the unchanged output never reaches a model. Start a pass by
 `factory start sweeps@maintain <rig> 'sweep: maintain'`.
 
 **Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
-`sweep:maintain`). At most 5 such beads per rig stay labeled `factory` (so they start on their
-own) in any 24-hour window; a later one that day is still filed, just without the `factory`
-label, for a person to queue. A kept bead past the cap starts on its own only when it also
-carries `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`.
-The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
+`sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A later bead
+that day still gets filed, but it waits for a person instead of starting on its own. A kept
+bead keeps the `factory` label, and starts on its own, only when it also carries
+`sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every
+other kept bead loses the `factory` label too and waits for a person, the same as a later
+bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
 
 A pinned run from before this design (`claude-factory-8pc`) still loads its own copy of the
 sweep stations from `factories/lifecycle.ts`, if its `factory.json` holds one.
