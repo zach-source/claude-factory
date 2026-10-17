@@ -1062,3 +1062,55 @@ test('a sweep bead filed between b.every() and b.ready() never starts unguarded 
   expect(out.code).toBe(0)
   expect(existsSync(join(ghome, 'runs'))).toBe(false) // acme-1 would else start with no cap check at all
 })
+
+/** one sweep-filed bead born 25h ago: older than `sweepGuard`'s own 24h cap window, so `sweepGuard`
+ * drops it from its results and never scores it. No sweep-guard.json mark exists for it either:
+ * dispatch never reached it in time (a full rig or a halt, past 24h, say). `ready` reflects this
+ * pass's own relabel, the same way `fakeGuardBd` above does. */
+function fakeAgedOutBd() {
+  mkdirSync(gbin, { recursive: true })
+  const bead = {
+    id: 'acme-1',
+    created_by: 'factory/sweeps-run1/maintain',
+    created_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    labels: ['factory'],
+  }
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify([bead])}';;`,
+    '  ready)',
+    `    if [ ! -f "${gdir}/removed-acme-1" ]; then printf '%s' '${JSON.stringify([
+      { id: bead.id, title: 't', labels: ['factory'] },
+    ])}'; else printf '%s' '[]'; fi;;`,
+    '  update)',
+    '    id="$2"',
+    '    case " $* " in *" --remove-label factory "*) touch "' + gdir + '/removed-$id";; esac',
+    '    exit 0;;',
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('claude-factory-8pc.21: a sweep bead aged out of the guard window unscored never starts', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeAgedOutBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(ghome, 'runs'))).toBe(false) // acme-1 would else start with no cap or allowlist check
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
+  expect(calls.some(l => /^bd update acme-1\b.*--remove-label factory\b/.test(l))).toBe(true)
+  expect(calls.some(l => /^bd update acme-1\b.*--add-label sweep:maintain\b/.test(l))).toBe(true)
+})

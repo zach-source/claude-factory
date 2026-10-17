@@ -4403,11 +4403,16 @@ async function dispatch() {
   const synced = existsSync(syncFile())
     ? readJson<Record<string, { at: number; error?: string }>>(syncFile())
     : {}
-  // the flood guard's own "already handled" marks (claude-factory-8pc.18): read once per pass,
-  // written back once at the end. A sweep worker's bd labels never reach this file.
+  // The flood guard's own "already handled" marks (claude-factory-8pc.18). Dispatch reads this
+  // once per pass, and writes it back once at the end. A sweep worker's bd labels never reach
+  // this file.
   let guardState: SweepGuardState = existsSync(sweepGuardFile())
     ? readJson<SweepGuardState>(sweepGuardFile())
     : {}
+  // Each rig's open bead ids, from this pass's own `b.every()` call (claude-factory-8pc.21).
+  // `pruneGuardState` below uses this to keep a rig's marks only for beads still open. A flat 48h
+  // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
+  const openIds: Record<string, Set<string>> = {}
   for (const rig of rigs()) {
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
@@ -4456,8 +4461,11 @@ async function dispatch() {
         errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
         continue // the guard read failed: start no ready bead for this rig this pass
       }
+      openIds[rig.name] = new Set(all.filter(x => x.status !== 'closed').map(x => x.id))
       const excluded = new Set<string>()
+      const scored = new Set<string>()
       for (const v of sweepGuard(all, Date.now())) {
+        scored.add(v.id)
         const current = all.find(x => x.id === v.id)
         if (!current) continue
         if (guardHandled(guardState, rig.name, v.id)) continue // scored before: leave it alone
@@ -4479,15 +4487,35 @@ async function dispatch() {
           errors.push({ id: v.id, error: (err as Error).message })
         }
       }
+      // claude-factory-8pc.21: `sweepGuard` only scores a bead inside its own 24h window. Dispatch
+      // can miss a bead for over 24h: the rig can stay full, the factory can halt, or `b.every()`
+      // can keep throwing. That bead then ages out of the window with no mark at all. Hold it the
+      // same way a past-the-cap bead is held above: strip `factory`, add `sweep:<station>`, and
+      // mark it. Only a mark lets a sweep-filed bead start. An unmarked one never starts, however
+      // old it is.
+      for (const current of all) {
+        const station = sweepFiler(current)
+        if (!station || scored.has(current.id) || guardHandled(guardState, rig.name, current.id)) continue
+        excluded.add(current.id)
+        const hasFactory = !!current.labels?.includes(LABEL)
+        try {
+          b.defer(
+            current.id,
+            `sweep flood guard: rig ${rig.name}'s ${current.id} aged out of the 24h guard window unscored`,
+          )
+          b.relabel(current.id, { add: [`sweep:${station}`], remove: hasFactory ? [LABEL] : [] })
+          guardState = markGuardHandled(guardState, rig.name, current.id, Date.now())
+        } catch (err) {
+          errors.push({ id: current.id, error: (err as Error).message })
+        }
+      }
       // claude-factory-8pc.17 and .18: a sweep pass can file a new bead. This can happen between
-      // the `b.every()` read above and the `b.ready()` read below. The loop above never scores
-      // this bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and
-      // no allowlist check. Drop it here too: a bead this fresh cannot already carry a sweep-guard
-      // mark from an earlier pass (`guardHandled` below), whatever label it was born with.
-      const seen = new Set(all.map(x => x.id))
+      // the `b.every()` read above and the `b.ready()` read below. Neither loop above scores this
+      // bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and no
+      // allowlist check. Drop it here too, the same as any other unmarked sweep-filed bead: a
+      // bead this fresh cannot already carry a sweep-guard mark from an earlier pass.
       const ready = b.ready().filter(x => {
         if (excluded.has(x.id)) return false
-        if (seen.has(x.id)) return true // the guard above already scored this bead
         const station = sweepFiler(x)
         if (!station) return true // not a sweep-filed bead: not this guard's concern
         return guardHandled(guardState, rig.name, x.id) // only a mark from an earlier pass lets it start
@@ -4569,7 +4597,7 @@ async function dispatch() {
       errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
     }
   }
-  writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now()))
+  writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
   writeJson(dispatchFile(), errors)
 }
 

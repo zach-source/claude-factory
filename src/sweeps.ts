@@ -59,17 +59,31 @@ export function markGuardHandled(
   return { ...state, [rig]: { ...(state[rig] ?? {}), [id]: now } }
 }
 
-/** Drops marks older than `maxAgeMs` (default 48h, twice the flood guard's 24h cap window): once a
- * bead ages out of `sweepGuard`'s own window it is never scored again regardless, so its mark here
- * is dead weight. This keeps sweep-guard.json from growing forever. */
+/**
+ * Drops a rig's stale marks. `openIds[rig]`, when the caller has it, is that rig's current open
+ * bead ids. Closed and absent beads are not in it. This function drops a mark whose id is missing
+ * from that set: its bead closed, or no longer exists. It keeps a mark whose id is still in that
+ * set, however old (claude-factory-8pc.21). A held bead can stay open well past 48h. It must keep
+ * its mark, or dispatch holds it again on the next pass.
+ *
+ * A rig dispatch did not read this pass (it stayed full, say) has no entry in `openIds`. For that
+ * rig only, this function falls back to `maxAgeMs` (default 48h, twice the flood guard's 24h cap
+ * window). A bead past `sweepGuard`'s own 24h window is never scored again regardless. So, past
+ * that age, a mark dispatch cannot check against a fresh bead list is dead weight. This keeps
+ * sweep-guard.json from growing forever, even once a rig drops out of `rigs.json`.
+ */
 export function pruneGuardState(
   state: SweepGuardState,
   now: number,
+  openIds: Record<string, Set<string>> = {},
   maxAgeMs = 48 * 60 * 60 * 1000,
 ): SweepGuardState {
   const out: SweepGuardState = {}
   for (const [rig, ids] of Object.entries(state)) {
-    const kept = Object.fromEntries(Object.entries(ids).filter(([, at]) => now - at < maxAgeMs))
+    const open = openIds[rig]
+    const kept = Object.fromEntries(
+      Object.entries(ids).filter(([id, at]) => (open ? open.has(id) : now - at < maxAgeMs)),
+    )
     if (Object.keys(kept).length) out[rig] = kept
   }
   return out
