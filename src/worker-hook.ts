@@ -1802,6 +1802,65 @@ function anyShellReason(
   return undefined
 }
 
+// claude-factory-dts: a long multi-push command denies slowly.
+// Each push segment causes 2 git spawns.
+// gitReason calls gate.headOf(dir).
+// protectedBranchSet calls gate.originHead(), inside gitPushDenied and sendPackDenied.
+// No code cached either call.
+// A command with N push segments spawns about 2N git processes.
+// This scan can run past the hook's own 10 s PreToolUse timeout (see :67-68).
+// Past that timeout, the hook fails open: the command runs unchecked.
+const MAX_HEAD_DIRS = 8
+
+/**
+ * Wraps `gate` so `headOf` and `originHead` each spawn git at most once for one `denyReason`
+ * call. One memo covers every push segment, eval level and sh -c level the scan recurses
+ * through (claude-factory-dts).
+ *
+ * `originHead` runs at most once.
+ * The memo keeps its result, even an undefined result.
+ * An unresolved `origin/HEAD` denies every branch-targeting push (claude-factory-zl5.13).
+ * The memo must give that same unresolved answer again. It must not drop the answer on a
+ * later call.
+ *
+ * `headOf` keeps one cached result for each distinct `dir` key, in a `Map`.
+ * The unset `dir` is its own key: `headOf()` and `headOf(undefined)` share one entry.
+ * Past MAX_HEAD_DIRS = 8 distinct dirs, `headOf` returns undefined and spawns no git process.
+ * This fails closed, the same rule `gitPushDenied` already uses for an unknown current branch
+ * (claude-factory-zl5.12).
+ *
+ * The wrapped gate keeps a field unset when the caller left it unset.
+ * A rig that wires neither `gate.headOf` nor `gate.originHead` keeps the exact behavior it had
+ * before this memo.
+ */
+function memoGate(gate: HookGate): HookGate {
+  const memo: HookGate = { ...gate }
+  if (gate.originHead) {
+    const real = gate.originHead
+    let called = false
+    let result: string | undefined
+    memo.originHead = () => {
+      if (!called) {
+        called = true
+        result = real()
+      }
+      return result
+    }
+  }
+  if (gate.headOf) {
+    const real = gate.headOf
+    const cache = new Map<string | undefined, string | undefined>()
+    memo.headOf = dir => {
+      if (cache.has(dir)) return cache.get(dir)
+      if (cache.size >= MAX_HEAD_DIRS) return undefined
+      const result = real(dir)
+      cache.set(dir, result)
+      return result
+    }
+  }
+  return memo
+}
+
 /**
  * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
  * `root` is the worktree root. An rm operand outside it is risky too (see riskyTarget).
@@ -1811,6 +1870,10 @@ function anyShellReason(
  * `gate` carries the merge-gate checks' own context (claude-factory-zl5): the running station, the
  * rig's protected branches, and small reads of the live repo a test can fake out. These checks
  * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
+ *
+ * claude-factory-dts: `memoGate` wraps `gate` once here, so every recursion level (denyAt,
+ * anyShellReason) through this one call shares one memoized `headOf`/`originHead`, in place of
+ * one real git spawn for every push segment.
  */
 export function denyReason(
   command: string,
@@ -1818,7 +1881,7 @@ export function denyReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
-  return denyAt(command, root, personOnly, gate ?? {}, 0)
+  return denyAt(command, root, personOnly, memoGate(gate ?? {}), 0)
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   ALIAS_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  type HookGate,
   LIVE_REASON,
   LONG_COMMAND_REASON,
   MERGE_REASON,
@@ -1597,4 +1598,97 @@ test('denyReason denies GIT_DIR and GIT_COMMON_DIR paired with a git word (claud
 
 test('denyReason allows HOME set with no git word (claude-factory-zl5.45)', () => {
   expect(denyReason('HOME=d echo hi')).toBeUndefined()
+})
+
+// claude-factory-dts: a counting fake gate. It wraps each real git-reading function the test
+// gives it, and counts each real call. It never counts a call memoGate skips (a cache hit, or a
+// headOf call past MAX_HEAD_DIRS).
+function countingGate(real: {
+  headOf?: (dir?: string) => string | undefined
+  originHead?: () => string | undefined
+}) {
+  const calls = { headOf: 0, originHead: 0 }
+  const gate: HookGate = {}
+  if (real.headOf) {
+    const fn = real.headOf
+    gate.headOf = dir => {
+      calls.headOf++
+      return fn(dir)
+    }
+  }
+  if (real.originHead) {
+    const fn = real.originHead
+    gate.originHead = () => {
+      calls.originHead++
+      return fn()
+    }
+  }
+  return { gate, calls }
+}
+
+// claude-factory-dts (AC1, AC2): before the fix, gitReason called gate.headOf(dir) once per push
+// segment, and protectedBranchSet called gate.originHead() once per push segment (inside
+// gitPushDenied). A command with 583 'git push o b;' segments plus a trailing protected push
+// made 584 calls of each, pre-fix. The memo now makes one real call of each, for the whole
+// denyReason call.
+test('denyReason calls gate.originHead and gate.headOf at most once each across 583 push segments (claude-factory-dts, AC1/AC2)', () => {
+  const { gate, calls } = countingGate({ headOf: () => 'feature', originHead: () => 'main' })
+  const command = 'git push o b; '.repeat(583) + 'git push origin main'
+  expect(denyReason(command, undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(calls.originHead).toBe(1)
+  expect(calls.headOf).toBe(1)
+})
+
+// claude-factory-dts (AC3): headOf keeps one cached result for each distinct dir, up to
+// MAX_HEAD_DIRS = 8. Here, 20 segments name 20 distinct dirs, and none push HEAD, so the
+// verdict does not depend on headOf's result. The call count still stays at or under 8.
+test('denyReason calls gate.headOf for at most 8 distinct dirs, out of 20 (claude-factory-dts, AC3)', () => {
+  const { gate, calls } = countingGate({ headOf: dir => `branch-of-${dir}`, originHead: () => 'main' })
+  const command = Array.from({ length: 20 }, (_, i) => `git -C d${i} push o b`).join('; ')
+  expect(denyReason(command, undefined, undefined, gate)).toBeUndefined()
+  expect(calls.headOf).toBeLessThanOrEqual(8)
+})
+
+// claude-factory-dts (AC3): the first 8 segments each name a new distinct dir (d1..d8), so they
+// fill the memo's cache. The 9th segment names a 9th distinct dir (d9) and pushes HEAD. Past
+// MAX_HEAD_DIRS, headOf(d9) returns undefined with no real call: the current branch there is
+// unknown, so the push fails closed (denies), the same rule an unresolvable headOf already used
+// before this memo existed (claude-factory-zl5.12).
+test('denyReason fails closed on a 9th distinct dir past MAX_HEAD_DIRS=8 (claude-factory-dts, AC3)', () => {
+  const { gate, calls } = countingGate({ headOf: dir => `branch-of-${dir}` })
+  const eightDirs = Array.from({ length: 8 }, (_, i) => `git -C d${i + 1} push o b`).join('; ')
+  const command = `${eightDirs}; git -C d9 push o HEAD`
+  expect(denyReason(command, undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(calls.headOf).toBe(8)
+})
+
+// claude-factory-dts (AC4): the memo must cache an unresolved (undefined) gate.originHead result
+// too, and keep giving that same unresolved answer on every later call within one denyReason
+// call. An unresolved origin/HEAD denies every branch-targeting push (claude-factory-zl5.13), so
+// the first of 2 push segments already denies; the memo still makes only 1 real call.
+test('denyReason caches an undefined gate.originHead result, and still denies every push (claude-factory-dts, AC4)', () => {
+  const { gate, calls } = countingGate({ originHead: () => undefined })
+  expect(denyReason('git push o b; git push o b', undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(calls.originHead).toBe(1)
+})
+
+// claude-factory-dts (AC4): a rig that wires no gate.originHead and no gate.headOf at all must
+// keep today's behavior: no origin/HEAD check at all, and no fail-closed current-branch check
+// for a non-HEAD push. memoGate must leave an unset field unset, not call a function that is not
+// there.
+test('denyReason with no gate.headOf or gate.originHead at all keeps allowing an unprotected push (claude-factory-dts, AC4)', () => {
+  expect(denyReason('git push origin develop', undefined, undefined, {})).toBeUndefined()
+})
+
+// claude-factory-dts (AC4): one memo, built once at the denyReason entry, must cover every
+// recursion level anyShellReason takes through `sh -c` or `eval`, not only the top-level scan.
+// The inner `sh -c` script holds 2 push segments of its own; the outer command holds a 3rd. All
+// 3 read the current branch and origin/HEAD through the same memo, so each real function still
+// runs once, even though the scan recurses one level deeper to reach 2 of the 3 segments.
+test('denyReason shares one memo across an sh -c recursion level (claude-factory-dts, AC4)', () => {
+  const { gate, calls } = countingGate({ headOf: () => 'feature', originHead: () => 'main' })
+  const command = `sh -c 'git push o b; git push o b'; git push o b`
+  expect(denyReason(command, undefined, undefined, gate)).toBeUndefined()
+  expect(calls.headOf).toBe(1)
+  expect(calls.originHead).toBe(1)
 })
