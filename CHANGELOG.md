@@ -6,6 +6,16 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `factory gc --worktrees` now matches a GitHub origin only on the exact host `github.com`. The
+  old regex had no host anchor. An origin like `https://mygithub.com/owner/repo` parsed as the
+  GitHub slug `owner/repo`. `gc` then read PR state for a different repo on `github.com`. It
+  could apply that repo's MERGED or CLOSED state to this rig's own branch deletes.
+  (claude-factory-0u0)
+  - `src/cli.ts`: `githubSlug()` now uses `parseRemote()` (`src/prs.ts`) and `forgeOf()`. This is
+    the same parser that `originRef()` uses for GitLab. `githubSlug()` is now exported. It also
+    accepts origin forms with userinfo, for example `https://user@github.com/...` and
+    token-auth clone URLs. The old regex rejected these forms.
+
 - `factory plan facts` failures now back off and log, the same as a failed spawn. The old
   code retried every 60 s forever and wrote no log, even with `bd` down. (claude-factory-4hb)
   - `mod/hooks/register.tsx`: the facts-failed branch in `pmNow()` now:
