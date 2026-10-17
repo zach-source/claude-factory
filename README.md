@@ -269,7 +269,9 @@ The hook also denies an equivalent, disguised form of each command above:
   these name the same branch as `HEAD` or `refs/heads/<branch>`
 - `git -c remote.<name>.push=<value>` or `git config remote.<name>.push <value>`: either one
   can send a later, plain `git push` to a protected branch with no refspec of its own
-- `gh alias set <name> "<expansion>"` when the expansion's own text contains a denied command. The hook also denies `gh alias import`, because it cannot read the imported file.
+- `gh alias set <name> "<expansion>"` and `gh alias import <file>`: the hook denies every one
+  of these calls (see the round-3 bullet below), not only a call whose own expansion text
+  contains a denied command
 
 A round-3 review found 5 more disguised forms. The hook now denies these too:
 
