@@ -945,3 +945,121 @@ test('a requeued bead with a merged PR citing it starts with 0 gh calls (A7)', (
   expect(existsSync(ghCallsLog)).toBe(false)
   expect(runDirs()).toHaveLength(1)
 })
+
+// claude-factory-wnm (A8): the full, end-to-end claim. A bead moves from one factory to another
+// with no hand `factory start`. Run 1 (factory `lifecycle`) ends on a requeue edge, naming factory
+// `release` and station `deploy`. `beadsPass()` runs track() then dispatch() in one call
+// (cli.ts:2219-2271, called once here through `factory beads`): one pass settles run 1 (the
+// requeue) and starts run 2, in the named factory, at the named station, for the same bead.
+const E2E_FACTORY_1: Factory = {
+  name: 'lifecycle',
+  start: 'implement',
+  nodes: {
+    implement: {
+      prompt: 'p',
+      next: { ship: { to: 'done', requeue: { factory: 'release', station: 'deploy' } } },
+    },
+  },
+}
+const E2E_FACTORY_2: Factory = {
+  name: 'release',
+  start: 'triage',
+  nodes: {
+    triage: { prompt: 'p', next: { done: 'done' } },
+    deploy: { prompt: 'p', next: { done: 'done' } },
+  },
+}
+
+/** fake bd for the A8 harness. `show`/`children` answer the bead's pre-requeue state: both calls
+ * `b.requeue` makes happen before its own `update`. `ready` answers its post-requeue state with no
+ * condition: by the time dispatch() calls it, in the same pass, track() already settled run 1. */
+function e2eBd() {
+  mkdirSync(pbin, { recursive: true })
+  const pre = JSON.stringify([
+    { id: 'acme-1', title: 't', labels: ['factory', 'factory:lifecycle', 'station:implement'] },
+  ])
+  const post = JSON.stringify([
+    {
+      id: 'acme-1',
+      title: 't',
+      labels: ['factory', 'factory:release', 'station:deploy'],
+      metadata: { requeued_from: 'run-1', requeues: 1 },
+    },
+  ])
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${bdCallsLog}"`,
+    'case "$1" in',
+    `  show) printf '%s' '${pre}';;`,
+    `  ready) printf '%s' '${post}';;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'bd'), script)
+  chmodSync(join(pbin, 'bd'), 0o755)
+}
+
+function e2eReset() {
+  rmSync(pdir, { recursive: true, force: true })
+  mkdirSync(pClaudeConfig, { recursive: true })
+  writeFileSync(join(pClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(phome, { recursive: true })
+  writeFileSync(join(phome, 'labels.stamp'), '') // throttles labelPass's own, unrelated gh call
+  // a real git repo: createRun()'s freshBase() runs `git rev-parse` in it, for a new run's base
+  const r = precheckRepo()
+  writeFixtureFactory(r, 'release', E2E_FACTORY_2)
+  e2eBd()
+  fakePrecheckHerdr()
+  writeFileSync(join(phome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  return r
+}
+
+test('a bead moves lifecycle -> release with no hand factory start (A8)', () => {
+  const r = e2eReset()
+  // run 1 already sits at `done`, having reported outcome `ship`: a requeue edge
+  const f1 = join(pdir, 'factory-1.json')
+  writeFileSync(f1, JSON.stringify(E2E_FACTORY_1))
+  const actor = createActor(compile(E2E_FACTORY_1)).start()
+  actor.send({ type: 'TICK', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  actor.send({ type: 'DONE', seq, outcome: 'ship', summary: 'moved on', at: Date.now() })
+  const d1 = join(phome, 'runs', 'run-1')
+  mkdirSync(d1, { recursive: true })
+  writeFileSync(
+    join(d1, 'run.json'),
+    JSON.stringify({
+      id: 'run-1',
+      factory: f1,
+      repo: r,
+      goal: 'g',
+      ws: 'ws1',
+      worktree: r,
+      branch: 'b',
+      bead: 'acme-1',
+    }),
+  )
+  writeFileSync(join(d1, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+
+  const out = pfactory(['beads']) // one pass: track() settles run 1, dispatch() starts run 2
+  expect(out.code).toBe(0)
+
+  const runs = runDirs()
+  expect(runs).toHaveLength(2) // run-1 (now settled) and the new run dispatch started
+  const run2Id = runs.find(id => id !== 'run-1')!
+  const run2 = JSON.parse(readFileSync(join(phome, 'runs', run2Id, 'run.json'), 'utf8')) as { bead?: string }
+  expect(run2.bead).toBe('acme-1') // the same bead, with no hand `factory start`
+  const pinned = JSON.parse(readFileSync(join(phome, 'runs', run2Id, 'factory.json'), 'utf8')) as {
+    name: string
+  }
+  expect(pinned.name).toBe('release') // followed the bead's factory:release label
+  expect(gotosOf(run2Id)).toMatchObject([{ type: 'GOTO', node: 'deploy' }]) // started at station:deploy
+
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => l.startsWith('bd unclaim acme-1'))).toBe(true) // run 1 released the bead
+  expect(calls.some(l => l.startsWith('bd update acme-1') && l.includes('--add-label factory:release'))).toBe(
+    true,
+  )
+  expect(calls.some(l => l.startsWith('bd update acme-1') && l.includes('--claim'))).toBe(true) // run 2 claimed it
+})
