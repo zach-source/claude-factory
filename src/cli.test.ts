@@ -926,6 +926,13 @@ const runMemoryAdd = (home: string, args: string[]) => {
   })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
 }
+const runMemoryHelped = (home: string, args: string[]) => {
+  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const p = Bun.spawnSync([MEMORY_ADD_CLI, 'memory', 'helped', ...args], {
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+  })
+  return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
+}
 const inboxFiles = (home: string) =>
   existsSync(join(home, 'memory', 'inbox')) ? readdirSync(join(home, 'memory', 'inbox')) : []
 const freshMemoryAddHome = (tag: string) => {
@@ -1238,6 +1245,44 @@ test('memory add --supersedes a non-.md file exits 2 and writes nothing', () => 
   expect(inboxFiles(home)).toEqual([])
   expect(usageLinesOf(home)).toEqual([])
   expect(readFileSync(join(home, 'memory', 'beads', 'notes.txt'), 'utf8')).toBe('plain text, not a note\n')
+}, 30_000)
+
+// claude-factory-3u1.1.2.7: noteExists() took a `#` path split into a file part and an id part.
+// It read the file part once existsSync() passed, with no check for a file vs. a directory.
+// 'beads#x' points its file part at the real 'beads' topic directory, so existsSync() passed,
+// and the read then failed with EISDIR. Both callers below must refuse this path, not crash.
+test('memory add --supersedes a "#" path whose file part is a directory exits 2 and writes nothing', () => {
+  const home = freshMemoryAddHome('supersedes-hash-eisdir')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(join(home, 'memory', 'beads', 'x.md'), '---\nsummary: a real note\n---\nbody\n')
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads#x',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).not.toContain('EISDIR')
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+  expect(usageLinesOf(home)).toEqual([])
+  expect(readFileSync(join(home, 'memory', 'beads', 'x.md'), 'utf8')).toBe(
+    '---\nsummary: a real note\n---\nbody\n',
+  )
+}, 30_000)
+
+test('memory helped on a "#" path whose file part is a directory refuses it as not a note, not EISDIR', () => {
+  const home = freshMemoryAddHome('helped-hash-eisdir')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(join(home, 'memory', 'beads', 'x.md'), '---\nsummary: a real note\n---\nbody\n')
+  const r = runMemoryHelped(home, ['beads#x'])
+  expect(r.code).toBe(1)
+  expect(r.err).not.toContain('EISDIR')
+  expect(r.err).toContain('not a note in')
+  expect(r.err).toContain('beads#x')
+  expect(usageLinesOf(home)).toEqual([])
 }, 30_000)
 
 test('memory add --supersedes on a short note writes one superseded: line, keeps every other byte, and logs contradicted', () => {
