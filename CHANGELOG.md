@@ -309,6 +309,22 @@ minor release may change the factory format, the CLI or the run state.
     `HEAD`, since no commit exists yet to diff against at that point.
   - Migration: a home with the old gitignore and an untracked `.usage.jsonl`
     starts tracking the file on its next dream.
+- Fixed: the worker `PreToolUse` hook's `rm` guard can time out and fail
+  open. `anyShellReason` (`src/worker-hook.ts`) recurses into `denyReason`
+  once for each stacked `eval` or `sh -c` level, with no depth limit, and the
+  8192-character length cap only fired when a rig passed `personOnly`.
+  (claude-factory-epz)
+  - Cause: `denyReason('eval '.repeat(4000) + 'rm '.repeat(4000) + '; rm -rf
+    x')` with no `personOnly` took about 4 seconds at 32 KB, and grew 4-6x
+    per doubling. Past the hook's 10-second timeout (`src/cli.ts`), a
+    PreToolUse hook that times out lets the command run, so the `rm` guard
+    had no bound on every rig that does not pass `personOnly`.
+  - Fix: `denyAt(command, root, personOnly, depth)` now threads a `depth`
+    through all 3 recursion sites and denies past `MAX_SHELL_DEPTH` (32),
+    before the length check, so the limit applies with or without
+    `personOnly`. The 8192-character cap stays. The cap's own wording now
+    says "characters", not "bytes": `command.length` counts UTF-16 units.
+    README.md gained one sentence on the 8192-character deny.
 
 ## 0.12.0 (2026-10-15)
 
