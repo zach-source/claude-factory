@@ -364,3 +364,77 @@ test('a CLOSED PR with the bead closed deletes the branch; bead open keeps it', 
   expect(git(repo, 'branch', '--list', `factory/${closedId}`)).toBe('')
   expect(git(repo, 'branch', '--list', `factory/${openId}`)).not.toBe('')
 })
+
+/** a fake herdr that answers `tab create` and `pane run` the way a real worker launch needs
+ * (same shape as src/gc-cli.test.ts's okHerdr, which proves the sibling prompts/ revival). */
+function okHerdr(path: string) {
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(
+    path,
+    [
+      '#!/bin/sh',
+      'case "$1 $2" in',
+      '  "tab create") printf \'{"result":{"root_pane":{"pane_id":"p1"}}}\\n\' ;;',
+      '  "pane run") exit 0 ;;',
+      "  *) echo '{}' ;;",
+      'esac',
+    ].join('\n'),
+  )
+  chmodSync(path, 0o755)
+}
+
+test('i: goto after gc recreates the removed worktree at the same path and starts a worker (AC12)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: false })
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  expect(factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes() }).code).toBe(0)
+  expect(existsSync(worktree)).toBe(false) // gc removed the worktree
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('') // unmerged: the branch stays
+
+  expect(factory(['goto', id, 'implement']).code).toBe(0) // queues a GOTO; the next tick drains it
+  const herdr = join(bin, 'ok-herdr-revive')
+  okHerdr(herdr)
+  const out = factory(['tick'], {
+    FACTORY_HERDR: herdr,
+    // no .claude.json at this path: isTrusted() hits its catch branch and reads as trusted
+    CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+    // tick's own finally block would otherwise kick a detached `factory gc` at this FACTORY_HOME
+    FACTORY_GC: '0',
+  })
+  expect(out.code).toBe(0)
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === id)
+  expect(row.error).toBeFalsy()
+  expect(row.pane).toBe('p1')
+  expect(existsSync(worktree)).toBe(true) // recreated at the same path, from the surviving branch
+  expect(readFileSync(join(worktree, `${id}.txt`), 'utf8')).toBe(id) // the branch's own commit
+})
+
+test('i: goto after gc refuses when the branch is also gone, and starts no worker (AC12)', () => {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  expect(factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes() }).code).toBe(0)
+  expect(existsSync(worktree)).toBe(false)
+  expect(git(repo, 'branch', '--list', branch)).toBe('') // merged: gc deleted the branch too
+  expect(git(origin, 'branch', '--list', branch)).toBe('')
+
+  expect(factory(['goto', id, 'implement']).code).toBe(0)
+  const out = factory(['tick'], {
+    FACTORY_HERDR: noPanes(),
+    CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+    FACTORY_GC: '0',
+  })
+  expect(out.code).toBe(0)
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === id)
+  expect(row.error).toContain('gc')
+  expect(row.error).toContain(branch)
+  expect(row.error).toContain(`refs/factory-gc/${id}`)
+  expect(row.pane).toBeFalsy()
+  expect(existsSync(worktree)).toBe(false) // still not recreated: there is nothing to recreate it from
+})

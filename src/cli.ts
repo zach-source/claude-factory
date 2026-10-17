@@ -977,8 +977,35 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
   runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
 
+/**
+ * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
+ * `goto` or `retry`. Recreate the worktree at the same path first. Use the local branch if it
+ * exists. If not, fetch origin and use origin/<branch>.
+ *
+ * gc can also delete the branch, after a merge, or after a closed PR with a closed bead. If the
+ * branch is gone, fail. Name gc, the branch and refs/factory-gc/<runId> in the message. Start no
+ * worker.
+ */
+function reviveWorktree(run: Run) {
+  const verify = (ref: string) =>
+    Bun.spawnSync(['git', '-C', run.repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
+  if (verify(`refs/heads/${run.branch}`)) return git(run.repo, 'worktree', 'add', run.worktree, run.branch)
+  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], { timeout: 30_000 })
+  if (verify(`refs/remotes/origin/${run.branch}`))
+    return git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, `origin/${run.branch}`)
+  const ref = `refs/factory-gc/${run.id}`
+  const snapshot = verify(ref)
+  fail(
+    `factory gc --worktrees removed ${run.worktree} and deleted its branch ${run.branch}. ` +
+      `${snapshot ? `Its last work is at ${ref}.` : `No work is saved at ${ref}.`} ` +
+      `No worker started.`,
+  )
+}
+
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
+  // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
+  if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   const full = () => brief(run, def, node, c, c.mail[node] ?? [])
   // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
