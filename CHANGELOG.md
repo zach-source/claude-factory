@@ -6,6 +6,24 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: `denyAt`'s `find` branch (`src/worker-hook.ts`) no longer scans the
+  `-exec`/`-execdir` words of a `find` command in quadratic time. (claude-factory-lbn)
+  - Before this fix, a long `find ... -exec` command can time out the 10-second
+    PreToolUse hook. The hook then fails open and skips the deny check.
+  - Cause: for each `-exec`/`-execdir` word, the branch ran `cmd.slice(i + 1)`. It
+    then checked the first word of the slice. A run of n such words cost O(n^2).
+    Proof: this took 1.36 s at n=80000 words (480 KB). Past about 1.3 MB, this runs
+    past the hook's 10-second timeout.
+  - Fix: `isRecursiveRm()` now takes a start index. It reads `cmd` in place, with
+    no slice. The `find` branch first checks `baseWord(cmd[i + 1]) === 'rm'` in
+    O(1) time. It then calls `isRecursiveRm(cmd, i + 1)`. Each scan starts at an
+    `rm` word, and stops at the first non-flag word. The scans do not overlap, so
+    the whole loop costs O(n).
+  - Proof: `bun run src/worker-hook.bench.ts find 200000` now takes 191.2 ms.
+    Before the fix, the same shape with a trailing `rm -rf x` took 11451.9 ms.
+  - `find . -exec rm -f x \;` still allows. `find . -name x -exec rm -rf {} +`
+    still denies. All 230 `worker-hook.test.ts` tests pass.
+
 - The lifecycle factory has a new triage outcome, `small`, for a docs-only, test-only or tiny
   change. Before this fix, every run paid for the full loop. The full loop has an Opus plan, a
   separate verify station, a separate review station, security and soak. A small run now takes
