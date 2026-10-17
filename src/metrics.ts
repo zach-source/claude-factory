@@ -83,9 +83,10 @@ export function metrics(records: RunRecord[]) {
         reviewLoops++
         reviewChanges++
       }
-      // claude-factory-qgz AC9: a capped round's re-plan (onRounds) always lands review's report
-      // right next to plan's arrival in the log, with no other station between them
-      if (e.node === 'review' && r.log[i + 1]?.node === 'plan') capReplans++
+      // claude-factory-qgz AC9: count only the machine's own round-cap re-plan (Entry.replan), not
+      // a review-then-plan pair a manager goto makes after a stuck hold or a review fail (review
+      // round 1 finding .8: those write no log entry of their own, but still sit next to 'plan')
+      if (e.replan) capReplans++
       if (e.node === 'triage' && e.outcome === 'reject' && ALREADY_DONE.test(e.summary)) triageAlreadyDone++
       prev = e.at
     }

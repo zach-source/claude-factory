@@ -123,7 +123,18 @@ export function extend(base: Factory, ext: Omit<Extension, 'extends'>): Factory 
 }
 
 export type Mail = { from: string; text: string; at: number }
-export type Entry = { node: string; attempt: number; outcome: string; summary: string; at: number }
+export type Entry = {
+  node: string
+  attempt: number
+  outcome: string
+  summary: string
+  at: number
+  /** set only on the log entry a round cap's own re-plan writes (the `onRounds` DONE guard), never
+   * on a manager `goto plan` after a stuck hold: metrics' `capReplans` counts this field, not every
+   * review-then-plan pair, and `repeatMail` reads it to stop comparing acceptance-criterion ids
+   * across a re-plan (claude-factory-qgz, review round 1 findings .8 and .9) */
+  replan?: true
+}
 
 export type Ctx = {
   /** bumps on every worker launch; reports must quote it, so stale ones drop */
@@ -284,13 +295,22 @@ export const acIdsIn = (text: string): string[] => [
   ...new Set([...text.matchAll(/\bAC-?(\d+)\b/gi)].map(m => `AC${m[1]}`)),
 ]
 
+/** Get the failing ids from one `Failing: AC2, AC6` line (lifecycle's verify prompt needs this
+ * line). Skip any AC id the report calls passing in its other text. Two red reports that each
+ * name one passing AC must not look like a repeat on that AC (claude-factory-qgz, review round 1
+ * finding .9: `acIdsIn` read the whole report and did that). */
+export const failingAcIds = (text: string): string[] => {
+  const line = text.match(/^\s*Failing:\s*(.+)$/im)
+  return line ? acIdsIn(line[1]!) : []
+}
+
 /** a node's previous report whose outcome is one `next` names: `repeatMail` compares the arriving
  * report against this one, not any log entry, so a `fail`, `blocked` or `handoff` in between does
  * not break the streak (those outcomes are never a key of `next`) */
 export const prevReport = (log: Entry[], node: string, next: Record<string, unknown>): Entry | undefined => {
   for (let i = log.length - 1; i >= 0; i--) {
     const e = log[i]!
-    if (e.node === node && e.outcome in next) return e
+    if (e.node === node && Object.hasOwn(next, e.outcome)) return e
   }
   return undefined
 }
@@ -487,7 +507,14 @@ export function compile(def: Factory) {
                               const { outcome, summary, at } = event as Extract<Ev, { type: 'DONE' }>
                               const log = [
                                 ...context.log,
-                                { node: id, attempt: context.attempt, outcome, summary, at },
+                                {
+                                  node: id,
+                                  attempt: context.attempt,
+                                  outcome,
+                                  summary,
+                                  at,
+                                  replan: true as const,
+                                },
                               ]
                               const text = capReplanMail(context.log, id, outcome, summary)
                               return {
@@ -540,8 +567,11 @@ export function compile(def: Factory) {
                   // manager from 'factory', never from `id` (cli.ts's isAsking keys on from === node)
                   if (node.repeatMail === outcome) {
                     const prev = prevReport(context.log, id, node.next)
-                    if (prev?.outcome === outcome) {
-                      const shared = acIdsIn(summary).filter(x => acIdsIn(prev.summary).includes(x))
+                    // a re-plan between the two reports renumbers acceptance criteria, so a shared
+                    // id across it is coincidence, not a real repeat (claude-factory-qgz finding .9)
+                    const replanned = !!prev && context.log.some(e => e.replan && e.at > prev.at)
+                    if (prev?.outcome === outcome && !replanned) {
+                      const shared = failingAcIds(summary).filter(x => failingAcIds(prev.summary).includes(x))
                       if (shared.length)
                         mail = post(mail, 'manager', {
                           from: 'factory',

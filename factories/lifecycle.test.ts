@@ -328,12 +328,18 @@ test("verify's repeated red on the same AC id mails the manager; a different AC 
   const red = createActor(compile(lifecycle)).start()
   red.send({ type: 'GOTO', node: 'verify', at: 0 })
   let seq = red.getSnapshot().context.seq
-  red.send({ type: 'DONE', seq, outcome: 'red', summary: '1. fails AC2 2. fails AC3', at: 1000 })
+  red.send({
+    type: 'DONE',
+    seq,
+    outcome: 'red',
+    summary: '1. fails AC2 2. fails AC3\nFailing: AC2, AC3',
+    at: 1000,
+  })
   expect(where(red.getSnapshot().value)[0]).toBe('implement')
 
   red.send({ type: 'GOTO', node: 'verify', at: 1000 })
   seq = red.getSnapshot().context.seq
-  red.send({ type: 'DONE', seq, outcome: 'red', summary: 'still fails AC2', at: 2000 })
+  red.send({ type: 'DONE', seq, outcome: 'red', summary: 'still fails AC2\nFailing: AC2', at: 2000 })
   const s = red.getSnapshot()
   expect(where(s.value)[0]).toBe('implement') // the normal edge still runs
   const mail = s.context.mail.manager?.at(-1)
@@ -343,9 +349,9 @@ test("verify's repeated red on the same AC id mails the manager; a different AC 
   const noShare = createActor(compile(lifecycle)).start()
   noShare.send({ type: 'GOTO', node: 'verify', at: 0 })
   seq = noShare.getSnapshot().context.seq
-  noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC1', at: 1000 })
+  noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC1\nFailing: AC1', at: 1000 })
   noShare.send({ type: 'GOTO', node: 'verify', at: 1000 })
   seq = noShare.getSnapshot().context.seq
-  noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2', at: 2000 })
+  noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2\nFailing: AC2', at: 2000 })
   expect(noShare.getSnapshot().context.mail.manager).toBeUndefined()
 })

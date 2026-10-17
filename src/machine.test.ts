@@ -6,6 +6,7 @@ import {
   capReplanMail,
   compile,
   failClass,
+  failingAcIds,
   isPrWait,
   mrsIn,
   parkDelayMin,
@@ -349,6 +350,8 @@ test('onRounds re-plans a capped station with its findings, then holds for the m
   let s = toReview('round 3: still flaky')
   expect(where(s.value)).toEqual(['plan', 'working']) // AC1: the (R+1)th report re-plans, not stuck
   expect(s.context.log.filter(e => e.node === 'review' && e.outcome === 'changes')).toHaveLength(3)
+  // claude-factory-qgz finding .8: only the machine's own re-plan carries `replan: true`
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'review', outcome: 'changes', replan: true })
   expect(s.context.mail.manager).toBeUndefined() // AC2: no manager mail on this path
   const findings = s.context.mail.plan?.[0]
   expect(findings?.from).toBe('review')
@@ -414,8 +417,10 @@ test('validate refuses onRounds with no rounds, to an unknown node, to done, or 
 })
 
 // claude-factory-qgz AC6: repeatMail mails the manager once a station repeats one outcome twice in a
-// row, both summaries citing the same AC id, skipping fail/blocked/handoff in between.
-test('repeatMail mails the manager once two reports in a row share an AC id', () => {
+// row, both summaries citing the same AC id on their own "Failing:" line, skipping fail/blocked/
+// handoff in between. Review round 1 finding .9: a passing AC named elsewhere in the report must
+// not count, since verify's prompt has it name passing ACs too.
+test('repeatMail mails the manager once two reports in a row share a failing AC id', () => {
   const verifyLoop: Factory = {
     name: 'verify-loop',
     start: 'verify',
@@ -435,11 +440,17 @@ test('repeatMail mails the manager once two reports in a row share an AC id', ()
   // red(AC2, AC3), a fail at verify (skipped), then red(AC2): one mail from 'factory' naming AC2
   {
     const { send } = run(verifyLoop)
-    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'fails AC2 and AC3', at: 1 })
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'checked everything.\nFailing: AC2, AC3', at: 1 })
     send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
     send({ type: 'FAIL', seq: 3, reason: 'flaky', at: 3 })
     send({ type: 'TICK', at: 1_000_000 })
-    const s = send({ type: 'DONE', seq: 4, outcome: 'red', summary: 'still fails AC2', at: 1_000_001 })
+    const s = send({
+      type: 'DONE',
+      seq: 4,
+      outcome: 'red',
+      summary: 'still broken.\nFailing: AC2',
+      at: 1_000_001,
+    })
     expect(where(s.value)).toEqual(['implement', 'working'])
     expect(repeatMails(s)).toHaveLength(1)
     expect(repeatMails(s)[0]).toMatchObject({ from: 'factory' })
@@ -447,31 +458,31 @@ test('repeatMail mails the manager once two reports in a row share an AC id', ()
     expect(repeatMails(s)[0]!.text).toContain('verify')
   }
 
-  // red(AC1) then red(AC2): no shared id, no mail
+  // red(AC1) then red(AC2): no shared failing id, no mail
   {
     const { send } = run(verifyLoop)
-    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'fails AC1', at: 1 })
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC1', at: 1 })
     send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
-    const s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'fails AC2 now', at: 3 })
+    const s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'Failing: AC2', at: 3 })
     expect(repeatMails(s)).toHaveLength(0)
   }
 
   // red(AC2), green(AC2), red(AC2): the intervening green (a key of next) breaks the streak
   {
     const { send } = run(verifyLoop)
-    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'fails AC2', at: 1 })
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC2', at: 1 })
     send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
     send({ type: 'DONE', seq: 3, outcome: 'green', summary: 'AC2 still open', at: 3 })
-    const s = send({ type: 'DONE', seq: 4, outcome: 'red', summary: 'fails AC2 again', at: 4 })
+    const s = send({ type: 'DONE', seq: 4, outcome: 'red', summary: 'Failing: AC2', at: 4 })
     expect(repeatMails(s)).toHaveLength(0)
   }
 
   // 'AC-2' and 'ac2' both normalize to AC2
   {
     const { send } = run(verifyLoop)
-    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'fails AC-2', at: 1 })
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC-2', at: 1 })
     send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
-    const s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'still fails ac2', at: 3 })
+    const s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'still fails.\nFailing: ac2', at: 3 })
     expect(repeatMails(s)).toHaveLength(1)
   }
 
@@ -483,11 +494,63 @@ test('repeatMail mails the manager once two reports in a row share an AC id', ()
     const s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'still no id', at: 3 })
     expect(repeatMails(s)).toHaveLength(0)
   }
+
+  // finding .9: both reports name AC2 as passing in their prose, but fail only on a different id
+  // each time; sharing a passing mention must never look like a repeat
+  {
+    const { send } = run(verifyLoop)
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'AC2 passes.\nFailing: AC3', at: 1 })
+    send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+    const s = send({
+      type: 'DONE',
+      seq: 3,
+      outcome: 'red',
+      summary: 'AC2 passes again.\nFailing: AC5',
+      at: 3,
+    })
+    expect(repeatMails(s)).toHaveLength(0)
+  }
 })
 
-test('acIdsIn normalizes AC ids, and prevReport skips outcomes that are not a key of next', () => {
+// claude-factory-qgz finding .9: a re-plan between two same-outcome reports renumbers acceptance
+// criteria, so a shared id across it is coincidence, not a real repeat on the same criterion.
+test('repeatMail does not fire across a re-plan, even when the failing id is the same by coincidence', () => {
+  const graph: Factory = {
+    name: 'replan-then-repeat',
+    start: 'verify',
+    nodes: {
+      verify: { prompt: 'verify', next: { red: 'review', green: 'done' }, repeatMail: 'red' },
+      review: {
+        prompt: 'review',
+        next: { changes: 'implement', approve: 'verify' },
+        rounds: 1,
+        onRounds: 'plan',
+      },
+      implement: { prompt: 'implement', next: { ready: 'review' } },
+      plan: { prompt: 'plan', next: { planned: 'verify' } },
+    },
+  }
+  const { send } = run(graph)
+  let s = send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC2', at: 1 })
+  expect(where(s.value)).toEqual(['review', 'working'])
+  s = send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'round 1', at: 2 })
+  expect(where(s.value)).toEqual(['implement', 'working']) // review's 1st round: the normal edge, no cap yet
+  s = send({ type: 'DONE', seq: 3, outcome: 'ready', summary: 'fixed', at: 3 })
+  expect(where(s.value)).toEqual(['review', 'working'])
+  s = send({ type: 'DONE', seq: 4, outcome: 'changes', summary: 'round 2, not converging', at: 4 })
+  expect(where(s.value)).toEqual(['plan', 'working']) // the 2nd round hits review's cap: re-plan
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'review', replan: true })
+  s = send({ type: 'DONE', seq: 5, outcome: 'planned', summary: 're-planned', at: 5 })
+  expect(where(s.value)).toEqual(['verify', 'working'])
+  s = send({ type: 'DONE', seq: 6, outcome: 'red', summary: 'Failing: AC2', at: 6 })
+  expect(s.context.mail.manager?.filter(m => m.from === 'factory') ?? []).toHaveLength(0)
+})
+
+test('acIdsIn normalizes AC ids, failingAcIds reads only the Failing: line, and prevReport skips outcomes that are not a key of next', () => {
   expect(acIdsIn('fails AC2, AC-3 and ac4')).toEqual(['AC2', 'AC3', 'AC4'])
   expect(acIdsIn('no ids here')).toEqual([])
+  expect(failingAcIds('AC2 passes.\nFailing: AC3, AC-5')).toEqual(['AC3', 'AC5'])
+  expect(failingAcIds('no Failing line, just AC2')).toEqual([])
   const next = { red: 'implement', green: 'done' }
   const log = [
     { node: 'verify', attempt: 1, outcome: 'red', summary: 'r1', at: 1 },

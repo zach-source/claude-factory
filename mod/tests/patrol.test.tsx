@@ -1466,7 +1466,7 @@ test(
     expect(patrol).toBeDefined()
     expect(patrol!.prompt).toContain('already re-planned once')
     expect(patrol!.prompt).toMatch(/[Nn]ever goto it to implement/)
-    expect(patrol!.prompt).toContain('repeat red')
+    expect(patrol!.prompt).toMatch(/reported <outcome> again on/)
     expect(patrol!.prompt).toContain('Never goto implement with no new direction')
   },
 )

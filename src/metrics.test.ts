@@ -19,6 +19,11 @@ const e = (node: string, outcome: string, h: number, summary = '') => ({
   summary,
   at: h * H,
 })
+/** a round-cap's own re-plan entry (machine.ts's `onRounds` DONE guard): the only kind `capReplans` counts */
+const replan = (node: string, outcome: string, h: number, summary = '') => ({
+  ...e(node, outcome, h, summary),
+  replan: true as const,
+})
 
 test("a run's fate: shipped, rejected, closed, aborted or where it is", () => {
   expect(
@@ -266,17 +271,19 @@ test('implementPassesPerShippedRun skips handoff, blocked and isPrWait, and is n
   expect(metrics([{ id: 'r', node: 'done', createdAt: 0, log: [] }]).implementPassesPerShippedRun).toBeNull()
 })
 
-// claude-factory-qgz AC9: a capped round's re-plan puts plan right after review's own log entry,
-// with no station in between; this counts it, and an ordinary review -> implement does not.
-test('capReplans counts an adjacent review -> plan log pair, not review -> implement', () => {
+// claude-factory-qgz AC9, review round 1 finding .8: capReplans must count only the machine's own
+// round-cap re-plan (Entry.replan). A manager goto plan, after a stuck hold or a review fail, also
+// puts plan right next to review in the log. It writes no replan entry. It must not count.
+test("capReplans counts only the machine's own re-plan entry, not any review -> plan log pair", () => {
   const m = metrics([
-    {
-      id: 'r1',
-      node: 'plan',
-      createdAt: 0,
-      log: [e('review', 'changes', 1), e('plan', 'ready', 2), e('review', 'changes', 3)],
-    },
+    // the real thing: review's onRounds DONE guard marks its own log entry
+    { id: 'r1', node: 'plan', createdAt: 0, log: [replan('review', 'changes', 1), e('plan', 'ready', 2)] },
+    // ordinary review -> implement: no plan involved at all
     { id: 'r2', node: 'implement', createdAt: 0, log: [e('review', 'changes', 1)] },
+    // a manager goto plan right after review's stuck hold (no onRounds): adjacent in the log, no replan flag
+    { id: 'r3', node: 'plan', createdAt: 0, log: [e('review', 'changes', 1), e('plan', 'ready', 2)] },
+    // a manager goto plan after review's own fail: also adjacent, also no replan flag
+    { id: 'r4', node: 'plan', createdAt: 0, log: [e('review', 'fail', 1), e('plan', 'ready', 2)] },
   ])
   expect(m.capReplans).toBe(1)
 })
@@ -290,7 +297,7 @@ test('render prints the round-cap and implement-passes line', () => {
       log: [
         e('review', 'changes', 1),
         e('review', 'changes', 2),
-        e('review', 'changes', 3),
+        replan('review', 'changes', 3),
         e('plan', 'ready', 4),
         e('deploy', 'deployed', 5),
       ],
