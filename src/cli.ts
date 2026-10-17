@@ -936,15 +936,19 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     ...(committed
       ? ['', '## Already committed on this branch (build on it, do not redo it)', committed]
       : []),
-    // mail text can hold more than one line (claude-factory-8pc.23: sweep mail carries raw --slo
-    // command output). Indent every line past the first, so an embedded "- from X:" line never reads
-    // as a fresh top-level bullet claiming to be from a different, more trusted sender.
+    // Sweep mail transports raw --slo command output (claude-factory-8pc.23), and that output
+    // can have more than one line. Add 4 spaces before every line after the first line. Do this
+    // so a line such as "- from X:" cannot start a new, more trusted "- from <sender>:" bullet.
+    //
+    // Divide the text at each line break. LF and CRLF are not the only line breaks: a single CR,
+    // NEL (U+0085), LS (U+2028) or PS (U+2029) can also start a fake "- from <sender>:" bullet
+    // (claude-factory-8pc.26).
     ...(inbox.length
       ? [
           '',
           '## Inbox',
           ...inbox.map(m => {
-            const [first, ...rest] = clipReport(m.text).split('\n')
+            const [first, ...rest] = clipReport(m.text).split(/\r\n|[\n\r\u0085\u2028\u2029]/)
             return [`- from ${m.from}: ${first}`, ...rest.map(l => `    ${l}`)].join('\n')
           }),
         ]
