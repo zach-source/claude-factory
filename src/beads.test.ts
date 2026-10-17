@@ -328,7 +328,16 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
   const bin = join(tmpdir(), `fake-bd-reject-${process.pid}`)
   mkdirSync(bin, { recursive: true })
   const log = join(bin, 'calls')
-  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho "$*" >> ${log}\n`)
+  // `queue` now reads the bead first, to drop any stale factory:*/station:* label (claude-factory-wnm.12);
+  // this fixture bead carries none, so that step changes nothing else queue() does
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    `  show) printf '%s' '[{"id":"fx-1","title":"t","labels":["rejected"]}]';;`,
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
   chmodSync(join(bin, 'bd'), 0o755)
   const path = process.env.PATH
   process.env.PATH = `${bin}:${path}`
@@ -336,7 +345,7 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     const b = beads(tmpdir(), 'factory/run-1')
     b.reject('fx-1', 'run-1/triage', 'already tracked by fx-2')
     b.queue('fx-1')
-    const [unclaim, update, queue] = readFileSync(log, 'utf8').trim().split('\n')
+    const [unclaim, update, show, queue] = readFileSync(log, 'utf8').trim().split('\n')
     expect(unclaim).toBe('unclaim fx-1 --actor factory/run-1')
     expect(update).toStartWith(
       'update fx-1 --remove-label factory --add-label rejected --set-metadata rejected_by=run-1/triage',
@@ -346,7 +355,39 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     )
     // nothing closes it: still open and ready for a person
     expect(readFileSync(log, 'utf8')).not.toContain('close')
+    expect(show).toBe('show fx-1 --json --actor factory/run-1')
     expect(queue).toBe('update fx-1 --add-label factory --remove-label rejected --actor factory/run-1')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('queue removes a stale factory:*/station:* label before adding the station it was given (claude-factory-wnm.12)', () => {
+  const bin = join(tmpdir(), `fake-bd-queue-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    `  show) printf '%s' '[{"id":"fx-1","title":"t","labels":["factory:release","station:deploy"]}]';;`,
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    b.queue('fx-1', 'implement')
+    const update = readFileSync(log, 'utf8')
+      .trim()
+      .split('\n')
+      .find(l => l.startsWith('update'))!
+    expect(update).toContain('--remove-label factory:release')
+    expect(update).toContain('--remove-label station:deploy')
+    expect(update).toContain('--add-label factory --remove-label rejected')
+    expect(update).toContain('--add-label station:implement')
   } finally {
     process.env.PATH = path
   }
@@ -422,6 +463,47 @@ test('requeue releases the claim, swaps factory:*/station:* labels when told to,
   } finally {
     process.env.PATH = path
   }
+})
+
+test('requeue throws on a bd show failure, instead of writing requeues=1 and dropping no old label (claude-factory-wnm.9)', () => {
+  const bin = join(tmpdir(), `fake-bd-requeue-fail-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    '  show) echo "Error fetching fx-1: dial tcp: i/o timeout" >&2; exit 1;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    expect(() => b.requeue('fx-1', 'run-1', { factory: 'release', station: 'implement' })).toThrow(
+      /Error fetching fx-1/,
+    )
+    // unclaim still ran (it is best-effort and comes first); no update ever landed on the failed read
+    const calls = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls.some(l => l.startsWith('unclaim fx-1'))).toBe(true)
+    expect(calls.some(l => l.startsWith('update fx-1'))).toBe(false)
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('factoryOf and stationOf refuse a bead with two factory: or two station: labels (claude-factory-wnm.11)', () => {
+  expect(() => factoryOf(bead('fx-1', { labels: ['factory:release', 'factory:lifecycle'] }))).toThrow(
+    /ambiguous factory labels/,
+  )
+  expect(() => stationOf(bead('fx-2', { labels: ['station:deploy', 'station:implement'] }))).toThrow(
+    /ambiguous station labels/,
+  )
+  // one of each, no ambiguity: both still read fine
+  expect(factoryOf(bead('fx-3', { labels: ['factory:release', 'station:deploy'] }))).toBe('release')
+  expect(stationOf(bead('fx-3', { labels: ['factory:release', 'station:deploy'] }))).toBe('deploy')
 })
 
 test('hasMetadata reads the metadata-field listing, true only when bd answers a non-empty array', () => {
