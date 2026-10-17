@@ -26,6 +26,20 @@ minor release may change the factory format, the CLI or the run state.
     rule out owning an id, so the lookup reads "lookup failed" for it, never "not found". `dream()`
     and both `memory compact` paths (`--dry-run` and real) now pass it to `applyTiers()`.
     `compactMessage()` adds `, N retired` and `, N flagged` clauses when either count is over 0.
+- `factory gc --worktrees` fixes two gaps the PR #70 security review found. (claude-factory-ulv)
+  - `src/cli.ts`: `snapshotWorktree()` used to set `GIT_INDEX_FILE` to a path that other
+    processes can predict: `factory-gc-index-<runId>-<pid>` in the shared tmpdir. A write race
+    between `git add -A` and `git write-tree` can snapshot the wrong tree before the caller
+    force-removes the worktree. The function now uses `mkdtempSync` to make a private,
+    unpredictable 0700 directory for the index file. It removes this directory in its `finally`
+    block.
+  - `src/gc.ts`: `coverTip()` used to trust a cross-repo (fork) PR's CLOSED or MERGED state as
+    proof that a tip merged. `PrFact` now carries a required `isCrossRepository` field.
+    `coverTip()` ignores each `PrFact` where this field is `true`. `prFacts()` (`src/cli.ts`)
+    asks `gh` for `isCrossRepository`. It fails closed, with no branch deletes in that rig, when
+    a PR entry has no boolean `isCrossRepository` value. `beadClosedFacts()` builds its CLOSED
+    set from non-cross-repo PRs only. It never runs `bd show` for a fork PR's bead.
+
 - `factory gc --worktrees` now matches a GitHub origin only on the exact host `github.com`. The
   old regex had no host anchor. An origin like `https://mygithub.com/owner/repo` parsed as the
   GitHub slug `owner/repo`. `gc` then read PR state for a different repo on `github.com`. It
