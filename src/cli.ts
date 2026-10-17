@@ -685,6 +685,12 @@ function git(cwd: string, ...args: string[]) {
   return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
 }
 
+/** every git call that can reach a remote (fetch, ls-remote, push) gets this: a credential prompt
+ * never blocks (it fails instead), and a timeout caps how long a hung connection can hold
+ * gc-worktrees.lock (claude-factory-l38.12). It never skips hooks. */
+const GIT_NETWORK_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+const GIT_NETWORK_TIMEOUT_MS = 30_000
+
 /**
  * the factory a new run follows: a path as given; else the repo's own `.factory/<name>.ts` in `checkout`
  * (the run's worktree, so the version in the commit it starts from); else the template of that name
@@ -2965,6 +2971,7 @@ function worktreeFacts(repo: string): gc.WorktreeFact[] {
  * branch. null on any failure (fetch, ls-remote, or no default ref): gc then deletes no branch here (AC5). */
 function branchFacts(repo: string): gc.BranchFact[] | null {
   const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', '--no-tags', 'origin'], {
+    env: GIT_NETWORK_ENV,
     timeout: 120_000,
   })
   if (fetch.exitCode !== 0) return null
@@ -2981,7 +2988,10 @@ function branchFacts(repo: string): gc.BranchFact[] | null {
     '--format=%(refname:short) %(objectname)',
     'refs/heads/factory/',
   ])
-  const remote = Bun.spawnSync(['git', '-C', repo, 'ls-remote', '--heads', 'origin', 'refs/heads/factory/*'])
+  const remote = Bun.spawnSync(
+    ['git', '-C', repo, 'ls-remote', '--heads', 'origin', 'refs/heads/factory/*'],
+    { env: GIT_NETWORK_ENV, timeout: GIT_NETWORK_TIMEOUT_MS },
+  )
   if (local.exitCode !== 0 || remote.exitCode !== 0) return null
   const byName = new Map<string, { local: string | null; remote: string | null }>()
   const get = (name: string) => byName.get(name) ?? { local: null, remote: null }
@@ -3128,15 +3138,18 @@ export function deleteBranchCas(repo: string, name: string, local: string | null
     if (!localOk) error = p.stderr.toString().trim()
   }
   if (remote) {
-    const p = Bun.spawnSync([
-      'git',
-      '-C',
-      repo,
-      'push',
-      `--force-with-lease=refs/heads/${name}:${remote}`,
-      'origin',
-      `:refs/heads/${name}`,
-    ])
+    const p = Bun.spawnSync(
+      [
+        'git',
+        '-C',
+        repo,
+        'push',
+        `--force-with-lease=refs/heads/${name}:${remote}`,
+        'origin',
+        `:refs/heads/${name}`,
+      ],
+      { env: GIT_NETWORK_ENV, timeout: GIT_NETWORK_TIMEOUT_MS },
+    )
     remoteOk = p.exitCode === 0
     if (!remoteOk) error = (error ? `${error}; ` : '') + p.stderr.toString().trim()
   }
