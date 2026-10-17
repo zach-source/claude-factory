@@ -934,7 +934,19 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     ...(committed
       ? ['', '## Already committed on this branch (build on it, do not redo it)', committed]
       : []),
-    ...(inbox.length ? ['', '## Inbox', ...inbox.map(m => `- from ${m.from}: ${clipReport(m.text)}`)] : []),
+    // mail text can hold more than one line (claude-factory-8pc.23: sweep mail carries raw --slo
+    // command output). Indent every line past the first, so an embedded "- from X:" line never reads
+    // as a fresh top-level bullet claiming to be from a different, more trusted sender.
+    ...(inbox.length
+      ? [
+          '',
+          '## Inbox',
+          ...inbox.map(m => {
+            const [first, ...rest] = clipReport(m.text).split('\n')
+            return [`- from ${m.from}: ${first}`, ...rest.map(l => `    ${l}`)].join('\n')
+          }),
+        ]
+      : []),
     '',
     '## Reporting (required)',
     'When you are finished, report exactly once and then stop:',
