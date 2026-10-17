@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -2856,11 +2857,23 @@ function strictPaneCwds(): { cwd: string }[] | null {
 }
 
 type WtEntry = { path: string; branch: string | null; locked: boolean; prunable: boolean }
-/** `git worktree list --porcelain`, split into entries; the rig's own checkout is dropped, as it is
- * never a run's worktree */
+/**
+ * `git worktree list --porcelain`, split into entries. This marks the rig's own checkout `locked`
+ * (claude-factory-l38.11). gc must never remove it, and must keep any factory/* branch checked out
+ * there (an unusual case) in `keptBranches` too.
+ *
+ * `git worktree list` always prints the real path. This function compares paths after
+ * `realpathSync`, so a symlinked repo path still matches and keeps this protection.
+ */
 function worktreeEntries(repo: string): WtEntry[] {
   const p = Bun.spawnSync(['git', '-C', repo, 'worktree', 'list', '--porcelain'])
   if (p.exitCode !== 0) return []
+  let repoReal = repo
+  try {
+    repoReal = realpathSync(repo)
+  } catch {
+    // repo itself unreadable: fall through with the raw path, so nothing below throws on it
+  }
   const out: WtEntry[] = []
   let cur: WtEntry | null = null
   for (const line of p.stdout.toString().split('\n')) {
@@ -2872,7 +2885,15 @@ function worktreeEntries(repo: string): WtEntry[] {
     else if (cur && line.startsWith('prunable')) cur.prunable = true
   }
   if (cur) out.push(cur)
-  return out.filter(e => e.path !== repo)
+  return out.map(e => {
+    let real = e.path
+    try {
+      real = realpathSync(e.path)
+    } catch {
+      // gone already: worktreeFacts()'s own existsSync check drops it next, this mapping is moot
+    }
+    return real === repoReal ? { ...e, locked: true } : e
+  })
 }
 const UNTRACKED_IGNORE = '.beads.gate.lock'
 /** each worktree's dirty state and disk use. `du -sk` runs once per worktree: slow at hundreds of

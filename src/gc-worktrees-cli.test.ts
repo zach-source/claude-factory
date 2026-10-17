@@ -457,6 +457,44 @@ test('n: a run whose run.json is unreadable counts as live, never folded into a 
   expect(git(repo, 'branch', '--list', forkBranch)).not.toBe('')
 })
 
+test("o: a factory/* branch checked out in the rig's own main checkout is never deleted (claude-factory-l38.11)", () => {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  const branch = `factory/${id}`
+  git(repo, 'checkout', '-q', '-b', branch, 'main') // the main checkout itself sits on this branch
+  git(repo, 'push', '-q', 'origin', `${branch}:${branch}`) // same tip as main: trivially an ancestor
+  const d = runDir(id)
+  mkdirSync(d, { recursive: true })
+  const factoryFile = join(d, 'factory.ts')
+  writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id,
+      factory: factoryFile,
+      repo,
+      goal: 'g',
+      ws: `ws-${id}`,
+      worktree: join(dir, 'wt', id), // never created: this run has no separate worktree
+      branch,
+    }),
+  )
+  const actor = createActor(compile(DEF)).start()
+  actor.send({ type: 'TICK', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 's', at: OLD })
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([])
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('') // still a local branch
+  expect(git(repo, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(branch) // still checked out, untouched
+  expect(git(origin, 'branch', '--list', branch)).not.toBe('')
+})
+
 test('h: 2 live runs among finished ones leaves 2 owned worktrees after a pass (AC11)', () => {
   reset()
   const { repo } = makeRig('r1')
