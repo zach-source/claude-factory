@@ -281,15 +281,15 @@ factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egr
 
 [`factories/lifecycle.ts`](factories/lifecycle.ts) is the whole software lifecycle in one graph:
 
-| Loop                         | Stations                                                                                           |
-| ---------------------------- | -------------------------------------------------------------------------------------------------- |
-| build                        | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
+| Loop                          | Stations                                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- |
+| build                         | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
 | small (docs, test-only, tiny) | triage → quick ⇄ check (→ security only when flagged) → release → deploy (**you merge**)           |
-| optimize (performance, cost) | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
-| refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
-| operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
-| incident                     | incident → rollback or plan → … → postmortem, which files the action items                         |
-| sweeps                       | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)    |
+| optimize (performance, cost)  | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
+| refactor                      | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
+| operate                       | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
+| incident                      | incident → rollback or plan → … → postmortem, which files the action items                         |
+| sweeps                        | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)    |
 
 Sweeps never end: each pass files what it finds as runs of its own (`lifecycle@incident`,
 `@plan`, `@baseline`, `@characterize`), skipping duplicates. `factory loop` ticks with no
