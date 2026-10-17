@@ -153,6 +153,29 @@ CHANGELOG): a manager session already running when the pm shipped cannot registe
 agent, so it retries every 60 seconds, forever. Set `pm` back to `true` only after a fix
 closes that gap.
 
+The hidden `briefer` subagent starts once for each gate visit. It has no tools at all.
+
+Run `factory gate-brief facts <run>` to get the facts. The facts are:
+
+- the pull request title
+- the pull request state
+- the diff stat
+- the CI checks
+- the last verify summary
+- the last review or security summary
+- the goal of the run
+
+The briefer reads that JSON. It writes a brief of 8 lines or fewer. Run `factory gate-brief set <key> <file>` to clean the brief and keep it. The command writes the brief to `<home>/gate-briefs.json`. It also writes one line for each try to `<home>/brief-log.jsonl`.
+
+The gate's Interview item shows the brief. You do not need to read anything.
+
+The manager's "Gates" prompt line reads the brief from the `gate.brief` field of `factory show <run>`.
+The manager itself reads the raw pull request and journal only when that field is missing. It also reads them when you ask for more.
+
+You still decide every gate with `factory decide`. The briefer cannot run that command.
+`tool.call` denies it in all cases. To turn off the briefer, set `briefer` to `false` in the
+plugin's `userConfig`.
+
 To tick with no console, run `factory loop [--interval ms]` in the factory directory.
 
 ## 6. Your first run
