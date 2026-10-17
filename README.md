@@ -284,6 +284,7 @@ factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egr
 | Loop                         | Stations                                                                                           |
 | ---------------------------- | -------------------------------------------------------------------------------------------------- |
 | build                        | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
+| small (docs, test-only, tiny) | triage → quick ⇄ check (→ security only when flagged) → release → deploy (**you merge**)           |
 | optimize (performance, cost) | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
 | refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
 | operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
@@ -298,6 +299,15 @@ request ready, and deploy parks on it until you merge it on GitHub, then deploys
 the rollout. It never merges itself. Request changes on the pull request to send the run back
 to implement; close it to end the run with its bead deferred.
 Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews security.
+
+Triage picks `small` for a change that is docs-only, test-only, or tiny. A tiny change has
+about 50 changed lines or fewer, in 3 files or fewer, with no new dependency, migration, or
+public API change. Triage does not pick `small` when the change is security-sensitive or
+touches a factory definition.
+
+The `small` loop skips the Opus plan step. It pays for security only when `check` flags
+the change. Deploy reports `published`, with no soak, for a docs-only or test-only change.
+This is the same as for a library or a change to `.factory/` only.
 `factories/lifecycle.test.ts` walks every loop through the machine.
 
 `bin/factory help` lists every command; the manager model uses the same CLI.
