@@ -8,6 +8,7 @@ import {
   fsyncSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -3106,7 +3107,7 @@ function prFacts(repo: string): gc.PrFact[] | null {
       '--limit',
       '1000',
       '--json',
-      'number,state,headRefName,headRefOid',
+      'number,state,headRefName,headRefOid,isCrossRepository',
     ],
     { cwd: repo, timeout: 60_000 },
   )
@@ -3114,6 +3115,9 @@ function prFacts(repo: string): gc.PrFact[] | null {
   try {
     const list = JSON.parse(p.stdout.toString())
     if (!Array.isArray(list) || list.length >= 1000) return null
+    // a missing or non-boolean isCrossRepository (an older `gh`, a malformed entry) must fail
+    // closed (AC4/AC5): trusting a fork PR as same-repo can cover an unmerged tip
+    if (!list.every(it => typeof it?.isCrossRepository === 'boolean')) return null
     return list
   } catch {
     return null
@@ -3125,7 +3129,10 @@ type GcRunRef = gc.RunRef & { repo: string }
  * a failed or missing read counts as open (AC5), never as closed. */
 function beadClosedFacts(repo: string, runs: GcRunRef[], prs: gc.PrFact[] | null): Record<string, boolean> {
   if (!prs) return {}
-  const closed = new Set(prs.filter(p => p.state === 'CLOSED').map(p => p.headRefName))
+  // a fork's CLOSED PR is not ours to have merged (claude-factory-ulv): never trust it to close a tip
+  const closed = new Set(
+    prs.filter(p => p.state === 'CLOSED' && !p.isCrossRepository).map(p => p.headRefName),
+  )
   const out: Record<string, boolean> = {}
   for (const r of runs) {
     if (!r.bead || !['done', 'aborted'].includes(r.node)) continue
@@ -3161,7 +3168,11 @@ function allRunRefs(): GcRunRef[] {
 /** commits every change in `path` (tracked and untracked, `.gitignore` honored) to a local-only ref
  * at `refs/factory-gc/<runId>`: a dirty-small worktree's work survives its removal (AC6). Returns the sha. */
 function snapshotWorktree(path: string, runId: string): string {
-  const indexFile = join(tmpdir(), `factory-gc-index-${runId}-${process.pid}`)
+  // a private, unpredictably named dir (claude-factory-ulv): `factory-gc-index-<runId>-<pid>` in the
+  // shared tmpdir let another user on the same host pre-create the index path, or race the write
+  // between `add -A` and `write-tree` below
+  const indexDir = mkdtempSync(join(tmpdir(), 'factory-gc-index-'))
+  const indexFile = join(indexDir, 'index')
   const env = { ...process.env, GIT_INDEX_FILE: indexFile }
   // every step must succeed, or the caller must never force-remove on the strength of this snapshot
   // (claude-factory-l38.8): an ignored failure here silently commits an empty or stale tree instead
@@ -3193,7 +3204,7 @@ function snapshotWorktree(path: string, runId: string): string {
     git(path, 'update-ref', `refs/factory-gc/${runId}`, commit)
     return commit
   } finally {
-    rmSync(indexFile, { force: true })
+    rmSync(indexDir, { recursive: true, force: true })
   }
 }
 

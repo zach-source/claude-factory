@@ -203,7 +203,9 @@ test('3: unmerged with no PR keeps the branch, but still removes the worktree', 
 
 test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the merge is kept', () => {
   const runs = [ref('r1', 'done'), ref('r2', 'done')]
-  const prs: PrFact[] = [{ state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa' }]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const r1 = rigFacts({
     worktrees: [],
     branches: [branch('factory/r1', { local: 'aaa', remote: 'aaa' })],
@@ -212,7 +214,9 @@ test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the mer
   expect(planOf(r1, runs).removeBranches).toEqual([
     { runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'aaa' },
   ])
-  const prs2: PrFact[] = [{ state: 'MERGED', headRefName: 'factory/r2', headRefOid: 'aaa' }]
+  const prs2: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r2', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const r2 = rigFacts({
     worktrees: [],
     branches: [branch('factory/r2', { local: 'ccc', remote: 'aaa' })],
@@ -224,8 +228,8 @@ test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the mer
 test('5: a CLOSED PR with the bead closed deletes; open or unknown bead keeps', () => {
   const runs = [ref('r1', 'done', '/wt/r1', { bead: 'b-1' }), ref('r2', 'done', '/wt/r2', { bead: 'b-2' })]
   const prs: PrFact[] = [
-    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa' },
-    { state: 'CLOSED', headRefName: 'factory/r2', headRefOid: 'aaa' },
+    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+    { state: 'CLOSED', headRefName: 'factory/r2', headRefOid: 'aaa', isCrossRepository: false },
   ]
   const rig = rigFacts({
     worktrees: [],
@@ -238,9 +242,48 @@ test('5: a CLOSED PR with the bead closed deletes; open or unknown bead keeps', 
   expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r2', name: 'factory/r2', reason: 'bead-open' })
 })
 
+test('5a: a cross-repo CLOSED PR with a closed bead never covers a tip (claude-factory-ulv)', () => {
+  const runs = [ref('r1', 'done', '/wt/r1', { bead: 'b-1' })]
+  const prs: PrFact[] = [
+    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: true },
+  ]
+  const rig = rigFacts({
+    worktrees: [],
+    branches: [branch('factory/r1')],
+    prs,
+    beadClosed: { 'b-1': true },
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'unmerged' })
+})
+
+test('5b: a cross-repo MERGED PR never covers a tip (claude-factory-ulv)', () => {
+  const runs = [ref('r1', 'done')]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: true },
+  ]
+  const rig = rigFacts({ worktrees: [], branches: [branch('factory/r1')], prs })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'unmerged' })
+})
+
+test('5c: a same-repo MERGED PR still covers (control for 5a/5b)', () => {
+  const runs = [ref('r1', 'done')]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
+  const rig = rigFacts({ worktrees: [], branches: [branch('factory/r1')], prs })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([{ runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'aaa' }])
+})
+
 test('6: an OPEN PR with an ancestor tip keeps', () => {
   const runs = [ref('r1', 'done')]
-  const prs: PrFact[] = [{ state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa' }]
+  const prs: PrFact[] = [
+    { state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const rig = rigFacts({
     worktrees: [],
     branches: [branch('factory/r1', { localMerged: true, remoteMerged: true })],
