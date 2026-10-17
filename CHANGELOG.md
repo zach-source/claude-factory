@@ -66,7 +66,8 @@ minor release may change the factory format, the CLI or the run state.
 
     This denial is defense in depth only. It covers only the forms that the guard knows. A
     worker can still bypass it in other ways. The gap stays open
-    (claude-factory-8pc.24, .27, .28).
+    (claude-factory-8pc.24, .27; the remaining `env -u`/`env -i` sibling forms are follow-up
+    claude-factory-igj).
 
 - `factory gc --worktrees` now reclaims a merged `factory/*` branch on a rig with 1000 or more
   pull requests. `prFacts()` used to call `gh pr list --limit 1000`. A rig with more pull
