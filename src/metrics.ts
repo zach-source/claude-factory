@@ -52,12 +52,17 @@ export function metrics(records: RunRecord[]) {
   } = {}
   const fails: { [k: string]: number } = {}
   const cycle: number[] = []
+  const smallCycle: number[] = []
   const gateWait: number[] = []
   let reviewLoops = 0
   let triageAlreadyDone = 0
+  let smallRuns = 0
   for (const r of records) {
     const f = fate(r)
     fates[f] = (fates[f] ?? 0) + 1
+    // claude-factory-wnn: a small run's first log entry is triage with outcome `small`.
+    const isSmall = r.log[0]?.node === 'triage' && r.log[0].outcome === 'small'
+    if (isSmall) smallRuns++
     let prev = r.createdAt
     for (const e of r.log) {
       // a pre-launch PR park (isPrWait) spent no worker: skip it so it is not a station visit,
@@ -74,12 +79,18 @@ export function metrics(records: RunRecord[]) {
       }
       // ponytail: a gate's wait is its station's time; gates are named approve in every factory so far
       if (e.node === 'approve') gateWait.push((e.at - prev) / HOUR)
-      if (e.node === 'review' && e.outcome === 'changes') reviewLoops++
+      // claude-factory-wnn: `check` is the small route's combined verify+review station. It sends
+      // work back the same way `review`'s `changes` outcome does. Count it the same way.
+      if ((e.node === 'review' || e.node === 'check') && e.outcome === 'changes') reviewLoops++
       if (e.node === 'triage' && e.outcome === 'reject' && ALREADY_DONE.test(e.summary)) triageAlreadyDone++
       prev = e.at
     }
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
-    if (shipped) cycle.push((shipped.at - r.createdAt) / HOUR)
+    if (shipped) {
+      const hours = (shipped.at - r.createdAt) / HOUR
+      cycle.push(hours)
+      if (isSmall) smallCycle.push(hours)
+    }
   }
   const ended = (fates.shipped ?? 0) + (fates.rejected ?? 0) + (fates.closed ?? 0) + (fates.aborted ?? 0)
   // a pre-launch PR park (isPrWait) spent no worker, so it is not a deploy session
@@ -92,6 +103,7 @@ export function metrics(records: RunRecord[]) {
     fates,
     shipRate: ended ? (fates.shipped ?? 0) / ended : null,
     hoursToShip: { median: median(cycle), p90: p90(cycle) },
+    small: { runs: smallRuns, hoursToShip: { median: median(smallCycle), p90: p90(smallCycle) } },
     approveWaitHours: { median: median(gateWait), p90: p90(gateWait) },
     reviewLoops,
     deploySessionsPerShippedRun: fates.shipped ? deploySessions / fates.shipped : null,
@@ -123,6 +135,7 @@ export function render(
       `, to ship ${h(m.hoursToShip.median)} median / ${h(m.hoursToShip.p90)} p90` +
       `, waiting on approve ${h(m.approveWaitHours.median)} median / ${h(m.approveWaitHours.p90)} p90`,
     `  deploy sessions per shipped run ${m.deploySessionsPerShippedRun === null ? '-' : m.deploySessionsPerShippedRun.toFixed(2)}`,
+    `  small runs ${m.small.runs}, to ship ${h(m.small.hoursToShip.median)} median / ${h(m.small.hoursToShip.p90)} p90`,
     `  review sent work back ${m.reviewLoops}x; failures: ${
       Object.entries(m.fails)
         .map(([k, v]) => `${k} ${v}`)
