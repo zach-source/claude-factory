@@ -166,9 +166,19 @@ function recursiveFlag(w: string): boolean {
   return false
 }
 
-/** true when `words` (the rm command and its args) ask for a recursive delete, stopping flag scanning at `--` or the first non-flag word */
-function isRecursiveRm(words: string[]): boolean {
-  for (const w of words.slice(1)) {
+/**
+ * `words` is an rm command and its args. `words[start]` is the rm word itself.
+ * This function returns true when `words` asks for a recursive delete.
+ * It stops at the first `--` word or the first non-flag word.
+ *
+ * claude-factory-lbn: this function reads `words` by index. It does not call
+ * `words.slice(start + 1)`. The find branch below calls this function once for each
+ * `-exec rm` or `-execdir rm` word. A slice there would still cost O(n) for each call, and
+ * O(n^2) in total.
+ */
+function isRecursiveRm(words: string[], start = 0): boolean {
+  for (let k = start + 1; k < words.length; k++) {
+    const w = words[k]!
     if (w === '--') return false
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
@@ -656,10 +666,14 @@ function denyAt(
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'find') {
+      // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
+      // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
+      // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a
+      // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
+      // O(n), not O(n^2).
       for (let i = 0; i < cmd.length; i++) {
         if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-        const rest = cmd.slice(i + 1)
-        if (rest.length && baseWord(rest[0]!) === 'rm' && isRecursiveRm(rest)) return REASON
+        if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
       }
     }
   }
