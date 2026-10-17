@@ -59,7 +59,16 @@ import {
   type Bead,
 } from './beads'
 import * as plan from './plan'
-import { clipUtf8, dueSweeps, sigOf, sweepGoal, sweepGuard, sweepNames, type SweepState } from './sweeps'
+import {
+  clipUtf8,
+  dueSweeps,
+  sigOf,
+  sweepFiler,
+  sweepGoal,
+  sweepGuard,
+  sweepNames,
+  type SweepState,
+} from './sweeps'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
@@ -4431,7 +4440,19 @@ async function dispatch() {
           errors.push({ id: v.id, error: (err as Error).message })
         }
       }
-      const ready = b.ready().filter(x => !excluded.has(x.id))
+      // claude-factory-8pc.17: a sweep pass can file a new bead. This can happen between the
+      // `b.every()` read above and the `b.ready()` read below. The loop above never scores this
+      // bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and no
+      // allowlist check. Drop it here too, unless it already carries `sweep:<station>`. That
+      // label means a person re-queued it: the loop above keeps the same rule.
+      const seen = new Set(all.map(x => x.id))
+      const ready = b.ready().filter(x => {
+        if (excluded.has(x.id)) return false
+        if (seen.has(x.id)) return true // the guard above already scored this bead
+        const station = sweepFiler(x)
+        if (!station) return true // not a sweep-filed bead: not this guard's concern
+        return !!x.labels?.includes(`sweep:${station}`)
+      })
       // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
       // lost its own claim on the bead, to a reaper, say). `dispatchable` below drops this bead from
       // `candidates`, so no second run starts for it. This loop still leaves one comment naming the

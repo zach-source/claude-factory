@@ -958,3 +958,44 @@ test('a relabel failure fails closed: the bead it could not relabel never starts
   }[]
   expect(errors.some(e => e.id === 'acme-1')).toBe(true)
 })
+
+/** `list` (`b.every()`) answers before a sweep pass files its bead: it sees none. `ready` answers
+ * after: it names a fresh sweep-filed bead (`created_by` matches the sweep-filer pattern) with
+ * only `factory`, no `sweep:<station>` label yet. A real bd would read this way when a sweep
+ * pass's own `bd create` lands in the gap between the two calls (claude-factory-8pc.17). */
+function fakeLateFiledBd() {
+  mkdirSync(gbin, { recursive: true })
+  const bead = {
+    id: 'acme-1',
+    created_by: 'factory/sweeps-run1/maintain',
+    title: 't',
+    labels: ['factory'],
+  }
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    "  list) printf '%s' '[]';;", // the guard above sees no sweep-filed bead this pass
+    `  ready) printf '%s' '${JSON.stringify([bead])}';;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('a sweep bead filed between b.every() and b.ready() never starts unguarded (claude-factory-8pc.17)', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeLateFiledBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(ghome, 'runs'))).toBe(false) // acme-1 would else start with no cap check at all
+})
