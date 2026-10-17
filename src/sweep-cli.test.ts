@@ -116,3 +116,25 @@ test('rig.sweeps: [] (--sweeps none) starts nothing, and writes no journal line'
   expect(existsSync(join(home, 'runs'))).toBe(false)
   expect(journal()).toHaveLength(0)
 })
+
+// claude-factory-8pc.14: a sweep run's id starts with its factory's own `name` field, not the spec
+// a rig names. src/sweeps.ts's sweepFiler matches only a run id starting with `sweeps-`: a
+// sweepsFactory (or a repo's own .factory/sweeps.ts) with a different `name` would file beads the
+// flood guard never sees. `factory sweep` must refuse to run it, instead of running unguarded.
+test("rig.sweepsFactory naming a factory whose own `name` is not 'sweeps' is refused: no run starts", () => {
+  const r = reset(['maintain'])
+  mkdirSync(join(r, '.factory'), { recursive: true })
+  writeFileSync(
+    join(r, '.factory', 'acme-sweeps.ts'),
+    `export default { name: 'acme-sweeps', start: 'maintain', nodes: { maintain: { prompt: 'x', next: { filed: 'done' }, everyMin: 1440 } } }\n`,
+  )
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', sweepsFactory: 'acme-sweeps' }]),
+  )
+  const out = factory(['sweep'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(home, 'runs'))).toBe(false) // refused: the flood guard cannot see its beads
+  expect(journal()).toHaveLength(0) // refused before any (rig, sweep) pass, same as a bad spec
+  expect(out.err).toContain("'acme-sweeps', not 'sweeps'")
+})
