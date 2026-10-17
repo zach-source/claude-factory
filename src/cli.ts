@@ -4242,6 +4242,9 @@ async function precheckSkip(
 ): Promise<{ skip: boolean; error?: string }> {
   if (process.env.FACTORY_PRECHECK === '0') return { skip: false }
   if (bead.metadata?.rejected_by === 'dispatch') return { skip: false }
+  // claude-factory-wnm: a requeue edge already proved an earlier run's PR landed. The pre-check
+  // must not reject this bead on the strength of that same, already-landed PR.
+  if (bead.metadata?.requeued_from) return { skip: false }
   if (!/^[\w.-]+$/.test(bead.id)) return { skip: false }
   if (originRef(rig.repo)?.forge !== 'github') return { skip: false }
   let merged: MergedPr[]
@@ -4373,6 +4376,33 @@ async function dispatch() {
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
         if (room(rig, busy, undefined, held) <= 0) break
+        // claude-factory-wnm: a `factory:<name>` label on the bead picks a different factory to
+        // compile this run from, in place of the rig's own `rig.factory`. A bad label (an unknown
+        // name, or a factory file that fails to load) must defer only this bead. It must never
+        // throw. A throw here hits the rig-level catch below. That catch skips every later
+        // candidate too.
+        const named = factoryOf(bead)
+        let spec = rig.factory
+        let name = preview.name
+        if (named) {
+          const source = namedFactorySource(named, rig.repo)
+          if (!source) {
+            errors.push({ id: bead.id, error: `no factory ${named}` })
+            try {
+              b.defer(bead.id, `no factory ${named}`)
+            } catch (err) {
+              errors.push({ id: bead.id, error: (err as Error).message })
+            }
+            continue
+          }
+          try {
+            name = (await loadFactory(source)).name
+          } catch (err) {
+            errors.push({ id: bead.id, error: (err as Error).message })
+            continue
+          }
+          spec = source
+        }
         const runBranches = runIds()
           .filter(id => {
             try {
@@ -4395,7 +4425,7 @@ async function dispatch() {
         if (skip) continue
         let run, def
         try {
-          ;({ run, def } = await createTracked(rig.factory, preview.name, rig.repo, goalOf(bead), bead.id))
+          ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id))
         } catch (err) {
           if (/already claimed/.test((err as Error).message)) continue // lost the race to another worker
           throw err

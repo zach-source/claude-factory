@@ -831,3 +831,117 @@ test('REQUEUE_MAX (5) stops the loop: a bead already requeued 5 times is deferre
   expect(trackOf('run-4')).toMatchObject({ isSettled: true })
   expect(trackOf('run-4').requeued).toBeUndefined()
 })
+
+// claude-factory-wnm (A4, A6, A7): the `factory:<name>` dispatch label.
+// A bead's `factory:<name>` label picks a different factory to compile the run from.
+// `station:<name>` (already honored, claude-factory-b6c.27) still picks where in it to start.
+// An unknown name must defer only that bead; the next candidate in the same rig still starts
+// (A6). A requeued bead's pre-check must not reject it a second time for its own, already-landed
+// PR (A7). This reuses the pre-check harness (pdir/phome/pbin), since it already gives the rig a
+// GitHub origin and a fake `gh`.
+const RELEASE_FIXTURE: Factory = {
+  name: 'release',
+  start: 'triage',
+  nodes: {
+    triage: { prompt: 'p', next: { done: 'done' } },
+    deploy: { prompt: 'p', next: { done: 'done' } },
+  },
+}
+
+/** writes a fixture factory to `<repo>/.factory/<name>.json`, where `namedFactorySource` looks first */
+function writeFixtureFactory(repo: string, name: string, def: Factory) {
+  mkdirSync(join(repo, '.factory'), { recursive: true })
+  writeFileSync(join(repo, '.factory', `${name}.json`), JSON.stringify(def))
+}
+
+/** fake bd: `ready` answers exactly the beads given. Every call is logged, as `fakePrecheckBd` does. */
+function fixtureBd(beads: Record<string, unknown>[]) {
+  mkdirSync(pbin, { recursive: true })
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${bdCallsLog}"`,
+    'case "$1" in',
+    `  ready) printf '%s' '${JSON.stringify(beads)}';;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'bd'), script)
+  chmodSync(join(pbin, 'bd'), 0o755)
+}
+
+function fixtureReset(beads: Record<string, unknown>[]) {
+  rmSync(pdir, { recursive: true, force: true })
+  mkdirSync(pClaudeConfig, { recursive: true })
+  writeFileSync(join(pClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(phome, { recursive: true })
+  writeFileSync(join(phome, 'labels.stamp'), '') // throttles labelPass's own unrelated gh call
+  const r = precheckRepo()
+  writeFixtureFactory(r, 'release', RELEASE_FIXTURE)
+  fixtureBd(beads)
+  fakeGh()
+  fakePrecheckHerdr()
+  writeFileSync(join(phome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+}
+
+/** the pinned factory a started run compiled from (its `name` field), or undefined if none started */
+function pinnedFactoryName(): string | undefined {
+  const runsDir = join(phome, 'runs')
+  if (!existsSync(runsDir)) return undefined
+  const id = readdirSync(runsDir)[0]
+  if (!id) return undefined
+  const f = join(runsDir, id, 'factory.json')
+  return existsSync(f) ? (JSON.parse(readFileSync(f, 'utf8')) as { name?: string }).name : undefined
+}
+
+function gotosOf(id: string): { type: string; node: string }[] {
+  const inbox = join(phome, 'runs', id, 'inbox.jsonl')
+  if (!existsSync(inbox)) return []
+  return readFileSync(inbox, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+    .filter(e => e.type === 'GOTO')
+}
+
+test('factory:<name> picks that named factory; station:<name> still starts it there (A4)', () => {
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory', 'factory:release', 'station:deploy'] }])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+  expect(pinnedFactoryName()).toBe('release')
+  expect(gotosOf(runDirs()[0]!)).toMatchObject([{ type: 'GOTO', node: 'deploy' }])
+})
+
+test('station:<name> with no factory:<name> label keeps the rig factory (A4 control)', () => {
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory', 'station:deploy'] }])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(pinnedFactoryName()).toBe('lifecycle')
+})
+
+test('an unknown factory:<name> defers only that bead; the next candidate still starts (A6)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory', 'factory:nope'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1) // acme-1 deferred, acme-2 starts
+  const started = JSON.parse(readFileSync(join(phome, 'runs', runDirs()[0]!, 'run.json'), 'utf8')) as {
+    bead?: string
+  }
+  expect(started.bead).toBe('acme-2')
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => l.startsWith('bd defer acme-1') && l.includes('no factory nope'))).toBe(true)
+})
+
+test('a requeued bead with a merged PR citing it starts with 0 gh calls (A7)', () => {
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory'], metadata: { requeued_from: 'run-0' } }])
+  const out = pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-1 lands the thing') })
+  expect(out.code).toBe(0)
+  expect(existsSync(ghCallsLog)).toBe(false)
+  expect(runDirs()).toHaveLength(1)
+})
