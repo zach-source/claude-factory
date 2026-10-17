@@ -3077,11 +3077,17 @@ function originConfigUrl(repo: string): string | null {
   const p = Bun.spawnSync(['git', '-C', repo, 'config', '--get', 'remote.origin.url'])
   return p.exitCode === 0 ? p.stdout.toString().trim() : null
 }
-/** `<owner>/<repo>` from an origin URL (`https://github.com/<owner>/<repo>.git` or
- * `git@github.com:<owner>/<repo>.git`), else null. */
-function githubSlug(url: string): string | null {
-  const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/)
-  return m ? `${m[1]}/${m[2]}` : null
+/** Get `<owner>/<repo>` from an origin URL. This result controls which repo's PR state
+ * `gc --worktrees` reads before it deletes a branch (claude-factory-0u0).
+ * - Match the host `github.com` only, never a longer host that merely ends with it.
+ * - Accept `https://`, `ssh://`, `git@host:`, and a form with userinfo before the host, the
+ *   same forms `parseRemote` (src/prs.ts:99) accepts.
+ * - Give null for a path that is not exactly `<owner>/<repo>`. */
+export function githubSlug(url: string): string | null {
+  const remote = parseRemote(url)
+  if (!remote || forgeOf(remote.host) !== 'github') return null
+  const parts = remote.path.split('/')
+  return parts.length === 2 && parts[0] && parts[1] ? `${parts[0]}/${parts[1]}` : null
 }
 /** `gh pr list`, called once per rig, not once per branch. The plan for claude-factory-l38
  * rejected the per-branch call: it would run about 700 calls on the first pass. This function
