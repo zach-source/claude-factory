@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  ALIAS_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
   LIVE_REASON,
@@ -625,6 +626,65 @@ test('denyReason allows a bare git push, git push origin HEAD and git push -u or
   expect(denyReason('git push -u origin HEAD', undefined, undefined, gate)).toBeUndefined()
 })
 
+// claude-factory-zl5.19: `@` is a short alias for `HEAD`.
+// On a case-insensitive filesystem (macOS), git's own ref lookup also resolves `head`, in any
+// letter case, to `HEAD`.
+// Real git confirmed that both push the current branch.
+// A refspec of `@` or `head` must deny the same way a bare `HEAD` does on a protected current
+// branch.
+const DENY_PUSH_HEAD_ALIAS = ['git push origin @', 'git push origin head', 'git push origin Head']
+
+test.each(DENY_PUSH_HEAD_ALIAS)(
+  'denyReason denies %j when the current branch is main (claude-factory-zl5.19)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows git push origin @ and head on a run branch (claude-factory-zl5.19)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(denyReason('git push origin @', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git push origin head', undefined, undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-zl5.20: real git resolves an unqualified push `<dst>` by trying it under `refs/`
+// first, so `heads/main` reaches the real `refs/heads/main`, the same branch a bare `main`
+// reaches. Real git confirmed this DWIM for both the colon form and the bare form.
+const DENY_PUSH_HEADS_PREFIX = ['git push origin HEAD:heads/main', 'git push origin heads/main']
+
+test.each(DENY_PUSH_HEADS_PREFIX)(
+  'denyReason denies %j (claude-factory-zl5.20, DWIM reaches refs/heads/main)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-zl5.21: a `-c alias.<name>=push` or `git config alias.<name> push` write defines
+// a push alias; `-c remote.<name>.push=<refspec>` or `git config remote.<name>.push <refspec>`
+// sets a push override. Either write can send a later, plain-looking push to a protected branch
+// with no push word, and no protected branch name, on that later command line. This guard denies
+// the write itself.
+const DENY_GIT_CONFIG_PUSH = [
+  'git config alias.p push',
+  'git config alias.p "push origin main"',
+  'git config remote.origin.push HEAD:refs/heads/main',
+  'git -c remote.origin.push=HEAD:refs/heads/main push',
+]
+
+test.each(DENY_GIT_CONFIG_PUSH)('denyReason denies %j (claude-factory-zl5.21)', cmd => {
+  expect(denyReason(cmd)).toBe(PUSH_REASON)
+})
+
+const ALLOW_GIT_CONFIG = [
+  'git config user.name "Test"',
+  'git config alias.co checkout',
+  'git config --get remote.origin.url',
+]
+
+test.each(ALLOW_GIT_CONFIG)('denyReason allows %j', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
 // claude-factory-zl5.12: a HEAD-targeting push is a bare `git push`, or `git push origin HEAD`.
 // When this guard cannot read the current branch, it has no name to check against the
 // protected list. This guard then fails closed. It denies, and does not let the push through.
@@ -753,6 +813,91 @@ const ALLOW_API_PUSH = [
 ]
 
 test.each(ALLOW_API_PUSH)('denyReason allows %j', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+// claude-factory-zl5.15: `-p`/`--preview` take a value word. GH_API_VALUE_FLAGS did not list it.
+// So the value word stood in for the real endpoint. The method and endpoint after it went
+// unchecked.
+const DENY_MERGE_PREVIEW = [
+  'gh api -p corsair -X PUT repos/o/r/pulls/5/merge',
+  'gh api --preview corsair -X PUT repos/o/r/pulls/5/merge',
+]
+
+test.each(DENY_MERGE_PREVIEW)('denyReason denies %j (claude-factory-zl5.15)', cmd => {
+  expect(denyReason(cmd)).toBe(MERGE_REASON)
+})
+
+// claude-factory-zl5.16: gh reads a field pair as `-f=name=value` too: an `=` right after the
+// 1-char flag. gh also lets a caller cluster a boolean short flag (`-i`) with a value-taking
+// one (`-X`, `-f`, `-F`), in one word.
+const DENY_MERGE_PFLAG = [
+  "gh api graphql -f=query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+  "gh api graphql -F=query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+  'gh api -iXPUT repos/o/r/pulls/5/merge',
+  'gh api -if base=main repos/o/r/merges',
+]
+
+test.each(DENY_MERGE_PFLAG)('denyReason denies %j (claude-factory-zl5.16)', cmd => {
+  expect(denyReason(cmd)).toBe(MERGE_REASON)
+})
+
+const ALLOW_MERGE_PFLAG = ['gh api -i repos/o/r/pulls/5/merge'] // GET + --include: read-only
+test.each(ALLOW_MERGE_PFLAG)('denyReason allows %j', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+// claude-factory-zl5.17: `gh api` takes the GraphQL endpoint as a bare `graphql`, a leading-slash
+// path, or a full URL. Each form must reach the same merge, ready and push mutation checks.
+const DENY_MERGE_GRAPHQL_ENDPOINT = [
+  "gh api /graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+  "gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+]
+
+test.each(DENY_MERGE_GRAPHQL_ENDPOINT)('denyReason denies %j (claude-factory-zl5.17)', cmd => {
+  expect(denyReason(cmd)).toBe(MERGE_REASON)
+})
+
+// claude-factory-zl5.18: a `$variable` or `$(command)` in a field value, and a shell-expanded PR
+// number in a REST path, read as literal, unresolved text here. Each must fail closed (deny),
+// not pass with no match.
+const DENY_MERGE_SHELL_EXPANSION = [
+  'gh api graphql -f query="$Q"',
+  'gh api graphql -f query="$(cat f)"',
+  'gh api -X PUT repos/o/r/pulls/$N/merge',
+]
+
+test.each(DENY_MERGE_SHELL_EXPANSION)('denyReason denies %j (claude-factory-zl5.18, fail closed)', cmd => {
+  expect(denyReason(cmd)).toBe(MERGE_REASON)
+})
+
+// claude-factory-zl5.18 is a sibling bug in ghApiPushDenied's own field reads: a `ref` or
+// `branch` field that is a shell expansion must fail closed too, the same as a graphql query.
+const DENY_API_PUSH_SHELL_EXPANSION = [
+  'gh api repos/o/r/git/refs -f ref="$REF" -f sha=abc123',
+  'gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=YQ== -f branch="$BRANCH"',
+]
+
+test.each(DENY_API_PUSH_SHELL_EXPANSION)('denyReason denies %j (claude-factory-zl5.18, fail closed)', cmd => {
+  expect(denyReason(cmd)).toBe(PUSH_REASON)
+})
+
+// claude-factory-zl5.22: `gh alias set` or `gh alias import` can hide a denied gh command behind
+// a short name this hook has no memory of from a later, separate `gh <name>` call. It denies the
+// alias write itself, when the expansion's own text already denies, and denies `alias import`
+// outright (it reads a file this hook cannot check).
+const DENY_GH_ALIAS = ['gh alias set m "pr merge"', 'gh alias set m "gh pr merge"']
+
+test.each(DENY_GH_ALIAS)('denyReason denies %j (claude-factory-zl5.22)', cmd => {
+  expect(denyReason(cmd)).toBe(MERGE_REASON)
+})
+
+test('denyReason denies gh alias import outright (claude-factory-zl5.22)', () => {
+  expect(denyReason('gh alias import aliases.yml')).toBe(ALIAS_REASON)
+})
+
+const ALLOW_GH_ALIAS = ['gh alias set co "pr checkout"', 'gh alias list']
+test.each(ALLOW_GH_ALIAS)('denyReason allows %j', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
 
