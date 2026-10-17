@@ -3133,6 +3133,9 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
     console.log(`${p.rig}: owned ${p.owned}, live ${p.live}, unowned ${p.unowned}`)
     if (dryRun) continue
     const repo = byRigRepo.get(p.rig)!
+    // a worktree whose `git worktree remove` fails keeps its branch too (claude-factory-l38.6):
+    // `update-ref -d` does not check whether a worktree still has the branch checked out
+    const failedWorktrees = new Set<string>()
     for (const w of p.removeWorktrees) {
       try {
         rmSync(join(w.path, '.beads.gate.lock'), { force: true })
@@ -3147,7 +3150,16 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
             sha: snapshot,
           })
         }
-        Bun.spawnSync(['git', '-C', repo, 'worktree', 'remove', ...(w.snapshot ? ['--force'] : []), w.path])
+        const rm = Bun.spawnSync([
+          'git',
+          '-C',
+          repo,
+          'worktree',
+          'remove',
+          ...(w.snapshot ? ['--force'] : []),
+          w.path,
+        ])
+        if (rm.exitCode !== 0) throw new Error(`git worktree remove: ${rm.stderr.toString().trim()}`)
         gcLog({ type: 'worktree', rig: p.rig, run: w.runId, path: w.path, bytes: w.bytes })
         worktreesN++
         bytesN += w.bytes
@@ -3156,10 +3168,15 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
         writeJson(file, { ...prior, worktree: { path: w.path, bytes: w.bytes, snapshot }, at: now })
       } catch (err) {
         errors++
+        failedWorktrees.add(w.runId)
         gcLog({ type: 'error', rig: p.rig, run: w.runId, path: w.path, reason: (err as Error).message })
       }
     }
     for (const b of p.removeBranches) {
+      if (failedWorktrees.has(b.runId)) {
+        gcLog({ type: 'skip-branch', rig: p.rig, run: b.runId, ref: `refs/heads/${b.name}` })
+        continue
+      }
       const { localOk, remoteOk, error } = deleteBranchCas(repo, b.name, b.local, b.remote)
       if (b.local && localOk) {
         gcLog({ type: 'branch', rig: p.rig, run: b.runId, ref: `refs/heads/${b.name}`, sha: b.local })

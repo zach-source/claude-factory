@@ -323,6 +323,33 @@ test('g: a second pass while gc-worktrees.lock is held deletes nothing and exits
   expect(existsSync(worktree)).toBe(true)
 })
 
+test('j: git worktree remove failing keeps the worktree and its branch, and journals an error (claude-factory-l38.6)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([])
+  const wtParent = join(dir, 'wt')
+  chmodSync(wtParent, 0o555) // no write: git can't unlink the worktree's entries inside it
+  try {
+    const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+    expect(out.code).toBe(0)
+    expect(out.out).toContain('reclaimed: 0 worktrees')
+    expect(existsSync(worktree)).toBe(true) // removal failed: the worktree stays
+    expect(git(repo, 'branch', '--list', branch)).not.toBe('') // the branch is never deleted for a failed worktree
+    const lines = readFileSync(join(home, 'gc-worktrees.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l))
+    expect(lines.some(l => l.type === 'error' && l.run === id)).toBe(true)
+    expect(lines.at(-1).errors).toBe(1)
+  } finally {
+    chmodSync(wtParent, 0o755) // restore before afterEach's recursive rm
+  }
+})
+
 test('h: 2 live runs among finished ones leaves 2 owned worktrees after a pass (AC11)', () => {
   reset()
   const { repo } = makeRig('r1')
