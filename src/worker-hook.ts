@@ -352,13 +352,19 @@ function xargsHidesOperand(words: string[]): boolean {
   return false
 }
 
-// claude-factory-zl5.41: these 7 environment variables replace git's own config lookup. Real git
-// reads `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` as an injected list of
-// config pairs, of any length. `GIT_CONFIG_PARAMETERS` is the same list in git's own internal
-// encoding. `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` point git at a whole config
-// file this guard cannot read. Any one of them can set a key `isPushConfigWrite` denies, such as
-// `push.default=matching`, with no value on this command line for this guard to check.
-const DANGEROUS_GIT_CONFIG_ENV = /^GIT_CONFIG(_GLOBAL|_SYSTEM|_COUNT|_PARAMETERS|_KEY_\d+|_VALUE_\d+)?$/
+// claude-factory-zl5.41: these environment variables replace git's own config lookup.
+// Real git reads `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` as a config
+// list of any length. `GIT_CONFIG_PARAMETERS` holds the same list in git's own internal format.
+// `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` each name a config file this guard
+// cannot read. Each name can set a key that `isPushConfigWrite` denies, for example
+// `push.default=matching`. The command line shows no such value for this guard to check.
+//
+// claude-factory-zl5.45: `HOME` and `XDG_CONFIG_HOME` name the same kind of unreadable file.
+// Git reads `$HOME/.gitconfig` as its own global config, with no `GIT_CONFIG_*` name in sight.
+// Git reads `$XDG_CONFIG_HOME/git/config` the same way. `GIT_DIR` and `GIT_COMMON_DIR` point git
+// at a different repository. That repository's config file counts too.
+const DANGEROUS_GIT_CONFIG_ENV =
+  /^(GIT_CONFIG(_GLOBAL|_SYSTEM|_COUNT|_PARAMETERS|_KEY_\d+|_VALUE_\d+)?|HOME|XDG_CONFIG_HOME|GIT_DIR|GIT_COMMON_DIR)$/
 
 /**
  * True when `words` has a plain `NAME=value` word, or an `export NAME=value` word, that sets one
@@ -375,6 +381,31 @@ function setsDangerousGitConfigEnv(words: string[]): boolean {
     const eq = w.indexOf('=')
     if (eq <= 0) continue
     if (DANGEROUS_GIT_CONFIG_ENV.test(w.slice(0, eq))) return true
+  }
+  return false
+}
+
+/**
+ * True when any word in the raw `command` text has baseWord `git` or `git-<verb>`
+ * (claude-factory-zl5.44).
+ *
+ * This reads the unparsed text, not one segment's `words` array. A quoted argument to `eval` or
+ * `bash -c` stays one `segments()` word with its own spaces inside (for example `'git push
+ * origin'`), so a `baseWord` check on that one word never matches `git`. A wrapper flag
+ * `realCommand` does not know by name (`nice -n 5`, `command -p`, `stdbuf -o0`) can also push a
+ * `git` word past a cheap `cmd[0]` check. This scan instead splits the whole raw text on
+ * whitespace and quote characters, so it reads a `git` word at any depth: inside a quoted
+ * recursion argument, behind an unknown wrapper, or set by a separate `export` statement earlier
+ * in the same command.
+ *
+ * `denyAt` calls this only when `hasDangerousConfigEnv` is already true, so a stray `git`-shaped
+ * word in an unrelated value only matters alongside one of the `DANGEROUS_GIT_CONFIG_ENV` names.
+ */
+function commandHasGitWord(command: string): boolean {
+  for (const w of command.split(/['"`\s;&|()<>]+/)) {
+    if (!w) continue
+    const b = baseWord(w)
+    if (b === 'git' || /^git-/.test(b)) return true
   }
   return false
 }
@@ -1580,16 +1611,31 @@ function gitReason(cmd: string[], root: string | undefined, gate: HookGate): str
   return gitPushDenied(pushTail, currentBranch, gate) ? PUSH_REASON : undefined
 }
 
+// claude-factory-zl5.43: a dashed git-core binary name (`git-push`, `git-send-pack`, and so on)
+// runs the same code as `git <verb>`, with the verb baked into the binary name instead of a
+// separate argument. `git --exec-path` holds one such binary per verb, and a real shell finds
+// them there or on PATH with no `git` word anywhere in the command line. The capture group is the
+// verb itself: `git-push origin main` reads the same as `git push origin main`.
+const GIT_DASHED_BINARY = /^git-(.+)$/
+
 /**
- * Returns true when a word in `words` is a bare `git` token.
- * From that word, the words start a command that this guard denies (claude-factory-zl5.3).
- * The function scans every position, with the same fail-closed rule as `anyGhReason` for `gh`.
- * A wrapper that this hook does not strip by name cannot hide a `git` word that follows it.
+ * Returns true when a word in `words` is a bare `git` token, or a dashed git-core binary name
+ * (claude-factory-zl5.43). From that word, the words start a command that this guard denies
+ * (claude-factory-zl5.3). The function scans every position, with the same fail-closed rule as
+ * `anyGhReason` for `gh`. A wrapper that this hook does not strip by name cannot hide a `git`
+ * word that follows it.
  */
 function anyGitReason(words: string[], root: string | undefined, gate: HookGate): string | undefined {
   for (let j = 0; j < words.length; j++) {
-    if (baseWord(words[j]!) === 'git') {
+    const b = baseWord(words[j]!)
+    if (b === 'git') {
       const r = gitReason(words.slice(j), root, gate)
+      if (r) return r
+      continue
+    }
+    const dashed = GIT_DASHED_BINARY.exec(b)
+    if (dashed) {
+      const r = gitReason(['git', dashed[1]!, ...words.slice(j + 1)], root, gate)
       if (r) return r
     }
   }
@@ -1646,7 +1692,35 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * claude-factory-epz: `depth` counts how many eval/sh -c levels denyAt has already recursed
  * through to reach `words`. Each recursive call below passes `depth + 1`, so denyAt can fail
  * closed past MAX_SHELL_DEPTH levels instead of recursing without a bound.
+ *
+ * claude-factory-zl5.42: `env -S STRING` (GNU and BSD) splits `STRING` into words at run time and
+ * runs it, the same shape of hazard as `eval`. `envSplitStringValue` reads `STRING` off the `env`
+ * word's own flags: the plain `-S`/`--split-string` form with the value as a separate word, the
+ * attached form (`-S'git push origin main'`, tokenized with the quote stripped as one word
+ * `-Sgit push origin main`), a short-flag cluster (`-vS`), and `--split-string=...`.
  */
+/**
+ * Reads the value an `env -S`/`env --split-string` word at `words[j]` would split and run, or
+ * undefined when no such flag is present (claude-factory-zl5.42). Stops and returns undefined at
+ * the first word that does not start with `-`: that word is `env`'s own command, and `-S` did not
+ * appear before it.
+ */
+function envSplitStringValue(words: string[], j: number): string | undefined {
+  for (let k = j + 1; k < words.length; k++) {
+    const w = words[k]!
+    if (w === '-S' || w === '--split-string') return words[k + 1]
+    const longEq = /^--split-string=([\s\S]*)$/.exec(w)
+    if (longEq) return longEq[1]
+    // a short-flag cluster carrying `S`: `-vS` (value is the next word), or the attached form
+    // `-Sgit push origin main` (the tokenizer already dropped the quote around the value, so the
+    // value sits right after the `S` in this one word).
+    const shortCluster = /^-[a-zA-Z]*S([\s\S]*)$/.exec(w)
+    if (shortCluster) return shortCluster[1] || words[k + 1]
+    if (!w.startsWith('-')) return undefined
+  }
+  return undefined
+}
+
 function anyShellReason(
   words: string[],
   root: string | undefined,
@@ -1656,6 +1730,13 @@ function anyShellReason(
 ): string | undefined {
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
+    if (bw === 'env') {
+      const val = envSplitStringValue(words, j)
+      if (val === undefined) continue
+      const r = denyAt(val, root, personOnly, gate, depth + 1)
+      if (r) return r
+      break
+    }
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
       const ci = shCFlagIndex(words.slice(j))
       if (ci < 0) continue
@@ -1731,11 +1812,11 @@ function denyAt(
   const g = gate
   let hasRm = false
   let hasCd = false
-  // claude-factory-zl5.41: these 2 flags accumulate across every segment of `command`, not one
+  // claude-factory-zl5.41: this flag accumulates across every segment of `command`, not one
   // segment alone. An `export GIT_CONFIG_COUNT=1` and a later, `;`-separated `git push` are 2
-  // different segments, and either order of the 2 checks below still denies.
+  // different segments, and either order still denies, through the `commandHasGitWord` check
+  // below (claude-factory-zl5.44: that check reads the whole raw `command` text, not one segment).
   let hasDangerousConfigEnv = false
-  let hasGitWord = false
   for (const words of segments(command)) {
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
@@ -1744,10 +1825,6 @@ function denyAt(
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
-    // claude-factory-zl5.41: `b` is already the basename of this segment's real command, past any
-    // leading `VAR=val` word, wrapper or `timeout <n>` word that `realCommand` strips. A bare
-    // `git` word there is cheap to read: no extra scan of `words` on top of the scans below.
-    if (b === 'git') hasGitWord = true
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
@@ -1777,7 +1854,7 @@ function denyAt(
       }
     }
   }
-  if (hasDangerousConfigEnv && hasGitWord) return PUSH_REASON
+  if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 

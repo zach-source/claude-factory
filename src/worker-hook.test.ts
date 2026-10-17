@@ -1377,3 +1377,103 @@ test('denyReason allows an unrelated config key and an unrelated env var (claude
   expect(denyReason('MY_OWN_VAR=1 git push origin', undefined, undefined, gate)).toBeUndefined()
   expect(denyReason('GIT_CONFIG_COUNT=1 echo hi')).toBeUndefined()
 })
+
+// claude-factory-zl5.42: review found `env -S`/`env --split-string` hides a merge, a ready, or a
+// push: BSD and GNU `env` split the string into words and run it, the same shape of hazard as
+// `eval`. Real git 2.54 moved remote `main` for the push row below (`env -S 'git push -q origin
+// main'`). Each row below pairs the flag form with the reason the recursed command itself denies.
+const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
+  ["env -S 'gh pr merge 5'", 'MERGE_REASON'],
+  ["env -S 'gh pr ready 5'", 'READY_REASON'],
+  ["env -S 'git push origin main'", 'PUSH_REASON'],
+  // the attached form: no space between -S and the quoted value
+  ["env -S'git push origin main'", 'PUSH_REASON'],
+  // a short-flag cluster ahead of S, value as its own word
+  ["env -vS 'git push origin main'", 'PUSH_REASON'],
+  ["env --split-string='git push origin main'", 'PUSH_REASON'],
+]
+const ENV_SPLIT_STRING_REASON: Record<string, string> = {
+  MERGE_REASON,
+  READY_REASON,
+  PUSH_REASON,
+}
+
+test.each(DENY_ENV_SPLIT_STRING)(
+  'denyReason denies %j (claude-factory-zl5.42, env -S/--split-string hides the real command)',
+  (cmd, reasonName) => {
+    expect(denyReason(cmd)).toBe(ENV_SPLIT_STRING_REASON[reasonName])
+  },
+)
+
+test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.42)', () => {
+  expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
+  expect(denyReason('env -i git status')).toBeUndefined()
+})
+
+// claude-factory-zl5.43: a dashed git-core binary name (`git-push`, `git-send-pack`, found on
+// PATH or under `git --exec-path`) runs the same code as `git <verb>`, with no `git` word in the
+// command line at all. Real git 2.54 moved remote `main` through the plain `git-push` form.
+test('denyReason denies dashed git-core binaries (claude-factory-zl5.43)', () => {
+  expect(denyReason('git-push origin main')).toBe(PUSH_REASON)
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason('git-send-pack ../remote.git', undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(denyReason('/nix/store/abc123-git-2.54.0/libexec/git-core/git-push origin main')).toBe(PUSH_REASON)
+  // the combo check (claude-factory-zl5.44) must also read a dashed binary as a git word
+  expect(denyReason('GIT_CONFIG_GLOBAL=/x/cfg git-push origin', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+test('denyReason allows a dashed git-core binary pushing a run branch (claude-factory-zl5.43)', () => {
+  expect(denyReason('git-push origin feature')).toBeUndefined()
+})
+
+// claude-factory-zl5.44: `hasGitWord` (the combo check paired with a DANGEROUS_GIT_CONFIG_ENV
+// name) used to read only one segment's `cmd[0]`, past `realCommand`'s own strip. Real git 2.54
+// moved remote `main` for `nice -n 5 git push origin` and `bash -c 'git push origin'`, each with
+// `push.default = matching` set through the unreadable config file `GIT_CONFIG_GLOBAL` names.
+const DENY_DANGEROUS_ENV_GIT_WORD_SIBLINGS = [
+  'GIT_CONFIG_GLOBAL=x nice -n 5 git push origin',
+  'GIT_CONFIG_GLOBAL=x command -p git push origin',
+  'GIT_CONFIG_GLOBAL=x stdbuf -o0 git push origin',
+  "GIT_CONFIG_GLOBAL=x eval 'git push origin'",
+  "GIT_CONFIG_GLOBAL=x bash -c 'git push origin'",
+  "export GIT_CONFIG_GLOBAL=x; bash -c 'git push origin'",
+]
+
+test.each(DENY_DANGEROUS_ENV_GIT_WORD_SIBLINGS)(
+  'denyReason denies %j (claude-factory-zl5.44, a dangerous git config env var pairs with a hidden git word)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the same wrappers with no dangerous git config env var (claude-factory-zl5.44)', () => {
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason('nice -n 5 git push origin', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason("bash -c 'git push origin'", undefined, undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-zl5.45: `HOME` and `XDG_CONFIG_HOME` redirect git's global config the same way
+// `GIT_CONFIG_GLOBAL` does. `GIT_DIR` and `GIT_COMMON_DIR` point git at a different repository's
+// config. Real git 2.54 moved remote `main` for the `HOME=` and `XDG_CONFIG_HOME=` rows, with
+// `push.default = matching` set in the config file each variable names.
+const DENY_HOME_AND_GIT_DIR_SIBLINGS = ['HOME=d git push origin', 'XDG_CONFIG_HOME=d git push origin']
+
+test.each(DENY_HOME_AND_GIT_DIR_SIBLINGS)(
+  'denyReason denies %j (claude-factory-zl5.45, HOME/XDG_CONFIG_HOME redirect git config like GIT_CONFIG_GLOBAL)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason denies GIT_DIR and GIT_COMMON_DIR paired with a git word (claude-factory-zl5.45)', () => {
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason('GIT_DIR=/other/.git git push origin', undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(denyReason('GIT_COMMON_DIR=/other/.git git push origin', undefined, undefined, gate)).toBe(
+    PUSH_REASON,
+  )
+})
+
+test('denyReason allows HOME set with no git word (claude-factory-zl5.45)', () => {
+  expect(denyReason('HOME=d echo hi')).toBeUndefined()
+})
