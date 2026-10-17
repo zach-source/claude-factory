@@ -306,3 +306,16 @@ export function worktreePlan(
     return { rig: rig.name, removeWorktrees, removeBranches, keep, owned, live, unowned }
   })
 }
+
+/** This function removes the userinfo part of each URL in `text` (claude-factory-0lt).
+ * A git error message can print the remote URL in full. A URL with a secret in its userinfo
+ * (user:pass@host, or a bare token@host) then puts that secret in cli.ts's gc-worktrees.jsonl
+ * journal.
+ *
+ * This function finds each `scheme://` in `text`, and the userinfo after it, up to the next
+ * `@`. It removes that userinfo, and it keeps the scheme and the host. It does not change an
+ * scp-style remote (git@github.com:acme/widget, with no `scheme://`). It does not change plain
+ * text with no URL. */
+export function scrubUrlUserinfo(text: string): string {
+  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, '$1')
+}
