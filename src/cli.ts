@@ -3187,6 +3187,28 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
   )
 }
 
+const GC_WORKTREES_MS = Number(process.env.FACTORY_GC_WORKTREES_MS) || 86_400_000
+/**
+ * A worktree gc pass runs at most once a day (FACTORY_GC_WORKTREES_MS). Set FACTORY_GC_WORKTREES=0
+ * to turn this off: tick then spawns no pass. Its lock is gc-worktrees.lock, separate from gc.lock.
+ *
+ * The first tick with no gc-worktrees.stamp file only writes the stamp. It starts the daily window.
+ * It spawns no pass. This way a fresh FACTORY_HOME never deletes a worktree or a branch on its own
+ * first tick.
+ */
+const kickGcWorktrees = () => {
+  if (process.env.FACTORY_GC_WORKTREES === '0') return
+  const stamp = join(HOME, 'gc-worktrees.stamp')
+  if (!existsSync(stamp)) return void writeFileSync(stamp, '') // seed only: the window starts now
+  const age = Date.now() - statSync(stamp).mtimeMs
+  if (isHeld('gc-worktrees.lock') || age < GC_WORKTREES_MS) return
+  spawnChild(CLI, ['gc', '--worktrees'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 async function tick(isPatrol = false) {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
@@ -3234,6 +3256,7 @@ async function tick(isPatrol = false) {
       kickConfigSync()
       kickSelfUpdate()
       kickGc()
+      kickGcWorktrees()
     }
   }
 }
