@@ -594,7 +594,7 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
     toolNames = undefined
   }
   if (hasAgentTool(toolNames) === false) {
-    rt.pmBlocked = 'this manager has no Agent tool: restart factory manager'
+    rt.pmBlocked = 'this manager has no Agent tool'
     $.ui.status(`factory: the pm is blocked: ${rt.pmBlocked}`)
     try {
       await appendPmLog($, { at: now, reason: 'blocked', durationMs: 0, error: rt.pmBlocked })
@@ -1294,7 +1294,7 @@ export const register: Register = (on, options) => {
           : shown === 'prs'
             ? prsView(p, pr, b)
             : shown === 'rigs'
-              ? rigsView(p, b, pl)
+              ? rigsView(p, b, pl, rt.pmBlocked)
               : shown === 'interview'
                 ? interviewView(p, b, dr, dec)
                 : boardView(p, b, dr, sel, d, tail)

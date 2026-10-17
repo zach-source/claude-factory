@@ -556,6 +556,14 @@ export function pmRetryDelay(failures: number): number {
   return Math.min(60_000 * 2 ** (failures - 1), 3_600_000)
 }
 
+/** The Rigs tab's own line while the pm is blocked (claude-factory-dun.30): `reason` is
+ * `register.tsx`'s `rt.pmBlocked`, the short cause (for example "this manager has no Agent
+ * tool"). One function composes the full line, so `register.tsx` (the pm-log entry and the
+ * status line) and `views.tsx` (this line) never drift apart on wording. */
+export function pmBlockedLine(reason: string): string {
+  return `pm blocked: ${reason}. The patrol still runs in the main chat. Restart factory manager (exit it, then \`factory manager --resume <session>\`) to bring the pm back.`
+}
+
 /**
  * Pure cadence for the pm subagent (claude-factory-dun.5). This is a hidden `factory:pm` subagent.
  * It ranks each rig's next work on its own timer, never every patrol. register.tsx's `pmNow` calls
