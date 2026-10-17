@@ -3212,7 +3212,9 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
   const allRigs = rigs()
   // an unknown --rig must fail, not silently run on zero rigs and print "reclaimed: 0" (claude-factory-l38.16)
   if (rigName && !allRigs.some(r => r.name === rigName))
-    fail(`factory gc --worktrees --rig ${rigName}: no such rig. Known rigs: ${allRigs.map(r => r.name).join(', ') || '(none)'}`)
+    fail(
+      `factory gc --worktrees --rig ${rigName}: no such rig. Known rigs: ${allRigs.map(r => r.name).join(', ') || '(none)'}`,
+    )
   const targetRigs = allRigs.filter(r => !rigName || r.name === rigName)
   const runs = allRunRefs()
   const panes = strictPaneCwds()
