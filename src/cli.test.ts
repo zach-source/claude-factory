@@ -1370,6 +1370,51 @@ test('memory helped on a "#" path whose file part is a directory refuses it as n
   expect(usageLinesOf(home)).toEqual([])
 }, 30_000)
 
+// claude-factory-5o7: noteExists()'s no-'#' branch was only existsSync(join(dir,path)), with no
+// isFile() check. A topic directory ('beads') or '.' (which resolves to '') passed that check, so
+// `memory helped beads` and `memory helped .` exited 0 and logged a bogus usage line for a path
+// that names no real note. These three shapes must all exit 1 and write nothing.
+test('memory helped on a topic directory exits 1 and writes nothing', () => {
+  const home = freshMemoryAddHome('helped-topic-dir')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(join(home, 'memory', 'beads', 'x.md'), '---\nsummary: a real note\n---\nbody\n')
+  const r = runMemoryHelped(home, ['beads'])
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('not a note in')
+  expect(r.err).toContain('beads')
+  expect(usageLinesOf(home)).toEqual([])
+}, 30_000)
+
+test('memory helped on "." exits 1 and writes nothing', () => {
+  const home = freshMemoryAddHome('helped-dot')
+  mkdirSync(join(home, 'memory'), { recursive: true })
+  const r = runMemoryHelped(home, ['.'])
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('not a note in')
+  expect(usageLinesOf(home)).toEqual([])
+}, 30_000)
+
+test('memory helped on a non-.md file exits 1 and writes nothing', () => {
+  const home = freshMemoryAddHome('helped-non-md')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(join(home, 'memory', 'beads', 'notes.txt'), 'plain text, not a note\n')
+  const r = runMemoryHelped(home, ['beads/notes.txt'])
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('not a note in')
+  expect(r.err).toContain('beads/notes.txt')
+  expect(usageLinesOf(home)).toEqual([])
+}, 30_000)
+
+test('memory helped on a real note still exits 0 and logs it', () => {
+  const home = freshMemoryAddHome('helped-real-note')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(join(home, 'memory', 'beads', 'x.md'), '---\nsummary: a real note\n---\nbody\n')
+  const r = runMemoryHelped(home, ['beads/x.md'])
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('noted:')
+  expect(usageLinesOf(home).map(l => l.path)).toEqual(['beads/x.md'])
+}, 30_000)
+
 test('memory add --supersedes on a short note writes one superseded: line, keeps every other byte, and logs contradicted', () => {
   const home = freshMemoryAddHome('supersedes-success')
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
