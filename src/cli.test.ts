@@ -980,6 +980,19 @@ test('memory add with a bad --until value exits 2 naming --until', () => {
   expect(inboxFiles(home)).toEqual([])
 }, 30_000)
 
+test('memory add gate() runs before dedupe: a refusal fires even when the summary already matches a note', () => {
+  const home = freshMemoryAddHome('gate-before-dedupe')
+  const summary = 'acme widget retries flush three times before it gives up'
+  mkdirSync(join(home, 'memory', 'general'), { recursive: true })
+  writeFileSync(join(home, 'memory', 'general', 'x.md'), `---\nsummary: ${summary}\n---\nbody\n`)
+  // no --kind: gate() must refuse before same() ever compares this summary to the seeded note above.
+  // If dedupe ran first, this would print "already noted" and exit 0 instead.
+  const r = runMemoryAdd(home, [summary, 'a plain body'])
+  expect(r.code).toBe(2)
+  expect(r.out).not.toContain('already noted')
+  expect(r.err).toContain('--kind')
+}, 30_000)
+
 test('memory add that cites nothing needs no --until', () => {
   const home = freshMemoryAddHome('no-cite-ok')
   const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body'])
