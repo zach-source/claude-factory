@@ -243,10 +243,11 @@ const rt = {
   pmWanted: false,
   /** the live run ids as of the last pmNow call, to notice a drop (live -> not live) next tick */
   liveIds: new Set<string>(),
-  /** a denied pm spawn's next attempt; 0 means try at once */
+  /** the next attempt after a failed spawn or a failed `factory plan facts` call; 0 means try at once */
   pmRetryAt: 0,
-  /** pm spawns that failed (a deny or a throw) since the last one that worked; feeds
-   * `pmRetryDelay`'s backoff (claude-factory-dun.29). A working spawn resets this to 0. */
+  /** pm spawns that failed (a deny or a throw), or `factory plan facts` calls that failed
+   * (claude-factory-4hb), since the last spawn that worked; feeds `pmRetryDelay`'s backoff
+   * (claude-factory-dun.29). A working spawn resets this to 0. */
   pmFailures: 0,
   /** set once this process finds the manager has no Agent tool (claude-factory-dun.29): gathers no
    * more facts and spawns nothing until a restart starts a fresh process. `undefined` means not
