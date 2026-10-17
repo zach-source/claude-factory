@@ -986,6 +986,19 @@ test.each(DENY_CONTENTS_BRANCH_PREFIX)('denyReason denies %j (claude-factory-zl5
   expect(denyReason(cmd)).toBe(PUSH_REASON)
 })
 
+// claude-factory-zl5.30: a percent-encoded slash after `heads` (`heads%2Fmain`) names the same path as a literal one (`heads/main`).
+// GitHub decodes the whole path before it reads it.
+// The raw, still-encoded path has no `/` there. So REF_HEADS_PATH never matches the raw text.
+// Only a whole-path decode before the match catches this.
+const DENY_REF_HEADS_ENCODED_SLASH = [
+  'gh api -X PATCH repos/o/r/git/refs/heads%2Fmain -f sha=abc123',
+  'gh api -X DELETE repos/o/r/git/refs/heads%2Fmain',
+]
+
+test.each(DENY_REF_HEADS_ENCODED_SLASH)('denyReason denies %j (claude-factory-zl5.30)', cmd => {
+  expect(denyReason(cmd)).toBe(PUSH_REASON)
+})
+
 // claude-factory-zl5.22: `gh alias set` or `gh alias import` can hide a denied gh command behind
 // a short name this hook has no memory of from a later, separate `gh <name>` call.
 //

@@ -880,14 +880,17 @@ function ghApiReadyDenied(apiArgs: string[], gate: HookGate): boolean {
   )
 }
 
-// claude-factory-zl5.10: a REST path that updates or deletes an existing branch ref.
-// Like the merge check above, this reads the path's tail, as in `/pulls/<n>/merge`.
-// A `/repos/<owner>/<repo>/` prefix is optional. An endpoint can be a full URL or a short path.
+// claude-factory-zl5.10: a REST path can update or delete an existing branch ref.
+// Like the merge check above, this reads the tail of the path, for example `/pulls/<n>/merge`.
+// The `/repos/<owner>/<repo>/` prefix is optional. An endpoint can be a full URL or a short path.
 //
-// claude-factory-zl5.26: this captures every character up to a `?` or `#`, not only up to the
-// first `/`. A branch name can itself have a slash, for example `acme/deploy`. The old pattern
-// stopped there and read only `acme` as the branch name. GitHub also accepts the singular
-// `git/ref/heads/<branch>` path for this same read and write, so this pattern matches `refs?`.
+// claude-factory-zl5.26: this pattern captures all characters up to a `?` or `#`. It does not stop at the first `/`.
+// A branch name can contain a slash, for example `acme/deploy`. The old pattern read only `acme`.
+// GitHub also accepts the singular `git/ref/heads/<branch>` path for the same read and write. So this pattern matches `refs?`.
+//
+// claude-factory-zl5.30: this pattern reads an already-decoded path (`decodeApiPath` below).
+// So a percent-encoded slash after `heads` (`heads%2Fmain`) matches the same as a literal one (`heads/main`).
+// The raw, still-encoded path has no `/` there. A match against the raw text misses this path.
 const REF_HEADS_PATH = /\/git\/refs?\/heads\/([^?#]+)/
 // a REST path that creates a new ref. The caller names the new ref in a `ref` field.
 // claude-factory-zl5.25: `normalizeEndpoint` already strips a `?query` and `#fragment`, so this
@@ -897,16 +900,17 @@ const REFS_CREATE_PATH = /\/git\/refs\/?$/
 const CONTENTS_PATH = /\/contents\/.+/
 
 /**
- * Decodes a percent-encoded REST path segment, such as the branch name after
- * `/git/refs/heads/` (claude-factory-zl5.26).
+ * Decodes a percent-encoded REST path once, in full (claude-factory-zl5.30).
  *
- * GitHub itself decodes this text before it reads the branch name. For example, `%6Dain` reaches
- * the branch `main`. A check against the raw, still-encoded text misses that branch.
+ * GitHub decodes the whole path before it reads it. A percent-encoded slash (`heads%2Fmain`)
+ * names the same path segment as a literal one (`heads/main`).
+ * A pattern that reads the raw, encoded text can miss that match. It does not only read the wrong branch name.
+ * So every REST pattern in `ghApiPushDenied` (`REF_HEADS_PATH`, `REFS_CREATE_PATH`, `CONTENTS_PATH`) must read this decoded form.
  *
- * Returns undefined when the text is not valid percent-encoding. The caller then fails closed,
- * the same rule `SHELL_UNSAFE` uses for a shell expansion this hook cannot read.
+ * Returns undefined when the text is not valid percent-encoding. The caller then fails closed.
+ * This is the same rule that `SHELL_UNSAFE` uses for a shell expansion that this hook cannot read.
  */
-function decodeRefTail(raw: string): string | undefined {
+function decodeApiPath(raw: string): string | undefined {
   try {
     return decodeURIComponent(raw)
   } catch {
@@ -930,19 +934,26 @@ function decodeRefTail(raw: string): string | undefined {
  * claude-factory-zl5.13: it also denies when `protectedBranchSet` reports `unresolved`.
  * In that case, it cannot check the branch name against the rig's real default branch.
  *
- * claude-factory-zl5.18: it also denies when the `ref` or `branch` field is a shell expansion
- * that this hook cannot read (`SHELL_UNSAFE`).
+ * claude-factory-zl5.18: it also denies when the `ref` or `branch` field is a shell expansion.
+ * This hook cannot read that expansion (`SHELL_UNSAFE`).
  * A check against a literal, unresolved `$BRANCH` finds no match.
- * So the call would wrongly pass.
+ * So the call passes, but this guard must deny it.
+ *
+ * claude-factory-zl5.30: it also denies when the URL path has malformed percent-encoding (`decodeApiPath` fails).
+ * This hook cannot read the real path then.
  */
 function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
   if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, PUSH_MUTATIONS)
-  // claude-factory-zl5.25: read the normalized path, with no `#fragment` or `?query`, for every
-  // REST pattern below.
-  const path = normalizeEndpoint(endpoint)
+  // claude-factory-zl5.25: read the normalized path, which has no `#fragment` or `?query`, for every REST pattern below.
+  // claude-factory-zl5.30: then decode the whole path once. Do this before any pattern reads it.
+  // GitHub decodes a percent-encoded slash in the path. `heads%2Fmain` names the same path as `heads/main`.
+  // A raw-text match against the still-encoded form misses that match.
+  const normalized = normalizeEndpoint(endpoint)
+  const path = decodeApiPath(normalized)
+  if (path === undefined) return true
   const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
   const fields = ghApiFields(apiArgs)
   const hasData = fields.length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
@@ -952,10 +963,9 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
   if (refMatch) {
     if (effective !== 'PATCH' && effective !== 'DELETE') return false
     if (unresolved) return true
-    // claude-factory-zl5.26: decode the branch name, then strip a `refs/heads/` or `heads/`
-    // prefix that the decode can reveal, before this checks it against the protected set.
-    const branch = decodeRefTail(refMatch[1]!)
-    return branch === undefined || protectedSet.has(stripRefsHeads(branch))
+    // claude-factory-zl5.30: `path`, and so `refMatch[1]`, is already decoded in full above.
+    // Strip a `refs/heads/` or `heads/` prefix that the decode reveals. Do this before the check against the protected set.
+    return protectedSet.has(stripRefsHeads(refMatch[1]!))
   }
   if (REFS_CREATE_PATH.test(path) && effective === 'POST') {
     const ref = fields.find(f => f.name === 'ref')?.value
