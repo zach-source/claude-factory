@@ -817,6 +817,10 @@ const ARCHIVE_NEW_DAYS = 14 // never shown at all, and this old: a candidate too
 const ARCHIVE_CAP = 25
 const PROMOTE_HELPED = 3 // a long entry helped at least this often...
 const PROMOTE_RUNS = 3 // ...across at least this many distinct runs, becomes a promotion candidate
+// a topic's short-note cap (FR-010): past this many short notes in one topic, the tier pass merges
+// the oldest ones into LONG.md so the topic keeps retrieval dense; the dream drops or merges the rest
+// the tier pass cannot (claude-factory-3u1.1.3).
+export const TOPIC_CAP = 15
 
 /** a short topic note (never inbox/*), with what decide() needs to judge it */
 export type ShortCandidate = {
@@ -841,30 +845,43 @@ export type Decision =
   | { kind: 'dedupe'; a: string; b: string; reason: string }
 
 /**
- * The tiering pass creates a plan. The plan uses no file and no clock. A table test covers each
+ * The tier pass creates a plan. The plan uses no file and no clock. A table test covers each
  * boundary: 7, 14 and 30 days; 3 helps or runs; the cap.
  *
- * `opts.historyDays` shows how far back the usage log goes.
- * If the history is shorter than ARCHIVE_NEW_DAYS (14 days), both usage-based archive rules do not apply.
- * A home with a new or lost `.usage.jsonl` file cannot tell "never shown" from "shown before logging began."
- * This is a spec edge case.
- * The default is Infinity. A caller that does not measure it, like most direct tests, keeps the old, unguarded rules.
- * The superseded rule ignores this guard. A note marked `superseded:` always archives.
+ * `opts.historyDays` sets how far back the usage log goes.
+ * Below ARCHIVE_NEW_DAYS (14 days), decide() does not use either usage-based archive rule.
+ * A new or lost `.usage.jsonl` file cannot show if a note was never shown or shown before the log started.
+ * The default is Infinity; a caller that does not pass it keeps the old rules, without this check.
+ * This check does not apply to the superseded rule. A note with `superseded:` always gets an `archive` decision.
  *
- * `opts.archiveCap` sets the maximum number of notes that one pass archives.
- * The oldest notes, by ageDays, go first. A tie breaks by path, ascending.
- * The cap applies to every topic and every archive rule, including superseded.
- * A note past the cap gets a `held` decision instead of `archive`.
- * This prevents a long-idle home from sending hundreds of notes to `.archive` on one day.
- * That day is the day they all cross their threshold.
+ * `opts.archiveCap` sets the top limit on notes that one pass can archive.
+ * The oldest notes go first, by ageDays. decide() breaks a tie by path, in ascending order.
+ * The cap applies to every topic and every archive rule, including superseded notes.
+ * A note past the cap gets a `held` decision, not an `archive` decision.
+ * So a long-idle home cannot send hundreds of notes to `.archive` on one day, when they all cross the threshold.
+ *
+ * `opts.topicCap` (FR-010) sets a per-topic cap on short notes.
+ * decide() checks it last, after every other rule above.
+ * If a topic holds more short notes than the cap, decide() adds `merge` decisions for its oldest notes.
+ * The merges stop when the topic reaches the cap. A held note still counts toward the topic.
+ *
+ * A candidate note has no decision yet. It is not superseded.
+ * It is at least MERGE_AGE_DAYS (7) days old.
+ *
+ * decide() never picks an inbox note. It never touches inbox at all.
+ * The oldest candidates go first, by ageDays descending, then path ascending.
+ * This is the same tie-break that the archive cap uses.
+ *
+ * The default is Infinity. A caller that does not pass topicCap keeps the current output.
+ * This is true for most direct tests, and for every call before claude-factory-3u1.1.3.
  */
 export function decide(
   short: ShortCandidate[],
   long: LongCandidate[],
   sims: SimPair[] = [],
-  opts: { historyDays?: number; archiveCap?: number } = {},
+  opts: { historyDays?: number; archiveCap?: number; topicCap?: number } = {},
 ): Decision[] {
-  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP } = opts
+  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP, topicCap = Infinity } = opts
   const decisions: Decision[] = []
   for (const n of short) {
     if (n.topic === 'inbox') continue // the dream files these; decide() never touches them
@@ -921,6 +938,40 @@ export function decide(
   for (const { d, i } of overCap.slice(archiveCap))
     decisions[i] = { kind: 'held', path: d.path, reason: `over the archive cap of ${archiveCap} this pass` }
 
+  // the topic cap (FR-010): runs last, once every other rule above has set its decision. A topic left
+  // with more short notes than topicCap, after its merge and archive decisions, gets extra `merge`
+  // decisions for its oldest still-undecided notes, until it is at the cap or no candidate is left.
+  if (Number.isFinite(topicCap)) {
+    const decided = new Set(
+      decisions.filter(d => d.kind !== 'promote' && d.kind !== 'dedupe').map(d => d.path),
+    )
+    const byTopic = new Map<string, ShortCandidate[]>()
+    for (const n of short) {
+      if (n.topic === 'inbox') continue
+      ;(byTopic.get(n.topic) ?? byTopic.set(n.topic, []).get(n.topic)!).push(n)
+    }
+    for (const [topic, topicNotes] of byTopic) {
+      const removed = decisions.filter(
+        d => (d.kind === 'merge' || d.kind === 'archive') && topicNotes.some(n => n.path === d.path),
+      ).length
+      let left = topicNotes.length - removed
+      if (left <= topicCap) continue
+      const candidates = topicNotes
+        .filter(n => !decided.has(n.path) && !n.superseded && n.ageDays >= MERGE_AGE_DAYS)
+        .sort((a, b) => b.ageDays - a.ageDays || a.path.localeCompare(b.path))
+      for (const n of candidates) {
+        if (left <= topicCap) break
+        decisions.push({
+          kind: 'merge',
+          path: n.path,
+          reason: `topic ${topic} over the short-note cap of ${topicCap} (${topicNotes.length} short notes)`,
+        })
+        decided.add(n.path)
+        left--
+      }
+    }
+  }
+
   return decisions
 }
 
@@ -949,6 +1000,14 @@ function envArchiveCap(): number {
   if (raw === undefined) return ARCHIVE_CAP
   const n = Number(raw)
   return Number.isInteger(n) && n >= 0 ? n : ARCHIVE_CAP
+}
+
+/** FACTORY_MEMORY_TOPIC_CAP, when it is a whole number >= 1; else the default TOPIC_CAP (15). */
+export function envTopicCap(): number {
+  const raw = process.env.FACTORY_MEMORY_TOPIC_CAP
+  if (raw === undefined) return TOPIC_CAP
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 1 ? n : TOPIC_CAP
 }
 
 /** how many days of usage history the store holds: now minus the oldest note's newest recorded `at`.

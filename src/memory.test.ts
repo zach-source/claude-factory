@@ -13,6 +13,7 @@ import {
   coreNotes,
   decide,
   dreamPrompt,
+  envTopicCap,
   type EvalCase,
   evalScore,
   evaluate,
@@ -45,6 +46,7 @@ import {
   supersede,
   tally,
   tierCandidates,
+  TOPIC_CAP,
   usage,
   usageLines,
   use,
@@ -825,6 +827,101 @@ test('decide() archive cap counts a superseded archive against the same cap', ()
   const decisions = decide(cands, [], [], { historyDays: 100, archiveCap: 1 })
   expect(decisions.filter(d => d.kind === 'archive').map(d => d.path)).toEqual(['beads/a.md'])
   expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/b.md'])
+})
+
+const plainOld = (path: string, over: Partial<ShortCandidate> = {}): ShortCandidate =>
+  short({ path, ageDays: 10, staleDays: 10, ...over })
+
+test('decide() topic cap: 15 short notes get no cap merge, 16 get exactly 1', () => {
+  const fifteen = Array.from({ length: 15 }, (_, i) => plainOld(`beads/n${i}.md`))
+  expect(decide(fifteen, [], [], { topicCap: 15 })).toEqual([])
+
+  const sixteen = Array.from({ length: 16 }, (_, i) => plainOld(`beads/n${i}.md`))
+  const decisions = decide(sixteen, [], [], { topicCap: 15 })
+  expect(decisions).toHaveLength(1)
+  expect(decisions[0]).toEqual({
+    kind: 'merge',
+    path: 'beads/n0.md',
+    reason: 'topic beads over the short-note cap of 15 (16 short notes)',
+  })
+})
+
+test('decide() topic cap picks the oldest notes first, by ageDays then path', () => {
+  const cands = [
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/n${i}.md`, { ageDays: 10 })),
+    plainOld('beads/oldest.md', { ageDays: 50 }),
+    plainOld('beads/older.md', { ageDays: 30 }),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions.map(d => ('path' in d ? d.path : ''))).toEqual(['beads/oldest.md', 'beads/older.md'])
+})
+
+test('decide() topic cap never picks a note under MERGE_AGE_DAYS (7) old, even when candidates run out first', () => {
+  // 20 notes, only 2 old enough to merge: the cap would need 5 removed to reach 15, but decide() must
+  // stop at 2 (out of candidates) rather than reach into the 18 young notes to hit the cap exactly
+  const cands = [
+    ...Array.from({ length: 2 }, (_, i) => plainOld(`beads/old${i}.md`, { ageDays: 10 })),
+    ...Array.from({ length: 18 }, (_, i) => plainOld(`beads/young${i}.md`, { ageDays: 6 })),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions).toEqual([
+    {
+      kind: 'merge',
+      path: 'beads/old0.md',
+      reason: 'topic beads over the short-note cap of 15 (20 short notes)',
+    },
+    {
+      kind: 'merge',
+      path: 'beads/old1.md',
+      reason: 'topic beads over the short-note cap of 15 (20 short notes)',
+    },
+  ])
+})
+
+test('decide() topic cap: 20 notes with 3 merges and 2 archives already planned leaves 15, no cap merge', () => {
+  const cands = [
+    ...Array.from({ length: 3 }, (_, i) => plainOld(`beads/shown${i}.md`, { shown: 1 })), // -> merge
+    ...Array.from({ length: 2 }, (_, i) => plainOld(`beads/stale${i}.md`, { staleDays: 31, helped: 0 })), // -> archive
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, topicCap: 15 })
+  expect(decisions.filter(d => d.kind === 'merge')).toHaveLength(3)
+  expect(decisions.filter(d => d.kind === 'archive')).toHaveLength(2)
+  expect(decisions.some(d => 'reason' in d && d.reason.includes('over the short-note cap'))).toBe(false)
+})
+
+test('decide() topic cap counts a held note (over the archive cap) as still in the topic', () => {
+  const cands = [
+    plainOld('beads/held-candidate.md', { staleDays: 31, helped: 0 }), // archive -> held (archiveCap 0)
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, topicCap: 15, archiveCap: 0 })
+  expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/held-candidate.md'])
+  const capMerges = decisions.filter(d => 'reason' in d && d.reason.includes('over the short-note cap'))
+  expect(capMerges).toHaveLength(1)
+  expect(capMerges[0]).toMatchObject({ path: 'beads/plain0.md' })
+})
+
+test('decide() topic cap counts a superseded note (archived outright) as removed from the topic', () => {
+  const cands = [
+    plainOld('beads/superseded.md', { superseded: 'beads/kept.md' }),
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions).toEqual([
+    { kind: 'archive', path: 'beads/superseded.md', reason: 'superseded by beads/kept.md' },
+  ])
+})
+
+test('decide() topic cap never touches inbox, however many notes it holds', () => {
+  const cands = Array.from({ length: 20 }, (_, i) => plainOld(`inbox/n${i}.md`, { topic: 'inbox' }))
+  expect(decide(cands, [], [], { topicCap: 15 })).toEqual([])
+})
+
+test('decide() with no topicCap (default Infinity) gives the same output as before the cap existed', () => {
+  const cands = Array.from({ length: 100 }, (_, i) => plainOld(`beads/n${i}.md`))
+  expect(decide(cands, [])).toEqual([])
+  expect(decide(cands, [], [], {})).toEqual([])
 })
 
 test('mdFileCount counts CORE.md and every topic README, LONG.md and short note, never .archive', () => {
