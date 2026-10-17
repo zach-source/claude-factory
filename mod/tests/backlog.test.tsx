@@ -73,6 +73,22 @@ test('the row limit counts a parent with its children and never splits them', ()
   expect(tiers(BEADS, 'all', 2).drawn).toBe(4)
 })
 
+test('beads labeled sweep:<name> group under their own heading, apart from the priority tiers', () => {
+  const list = [
+    ...BEADS,
+    { id: 's-1', title: 'drift found', type: 'bug', labels: ['sweep:maintain'] },
+    { id: 's-2', title: 'advisory found', type: 'bug', priority: 2, labels: ['sweep:maintain'] },
+    { id: 's-3', title: 'ci red', type: 'bug', labels: ['sweep:improve'] },
+  ]
+  const t = tiers(list)
+  const sweepTiers = t.tiers.filter(g => g.tier.startsWith('sweep:'))
+  // sorted by station name, each heading counting only its own group
+  expect(sweepTiers.map(g => g.tier)).toEqual(['sweep:improve (1)', 'sweep:maintain (2)'])
+  expect(sweepTiers.flatMap(g => g.rows.map(r => r.bead.id))).toEqual(['s-3', 's-1', 's-2'])
+  // the P2 priority tier still holds only its own root (a-4); no sweep-labeled bead joins it
+  expect(t.tiers.filter(g => g.priority === 2).flatMap(g => g.rows.map(r => r.bead.id))).toEqual(['a-4'])
+})
+
 test('the backlog tab draws the picked type with a child nested under its parent', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
