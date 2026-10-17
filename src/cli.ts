@@ -712,6 +712,17 @@ function factorySource(spec: string, checkout: string) {
     join(ROOT, 'factories', `${spec}.ts`)
   )
 }
+/**
+ * The factory that a bead's `factory:<name>` label names (claude-factory-wnm), by name only. It
+ * checks `repo`'s own `.factory/<name>.ts`, then this project's own `factories/<name>.ts`. It
+ * returns undefined when neither holds the name.
+ *
+ * Unlike `factorySource`, it never takes a literal path. `factoryOf` already limits a label's name
+ * to `NAME` (no path). This function stays name-only too, so a label can never pick an arbitrary
+ * file on disk.
+ */
+const namedFactorySource = (name: string, repo: string) =>
+  findIn(join(repo, OWN), name) ?? findIn(join(ROOT, 'factories'), name)
 /** what `extends` names, from the extending file's directory: a path, a sibling, else a built-in; never itself */
 function baseSource(spec: string, file: string) {
   const at = resolve(dirname(file), spec)
