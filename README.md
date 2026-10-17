@@ -495,11 +495,39 @@ export default {
 
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
-the manager; lifecycle's review has 3), `gate: true` for a station the person decides instead of a
-worker, and `awaitsPr: true` for a station that must wait for someone to merge, close or update a
-pull or merge request an arrival's report links, before it starts a worker (lifecycle's `deploy`;
-see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }` parks the run with no worker;
-`goto` skips the wait.
+the manager; lifecycle's review has 3), `onRounds` (a node for a re-plan at the round cap, below),
+`repeatMail` (an outcome that mails the manager on a repeat, below), `gate: true` for a station the
+person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
+to merge, close or update a pull or merge request an arrival's report links, before it starts a
+worker (lifecycle's `deploy`; see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }`
+parks the run with no worker; `goto` skips the wait.
+
+`onRounds` names the node that takes the first capped report, instead of the manager. The run
+carries the round's findings to that node. A second capped report in the same run still goes to
+the manager, and the mail names the earlier re-plan. Lifecycle's review sets `onRounds` to `plan`.
+
+`repeatMail` names an outcome in `next`. A station can report this outcome two times in a row.
+
+Each report must name the same `AC<n>` id on its own `Failing: AC2, AC6` line. An id named only as
+passing elsewhere in a report does not count.
+
+When both reports share a failing id, the machine mails the manager from `'factory'`. The mail
+names the station, the shared ids and both report times.
+
+The run still follows the outcome's normal edge in every case. With no shared failing id, the
+machine sends no mail.
+
+A re-plan between the two reports also sends no mail, because a re-plan can renumber the acceptance
+criteria.
+
+A re-plan has two cases. In the first case, the capped node's own `onRounds` jump occurs. Its log
+entry carries `replan: true`.
+
+In the second case, a manager `goto` reaches a node that another node's `onRounds` names. That node
+then reports in between. It has no `replan` entry of its own.
+
+Lifecycle's verify sets `repeatMail` to `red`. Its prompt asks for the `Failing:` line.
+
 `onTimeout: { timeoutMin, prompt? }` gives the attempt right after a timeout fail a longer limit
 than the station's own `timeoutMin`, plus an extra brief section carrying `prompt`, instead of the
 same limit and a brief with no extra text (lifecycle's `security`: 45 min, then 75 min with a

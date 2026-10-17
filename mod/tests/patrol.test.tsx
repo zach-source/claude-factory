@@ -1440,3 +1440,33 @@ test(
     } as never)
   },
 )
+
+// claude-factory-qgz AC8: the patrol's own system prompt (registered once at session.start, not the
+// per-turn `agent.spawn` text) forbids a hand goto past a station's round cap, and steers a
+// repeat-red notice toward a concrete steer or a re-plan, never a bare retry.
+test(
+  "the patrol's registered prompt forbids goto implement past a round cap, and steers a repeat-red notice",
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    on('session.start', ($, e) => ({ cwd: e.cwd }) as never)
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+    on('command.register', () => ({ value: { command: 'factory' } }) as never)
+    const registered: { name: string; prompt: string }[] = []
+    on('agent.register', ($, e) => {
+      registered.push(e as unknown as { name: string; prompt: string })
+      return { value: { agent: `factory:${(e as unknown as { name: string }).name}` } } as never
+    })
+
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false } as never)
+
+    const patrol = registered.find(r => r.name === 'patrol')
+    expect(patrol).toBeDefined()
+    expect(patrol!.prompt).toContain('already re-planned once')
+    expect(patrol!.prompt).toMatch(/[Nn]ever goto it to implement/)
+    expect(patrol!.prompt).toMatch(/reported <outcome> again on/)
+    expect(patrol!.prompt).toContain('Never goto implement with no new direction')
+  },
+)

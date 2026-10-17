@@ -20,6 +20,46 @@ minor release may change the factory format, the CLI or the run state.
     brief through `gate-brief set` and logs one line to `<home>/brief-log.jsonl`. `tool.call`
     denies every Bash call from a briefer agent, `factory decide` included. The person still
     decides every gate. `userConfig.briefer` (default `true`) turns the briefer off.
+- A station at its round cap now re-plans once with the round's findings instead of holding for a
+  hand goto, and a repeated red on the same acceptance criterion mails the manager on its own.
+  (claude-factory-qgz)
+  - Cause: a run review found 40% of reviews send work back, but a run held at its round cap most
+    often got a hand goto to implement, so the loop kept going (one run: 8 review rounds, 10
+    implement passes).
+  - `src/machine.ts`: `Node.onRounds` names the node a capped report re-plans to, carrying every
+    round's own-outcome summary (oldest first, each clipped to fit near 24,000 characters). The
+    first report past `rounds` re-plans; a second cap in the same run still holds for the manager,
+    now naming the earlier re-plan. With no `onRounds`, a station's rounds cap holds for the
+    manager exactly as before. The re-plan's own log entry sets a new `Entry.replan: true` field,
+    so metrics and the repeat-mail check can tell it apart from a manager's own `goto plan`.
+    `Node.repeatMail` names an outcome in `next`; when a station reports it twice in a row and
+    both reports name the same `AC<n>` id on their own `Failing: AC2, AC6` line, the machine mails
+    the manager from `'factory'`, naming the station, the shared ids and both report times, and
+    the run still follows the normal edge. A `replan` entry between the two reports breaks the
+    streak, since a re-plan can renumber acceptance criteria. New exports `acIdsIn`,
+    `failingAcIds`, `prevReport`, `repeatMailText` and `capReplanMail`. `validate()` refuses an
+    `onRounds` with no `rounds`, or one that names an unknown node, `'done'`, or the node itself;
+    it refuses a `repeatMail` that is not a key of `next`.
+
+  - A manager `goto` command writes no log entry. A hand `goto plan` after a repeat mail left no
+    `replan: true` entry (claude-factory-qgz, review round 2, finding .11).
+
+    The streak check now also breaks on an entry for a `replanTargets` node between the two
+    reports. A `replanTargets` node is a node named in a different node's `onRounds` field.
+    `replanTargets` is a new export in `src/machine.ts`.
+
+  - `factories/lifecycle.ts`: `review` sets `onRounds: 'plan'` (`rounds` stays 3); `verify` sets
+    `repeatMail: 'red'` and its prompt now asks for one fixed `Failing: AC2, AC6` line naming only
+    the still-failing ids. `plan`'s prompt numbers acceptance criteria `AC1`, `AC2`, ....
+  - `mod/hooks/register.tsx`: the manager's patrol prompt now forbids a goto to implement past a
+    station's round cap (a stuck mail that says "already re-planned once" already went through one
+    re-plan), and tells the manager to steer implement or goto plan on a mail that says a station
+    "reported `<outcome>` again on `<AC ids>`", never goto implement with no new direction.
+  - `src/metrics.ts`: `metrics()` adds `runsWith3PlusReviewRounds`, `implementPassesPerShippedRun`
+    (null at 0 shipped runs; skips `handoff`, `blocked` and a pre-launch PR park) and `capReplans`
+    (counts only a log entry with `replan: true`, never any `review` -> `plan` pair, so a
+    manager's own goto plan after a stuck hold or a review fail does not count). `render()` prints
+    them on one line.
 - A short note's `until` marker (a bead id, `owner/repo#N`, a GitHub pull URL, or a `YYYY-MM-DD`
   date) now retires the note on its own schedule, apart from the dream's own judgment. `dream`
   and `memory compact` retire a note once its date has passed, its named bead has closed, or its

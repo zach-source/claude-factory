@@ -56,6 +56,9 @@ export function metrics(records: RunRecord[]) {
   const gateWait: number[] = []
   let reviewLoops = 0
   let triageAlreadyDone = 0
+  let runsWith3PlusReviewRounds = 0
+  let capReplans = 0
+  let implementPassesShipped = 0
   let smallRuns = 0
   for (const r of records) {
     const f = fate(r)
@@ -67,7 +70,9 @@ export function metrics(records: RunRecord[]) {
     const wentFull = r.log.some(e => e.node === 'quick' && e.outcome === 'full')
     if (isSmall) smallRuns++
     let prev = r.createdAt
-    for (const e of r.log) {
+    let reviewChanges = 0
+    for (let i = 0; i < r.log.length; i++) {
+      const e = r.log[i]!
       // a pre-launch PR park (isPrWait) spent no worker: skip it so it is not a station visit,
       // and leave prev at the entry before it so the next real visit's wait time is still correct
       if (isPrWait(e)) continue
@@ -83,16 +88,28 @@ export function metrics(records: RunRecord[]) {
       // ponytail: a gate's wait is its station's time; gates are named approve in every factory so far
       if (e.node === 'approve') gateWait.push((e.at - prev) / HOUR)
       // claude-factory-wnn: `check` is the small route's combined verify+review station. It sends
-      // work back the same way `review`'s `changes` outcome does. Count it the same way.
-      if ((e.node === 'review' || e.node === 'check') && e.outcome === 'changes') reviewLoops++
+      // work back the same way `review`'s `changes` outcome does. Count it the same way here, and
+      // below in the round-cap metric.
+      if ((e.node === 'review' || e.node === 'check') && e.outcome === 'changes') {
+        reviewLoops++
+        reviewChanges++
+      }
+      // claude-factory-qgz AC9: count only the machine's own round-cap re-plan (Entry.replan), not
+      // a review-then-plan pair a manager goto makes after a stuck hold or a review fail (review
+      // round 1 finding .8: those write no log entry of their own, but still sit next to 'plan')
+      if (e.replan) capReplans++
       if (e.node === 'triage' && e.outcome === 'reject' && ALREADY_DONE.test(e.summary)) triageAlreadyDone++
       prev = e.at
     }
+    if (reviewChanges >= 3) runsWith3PlusReviewRounds++
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
     if (shipped) {
       const hours = (shipped.at - r.createdAt) / HOUR
       cycle.push(hours)
       if (isSmall && !wentFull) smallCycle.push(hours)
+      implementPassesShipped += r.log.filter(
+        e => e.node === 'implement' && e.outcome !== 'handoff' && e.outcome !== 'blocked' && !isPrWait(e),
+      ).length
     }
   }
   const ended = (fates.shipped ?? 0) + (fates.rejected ?? 0) + (fates.closed ?? 0) + (fates.aborted ?? 0)
@@ -111,6 +128,9 @@ export function metrics(records: RunRecord[]) {
     reviewLoops,
     deploySessionsPerShippedRun: fates.shipped ? deploySessions / fates.shipped : null,
     triageAlreadyDone,
+    runsWith3PlusReviewRounds,
+    implementPassesPerShippedRun: fates.shipped ? implementPassesShipped / fates.shipped : null,
+    capReplans,
     fails,
     stations: Object.fromEntries(
       Object.entries(stations).map(([id, s]) => [
@@ -144,6 +164,8 @@ export function render(
         .map(([k, v]) => `${k} ${v}`)
         .join(', ') || 'none'
     }`,
+    `  3+ review rounds ${m.runsWith3PlusReviewRounds} runs; cap re-plans ${m.capReplans}; ` +
+      `implement passes per shipped run ${m.implementPassesPerShippedRun === null ? '-' : m.implementPassesPerShippedRun.toFixed(2)}`,
     `  triage rejects ${triageRejects} of ${triageVisits} (${m.triageAlreadyDone} already done); ` +
       `dispatch skipped ${precheck.mergedPr + precheck.liveRun} (merged-pr ${precheck.mergedPr}, live-run ${precheck.liveRun}), ` +
       `gh fail-open ${precheck.failOpen ?? 0}`,
