@@ -8,17 +8,32 @@
  * The change replaces that per-word check with two forward pointers, `nc` and `nd`.
  * Each pointer reads the segment one time, so the total time is `O(n)`.
  *
- * Shape "find" (claude-factory-lbn, open as of 2026-10-17):
- * The `find` part of `denyAt` (`src/worker-hook.ts:658-664`) examines a segment for `-exec` and `-execdir` words.
- * At each word, it uses `cmd.slice(i + 1)` to make `rest`, then reads `rest[0]`.
- * The slice itself is `O(n-i)` in time.
+ * Shape "find" (claude-factory-lbn, fixed 2026-10-17):
+ * The `find` part of `denyAt` (`src/worker-hook.ts:658-677`) checks a segment for `-exec` and `-execdir` words.
+ * Before the fix, the code made `rest` with `cmd.slice(i + 1)` at each such word. It then read `rest[0]`.
+ * The slice itself took `O(n-i)` time.
  *
- * When there is no match, `i` moves forward by only one word.
- * So the total time of the loop is `O(n^2)`.
- * This has the same shape as the "shell" bug above, but in a different function.
+ * When there was no match, `i` moved forward by only one word.
+ * As a result, the total time of the loop was `O(n^2)`.
+ * This bug had the same shape as the "shell" bug above, but in a different function.
  *
- * Total slice time must be `O(n)` for the full segment. Use one slice for each segment, or use an index-taking `isRecursiveRm` variant.
- * Do not only skip the slice when `rest[0]` is not `rm`. The repro string `'find . -exec rm '.repeat(n)` slices once for each `-exec`.
+ * The fix gives `isRecursiveRm` a `start` index. The function reads `cmd` in place, without a slice.
+ * Each call starts its scan at an `rm` word and stops at the first non-flag word.
+ * A later `-exec`/`-execdir` match starts a new scan only at its own `rm` word. So the scans do not overlap.
+ * The total time of the loop is now `O(n)`.
+ *
+ * Measured after the fix, load average 81-85:
+ * `denyReason('find . ' + '-exec '.repeat(200000))` took 191.2 ms.
+ * `denyReason('find . ' + '-exec '.repeat(400000))` took 470.2 ms. The ratio is 2.46x for a 2x input. An `O(n^2)` scan gives a ratio of ~4x.
+ *
+ * Before the fix, at load 13.81, `n=20000` took 75.5 ms.
+ * `n=40000` took 233.0 ms (3.09x).
+ * `n=80000` took 1445.0 ms (6.20x).
+ *
+ * Use this repro input to check any future fix here: `'find . -exec rm '.repeat(n)`.
+ * A fix that only adds a check for `rest[0] === 'rm'` before the slice still slices once for
+ * each `-exec`. This input catches that case. The current fix stays `O(n)` on this input too,
+ * because it does not slice at all.
  *
  * Use one of these commands to start this script by hand:
  *   `bun run src/worker-hook.bench.ts` (shape "shell", default sizes)
