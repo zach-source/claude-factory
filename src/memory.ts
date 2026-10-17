@@ -1010,6 +1010,31 @@ export function envTopicCap(): number {
   return Number.isInteger(n) && n >= 1 ? n : TOPIC_CAP
 }
 
+/** each topic whose count is over cap, sorted by count descending, then topic ascending (FR-010). */
+function overCapFrom(counts: Map<string, number>, cap: number): { topic: string; count: number }[] {
+  return [...counts]
+    .filter(([, count]) => count > cap)
+    .map(([topic, count]) => ({ topic, count }))
+    .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic))
+}
+
+/**
+ * every topic over the short-note cap right now (FR-010), read straight from the store.
+ * This counts only short notes. It never counts README.md, LONG.md or inbox/.
+ * Pass the result to dreamPrompt(). A dream can then name each topic where it must merge or drop
+ * notes before applyTiers() runs again.
+ */
+export function overCapTopics(dir: string, cap = envTopicCap()): { topic: string; count: number }[] {
+  const counts = new Map<string, number>()
+  for (const n of walk(dir).notes) {
+    if (n.tier !== 'short') continue
+    const topic = topicOf(n)
+    if (topic === 'inbox') continue
+    counts.set(topic, (counts.get(topic) ?? 0) + 1)
+  }
+  return overCapFrom(counts, cap)
+}
+
 /** how many days of usage history the store holds: now minus the oldest note's newest recorded `at`.
  * 0 with no usage file, or when no entry ever recorded an `at` (claude-factory-503.2, AC2's guard). */
 function usageHistoryDays(dir: string, now: number, uses: Map<string, Use>): number {
@@ -1144,18 +1169,32 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
  * `skipped` names a topic a merge left untouched, and why.
  *
  * `opts.archiveCap` sets the pass's archive cap. It falls back to FACTORY_MEMORY_ARCHIVE_CAP, then 25.
+ *
+ * `opts.topicCap` sets the pass's per-topic cap on short notes (FR-010).
+ * It falls back to FACTORY_MEMORY_TOPIC_CAP, then to TOPIC_CAP (15).
+ * The return value's `overCap` field lists each topic still over the cap at the end of the pass.
+ * A skipped merge (an unsafe LONG.md) does not lower a topic's count.
+ * So that topic can still appear in `overCap`.
+ *
  * `opts.onPlan`, when given, runs once with planLines(). It runs right after decide(), before any
  * write or rmSync, and on a dry run too. This way, the plan a caller logs always matches what ran.
  */
 export function applyTiers(
   dir: string,
-  opts: { now?: number; dryRun?: boolean; archiveCap?: number; onPlan?: (lines: string[]) => void } = {},
+  opts: {
+    now?: number
+    dryRun?: boolean
+    archiveCap?: number
+    topicCap?: number
+    onPlan?: (lines: string[]) => void
+  } = {},
 ) {
   const now = opts.now ?? Date.now()
   const { notes } = walk(dir)
   const uses = usage(dir)
   const historyDays = usageHistoryDays(dir, now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
+  const topicCap = opts.topicCap ?? envTopicCap()
   const short: ShortCandidate[] = notes
     .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
     .map(n => {
@@ -1173,7 +1212,7 @@ export function applyTiers(
         helped: u?.helped ?? 0,
       }
     })
-  const decisions = decide(short, [], [], { historyDays, archiveCap })
+  const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap })
   opts.onPlan?.(planLines(decisions, { archiveCap, historyDays }))
   // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
   // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
@@ -1184,6 +1223,10 @@ export function applyTiers(
   const skipped: { topic: string; reason: string }[] = []
   let merged = 0
   let archived = 0
+  // one topic's remaining short-note count drops by one for every merge this pass writes to disk
+  // (not one a skipped, unsafe LONG.md held back) and every archive; overCap below reads this.
+  const removedByTopic = new Map<string, number>()
+  const removeOne = (topic: string) => removedByTopic.set(topic, (removedByTopic.get(topic) ?? 0) + 1)
   for (const d of decisions) {
     if (d.kind !== 'merge' && d.kind !== 'archive') continue
     const note = notes.find(n => n.path === d.path)
@@ -1201,6 +1244,7 @@ export function applyTiers(
       const longFile = join(dir, topic, 'LONG.md')
       const rawText = existsSync(longFile) ? readFileSync(longFile, 'utf8') : null
       merged++
+      removeOne(topic)
       if (opts.dryRun) continue
       const existing = rawText !== null ? parseLong(rawText) : []
       // a fresh id must not collide with an id a rename log or another entry's aliases already claim
@@ -1231,8 +1275,9 @@ export function applyTiers(
       rewriteReadmeLink(dir, topic, note.path, `LONG.md#${id}`)
     } else {
       archived++
-      if (opts.dryRun) continue
       const topic = topicOf(note)
+      removeOne(topic)
+      if (opts.dryRun) continue
       mkdirSync(join(dir, '.archive'), { recursive: true })
       const archiveFile = join(dir, '.archive', `${topic}.md`)
       const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
@@ -1247,7 +1292,13 @@ export function applyTiers(
     }
   }
   const held = decisions.filter(d => d.kind === 'held').length
-  return { decisions, renamed, merged, archived, held, skipped, archiveCap, historyDays }
+  const totalByTopic = new Map<string, number>()
+  for (const n of short) totalByTopic.set(n.topic, (totalByTopic.get(n.topic) ?? 0) + 1)
+  const overCap = overCapFrom(
+    new Map([...totalByTopic].map(([t, c]) => [t, c - (removedByTopic.get(t) ?? 0)])),
+    topicCap,
+  )
+  return { decisions, renamed, merged, archived, held, skipped, archiveCap, historyDays, topicCap, overCap }
 }
 
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */

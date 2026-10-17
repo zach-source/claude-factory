@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -31,6 +31,7 @@ import {
   NOTE_KINDS,
   noteExists,
   outline,
+  overCapTopics,
   parse,
   parseLong,
   patrolActivity,
@@ -1044,7 +1045,9 @@ test('applyTiers() archives nothing under the usage-history guard with no usage 
   const now = Date.parse('2026-10-15T00:00:00Z')
   const paths = fixtureNeverShown30(dir, now)
 
-  const { archived, historyDays } = applyTiers(dir, { now })
+  // topicCap: Infinity keeps this test about the usage-history guard alone; the 30-note fixture would
+  // otherwise trip the unrelated topic cap (default 15) and merge some of these notes away
+  const { archived, historyDays } = applyTiers(dir, { now, topicCap: Infinity })
   expect(archived).toBe(0)
   expect(historyDays).toBe(0)
   for (const p of paths) expect(existsSync(join(dir, p))).toBe(true)
@@ -1069,6 +1072,111 @@ test('applyTiers() reads the archive cap from FACTORY_MEMORY_ARCHIVE_CAP, and a 
     if (prev === undefined) delete process.env.FACTORY_MEMORY_ARCHIVE_CAP
     else process.env.FACTORY_MEMORY_ARCHIVE_CAP = prev
   }
+})
+
+// n short notes in one topic. Note 0 is startAgeDays old, note 1 is startAgeDays+1 old, and so on.
+// Each note's ageDays is distinct, so the oldest-first tie-break never has to pick between two of them.
+function fixtureOldNotes(dir: string, topic: string, n: number, now: number, startAgeDays = 10): string[] {
+  const DAY = 24 * 60 * 60 * 1000
+  mkdirSync(join(dir, topic), { recursive: true })
+  const paths: string[] = []
+  for (let i = 0; i < n; i++) {
+    const file = `n${String(i).padStart(2, '0')}.md`
+    paths.push(`${topic}/${file}`)
+    const at = new Date(now - (startAgeDays + i) * DAY).toISOString().slice(0, 10)
+    writeFileSync(join(dir, topic, file), format({ summary: `note ${i}`, at, body: 'body' }))
+  }
+  return paths
+}
+
+test('applyTiers() merges a topic down to the cap: 18 notes become 15 short notes and 3 LONG.md entries, each renamed', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const paths = fixtureOldNotes(dir, 'beads', 18, now)
+
+  const { merged, archived, renamed, overCap, topicCap } = applyTiers(dir, { now, topicCap: 15 })
+  expect(topicCap).toBe(15)
+  expect(merged).toBe(3)
+  expect(archived).toBe(0)
+  expect(Object.keys(renamed)).toHaveLength(3)
+  for (const old of Object.keys(renamed)) expect(paths).toContain(old)
+  expect(overCap).toEqual([])
+
+  const remaining = readdirSync(join(dir, 'beads')).filter(f => f.endsWith('.md') && f !== 'LONG.md')
+  expect(remaining).toHaveLength(15)
+  expect(existsSync(join(dir, 'beads', 'LONG.md'))).toBe(true)
+  // the 3 oldest (the last 3 created, ages 25, 26, 27) are the ones that merged away
+  for (const i of [15, 16, 17])
+    expect(existsSync(join(dir, 'beads', `n${String(i).padStart(2, '0')}.md`))).toBe(false)
+})
+
+test('applyTiers() topic cap, dry run: counts the same 3 merges, writes nothing, same overCap as the real pass', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-dry-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const paths = fixtureOldNotes(dir, 'beads', 18, now)
+
+  const dry = applyTiers(dir, { now, topicCap: 15, dryRun: true })
+  expect(dry.merged).toBe(3)
+  expect(dry.overCap).toEqual([])
+  for (const p of paths) expect(existsSync(join(dir, p))).toBe(true) // nothing written
+  expect(existsSync(join(dir, 'beads', 'LONG.md'))).toBe(false)
+})
+
+test('applyTiers() topic cap: a skipped merge into an unsafe LONG.md leaves the topic in overCap', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-unsafe-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 18, now)
+  // stray prose before the first entry: unsafeLongTopics() flags this file, so no merge into it can run
+  writeFileSync(join(dir, 'beads', 'LONG.md'), '---\ntier: long\n---\nstray prose with no entry\n')
+
+  const { merged, skipped, overCap } = applyTiers(dir, { now, topicCap: 15 })
+  expect(merged).toBe(0)
+  expect(skipped).toEqual([
+    { topic: 'beads', reason: expect.stringContaining('a merge would lose') as unknown as string },
+  ])
+  expect(overCap).toEqual([{ topic: 'beads', count: 18 }])
+})
+
+test('applyTiers() reads the topic cap from FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-env-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 18, now)
+
+  const prev = process.env.FACTORY_MEMORY_TOPIC_CAP
+  try {
+    process.env.FACTORY_MEMORY_TOPIC_CAP = '3'
+    expect(applyTiers(dir, { now, dryRun: true }).merged).toBe(15) // 18 - 3
+    process.env.FACTORY_MEMORY_TOPIC_CAP = 'abc'
+    expect(applyTiers(dir, { now, dryRun: true }).merged).toBe(3) // 18 - 15
+  } finally {
+    if (prev === undefined) delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    else process.env.FACTORY_MEMORY_TOPIC_CAP = prev
+  }
+})
+
+test('overCapTopics lists topics over the cap now, from the live store, sorted by count desc then topic asc', () => {
+  const dir = join(tmpdir(), `memory-overcap-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 16, now)
+  fixtureOldNotes(dir, 'ci', 20, now)
+  fixtureOldNotes(dir, 'release', 10, now) // under the cap: never listed
+
+  expect(overCapTopics(dir, 15)).toEqual([
+    { topic: 'ci', count: 20 },
+    { topic: 'beads', count: 16 },
+  ])
+  // exactly at the cap: not over it
+  expect(overCapTopics(dir, 16)).toEqual([{ topic: 'ci', count: 20 }])
 })
 
 test('applyTiers() with dryRun counts decisions but writes nothing, and a second pass is a no-op', () => {
