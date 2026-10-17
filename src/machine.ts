@@ -44,6 +44,12 @@ export type Node = {
    * any later activity. `validate` refuses this field on a gate: a gate has no worker to hold back.
    */
   awaitsPr?: true
+  /**
+   * Marks this node a sweep station. `sweep()` runs it at most once per `everyMin` minutes, for each
+   * rig. No person or other station sends work to it. `validate` requires a value greater than 0.
+   * `src/sweeps.ts`'s `sweepNames` function reads every node that carries this field.
+   */
+  everyMin?: number
 }
 
 export type Factory = {
@@ -176,6 +182,7 @@ export function validate(def: Factory): Factory {
         node.gate && node.runner && `${id}: a gate has no worker, so no runner`,
         node.gate && node.awaitsPr && `${id}: a gate has no worker, so nothing to hold back`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
+        node.everyMin !== undefined && !(node.everyMin > 0) && `${id}: everyMin is greater than 0`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&
