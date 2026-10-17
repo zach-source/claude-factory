@@ -6392,6 +6392,9 @@ if (import.meta.main && !outboxCmd)
           break
         }
         try {
+          // a failed pass waits for the next window too, not every tick (the same rule as gc.stamp
+          // and gc-worktrees.stamp): write this before the pass, not after
+          writeFileSync(join(HOME, 'sweeps.stamp'), '')
           await sweep()
         } finally {
           release()
