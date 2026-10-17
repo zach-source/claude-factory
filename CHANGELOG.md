@@ -761,6 +761,22 @@ minor release may change the factory format, the CLI or the run state.
     it with `--body-file`, or as `"$(cat .scratch/<name>)"`.
     `src/worker-hook.bench.ts` now times `scanReason`, matching the removed
     cap. README.md's 8192-character sentence now says "on every rig".
+- Fixed: `memoGate` (claude-factory-dts) bounded the spawn count, not the
+  spawn time. A stuck or slow git process can still spend its own full
+  2-second timeout on each of up to 8 `headOf` spawns plus 1 `originHead`
+  spawn: 9 full timeouts, past the hook's 10-second `PreToolUse` timeout.
+  (claude-factory-dts.4)
+  - Cause: 8 dirs with a `mkfifo .git/HEAD` (`git symbolic-ref` blocks on
+    open) took 16.1 seconds at a load average of 10, through
+    `bun src/worker-hook.ts`.
+  - Fix: `memoGate` now sets a shared deadline, `GATE_BUDGET_MS` (6000 ms)
+    after the memo is built. `gate.headOf` and `gate.originHead` gained an
+    optional `timeoutMs` parameter; `memoGate` passes each real call at most
+    the time left before the deadline, capped at 2000 ms. Past the deadline,
+    a call skips the spawn outright and returns `undefined` (fail closed,
+    the same rule `MAX_HEAD_DIRS` already uses). `gitSymbolicRef` and the
+    `headOf`/`originHead` closures in `main()` now thread `timeoutMs`
+    through to `Bun.spawnSync`'s own `timeout` option.
 - Added: `factory memory add` now takes `--kind fact|rule|recipe` and
   `--until <bead|owner/repo#N|pull-URL|YYYY-MM-DD>`. It refuses the note
   before it checks for a duplicate. (claude-factory-3u1.1.1)

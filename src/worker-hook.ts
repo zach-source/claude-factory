@@ -126,10 +126,12 @@ export interface HookGate {
   station?: string
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
-  /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any error */
-  headOf?: (dir?: string) => string | undefined
-  /** the short branch name the repo's `origin/HEAD` points to, or undefined on any error */
-  originHead?: () => string | undefined
+  /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
+   * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
+  headOf?: (dir?: string, timeoutMs?: number) => string | undefined
+  /** the short branch name the repo's `origin/HEAD` points to, or undefined on any error.
+   * `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
+  originHead?: (timeoutMs?: number) => string | undefined
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
@@ -1818,29 +1820,55 @@ function anyShellReason(
 // Past that timeout, the hook fails open: the command runs unchecked.
 const MAX_HEAD_DIRS = 8
 
+// claude-factory-dts.4: MAX_HEAD_DIRS gives the maximum number of spawns. It does not set a limit on the time of each spawn.
+// Each git spawn can use its full timeout if it is stuck or slow.
+// Up to 8 headOf spawns and 1 originHead spawn can use 9 full timeouts.
+// That is more than the hook's own 10 s PreToolUse timeout.
+// GATE_BUDGET_MS gives the maximum total time that memoGate spends on gate spawns for one denyReason call.
+//
+// When memoGate has used the budget, it skips the spawn and gives undefined. This is a fail-closed result.
+// MAX_HEAD_DIRS uses the same fail-closed rule.
+//
+// 6000 ms is below the 10 s timeout, so the remaining scan has time to finish.
+// The budget also covers one spawn that started before the deadline.
+// That spawn gets its own timeout. memoGate decreases it to the time left (see the
+// Math.min(2000, remaining) lines below).
+const GATE_BUDGET_MS = 6000
+
 /**
- * Wraps `gate` so `headOf` and `originHead` each spawn git at most once for one `denyReason`
- * call. One memo covers every push segment, eval level and sh -c level the scan recurses
- * through (claude-factory-dts).
+ * This memo for `gate` makes `headOf` and `originHead` each spawn git at most one time for one
+ * `denyReason` call. One memo covers each push segment, each eval level and each sh -c level that
+ * the scan goes through (claude-factory-dts).
  *
- * `originHead` runs at most once.
- * The memo keeps its result, even an undefined result.
+ * `originHead` calls the original function at most one time.
+ * The memo keeps the result, and it also keeps an undefined result.
  * An unresolved `origin/HEAD` denies every branch-targeting push (claude-factory-zl5.13).
  * The memo must give that same unresolved answer again. It must not drop the answer on a
- * later call.
+ * subsequent call.
  *
- * `headOf` keeps one cached result for each distinct `dir` key, in a `Map`.
- * The unset `dir` is its own key: `headOf()` and `headOf(undefined)` share one entry.
- * Past MAX_HEAD_DIRS = 8 distinct dirs, `headOf` returns undefined and spawns no git process.
- * This fails closed, the same rule `gitPushDenied` already uses for an unknown current branch
- * (claude-factory-zl5.12).
+ * `headOf` keeps one cached result for each separate `dir` key, in a `Map`.
+ * The unset `dir` is its own key. `headOf()` and `headOf(undefined)` share one entry.
+ * When there are more than MAX_HEAD_DIRS = 8 separate dirs, `headOf` gives undefined.
+ * It does not spawn a git process. This is a fail-closed result.
+ *
+ * `gitPushDenied` uses the same rule for an unknown current branch (claude-factory-zl5.12).
+ *
+ * A shared deadline also limits the time of each spawn (claude-factory-dts.4).
+ * The deadline is GATE_BUDGET_MS after this memo is built.
+ * Each call gives the original `headOf` or `originHead` a `timeoutMs`. This value is at most
+ * the time left before the deadline.
+ *
+ * After the deadline, a call skips the spawn and gives undefined at once.
+ * A slow or stuck git spawn cannot make the whole scan last longer than the hook's own
+ * 10 s PreToolUse timeout.
  *
  * The wrapped gate keeps a field unset when the caller left it unset.
- * A rig that wires neither `gate.headOf` nor `gate.originHead` keeps the exact behavior it had
- * before this memo.
+ * A caller that does not set `gate.headOf` and does not set `gate.originHead` has the same
+ * behavior as before this memo.
  */
 function memoGate(gate: HookGate): HookGate {
   const memo: HookGate = { ...gate }
+  const deadline = Date.now() + GATE_BUDGET_MS
   if (gate.originHead) {
     const real = gate.originHead
     let called = false
@@ -1848,7 +1876,8 @@ function memoGate(gate: HookGate): HookGate {
     memo.originHead = () => {
       if (!called) {
         called = true
-        result = real()
+        const remaining = deadline - Date.now()
+        if (remaining > 0) result = real(Math.min(2000, remaining))
       }
       return result
     }
@@ -1859,7 +1888,9 @@ function memoGate(gate: HookGate): HookGate {
     memo.headOf = dir => {
       if (cache.has(dir)) return cache.get(dir)
       if (cache.size >= MAX_HEAD_DIRS) return undefined
-      const result = real(dir)
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return undefined
+      const result = real(dir, Math.min(2000, remaining))
       cache.set(dir, result)
       return result
     }
@@ -1980,13 +2011,16 @@ function denyAt(
   return hasRm && hasCd ? REASON : undefined
 }
 
-// claude-factory-zl5.3: runs `git symbolic-ref`, with a 2 s cap.
-// The 2 s cap stops a stuck or missing git from blocking the 10 s PreToolUse hook.
-// It returns undefined on an error, a non-zero exit, or empty output.
+// claude-factory-zl5.3: runs `git symbolic-ref`. `timeoutMs` caps it, at 2000 ms by default.
+// The cap stops a stuck or missing git process from blocking the 10 s PreToolUse hook.
+// This function returns undefined on an error, a non-zero exit, or empty output.
 // `gate.headOf` and `gate.originHead` then treat the branch as unknown.
-function gitSymbolicRef(args: string[]): string | undefined {
+//
+// claude-factory-dts.4: memoGate passes a shorter `timeoutMs` near its own shared deadline.
+// This stops one spawn from running the whole scan past the hook's own 10 s timeout.
+function gitSymbolicRef(args: string[], timeoutMs = 2000): string | undefined {
   try {
-    const p = Bun.spawnSync(['git', ...args], { timeout: 2000 })
+    const p = Bun.spawnSync(['git', ...args], { timeout: timeoutMs })
     if (p.exitCode !== 0) return undefined
     return p.stdout.toString().trim() || undefined
   } catch {
@@ -2037,9 +2071,10 @@ async function main() {
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
     protectedBranches,
-    headOf: dir => gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD']),
-    originHead: () =>
-      gitSymbolicRef(['-C', root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])?.replace(
+    headOf: (dir, timeoutMs) =>
+      gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD'], timeoutMs),
+    originHead: timeoutMs =>
+      gitSymbolicRef(['-C', root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], timeoutMs)?.replace(
         /^origin\//,
         '',
       ),

@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1792,4 +1792,83 @@ test('denyReason shares one memo across an sh -c recursion level (claude-factory
   expect(denyReason(command, undefined, undefined, gate)).toBeUndefined()
   expect(calls.headOf).toBe(1)
   expect(calls.originHead).toBe(1)
+})
+
+// claude-factory-dts.4: MAX_HEAD_DIRS limits the spawn count. It does not limit the spawn time.
+// A git process that is slow or does not respond can use its full timeout on each spawn.
+// Up to 8 headOf dirs plus 1 originHead spawn can take 9 full timeouts.
+// That is more than the hook's own 10 s PreToolUse timeout.
+// A shared deadline (GATE_BUDGET_MS = 6000 ms) now limits the total spawn time too.
+//
+// This test uses a fake clock. It does not use a real sleep.
+// The fake headOf moves the clock forward by 5500 ms on each real call.
+// This represents a spawn that takes 5500 ms.
+// `spyOn(Date, 'now')` makes memoGate read the fake clock. It does not change memoGate.
+test('denyReason stops spawning headOf once the shared gate budget runs out, before MAX_HEAD_DIRS, and still denies the trailing push (claude-factory-dts.4)', () => {
+  let fakeNow = 0
+  const dateSpy = spyOn(Date, 'now').mockImplementation(() => fakeNow)
+  try {
+    let headOfCalls = 0
+    const seenTimeouts: (number | undefined)[] = []
+    const gate: HookGate = {
+      headOf: (dir, timeoutMs) => {
+        headOfCalls++
+        seenTimeouts.push(timeoutMs)
+        fakeNow += 5500
+        return `branch-of-${dir}`
+      },
+    }
+    // 2 segments name 2 distinct dirs (d1, d2). This is well under MAX_HEAD_DIRS = 8.
+    // A 3rd segment names a 3rd distinct dir (d3). It pushes HEAD.
+    // Its verdict depends on the result of headOf(d3).
+    const command = 'git -C d1 push o b; git -C d2 push o b; git -C d3 push o HEAD'
+    // The budget runs out after 2 real calls (5500 ms, then 11000 ms of fake time).
+    // This is well before MAX_HEAD_DIRS = 8.
+    //
+    // The memo skips the 3rd call. No spawn occurs.
+    // The current branch at d3 is unknown. It then fails closed: PUSH_REASON.
+    // This is the same rule that the MAX_HEAD_DIRS cap uses.
+    expect(denyReason(command, undefined, undefined, gate)).toBe(PUSH_REASON)
+    expect(headOfCalls).toBe(2)
+    // Each real call gets a timeoutMs of at most the time left before the shared deadline.
+    // At the start, timeoutMs is 2000 ms. This is the full per-spawn cap.
+    // Then timeoutMs is 500 ms. This happens when only 500 ms of budget is left.
+    expect(seenTimeouts).toEqual([2000, 500])
+  } finally {
+    dateSpy.mockRestore()
+  }
+})
+
+// claude-factory-dts.4: the shared deadline applies to both gate fields, not only headOf.
+// One slow headOf call uses the whole GATE_BUDGET_MS = 6000 ms budget.
+// gitReason reads headOf before gitPushDenied reads originHead (see :1623 and :1332).
+// So that one slow call also stops the originHead spawn in the same push segment.
+//
+// The target branch here ('feature-branch') is not main, master, or any gate.protectedBranches.
+// A real originHead call that returned a different branch would allow this push to pass.
+// When the budget is spent, the memo skips that spawn. It gives an unresolved answer instead.
+// An unresolved answer fails closed (claude-factory-zl5.13): PUSH_REASON.
+test('a single slow headOf call that spends the whole gate budget also skips the originHead spawn in the same push (claude-factory-dts.4)', () => {
+  let fakeNow = 0
+  const dateSpy = spyOn(Date, 'now').mockImplementation(() => fakeNow)
+  try {
+    let headOfCalls = 0
+    let originHeadCalls = 0
+    const gate: HookGate = {
+      headOf: () => {
+        headOfCalls++
+        fakeNow += 7000
+        return 'feature'
+      },
+      originHead: () => {
+        originHeadCalls++
+        return 'release'
+      },
+    }
+    expect(denyReason('git push origin feature-branch', undefined, undefined, gate)).toBe(PUSH_REASON)
+    expect(headOfCalls).toBe(1)
+    expect(originHeadCalls).toBe(0)
+  } finally {
+    dateSpy.mockRestore()
+  }
 })
