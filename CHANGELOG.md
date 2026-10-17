@@ -26,6 +26,28 @@ minor release may change the factory format, the CLI or the run state.
     rule out owning an id, so the lookup reads "lookup failed" for it, never "not found". `dream()`
     and both `memory compact` paths (`--dry-run` and real) now pass it to `applyTiers()`.
     `compactMessage()` adds `, N retired` and `, N flagged` clauses when either count is over 0.
+- `factory gc --worktrees` now matches a GitHub origin only on the exact host `github.com`. The
+  old regex had no host anchor. An origin like `https://mygithub.com/owner/repo` parsed as the
+  GitHub slug `owner/repo`. `gc` then read PR state for a different repo on `github.com`. It
+  could apply that repo's MERGED or CLOSED state to this rig's own branch deletes.
+  (claude-factory-0u0)
+  - `src/cli.ts`: `githubSlug()` now uses `parseRemote()` (`src/prs.ts`) and `forgeOf()`. This is
+    the same parser that `originRef()` uses for GitLab. `githubSlug()` is now exported. It also
+    accepts origin forms with userinfo, for example `https://user@github.com/...` and
+    token-auth clone URLs. The old regex rejected these forms.
+
+- `reconcile()` now has a direct test for the escalated deadline from `timeoutOf()` (`onTimeout`,
+  claude-factory-3t2). `src/remote.test.ts` sends a real `factory tick` through a timeout fail, a
+  backoff and a new spawn. The test checks the warn and fail minutes against the escalated
+  limit, not the plain `timeoutMin`. (claude-factory-9ff)
+- `factory plan facts` failures now back off and log, the same as a failed spawn. The old
+  code retried every 60 s forever and wrote no log, even with `bd` down. (claude-factory-4hb)
+  - `mod/hooks/register.tsx`: the facts-failed branch in `pmNow()` now:
+    - runs `rt.pmFailures += 1`
+    - waits `pmRetryDelay(rt.pmFailures)` (60 s doubling, capped at 60 min), not the fixed
+      60 s `PM_RETRY_MS` (removed)
+    - adds a `pm-log.jsonl` entry `{ reason: 'facts-failed', error }`, the same shape as the
+      two spawn-failed sites
 - `factory gc --worktrees` no longer journals a secret from a remote URL's userinfo
   (`user:pass@` or a bare `token@`). A failed `git push` or `git worktree remove` can print the
   URL in its stderr. That stderr line used to reach `HOME/gc-worktrees.jsonl` unscrubbed.
@@ -38,7 +60,6 @@ minor release may change the factory format, the CLI or the run state.
     (`GIT_TERMINAL_PROMPT=0`) and the `GIT_NETWORK_TIMEOUT_MS` timeout (still 30 s), the same as
     every other network-reaching git call in this file. A stuck credential prompt now fails fast
     instead of waiting out the timeout.
-
 - `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
   `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
   path. `memory compact` now removes such a usage line. (claude-factory-5o7)

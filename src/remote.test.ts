@@ -194,6 +194,50 @@ function launched(id: string, policy = true, task = 't') {
   )
   return seq
 }
+/** node a's def for claude-factory-9ff.1: it times out at 45 min, or at 75 min after a timeout fail */
+const escalatingDef: Factory = {
+  name: 'one',
+  start: 'a',
+  nodes: { a: { prompt: 'do a', timeoutMin: 45, onTimeout: { timeoutMin: 75 }, next: { ready: 'done' } } },
+}
+/**
+ * A run after node a's worker fails once, and the backoff relaunches it. The run is now on the
+ * escalated attempt, working, with its SPAWNED `at` elapsedMin ago. This sends the real actor FAIL,
+ * then a TICK past retryAt (backoff), then a fresh SPAWNED. So timeoutOf()'s afterTimeout() check sees
+ * the log a real run would see (claude-factory-9ff). Returns the escalated attempt's seq.
+ */
+function launchedAfterFail(id: string, priorFailReason: string, elapsedMin: number, task = 't') {
+  const runDir = join(home, 'runs', id)
+  const worktree = join(dir, 'wt')
+  mkdirSync(runDir, { recursive: true })
+  mkdirSync(worktree, { recursive: true })
+  writeFileSync(join(home, 'dream.stamp'), '') // no dream in a test
+  writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(escalatingDef)}`)
+  const run = {
+    id,
+    factory: join(runDir, 'factory.ts'),
+    repo: worktree,
+    goal: 'g',
+    ws: 'w1',
+    worktree,
+    branch: `factory/${id}`,
+  }
+  writeFileSync(join(runDir, 'run.json'), JSON.stringify(run))
+  const actor = createActor(compile(escalatingDef)).start()
+  actor.send({ type: 'TICK', at: Date.now() })
+  const firstSeq = actor.getSnapshot().context.seq
+  actor.send({ type: 'SPAWNED', seq: firstSeq, pane: `ax://${task}`, at: Date.now() })
+  actor.send({ type: 'FAIL', seq: firstSeq, reason: priorFailReason, at: Date.now() })
+  actor.send({ type: 'TICK', at: actor.getSnapshot().context.retryAt }) // past the backoff: a fresh launch
+  const seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'SPAWNED', seq, pane: `ax://${task}`, at: Date.now() - elapsedMin * 60_000 })
+  writeFileSync(join(runDir, `${task}.json`), JSON.stringify({ node: 'a', seq, policy: true }))
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  return seq
+}
 /** the fake cluster: the task's phase and what the worker's poll prints */
 function cluster(phase: string, poll: object) {
   rmSync(calls, { force: true })
@@ -750,6 +794,56 @@ test('a committing AX worker IS called stalled when its tail, head and bytes all
   const state = readFileSync(join(home, 'runs', 'r14', 'state.json'), 'utf8')
   expect(state).toContain('stalled: no output for') // failed as stalled
   rmSync(join(home, 'runs', 'r14'), { recursive: true })
+})
+
+// claude-factory-9ff: reconcile()'s real FAIL/warn path must use timeoutOf()'s escalated deadline
+// (75 min after a timeout fail), not only the plain timeoutMin (45 min). Each case below runs one real
+// `factory tick` and reads its state.json back, like the stall tests above.
+// Each run's seed already has a prior FAIL. Its own reason is 'no report within 45 min' (so
+// afterTimeout() sees a real timeout entry). So a plain whole-file `toContain('no report within')`
+// check would always pass, for the wrong reason. The log/mail checks below read the persisted context
+// instead. They see only what the tested tick itself adds.
+const ctxOf = (id: string) =>
+  (JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')) as { snapshot: { context: any } })
+    .snapshot.context
+
+test('escalated, elapsed 50 min: under the escalated 75 min deadline, so not warned or failed (claude-factory-9ff)', () => {
+  launchedAfterFail('r20', 'no report within 45 min', 50)
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail: 't' })
+  expect(factory(['tick']).code).toBe(0)
+  const ctx = ctxOf('r20')
+  expect(ctx.log).toHaveLength(1) // no new fail past the seed
+  expect(JSON.stringify(ctx.mail)).not.toContain('minutes are up')
+  rmSync(join(home, 'runs', 'r20'), { recursive: true })
+})
+
+test('escalated, elapsed 80 min: past the escalated 75 min deadline, warned at 75, not failed (claude-factory-9ff)', () => {
+  launchedAfterFail('r21', 'no report within 45 min', 80)
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail: 't' })
+  expect(factory(['tick']).code).toBe(0)
+  const ctx = ctxOf('r21')
+  expect(ctx.log).toHaveLength(1) // warned, not failed: no new log entry
+  expect(JSON.stringify(ctx.mail)).toContain('75 minutes are up')
+  rmSync(join(home, 'runs', 'r21'), { recursive: true })
+})
+
+test('escalated, elapsed 115 min: past 1.5x the escalated 75 min deadline, failed at 75 (claude-factory-9ff)', () => {
+  launchedAfterFail('r22', 'no report within 45 min', 115)
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail: 't' })
+  expect(factory(['tick']).code).toBe(0)
+  const ctx = ctxOf('r22')
+  expect(ctx.log).toHaveLength(2) // a new fail, past the seed
+  expect(ctx.log.at(-1)).toMatchObject({ outcome: 'fail', summary: 'no report within 75 min' })
+  rmSync(join(home, 'runs', 'r22'), { recursive: true })
+})
+
+test('control: a prior fail that is not a timeout keeps the plain 45 min deadline, warned at 45 at 50 min (claude-factory-9ff)', () => {
+  launchedAfterFail('r23', 'worker pane w1:p1 was closed', 50)
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail: 't' })
+  expect(factory(['tick']).code).toBe(0)
+  const state = readFileSync(join(home, 'runs', 'r23', 'state.json'), 'utf8')
+  expect(state).toContain('45 minutes are up')
+  rmSync(join(home, 'runs', 'r23'), { recursive: true })
 })
 
 test('status and show still list a run whose AX server is unreachable, naming it on that run', () => {
