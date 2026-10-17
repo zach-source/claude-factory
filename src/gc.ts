@@ -140,7 +140,13 @@ export type BranchFact = {
   remoteMerged: boolean
 }
 
-export type PrFact = { state: 'OPEN' | 'MERGED' | 'CLOSED'; headRefName: string; headRefOid: string }
+export type PrFact = {
+  state: 'OPEN' | 'MERGED' | 'CLOSED'
+  headRefName: string
+  headRefOid: string
+  /** a fork's pull request: its branch is not ours to have merged, so coverTip() must ignore it */
+  isCrossRepository: boolean
+}
 
 /** a run, as worktreePlan() needs it: enough to decide ownership, liveness and bead state */
 export type RunRef = { id: string; node: string; finishedAt: number; worktree: string; bead?: string }
@@ -189,7 +195,9 @@ const ownerOfPath = (path: string, branch: string | null, runs: RunRef[]): RunRe
  * the default branch, the headRefOid of a MERGED PR, or of a CLOSED one whose run's bead is closed */
 function coverTip(sha: string, mergedAncestor: boolean, prs: PrFact[], branch: string, beadClosed: boolean) {
   if (mergedAncestor) return 'covered' as const
-  const hit = prs.filter(p => p.headRefName === branch && p.headRefOid === sha)
+  // a cross-repo (fork) PR's branch is not ours to have merged (claude-factory-ulv): a fork branch
+  // named factory/<id> with a CLOSED PR at the tip sha must never cover it, even with the bead closed
+  const hit = prs.filter(p => !p.isCrossRepository && p.headRefName === branch && p.headRefOid === sha)
   if (hit.some(p => p.state === 'MERGED')) return 'covered' as const
   if (hit.some(p => p.state === 'CLOSED')) return beadClosed ? ('covered' as const) : ('bead-open' as const)
   return 'uncovered' as const
