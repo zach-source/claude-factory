@@ -362,3 +362,119 @@ test('small AC7/AC8: triage names the small route and its exclusions; deploy cou
   expect(lifecycle.nodes.triage!.prompt).toContain('factories/')
   expect(lifecycle.nodes.deploy!.prompt).toContain('docs-only')
 })
+
+// claude-factory-qgz: review hits its round cap (3) and re-plans once with the round's findings,
+// instead of holding for a hand goto; a second cap in the same run still holds for the manager.
+test("review's round cap re-plans to plan with the findings, then holds on a second cap (claude-factory-qgz AC1-AC3, AC7)", () => {
+  expect(lifecycle.nodes.review!.onRounds).toBe('plan')
+  expect(lifecycle.nodes.review!.rounds).toBe(3)
+
+  const actor = createActor(compile(lifecycle)).start()
+  let now = 0
+  const sendChanges = (i: number) => {
+    actor.send({ type: 'GOTO', node: 'review', at: now })
+    const { seq } = actor.getSnapshot().context
+    actor.send({ type: 'DONE', seq, outcome: 'changes', summary: `round ${i} findings AC${i}`, at: ++now })
+  }
+
+  for (let i = 1; i <= 3; i++) {
+    sendChanges(i)
+    expect(where(actor.getSnapshot().value)[0]).toBe('implement') // changes 1-3: the normal edge
+  }
+
+  sendChanges(4) // changes 4 == rounds + 1: re-plan instead of holding
+  expect(where(actor.getSnapshot().value)[0]).toBe('plan')
+  const plan = actor.getSnapshot().context.mail.plan?.at(-1)
+  expect(plan?.from).toBe('review')
+  for (let i = 1; i <= 4; i++) {
+    expect(plan?.text).toContain(`### review round ${i}`)
+    expect(plan?.text).toContain(`round ${i} findings AC${i}`)
+  }
+  expect(actor.getSnapshot().context.mail.manager).toBeUndefined() // AC2: re-plan mails no manager
+
+  for (let i = 5; i <= 7; i++) {
+    sendChanges(i)
+    expect(where(actor.getSnapshot().value)[0]).toBe('implement') // changes 5-7: the normal edge again
+  }
+
+  sendChanges(8) // changes 8 == 2*rounds + 2: held for the manager, re-plan already spent
+  const s = actor.getSnapshot()
+  expect(where(s.value)).toEqual(['review', 'stuck'])
+  expect(s.context.error).toBe('review reported changes more than 3 times')
+  const managerMail = s.context.mail.manager?.find(m => m.from === 'review')
+  expect(managerMail?.text).toContain('already re-planned once, to plan')
+})
+
+// claude-factory-qgz: verify reporting red twice in a row on the same acceptance-criterion id mails
+// the manager (from 'factory', not from verify), while the run still goes on to implement as today.
+test("verify's repeated red on the same AC id mails the manager; a different AC id does not (claude-factory-qgz AC6, AC7)", () => {
+  expect(lifecycle.nodes.verify!.repeatMail).toBe('red')
+
+  const red = createActor(compile(lifecycle)).start()
+  red.send({ type: 'GOTO', node: 'verify', at: 0 })
+  let seq = red.getSnapshot().context.seq
+  red.send({
+    type: 'DONE',
+    seq,
+    outcome: 'red',
+    summary: '1. fails AC2 2. fails AC3\nFailing: AC2, AC3',
+    at: 1000,
+  })
+  expect(where(red.getSnapshot().value)[0]).toBe('implement')
+
+  red.send({ type: 'GOTO', node: 'verify', at: 1000 })
+  seq = red.getSnapshot().context.seq
+  red.send({ type: 'DONE', seq, outcome: 'red', summary: 'still fails AC2\nFailing: AC2', at: 2000 })
+  const s = red.getSnapshot()
+  expect(where(s.value)[0]).toBe('implement') // the normal edge still runs
+  const mail = s.context.mail.manager?.at(-1)
+  expect(mail?.from).toBe('factory') // never from 'verify': cli.ts's isAsking keys on from === node
+  expect(mail?.text).toContain('verify reported red again on AC2')
+
+  const noShare = createActor(compile(lifecycle)).start()
+  noShare.send({ type: 'GOTO', node: 'verify', at: 0 })
+  seq = noShare.getSnapshot().context.seq
+  noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC1\nFailing: AC1', at: 1000 })
+  noShare.send({ type: 'GOTO', node: 'verify', at: 1000 })
+  seq = noShare.getSnapshot().context.seq
+  noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2\nFailing: AC2', at: 2000 })
+  expect(noShare.getSnapshot().context.mail.manager).toBeUndefined()
+})
+
+// claude-factory-qgz, review round 2 finding .11.
+// Review runs only after verify's green outcome. A review re-plan, with its `replan: true` log entry,
+// cannot sit between two verify reds.
+//
+// A manager `goto plan` after the first repeat mail writes no log entry.
+// Only the later report from `plan` writes one.
+// `plan` is review's `onRounds` target. The streak must break there too.
+//
+// A re-plan renumbers the acceptance criteria.
+// A shared id after a re-plan is a false repeat.
+// With no fix, the renumbered AC2 in the post-replan red looks like the same repeat again.
+test('a manager goto plan between two verify reds breaks the repeat streak (claude-factory-qgz finding .11)', () => {
+  const actor = createActor(compile(lifecycle)).start()
+  actor.send({ type: 'GOTO', node: 'verify', at: 0 })
+  let seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2\nFailing: AC2', at: 1000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+
+  actor.send({ type: 'GOTO', node: 'verify', at: 1000 })
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'still fails AC2\nFailing: AC2', at: 2000 })
+  expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1) // the 1st repeat mail
+
+  // the manager's hand goto plan, with the findings; the run re-plans and goes on as usual
+  actor.send({ type: 'GOTO', node: 'plan', at: 2000 })
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 're-planned', at: 3000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 'fixed', at: 4000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('verify')
+
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2 again\nFailing: AC2', at: 5000 })
+  // the re-plan renumbered AC2, so this is not a real repeat: still only the 1st mail
+  expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
+})

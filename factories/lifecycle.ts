@@ -84,7 +84,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
       agent: OPUS,
       timeoutMin: 45,
       prompt: `Write the spec every later station works from: your summary is that spec. Cover:
-1. Acceptance criteria, each one testable.
+1. Acceptance criteria, each one testable and numbered AC1, AC2, ... so verify and review can cite them.
 2. Design: the change, the files it touches, the alternatives you rejected and why.
 3. Test plan: the failing tests implement writes first.
 4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access.
@@ -124,13 +124,15 @@ For a refactor: no behavior change; the characterization tests stay untouched an
       timeoutMin: 75,
       prompt: `Check the branch independently; trust no earlier report and change no code.
 Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. Then try to fail it as review would: \`git merge-tree\` it against origin/main (a conflict is red); break each new guard or comparison and see a test fail; check that each fixture can occur in real data, each claim in a changed doc matches the code, and each documented command runs as written. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green. For a change to .factory/, run the factory check on every changed file.
-Report green with the evidence, or red with a numbered list of every failure and how to reproduce it, each also recorded as a bug task of this run (see Tracking).`,
+Report green with the evidence, or red with a numbered list of every failure, the AC id each one fails, and how to reproduce it, each also recorded as a bug task of this run (see Tracking). End a red report with one line \`Failing: AC2, AC6\` naming only the AC ids that still fail, so a repeat on the same id is easy to spot and a passing AC named elsewhere in the report never counts as one.`,
+      repeatMail: 'red', // red twice in a row on the same AC id (the report's own "Failing:" line) mails the manager; the run still goes to implement
       next: { green: 'review', red: 'implement' },
     },
     review: {
       agent: OPUS,
       timeoutMin: 45,
       rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
+      onRounds: 'plan', // a capped run re-plans with its findings instead of parking for a hand goto
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 Post the review on the pull request: push the branch and open it as a draft if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
