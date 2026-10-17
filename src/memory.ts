@@ -95,6 +95,96 @@ export const format = (n: Omit<Note, 'path'>) =>
     '',
   ].join('\n')
 
+// A bead id: one or more lowercase alnum segments joined by '-', then a final '-' and a hash.
+// The hash is 3-5 [a-z0-9] chars with at least one digit, plus an optional run of dotted child
+// numbers. Or the hash is 3-5 letters with a required dotted child number, for example
+// "acme-6kw.2". This shares its boundary guards with namesBead/citesBead in src/prs.ts. It is
+// generic over any prefix, not tied to one known id. A bead id is always lowercase.
+const BEAD_PREFIX = '[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*'
+const BEAD_HASH = '(?:(?=[a-z0-9]*\\d)[a-z0-9]{3,5}(?:\\.\\d+)*|[a-z]{3,5}(?:\\.\\d+)+)'
+const BEAD_ID_RE = new RegExp(`(?<![\\w.-])${BEAD_PREFIX}-${BEAD_HASH}(?![\\w-]|\\.\\w)`)
+const BEAD_ID_FULL_RE = new RegExp(`^${BEAD_PREFIX}-${BEAD_HASH}$`)
+
+// A PR reference: "PR 70", "PR#70" or "pr #70" (case insensitive on the letters only); "owner/repo#70";
+// or a GitHub pull URL's "/pull/70" tail. A bare "#5" never counts: GitHub issue numbers collide with
+// step numbers in run prose ("step #2").
+const PR_REF_RES = [/\bPR\s?#?\d+\b/i, /[\w.-]+\/[\w.-]+#\d+/, /\/pull\/\d+/]
+
+/**
+ * Check whether text names a bead id or a PR reference. Return the first match, or null. gate()
+ * uses this to demand --until on a note that names something whose status belongs in the tracker,
+ * not here (claude-factory-3u1.1.1.2).
+ */
+export function citesTracker(text: string): string | null {
+  const bead = BEAD_ID_RE.exec(text)
+  if (bead) return bead[0]
+  for (const re of PR_REF_RES) {
+    const m = re.exec(text)
+    if (m) return m[0]
+  }
+  return null
+}
+
+/** Is `v` a value gate() accepts for --until: a bead id, "owner/repo#N", a GitHub pull URL, or a real
+ * YYYY-MM-DD calendar date (checked by round-tripping through Date, so "2026-02-30" fails)? */
+export const isUntil = (v: string): boolean => {
+  if (BEAD_ID_FULL_RE.test(v)) return true
+  if (/^[\w.-]+\/[\w.-]+#\d+$/.test(v)) return true
+  if (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(v)) return true
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v)
+  if (!m) return false
+  const d = new Date(`${v}T00:00:00Z`)
+  return (
+    d.getUTCFullYear() === Number(m[1]) &&
+    d.getUTCMonth() + 1 === Number(m[2]) &&
+    d.getUTCDate() === Number(m[3])
+  )
+}
+
+export type GateResult = { ok: true } | { ok: false; flag: '--kind' | '--until'; reason: string }
+
+/**
+ * This is `factory memory add`'s write gate (claude-factory-3u1.1.1). It is a pure check: no fs,
+ * clock or env access. cli.ts can call it before memory.same() spends an embedding. memory.test.ts
+ * can test it with no store.
+ *
+ * It checks, in order: --kind is given and valid; --until, when given, is valid; a fact or rule
+ * note that names a bead or PR needs --until. A recipe never needs it: a recipe's value does not
+ * end when the bead or PR it names closes. --anyway only skips memory.same()'s dedupe, never this
+ * gate. A worker that always adds --anyway must still pass --kind, and --until when it names a
+ * bead or PR.
+ */
+export function gate(n: { summary: string; body: string; kind?: string; until?: string }): GateResult {
+  if (!n.kind)
+    return {
+      ok: false,
+      flag: '--kind',
+      reason: `a memory note needs --kind ${NOTE_KINDS.join('|')}`,
+    }
+  if (!NOTE_KINDS.includes(n.kind as NoteKind))
+    return {
+      ok: false,
+      flag: '--kind',
+      reason: `--kind "${n.kind}" is not one of ${NOTE_KINDS.join('|')}`,
+    }
+  if (n.until !== undefined && !isUntil(n.until))
+    return {
+      ok: false,
+      flag: '--until',
+      reason: `--until "${n.until}" is not a bead id, owner/repo#N, a GitHub pull URL, or a YYYY-MM-DD date`,
+    }
+  const cite = n.kind === 'recipe' ? null : citesTracker(`${n.summary}\n${n.body}`)
+  if (cite && !n.until)
+    return {
+      ok: false,
+      flag: '--until',
+      reason:
+        `this note cites ${cite}; a bead or PR's status belongs in the tracker (bd comments, the PR), ` +
+        `not here -- add --until <bead|owner/repo#N|YYYY-MM-DD>, or --kind recipe if this is a reusable recipe`,
+    }
+  return { ok: true }
+}
+
 /**
  * One entry inside a topic's LONG.md. A dream merges several short notes into one entry like this.
  * `aliases` lists ids a dream merged into this one by hand (point 7 of the dream prompt). longAliasRenames()
