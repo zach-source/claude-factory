@@ -344,6 +344,13 @@ export const beads = (repo: string, actor: string) => ({
       ),
       'update',
     ),
+  /**
+   * removes metadata keys, with no other change. Dispatch uses this to drop `requeued_from` and
+   * `requeued_at` right after it starts the one run that label's pre-check exemption was for, so the
+   * exemption lasts one dispatch pass, not forever (claude-factory-wnm.13).
+   */
+  unsetMetadata: (id: string, ...keys: string[]) =>
+    must(bd(repo, actor, 'update', id, ...keys.flatMap(k => ['--unset-metadata', k])), 'update'),
   /** false when bd refuses, e.g. while the bead still has open tasks */
   close: (id: string, reason: string) => bd(repo, actor, 'close', id, '--reason', reason).isOk,
   /** unassigned and out of bd ready until a person undefers it, which hands it back to the factory */

@@ -506,6 +506,26 @@ test('factoryOf and stationOf refuse a bead with two factory: or two station: la
   expect(stationOf(bead('fx-3', { labels: ['factory:release', 'station:deploy'] }))).toBe('deploy')
 })
 
+test('unsetMetadata removes each named key, with no other change (claude-factory-wnm.13)', () => {
+  const bin = join(tmpdir(), `fake-bd-unsetmeta-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho "$*" >> ${log}\n`)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    b.unsetMetadata('fx-1', 'requeued_from', 'requeued_at')
+    const call = readFileSync(log, 'utf8').trim()
+    expect(call).toBe(
+      'update fx-1 --unset-metadata requeued_from --unset-metadata requeued_at --actor factory/run-1',
+    )
+  } finally {
+    process.env.PATH = path
+  }
+})
+
 test('hasMetadata reads the metadata-field listing, true only when bd answers a non-empty array', () => {
   const bin = join(tmpdir(), `fake-bd-hasmeta-${process.pid}`)
   mkdirSync(bin, { recursive: true })
