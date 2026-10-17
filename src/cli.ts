@@ -118,6 +118,7 @@ import {
   type Gh,
   type MergedPr,
   type PrsFile,
+  type PrState,
   type RunMeta,
 } from './prs'
 
@@ -2342,9 +2343,76 @@ function closedBeads() {
 }
 
 /**
+ * The bd and gh lookups that untilStatus() needs for the `until` marker of a short note (claude-factory-3u1.1.4).
+ * dream() and `memory compact` give these lookups to applyTiers(). Each pass checks a bead or PR marker
+ * against the real tracker. It does not check only the date.
+ *
+ * `bead(id)` selects the rig whose bd prefix matches `${prefix}-`. The longest prefix wins. For example,
+ * "acme-widget" wins over "acme", because two rigs can share a short prefix.
+ *
+ * Then `bead(id)` calls `beads(repo, 'factory/dream').lookup(id)`. If no rig matches, bead(id) returns
+ * null, the same as bd's own "not found" result.
+ *
+ * If bd is down or slow, bd throws an error. untilStatus() then returns "unknown", never "ended" (AC2).
+ *
+ * `pr(url)` runs `gh pr view <url> --json state` with a 30 s timeout. If the exit code is 0, pr(url)
+ * parses `.state`. Any other exit code returns null.
+ *
+ * One pass makes at most 50 calls. A PR after that stays unmatched (null). untilStatus() flags that PR
+ * and does not guess (AC11).
+ *
+ * Both lookups memoize by value for the one pass that calls this function. A marker that two notes
+ * share costs one bd or gh call, not two.
+ */
+function untilDeps(): memory.UntilDeps {
+  const beadCache = new Map<string, 'closed' | 'open' | null>()
+  const prCache = new Map<string, PrState | null>()
+  let ghCalls = 0
+  // every bead-tracking rig's prefix, longest first, so "acme-widget" wins over "acme" for an id
+  // that starts with both
+  const owners = rigs()
+    .filter(r => hasBeads(r.repo))
+    .map(r => ({ repo: r.repo, prefix: beads(r.repo, 'factory/dream').prefix() }))
+    .filter(r => r.prefix)
+    .sort((a, b) => b.prefix.length - a.prefix.length)
+  return {
+    bead: (id: string) => {
+      if (beadCache.has(id)) return beadCache.get(id)!
+      const owner = owners.find(o => id.startsWith(`${o.prefix}-`))
+      const bead = owner ? beads(owner.repo, 'factory/dream').lookup(id) : null
+      const result: 'closed' | 'open' | null =
+        bead === null ? null : bead.status === 'closed' ? 'closed' : 'open'
+      beadCache.set(id, result)
+      return result
+    },
+    pr: (url: string) => {
+      if (prCache.has(url)) return prCache.get(url)!
+      if (ghCalls >= 50) {
+        prCache.set(url, null) // past the budget: stays unmatched, so untilStatus() flags it, never retires it
+        return null
+      }
+      ghCalls++
+      const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state'], { timeout: 30_000 })
+      const state: PrState | null =
+        p.exitCode === 0 ? ((JSON.parse(p.stdout.toString()).state as PrState) ?? null) : null
+      prCache.set(url, state)
+      return state
+    },
+  }
+}
+
+/**
  * One compact commit's message. The dream's compact step and `memory compact` both use it.
  * It reads "N merged, M archived, F1 files -> F2 files". It adds ", H held by the archive cap"
  * right after the archived count, only when the cap held notes back this pass.
+ *
+ * It adds ", R retired" right after the held clause. It adds this clause only when tiers.retired
+ * is over 0 (AC10). A retire is a note whose `until` marker ended. It writes to .archive like an
+ * archive, but it keeps its own count, so a compact log line shows the two apart.
+ *
+ * It adds ", F flagged" right after the retired clause. It adds this clause only when
+ * tiers.flagged is over 0 (AC10). A flag never removes a note. It marks only an `until` marker
+ * that untilStatus() failed to check.
  *
  * It adds a clause for each topic still over the cap after the pass. The clause reads
  * ", K topic(s) over the cap of N: a (17); b (16)". Each topic reads "name (count)". The worst
@@ -2356,6 +2424,8 @@ function compactMessage(
   tiers: {
     merged: number
     archived: number
+    retired: number
+    flagged: number
     held: number
     skipped: { topic: string; reason: string }[]
     overCap: { topic: string; count: number }[]
@@ -2367,6 +2437,8 @@ function compactMessage(
   return (
     `compact: ${tiers.merged} merged, ${tiers.archived} archived` +
     (tiers.held ? `, ${tiers.held} held by the archive cap` : '') +
+    (tiers.retired ? `, ${tiers.retired} retired` : '') +
+    (tiers.flagged ? `, ${tiers.flagged} flagged` : '') +
     `, ${filesBefore} files -> ${filesAfter} files` +
     (tiers.overCap.length
       ? `, ${tiers.overCap.length} topic(s) over the cap of ${tiers.topicCap}: ${tiers.overCap.map(o => `${o.topic} (${o.count})`).join('; ')}`
@@ -2469,6 +2541,7 @@ async function dream() {
       // appended, since line 2327 above already overwrote it with this dream's own exit text
       const tiers = memory.applyTiers(MEMORY, {
         now: start,
+        untilDeps: untilDeps(),
         onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
       })
       memory.compact(MEMORY, tiers.renamed)
@@ -5928,7 +6001,7 @@ if (import.meta.main && !outboxCmd)
           if (dryRun) {
             const { decisions, skipped, archiveCap, historyDays, overCap, topicCap } = memory.applyTiers(
               MEMORY,
-              { dryRun: true },
+              { dryRun: true, untilDeps: untilDeps() },
             )
             console.log(
               [
@@ -5954,6 +6027,7 @@ if (import.meta.main && !outboxCmd)
               const filesBefore = memory.mdFileCount(MEMORY)
               // the plan reaches dream.log before applyTiers writes or removes anything (claude-factory-503.2)
               const tiers = memory.applyTiers(MEMORY, {
+                untilDeps: untilDeps(),
                 onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
               })
               // runs before the commit, so its .usage.jsonl/.renames.jsonl writes land inside it and
