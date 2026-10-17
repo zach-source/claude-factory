@@ -1003,6 +1003,108 @@ test('a requeued bead with a merged PR citing it starts with 0 gh calls (A7)', (
   expect(runDirs()).toHaveLength(1)
 })
 
+test('dispatch clears requeued_from/requeued_at right after starting the run that exemption was for (claude-factory-wnm.13)', () => {
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory'], metadata: { requeued_from: 'run-0' } }])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(
+    calls.some(
+      l =>
+        l.startsWith('bd update acme-1') &&
+        l.includes('--unset-metadata requeued_from') &&
+        l.includes('--unset-metadata requeued_at'),
+    ),
+  ).toBe(true)
+})
+
+test('dispatch calls no unset-metadata for a bead with no requeued_from (claude-factory-wnm.13 control)', () => {
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory'] }])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => l.includes('--unset-metadata'))).toBe(false)
+})
+
+test('a bead with two factory: labels defers; the next candidate still starts (claude-factory-wnm.11)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory', 'factory:release', 'factory:lifecycle'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1) // acme-1 deferred, acme-2 starts
+  const started = JSON.parse(readFileSync(join(phome, 'runs', runDirs()[0]!, 'run.json'), 'utf8')) as {
+    bead?: string
+  }
+  expect(started.bead).toBe('acme-2')
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => l.startsWith('bd defer acme-1') && l.includes('ambiguous factory labels'))).toBe(
+    true,
+  )
+})
+
+test('a bead with two station: labels defers; the next candidate still starts (claude-factory-wnm.11)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory', 'station:deploy', 'station:triage'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+  const started = JSON.parse(readFileSync(join(phome, 'runs', runDirs()[0]!, 'run.json'), 'utf8')) as {
+    bead?: string
+  }
+  expect(started.bead).toBe('acme-2')
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => l.startsWith('bd defer acme-1') && l.includes('ambiguous station labels'))).toBe(
+    true,
+  )
+})
+
+test('a factory:<name> file that fails to load defers only that bead; the next candidate still starts (claude-factory-wnm.14)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory', 'factory:broken'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  writeFixtureFactory(join(pdir, 'repo'), 'broken', {
+    name: 'broken',
+    start: 'triage',
+    nodes: { triage: { prompt: 'p', next: { done: 'gone' } } },
+  } as Factory)
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1) // acme-1 deferred, acme-2 starts
+  const started = JSON.parse(readFileSync(join(phome, 'runs', runDirs()[0]!, 'run.json'), 'utf8')) as {
+    bead?: string
+  }
+  expect(started.bead).toBe('acme-2')
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(
+    calls.some(l => l.startsWith('bd defer acme-1') && l.includes('factory broken failed to load')),
+  ).toBe(true)
+})
+
+test('a station:<name> the named factory lacks defers only that bead; the next candidate still starts (claude-factory-wnm.15)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory', 'factory:release', 'station:nope'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1) // acme-1 deferred, acme-2 starts
+  const started = JSON.parse(readFileSync(join(phome, 'runs', runDirs()[0]!, 'run.json'), 'utf8')) as {
+    bead?: string
+  }
+  expect(started.bead).toBe('acme-2')
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(
+    calls.some(l => l.startsWith('bd defer acme-1') && l.includes('station nope not in factory release')),
+  ).toBe(true)
+})
+
 // claude-factory-wnm (A8): the full, end-to-end claim. A bead moves from one factory to another
 // with no hand `factory start`. Run 1 (factory `lifecycle`) ends on a requeue edge, naming factory
 // `release` and station `deploy`. `beadsPass()` runs track() then dispatch() in one call

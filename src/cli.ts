@@ -4287,7 +4287,10 @@ async function precheckSkip(
   if (process.env.FACTORY_PRECHECK === '0') return { skip: false }
   if (bead.metadata?.rejected_by === 'dispatch') return { skip: false }
   // claude-factory-wnm: a requeue edge already proved an earlier run's PR landed. The pre-check
-  // must not reject this bead on the strength of that same, already-landed PR.
+  // must not reject this bead for that same, already-landed PR. This exemption covers one dispatch
+  // pass only. The candidate loop below clears `requeued_from` right after it starts the run this
+  // exemption was for (claude-factory-wnm.13). A later, unrelated pickup of this bead then goes
+  // through the pre-check like any other.
   if (bead.metadata?.requeued_from) return { skip: false }
   if (!/^[\w.-]+$/.test(bead.id)) return { skip: false }
   if (originRef(rig.repo)?.forge !== 'github') return { skip: false }
@@ -4421,31 +4424,54 @@ async function dispatch() {
       for (const bead of candidates) {
         if (room(rig, busy, undefined, held) <= 0) break
         // claude-factory-wnm: a `factory:<name>` label on the bead picks a different factory to
-        // compile this run from, in place of the rig's own `rig.factory`. A bad label (an unknown
-        // name, or a factory file that fails to load) must defer only this bead. It must never
-        // throw. A throw here hits the rig-level catch below. That catch skips every later
-        // candidate too.
-        const named = factoryOf(bead)
+        // compile this run from, in place of the rig's own `rig.factory`. A `station:<name>` label
+        // picks where in it to start. A bad label must defer only this bead, never throw:
+        // - two factory: or two station: labels on the bead (claude-factory-wnm.11)
+        // - an unknown factory name, or a factory file that fails to load (claude-factory-wnm.14)
+        // - a station the named factory lacks (claude-factory-wnm.15)
+        // A throw here hits the rig-level catch below, which skips every later candidate too.
+        const deferCandidate = (msg: string) => {
+          errors.push({ id: bead.id, error: msg })
+          try {
+            b.defer(bead.id, msg)
+          } catch (err) {
+            errors.push({ id: bead.id, error: (err as Error).message })
+          }
+        }
+        let named: string | undefined
+        let at: string | undefined
+        try {
+          named = factoryOf(bead)
+          at = stationOf(bead)
+        } catch (err) {
+          deferCandidate((err as Error).message)
+          continue
+        }
         let spec = rig.factory
         let name = preview.name
+        let nodes = preview.nodes
         if (named) {
           const source = namedFactorySource(named, rig.repo)
           if (!source) {
-            errors.push({ id: bead.id, error: `no factory ${named}` })
-            try {
-              b.defer(bead.id, `no factory ${named}`)
-            } catch (err) {
-              errors.push({ id: bead.id, error: (err as Error).message })
-            }
+            deferCandidate(`no factory ${named}`)
             continue
           }
+          let loaded: Factory
           try {
-            name = (await loadFactory(source)).name
+            loaded = await loadFactory(source)
           } catch (err) {
-            errors.push({ id: bead.id, error: (err as Error).message })
+            deferCandidate(`factory ${named} failed to load: ${(err as Error).message}`)
             continue
           }
+          name = loaded.name
+          nodes = loaded.nodes
           spec = source
+        }
+        // a station the chosen factory lacks would otherwise start the run quietly at its own
+        // first station (`def.start`, below), with no sign anywhere that the label was wrong
+        if (at && !nodes[at]) {
+          deferCandidate(`station ${at} not in factory ${name}`)
+          continue
         }
         const runBranches = runIds()
           .filter(id => {
@@ -4474,7 +4500,15 @@ async function dispatch() {
           if (/already claimed/.test((err as Error).message)) continue // lost the race to another worker
           throw err
         }
-        const at = stationOf(bead)
+        // claude-factory-wnm.13: this run is the one the pre-check's `requeued_from` exemption
+        // (above) was for. Clear it now, so a later, unrelated pickup of this bead is not exempt.
+        if (bead.metadata?.requeued_from) {
+          try {
+            b.unsetMetadata(bead.id, 'requeued_from', 'requeued_at')
+          } catch (err) {
+            errors.push({ id: bead.id, error: (err as Error).message })
+          }
+        }
         if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
         busy.push(rig.name)
       }
