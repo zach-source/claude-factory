@@ -1050,7 +1050,9 @@ const usageLinesOf = (home: string) =>
 
 test('memory add --supersedes with no value after it exits 2 and writes nothing', () => {
   const home = freshMemoryAddHome('supersedes-no-value')
-  const r = runMemoryAdd(home, ['--kind', 'fact', '--supersedes', 'a plain summary', 'a plain body'])
+  // --supersedes must be the very last token: the CLI's opt() takes whatever follows a flag as its
+  // value, so putting it mid-command would make it swallow 'a plain summary' as a bogus path instead
+  const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body', '--supersedes'])
   expect(r.code).toBe(2)
   expect(r.err).toContain('--supersedes')
   expect(inboxFiles(home)).toEqual([])
@@ -1058,6 +1060,11 @@ test('memory add --supersedes with no value after it exits 2 and writes nothing'
 
 test('memory add --supersedes with a value that looks like a flag exits 2 and writes nothing', () => {
   const home = freshMemoryAddHome('supersedes-flag-value')
+  mkdirSync(join(home, 'memory'), { recursive: true })
+  // a real note literally named "--anyway": if the flag-like-value guard were missing,
+  // noteExists() alone would accept this path, so this proves the guard, not noteExists()
+  const before = '---\nsummary: a trap note\n---\nbody\n'
+  writeFileSync(join(home, 'memory', '--anyway'), before)
   const r = runMemoryAdd(home, [
     '--kind',
     'fact',
@@ -1069,10 +1076,15 @@ test('memory add --supersedes with a value that looks like a flag exits 2 and wr
   expect(r.code).toBe(2)
   expect(r.err).toContain('--supersedes')
   expect(inboxFiles(home)).toEqual([])
+  expect(readFileSync(join(home, 'memory', '--anyway'), 'utf8')).toBe(before)
 }, 30_000)
 
-test('memory add --supersedes ../outside.md exits 2 and writes nothing', () => {
+test('memory add --supersedes ../outside.md exits 2 and writes nothing, even when that file is real', () => {
   const home = freshMemoryAddHome('supersedes-outside')
+  // a real file one level above the memory dir: if the '..' guard were missing, noteExists() alone
+  // would accept this path (it only checks the filesystem), so this proves the guard, not noteExists()
+  const before = '---\nsummary: a file outside the memory\n---\nbody\n'
+  writeFileSync(join(home, 'outside.md'), before)
   const r = runMemoryAdd(home, [
     '--kind',
     'fact',
@@ -1084,6 +1096,7 @@ test('memory add --supersedes ../outside.md exits 2 and writes nothing', () => {
   expect(r.code).toBe(2)
   expect(r.err).toContain('--supersedes')
   expect(inboxFiles(home)).toEqual([])
+  expect(readFileSync(join(home, 'outside.md'), 'utf8')).toBe(before)
 }, 30_000)
 
 test('memory add --supersedes into a hidden (dot) segment exits 2 even when that file really exists', () => {
