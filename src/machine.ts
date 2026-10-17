@@ -2,6 +2,7 @@
 // event carries its own `at`, so a run is a fold over its events and the
 // persisted snapshot is the whole truth. The runner (cli.ts) does the effects.
 import { assign, setup } from 'xstate'
+import { NAME } from './beads'
 
 /**
  * The outcome goes to a node id, or to 'done'. An edge can also be an object. Its `to` field holds
@@ -33,8 +34,6 @@ export type Edge =
     }
 export const edgeTo = (e: Edge) => (typeof e === 'string' ? e : e.to)
 const delayOf = (e: Edge) => (typeof e === 'string' ? 0 : (e.delayMin ?? 0))
-/** a `factory:<name>` or `station:<name>` label's name: lowercase, hyphenated, no path */
-export const REQUEUE_NAME = /^[a-z][a-z0-9-]{0,63}$/
 
 export type Node = {
   /** the worker's task; for a gate, the question put to the person */
@@ -242,7 +241,7 @@ export function validate(def: Factory): Factory {
           ...(typeof edge !== 'string' && typeof edge.requeue === 'object'
             ? (['factory', 'station'] as const)
                 .map(k => edge.requeue && typeof edge.requeue === 'object' && edge.requeue[k])
-                .filter((name): name is string => !!name && !REQUEUE_NAME.test(name))
+                .filter((name): name is string => !!name && !NAME.test(name))
                 .map(name => `${id}: outcome "${outcome}" requeue name "${name}" is invalid`)
             : []),
         ]),
