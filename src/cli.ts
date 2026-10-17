@@ -5715,7 +5715,38 @@ async function status(id: string | undefined) {
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
-const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] <summary> [body...]`
+const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] <summary> [body...]`
+
+/**
+ * Check a `memory add --supersedes <path>` value (claude-factory-3u1.1.2, FR-009).
+ *
+ * Call this after the path resolves through the rename log. The function returns a reason to
+ * refuse the path, or null when the path names a real note. The `add` case calls this after
+ * gate() and before same(). A bad path must cost no embedding call and write nothing.
+ *
+ * `memory helped` already refuses a path with no matching note. This function adds four more
+ * checks. Each one catches a path that exists on disk, so noteExists() alone wrongly accepts it:
+ * - a path under a dot segment, such as `.archive/x.md` (walk() hides this path)
+ * - a topic's whole README.md or LONG.md file, named with no `#id`
+ * - CORE.md itself, named with no `#hash`
+ * - for a path with no `#` at all, any path that is not a real `.md` file: a directory, or a
+ *   file whose name does not end in `.md`
+ *
+ * claude-factory-3u1.1.2.6: for a path with no `#`, noteExists() was only existsSync(). A topic
+ * directory, `inbox`, or `.` (which resolves to `''`) passed that check. supersede() then crashed
+ * with EISDIR.
+ */
+function supersedesRefusal(dir: string, p: string): string | null {
+  if (p.startsWith('..')) return `"${p}" is outside ${dir}`
+  if (p.split('/').some(seg => seg.startsWith('.'))) return `"${p}" is in a hidden path`
+  const base = p.split('/').pop()
+  if (base === 'README.md' || base === 'LONG.md' || p === 'CORE.md')
+    return `"${p}" names a whole file, not one note`
+  if (!memory.noteExists(dir, p)) return `no note at "${p}" in ${dir}`
+  if (!p.includes('#') && (!p.endsWith('.md') || !statSync(join(dir, p)).isFile()))
+    return `"${p}" is not a note file`
+  return null
+}
 
 const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
@@ -5925,7 +5956,16 @@ if (import.meta.main && !outboxCmd)
       case 'memory': {
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
-        const [rig, from, kind, until] = [opt('--rig'), opt('--from'), opt('--kind'), opt('--until')]
+        // Capture this before opt('--supersedes') below runs. Otherwise a bare trailing flag (no
+        // value) looks the same as a caller who never passed --supersedes at all.
+        const hasSupersedes = args.includes('--supersedes')
+        const [rig, from, kind, until, supersedesArg] = [
+          opt('--rig'),
+          opt('--from'),
+          opt('--kind'),
+          opt('--until'),
+          opt('--supersedes'),
+        ]
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
           const found = await memory.search(MEMORY, words.join(' '), { rig })
@@ -5960,18 +6000,59 @@ if (import.meta.main && !outboxCmd)
             process.exitCode = 2
             break
           }
+          // --supersedes names an older note this one replaces (claude-factory-3u1.1.2, FR-009).
+          // Check it after gate() runs, before same() runs. A bad path must cost no embedding.
+          // A bad path must write nothing, the same as any other usage error here.
+          let supersedesPath: string | undefined
+          if (hasSupersedes) {
+            if (supersedesArg === undefined || supersedesArg.startsWith('--')) {
+              console.error(`factory memory add: --supersedes needs a note path`)
+              console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+              process.exitCode = 2
+              break
+            }
+            const resolved = memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, supersedesArg)))
+            const bad = supersedesRefusal(MEMORY, resolved)
+            if (bad) {
+              console.error(`factory memory add: --supersedes ${bad}`)
+              console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+              process.exitCode = 2
+              break
+            }
+            supersedesPath = resolved
+          }
           const dup = isAnyway ? null : await memory.same(MEMORY, note)
           if (dup) {
-            // a hit, not a new note: the copy would only crowd search results until a dream merged it
-            memory.use(MEMORY, [dup.note.path], 'helped', Date.now(), from)
+            // a hit, not a new note: the copy would only crowd search results until a dream merged it.
+            // It logs 'confirmed', not 'helped' (claude-factory-3u1.1.2, FR-008): 'helped' means a
+            // worker found and used the note; a duplicate add only confirms it is still true.
+            memory.use(MEMORY, [dup.note.path], 'confirmed', Date.now(), from)
             console.log(
               `already noted (${dup.score.toFixed(2)}): ${join(MEMORY, dup.note.path)}\n  ${dup.note.summary}\n` +
-                `counted as helping instead. If yours adds something it lacks, add it again with --anyway.`,
+                `counted as a confirmation instead. If yours adds something it lacks, add it again with --anyway.` +
+                // A duplicate hit is often the old note itself. Superseding it would make it
+                // replace itself. --supersedes applies only to a genuinely new note
+                // (claude-factory-3u1.1.2).
+                (supersedesPath
+                  ? `\n--supersedes was not applied: this was a duplicate, not a new note.`
+                  : ''),
             )
           } else {
             const at = new Date().toISOString().slice(0, 10)
             // gate() above already confirmed kind is one of memory.NOTE_KINDS
-            console.log(memory.add(MEMORY, { ...note, kind: kind as memory.NoteKind, from, at }))
+            const file = memory.add(MEMORY, { ...note, kind: kind as memory.NoteKind, from, at })
+            console.log(file)
+            if (supersedesPath) {
+              const newPath = relative(MEMORY, file)
+              const { marked } = memory.supersede(MEMORY, supersedesPath, newPath)
+              memory.use(MEMORY, [supersedesPath], 'contradicted', Date.now(), from)
+              console.log(
+                marked
+                  ? `marked superseded: ${join(MEMORY, supersedesPath)}`
+                  : `no marker was written on ${supersedesPath} (a LONG.md or CORE.md entry has no ` +
+                      `frontmatter of its own); logged contradicted instead`,
+              )
+            }
           }
         } else if (sub === 'helped' && words.length) {
           const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
