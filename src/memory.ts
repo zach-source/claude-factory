@@ -1362,12 +1362,13 @@ export function applyTiers(
   const skipped: { topic: string; reason: string }[] = []
   let merged = 0
   let archived = 0
+  let retired = 0
   // one topic's remaining short-note count drops by one for every merge this pass writes to disk
-  // (not one a skipped, unsafe LONG.md held back) and every archive; overCap below reads this.
+  // (not one a skipped, unsafe LONG.md held back) and every archive or retire; overCap below reads this.
   const removedByTopic = new Map<string, number>()
   const removeOne = (topic: string) => removedByTopic.set(topic, (removedByTopic.get(topic) ?? 0) + 1)
   for (const d of decisions) {
-    if (d.kind !== 'merge' && d.kind !== 'archive') continue
+    if (d.kind !== 'merge' && d.kind !== 'archive' && d.kind !== 'retire') continue
     const note = notes.find(n => n.path === d.path)
     if (!note) continue
     if (d.kind === 'merge') {
@@ -1413,7 +1414,10 @@ export function applyTiers(
       renamed[note.path] = `${topic}/LONG.md#${id}`
       rewriteReadmeLink(dir, topic, note.path, `LONG.md#${id}`)
     } else {
-      archived++
+      // archive and retire write the same way (AC8): a retire is an archive whose reason is an
+      // ended until marker. Only the counter differs, so a caller can tell the two apart.
+      if (d.kind === 'retire') retired++
+      else archived++
       const topic = topicOf(note)
       removeOne(topic)
       if (opts.dryRun) continue
@@ -1427,9 +1431,10 @@ export function applyTiers(
       )
       rmSync(join(dir, note.path))
       rewriteReadmeLink(dir, topic, note.path, `../.archive/${topic}.md`)
-      // no rename logged: decide() never archives a helped note, so no helped count is owed here
+      // no rename logged: decide() never archives or retires a helped note, so this keeps no helped count
     }
   }
+  const flagged = decisions.filter(d => d.kind === 'flag').length
   const held = decisions.filter(d => d.kind === 'held').length
   const totalByTopic = new Map<string, number>()
   for (const n of short) totalByTopic.set(n.topic, (totalByTopic.get(n.topic) ?? 0) + 1)
@@ -1437,7 +1442,20 @@ export function applyTiers(
     new Map([...totalByTopic].map(([t, c]) => [t, c - (removedByTopic.get(t) ?? 0)])),
     topicCap,
   )
-  return { decisions, renamed, merged, archived, held, skipped, archiveCap, historyDays, topicCap, overCap }
+  return {
+    decisions,
+    renamed,
+    merged,
+    archived,
+    retired,
+    flagged,
+    held,
+    skipped,
+    archiveCap,
+    historyDays,
+    topicCap,
+    overCap,
+  }
 }
 
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */

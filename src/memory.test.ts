@@ -1601,6 +1601,82 @@ test('applyTiers() ages a note with no at: from the commit that added it, not th
   ])
 })
 
+test('applyTiers() retires a note whose date until marker passed, and writes it to .archive like an archive', () => {
+  const dir = join(tmpdir(), `memory-apply-retire-date-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'stale-fact.md'),
+    format({ summary: 'a fact that holds only until a date', until: '2026-01-01', body: 'body' }),
+  )
+  const { retired, archived, merged, decisions } = applyTiers(dir, { now })
+  expect(retired).toBe(1)
+  expect(archived).toBe(0)
+  expect(merged).toBe(0)
+  expect(decisions).toEqual([
+    { kind: 'retire', path: 'beads/stale-fact.md', reason: 'date 2026-01-01 passed' },
+  ])
+  expect(existsSync(join(dir, 'beads', 'stale-fact.md'))).toBe(false)
+  expect(readFileSync(join(dir, '.archive', 'beads.md'), 'utf8')).toContain(
+    'a fact that holds only until a date',
+  )
+})
+
+test('applyTiers() dry run counts a retire but writes nothing', () => {
+  const dir = join(tmpdir(), `memory-apply-retire-dry-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'stale-fact.md'),
+    format({ summary: 'a fact that holds only until a date', until: '2026-01-01', body: 'body' }),
+  )
+  const { retired } = applyTiers(dir, { now, dryRun: true })
+  expect(retired).toBe(1)
+  expect(existsSync(join(dir, 'beads', 'stale-fact.md'))).toBe(true)
+  expect(existsSync(join(dir, '.archive', 'beads.md'))).toBe(false)
+})
+
+test('applyTiers() flags, and keeps, a bead-until note whose lookup throws', () => {
+  const dir = join(tmpdir(), `memory-apply-flag-throw-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'cites-bead.md'),
+    format({ summary: 'a fact that cites a bead', until: 'acme-widget-h7c', body: 'body' }),
+  )
+  const untilDeps: UntilDeps = {
+    bead: () => {
+      throw new Error('secret-e2e: bd down')
+    },
+  }
+  const { retired, flagged, decisions } = applyTiers(dir, { now, untilDeps })
+  expect(retired).toBe(0)
+  expect(flagged).toBe(1)
+  expect(decisions).toEqual([
+    { kind: 'flag', path: 'beads/cites-bead.md', reason: 'bead acme-widget-h7c lookup failed' },
+  ])
+  expect(existsSync(join(dir, 'beads', 'cites-bead.md'))).toBe(true)
+})
+
+test('applyTiers() with no untilDeps at all leaves a bead-until note untouched, with no flag', () => {
+  const dir = join(tmpdir(), `memory-apply-no-untildeps-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'cites-bead.md'),
+    format({ summary: 'a fact that cites a bead', until: 'acme-widget-h7c', body: 'body' }),
+  )
+  const { retired, flagged, decisions } = applyTiers(dir, { now })
+  expect(retired).toBe(0)
+  expect(flagged).toBe(0)
+  expect(decisions).toEqual([])
+  expect(existsSync(join(dir, 'beads', 'cites-bead.md'))).toBe(true)
+})
+
 test('tally keys a run by its id before the slash, so two stations of one run count as one run, not two (claude-factory-59r.16)', () => {
   const at = Date.parse('2026-10-06T12:00:00Z')
   const lines = [
