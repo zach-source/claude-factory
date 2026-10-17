@@ -192,8 +192,15 @@ example, the title can be "ama-gs2: will you merge PR #68 now?" Below the title 
 context that shows what is true at this time. Below the context are 2-4 option buttons. Each button has a short label.
 Next to each button is one line on its effect.
 
-When the manager marks one option recommended, that button says so and is easier to see. The
-full raw report sits behind a `details` toggle, and the collapsed row does not show it.
+When the manager marks one option as recommended, its button shows a mark. This button also
+stands out more than the others. The full raw report is behind a `details` toggle. The
+collapsed row does not show the report.
+
+A gate item's context line starts with `Brief: ` and shows the first line of the evidence brief.
+The hidden `factory:briefer` subagent writes this brief once for each gate visit, and the context
+line stays empty until then. The `details` toggle shows the full brief, up to 8 lines, from the pull
+request, the verify and review summaries, and the run's own goal. The briefer cannot decide the
+gate, and you still pick the outcome yourself.
 
 Two open items that have the same decision fold into one row. This applies to the same bead, or
 to the same question in the same rig. Answering that row answers every run or bead that the row covers.
