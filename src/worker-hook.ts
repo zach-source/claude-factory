@@ -69,7 +69,7 @@ export const LIVE_REASON =
 const MAX_COMMAND_LENGTH = 8192
 
 export const LONG_COMMAND_REASON =
-  'The factory denies this command: it is longer than 8192 bytes, and this rig checks commands ' +
+  'The factory denies this command: it is longer than 8192 characters, and this rig checks commands ' +
   'against a person-only kube context. A command this long can make that check too slow. ' +
   'Split this command into shorter commands and run them one at a time. Do not retry this exact command.'
 
@@ -112,6 +112,20 @@ export interface HookGate {
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
 }
+
+// claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
+// limit. A command with many stacked eval words can make this guard's own scan too slow. The scan
+// can then miss the 10 s PreToolUse hook timeout. A hook that times out lets the command run (fail
+// open). denyAt gives this reason instead, past MAX_SHELL_DEPTH recursion levels (fail closed).
+export const DEEP_COMMAND_REASON =
+  'The factory denies this command: it nests more than 32 eval or sh -c levels, and the factory ' +
+  'cannot check a command this deep in time. Run the inner command directly. Do not retry this exact command.'
+
+// claude-factory-epz: the recursion limit for denyAt's eval/sh -c levels. 16 is too low: the
+// claude-factory-25z.17 STACKED_EVAL tests use 24 levels, and need their old REASON or
+// LIVE_REASON verdict. 32 keeps those tests green. At 32, a 4000-level stacked-eval `rm` form is a
+// 31 ms deny, far inside the 10 s hook timeout.
+const MAX_SHELL_DEPTH = 32
 
 // wrapper commands whose own name we skip to find the command they run
 const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
@@ -1058,15 +1072,20 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * `words[j + ci + 1]`. This hook does not know every shell option. It tries every later word that
  * does not start with `-` as a candidate script. It also tries the word right after a literal
  * `--`, because an operand there can start with `-` and still be the script. A recursion on a
- * wrong candidate (an option's own value word, for example `extglob`) is safe: denyReason returns
+ * wrong candidate (an option's own value word, for example `extglob`) is safe: denyAt returns
  * undefined for it. Each word is still read once. The loop moves `j` to the last word it checked,
  * so a later step never reads this span again (the .17 bound).
+ *
+ * claude-factory-epz: `depth` counts how many eval/sh -c levels denyAt has already recursed
+ * through to reach `words`. Each recursive call below passes `depth + 1`, so denyAt can fail
+ * closed past MAX_SHELL_DEPTH levels instead of recursing without a bound.
  */
 function anyShellReason(
   words: string[],
   root: string | undefined,
   personOnly: string[] | undefined,
   gate: HookGate,
+  depth: number,
 ): string | undefined {
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -1079,11 +1098,11 @@ function anyShellReason(
         const w = words[k]!
         if (w === '--') {
           k++
-          if (k < words.length) found = denyReason(words[k]!, root, personOnly, gate)
+          if (k < words.length) found = denyAt(words[k]!, root, personOnly, gate, depth + 1)
           break
         }
         if (w.startsWith('-')) continue
-        found = denyReason(w, root, personOnly, gate)
+        found = denyAt(w, root, personOnly, gate, depth + 1)
         if (found) break
       }
       if (found) return found
@@ -1093,7 +1112,7 @@ function anyShellReason(
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {
-        const r = denyReason(rest.join(' '), root, personOnly, gate)
+        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1)
         if (r) return r
       }
       break
@@ -1118,13 +1137,31 @@ export function denyReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
+  return denyAt(command, root, personOnly, gate ?? {}, 0)
+}
+
+/**
+ * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
+ * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
+ * `depth + 1` at each of its 3 recursion sites.
+ */
+function denyAt(
+  command: string,
+  root: string | undefined,
+  personOnly: string[] | undefined,
+  gate: HookGate,
+  depth: number,
+): string | undefined {
   if (!command) return undefined
+  // claude-factory-epz: this check comes before the 8192-char check, so a deep command denies
+  // even when personOnly is empty or absent (the 8192 cap applies only when personOnly is set).
+  if (depth > MAX_SHELL_DEPTH) return DEEP_COMMAND_REASON
   // claude-factory-25z.20: this guard's own scan cost rises with the length of `command` (see
   // anyLiveApplyWord and anyShellReason). A command built to be long enough can push that scan
   // past the 10 s PreToolUse hook timeout, which lets the command run unchecked. When a
   // person-only context list is set, deny a command this long outright instead of scanning it.
   if (personOnly?.length && command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
-  const g = gate ?? {}
+  const g = gate
   let hasRm = false
   let hasCd = false
   for (const words of segments(command)) {
@@ -1145,7 +1182,7 @@ export function denyReason(
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
-    const shellReason = anyShellReason(words, root, personOnly, g)
+    const shellReason = anyShellReason(words, root, personOnly, g, depth)
     if (shellReason) return shellReason
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON

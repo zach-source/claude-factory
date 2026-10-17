@@ -223,6 +223,12 @@ the worker does not know its current context. The hook matches context and clust
 It cannot resolve a shell expansion. So it also refuses a `--context` or a kubectl `--cluster`
 value that is not a literal name, such as `$CTX` or a backtick.
 
+On a rig with a `--person-only-context`, the hook refuses a command longer than 8192 characters.
+A command this long can make the hook's own scan too slow.
+
+On every rig, the hook refuses a command that nests more than 32 `eval` or `sh -c` levels. A
+command nested this deep can make the hook's own scan too slow too.
+
 The hook reads only the command text Claude Code is about to run, so it stops a worker that
 runs the command directly. It cannot read a script that reaches a shell by another path: a pipe
 (`echo "kubectl --context acme apply -f x" | bash`), a here-string, `env -S`, `su -c`,
@@ -373,6 +379,8 @@ memory/
   a merge into that topic). A lesson that holds only while a bead is open names it;
   the dream is told which named beads have closed and retires what waited on them. The memory is its own git repo, committed before and
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
+  Each commit also carries that step's `.usage.jsonl` (per-note counts) and `.renames.jsonl`
+  (old path to new path). compact() writes both files before the commit. The repo stays clean right after.
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
   `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
   topic's `LONG.md` once the note is 7 days old and was shown or helped at least once, and
