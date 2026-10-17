@@ -16,22 +16,76 @@ minor release may change the factory format, the CLI or the run state.
     round's own-outcome summary (oldest first, each clipped to fit near 24,000 characters). The
     first report past `rounds` re-plans; a second cap in the same run still holds for the manager,
     now naming the earlier re-plan. With no `onRounds`, a station's rounds cap holds for the
-    manager exactly as before. `Node.repeatMail` names an outcome in `next`; when a station
-    reports it twice in a row and both reports cite the same `AC<n>` id, the machine mails the
-    manager from `'factory'`, naming the station, the shared ids and both report times, and the
-    run still follows the normal edge. New exports `acIdsIn`, `prevReport`, `repeatMailText` and
-    `capReplanMail`. `validate()` refuses an `onRounds` with no `rounds`, or one that names an
-    unknown node, `'done'`, or the node itself; it refuses a `repeatMail` that is not a key of
-    `next`.
+    manager exactly as before. The re-plan's own log entry sets a new `Entry.replan: true` field,
+    so metrics and the repeat-mail check can tell it apart from a manager's own `goto plan`.
+    `Node.repeatMail` names an outcome in `next`; when a station reports it twice in a row and
+    both reports name the same `AC<n>` id on their own `Failing: AC2, AC6` line, the machine mails
+    the manager from `'factory'`, naming the station, the shared ids and both report times, and
+    the run still follows the normal edge. A `replan` entry between the two reports breaks the
+    streak, since a re-plan can renumber acceptance criteria. New exports `acIdsIn`,
+    `failingAcIds`, `prevReport`, `repeatMailText` and `capReplanMail`. `validate()` refuses an
+    `onRounds` with no `rounds`, or one that names an unknown node, `'done'`, or the node itself;
+    it refuses a `repeatMail` that is not a key of `next`.
   - `factories/lifecycle.ts`: `review` sets `onRounds: 'plan'` (`rounds` stays 3); `verify` sets
-    `repeatMail: 'red'`. `plan`'s prompt numbers acceptance criteria `AC1`, `AC2`, ...; `verify`'s
-    prompt names the AC id each red failure fails.
+    `repeatMail: 'red'` and its prompt now asks for one fixed `Failing: AC2, AC6` line naming only
+    the still-failing ids. `plan`'s prompt numbers acceptance criteria `AC1`, `AC2`, ....
   - `mod/hooks/register.tsx`: the manager's patrol prompt now forbids a goto to implement past a
-    station's round cap (it already re-plans once on its own), and tells the manager to steer
-    implement or goto plan on a repeat-red notice, never goto implement with no new direction.
+    station's round cap (a stuck mail that says "already re-planned once" already went through one
+    re-plan), and tells the manager to steer implement or goto plan on a mail that says a station
+    "reported `<outcome>` again on `<AC ids>`", never goto implement with no new direction.
   - `src/metrics.ts`: `metrics()` adds `runsWith3PlusReviewRounds`, `implementPassesPerShippedRun`
     (null at 0 shipped runs; skips `handoff`, `blocked` and a pre-launch PR park) and `capReplans`
-    (adjacent log pairs `review` -> `plan`). `render()` prints them on one line.
+    (counts only a log entry with `replan: true`, never any `review` -> `plan` pair, so a
+    manager's own goto plan after a stuck hold or a review fail does not count). `render()` prints
+    them on one line.
+- `factory gc --worktrees` fixes two gaps the PR #70 security review found. (claude-factory-ulv)
+  - `src/cli.ts`: `snapshotWorktree()` used to set `GIT_INDEX_FILE` to a path that other
+    processes can predict: `factory-gc-index-<runId>-<pid>` in the shared tmpdir. A write race
+    between `git add -A` and `git write-tree` can snapshot the wrong tree before the caller
+    force-removes the worktree. The function now uses `mkdtempSync` to make a private,
+    unpredictable 0700 directory for the index file. It removes this directory in its `finally`
+    block.
+  - `src/gc.ts`: `coverTip()` used to trust a cross-repo (fork) PR's CLOSED or MERGED state as
+    proof that a tip merged. `PrFact` now carries a required `isCrossRepository` field.
+    `coverTip()` ignores each `PrFact` where this field is `true`. `prFacts()` (`src/cli.ts`)
+    asks `gh` for `isCrossRepository`. It fails closed, with no branch deletes in that rig, when
+    a PR entry has no boolean `isCrossRepository` value. `beadClosedFacts()` builds its CLOSED
+    set from non-cross-repo PRs only. It never runs `bd show` for a fork PR's bead.
+
+- `factory gc --worktrees` now matches a GitHub origin only on the exact host `github.com`. The
+  old regex had no host anchor. An origin like `https://mygithub.com/owner/repo` parsed as the
+  GitHub slug `owner/repo`. `gc` then read PR state for a different repo on `github.com`. It
+  could apply that repo's MERGED or CLOSED state to this rig's own branch deletes.
+  (claude-factory-0u0)
+  - `src/cli.ts`: `githubSlug()` now uses `parseRemote()` (`src/prs.ts`) and `forgeOf()`. This is
+    the same parser that `originRef()` uses for GitLab. `githubSlug()` is now exported. It also
+    accepts origin forms with userinfo, for example `https://user@github.com/...` and
+    token-auth clone URLs. The old regex rejected these forms.
+
+- `reconcile()` now has a direct test for the escalated deadline from `timeoutOf()` (`onTimeout`,
+  claude-factory-3t2). `src/remote.test.ts` sends a real `factory tick` through a timeout fail, a
+  backoff and a new spawn. The test checks the warn and fail minutes against the escalated
+  limit, not the plain `timeoutMin`. (claude-factory-9ff)
+- `factory plan facts` failures now back off and log, the same as a failed spawn. The old
+  code retried every 60 s forever and wrote no log, even with `bd` down. (claude-factory-4hb)
+  - `mod/hooks/register.tsx`: the facts-failed branch in `pmNow()` now:
+    - runs `rt.pmFailures += 1`
+    - waits `pmRetryDelay(rt.pmFailures)` (60 s doubling, capped at 60 min), not the fixed
+      60 s `PM_RETRY_MS` (removed)
+    - adds a `pm-log.jsonl` entry `{ reason: 'facts-failed', error }`, the same shape as the
+      two spawn-failed sites
+- `factory gc --worktrees` no longer journals a secret from a remote URL's userinfo
+  (`user:pass@` or a bare `token@`). A failed `git push` or `git worktree remove` can print the
+  URL in its stderr. That stderr line used to reach `HOME/gc-worktrees.jsonl` unscrubbed.
+  (claude-factory-0lt)
+  - `src/gc.ts`: new export `scrubUrlUserinfo(text)`. It removes the userinfo part of each
+    `scheme://` URL in `text`. It leaves an scp-style remote (`git@github.com:acme/widget`) alone.
+  - `src/cli.ts`: `gcLog()` now scrubs every string value of its entry with
+    `scrubUrlUserinfo()`, before it writes the journal line. This covers arrays and objects too.
+    `reviveWorktree`'s `ls-remote` and `fetch` calls now also run with `GIT_NETWORK_ENV`
+    (`GIT_TERMINAL_PROMPT=0`) and the `GIT_NETWORK_TIMEOUT_MS` timeout (still 30 s), the same as
+    every other network-reaching git call in this file. A stuck credential prompt now fails fast
+    instead of waiting out the timeout.
 - `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
   `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
   path. `memory compact` now removes such a usage line. (claude-factory-5o7)
