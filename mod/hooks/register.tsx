@@ -79,8 +79,6 @@ const PM_TYPE = 'factory:pm'
 const PM_WATCHDOG_MS = 15 * 60_000
 /** pm-log.jsonl keeps at most this many lines, oldest dropped first */
 const PM_LOG_CAP = 50
-/** a denied pm spawn waits this long before the next attempt, instead of asking again every tick */
-const PM_RETRY_MS = 60_000
 /** verbs act()'s own args[0] uses for the same run-acting commands, for the console's buttons */
 const TOUCH_VERBS = new Set(['mail', 'poke', 'retry', 'goto', 'fork', 'abort', 'rm', 'decide'])
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
@@ -245,10 +243,11 @@ const rt = {
   pmWanted: false,
   /** the live run ids as of the last pmNow call, to notice a drop (live -> not live) next tick */
   liveIds: new Set<string>(),
-  /** a denied pm spawn's next attempt; 0 means try at once */
+  /** the next attempt after a failed spawn or a failed `factory plan facts` call; 0 means try at once */
   pmRetryAt: 0,
-  /** pm spawns that failed (a deny or a throw) since the last one that worked; feeds
-   * `pmRetryDelay`'s backoff (claude-factory-dun.29). A working spawn resets this to 0. */
+  /** pm spawns that failed (a deny or a throw), or `factory plan facts` calls that failed
+   * (claude-factory-4hb), since the last spawn that worked; feeds `pmRetryDelay`'s backoff
+   * (claude-factory-dun.29). A working spawn resets this to 0. */
   pmFailures: 0,
   /** set once this process finds the manager has no Agent tool (claude-factory-dun.29): gathers no
    * more facts and spawns nothing until a restart starts a fresh process. `undefined` means not
@@ -561,6 +560,11 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
  * `rt.pmBlocked` is set, this function returns at once on every later call. Only a restart, a
  * fresh process, clears it. A spawn that fails for any other reason (a deny, or a throw with the
  * Agent tool present) backs off `pmRetryDelay(rt.pmFailures)` instead of a fixed 60 s wait.
+ *
+ * claude-factory-4hb: a failed `factory plan facts` call backs off and logs the same way. A
+ * `bd` outage is one cause. It uses the same `rt.pmFailures` counter. A mixed run of facts and
+ * spawn failures still doubles its wait, up to the 60 min cap. This stops `factory plan facts`
+ * from retrying every 60 s forever.
  */
 async function pmNow($: EngineInterface, runs: FactoryRun[]) {
   if (!rt.isPmEnabled || rt.pmBlocked) return
@@ -608,8 +612,14 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
     rt.isGatheringFacts = false
   })
   if (!isOk) {
-    rt.pmRetryAt = now + PM_RETRY_MS
+    rt.pmFailures += 1
+    rt.pmRetryAt = now + pmRetryDelay(rt.pmFailures)
     $.ui.status(`factory: plan facts failed: ${line(facts, 160)}`)
+    try {
+      await appendPmLog($, { at: now, reason: 'facts-failed', durationMs: 0, error: line(facts, 300) })
+    } catch (err) {
+      $.ui.status(`factory: failed to write the pm log: ${line(String(err), 160)}`)
+    }
     return
   }
   rt.isPlanning = true
