@@ -271,18 +271,37 @@ export const BEADS_ACTOR_REASON =
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
-/** true when a word in `words` sets, clears or (re-)exports BEADS_ACTOR, anywhere in the segment */
+/** This function returns true when a word in `words` sets, clears or (re-)exports BEADS_ACTOR. */
 function touchesBeadsActor(words: string[]): boolean {
+  let envClearsAll = false
+  let runsBd = false
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     if (/^BEADS_ACTOR=/.test(w)) return true
     const b = baseWord(w)
-    if ((b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') && words[i + 1]) {
-      if (/^BEADS_ACTOR(=|$)/.test(words[i + 1]!)) return true
+    if (b === 'bd') runsBd = true
+    // claude-factory-8pc.27: an option word (-n, -x, and so on) can come between the verb and
+    // the name, as in `export -n BEADS_ACTOR`. Step past each option word first.
+    if (b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') {
+      let j = i + 1
+      while (words[j]?.startsWith('-') && words[j] !== '--') j++
+      if (words[j] !== undefined && /^BEADS_ACTOR(=|$)/.test(words[j]!)) return true
     }
     if (b === 'unset' && words.slice(i + 1).includes('BEADS_ACTOR')) return true
+    // claude-factory-8pc.27: `env -u BEADS_ACTOR` and `env --unset=BEADS_ACTOR` clear the name
+    // for the command that env runs. `env -i` (or `--ignore-environment`) clears every name in
+    // the environment. Deny `env -i` only when the segment also runs `bd`.
+    if (b === 'env') {
+      for (let j = i + 1; j < words.length; j++) {
+        const ew = words[j]!
+        if (ew === '--unset=BEADS_ACTOR') return true
+        if ((ew === '-u' || ew === '--unset') && words[j + 1] === 'BEADS_ACTOR') return true
+        if (ew === '-i' || ew === '--ignore-environment') envClearsAll = true
+        if (!ew.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(ew)) break
+      }
+    }
   }
-  return false
+  return envClearsAll && runsBd
 }
 
 // claude-factory-25z: global flags that take a separate value word, so the verb search can step past

@@ -430,6 +430,32 @@ test('denyReason allows a plain bd command and an unrelated VAR=val assignment (
   expect(denyReason('echo BEADS_ACTOR_LOG=1')).toBeUndefined()
 })
 
+// claude-factory-8pc.27: each line clears BEADS_ACTOR before bd runs. bd then uses its own
+// default actor. sweepFiler (src/sweeps.ts) never matches the filed bead. The round-7 security
+// review found 3 of these forms let through by the claude-factory-8pc.24 fix.
+const BEADS_ACTOR_CLEAR_DENY = [
+  'env -u BEADS_ACTOR bd create "x" -l factory',
+  'env --unset=BEADS_ACTOR bd create "x" -l factory',
+  'env --unset BEADS_ACTOR bd create "x" -l factory',
+  'env -i PATH=/usr/bin bd create "x" -l factory',
+  'env --ignore-environment PATH=/usr/bin bd create "x" -l factory',
+  'export -n BEADS_ACTOR; bd create "x" -l factory',
+  'declare -n BEADS_ACTOR',
+]
+
+test.each(BEADS_ACTOR_CLEAR_DENY)('denyReason denies %s (claude-factory-8pc.27)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+test('denyReason allows env -i on a command that is not bd (claude-factory-8pc.27)', () => {
+  // env -i clears BEADS_ACTOR too, but it is this gap only when the cleared command is bd itself
+  expect(denyReason('env -i PATH=/usr/bin ls')).toBeUndefined()
+})
+
+test('denyReason allows env -u on a variable other than BEADS_ACTOR (claude-factory-8pc.27)', () => {
+  expect(denyReason('env -u OTHER_VAR bd create "x" -l factory')).toBeUndefined()
+})
+
 // claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it
 // runs cmd.slice(i + 1), then reads rest[0]. A slice costs O(n - i). A run of n -exec words makes
 // n such slices, so the find branch costs O(n^2). This test does not set personOnly. So the
