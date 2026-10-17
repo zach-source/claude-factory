@@ -399,6 +399,49 @@ test('l: a failed git add -A during the snapshot keeps the worktree, commits no 
   }
 })
 
+test('m: a clean detached-HEAD worktree with a commit on no ref is snapshotted, not wiped bare (claude-factory-l38.9)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const worktree = join(dir, 'wt', id)
+  mkdirSync(join(dir, 'wt'), { recursive: true })
+  git(repo, 'worktree', 'add', '-q', '--detach', worktree, 'main')
+  writeFileSync(join(worktree, 'unreachable.txt'), 'orphan commit')
+  git(worktree, 'add', 'unreachable.txt')
+  git(worktree, 'commit', '-q', '-m', 'commit on no ref')
+  const orphanSha = git(worktree, 'rev-parse', 'HEAD') // reachable from no branch, remote or tag
+  const d = runDir(id)
+  mkdirSync(d, { recursive: true })
+  const factoryFile = join(d, 'factory.ts')
+  writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id,
+      factory: factoryFile,
+      repo,
+      goal: 'g',
+      ws: `ws-${id}`,
+      worktree,
+      branch: `factory/${id}`,
+    }),
+  )
+  const actor = createActor(compile(DEF)).start()
+  actor.send({ type: 'TICK', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 's', at: OLD })
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([])
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(existsSync(worktree)).toBe(false) // a finished run's worktree is still removed
+  const refSha = git(repo, 'rev-parse', `refs/factory-gc/${id}`)
+  expect(refSha).not.toBe('')
+  expect(() => git(repo, 'merge-base', '--is-ancestor', orphanSha, refSha)).not.toThrow() // the orphan survives
+})
+
 test('h: 2 live runs among finished ones leaves 2 owned worktrees after a pass (AC11)', () => {
   reset()
   const { repo } = makeRig('r1')

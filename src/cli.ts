@@ -2911,6 +2911,27 @@ function worktreeFacts(repo: string): gc.WorktreeFact[] {
         }
       }
     }
+    // a detached HEAD (branch null) can hold commits reachable from no branch, remote or tag: a
+    // straight removal would make them unreachable for good (claude-factory-l38.9). A worktree that
+    // has a branch checked out never has any (the branch itself covers HEAD), so this is a no-op there.
+    if (dirty === 'clean') {
+      const revlist = Bun.spawnSync([
+        'git',
+        '-C',
+        e.path,
+        'rev-list',
+        '-n',
+        '1',
+        'HEAD',
+        '--not',
+        '--branches',
+        '--remotes',
+        '--tags',
+      ])
+      if (revlist.exitCode !== 0)
+        dirty = 'unknown' // a failed read must never read as clean (AC5-style)
+      else if (revlist.stdout.toString().trim()) dirty = 'small' // snapshot it before removal, not removed bare
+    }
     const du = Bun.spawnSync(['du', '-sk', e.path])
     const kb = du.exitCode === 0 ? Number(du.stdout.toString().split('\t')[0]) : 0
     return [
