@@ -1543,13 +1543,13 @@ const DENY_ENV_SPLIT_ESCAPE: string[] = [
   'env -S "git\\_push origin main"',
   "/usr/bin/env -S 'git\\_push origin main'",
   // a real newline inside the value, and a backslash with no following letter
-  'env -S \'git\npush origin main\'',
+  "env -S 'git\npush origin main'",
   "env -S 'rm\\_-rf\\_/'",
 ]
 
 test.each(DENY_ENV_SPLIT_ESCAPE)(
   'denyReason denies %j (claude-factory-vco, a backslash or newline in an env -S value hides the real command)',
-  (cmd) => {
+  cmd => {
     expect(denyReason(cmd)).toBe(ENV_SPLIT_ESCAPE_REASON)
   },
 )
