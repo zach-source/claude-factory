@@ -327,12 +327,12 @@ function realCommand(words: string[]): string[] {
 
 /**
  * True when `words` runs xargs right before a git or gh word, after the same leading `VAR=val`,
- * wrapper and `timeout <n>` prefixes `realCommand` steps past.
+ * wrapper and `timeout <n>` prefixes that `realCommand` skips.
  *
  * claude-factory-zl5.33: xargs can append its own operand, read from its own stdin, after every
- * word already on this command line. That operand can be a push refspec or a gh verb. This
- * guard checks only the text of the command line, so it cannot read an operand xargs adds at
- * run time. It denies the whole command instead, rather than scan text that may be incomplete.
+ * word on this command line. That operand can be a push refspec or a gh verb. This guard reads only
+ * the command text, so it cannot read an operand that xargs adds at run time. So this guard denies
+ * the whole command, because it does not trust text that can be incomplete.
  */
 function xargsHidesOperand(words: string[]): boolean {
   let w = words
@@ -1186,11 +1186,13 @@ function refspecTarget(
 ): { target?: string; unsafe: boolean } {
   const s = spec.startsWith('+') ? spec.slice(1) : spec
   if (REFSPEC_UNSAFE.test(s)) return { unsafe: true }
-  // claude-factory-zl5.32: real git confirmed a bare `:` refspec pushes every matching branch,
-  // the same broad reach as `--all`. This guard had read `:` as an empty source and an empty
-  // destination, so it fell to the no-colon branch's own text (also empty) and named no branch
-  // at all, which let a push with this refspec through unchecked. It now reads `:` as unsafe,
-  // the same fail-closed result `PUSH_BROAD_FLAGS` gives for `--all`.
+  // claude-factory-zl5.32: Real git confirmed that a bare `:` refspec pushes every branch that has
+  // the same name at both ends, with the same broad reach as `--all`.
+  //
+  // Earlier, this guard read `:` as an empty source and an empty destination. It then used the text
+  // of the no-colon branch, which is also empty, so it named no branch at all. That let a push with
+  // this refspec pass unchecked. Now this guard reads `:` as unsafe, the same fail-closed result that
+  // `PUSH_BROAD_FLAGS` gives for `--all`.
   if (s === ':') return { unsafe: true }
   const ci = s.indexOf(':')
   if (ci < 0) {
@@ -1319,14 +1321,16 @@ function isPushDefaultName(name: string): boolean {
   return name.toLowerCase() === 'push.default'
 }
 
-// claude-factory-zl5.28: real git confirmed `upstream` and its older name `tracking` make a bare
-// `git push` reach the current branch's own configured upstream branch, for example `main`.
-// claude-factory-zl5.31: real git also confirmed `matching` sends every local branch to a
-// remote branch of the same name, with no refspec on that later command line. A local `main`
-// branch then reaches the remote `main`, no matter which branch is current.
-// `current`, `simple` (git's own default since 2.0) and `nothing` only ever reach the branch
-// this guard already checks through `currentBranch`. They stay allowed. Any other value fails
-// closed, the same rule `REFSPEC_UNSAFE` uses for a refspec this guard cannot read in full.
+// claude-factory-zl5.28: Real git confirmed that `upstream` and `tracking`, its older name, make a
+// bare `git push` reach the upstream branch of the current branch. For example, that branch is `main`.
+//
+// claude-factory-zl5.31: Real git also confirmed that `matching` sends every local branch to a
+// remote branch with the same name. That later command line has no refspec. A local `main` branch
+// reaches the remote `main`, whatever branch is current.
+//
+// `current`, `simple` (the git default since 2.0) and `nothing` only reach the branch that this
+// guard already checks through `currentBranch`. They stay allowed. Any other value fails closed,
+// the same rule that `REFSPEC_UNSAFE` uses for a refspec that this guard cannot read in full.
 const PUSH_DEFAULT_SAFE_VALUES = new Set(['current', 'simple', 'nothing'])
 function isUpstreamPushDefaultValue(value: string): boolean {
   return !PUSH_DEFAULT_SAFE_VALUES.has(value.toLowerCase())
@@ -1369,8 +1373,8 @@ function isPushConfigWrite(name: string, value: string | undefined): boolean {
  * read in full.
  */
 // claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` from the text of the
-// environment variable named `<envvar>`, the same key `-c <name>=<value>` sets from the command
-// line itself. Real git takes only this one attached form, with `=` right after `--config-env`.
+// environment variable named `<envvar>`. It sets the same key that `-c <name>=<value>` sets from
+// the command line. Real git accepts only this one attached form, with `=` right after `--config-env`.
 const CONFIG_ENV_PREFIX = '--config-env='
 
 function gitDashCPushDenied(tail: string[]): boolean {
@@ -1378,10 +1382,12 @@ function gitDashCPushDenied(tail: string[]): boolean {
     const w = tail[i]!
     if (w === '--') break
     if (w.startsWith(CONFIG_ENV_PREFIX)) {
-      // claude-factory-zl5.34: this guard can read `<envvar>`'s name, but not the text of the
-      // environment variable it names. It cannot check that text against `isPushConfigWrite`'s
-      // own value rule for `push.default`, so it denies any `alias.*`, `remote.*.push` or
-      // `push.default` key this flag sets, with no value check: fail closed.
+      // claude-factory-zl5.34: This guard can read the name of `<envvar>`, but not the text of the
+      // environment variable that it names.
+      //
+      // It cannot check that text against the value rule of `isPushConfigWrite` for `push.default`.
+      // So this guard denies any `alias.*`, `remote.*.push` or `push.default` key that this flag sets.
+      // It does not check a value, so it fails closed.
       const rest = w.slice(CONFIG_ENV_PREFIX.length)
       const eq = rest.indexOf('=')
       if (eq < 0) continue
@@ -1436,11 +1442,13 @@ function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
   return isPushConfigWrite(name, operands[start + 1])
 }
 
-// claude-factory-zl5.35: `git send-pack` is the plumbing command `git push` itself calls. It
-// moves refs to a remote over the same transports `push` uses, including ssh, with no `push`
-// word of its own: `git send-pack [--all] [--dry-run] [<host>:]<directory> [<ref>...]`.
-// The first non-flag word is the destination, not a refspec. The rest match the same refspec
-// syntax `gitPushDenied` already reads, so this guard reuses `refspecTarget` on each one.
+// claude-factory-zl5.35: `git send-pack` is the plumbing command that `git push` itself calls.
+// It moves refs to a remote over the same transports that `push` uses, such as ssh.
+//
+// It has no `push` word of its own, and its synopsis is `git send-pack [--all] [--dry-run] [<host>:]<directory> [<ref>...]`.
+// The first word that is not a flag is the destination, not a refspec. The other words use the
+// same refspec syntax that `gitPushDenied` already reads. So this guard reuses `refspecTarget`
+// on each one.
 function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
   const operands: string[] = []
   let broad = false
@@ -1478,7 +1486,7 @@ function sendPackDenied(tail: string[], currentBranch: string | undefined, gate:
  * `dir` is the value of `-C` when given. Otherwise, `dir` is `root`.
  * `gate.headOf(dir)` reads the current branch there.
  *
- * claude-factory-zl5.35: `send-pack` is checked the same way `push` is, through `sendPackDenied`.
+ * claude-factory-zl5.35: This guard checks `send-pack` in the same way as `push`, through `sendPackDenied`.
  */
 function gitReason(cmd: string[], root: string | undefined, gate: HookGate): string | undefined {
   const tail = cmd.slice(1)

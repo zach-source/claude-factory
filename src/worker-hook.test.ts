@@ -1181,10 +1181,12 @@ test('run as `bun src/worker-hook.ts`, gh api graphql -f query=@file reads the r
   })
 }, 10_000)
 
-// claude-factory-zl5.31: real git confirmed `push.default matching` sends every local branch to
-// a remote branch of the same name, with no refspec on that later command line. `tracking` is
-// upstream's older name; `matching` and any value this guard does not recognize now deny too,
-// since this guard cannot tell a safe value from a risky one without a real git to ask.
+// claude-factory-zl5.31: Real git confirmed that `push.default matching` sends every local branch
+// to a remote branch with the same name.
+//
+// That later command line has no refspec. `tracking` is the older name of `upstream`. This guard now
+// denies `matching` and any value that it does not recognize. This guard cannot tell a safe value
+// from a risky one, since it has no real git to ask.
 const DENY_PUSH_DEFAULT_MATCHING_OR_UNKNOWN = [
   'git config push.default matching',
   'git config set push.default matching',
@@ -1240,17 +1242,32 @@ test('denyReason allows xargs ahead of a command that is not git or gh (claude-f
   expect(denyReason('git log | xargs -n1 echo')).toBeUndefined()
 })
 
-// claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` from an environment
-// variable this guard cannot read. It denies the same 3 keys `-c <name>=<value>` denies, with no
-// value check of its own, since it has no value to check.
+// claude-factory-zl5.33: Without this guard, a bare `git push origin` behind xargs reads as a push
+// of the current branch (HEAD). The real target, which xargs appends from its own stdin, is not in
+// this command text. On a run branch such as `feature`, this guard does not protect that read, so
+// the command passes with no deny at all. This test checks the real case that the fix closes,
+// not only a reason-text mismatch.
+test('denyReason denies a push behind xargs even on an unprotected current branch (claude-factory-zl5.33)', () => {
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason('echo main | xargs git push origin', undefined, undefined, gate)).toBe(XARGS_REASON)
+})
+
+// claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` from an environment variable
+// that this guard cannot read. It denies the same 3 keys that `-c <name>=<value>` denies. It does
+// not check a value, because it has no value to check.
+//
+// Each row below is a bare push with no refspec of its own, on a run branch (`feature`).
+// A guard that does not check `--config-env` reads each row as a safe push of the current branch.
+// Only the `--config-env` check denies each row.
 const DENY_CONFIG_ENV_PUSH = [
-  'git --config-env=alias.p=ENVVAR p origin main',
-  'git --config-env=remote.origin.push=ENVVAR push origin main',
-  'git --config-env=push.default=ENVVAR push origin main',
+  'git --config-env=alias.p=ENVVAR p origin',
+  'git --config-env=remote.origin.push=ENVVAR push origin',
+  'git --config-env=push.default=ENVVAR push origin',
 ]
 
 test.each(DENY_CONFIG_ENV_PUSH)('denyReason denies %j (claude-factory-zl5.34)', cmd => {
-  expect(denyReason(cmd)).toBe(PUSH_REASON)
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
 })
 
 test('denyReason allows --config-env on an unrelated key (claude-factory-zl5.34)', () => {
@@ -1263,9 +1280,7 @@ test('denyReason allows --config-env on an unrelated key (claude-factory-zl5.34)
 test('denyReason denies git send-pack to a protected branch (claude-factory-zl5.35)', () => {
   expect(denyReason('git send-pack origin refs/heads/main')).toBe(PUSH_REASON)
   expect(denyReason('git send-pack --all origin')).toBe(PUSH_REASON)
-  expect(denyReason('git send-pack origin', undefined, undefined, { headOf: () => 'main' })).toBe(
-    PUSH_REASON,
-  )
+  expect(denyReason('git send-pack origin', undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
   // the uncertain-verb path: an unrecognized global flag ahead of send-pack
   expect(denyReason('git --unknown-flag send-pack origin main')).toBe(PUSH_REASON)
 })

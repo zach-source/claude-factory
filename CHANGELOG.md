@@ -83,6 +83,22 @@ minor release may change the factory format, the CLI or the run state.
       has no literal slash in the raw text. So the branch-name pattern never matched it.
       The hook now decodes the whole path once, before any REST pattern reads it.
       A bad encoding denies the command, the same rule it already used for a branch name alone.
+  - Security's first review round found 5 more bypasses. The hook now closes each one too.
+    - `git -c push.default=matching` and any `push.default` value the hook does not know now
+      deny the command. Real git confirmed `matching` sends every local branch to a remote
+      branch of the same name, with no refspec that names any of them. Only `current`,
+      `simple` and `nothing` stay allowed.
+    - A bare `:` refspec, such as `git push origin :`, now denies the command. Real git
+      confirmed it pushes every matching branch, the same broad reach as `--all`.
+    - `xargs` right before a `git` or `gh` word now denies the command. `xargs` can read its
+      own operand from stdin, a push refspec or a `gh` verb, that the hook's own text scan
+      never sees.
+    - `git --config-env=<name>=<envvar>` now denies the same 3 config keys `-c <name>=<value>`
+      already denies (`alias.*`, `remote.*.push`, `push.default`). The hook cannot read the
+      named environment variable's own text, so it denies the write itself.
+    - `git send-pack`, the plumbing command `git push` calls, now goes through the same
+      refspec and protected-branch check as `git push` itself. It had no `push` word of its
+      own for the hook's verb search to find.
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook

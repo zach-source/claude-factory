@@ -302,6 +302,23 @@ A round-4 review found 1 more disguised form. The hook now denies this too:
   this match outright. A bad encoding denies the command, the rule the branch-name check
   already used.
 
+Security's first review round found 5 more disguised forms. The hook now denies these too:
+
+- `git -c push.default=matching`, `git config push.default matching`, or any other
+  `push.default` value the hook does not know. Real git confirmed `matching` sends every local
+  branch to a remote branch of the same name, with no refspec on that later command line. Only
+  `current`, `simple` and `nothing` stay allowed; every other value fails closed.
+- a bare `:` refspec, for example `git push origin :`. Real git confirmed it pushes every
+  matching branch, the same broad reach as `--all`.
+- `xargs` right before a `git` or `gh` word, for example `echo main | xargs git push origin`.
+  `xargs` can read its own operand from stdin, a push refspec or a `gh` verb, after the text
+  already on the command line. The hook cannot read that operand before `xargs` does.
+- `git --config-env=<name>=<envvar>`, the same `alias.*`, `remote.*.push` and `push.default`
+  check `-c <name>=<value>` already runs. The hook can read `<name>`, but not the text of the
+  environment variable `<envvar>` names, so it denies the write outright.
+- `git send-pack`, the plumbing command `git push` itself calls. It has no `push` word on its
+  own command line, so the hook now checks its refspecs the same way it checks `git push`'s.
+
 The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
 read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook
 denies the push outright: it has no branch name, or no `origin/HEAD` name, to check.
