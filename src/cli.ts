@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -20,7 +21,7 @@ import {
 } from 'node:fs'
 import { spawn as spawnChild } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
@@ -684,6 +685,12 @@ function git(cwd: string, ...args: string[]) {
   return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
 }
 
+/** every git call that can reach a remote (fetch, ls-remote, push) gets this: a credential prompt
+ * never blocks (it fails instead), and a timeout caps how long a hung connection can hold
+ * gc-worktrees.lock (claude-factory-l38.12). It never skips hooks. */
+const GIT_NETWORK_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+const GIT_NETWORK_TIMEOUT_MS = 30_000
+
 /**
  * the factory a new run follows: a path as given; else the repo's own `.factory/<name>.ts` in `checkout`
  * (the run's worktree, so the version in the commit it starts from); else the template of that name
@@ -977,8 +984,54 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
   runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
 
+/**
+ * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
+ * `goto` or `retry`. Recreate the worktree at the same path first. Use the local branch if it
+ * exists. If not, fetch origin and use origin/<branch>.
+ *
+ * gc can also delete the branch. It does this after a merge, or after a closed PR with a closed
+ * bead. If the branch is gone too, fail.
+ *
+ * Name gc, the branch and refs/factory-gc/<runId> in the message, but only when
+ * `runs/<id>/gc.json` shows that gc removed this run's worktree (claude-factory-l38.18). A failed
+ * fetch gets its own message. Any other missing branch gets a third message. This way the
+ * function never blames gc for another cause. Start no worker.
+ */
+function reviveWorktree(run: Run) {
+  const verify = (ref: string) =>
+    Bun.spawnSync(['git', '-C', run.repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
+  if (verify(`refs/heads/${run.branch}`)) return git(run.repo, 'worktree', 'add', run.worktree, run.branch)
+  // `git fetch origin <branch>` fails the same way when the branch is gone upstream and when
+  // this cannot reach the remote at all. Check reachability on its own first (claude-factory-l38.18):
+  // only a genuine network failure gets its own message, never the blame-gc message below.
+  const reachable =
+    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], { timeout: 30_000 })
+      .exitCode === 0
+  if (!reachable)
+    fail(
+      `Could not recreate ${run.worktree}: a fetch of origin failed, so this could not check whether ` +
+        `${run.branch} still exists there. Check network access, then retry.`,
+    )
+  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], { timeout: 30_000 })
+  if (verify(`refs/remotes/origin/${run.branch}`))
+    return git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, `origin/${run.branch}`)
+  const ref = `refs/factory-gc/${run.id}`
+  const snapshot = verify(ref)
+  const gcRemoved = existsSync(join(runDir(run.id), 'gc.json'))
+  fail(
+    gcRemoved
+      ? `factory gc --worktrees removed ${run.worktree} and deleted its branch ${run.branch}. ` +
+          `${snapshot ? `Its last work is at ${ref}.` : `No work is saved at ${ref}.`} ` +
+          `No worker started.`
+      : `Could not recreate ${run.worktree}: its branch ${run.branch} does not exist locally or ` +
+          `on origin, and gc did not record removing it. No worker started.`,
+  )
+}
+
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
+  // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
+  if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   const full = () => brief(run, def, node, c, c.mail[node] ?? [])
   // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
@@ -2827,6 +2880,486 @@ const kickGc = () => {
   }).unref()
 }
 
+// ---- `factory gc --worktrees` (claude-factory-l38): the impure half. gc.worktreePlan() decides.
+// Everything below reads real git, gh, bd and herdr state into facts. It then carries out the plan.
+
+/** the strict herdr read gc.worktreePlan() needs: null on any failure, so it keeps every worktree
+ * instead of reading a herdr outage as "no live panes" (the same fail-closed rule as strictPanes) */
+function strictPaneCwds(): { cwd: string }[] | null {
+  if (!herdrInstalled()) return null
+  const p = Bun.spawnSync([HERDR(), 'pane', 'list'])
+  if (p.exitCode !== 0) return null
+  try {
+    const panes = JSON.parse(p.stdout.toString() || '{}').result?.panes
+    return Array.isArray(panes)
+      ? panes.filter((x: HerdrPane) => x.cwd).map((x: HerdrPane) => ({ cwd: x.cwd! }))
+      : null
+  } catch {
+    return null
+  }
+}
+
+type WtEntry = { path: string; branch: string | null; locked: boolean; prunable: boolean }
+/**
+ * `git worktree list --porcelain`, split into entries. This marks the rig's own checkout `locked`
+ * (claude-factory-l38.11). gc must never remove it, and must keep any factory/* branch checked out
+ * there (an unusual case) in `keptBranches` too.
+ *
+ * `git worktree list` always prints the real path. This function compares paths after
+ * `realpathSync`, so a symlinked repo path still matches and keeps this protection.
+ */
+function worktreeEntries(repo: string): WtEntry[] {
+  const p = Bun.spawnSync(['git', '-C', repo, 'worktree', 'list', '--porcelain'])
+  if (p.exitCode !== 0) return []
+  let repoReal = repo
+  try {
+    repoReal = realpathSync(repo)
+  } catch {
+    // repo itself unreadable: fall through with the raw path, so nothing below throws on it
+  }
+  const out: WtEntry[] = []
+  let cur: WtEntry | null = null
+  for (const line of p.stdout.toString().split('\n')) {
+    if (line.startsWith('worktree ')) {
+      if (cur) out.push(cur)
+      cur = { path: line.slice('worktree '.length), branch: null, locked: false, prunable: false }
+    } else if (cur && line.startsWith('branch ')) cur.branch = line.slice('branch refs/heads/'.length)
+    else if (cur && line.startsWith('locked')) cur.locked = true
+    else if (cur && line.startsWith('prunable')) cur.prunable = true
+  }
+  if (cur) out.push(cur)
+  return out.map(e => {
+    let real = e.path
+    try {
+      real = realpathSync(e.path)
+    } catch {
+      // gone already: worktreeFacts()'s own existsSync check drops it next, this mapping is moot
+    }
+    return real === repoReal ? { ...e, locked: true } : e
+  })
+}
+const UNTRACKED_IGNORE = '.beads.gate.lock'
+/** each worktree's dirty state and disk use. `du -sk` runs once per worktree: slow at hundreds of
+ * worktrees, but gc runs at most daily and the bytes feed both the plan and the report line. */
+function worktreeFacts(repo: string): gc.WorktreeFact[] {
+  return worktreeEntries(repo).flatMap(e => {
+    if (e.prunable || !existsSync(e.path)) return [] // gone already: nothing for gc to remove here
+    const status = Bun.spawnSync(['git', '-C', e.path, 'status', '--porcelain'])
+    let dirty: gc.WorktreeFact['dirty'] = 'clean'
+    if (status.exitCode !== 0) {
+      // a failed read must never read as clean (claude-factory-l38.7): worktreePlan() then keeps it
+      dirty = 'unknown'
+    } else {
+      const lines = status.stdout
+        .toString()
+        .split('\n')
+        .filter(l => l.length > 3 && l.slice(3) !== UNTRACKED_IGNORE)
+      if (lines.length) {
+        const others = Bun.spawnSync(['git', '-C', e.path, 'ls-files', '--others', '--exclude-standard'])
+        if (others.exitCode !== 0) {
+          // a failed read must never read as small (claude-factory-l38.7): never force-remove on a guess
+          dirty = 'unknown'
+        } else {
+          const bytes = others.stdout
+            .toString()
+            .split('\n')
+            .filter(Boolean)
+            .reduce((a, rel) => {
+              try {
+                return a + lstatSync(join(e.path, rel)).size
+              } catch {
+                return a
+              }
+            }, 0)
+          dirty = bytes > gc.UNTRACKED_MAX_BYTES ? 'large' : 'small'
+        }
+      }
+    }
+    // a detached HEAD (branch null) can hold commits reachable from no branch, remote or tag: a
+    // straight removal would make them unreachable for good (claude-factory-l38.9). A worktree that
+    // has a branch checked out never has any (the branch itself covers HEAD), so this is a no-op there.
+    if (dirty === 'clean') {
+      const revlist = Bun.spawnSync([
+        'git',
+        '-C',
+        e.path,
+        'rev-list',
+        '-n',
+        '1',
+        'HEAD',
+        '--not',
+        '--branches',
+        '--remotes',
+        '--tags',
+      ])
+      if (revlist.exitCode !== 0)
+        dirty = 'unknown' // a failed read must never read as clean (AC5-style)
+      else if (revlist.stdout.toString().trim()) dirty = 'small' // snapshot it before removal, not removed bare
+    }
+    const du = Bun.spawnSync(['du', '-sk', e.path])
+    const kb = du.exitCode === 0 ? Number(du.stdout.toString().split('\t')[0]) : 0
+    return [
+      { path: e.path, branch: e.branch, locked: e.locked, dirty, bytes: Number.isFinite(kb) ? kb * 1024 : 0 },
+    ]
+  })
+}
+
+/** every factory/* branch's local and remote tip, and whether each is an ancestor of origin's default
+ * branch. null on any failure (fetch, ls-remote, or no default ref): gc then deletes no branch here (AC5).
+ *
+ * `dryRun` skips the `git fetch` (claude-factory-l38.15): AC1 says a dry run changes nothing, and
+ * a fetch can move `refs/remotes/origin/*` when the remote has commits this repo has not seen yet.
+ * A dry run then reads whatever this repo already knows, which can lag the real remote. */
+function branchFacts(repo: string, dryRun: boolean): gc.BranchFact[] | null {
+  if (!dryRun) {
+    const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', '--no-tags', 'origin'], {
+      env: GIT_NETWORK_ENV,
+      timeout: 120_000,
+    })
+    if (fetch.exitCode !== 0) return null
+  }
+  const sym = Bun.spawnSync(['git', '-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  if (sym.exitCode !== 0) return null
+  const base = Bun.spawnSync(['git', '-C', repo, 'rev-parse', sym.stdout.toString().trim()])
+  if (base.exitCode !== 0) return null
+  const baseSha = base.stdout.toString().trim()
+  const local = Bun.spawnSync([
+    'git',
+    '-C',
+    repo,
+    'for-each-ref',
+    '--format=%(refname:short) %(objectname)',
+    'refs/heads/factory/',
+  ])
+  const remote = Bun.spawnSync(
+    ['git', '-C', repo, 'ls-remote', '--heads', 'origin', 'refs/heads/factory/*'],
+    { env: GIT_NETWORK_ENV, timeout: GIT_NETWORK_TIMEOUT_MS },
+  )
+  if (local.exitCode !== 0 || remote.exitCode !== 0) return null
+  const byName = new Map<string, { local: string | null; remote: string | null }>()
+  const get = (name: string) => byName.get(name) ?? { local: null, remote: null }
+  for (const line of local.stdout.toString().split('\n').filter(Boolean)) {
+    const [name, sha] = line.trim().split(' ')
+    if (name && sha) byName.set(name, { ...get(name), local: sha })
+  }
+  for (const line of remote.stdout.toString().split('\n').filter(Boolean)) {
+    const [sha, ref] = line.trim().split('\t')
+    if (!sha || !ref) continue
+    const name = ref.replace(/^refs\/heads\//, '')
+    byName.set(name, { ...get(name), remote: sha })
+  }
+  const isAncestor = (sha: string | null) =>
+    !!sha && Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', sha, baseSha]).exitCode === 0
+  return [...byName.entries()].map(([name, t]) => ({
+    name,
+    local: t.local,
+    remote: t.remote,
+    localMerged: isAncestor(t.local),
+    remoteMerged: isAncestor(t.remote),
+  }))
+}
+
+/** the origin's configured URL. Unlike `git remote get-url`, a `url.<base>.insteadOf` alias never
+ * rewrites this: forge detection reads the rig's own intent, not where traffic ends up. */
+function originConfigUrl(repo: string): string | null {
+  const p = Bun.spawnSync(['git', '-C', repo, 'config', '--get', 'remote.origin.url'])
+  return p.exitCode === 0 ? p.stdout.toString().trim() : null
+}
+/** `<owner>/<repo>` from an origin URL (`https://github.com/<owner>/<repo>.git` or
+ * `git@github.com:<owner>/<repo>.git`), else null. */
+function githubSlug(url: string): string | null {
+  const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/)
+  return m ? `${m[1]}/${m[2]}` : null
+}
+/** `gh pr list`, called once per rig, not once per branch. The plan for claude-factory-l38
+ * rejected the per-branch call: it would run about 700 calls on the first pass. This function
+ * returns null on a non-GitHub forge, or on any `gh` failure (AC5).
+ *
+ * `-R` names the repo. Without it, `gh` can read the `upstream` remote instead of `origin` on a
+ * fork rig, and return the wrong repo's pull requests (claude-factory-l38.13). A result with
+ * exactly `--limit` entries counts as incomplete: it returns null, not "no more results". An
+ * older open PR that a shorter list would show stays hidden past the cap otherwise. */
+function prFacts(repo: string): gc.PrFact[] | null {
+  const url = originConfigUrl(repo)
+  const slug = url ? githubSlug(url) : null
+  if (!slug) return null
+  const p = Bun.spawnSync(
+    [
+      'gh',
+      'pr',
+      'list',
+      '-R',
+      slug,
+      '--state',
+      'all',
+      '--limit',
+      '1000',
+      '--json',
+      'number,state,headRefName,headRefOid',
+    ],
+    { cwd: repo, timeout: 60_000 },
+  )
+  if (p.exitCode !== 0) return null
+  try {
+    const list = JSON.parse(p.stdout.toString())
+    if (!Array.isArray(list) || list.length >= 1000) return null
+    return list
+  } catch {
+    return null
+  }
+}
+
+type GcRunRef = gc.RunRef & { repo: string }
+/** `bd show` only for a run whose branch has a CLOSED PR (claude-factory-l38's "CLOSED-PR candidates"):
+ * a failed or missing read counts as open (AC5), never as closed. */
+function beadClosedFacts(repo: string, runs: GcRunRef[], prs: gc.PrFact[] | null): Record<string, boolean> {
+  if (!prs) return {}
+  const closed = new Set(prs.filter(p => p.state === 'CLOSED').map(p => p.headRefName))
+  const out: Record<string, boolean> = {}
+  for (const r of runs) {
+    if (!r.bead || !['done', 'aborted'].includes(r.node)) continue
+    const candidate = [...closed].some(
+      name => name === `factory/${r.id}` || name.startsWith(`factory/${r.id}-`),
+    )
+    if (!candidate) continue
+    try {
+      out[r.bead] = beads(repo, 'factory/gc').show(r.bead)?.status === 'closed'
+    } catch {
+      out[r.bead] = false
+    }
+  }
+  return out
+}
+
+/** every run gc.worktreePlan() can see, across every rig */
+function allRunRefs(): GcRunRef[] {
+  return runIds().map(id => {
+    try {
+      const run = loadRun(id)
+      const { value, c } = current(id)
+      const finishedAt = c.log.at(-1)?.at ?? createdAt(id)
+      return { id, node: where(value)[0], finishedAt, worktree: run.worktree, bead: run.bead, repo: run.repo }
+    } catch {
+      // an unloadable run (a corrupt run.json or state.json) must count as live (claude-factory-l38.10):
+      // dropping it let ownerByBranch() give its longer-id fork's branch to a shorter, finished parent
+      return { id, node: 'unknown', finishedAt: 0, worktree: '', bead: undefined, repo: '' }
+    }
+  })
+}
+
+/** commits every change in `path` (tracked and untracked, `.gitignore` honored) to a local-only ref
+ * at `refs/factory-gc/<runId>`: a dirty-small worktree's work survives its removal (AC6). Returns the sha. */
+function snapshotWorktree(path: string, runId: string): string {
+  const indexFile = join(tmpdir(), `factory-gc-index-${runId}-${process.pid}`)
+  const env = { ...process.env, GIT_INDEX_FILE: indexFile }
+  // every step must succeed, or the caller must never force-remove on the strength of this snapshot
+  // (claude-factory-l38.8): an ignored failure here silently commits an empty or stale tree instead
+  const run = (...args: string[]) => {
+    const p = Bun.spawnSync(['git', '-C', path, ...args], { env })
+    if (p.exitCode !== 0) throw new Error(`git ${args[0]}: ${p.stderr.toString().trim()}`)
+    return p.stdout.toString().trim()
+  }
+  try {
+    run('add', '-A')
+    const tree = run('write-tree')
+    const head = run('rev-parse', 'HEAD')
+    const commitP = Bun.spawnSync(
+      [
+        'git',
+        '-C',
+        path,
+        'commit-tree',
+        tree,
+        '-p',
+        head,
+        '-m',
+        'factory gc --worktrees: snapshot before removal',
+      ],
+      { env: { ...env, ...MEMORY_GIT_IDENTITY_FALLBACK } },
+    )
+    if (commitP.exitCode !== 0) throw new Error(`git commit-tree: ${commitP.stderr.toString().trim()}`)
+    const commit = commitP.stdout.toString().trim()
+    git(path, 'update-ref', `refs/factory-gc/${runId}`, commit)
+    return commit
+  } finally {
+    rmSync(indexFile, { force: true })
+  }
+}
+
+/** `git update-ref -d` locally, `git push --force-with-lease` on the remote: each refuses when the
+ * ref moved since the read gc planned from (AC7). Returns what it actually deleted. */
+export function deleteBranchCas(repo: string, name: string, local: string | null, remote: string | null) {
+  let localOk = false
+  let remoteOk = false
+  let error: string | undefined
+  if (local) {
+    const p = Bun.spawnSync(['git', '-C', repo, 'update-ref', '-d', `refs/heads/${name}`, local])
+    localOk = p.exitCode === 0
+    if (!localOk) error = p.stderr.toString().trim()
+  }
+  if (remote) {
+    const p = Bun.spawnSync(
+      [
+        'git',
+        '-C',
+        repo,
+        'push',
+        `--force-with-lease=refs/heads/${name}:${remote}`,
+        'origin',
+        `:refs/heads/${name}`,
+      ],
+      { env: GIT_NETWORK_ENV, timeout: GIT_NETWORK_TIMEOUT_MS },
+    )
+    remoteOk = p.exitCode === 0
+    if (!remoteOk) error = (error ? `${error}; ` : '') + p.stderr.toString().trim()
+  }
+  return { localOk, remoteOk, error }
+}
+
+const gcWorktreesJournal = () => join(HOME, 'gc-worktrees.jsonl')
+const gcLog = (entry: Record<string, unknown>) =>
+  durable(gcWorktreesJournal(), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', 'a')
+
+/**
+ * Removes a finished run's worktree. It also removes the run's factory/* branch, once
+ * gc.worktreePlan() finds every tip covered. `--dry-run` only prints what this pass would do: it
+ * runs no git, gh or bd write (AC1). `rigName`, when set, limits the pass to one rig.
+ */
+function gcWorktreesPass(dryRun: boolean, rigName?: string) {
+  const now = Date.now()
+  const allRigs = rigs()
+  // an unknown --rig must fail, not silently run on zero rigs and print "reclaimed: 0" (claude-factory-l38.16)
+  if (rigName && !allRigs.some(r => r.name === rigName))
+    fail(
+      `factory gc --worktrees --rig ${rigName}: no such rig. Known rigs: ${allRigs.map(r => r.name).join(', ') || '(none)'}`,
+    )
+  const targetRigs = allRigs.filter(r => !rigName || r.name === rigName)
+  const runs = allRunRefs()
+  const panes = strictPaneCwds()
+  const facts: gc.RigWorktreeFacts[] = targetRigs.map(rig => {
+    const worktrees = worktreeFacts(rig.repo)
+    const branches = branchFacts(rig.repo, dryRun)
+    const prs = prFacts(rig.repo)
+    const repoRuns = runs.filter(r => r.repo === rig.repo)
+    const beadClosed = beadClosedFacts(rig.repo, repoRuns, prs)
+    return { name: rig.name, worktrees, branches, prs, beadClosed }
+  })
+  const plans = gc.worktreePlan(facts, runs, panes, now)
+  const byRigRepo = new Map(targetRigs.map(r => [r.name, r.repo]))
+  let worktreesN = 0
+  let localN = 0
+  let remoteN = 0
+  let bytesN = 0
+  let errors = 0
+  for (const p of plans) {
+    for (const w of p.removeWorktrees)
+      console.log(
+        `remove worktree ${w.path} (run ${w.runId}${w.snapshot ? ', dirty: snapshot first' : ''}, ${fmtBytes(w.bytes)})`,
+      )
+    for (const b of p.removeBranches)
+      console.log(
+        `remove branch ${b.name} (run ${b.runId}, local ${b.local?.slice(0, 8) ?? '-'}, remote ${b.remote?.slice(0, 8) ?? '-'})`,
+      )
+    for (const k of p.keep)
+      console.log(`keep ${k.kind} ${k.name} (run ${k.runId ?? 'unowned'}, reason: ${k.reason})`)
+    console.log(`${p.rig}: owned ${p.owned}, live ${p.live}, unowned ${p.unowned}`)
+    if (dryRun) continue
+    const repo = byRigRepo.get(p.rig)!
+    // a worktree whose `git worktree remove` fails keeps its branch too (claude-factory-l38.6):
+    // `update-ref -d` does not check whether a worktree still has the branch checked out
+    const failedWorktrees = new Set<string>()
+    for (const w of p.removeWorktrees) {
+      try {
+        rmSync(join(w.path, '.beads.gate.lock'), { force: true })
+        let snapshot: string | undefined
+        if (w.snapshot) {
+          snapshot = snapshotWorktree(w.path, w.runId)
+          gcLog({
+            type: 'snapshot',
+            rig: p.rig,
+            run: w.runId,
+            ref: `refs/factory-gc/${w.runId}`,
+            sha: snapshot,
+          })
+        }
+        const rm = Bun.spawnSync([
+          'git',
+          '-C',
+          repo,
+          'worktree',
+          'remove',
+          ...(w.snapshot ? ['--force'] : []),
+          w.path,
+        ])
+        if (rm.exitCode !== 0) throw new Error(`git worktree remove: ${rm.stderr.toString().trim()}`)
+        gcLog({ type: 'worktree', rig: p.rig, run: w.runId, path: w.path, bytes: w.bytes })
+        worktreesN++
+        bytesN += w.bytes
+        const file = join(runDir(w.runId), 'gc.json')
+        const prior = existsSync(file) ? readJson<Record<string, unknown>>(file) : {}
+        writeJson(file, { ...prior, worktree: { path: w.path, bytes: w.bytes, snapshot }, at: now })
+      } catch (err) {
+        errors++
+        failedWorktrees.add(w.runId)
+        gcLog({ type: 'error', rig: p.rig, run: w.runId, path: w.path, reason: (err as Error).message })
+      }
+    }
+    for (const b of p.removeBranches) {
+      if (failedWorktrees.has(b.runId)) {
+        gcLog({ type: 'skip-branch', rig: p.rig, run: b.runId, ref: `refs/heads/${b.name}` })
+        continue
+      }
+      const { localOk, remoteOk, error } = deleteBranchCas(repo, b.name, b.local, b.remote)
+      if (b.local && localOk) {
+        gcLog({ type: 'branch', rig: p.rig, run: b.runId, ref: `refs/heads/${b.name}`, sha: b.local })
+        localN++
+      }
+      if (b.remote && remoteOk) {
+        gcLog({ type: 'remote', rig: p.rig, run: b.runId, ref: `refs/heads/${b.name}`, sha: b.remote })
+        remoteN++
+      }
+      if (error) {
+        errors++
+        gcLog({ type: 'error', rig: p.rig, run: b.runId, ref: b.name, reason: error })
+      }
+    }
+  }
+  // dry-run writes nothing at all: the worktree list, refs, ls-remote and HOME stay byte-identical (AC1)
+  if (!dryRun)
+    gcLog({
+      type: 'pass',
+      errors,
+      rigs: plans.map(p => ({ rig: p.rig, owned: p.owned, live: p.live, unowned: p.unowned })),
+    })
+  // the report line must show the error count too (claude-factory-l38.17): the journal has it, but
+  // exit code stays 0 either way, so a reader of only this line must see a failed removal.
+  console.log(
+    `reclaimed: ${worktreesN} worktrees, ${localN} local + ${remoteN} remote branches, ${fmtBytes(bytesN)}, ${errors} errors`,
+  )
+}
+
+const GC_WORKTREES_MS = Number(process.env.FACTORY_GC_WORKTREES_MS) || 86_400_000
+/**
+ * A worktree gc pass runs at most once a day (FACTORY_GC_WORKTREES_MS). Set FACTORY_GC_WORKTREES=0
+ * to turn this off: tick then spawns no pass. Its lock is gc-worktrees.lock, separate from gc.lock.
+ *
+ * The first tick with no gc-worktrees.stamp file only writes the stamp. It starts the daily window.
+ * It spawns no pass. This way a fresh FACTORY_HOME never deletes a worktree or a branch on its own
+ * first tick.
+ */
+const kickGcWorktrees = () => {
+  if (process.env.FACTORY_GC_WORKTREES === '0') return
+  const stamp = join(HOME, 'gc-worktrees.stamp')
+  if (!existsSync(stamp)) return void writeFileSync(stamp, '') // seed only: the window starts now
+  const age = Date.now() - statSync(stamp).mtimeMs
+  if (isHeld('gc-worktrees.lock') || age < GC_WORKTREES_MS) return
+  spawnChild(CLI, ['gc', '--worktrees'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 async function tick(isPatrol = false) {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
@@ -2874,6 +3407,7 @@ async function tick(isPatrol = false) {
       kickConfigSync()
       kickSelfUpdate()
       kickGc()
+      kickGcWorktrees()
     }
   }
 }
@@ -5124,6 +5658,11 @@ const usage = `factory — herdr software factories on xstate
                                      drop prompts, briefs and stray backups, and a dead launch script;
                                      --dry-run only prints bytes per kind, deleting nothing (each tick
                                      starts one, at most hourly, FACTORY_GC_MS; FACTORY_GC=0 turns it off)
+  gc --worktrees [--dry-run] [--rig NAME]   finished runs: drop a worktree, and its factory/* branch
+                                     once it is merged, or its PR is closed and its bead is closed;
+                                     never a live run or an unmerged branch; --dry-run only prints
+                                     what it would remove (each tick starts one, at most daily,
+                                     FACTORY_GC_WORKTREES_MS; FACTORY_GC_WORKTREES=0 turns it off)
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
@@ -5785,6 +6324,23 @@ if (import.meta.main && !outboxCmd)
       case 'gc': {
         const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
         const dryRun = args.includes('--dry-run')
+        if (args.includes('--worktrees')) {
+          const rigName = opt('--rig')
+          const release = hold('gc-worktrees.lock')
+          if (!release) {
+            console.log('a gc --worktrees pass is already running: skipped this one')
+            break
+          }
+          try {
+            // a failed pass waits for the next window too, not every tick (same rule as gc.stamp);
+            // --dry-run never stamps, so it never changes HOME at all (AC1)
+            if (!dryRun) writeFileSync(join(HOME, 'gc-worktrees.stamp'), '')
+            gcWorktreesPass(dryRun, rigName)
+          } finally {
+            release()
+          }
+          break
+        }
         const daysArg = opt('--days') ?? process.env.FACTORY_GC_DAYS
         const days = daysArg === undefined ? 7 : Number(daysArg)
         if (!(days > 0)) fail('usage: factory gc [--days N] [--dry-run]: --days must be a positive number')

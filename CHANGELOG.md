@@ -175,6 +175,27 @@ minor release may change the factory format, the CLI or the run state.
   - `gcPass()` now skips one unreadable run directory. It names the directory
     on stderr and continues the rest of the pass, instead of failing the
     whole pass.
+- Added: `factory gc --worktrees [--dry-run] [--rig NAME]`. For each rig, it removes a finished
+  run's worktree, and its `factory/*` branch (local and on `origin`) once every tip is merged
+  into main, or its pull request is closed and its bead is closed. It never touches a live
+  run's worktree, or a branch with unmerged commits in no pull request. (claude-factory-l38)
+  - Cause: a 2026-10-16 review found 990 worktrees across 11 rigs. 711 belonged to done or
+    aborted runs. 800 local and 533 remote `factory/*` branches remained after their runs
+    finished. `factory rm` removes a run's worktree by hand, but it always keeps the branch.
+  - Fix: `gc.worktreePlan()` (`src/gc.ts`) is a pure plan over `git worktree`, branch, pull
+    request and bead facts. `gcWorktreesPass()` (`src/cli.ts`) reads those facts for real and
+    carries out the plan: `git worktree remove`, a snapshot commit at `refs/factory-gc/<runId>`
+    before a dirty worktree's forced removal, and a compare-and-swap branch delete
+    (`git update-ref -d`, `git push --force-with-lease`). A dirty worktree over 50 MiB of
+    untracked files, a locked worktree, and a run finished under 1 hour ago all stay. Each
+    action appends one line to `HOME/gc-worktrees.jsonl`; `--dry-run` writes nothing at all.
+  - `tick()` now starts one pass at most once a day (`FACTORY_GC_WORKTREES_MS`).
+    `FACTORY_GC_WORKTREES=0` turns this off. The first tick with no `gc-worktrees.stamp` only
+    writes the stamp, so a fresh `FACTORY_HOME` never deletes a branch on its first tick.
+  - `spawn()` (`src/cli.ts`) now revives a run whose worktree gc removed: `goto` or `retry`
+    recreates it from the local branch, else from `origin/<branch>`. When neither branch
+    survives, it fails, naming gc, the branch and `refs/factory-gc/<runId>`, and starts no
+    worker.
 - Deploy no longer starts a worker against an unmerged pull request. (claude-factory-960)
   - Cause: a run reached `deploy` as soon as release reported, so a worker always launched
     even when the pull request was still open. The worker then found nothing to do and

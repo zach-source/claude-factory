@@ -213,6 +213,7 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 | `factory abort <run>` | Abort a run. Its bead is deferred. |
 | `factory rm <run>` | Remove a finished run. Its branch stays. |
 | `factory gc [--days N] [--dry-run]` | Remove old files of finished runs, and a dead launch script. `--dry-run` only shows the bytes. |
+| `factory gc --worktrees [--dry-run] [--rig NAME]` | Remove a finished run's worktree, and its `factory/*` branch once it is merged, or its PR is closed and its bead is closed. Never touches a live run or an unmerged branch. `--dry-run` only shows what it would remove. |
 
 ### Stop and resume
 
