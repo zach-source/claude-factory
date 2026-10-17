@@ -674,3 +674,30 @@ test('r: gh pr list passes -R to the origin repo, and a result at the --limit ca
   // a closed PR plus a closed bead would delete this branch outright; a capped list must not count
   expect(git(repo, 'branch', '--list', branch)).not.toBe('')
 })
+
+test('t: goto after gc says the fetch failed, not that gc did this, when origin is unreachable (claude-factory-l38.18)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  expect(factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes() }).code).toBe(0)
+  expect(existsSync(worktree)).toBe(false)
+  expect(git(repo, 'branch', '--list', branch)).toBe('') // merged: gc deleted the branch too
+
+  // break the remote so a revive's fetch fails outright, instead of succeeding and finding no branch
+  git(repo, 'remote', 'set-url', 'origin', 'file:///nonexistent-xyz-gc-test')
+
+  expect(factory(['goto', id, 'implement']).code).toBe(0)
+  const out = factory(['tick'], {
+    FACTORY_HERDR: noPanes(),
+    CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+    FACTORY_GC: '0',
+  })
+  expect(out.code).toBe(0)
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === id)
+  expect(row.error).toContain('fetch')
+  expect(row.error).not.toContain('factory gc --worktrees removed')
+  expect(row.pane).toBeFalsy()
+})

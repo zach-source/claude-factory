@@ -989,23 +989,42 @@ const runnerOfStation = (run: Run, def: Factory, node: string) =>
  * `goto` or `retry`. Recreate the worktree at the same path first. Use the local branch if it
  * exists. If not, fetch origin and use origin/<branch>.
  *
- * gc can also delete the branch, after a merge, or after a closed PR with a closed bead. If the
- * branch is gone, fail. Name gc, the branch and refs/factory-gc/<runId> in the message. Start no
- * worker.
+ * gc can also delete the branch. It does this after a merge, or after a closed PR with a closed
+ * bead. If the branch is gone too, fail.
+ *
+ * Name gc, the branch and refs/factory-gc/<runId> in the message, but only when
+ * `runs/<id>/gc.json` shows that gc removed this run's worktree (claude-factory-l38.18). A failed
+ * fetch gets its own message. Any other missing branch gets a third message. This way the
+ * function never blames gc for another cause. Start no worker.
  */
 function reviveWorktree(run: Run) {
   const verify = (ref: string) =>
     Bun.spawnSync(['git', '-C', run.repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
   if (verify(`refs/heads/${run.branch}`)) return git(run.repo, 'worktree', 'add', run.worktree, run.branch)
+  // `git fetch origin <branch>` fails the same way when the branch is gone upstream and when
+  // this cannot reach the remote at all. Check reachability on its own first (claude-factory-l38.18):
+  // only a genuine network failure gets its own message, never the blame-gc message below.
+  const reachable =
+    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], { timeout: 30_000 })
+      .exitCode === 0
+  if (!reachable)
+    fail(
+      `Could not recreate ${run.worktree}: a fetch of origin failed, so this could not check whether ` +
+        `${run.branch} still exists there. Check network access, then retry.`,
+    )
   Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], { timeout: 30_000 })
   if (verify(`refs/remotes/origin/${run.branch}`))
     return git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, `origin/${run.branch}`)
   const ref = `refs/factory-gc/${run.id}`
   const snapshot = verify(ref)
+  const gcRemoved = existsSync(join(runDir(run.id), 'gc.json'))
   fail(
-    `factory gc --worktrees removed ${run.worktree} and deleted its branch ${run.branch}. ` +
-      `${snapshot ? `Its last work is at ${ref}.` : `No work is saved at ${ref}.`} ` +
-      `No worker started.`,
+    gcRemoved
+      ? `factory gc --worktrees removed ${run.worktree} and deleted its branch ${run.branch}. ` +
+          `${snapshot ? `Its last work is at ${ref}.` : `No work is saved at ${ref}.`} ` +
+          `No worker started.`
+      : `Could not recreate ${run.worktree}: its branch ${run.branch} does not exist locally or ` +
+          `on origin, and gc did not record removing it. No worker started.`,
   )
 }
 
