@@ -275,6 +275,52 @@ test('metrics counts small runs and their time to ship apart from the full loop'
   expect(m.hoursToShip.median).toBe(9) // the overall figure still counts every shipped run
 })
 
+// claude-factory-wnn.5: a triage/fail retry can log before the triage/small entry. isSmall must
+// find that entry anywhere in the log, not only at r.log[0].
+test('metrics finds a small run whose triage/small entry is not the first log entry', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      log: [
+        e('triage', 'fail', 0, 'no report within 20 min'),
+        e('triage', 'small', 1),
+        e('quick', 'ready', 1),
+        e('check', 'approve', 2),
+        e('release', 'ready', 2),
+        e('deploy', 'published', 3),
+      ],
+    },
+  ])
+  expect(m.small.runs).toBe(1)
+  expect(m.small.hoursToShip).toEqual({ median: 3, p90: 3 })
+})
+
+// claude-factory-wnn.5: a run quick sends to `full` joins the build loop; it is still a small run
+// for the count, but its eventual ship time is a full-loop number, not a small-route one.
+test('metrics keeps a run quick sent to full out of the small-route time to ship', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      log: [
+        e('triage', 'small', 1),
+        e('quick', 'full', 1),
+        e('plan', 'ready', 2),
+        e('implement', 'ready', 10),
+        e('review', 'approve', 11),
+        e('release', 'ready', 11),
+        e('deploy', 'published', 20),
+      ],
+    },
+  ])
+  expect(m.small.runs).toBe(1)
+  expect(m.small.hoursToShip).toEqual({ median: null, p90: null })
+  expect(m.hoursToShip.median).toBe(20)
+})
+
 test('check changes counts as a review loop, same as review changes', () => {
   const m = metrics([
     {

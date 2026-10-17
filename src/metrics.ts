@@ -60,8 +60,11 @@ export function metrics(records: RunRecord[]) {
   for (const r of records) {
     const f = fate(r)
     fates[f] = (fates[f] ?? 0) + 1
-    // claude-factory-wnn: a small run's first log entry is triage with outcome `small`.
-    const isSmall = r.log[0]?.node === 'triage' && r.log[0].outcome === 'small'
+    // claude-factory-wnn.5: a small run is one where triage sent the work to `small`, at any
+    // attempt, since a fail retry or a blocked park can log before that entry does.
+    const isSmall = r.log.some(e => e.node === 'triage' && e.outcome === 'small')
+    // quick can send the work to the full loop at plan: that run's ship time is not a small number.
+    const wentFull = r.log.some(e => e.node === 'quick' && e.outcome === 'full')
     if (isSmall) smallRuns++
     let prev = r.createdAt
     for (const e of r.log) {
@@ -89,7 +92,7 @@ export function metrics(records: RunRecord[]) {
     if (shipped) {
       const hours = (shipped.at - r.createdAt) / HOUR
       cycle.push(hours)
-      if (isSmall) smallCycle.push(hours)
+      if (isSmall && !wentFull) smallCycle.push(hours)
     }
   }
   const ended = (fates.shipped ?? 0) + (fates.rejected ?? 0) + (fates.closed ?? 0) + (fates.aborted ?? 0)
