@@ -442,6 +442,21 @@ test('m: a clean detached-HEAD worktree with a commit on no ref is snapshotted, 
   expect(() => git(repo, 'merge-base', '--is-ancestor', orphanSha, refSha)).not.toThrow() // the orphan survives
 })
 
+test('n: a run whose run.json is unreadable counts as live, never folded into a shorter finished id (claude-factory-l38.10)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  writeRun(repo, 'r1', { outcome: 'done', finishedAt: OLD, merged: true })
+  const { worktree: forkWt, branch: forkBranch } = writeRun(repo, 'r1-2', { outcome: 'working' })
+  writeFileSync(join(runDir('r1-2'), 'run.json'), '{not json') // corrupt: loadRun throws for this run
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([])
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(existsSync(forkWt)).toBe(true) // never folded into the finished parent r1 and removed
+  expect(git(repo, 'branch', '--list', forkBranch)).not.toBe('')
+})
+
 test('h: 2 live runs among finished ones leaves 2 owned worktrees after a pass (AC11)', () => {
   reset()
   const { repo } = makeRig('r1')

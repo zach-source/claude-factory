@@ -3042,16 +3042,16 @@ function beadClosedFacts(repo: string, runs: GcRunRef[], prs: gc.PrFact[] | null
 
 /** every run gc.worktreePlan() can see, across every rig */
 function allRunRefs(): GcRunRef[] {
-  return runIds().flatMap(id => {
+  return runIds().map(id => {
     try {
       const run = loadRun(id)
       const { value, c } = current(id)
       const finishedAt = c.log.at(-1)?.at ?? createdAt(id)
-      return [
-        { id, node: where(value)[0], finishedAt, worktree: run.worktree, bead: run.bead, repo: run.repo },
-      ]
+      return { id, node: where(value)[0], finishedAt, worktree: run.worktree, bead: run.bead, repo: run.repo }
     } catch {
-      return []
+      // an unloadable run (a corrupt run.json or state.json) must count as live (claude-factory-l38.10):
+      // dropping it let ownerByBranch() give its longer-id fork's branch to a shorter, finished parent
+      return { id, node: 'unknown', finishedAt: 0, worktree: '', bead: undefined, repo: '' }
     }
   })
 }
