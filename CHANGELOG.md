@@ -6,6 +6,33 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- The lifecycle factory has a new triage outcome, `small`, for a docs-only, test-only or tiny
+  change. Before this fix, every run paid for the full loop. The full loop has an Opus plan, a
+  separate verify station, a separate review station, security and soak. A small run now takes
+  a shorter path: `triage -> quick -> check -> release -> deploy`. This path skips the Opus
+  plan. It also skips security, unless `check` flags the diff as security-sensitive, or the
+  diff touches a factory definition (`.factory/` or `factories/`). In that case the run still
+  goes through security before release. (claude-factory-wnn)
+  - `factories/lifecycle.ts`: `triage`'s prompt names the new `small` outcome. It also names the
+    rules that exclude a run from this outcome: a security-sensitive goal, or a change to a
+    factory definition. Two new stations support this route. `quick` runs on Sonnet with a
+    60-minute limit; on a `full` outcome it joins the plan loop, because the work was bigger
+    than small. `check` runs on Opus with a 60-minute limit and 3 rounds; on a `changes` outcome
+    it loops back to `quick` and closes each task it filed, with its commit, the same way
+    `implement` closes `review`'s findings; on a `security` outcome it goes to the existing
+    `security` station. `check`'s prompt keeps the pull request a draft; only `release` marks
+    it ready. `security`'s prompts now name `check`'s report and `triage`'s summary, as well as
+    `review`'s report and the plan's risk section, so a small run's security pass reads the
+    right station.
+  - `src/metrics.ts`: `metrics()` now reports `small: { runs, hoursToShip: { median, p90 } }`.
+    `runs` counts every run that `triage` ever sent down the `small` route, found anywhere in
+    its log, not only in its first entry. This way a run that failed triage once, then went
+    `small`, still counts. `hoursToShip` covers only the runs that shipped, and excludes any run
+    that `quick` sent to the full loop. `reviewLoops` now also counts `check`'s `changes`
+    outcome. `render()` adds one line: `small runs N, to ship Xh median / Yh p90`.
+  - `README.md`: the lifecycle table gains a `small` row. Two new paragraphs say when `triage`
+    picks this route, and what the route skips.
+
 - `factory gc --worktrees` fixes two gaps the PR #70 security review found. (claude-factory-ulv)
   - `src/cli.ts`: `snapshotWorktree()` used to set `GIT_INDEX_FILE` to a path that other
     processes can predict: `factory-gc-index-<runId>-<pid>` in the shared tmpdir. A write race
