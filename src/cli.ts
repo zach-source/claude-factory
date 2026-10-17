@@ -3431,13 +3431,6 @@ type SweepLogEntry = {
 }
 const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.stringify(e) + '\n')
 
-/**
- * one run per due (rig, sweep) pass (src/sweeps.ts's `dueSweeps`), under factory "sweeps" (or a
- * rig's own `sweepsFactory`), parked at that station by GOTO when it is not the factory's start.
- * `factory tick`'s `kickSweeps` calls this, detached, under its own cadence; `factory sweep` calls it
- * by hand. Every attempt, started or not, gets one line in sweeps.jsonl.
- */
-
 /** Runs a rig's `--slo` command (claude-factory-8pc.6): the monitor sweep's read, on the laptop, not
  * on a worker. It is a shell command (`sh -c`), since a person writes it in rigs.json and it may
  * pipe kubectl, Mimir or Loki calls together. It combines stdout and stderr: a command that starts
@@ -3448,6 +3441,12 @@ function readSlo(rig: Rig): string {
   return (p.stdout.toString() + p.stderr.toString()).trim()
 }
 
+/**
+ * one run per due (rig, sweep) pass (src/sweeps.ts's `dueSweeps`), under factory "sweeps" (or a
+ * rig's own `sweepsFactory`), parked at that station by GOTO when it is not the factory's start.
+ * `factory tick`'s `kickSweeps` calls this, detached, under its own cadence; `factory sweep` calls it
+ * by hand. Every attempt, started or not, gets one line in sweeps.jsonl.
+ */
 async function sweep() {
   if (halted()) return
   const live = runIds().flatMap(id => {
@@ -3466,6 +3465,17 @@ async function sweep() {
       preview = await loadFactory(factorySource(spec, rig.repo))
     } catch (err) {
       console.error(`${new Date().toISOString()} sweeps for rig ${rig.name}: ${(err as Error).message}`)
+      continue
+    }
+    // claude-factory-8pc.14: a sweep run's id starts with its factory's own `name` field
+    // (createTracked), not `spec`. src/sweeps.ts's `sweepFiler` only matches a run id that starts
+    // with `sweeps-`: a `rig.sweepsFactory`, or a repo's own `.factory/sweeps.ts`, with a `name`
+    // other than 'sweeps' would file beads the flood guard never sees. Refuse it, unguarded.
+    if (preview.name !== 'sweeps') {
+      console.error(
+        `${new Date().toISOString()} sweeps for rig ${rig.name}: ${spec}'s factory name is ` +
+          `'${preview.name}', not 'sweeps': the flood guard only matches sweep runs filed under 'sweeps'`,
+      )
       continue
     }
     for (const station of dueSweeps(preview, rig, state, live, Date.now())) {
@@ -3966,9 +3976,10 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
 }
 
 /**
- * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, it keeps its
- * sweeps running, and `maxRuns` caps its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's
- * rigs.json is written by `factory rig add` and can be edited by hand.
+ * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, its
+ * due sweeps start one pass each under `factory sweep` (claude-factory-8pc.16), and `maxRuns` caps
+ * its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's rigs.json is written by
+ * `factory rig add` and can be edited by hand.
  */
 export type Rig = {
   name: string
@@ -4381,35 +4392,46 @@ async function dispatch() {
         continue
       }
       // the flood guard (claude-factory-8pc.5), before b.ready(): a deferred or unlabeled bead must
-      // never show up as ready work this same pass
+      // never show up as ready work this same pass. It must fail closed.
+      //
+      // claude-factory-8pc.12: a bead that already carries `sweep:<station>` got the guard's one
+      // call already (kept, or held). The code below skips it. So a person's `factory queue` on a
+      // held bead stands; the guard does not undo it again within 30s.
+      //
+      // claude-factory-8pc.13: (a) when `b.every()` throws, `continue` skips the rest of this rig:
+      // no ready bead starts for it this pass. (b) the code drops from `ready` each bead the guard
+      // did not keep and allow, so a failed `defer` or `relabel` call still cannot start that bead.
+      let all: Bead[]
       try {
-        const all = b.every()
-        for (const v of sweepGuard(all, Date.now())) {
-          const current = all.find(x => x.id === v.id)
-          if (!current) continue
-          const hasFactory = !!current.labels?.includes(LABEL)
-          const hasStationLabel = !!current.labels?.includes(`sweep:${v.station}`)
-          try {
-            if (!v.kept) {
-              if (!hasFactory && current.status === 'deferred') continue // already done, a prior pass
-              b.defer(
-                v.id,
-                `sweep flood guard: rig ${rig.name} already has 5 sweep-filed beads in the last 24h`,
-              )
-              if (hasFactory) b.relabel(v.id, { remove: [LABEL] })
-            } else {
-              const add = hasStationLabel ? [] : [`sweep:${v.station}`]
-              const remove = v.allowed || !hasFactory ? [] : [LABEL]
-              if (add.length || remove.length) b.relabel(v.id, { add, remove })
-            }
-          } catch (err) {
-            errors.push({ id: v.id, error: (err as Error).message })
-          }
-        }
+        all = b.every()
       } catch (err) {
         errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
+        continue // the guard read failed: start no ready bead for this rig this pass
       }
-      const ready = b.ready()
+      const excluded = new Set<string>()
+      for (const v of sweepGuard(all, Date.now())) {
+        const current = all.find(x => x.id === v.id)
+        if (!current) continue
+        const hasStationLabel = !!current.labels?.includes(`sweep:${v.station}`)
+        if (hasStationLabel) continue // handled once already: leave a person's own decision alone
+        if (!v.kept || !v.allowed) excluded.add(v.id) // never start this pass, win or lose the call below
+        const hasFactory = !!current.labels?.includes(LABEL)
+        try {
+          if (!v.kept) {
+            b.defer(
+              v.id,
+              `sweep flood guard: rig ${rig.name} already has 5 sweep-filed beads in the last 24h`,
+            )
+            b.relabel(v.id, { add: [`sweep:${v.station}`], remove: hasFactory ? [LABEL] : [] })
+          } else {
+            const remove = v.allowed || !hasFactory ? [] : [LABEL]
+            b.relabel(v.id, { add: [`sweep:${v.station}`], remove })
+          }
+        } catch (err) {
+          errors.push({ id: v.id, error: (err as Error).message })
+        }
+      }
+      const ready = b.ready().filter(x => !excluded.has(x.id))
       // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
       // lost its own claim on the bead, to a reaper, say). `dispatchable` below drops this bead from
       // `candidates`, so no second run starts for it. This loop still leaves one comment naming the
