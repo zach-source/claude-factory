@@ -1218,6 +1218,23 @@ test('memory add --supersedes . exits 2 and writes nothing', () => {
   expect(usageLinesOf(home)).toEqual([])
 }, 30_000)
 
+test('memory add --supersedes a directory whose name ends in .md exits 2 and writes nothing', () => {
+  const home = freshMemoryAddHome('supersedes-md-dir')
+  mkdirSync(join(home, 'memory', 'beads', 'old.md'), { recursive: true })
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads/old.md',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+  expect(usageLinesOf(home)).toEqual([])
+}, 30_000)
+
 test('memory add --supersedes a non-.md file exits 2 and writes nothing', () => {
   const home = freshMemoryAddHome('supersedes-non-md')
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
