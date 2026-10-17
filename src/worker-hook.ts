@@ -1705,6 +1705,11 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * attached form (`-S'git push origin main'`, tokenized with the quote stripped as one word
  * `-Sgit push origin main`), a short-flag cluster (`-vS`), and `--split-string=...`.
  *
+ * claude-factory-dgf: `env` has more value flags. These are `-u`/`--unset`, `-C`/`--chdir`, `-P`
+ * and `--argv0`/`-a`. `envSplitStringValue` now reads past each flag's own value word. A value
+ * word does not stop the scan before a later `-S`. The function also reads a prefix of a long
+ * flag name, such as `--spl` for `--split-string`. GNU `getopt_long` reads a prefix this way.
+ *
  * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
  * pointers that only move up.
  *
@@ -1723,24 +1728,69 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * approximation: see src/worker-hook.test.ts for the differential checks and for the two
  * regression shapes that a blind jump past a miss would break.
  */
+// claude-factory-dgf: `env` (GNU and BSD) reads each word after `env` as an option. It stops at
+// the first word that is not an option. That word, and each word after it, is the real command.
+//
+// `-u`/`--unset`, `-C`/`--chdir`, `-P` (BSD) and `--argv0`/`-a` (GNU) each take a value.
+// You can give the value in two ways. Attach it to the flag: `-uFOO`, `--unset=FOO`.
+// Or give it as the next word: `-u FOO`. In the second way, the value word does not start with `-`.
+//
+// The old scan stopped at that word and read it as the real command.
+// It did not get to a later `-S`.
+// The scan below reads each value flag's own value in place of the command.
+// This means it can get to a later `-S`.
+//
+// GNU `getopt_long` also accepts a prefix of a long option name. It does so when the prefix names
+// only one option. `--spl` and `--unset` (the full name) both name their own option this way.
+const ENV_LONG_SPLIT_STRING = 'split-string'
+const ENV_LONG_VALUE_FLAGS = ['unset', 'chdir', 'argv0']
+const ENV_SHORT_VALUE_FLAGS = new Set(['u', 'C', 'P', 'a'])
+
 /**
- * Reads the value an `env -S`/`env --split-string` word at `words[j]` would split and run, or
- * undefined when no such flag is present (claude-factory-zl5.42). Stops and returns undefined at
- * the first word that does not start with `-`: that word is `env`'s own command, and `-S` did not
- * appear before it.
+ * Reads the value that the `env -S`/`env --split-string` word at `words[j]` splits and runs.
+ * Returns undefined when no such flag is present (claude-factory-zl5.42, claude-factory-dgf).
+ * Stops and returns undefined at the first word that is not an option and not an option's own
+ * value word. That word is the command of `env`. `-S` did not appear before it.
  */
 function envSplitStringValue(words: string[], j: number): string | undefined {
   for (let k = j + 1; k < words.length; k++) {
     const w = words[k]!
-    if (w === '-S' || w === '--split-string') return words[k + 1]
-    const longEq = /^--split-string=([\s\S]*)$/.exec(w)
-    if (longEq) return longEq[1]
-    // a short-flag cluster carrying `S`: `-vS` (value is the next word), or the attached form
-    // `-Sgit push origin main` (the tokenizer already dropped the quote around the value, so the
-    // value sits right after the `S` in this one word).
-    const shortCluster = /^-[a-zA-Z]*S([\s\S]*)$/.exec(w)
-    if (shortCluster) return shortCluster[1] || words[k + 1]
-    if (!w.startsWith('-')) return undefined
+    if (w === '-') continue // a bare `-` operand: not an option, keeps the scan going
+    if (w === '--') return undefined // ends option parsing: the real command follows
+    if (w.startsWith('--')) {
+      const body = w.slice(2)
+      const eqAt = body.indexOf('=')
+      const name = eqAt === -1 ? body : body.slice(0, eqAt)
+      const attached = eqAt === -1 ? undefined : body.slice(eqAt + 1)
+      if (name.length > 0 && ENV_LONG_SPLIT_STRING.startsWith(name)) {
+        return attached !== undefined ? attached : words[k + 1]
+      }
+      if (
+        attached === undefined &&
+        name.length > 0 &&
+        ENV_LONG_VALUE_FLAGS.some(full => full.startsWith(name))
+      ) {
+        k++ // skip this flag's separate value word (`--unset FOO`, `--chdir /tmp`, ...)
+      }
+      continue // an unrelated long option (`--debug`, `--ignore-signal`, ...): keep scanning
+    }
+    if (w.startsWith('-')) {
+      const chars = w.slice(1)
+      for (let ci = 0; ci < chars.length; ci++) {
+        const c = chars[ci]!
+        if (c === 'S') {
+          const rest = chars.slice(ci + 1)
+          return rest.length > 0 ? rest : words[k + 1]
+        }
+        if (ENV_SHORT_VALUE_FLAGS.has(c)) {
+          const rest = chars.slice(ci + 1)
+          if (rest.length === 0) k++ // the value is the next whole word: skip it
+          break // the cluster's value, attached or skipped, ends the cluster
+        }
+      }
+      continue // an unrelated short cluster (`-i`, `-v`, `-0`, ...): keep scanning
+    }
+    return undefined
   }
   return undefined
 }

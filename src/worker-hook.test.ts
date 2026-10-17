@@ -1507,6 +1507,22 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   // a short-flag cluster ahead of S, value as its own word
   ["env -vS 'git push origin main'", 'PUSH_REASON'],
   ["env --split-string='git push origin main'", 'PUSH_REASON'],
+  // claude-factory-dgf (AC1): a value flag takes its own value word (FOO, /tmp, /usr/bin). That
+  // word does not start with `-`. The old scan stopped there and never reached `-S`. The fix must
+  // skip past the value word.
+  ["env -u FOO -S 'git push origin main'", 'PUSH_REASON'],
+  ["env -C /tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  ["env -P /usr/bin -S 'git push origin main'", 'PUSH_REASON'],
+  // claude-factory-dgf (AC2): the long forms of the same value flags.
+  ["env --unset FOO -S 'git push origin main'", 'PUSH_REASON'],
+  ["env --chdir /tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  ["env --argv0 x -S 'git push origin main'", 'PUSH_REASON'],
+  ["env -a x -S 'git push origin main'", 'PUSH_REASON'],
+  // claude-factory-dgf (AC3): a short cluster that ends in a value flag (`-iu FOO`) skips one word.
+  ["env -iu FOO -S 'git push origin main'", 'PUSH_REASON'],
+  // claude-factory-dgf (AC4): GNU getopt_long accepts a unique prefix of a long option name.
+  ["env --spl 'git push origin main'", 'PUSH_REASON'],
+  ["env --sp='git push origin main'", 'PUSH_REASON'],
 ]
 const ENV_SPLIT_STRING_REASON: Record<string, string> = {
   MERGE_REASON,
@@ -1515,7 +1531,7 @@ const ENV_SPLIT_STRING_REASON: Record<string, string> = {
 }
 
 test.each(DENY_ENV_SPLIT_STRING)(
-  'denyReason denies %j (claude-factory-zl5.42, env -S/--split-string hides the real command)',
+  'denyReason denies %j (claude-factory-zl5.42/dgf, env -S/--split-string hides the real command)',
   (cmd, reasonName) => {
     expect(denyReason(cmd)).toBe(ENV_SPLIT_STRING_REASON[reasonName])
   },
@@ -1524,6 +1540,17 @@ test.each(DENY_ENV_SPLIT_STRING)(
 test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.42)', () => {
   expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
   expect(denyReason('env -i git status')).toBeUndefined()
+})
+
+// claude-factory-dgf (AC5): these must stay allowed. Real `env` stops reading options at the
+// first `NAME=VALUE` word, so `-S` after one is the command itself, not a flag. `-u`/`-C` without
+// a later `-S` just set up the environment for an unrelated command. `-uS` is one cluster whose
+// first char, `u`, consumes the rest of the word (`S`) as its own value: no separate `-S` flag.
+test('denyReason allows env value-flag forms with no real split-string flag (claude-factory-dgf)', () => {
+  expect(denyReason("env FOO=1 -S 'git push origin main'")).toBeUndefined()
+  expect(denyReason('env -u FOO echo hi')).toBeUndefined()
+  expect(denyReason('env -C /tmp git status')).toBeUndefined()
+  expect(denyReason("env -uS 'git push origin main'")).toBeUndefined()
 })
 
 // claude-factory-zl5.43: a dashed git-core binary name (`git-push`, `git-send-pack`, found on
