@@ -5561,10 +5561,17 @@ const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KI
  * refuse the path, or null when the path names a real note. The `add` case calls this after
  * gate() and before same(). A bad path must cost no embedding call and write nothing.
  *
- * `memory helped` already refuses a path with no matching note. This function adds three checks
- * for paths that exist on disk, which noteExists() alone would wrongly accept: a path under a
- * dot segment such as `.archive/x.md` (hidden by walk()); a topic's whole README.md or LONG.md
- * file, named with no `#id`; and CORE.md itself, named with no `#hash`.
+ * `memory helped` already refuses a path with no matching note. This function adds four more
+ * checks. Each one catches a path that exists on disk, so noteExists() alone wrongly accepts it:
+ * - a path under a dot segment, such as `.archive/x.md` (walk() hides this path)
+ * - a topic's whole README.md or LONG.md file, named with no `#id`
+ * - CORE.md itself, named with no `#hash`
+ * - for a path with no `#` at all, any path that is not a real `.md` file: a directory, or a
+ *   file whose name does not end in `.md`
+ *
+ * claude-factory-3u1.1.2.6: for a path with no `#`, noteExists() was only existsSync(). A topic
+ * directory, `inbox`, or `.` (which resolves to `''`) passed that check. supersede() then crashed
+ * with EISDIR.
  */
 function supersedesRefusal(dir: string, p: string): string | null {
   if (p.startsWith('..')) return `"${p}" is outside ${dir}`
@@ -5573,6 +5580,8 @@ function supersedesRefusal(dir: string, p: string): string | null {
   if (base === 'README.md' || base === 'LONG.md' || p === 'CORE.md')
     return `"${p}" names a whole file, not one note`
   if (!memory.noteExists(dir, p)) return `no note at "${p}" in ${dir}`
+  if (!p.includes('#') && (!p.endsWith('.md') || !statSync(join(dir, p)).isFile()))
+    return `"${p}" is not a note file`
   return null
 }
 
