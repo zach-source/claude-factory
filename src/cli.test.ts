@@ -675,6 +675,43 @@ test("brief() clips a 200_000-char inbox mail instead of pasting it whole (the o
   expect(text).not.toContain('x'.repeat(40_000))
 })
 
+test("brief()'s memory section tells a worker to pass --kind on memory add (claude-factory-3u1.1.1.4), else every add fails after deploy", () => {
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-kind-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-kind-test',
+    branch: 'b',
+  }
+  const def = {
+    name: 'f',
+    start: 'implement',
+    nodes: { implement: { prompt: 'do the thing', next: { ready: 'verify' } } },
+  }
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const text = brief(run, def, 'implement', c, [])
+  expect(text).toContain('memory add --from r1/implement --kind fact|rule|recipe')
+  expect(text).toContain('--until')
+})
+
 test('brief() tells an awaitsPr pre-launch park apart from a worker-reported block (claude-factory-960)', () => {
   const run = {
     id: 'r1',
