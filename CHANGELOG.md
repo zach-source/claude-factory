@@ -10,6 +10,14 @@ minor release may change the factory format, the CLI or the run state.
   claude-factory-3t2). `src/remote.test.ts` sends a real `factory tick` through a timeout fail, a
   backoff and a new spawn. The test checks the warn and fail minutes against the escalated
   limit, not the plain `timeoutMin`. (claude-factory-9ff)
+- `factory plan facts` failures now back off and log, the same as a failed spawn. The old
+  code retried every 60 s forever and wrote no log, even with `bd` down. (claude-factory-4hb)
+  - `mod/hooks/register.tsx`: the facts-failed branch in `pmNow()` now:
+    - runs `rt.pmFailures += 1`
+    - waits `pmRetryDelay(rt.pmFailures)` (60 s doubling, capped at 60 min), not the fixed
+      60 s `PM_RETRY_MS` (removed)
+    - adds a `pm-log.jsonl` entry `{ reason: 'facts-failed', error }`, the same shape as the
+      two spawn-failed sites
 - `factory gc --worktrees` no longer journals a secret from a remote URL's userinfo
   (`user:pass@` or a bare `token@`). A failed `git push` or `git worktree remove` can print the
   URL in its stderr. That stderr line used to reach `HOME/gc-worktrees.jsonl` unscrubbed.
