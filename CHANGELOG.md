@@ -143,6 +143,20 @@ minor release may change the factory format, the CLI or the run state.
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
     only after a person rebuilds and pushes its worker image (`hack/push-worker.sh`).
 
+- A hidden `briefer` subagent writes an evidence brief into each gate's decision item. The
+  manager no longer needs to read the pull request and the journal itself. (claude-factory-2u2)
+  - `src/gatebrief.ts`: `gateKey()` and `clipBrief()`. `src/cli.ts`: `factory gate-brief facts
+    <run>` prints the pull request, the verify and review summaries, and the run's goal as
+    JSON, only at a live gate; `factory gate-brief set <key> <file>` checks the key against
+    the live gate, strips control characters, keeps 8 lines of 200 characters or fewer each,
+    and stores the brief in `<home>/gate-briefs.json`; `row()` adds `gate.brief`.
+  - `mod/hooks/view.ts`: `briefContext()` and `interviews()` put the brief into the gate
+    Interview item: `context` is a redacted one-line summary, `details` is the whole brief.
+  - `mod/hooks/register.tsx`: a new `factory:briefer` subagent (`BRIEFER_TYPE`), spawned once
+    for each gate visit by `briefNow()`, with no tools at all. Its `turn.complete` writes the
+    brief through `gate-brief set` and logs one line to `<home>/brief-log.jsonl`. `tool.call`
+    denies every Bash call from a briefer agent, `factory decide` included. The person still
+    decides every gate. `userConfig.briefer` (default `true`) turns the briefer off.
 - A station at its round cap now re-plans once with the round's findings instead of holding for a
   hand goto, and a repeated red on the same acceptance criterion mails the manager on its own.
   (claude-factory-qgz)

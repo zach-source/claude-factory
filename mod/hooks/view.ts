@@ -711,6 +711,13 @@ function asked(text: string) {
 const redact = (text: string) =>
   text.replace(/https?:\/\/\S+/g, '').replace(/\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/gi, '')
 
+/** the gate's brief, as one line for the console. The line is `'Brief: '` plus the redacted first line of
+ * the brief, clipped to 200 characters. The line is empty when the briefer has not yet written a brief for
+ * this gate visit. `interviews()` and the gate panel in views.tsx both call this function, so they show the
+ * same line (claude-factory-2u2). */
+export const briefContext = (brief: string | undefined): string =>
+  brief ? line(`Brief: ${redact(brief.split('\n')[0] ?? '')}`, 200) : ''
+
 /** the fallback context when the item has no `Context:` line of its own. It is the first sentence of the raw
  * text. The function redacts that sentence and clips it to `max` characters. */
 function firstSentence(text: string, max: number) {
@@ -765,6 +772,7 @@ export function interviews(runs: readonly FactoryRun[], answered: Record<string,
     if (r.gate) {
       const at = r.since ?? 0
       const key = `gate:${r.id}@${at}`
+      const brief = r.gate.brief
       if (!answered[key])
         out.push({
           key,
@@ -775,8 +783,11 @@ export function interviews(runs: readonly FactoryRun[], answered: Record<string,
           title: line(r.gate.question, 160),
           question: r.gate.question,
           options: r.gate.outcomes.map(label => ({ label })),
-          context: '',
-          details: '',
+          // the briefer's evidence brief (claude-factory-2u2): context is one redacted line for the
+          // collapsed row, details is the whole brief (unredacted) behind the details toggle. Both stay
+          // '' until the briefer writes one for this gate visit.
+          context: briefContext(brief),
+          details: brief ?? '',
           needsProposal: false,
           at,
         })
