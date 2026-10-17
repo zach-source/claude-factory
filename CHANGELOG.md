@@ -14,7 +14,8 @@ minor release may change the factory format, the CLI or the run state.
     their own review ran.
   - Fix: `implement` now opens the draft pull request (`factories/lifecycle.ts`). `review`
     opens one only as a fallback, when none exists yet. Only `release` marks a pull request
-    ready for review, and only `release` may run `gh pr merge`.
+    ready for review. No station, `release` included, ever runs `gh pr merge`; only a person
+    merges, through GitHub's own auto-merge on green.
   - The worker `PreToolUse` hook (`src/worker-hook.ts`) denies these commands at every other
     station: `gh pr merge` (plain, `--auto`, `--admin`, or wrapped in `sudo`, `env`,
     `timeout`, `watch`, `bash -lc`, or `eval`); `gh pr ready`; and the GraphQL
