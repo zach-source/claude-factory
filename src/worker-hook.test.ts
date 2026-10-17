@@ -324,6 +324,73 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
   expect(denyReason(LONG_COMMAND_8192, undefined, ACME)).toBeUndefined()
 })
 
+// claude-factory-1by: anyShellReason calls shCFlagIndex(words.slice(j)) for each sh/bash/zsh/dash
+// word. words.slice(j) costs O(n-j).
+//
+// The scan it feeds also costs O(n-j). On a miss, j moves by only 1.
+//
+// So a run of n such words with no `-c` cluster costs O(n^2). No personOnly is set here.
+//
+// So the 8192-character cap (claude-factory-25z.20) does not apply. Nothing else bounds the scan.
+//
+// Measured on the pre-fix code, load 12-30:
+//
+// 'sh '.repeat(40000) + '; rm -rf x' took 13.6 s.
+//
+// 'bash -x '.repeat(40000) + '; rm -rf x' took 36.3 s.
+//
+// 'sh -- '.repeat(40000) + '; rm -rf x' took 875 ms. The slice alone is quadratic.
+//
+// The inner scan stops at the first word there, because '--' matches right away.
+//
+// 'eval ' + 'sh '.repeat(40000) + '; rm -rf x' took 9.5 s.
+//
+// The eval recursion reaches the same sh-word loop at depth 1, at the same cost.
+//
+// Each time is far past the 500 ms limit this test sets below.
+//
+// The PreToolUse hook has a 10 s limit (src/cli.ts). Past that limit, the hook fails open.
+//
+// The command's `rm -rf` then runs.
+//
+// This test does not read or measure the time used. `test()`'s own time limit does that check.
+const SCAN_N = 40000
+
+test('denyReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(denyReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+test('denyReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(denyReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+test('denyReason denies a 40000-word sh -- scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(denyReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+test('denyReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(denyReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+// claude-factory-1by: shapes the fix must keep denying or allowing exactly as before. A fix that
+// jumps `j` blindly to the end of a segment on a cluster miss would wrongly allow the first two:
+// the real `-c` script sits past a plain word (`eval`) or past a literal `--`.
+test('denyReason still denies `sh eval rm -rf x` (claude-factory-1by)', () => {
+  expect(denyReason('sh eval rm -rf x')).toBe(REASON)
+})
+
+test('denyReason still denies `sh foo -- bash -c "rm -rf x"` (claude-factory-1by)', () => {
+  expect(denyReason('sh foo -- bash -c "rm -rf x"')).toBe(REASON)
+})
+
+test('denyReason still denies `sh -x -lc "rm -rf x"` (claude-factory-1by)', () => {
+  expect(denyReason('sh -x -lc "rm -rf x"')).toBe(REASON)
+})
+
+test('denyReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
+  expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
+})
+
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
 async function run(stdin: string, env?: Record<string, string | undefined>, argv: string[] = []) {
