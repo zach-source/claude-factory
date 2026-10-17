@@ -532,3 +532,27 @@ test(
     expect(patrol!.tools).toEqual(['Bash', 'Read', 'Grep', 'Glob'])
   },
 )
+
+// ---- claude-factory-dun.32: the pm's default is on again, not just when a test says so ----
+
+test(
+  'the pm spawns when due with no options.pm override at all: the default is on, not only set true by the test (claude-factory-dun.32)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const spawns: unknown[] = []
+    pmMocks(on, { runs: () => [RUN('r11')], tools: ['Bash', 'Agent'] })
+    on('agent.spawn', ($, e) => {
+      const ev = e as unknown as { subagent_type: string }
+      if (ev.subagent_type === 'factory:pm') spawns.push(ev)
+      return { model: 'sonnet' } as never
+    })
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    agentListMock(on, [], ['pm-11'])
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    expect(spawns).toHaveLength(1)
+  },
+)

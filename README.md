@@ -170,9 +170,9 @@ A plan gap is different. In one kind, an epic stays open after all its children 
 
 The pm does not change the priority of a P0 or P1 bead, a rig goal, or an owner-only setting. It can only propose such a change. The proposal becomes a decision item in the Interview tab. A person must decide on the item. Set `pm` to `false` in the plugin's `userConfig` to turn off the pm.
 
-The pm's `userConfig` default is `false` for now. This is a rollback for claude-factory-dun (see CHANGELOG). A manager session that was already running when the pm shipped cannot register the agent type the pm spawns. So it retried every 60 seconds, forever. Set `pm` back to `true` only after a fix closes that gap.
-
 A manager session can start with no `Agent` tool in its `--tools` list, so each pm spawn fails. The pm checks for the `Agent` tool before it reads any rig's ready beads. If the tool is missing, the pm stops at once. It writes one line to `<home>/pm-log.jsonl` and the Rigs tab shows a red "pm blocked: ..." line. To clear this, exit the factory manager, then run `factory manager --resume <session>`. The patrol and `factory plan show` keep working during the block.
+
+An earlier claude-factory-dun session named the wrong cause for this gap. It rolled the pm's `userConfig` default back to `false`. The default is `true` again now. See CHANGELOG for the corrected cause.
 
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats
