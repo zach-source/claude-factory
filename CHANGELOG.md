@@ -21,7 +21,26 @@ minor release may change the factory format, the CLI or the run state.
     under the first page's `totalCount` (a lost page). This keeps the `isCrossRepository` guard
     from claude-factory-ulv working: the query, `PrPageNode` and `isPrPageNode` all need it
     as a boolean, and fail closed on a missing or wrong-typed value (claude-factory-ph8.4).
-
+- A short note's `until` marker (a bead id, `owner/repo#N`, a GitHub pull URL, or a `YYYY-MM-DD`
+  date) now retires the note on its own schedule, apart from the dream's own judgment. `dream`
+  and `memory compact` retire a note once its date has passed, its named bead has closed, or its
+  named PR has merged or closed. A lookup that fails or finds nothing only flags the note; it
+  never retires it. (claude-factory-3u1.1.4, FR-016)
+  - `src/memory.ts`: new `untilStatus(until, now, deps)` gives the verdict for one marker, from
+    injected `UntilDeps` (`bead`, `pr`) with no file or network access of its own. `ShortCandidate`
+    gains `expired`, `expiredReason` and `untilFlag`. `decide()` emits a `retire` decision for an
+    expired note (right after the superseded check, at any age or usage) and a `flag` decision for
+    an unreachable marker; a retire shares the archive cap with `archive`, and a flag never counts
+    toward the topic cap. `applyTiers(dir, { untilDeps })` judges each short note's marker, writes
+    a retire like an archive (`.archive/<topic>.md`, removed file, rewritten README link), and
+    returns `retired` and `flagged` counts. With no `untilDeps`, a bead or PR marker gets no
+    verdict, so a caller that skips it keeps its old output; a date marker is always judged.
+  - `src/cli.ts`: new `untilDeps()` looks up a bead through the rig whose bd prefix matches it
+    (longest match first) and `gh pr view <url> --json state` for a PR, each memoized for one pass
+    and capped at 50 `gh` calls. A rig whose own prefix lookup fails is set apart. That rig cannot
+    rule out owning an id, so the lookup reads "lookup failed" for it, never "not found". `dream()`
+    and both `memory compact` paths (`--dry-run` and real) now pass it to `applyTiers()`.
+    `compactMessage()` adds `, N retired` and `, N flagged` clauses when either count is over 0.
 - Fixed: `denyAt`'s `find` branch (`src/worker-hook.ts`) no longer scans the
   `-exec`/`-execdir` words of a `find` command in quadratic time. (claude-factory-lbn)
   - Before this fix, a long `find ... -exec` command can time out the 10-second
@@ -39,7 +58,6 @@ minor release may change the factory format, the CLI or the run state.
     Before the fix, the same shape with a trailing `rm -rf x` took 11451.9 ms.
   - `find . -exec rm -f x \;` still allows. `find . -name x -exec rm -rf {} +`
     still denies. All 230 `worker-hook.test.ts` tests pass.
-
 - The lifecycle factory has a new triage outcome, `small`, for a docs-only, test-only or tiny
   change. Before this fix, every run paid for the full loop. The full loop has an Opus plan, a
   separate verify station, a separate review station, security and soak. A small run now takes
