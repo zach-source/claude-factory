@@ -20,6 +20,7 @@ import type {
 import {
   BEAD_TYPES,
   bar,
+  briefContext,
   byState,
   blockers,
   clockOf,
@@ -169,11 +170,32 @@ function trail({ ui }: Base, r: FactoryRun) {
 
 function gate(p: Base, r: FactoryRun, draft: FactoryDraft, isFocused = false) {
   const { Box, Text, Button, Input } = p.ui
+  const briefKey = `gate-details:${r.id}`
+  const briefOpen = draft.interviewOpen?.includes(briefKey) ?? false
   return (
     <Box key={`gate-${r.id}`} flexDirection="column" marginTop={1}>
       <Text color="yellow" bold wrap="wrap">
         ? {r.gate!.question}
       </Text>
+      {r.gate!.brief && (
+        <Box flexDirection="column">
+          <Text dimColor wrap="wrap">
+            {briefContext(r.gate!.brief)}
+          </Text>
+          <Button
+            key={`${briefKey}-toggle`}
+            label={briefOpen ? 'details ▾' : 'details ▸'}
+            plain
+            dimColor
+            onPress={() => p.act.draft({ interviewOpen: toggled(draft.interviewOpen, briefKey) })}
+          />
+          {briefOpen && (
+            <Text dimColor wrap="wrap">
+              {r.gate!.brief}
+            </Text>
+          )}
+        </Box>
+      )}
       {Input && (
         <Input
           key={`note-${r.id}`}

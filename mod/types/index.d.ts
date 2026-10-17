@@ -12,7 +12,7 @@ export type FactoryRun = {
   error?: string | null
   last?: FactoryEntry
   /** set while the run waits at a gate for the person */
-  gate?: { question: string; outcomes: string[] }
+  gate?: { question: string; outcomes: string[]; brief?: string }
   /** the bead the run works, in a repo tracked with beads */
   bead?: string
   /** the rig whose repo it works */
