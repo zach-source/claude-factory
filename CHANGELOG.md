@@ -481,6 +481,19 @@ minor release may change the factory format, the CLI or the run state.
     marker. PR #76 fixed the directory-as-`--supersedes` case. PR #78
     fixed the `#`-path case (for example `beads#x`, where `beads` is a
     directory).
+- `mod/tests/patrol.test.tsx` now has a regression test for the patrol
+  re-adoption guard in the `tool.call` Bash hook (`mod/hooks/register.tsx`,
+  the `!rt.patrolIds.includes(e.agentId)` clause). (claude-factory-72v.17,
+  claude-factory-cb9)
+  - Before this test, no test covered the guard. A patrol the watchdog
+    freed, but which still calls Bash late, can steal `rt.patrolId` from
+    the newer patrol now running. Its command can land in the newer
+    patrol's logged actions.
+  - The new test spawns patrol A, lets the watchdog free it, starts patrol
+    B, then has A call Bash late. It asserts B's own `turn.complete` logs
+    exactly one `patrol-log.jsonl` entry, for `patrol-B`, with only B's own
+    command in `actions`, and that `isPatrolling` frees for a third patrol.
+    PR #84, merge 27bc371.
 
 ## 0.12.0 (2026-10-15)
 
