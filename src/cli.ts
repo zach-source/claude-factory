@@ -5488,6 +5488,11 @@ const usage = `factory — herdr software factories on xstate
                                      drop prompts, briefs and stray backups, and a dead launch script;
                                      --dry-run only prints bytes per kind, deleting nothing (each tick
                                      starts one, at most hourly, FACTORY_GC_MS; FACTORY_GC=0 turns it off)
+  gc --worktrees [--dry-run] [--rig NAME]   finished runs: drop a worktree, and its factory/* branch
+                                     once it is merged, or its PR is closed and its bead is closed;
+                                     never a live run or an unmerged branch; --dry-run only prints
+                                     what it would remove (each tick starts one, at most daily,
+                                     FACTORY_GC_WORKTREES_MS; FACTORY_GC_WORKTREES=0 turns it off)
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
