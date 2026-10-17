@@ -541,6 +541,21 @@ const PM_INTERVAL_MS = 60 * 60_000
  * window), so several runs that finish together cost one pm turn, not one each. */
 const PM_DEBOUNCE_MS = 5 * 60_000
 
+/** Checks the tool list `names` for `Agent`. A subagent spawn needs that tool
+ * (claude-factory-dun.28, .29). `names` is `undefined` when a caller has no tool list: an old
+ * engine, or a test with no mock. Read that case as unknown. Do not read it as blocked. */
+export function hasAgentTool(names: readonly string[] | undefined): boolean | undefined {
+  if (names === undefined) return undefined
+  return names.includes('Agent')
+}
+
+/** Backs off a pm spawn that failed (claude-factory-dun.29): 60 s, 120 s, 240 s, doubling up to a
+ * 60 minute cap. `failures` counts spawns that failed since the last one that worked; a working
+ * spawn resets it to 0. */
+export function pmRetryDelay(failures: number): number {
+  return Math.min(60_000 * 2 ** (failures - 1), 3_600_000)
+}
+
 /**
  * Pure cadence for the pm subagent (claude-factory-dun.5). This is a hidden `factory:pm` subagent.
  * It ranks each rig's next work on its own timer, never every patrol. register.tsx's `pmNow` calls
