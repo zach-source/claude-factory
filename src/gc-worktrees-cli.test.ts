@@ -337,6 +337,7 @@ test('j: git worktree remove failing keeps the worktree and its branch, and jour
     const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
     expect(out.code).toBe(0)
     expect(out.out).toContain('reclaimed: 0 worktrees')
+    expect(out.out).toContain('1 errors') // the report line must show the error count too (claude-factory-l38.17)
     expect(existsSync(worktree)).toBe(true) // removal failed: the worktree stays
     expect(git(repo, 'branch', '--list', branch)).not.toBe('') // the branch is never deleted for a failed worktree
     const lines = readFileSync(join(home, 'gc-worktrees.jsonl'), 'utf8')

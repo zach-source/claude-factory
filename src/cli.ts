@@ -3292,8 +3292,10 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
       errors,
       rigs: plans.map(p => ({ rig: p.rig, owned: p.owned, live: p.live, unowned: p.unowned })),
     })
+  // the report line must show the error count too (claude-factory-l38.17): the journal has it, but
+  // exit code stays 0 either way, so a reader of only this line must see a failed removal.
   console.log(
-    `reclaimed: ${worktreesN} worktrees, ${localN} local + ${remoteN} remote branches, ${fmtBytes(bytesN)}`,
+    `reclaimed: ${worktreesN} worktrees, ${localN} local + ${remoteN} remote branches, ${fmtBytes(bytesN)}, ${errors} errors`,
   )
 }
 
