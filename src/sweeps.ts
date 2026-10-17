@@ -21,7 +21,19 @@ const SWEEP_FILER = /^factory\/sweeps-[^/]+\/([^/]+)$/
 
 /** Reads the sweep station that filed a bead, from its `created_by` field. A sweep run's actor
  * looks like `factory/sweeps-<run>/maintain` (beads.ts's `actorOf`, plus `/<station>`). This
- * returns undefined for a bead a person created, or for a bead any other kind of run created. */
+ * returns undefined for a bead a person created, or for a bead any other kind of run created.
+ *
+ * claude-factory-8pc.24: `created_by` comes from `BEADS_ACTOR`.
+ * This is an env var in the worker's own session (src/cli.ts:1089,1198).
+ * A worker can set, clear or re-export `BEADS_ACTOR` itself, for example
+ * `BEADS_ACTOR=person bd create ... -l factory`.
+ * That files a bead this function never matches.
+ * No cap applies then. No sweep-queue allowlist applies then.
+ *
+ * The worker hook denies that exact command text (src/worker-hook.ts's `BEADS_ACTOR_REASON`).
+ * This denial is defense in depth. The guard is client-side.
+ * A worker can still write around a denied command in other ways.
+ * This gap stays open until the flood guard reads a field no filer can set itself. */
 export const sweepFiler = (b: { created_by?: string }): string | undefined =>
   SWEEP_FILER.exec(b.created_by ?? '')?.[1]
 

@@ -1,6 +1,13 @@
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
-import { DEEP_COMMAND_REASON, denyReason, LIVE_REASON, LONG_COMMAND_REASON, REASON } from './worker-hook'
+import {
+  BEADS_ACTOR_REASON,
+  DEEP_COMMAND_REASON,
+  denyReason,
+  LIVE_REASON,
+  LONG_COMMAND_REASON,
+  REASON,
+} from './worker-hook'
 
 const DENY = [
   'rm -rf foo',
@@ -389,6 +396,30 @@ test('denyReason still denies `sh -x -lc "rm -rf x"` (claude-factory-1by)', () =
 
 test('denyReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
   expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
+})
+
+// claude-factory-8pc.24: bd fills a bead's created_by from BEADS_ACTOR, which the flood guard's
+// sweepFiler trusts. A worker that sets, clears or re-exports BEADS_ACTOR escapes the cap.
+const BEADS_ACTOR_DENY = [
+  'BEADS_ACTOR=person bd create "x" -l factory',
+  'env BEADS_ACTOR=person bd create "x" -l factory',
+  'export BEADS_ACTOR=person',
+  'export BEADS_ACTOR',
+  'unset BEADS_ACTOR',
+  'declare -x BEADS_ACTOR=person',
+  'bd create "x"; BEADS_ACTOR=person bd create "y" -l factory',
+  "bash -c 'BEADS_ACTOR=person bd create x -l factory'",
+]
+
+test.each(BEADS_ACTOR_DENY)('denyReason denies %s (claude-factory-8pc.24)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+test('denyReason allows a plain bd command and an unrelated VAR=val assignment (claude-factory-8pc.24)', () => {
+  expect(denyReason('bd create "x" -l factory')).toBeUndefined()
+  expect(denyReason('FOO=1 bd list --all')).toBeUndefined()
+  // a word that only contains the text BEADS_ACTOR, not an assignment or export of it, is not denied
+  expect(denyReason('echo BEADS_ACTOR_LOG=1')).toBeUndefined()
 })
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
