@@ -30,6 +30,98 @@ minor release may change the factory format, the CLI or the run state.
   - `src/metrics.ts`: `fate()` returns `requeued` before `rejected`/`closed`; `shipRate` leaves it
     out of the ended-run count.
 
+- A short note's `until` marker (a bead id, `owner/repo#N`, a GitHub pull URL, or a `YYYY-MM-DD`
+  date) now retires the note on its own schedule, apart from the dream's own judgment. `dream`
+  and `memory compact` retire a note once its date has passed, its named bead has closed, or its
+  named PR has merged or closed. A lookup that fails or finds nothing only flags the note; it
+  never retires it. (claude-factory-3u1.1.4, FR-016)
+  - `src/memory.ts`: new `untilStatus(until, now, deps)` gives the verdict for one marker, from
+    injected `UntilDeps` (`bead`, `pr`) with no file or network access of its own. `ShortCandidate`
+    gains `expired`, `expiredReason` and `untilFlag`. `decide()` emits a `retire` decision for an
+    expired note (right after the superseded check, at any age or usage) and a `flag` decision for
+    an unreachable marker; a retire shares the archive cap with `archive`, and a flag never counts
+    toward the topic cap. `applyTiers(dir, { untilDeps })` judges each short note's marker, writes
+    a retire like an archive (`.archive/<topic>.md`, removed file, rewritten README link), and
+    returns `retired` and `flagged` counts. With no `untilDeps`, a bead or PR marker gets no
+    verdict, so a caller that skips it keeps its old output; a date marker is always judged.
+  - `src/cli.ts`: new `untilDeps()` looks up a bead through the rig whose bd prefix matches it
+    (longest match first) and `gh pr view <url> --json state` for a PR, each memoized for one pass
+    and capped at 50 `gh` calls. A rig whose own prefix lookup fails is set apart. That rig cannot
+    rule out owning an id, so the lookup reads "lookup failed" for it, never "not found". `dream()`
+    and both `memory compact` paths (`--dry-run` and real) now pass it to `applyTiers()`.
+    `compactMessage()` adds `, N retired` and `, N flagged` clauses when either count is over 0.
+- Fixed: `denyAt`'s `find` branch (`src/worker-hook.ts`) no longer scans the
+  `-exec`/`-execdir` words of a `find` command in quadratic time. (claude-factory-lbn)
+  - Before this fix, a long `find ... -exec` command can time out the 10-second
+    PreToolUse hook. The hook then fails open and skips the deny check.
+  - Cause: for each `-exec`/`-execdir` word, the branch ran `cmd.slice(i + 1)`. It
+    then checked the first word of the slice. A run of n such words cost O(n^2).
+    Proof: this took 1.36 s at n=80000 words (480 KB). Past about 1.3 MB, this runs
+    past the hook's 10-second timeout.
+  - Fix: `isRecursiveRm()` now takes a start index. It reads `cmd` in place, with
+    no slice. The `find` branch first checks `baseWord(cmd[i + 1]) === 'rm'` in
+    O(1) time. It then calls `isRecursiveRm(cmd, i + 1)`. Each scan starts at an
+    `rm` word, and stops at the first non-flag word. The scans do not overlap, so
+    the whole loop costs O(n).
+  - Proof: `bun run src/worker-hook.bench.ts find 200000` now takes 191.2 ms.
+    Before the fix, the same shape with a trailing `rm -rf x` took 11451.9 ms.
+  - `find . -exec rm -f x \;` still allows. `find . -name x -exec rm -rf {} +`
+    still denies. All 230 `worker-hook.test.ts` tests pass.
+- The lifecycle factory has a new triage outcome, `small`, for a docs-only, test-only or tiny
+  change. Before this fix, every run paid for the full loop. The full loop has an Opus plan, a
+  separate verify station, a separate review station, security and soak. A small run now takes
+  a shorter path: `triage -> quick -> check -> release -> deploy`. This path skips the Opus
+  plan. It also skips security, unless `check` flags the diff as security-sensitive, or the
+  diff touches a factory definition (`.factory/` or `factories/`). In that case the run still
+  goes through security before release. (claude-factory-wnn)
+  - `factories/lifecycle.ts`: `triage`'s prompt names the new `small` outcome. It also names the
+    rules that exclude a run from this outcome: a security-sensitive goal, or a change to a
+    factory definition. Two new stations support this route. `quick` runs on Sonnet with a
+    60-minute limit; on a `full` outcome it joins the plan loop, because the work was bigger
+    than small. `check` runs on Opus with a 60-minute limit and 3 rounds; on a `changes` outcome
+    it loops back to `quick` and closes each task it filed, with its commit, the same way
+    `implement` closes `review`'s findings; on a `security` outcome it goes to the existing
+    `security` station. `check`'s prompt keeps the pull request a draft; only `release` marks
+    it ready. `security`'s prompts now name `check`'s report and `triage`'s summary, as well as
+    `review`'s report and the plan's risk section, so a small run's security pass reads the
+    right station.
+  - `src/metrics.ts`: `metrics()` now reports `small: { runs, hoursToShip: { median, p90 } }`.
+    `runs` counts every run that `triage` ever sent down the `small` route, found anywhere in
+    its log, not only in its first entry. This way a run that failed triage once, then went
+    `small`, still counts. `hoursToShip` covers only the runs that shipped, and excludes any run
+    that `quick` sent to the full loop. `reviewLoops` now also counts `check`'s `changes`
+    outcome. `render()` adds one line: `small runs N, to ship Xh median / Yh p90`.
+  - `README.md`: the lifecycle table gains a `small` row. Two new paragraphs say when `triage`
+    picks this route, and what the route skips.
+
+- `factory gc --worktrees` fixes two gaps the PR #70 security review found. (claude-factory-ulv)
+  - `src/cli.ts`: `snapshotWorktree()` used to set `GIT_INDEX_FILE` to a path that other
+    processes can predict: `factory-gc-index-<runId>-<pid>` in the shared tmpdir. A write race
+    between `git add -A` and `git write-tree` can snapshot the wrong tree before the caller
+    force-removes the worktree. The function now uses `mkdtempSync` to make a private,
+    unpredictable 0700 directory for the index file. It removes this directory in its `finally`
+    block.
+  - `src/gc.ts`: `coverTip()` used to trust a cross-repo (fork) PR's CLOSED or MERGED state as
+    proof that a tip merged. `PrFact` now carries a required `isCrossRepository` field.
+    `coverTip()` ignores each `PrFact` where this field is `true`. `prFacts()` (`src/cli.ts`)
+    asks `gh` for `isCrossRepository`. It fails closed, with no branch deletes in that rig, when
+    a PR entry has no boolean `isCrossRepository` value. `beadClosedFacts()` builds its CLOSED
+    set from non-cross-repo PRs only. It never runs `bd show` for a fork PR's bead.
+
+- `factory gc --worktrees` now matches a GitHub origin only on the exact host `github.com`. The
+  old regex had no host anchor. An origin like `https://mygithub.com/owner/repo` parsed as the
+  GitHub slug `owner/repo`. `gc` then read PR state for a different repo on `github.com`. It
+  could apply that repo's MERGED or CLOSED state to this rig's own branch deletes.
+  (claude-factory-0u0)
+  - `src/cli.ts`: `githubSlug()` now uses `parseRemote()` (`src/prs.ts`) and `forgeOf()`. This is
+    the same parser that `originRef()` uses for GitLab. `githubSlug()` is now exported. It also
+    accepts origin forms with userinfo, for example `https://user@github.com/...` and
+    token-auth clone URLs. The old regex rejected these forms.
+
+- `reconcile()` now has a direct test for the escalated deadline from `timeoutOf()` (`onTimeout`,
+  claude-factory-3t2). `src/remote.test.ts` sends a real `factory tick` through a timeout fail, a
+  backoff and a new spawn. The test checks the warn and fail minutes against the escalated
+  limit, not the plain `timeoutMin`. (claude-factory-9ff)
 - `factory plan facts` failures now back off and log, the same as a failed spawn. The old
   code retried every 60 s forever and wrote no log, even with `bd` down. (claude-factory-4hb)
   - `mod/hooks/register.tsx`: the facts-failed branch in `pmNow()` now:
@@ -38,7 +130,6 @@ minor release may change the factory format, the CLI or the run state.
       60 s `PM_RETRY_MS` (removed)
     - adds a `pm-log.jsonl` entry `{ reason: 'facts-failed', error }`, the same shape as the
       two spawn-failed sites
-
 - `factory gc --worktrees` no longer journals a secret from a remote URL's userinfo
   (`user:pass@` or a bare `token@`). A failed `git push` or `git worktree remove` can print the
   URL in its stderr. That stderr line used to reach `HOME/gc-worktrees.jsonl` unscrubbed.
@@ -51,7 +142,6 @@ minor release may change the factory format, the CLI or the run state.
     (`GIT_TERMINAL_PROMPT=0`) and the `GIT_NETWORK_TIMEOUT_MS` timeout (still 30 s), the same as
     every other network-reaching git call in this file. A stuck credential prompt now fails fast
     instead of waiting out the timeout.
-
 - `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
   `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
   path. `memory compact` now removes such a usage line. (claude-factory-5o7)
