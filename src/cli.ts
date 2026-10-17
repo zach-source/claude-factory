@@ -2968,13 +2968,19 @@ function worktreeFacts(repo: string): gc.WorktreeFact[] {
 }
 
 /** every factory/* branch's local and remote tip, and whether each is an ancestor of origin's default
- * branch. null on any failure (fetch, ls-remote, or no default ref): gc then deletes no branch here (AC5). */
-function branchFacts(repo: string): gc.BranchFact[] | null {
-  const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', '--no-tags', 'origin'], {
-    env: GIT_NETWORK_ENV,
-    timeout: 120_000,
-  })
-  if (fetch.exitCode !== 0) return null
+ * branch. null on any failure (fetch, ls-remote, or no default ref): gc then deletes no branch here (AC5).
+ *
+ * `dryRun` skips the `git fetch` (claude-factory-l38.15): AC1 says a dry run changes nothing, and
+ * a fetch can move `refs/remotes/origin/*` when the remote has commits this repo has not seen yet.
+ * A dry run then reads whatever this repo already knows, which can lag the real remote. */
+function branchFacts(repo: string, dryRun: boolean): gc.BranchFact[] | null {
+  if (!dryRun) {
+    const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', '--no-tags', 'origin'], {
+      env: GIT_NETWORK_ENV,
+      timeout: 120_000,
+    })
+    if (fetch.exitCode !== 0) return null
+  }
   const sym = Bun.spawnSync(['git', '-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
   if (sym.exitCode !== 0) return null
   const base = Bun.spawnSync(['git', '-C', repo, 'rev-parse', sym.stdout.toString().trim()])
@@ -3189,7 +3195,7 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
   const panes = strictPaneCwds()
   const facts: gc.RigWorktreeFacts[] = targetRigs.map(rig => {
     const worktrees = worktreeFacts(rig.repo)
-    const branches = branchFacts(rig.repo)
+    const branches = branchFacts(rig.repo, dryRun)
     const prs = prFacts(rig.repo)
     const repoRuns = runs.filter(r => r.repo === rig.repo)
     const beadClosed = beadClosedFacts(rig.repo, repoRuns, prs)

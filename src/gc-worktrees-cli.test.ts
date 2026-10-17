@@ -611,6 +611,29 @@ test('i: goto after gc refuses when the branch is also gone, and starts no worke
   expect(existsSync(worktree)).toBe(false) // still not recreated: there is nothing to recreate it from
 })
 
+test('p: --dry-run never fetches, so refs/remotes/origin stay exactly as before (claude-factory-l38.15)', () => {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  // a second clone pushes a new branch straight to origin, behind what `repo` last fetched
+  const other = join(dir, 'other')
+  git(dir, 'clone', '--quiet', origin, other)
+  git(other, 'checkout', '-q', '-b', 'factory/ghost')
+  writeFileSync(join(other, 'ghost.txt'), 'x')
+  git(other, 'add', 'ghost.txt')
+  git(other, 'commit', '-q', '-m', 'ghost')
+  git(other, 'push', '-q', 'origin', 'factory/ghost')
+  const before = git(repo, 'for-each-ref', '--format=%(refname) %(objectname)')
+  const herdr = noPanes()
+  fakeGh([])
+  const out = factory(['gc', '--worktrees', '--dry-run'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(git(repo, 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(before)
+  expect(git(repo, 'for-each-ref', 'refs/remotes/origin/factory/ghost')).toBe('') // never fetched
+})
+
 test('r: gh pr list passes -R to the origin repo, and a result at the --limit cap counts as incomplete (claude-factory-l38.13)', () => {
   reset()
   const { repo } = makeRig('r1')
