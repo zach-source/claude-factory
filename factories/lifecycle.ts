@@ -133,12 +133,19 @@ Report green with the evidence, or red with a numbered list of every failure and
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 Post the review on the pull request: push the branch and open it as a draft if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
-Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link.`,
+Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/main...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
       next: { approve: 'release', changes: 'implement', security: 'security' },
     },
     security: {
       agent: FABLE,
       timeoutMin: 45,
+      // claude-factory-3t2: 5 of 65 security visits timed out at 45 min, all on one large rig. The
+      // retry right after a timeout gets 75 min and a narrower brief, instead of the same 45 min
+      // and the whole branch again; a 2nd timeout in a row still goes to isRepeatFail's stuck+mail.
+      onTimeout: {
+        timeoutMin: 75,
+        prompt: `Do not re-read the whole branch. Start from the changed-files list and the diff summary in review's report in your Inbox. If there is none, run \`git diff --stat origin/main...HEAD\`. Read the hunks of the riskiest files first (auth, input parsing, secrets, permissions, .factory/). Post each finding on the pull request as you find it. Report before the limit, and name the files you did not read.`,
+      },
       prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section. Change no code.
 Post it on the pull request the way review does.
 Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
