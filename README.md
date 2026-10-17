@@ -452,9 +452,11 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
   `factory` become runs, every 30 s while the rig and the town have room. A
   `station:<name>` label starts one at that station. A `factory:<name>` label compiles that
   factory instead of the rig's own, so a run can hand a bead to another factory with no hand
-  start (for example, lifecycle to release). Dispatch reads both labels together. An unknown
-  `factory:<name>` defers that one bead ('no factory \<name\>'); the rest of the rig still starts.
-  Neither label is read from a Linear-sourced bead.
+  start (for example, lifecycle to release). Dispatch reads both labels together. A bad label
+  defers that one bead, never the rest of the rig: two `factory:` or two `station:` labels on one
+  bead, an unknown factory name ('no factory \<name\>'), a factory file that fails to load, or a
+  `station:<name>` the named factory lacks. Neither label is read from a Linear-sourced bead; a
+  requeue edge on one defers instead of looping.
 - **Dispatch checks a bead before it starts a run**: it looks for a merged pull request that
   already names the bead's id. It also looks for a live run that already holds the bead. On a
   hit, it rejects the bead (`rejected_by: dispatch`) or leaves one comment, and starts no run.

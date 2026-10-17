@@ -60,13 +60,20 @@ The check also runs when a live run already holds a ready, unassigned bead. This
 
 If `gh` fails or times out, the check fails open. The run starts anyway. `factory metrics` counts this as `gh fail-open`, apart from a real skip. `factory metrics` also prints how many triage rejects there were. It prints how many beads the pre-check did skip before a run can start (`dispatch skipped ... (merged-pr ..., live-run ...)`).
 
-A bead that a requeue edge sends on has the metadata `requeued_from` set. This bead skips the pre-check, and makes no `gh` call. The bead already passed that check, or review's own merge, before it came here. So, a merged pull request that names this bead must not reject it again (claude-factory-wnm).
+A bead that a requeue edge sends on gets the metadata `requeued_from`. This bead skips the pre-check and makes no `gh` call, for the one dispatch that starts its next run. The bead's last run already passed the check, or review's own merge, before it ended. So, a merged pull request that names this bead must not reject it again (claude-factory-wnm). Dispatch clears `requeued_from` right after it starts that run. A later dispatch runs the check again, like it does for any other bead.
 
 **Which factory and station a run starts in**: a `station:<name>` label starts the run at that station, in the rig's own factory (`rig.factory`). A `factory:<name>` label names a different factory. Dispatch looks for the factory file in the repo's own `.factory/` directory, as `<name>.ts` (or `.json`, `.yaml`, `.toml`). If the file is not there, dispatch looks in this repo's `factories/` directory. Dispatch uses the file that it finds.
 
 You can use both labels at the same time. With both labels, the run starts in the named factory, at the named station. If you use only `station:<name>`, the run stays in `rig.factory`. This is how a run moves a bead on to another factory, with no start by a person. For example, a run moves a bead from `lifecycle` to `release` with a [`requeue`](../README.md#beads-planning-and-execution) edge.
 
-An unknown `factory:<name>` defers that one bead. The cause is `no factory <name>`. The other beads of the rig still start. Dispatch does not read either label from a Linear-sourced bead. The bare `factory` label, with no colon, queues a bead for dispatch. Dispatch never reads it as a factory name.
+A bad `factory:<name>` or `station:<name>` label defers that one bead. The other beads of the rig still start. The cause is one of these:
+
+- two `factory:` labels, or two `station:` labels, on the same bead
+- an unknown factory name (`no factory <name>`)
+- a factory file that fails to load (`factory <name> failed to load: ...`)
+- a `station:<name>` the named factory does not have (`station <name> not in factory <name>`)
+
+Dispatch does not read either label from a Linear-sourced bead. The bare `factory` label, with no colon, queues a bead for dispatch. Dispatch never reads it as a factory name.
 
 **Priority**: dispatch takes queued beads in `bd ready` order, which is by priority first (`-p 0` is the most urgent, `-p 4` the backlog). Set it with `bd update <id> -p <n>` or `bd priority`.
 
@@ -98,7 +105,7 @@ How the run's end settles the bead:
 | held for you, or aborted                  | deferred and unassigned. `bd undefer <id>` hands it back to the factory                                                              |
 | rejected by a station (not the factory's) | open and ready, `factory` swapped for `rejected`, metadata `rejected_by`, `rejected_at`, `reject_reason`. Queue it again or close it |
 | ended with open children                  | open and unassigned, for the children                                                                                                |
-| ended on a `requeue` edge                 | open, ready, unassigned and `factory`-labeled. Metadata `requeued_from`, `requeued_at`, `requeues`. With `requeue: { factory?, station? }`, old `factory:*`/`station:*` labels are removed first, then the new ones are added; with `requeue: true`, the labels stay as the worker set them. Capped at `REQUEUE_MAX` (5) hops, then deferred, with `requeues` reset to 0 so `bd undefer <id>` starts a fresh count |
+| ended on a `requeue` edge                 | open, ready, unassigned and `factory`-labeled. Metadata `requeued_from`, `requeued_at`, `requeues`. With `requeue: { factory?, station? }`, each named field swaps its own old labels for the new one: `factory` swaps `factory:*`, `station` swaps `station:*`, on its own. With `requeue: true`, the labels stay as the worker set them. Capped at `REQUEUE_MAX` (5) hops, then deferred, with `requeues` reset to 0 so `bd undefer <id>` starts a fresh count. A Linear-sourced bead defers instead of requeuing: dispatch never reads a `factory:`/`station:` label off one (claude-factory-wnm.22) |
 
 ### What not to touch
 

@@ -14,19 +14,24 @@ minor release may change the factory format, the CLI or the run state.
   `factory metrics` counts this ending as `requeued`, ahead of `rejected`/`closed` and apart from
   the ship rate. A run with a bead gets a brief line to read the bead's comments first, since a
   requeued bead's comments are earlier runs' reports. (claude-factory-wnm)
-  - `src/machine.ts`: `Edge.requeue`, the `REQUEUE_NAME` name guard, and `validate()` rules that
-    refuse `requeue` off an edge not into `done`, beside `defer`/`reject`, or with a bad
-    factory/station name.
+  - `src/machine.ts`: `Edge.requeue` and `validate()` rules that refuse `requeue` off an edge not
+    into `done`, beside `defer`/`reject`, or with a bad factory/station name (checked against
+    `beads.ts`'s own `NAME` pattern, not a second copy).
   - `src/beads.ts`: `factoryOf(b)` reads the `factory:<name>` label (never from a Linear-sourced
-    bead, never a path). `requeue(id, runId, to?)` releases the claim, keeps the bead open and
-    `factory`-labeled, swaps labels when `to` names one, and stamps `requeued_from`,
-    `requeued_at`, `requeues` in metadata.
+    bead, never a path; never a bead with two such labels). `requeue(id, runId, to?)` releases the
+    claim, keeps the bead open and `factory`-labeled, swaps labels one field at a time when `to`
+    names one (`factory` swaps `factory:*`, `station` swaps `station:*`), and stamps
+    `requeued_from`, `requeued_at`, `requeues` in metadata. A requeue edge on a Linear-sourced bead
+    defers instead, since dispatch cannot read its labels back.
   - `src/cli.ts`: `track()` settles a `requeue` edge (capped by `REQUEUE_MAX = 5`, then
-    deferred, with the `requeues` metadata reset to 0 so an undefer starts a fresh count).
+    deferred, with the `requeues` metadata reset to 0 so an undefer starts a fresh count); it
+    also clears a stale `requeued` flag when a person revives an ended run with `GOTO`.
     `dispatch()` resolves each bead's `factory:<name>` through a new
     `namedFactorySource(name, repo)` (never `factorySource`'s literal-path branch), and defers
-    only that bead on an unknown name. `precheckSkip` makes 0 `gh` calls for a bead with
-    `requeued_from` set.
+    only that bead on an unknown name, a factory that fails to load, or a `station:<name>` the
+    named factory lacks. `precheckSkip` makes 0 `gh` calls for the one dispatch right after a
+    requeue, for the bead carrying `requeued_from`; dispatch clears that metadata once it has
+    started that one run.
   - `src/metrics.ts`: `fate()` returns `requeued` before `rejected`/`closed`; `shipRate` leaves it
     out of the ended-run count.
 
