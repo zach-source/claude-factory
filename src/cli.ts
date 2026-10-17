@@ -52,6 +52,7 @@ import {
   backlogOf,
   beads,
   dispatchable,
+  factoryOf,
   goalOf,
   hasBeads,
   isOwned,
@@ -176,6 +177,8 @@ const STOP_NOTE =
 const DREAM_SOON_MS = 2 * 3600_000
 const INBOX_FULL = 12
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
+/** a bead requeued this many times gets deferred instead: a factory that always requeues never loops forever */
+const REQUEUE_MAX = 5
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const STALL_MS = 20 * 60_000 // a working worker whose tail and branch head stand still this long is nudged, then failed
 const NUDGES = 4 // ...this many times, each wait twice the last (90s to 24 min), then fails
@@ -208,9 +211,9 @@ type Saved = {
   /** where bead bookkeeping was kept before it moved to track.json */
   track?: Track
 }
-/** bead bookkeeping, the beads pass's own file: journal entries mirrored, last heartbeat, whether the run's
- * end was recorded, and what last went wrong */
-type Track = { mirrored: number; beatAt: number; isSettled: boolean; error?: string }
+/** bead bookkeeping, the beads pass's own file: journal entries mirrored, last heartbeat, whether track()
+ * recorded the run's end, whether that ending was a requeue, and what last went wrong */
+type Track = { mirrored: number; beatAt: number; isSettled: boolean; requeued?: boolean; error?: string }
 type Input = Ev extends infer E ? (E extends Ev ? Omit<E, 'at'> : never) : never
 export type Row = {
   id: string
@@ -2123,7 +2126,16 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     }
     // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
     else if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
-    else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
+    // a requeue edge keeps the bead ready and factory-labeled for the next dispatch, in the factory and
+    // station it names; REQUEUE_MAX stops a factory that always requeues from looping forever
+    else if (typeof edge === 'object' && edge.requeue) {
+      const requeues = Number(b.show(id)?.metadata?.requeues ?? 0)
+      if (requeues >= REQUEUE_MAX) b.defer(id, `requeued ${REQUEUE_MAX} times`)
+      else {
+        b.requeue(id, run.id, edge.requeue === true ? undefined : edge.requeue)
+        t.requeued = true
+      }
+    } else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
