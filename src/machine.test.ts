@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
 import {
+  afterTimeout,
   compile,
   failClass,
   isPrWait,
@@ -8,10 +9,12 @@ import {
   parkDelayMin,
   prsIn,
   reach,
+  timeoutOf,
   unread,
   validate,
   where,
   WATCHED_PARK_MIN,
+  type Ctx,
   type Ev,
   type Factory,
 } from './machine'
@@ -378,6 +381,88 @@ test('failures of different kinds still retry', () => {
   send({ type: 'TICK', at: 11_000 })
   const s = send({ type: 'FAIL', seq: 2, reason: 'stalled: no output for 40 min', at: 12_000 })
   expect(where(s.value)).toEqual(['implement', 'backoff'])
+})
+
+// claude-factory-3t2: a timeout retry gets a longer limit and an extra brief section.
+test('afterTimeout is true right after a timeout fail, stays true through another fail kind in the same tail, and is false with no timeout fail in it', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { ...def.nodes.implement!, retries: 2 } },
+  })
+  // attempt 1 fails some other way: no timeout fail in the tail yet (AC2)
+  let s = send({ type: 'FAIL', seq: 1, reason: 'worker pane w1:p1 was closed', at: 500 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(false)
+  s = send({ type: 'TICK', at: 1_000_000 })
+
+  s = send({ type: 'FAIL', seq: s.context.seq, reason: 'no report within 45 min', at: 1_000_100 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+  s = send({ type: 'TICK', at: 2_000_000 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+
+  // a later fail of another kind in the same tail does not drop the escalation: the timeout
+  // entry is still in the node's run of log entries, which only a new visit (a different node) ends
+  s = send({ type: 'FAIL', seq: s.context.seq, reason: 'worker pane w1:p1 was closed', at: 2_000_100 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+
+  // a node that never failed has no timeout tail
+  expect(afterTimeout(s.context as Ctx, 'review')).toBe(false)
+})
+
+test("afterTimeout stays true across a stuck state and the manager's RETRY (the log tail still holds it)", () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { ...def.nodes.implement!, retries: 1 } },
+  })
+  send({ type: 'FAIL', seq: 1, reason: 'no report within 45 min', at: 1000 })
+  const retried = send({ type: 'TICK', at: 11_000 })
+  let s = send({ type: 'FAIL', seq: retried.context.seq, reason: 'no report within 45 min', at: 12_000 })
+  expect(where(s.value)).toEqual(['implement', 'stuck'])
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+
+  s = send({ type: 'RETRY', at: 13_000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+})
+
+test('timeoutOf gives the plain timeoutMin with no onTimeout, and the escalated one only after a timeout fail', () => {
+  const plain = def.nodes.implement!
+  const escalated = { ...plain, timeoutMin: 45, onTimeout: { timeoutMin: 75 } }
+  const { send, now } = run({ ...def, nodes: { ...def.nodes, implement: escalated } })
+  const fresh = now()
+  expect(timeoutOf(plain, fresh.context as Ctx, 'implement')).toBe(60) // no timeoutMin set: falls back to 60
+  expect(timeoutOf(escalated, fresh.context as Ctx, 'implement')).toBe(45) // no timeout fail yet
+
+  const s = send({ type: 'FAIL', seq: 1, reason: 'no report within 45 min', at: 1000 })
+  expect(timeoutOf(escalated, s.context as Ctx, 'implement')).toBe(75)
+  expect(timeoutOf(plain, s.context as Ctx, 'implement')).toBe(60) // no onTimeout: unaffected
+})
+
+test('validate refuses onTimeout on a gate, and onTimeout.timeoutMin at or under timeoutMin, each alone', () => {
+  const graph = (node: object) => ({ name: 'x', start: 'a', nodes: { a: node } }) as unknown as Factory
+  expect(() =>
+    validate(
+      graph({
+        prompt: '?',
+        gate: true,
+        agent: undefined,
+        next: { ok: 'done' },
+        onTimeout: { timeoutMin: 75 },
+      }),
+    ),
+  ).toThrow('a: a gate has no worker, so no onTimeout')
+  expect(() =>
+    validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 45 } })),
+  ).toThrow('a: onTimeout.timeoutMin must be greater than timeoutMin (45)')
+  expect(() =>
+    validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 30 } })),
+  ).toThrow('a: onTimeout.timeoutMin must be greater than timeoutMin (45)')
+  expect(
+    validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 75 } })),
+  ).toBeTruthy()
+  // no timeoutMin set: the default of 60 is the floor onTimeout must clear
+  expect(() => validate(graph({ prompt: 'x', next: { ok: 'done' }, onTimeout: { timeoutMin: 60 } }))).toThrow(
+    'a: onTimeout.timeoutMin must be greater than timeoutMin (60)',
+  )
 })
 
 // claude-factory-960.1: an awaitsPr station (deploy, for example) parks before its first worker starts.

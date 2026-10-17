@@ -25,6 +25,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
+  afterTimeout,
   compile,
   extend,
   fill,
@@ -34,6 +35,7 @@ import {
   parkDelayMin,
   prsIn,
   reach,
+  timeoutOf,
   unread,
   validate,
   where,
@@ -890,6 +892,14 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
         ]
       : []),
     ...(lastFail ? ['', '## The previous attempt failed', clipReport(lastFail.summary)] : []),
+    ...(n.onTimeout && afterTimeout(c, node)
+      ? [
+          '',
+          '## The previous attempt timed out',
+          `This attempt has ${n.onTimeout.timeoutMin} min.`,
+          ...(n.onTimeout.prompt ? [n.onTimeout.prompt] : []),
+        ]
+      : []),
     ...(handedOff
       ? [
           '',
@@ -1817,7 +1827,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (step) send({ type: 'NUDGED', seq: c.seq })
     return step ? 'relaunching' : 'starting'
   }
-  const timeoutMin = n.timeoutMin ?? 60
+  const timeoutMin = timeoutOf(n, c, node)
   const inbox = unread(c, node)
   // a worker waiting on the manager's answer is idle by design: no nudges until the answer arrives
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)

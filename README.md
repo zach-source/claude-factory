@@ -503,6 +503,13 @@ worker, and `awaitsPr: true` for a station that must wait for someone to merge, 
 pull or merge request an arrival's report links, before it starts a worker (lifecycle's `deploy`;
 see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }` parks the run with no worker;
 `goto` skips the wait.
+`onTimeout: { timeoutMin, prompt? }` gives the attempt right after a timeout fail a longer limit
+than the station's own `timeoutMin`, plus an extra brief section carrying `prompt`, instead of the
+same limit and a brief with no extra text (lifecycle's `security`: 45 min, then 75 min with a
+prompt that works from review's diff summary instead of the whole branch again). A 2nd timeout in
+a row still goes to `isRepeatFail`'s stuck state and one manager mail, same as any other repeated
+silent failure. `validate` refuses `onTimeout` on a gate, and refuses `onTimeout.timeoutMin` at or
+under `timeoutMin`.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
 edge refills it, so soak's `unsure` self-loop does not run out), `maxContextK` (200: the context, in thousands of

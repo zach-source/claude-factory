@@ -6,6 +6,21 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A station can now set `onTimeout: { timeoutMin, prompt? }`: the attempt right after a timeout
+  fail gets this longer limit and an extra brief section instead of the plain retry. lifecycle's
+  `security` uses it (45 min, then 75 min with a prompt that works from review's diff summary
+  instead of rereading the whole branch); a 2nd timeout in a row still goes to `isRepeatFail`'s
+  stuck state and one manager mail, unchanged. (claude-factory-3t2)
+  - Cause: a run review found 5 of 65 security visits (8%) timed out at 45 min, all on one large
+    AX rig, 4 in a row on two runs until the launch budget held them.
+  - `src/machine.ts`: `Node.onTimeout`, `afterTimeout(c, id)` (true when the node's own run of log
+    entries, read back from the end, holds a timeout fail), `timeoutOf(node, c, id)`, and two
+    `validate()` refusals (`onTimeout` on a gate; `onTimeout.timeoutMin` at or under `timeoutMin`).
+  - `src/cli.ts`: `reconcile()`'s deadline check now reads the limit from `timeoutOf()`; `brief()`
+    adds a "The previous attempt timed out" section with the longer limit and the node's prompt.
+  - `factories/lifecycle.ts`: `security.onTimeout` (75 min); `review`'s prompt now says its report,
+    when it reaches security, carries `git diff --stat origin/main...HEAD` (at most 60 files, then
+    "+N more") and one line per changed area.
 - Dispatch now checks a ready bead before it starts a run for it, and skips a bead a merged
   pull request or a live run already covers. (claude-factory-6as)
   - Cause: a 3-day review (2026-10-13 to 16) found 40 of 319 triage visits (12.5%) were
@@ -422,6 +437,29 @@ minor release may change the factory format, the CLI or the run state.
   - `sh eval rm -rf x`, `sh foo -- bash -c "rm -rf x"`, and `sh -x -lc "rm
     -rf x"` still deny. A trailing bare `-c` with no script still allows.
     All 230 `worker-hook.test.ts` tests pass.
+- `factory memory add` now logs a duplicate hit as `confirmed`, not `helped`.
+  It also takes a new `--supersedes <note path>` flag. (claude-factory-3u1.1.2)
+  - When `memory.same()` finds a note that is already there, `src/cli.ts`
+    logs `confirmed` in `.usage.jsonl`. `memory.use()`, `tallyRaw()` and
+    `tally()` (`src/memory.ts`) now carry `confirmed` and `contradicted`
+    counts per note, next to `shown` and `helped`. Each count defaults to
+    0. `compact()` folds `confirmed` and `contradicted` into each note's
+    line. A compact, then a tally, give the same counts.
+  - `--supersedes <note path>` resolves the path through `resolvePath()`
+    (the rename log). It writes the new note, adds one `superseded: <new
+    note path>` frontmatter line to the old note, and logs a
+    `contradicted` event on the old note.
+  - The flag refuses with exit 2 and writes nothing in each of these
+    cases: the path is missing a value; the path starts with `--` or
+    `..`; the path has a dot segment (such as `.archive`); the path names
+    a topic's whole `README.md`, `LONG.md` or `CORE.md` with no `#`; the
+    path is a directory; or the path is a `#` path whose file part is a
+    directory.
+  - PR #73 first shipped the last two refusals above as a crash
+    (`EISDIR`, exit 1) that left a note behind with no `superseded:`
+    marker. PR #76 fixed the directory-as-`--supersedes` case. PR #78
+    fixed the `#`-path case (for example `beads#x`, where `beads` is a
+    directory).
 
 ## 0.12.0 (2026-10-15)
 
