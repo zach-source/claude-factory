@@ -6,6 +6,10 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `reconcile()` now has a direct test for the escalated deadline from `timeoutOf()` (`onTimeout`,
+  claude-factory-3t2). `src/remote.test.ts` sends a real `factory tick` through a timeout fail, a
+  backoff and a new spawn. The test checks the warn and fail minutes against the escalated
+  limit, not the plain `timeoutMin`. (claude-factory-9ff)
 - `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
   `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
   path. `memory compact` now removes such a usage line. (claude-factory-5o7)
