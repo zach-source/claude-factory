@@ -1,5 +1,14 @@
 import { expect, test } from 'bun:test'
-import { dueSweeps, sweepFiler, sweepGoal, sweepGuard, sweepNames, type SweepState } from './sweeps'
+import {
+  clipUtf8,
+  dueSweeps,
+  sigOf,
+  sweepFiler,
+  sweepGoal,
+  sweepGuard,
+  sweepNames,
+  type SweepState,
+} from './sweeps'
 import type { Factory } from './machine'
 
 const def: Factory = {
@@ -144,6 +153,31 @@ test('sweepGuard is idempotent: the same beads give the same verdicts on a secon
     ),
   )
   expect(sweepGuard(beads, now)).toEqual(sweepGuard(beads, now))
+})
+
+// --- sigOf and clipUtf8 (claude-factory-8pc.6): monitor's deterministic read ---
+
+test('sigOf is the same for the same text, and different for any difference', () => {
+  expect(sigOf('all green')).toBe(sigOf('all green'))
+  expect(sigOf('all green')).not.toBe(sigOf('all red'))
+  expect(sigOf('')).toBe(sigOf(''))
+})
+
+test('clipUtf8 leaves short text untouched', () => {
+  expect(clipUtf8('all green')).toBe('all green')
+  expect(clipUtf8('', 10)).toBe('')
+})
+
+test('clipUtf8 cuts at the byte limit and says so, never mid-codepoint', () => {
+  const text = 'x'.repeat(5000)
+  const clipped = clipUtf8(text, 4096)
+  expect(clipped).toContain('[clipped: 4096 of 5000 bytes]')
+  expect(clipped.startsWith('x'.repeat(4096))).toBe(true)
+  // é is 2 bytes in UTF-8: a cut that lands between its two bytes must never leave a
+  // replacement character in the result
+  const multibyte = 'é'.repeat(3000)
+  const clippedMb = clipUtf8(multibyte, 4096)
+  expect(clippedMb.includes('�')).toBe(false)
 })
 
 test('mutation check: the cap and the allowlist both matter, not just "keep the first few"', () => {

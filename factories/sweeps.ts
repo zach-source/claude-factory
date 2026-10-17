@@ -62,7 +62,7 @@ export default {
       runner: LAPTOP,
       everyMin: 30,
       timeoutMin: 20,
-      prompt: `One pass of production watch, read-only: SLOs and error budgets, alert states, error rates and new error types, latency, saturation, failing jobs, certificate and quota expiry, and the health of recent deploys. Compare with the previous passes in the journal.
+      prompt: `One pass of production watch, read-only. The rig's \`--slo\` command ran before you started: its output is in your inbox, clipped to 4 KiB. It ran only because it changed since the last pass; an unchanged read starts no run at all. Read SLOs and error budgets, alert states, error rates and new error types, latency, saturation, failing jobs, certificate and quota expiry, and the health of recent deploys from it, against the previous passes in the journal.
 File what hurts users now as separate work that starts on its own at the incident station, at priority 0, labeled sweep-queue:incident. File defects that can wait as separate work for a person to prioritize. Never file what is already tracked or running.
 ${guardNote('monitor')}
 Report filed with the key numbers, which the next pass compares against, and what you filed.`,

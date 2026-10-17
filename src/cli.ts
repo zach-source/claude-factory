@@ -59,7 +59,7 @@ import {
   type Bead,
 } from './beads'
 import * as plan from './plan'
-import { dueSweeps, sweepGoal, sweepGuard, sweepNames, type SweepState } from './sweeps'
+import { clipUtf8, dueSweeps, sigOf, sweepGoal, sweepGuard, sweepNames, type SweepState } from './sweeps'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
@@ -3437,6 +3437,17 @@ const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.strin
  * `factory tick`'s `kickSweeps` calls this, detached, under its own cadence; `factory sweep` calls it
  * by hand. Every attempt, started or not, gets one line in sweeps.jsonl.
  */
+
+/** Runs a rig's `--slo` command (claude-factory-8pc.6): the monitor sweep's read, on the laptop, not
+ * on a worker. It is a shell command (`sh -c`), since a person writes it in rigs.json and it may
+ * pipe kubectl, Mimir or Loki calls together. It combines stdout and stderr: a command that starts
+ * failing is itself a change worth a pass. A 30s timeout keeps a hung read from jamming `factory
+ * sweep`. */
+function readSlo(rig: Rig): string {
+  const p = Bun.spawnSync(['sh', '-c', rig.slo!], { cwd: rig.repo, timeout: 30_000 })
+  return (p.stdout.toString() + p.stderr.toString()).trim()
+}
+
 async function sweep() {
   if (halted()) return
   const live = runIds().flatMap(id => {
@@ -3460,6 +3471,30 @@ async function sweep() {
     for (const station of dueSweeps(preview, rig, state, live, Date.now())) {
       const at = Date.now()
       const goal = sweepGoal(station)
+      // monitor reads before it ever asks for a slot: unchanged needs no run, so it must cost no
+      // room, and a changed read still needs its mail even when no room is free yet (it waits)
+      let mail: string | undefined
+      let read: { sig: string; lines: number } | undefined
+      if (station === 'monitor') {
+        let output: string
+        try {
+          output = readSlo(rig)
+        } catch (err) {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+          console.error(
+            `${new Date().toISOString()} sweep monitor for rig ${rig.name}: ${(err as Error).message}`,
+          )
+          continue
+        }
+        read = { sig: sigOf(output), lines: output ? output.split('\n').length : 0 }
+        if (read.sig === state[rig.name]?.[station]?.sig) {
+          state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at, ...read } } }
+          writeJson(sweepStateFile(), state)
+          logSweep({ at, rig: rig.name, sweep: station, action: 'unchanged' })
+          continue
+        }
+        mail = clipUtf8(output)
+      }
       try {
         await assertRoom(rig.repo)
       } catch {
@@ -3470,7 +3505,8 @@ async function sweep() {
         const linked = beadFor(rig.repo, goal)
         const { run, def } = await createTracked(spec, preview.name, rig.repo, goal, linked.bead)
         if (station !== def.start) post(run.id, { type: 'GOTO', node: station })
-        state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
+        if (mail !== undefined) post(run.id, { type: 'MAIL', from: 'sweep', to: station, text: mail })
+        state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at, ...read } } }
         writeJson(sweepStateFile(), state)
         logSweep({ at, rig: rig.name, sweep: station, action: 'started', run: run.id })
         console.log(`${new Date(at).toISOString()} sweep ${station} for rig ${rig.name} → ${run.id}`)
@@ -3942,6 +3978,14 @@ export type Rig = {
   sweeps?: string[]
   /** a sweep station's factory, in place of the built-in "sweeps" (factories/sweeps.ts) */
   sweepsFactory?: string
+  /**
+   * A read-only command for the monitor sweep (claude-factory-8pc.6). It reads this rig's production
+   * watch: SLOs, error budgets, alert states. `factory sweep` runs it on the laptop, as a shell
+   * command (through `sh -c`). It never runs on a VM worker: it needs the laptop's own kube
+   * credentials and network. Monitor is due only when this is set. `rig add` refuses an explicit
+   * `--sweeps` that names `monitor` with no `--slo`.
+   */
+  slo?: string
   /** what the manager works toward there while the rig has room */
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
@@ -5097,6 +5141,7 @@ async function defineRig(
   {
     max,
     sweeps,
+    slo,
     goal,
     runner,
     agent,
@@ -5110,6 +5155,7 @@ async function defineRig(
   }: {
     max?: string
     sweeps?: string
+    slo?: string
     goal?: string
     runner?: string
     agent?: string
@@ -5177,6 +5223,10 @@ async function defineRig(
     if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
     rig.maxRuns = Number(max)
   }
+  if (slo !== undefined) {
+    if (!slo.trim()) fail('--slo is a read-only command, e.g. --slo "kubectl get pods -A | grep -v Running"')
+    rig.slo = slo
+  }
   if (sweeps !== undefined) {
     rig.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
     const sweepsDef = await loadFactory(factorySource(rig.sweepsFactory ?? 'sweeps', repo))
@@ -5184,6 +5234,10 @@ async function defineRig(
     const unknown = rig.sweeps.filter(s => !names.includes(s))
     if (unknown.length)
       fail(`no sweep ${unknown.join(', ')} in ${sweepsDef.name}: ${names.join(', ') || 'none'}`)
+    // monitor reads rig.slo; an explicit opt-in with no command set would never fire (src/sweeps.ts's
+    // dueSweeps already gates it), which is a silent no-op a person is better off told about now
+    if (rig.sweeps.includes('monitor') && !rig.slo)
+      fail('monitor needs --slo "<read-only command>": add it, or drop monitor from --sweeps')
   }
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
@@ -6264,9 +6318,10 @@ if (import.meta.main && !outboxCmd)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
-        const [max, sweeps, runner, agent, mcp, linear, linearProjects, linearLabels] = [
+        const [max, sweeps, slo, runner, agent, mcp, linear, linearProjects, linearLabels] = [
           opt('--max'),
           opt('--sweeps'),
+          opt('--slo'),
           opt('--runner'),
           opt('--agent'),
           opt('--mcp'),
@@ -6285,11 +6340,12 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
             sweeps,
+            slo,
             goal,
             runner,
             agent,
@@ -6345,6 +6401,7 @@ if (import.meta.main && !outboxCmd)
               `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
             )
             if (r.goal) console.log(`  goal: ${r.goal}`)
+            if (r.slo) console.log(`  slo: ${r.slo}`)
             if (r.agent) console.log(`  agent: ${r.agent}`)
             if (personOnlyContexts(r)?.length)
               console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)

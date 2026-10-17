@@ -1,6 +1,7 @@
 // Pure logic behind the standing sweeps (factories/sweeps.ts).
 // cli.ts's `sweep()` does the effects: it starts a run. It runs a rig's `--slo` command.
 // It reads and writes bd.
+import { createHash } from 'node:crypto'
 import type { Factory } from './machine'
 
 /** the goal a sweep pass's run carries. `dueSweeps` uses this to find a live run for a sweep. */
@@ -77,6 +78,22 @@ export function sweepGuard(
       kept: i < cap,
       allowed: i < cap && !!x.b.labels?.some(l => SWEEP_QUEUE_LABELS.includes(l)),
     }))
+}
+
+/** A deterministic fingerprint of a monitor pass's command output (claude-factory-8pc.6). `sweep()`
+ * compares this against the last pass's `sig` in sweeps.json. When it is unchanged, no run starts,
+ * and no model reads the output. Two equal outputs always give the same sig. One byte of difference
+ * gives a different sig. */
+export const sigOf = (text: string): string => createHash('sha256').update(text).digest('hex')
+
+/** Clips `text` to at most `maxBytes` UTF-8 bytes, so a monitor command's output can carry a run only
+ * a small, bounded mail (claude-factory-8pc.6: 4 KiB). It never splits a multi-byte character: a cut
+ * mid-codepoint decodes to U+FFFD, which this strips from the end before it appends the clip note. */
+export function clipUtf8(text: string, maxBytes = 4096): string {
+  const bytes = new TextEncoder().encode(text)
+  if (bytes.length <= maxBytes) return text
+  const cut = new TextDecoder().decode(bytes.subarray(0, maxBytes)).replace(/�+$/, '')
+  return `${cut}\n[clipped: ${maxBytes} of ${bytes.length} bytes]`
 }
 
 export function dueSweeps(
