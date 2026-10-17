@@ -6,6 +6,28 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- An edge into `done` can now carry `requeue: true` or `requeue: { factory?, station? }`. The
+  run ends, but the bead stays open, ready and `factory`-labeled instead of closed or deferred,
+  so the next dispatch starts a new run on it, in the factory and station its labels name (for
+  example, `lifecycle` to `release`, with no hand `factory start`). Dispatch now reads a
+  `factory:<name>` label next to `station:<name>` to pick which factory to compile a run from.
+  `factory metrics` counts this ending as `requeued`, ahead of `rejected`/`closed` and apart from
+  the ship rate. A run with a bead gets a brief line to read the bead's comments first, since a
+  requeued bead's comments are earlier runs' reports. (claude-factory-wnm)
+  - `src/machine.ts`: `Edge.requeue`, the `REQUEUE_NAME` name guard, and `validate()` rules that
+    refuse `requeue` off an edge not into `done`, beside `defer`/`reject`, or with a bad
+    factory/station name.
+  - `src/beads.ts`: `factoryOf(b)` reads the `factory:<name>` label (never from a Linear-sourced
+    bead, never a path). `requeue(id, runId, to?)` releases the claim, keeps the bead open and
+    `factory`-labeled, swaps labels when `to` names one, and stamps `requeued_from`,
+    `requeued_at`, `requeues` in metadata.
+  - `src/cli.ts`: `track()` settles a `requeue` edge (capped by `REQUEUE_MAX = 5`, then
+    deferred). `dispatch()` resolves each bead's `factory:<name>` through a new
+    `namedFactorySource(name, repo)` (never `factorySource`'s literal-path branch), and defers
+    only that bead on an unknown name. `precheckSkip` makes 0 `gh` calls for a bead with
+    `requeued_from` set.
+  - `src/metrics.ts`: `fate()` returns `requeued` before `rejected`/`closed`; `shipRate` leaves it
+    out of the ended-run count.
 - Each memory topic now has a cap of 15 short notes (`TOPIC_CAP`). Set
   `FACTORY_MEMORY_TOPIC_CAP` to override it. `decide()` merges a topic's oldest notes once the
   topic holds more notes than the cap. `dream` and `memory compact` name topics still over the
