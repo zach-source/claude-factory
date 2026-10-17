@@ -45,6 +45,12 @@ export type Node = {
    */
   awaitsPr?: true
   /**
+   * Marks this node a sweep station. `sweep()` runs it at most once per `everyMin` minutes, for each
+   * rig. No person or other station sends work to it. `validate` requires a value greater than 0.
+   * `src/sweeps.ts`'s `sweepNames` function reads every node that carries this field.
+   */
+  everyMin?: number
+  /**
    * The attempt right after a timeout. This attempt gets a longer limit and an extra brief section,
    * not the plain retry every other failure gets. `timeoutMin` must exceed the node's own (default 60).
    * The brief adds `prompt`, so the retried worker can start from a summary, not read everything again.
@@ -187,6 +193,7 @@ export function validate(def: Factory): Factory {
           !(node.onTimeout.timeoutMin > (node.timeoutMin ?? 60)) &&
           `${id}: onTimeout.timeoutMin must be greater than timeoutMin (${node.timeoutMin ?? 60})`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
+        node.everyMin !== undefined && !(node.everyMin > 0) && `${id}: everyMin is greater than 0`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&

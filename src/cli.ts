@@ -56,11 +56,26 @@ import {
   goalOf,
   hasBeads,
   isOwned,
+  LABEL,
   parentOf,
   stationOf,
   type Bead,
 } from './beads'
 import * as plan from './plan'
+import {
+  clipUtf8,
+  dueSweeps,
+  guardHandled,
+  markGuardHandled,
+  pruneGuardState,
+  sigOf,
+  sweepFiler,
+  sweepGoal,
+  sweepGuard,
+  sweepNames,
+  type SweepGuardState,
+  type SweepState,
+} from './sweeps'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
@@ -921,7 +936,19 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     ...(committed
       ? ['', '## Already committed on this branch (build on it, do not redo it)', committed]
       : []),
-    ...(inbox.length ? ['', '## Inbox', ...inbox.map(m => `- from ${m.from}: ${clipReport(m.text)}`)] : []),
+    // mail text can hold more than one line (claude-factory-8pc.23: sweep mail carries raw --slo
+    // command output). Indent every line past the first, so an embedded "- from X:" line never reads
+    // as a fresh top-level bullet claiming to be from a different, more trusted sender.
+    ...(inbox.length
+      ? [
+          '',
+          '## Inbox',
+          ...inbox.map(m => {
+            const [first, ...rest] = clipReport(m.text).split('\n')
+            return [`- from ${m.from}: ${first}`, ...rest.map(l => `    ${l}`)].join('\n')
+          }),
+        ]
+      : []),
     '',
     '## Reporting (required)',
     'When you are finished, report exactly once and then stop:',
@@ -3510,6 +3537,28 @@ const kickGcWorktrees = () => {
   }).unref()
 }
 
+const SWEEP_MS = Number(process.env.FACTORY_SWEEP_MS) || 300_000
+/**
+ * A sweep pass (`factory sweep`) runs at most every FACTORY_SWEEP_MS (default 5 min). Set
+ * FACTORY_SWEEPS=0 to turn this off: tick then spawns no pass. Its lock is sweeps.lock.
+ *
+ * The first tick with no sweeps.stamp file only writes the stamp. It starts the window and spawns
+ * no pass. This way a fresh FACTORY_HOME starts no run on its own first tick. `dueSweeps` (per rig,
+ * per sweep) still gates which stations a spawned pass starts.
+ */
+const kickSweeps = () => {
+  if (halted() || process.env.FACTORY_SWEEPS === '0') return
+  const stamp = join(HOME, 'sweeps.stamp')
+  if (!existsSync(stamp)) return void writeFileSync(stamp, '') // seed only: the window starts now
+  const age = Date.now() - statSync(stamp).mtimeMs
+  if (isHeld('sweeps.lock') || age < SWEEP_MS) return
+  spawnChild(CLI, ['sweep'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 async function tick(isPatrol = false) {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
@@ -3558,40 +3607,131 @@ async function tick(isPatrol = false) {
       kickSelfUpdate()
       kickGc()
       kickGcWorktrees()
+      kickSweeps()
     }
   }
 }
 
-// ponytail: lifecycle's sweep stations by name; a node flag if another factory grows its own
-const SWEEPS = ['monitor', 'maintain', 'improve']
-const sweepGoal = (station: string) => `sweep: ${station}`
+const sweepStateFile = () => join(HOME, 'sweeps.json')
+const sweepLogFile = () => join(HOME, 'sweeps.jsonl')
+const sweepState = (): SweepState => (existsSync(sweepStateFile()) ? readJson(sweepStateFile()) : {})
+type SweepLogEntry = {
+  at: number
+  rig: string
+  sweep: string
+  action: 'started' | 'no-room' | 'unchanged' | 'error' | 'no-beads'
+  run?: string
+}
+const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.stringify(e) + '\n')
 
-export const missingSweeps = (
-  def: Factory,
-  rig: Pick<Rig, 'repo' | 'sweeps'>,
-  runs: { repo: string; goal: string }[],
-) =>
-  (rig.sweeps ?? SWEEPS).filter(
-    s => def.nodes[s] && !runs.some(r => r.repo === rig.repo && r.goal === sweepGoal(s)),
-  )
+/** Runs a rig's `--slo` command (claude-factory-8pc.6): the monitor sweep's read, on the laptop, not
+ * on a worker. It is a shell command (`sh -c`), since a person writes it in rigs.json and it may
+ * pipe kubectl, Mimir or Loki calls together. It combines stdout and stderr: a command that starts
+ * failing is itself a change worth a pass. A 30s timeout keeps a hung read from jamming `factory
+ * sweep`. */
+function readSlo(rig: Rig): string {
+  const p = Bun.spawnSync(['sh', '-c', rig.slo!], { cwd: rig.repo, timeout: 30_000 })
+  return (p.stdout.toString() + p.stderr.toString()).trim()
+}
 
-/** each rig keeps one run per sweep it asks for: abort one to stop it, rm it to let it start again */
+/**
+ * one run per due (rig, sweep) pass (src/sweeps.ts's `dueSweeps`), under factory "sweeps" (or a
+ * rig's own `sweepsFactory`), parked at that station by GOTO when it is not the factory's start.
+ * `factory tick`'s `kickSweeps` calls this, detached, under its own cadence; `factory sweep` calls it
+ * by hand. Every attempt, started or not, gets one line in sweeps.jsonl.
+ */
 async function sweep() {
   if (halted()) return
-  const runs = runIds().map(id => loadRun(id))
-  for (const rig of rigs()) {
+  const live = runIds().flatMap(id => {
     try {
-      const preview = await loadFactory(factorySource(rig.factory, rig.repo))
-      for (const station of missingSweeps(preview, rig, runs)) {
-        const goal = sweepGoal(station)
-        await assertRoom(rig.repo)
-        const linked = beadFor(rig.repo, goal)
-        const { run, def } = await createTracked(rig.factory, preview.name, rig.repo, goal, linked.bead)
-        if (station !== def.start) post(run.id, { type: 'GOTO', node: station })
-        console.log(`${new Date().toISOString()} sweep ${station} for rig ${rig.name} → ${run.id}`)
-      }
+      const { run, value } = current(id)
+      return ['done', 'aborted'].includes(where(value)[0]) ? [] : [{ repo: run.repo, goal: run.goal }]
+    } catch {
+      return [] // the run ended between runIds() and here: treat it as gone, not live
+    }
+  })
+  let state = sweepState()
+  for (const rig of rigs()) {
+    let preview: Factory
+    const spec = rig.sweepsFactory ?? 'sweeps'
+    try {
+      preview = await loadFactory(factorySource(spec, rig.repo))
     } catch (err) {
       console.error(`${new Date().toISOString()} sweeps for rig ${rig.name}: ${(err as Error).message}`)
+      continue
+    }
+    // claude-factory-8pc.14: a sweep run's id starts with its factory's own `name` field
+    // (createTracked), not `spec`. src/sweeps.ts's `sweepFiler` only matches a run id that starts
+    // with `sweeps-`: a `rig.sweepsFactory`, or a repo's own `.factory/sweeps.ts`, with a `name`
+    // other than 'sweeps' would file beads the flood guard never sees. Refuse it, unguarded.
+    if (preview.name !== 'sweeps') {
+      console.error(
+        `${new Date().toISOString()} sweeps for rig ${rig.name}: ${spec}'s factory name is ` +
+          `'${preview.name}', not 'sweeps': the flood guard only matches sweep runs filed under 'sweeps'`,
+      )
+      continue
+    }
+    // claude-factory-8pc.19: a rig with no .beads has no bd for the flood guard to read at all
+    // (tracking() tells a worker on such a rig to `factory start` work with no bead, and no
+    // guard). Today every rig in rigs.json has .beads, so this is latent, not live. Skip it, one
+    // log line per due station, instead of starting a sweep run the guard can never see.
+    const due = dueSweeps(preview, rig, state, live, Date.now())
+    if (due.length && !hasBeads(rig.repo)) {
+      for (const station of due)
+        logSweep({ at: Date.now(), rig: rig.name, sweep: station, action: 'no-beads' })
+      console.error(
+        `${new Date().toISOString()} sweeps for rig ${rig.name}: no .beads directory: the flood guard needs bd`,
+      )
+      continue
+    }
+    for (const station of due) {
+      const at = Date.now()
+      const goal = sweepGoal(station)
+      // monitor reads before it ever asks for a slot: unchanged needs no run, so it must cost no
+      // room, and a changed read still needs its mail even when no room is free yet (it waits)
+      let mail: string | undefined
+      let read: { sig: string; lines: number } | undefined
+      if (station === 'monitor') {
+        let output: string
+        try {
+          output = readSlo(rig)
+        } catch (err) {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+          console.error(
+            `${new Date().toISOString()} sweep monitor for rig ${rig.name}: ${(err as Error).message}`,
+          )
+          continue
+        }
+        read = { sig: sigOf(output), lines: output ? output.split('\n').length : 0 }
+        if (read.sig === state[rig.name]?.[station]?.sig) {
+          state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at, ...read } } }
+          writeJson(sweepStateFile(), state)
+          logSweep({ at, rig: rig.name, sweep: station, action: 'unchanged' })
+          continue
+        }
+        mail = clipUtf8(output)
+      }
+      try {
+        await assertRoom(rig.repo)
+      } catch {
+        logSweep({ at, rig: rig.name, sweep: station, action: 'no-room' })
+        continue
+      }
+      try {
+        const linked = beadFor(rig.repo, goal)
+        const { run, def } = await createTracked(spec, preview.name, rig.repo, goal, linked.bead)
+        if (station !== def.start) post(run.id, { type: 'GOTO', node: station })
+        if (mail !== undefined) post(run.id, { type: 'MAIL', from: 'sweep', to: station, text: mail })
+        state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at, ...read } } }
+        writeJson(sweepStateFile(), state)
+        logSweep({ at, rig: rig.name, sweep: station, action: 'started', run: run.id })
+        console.log(`${new Date(at).toISOString()} sweep ${station} for rig ${rig.name} → ${run.id}`)
+      } catch (err) {
+        logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+        console.error(
+          `${new Date().toISOString()} sweep ${station} for rig ${rig.name}: ${(err as Error).message}`,
+        )
+      }
     }
   }
 }
@@ -3889,10 +4029,10 @@ async function linearPass(names: string[] = [], force = false) {
   return lines
 }
 
-/** ticks forever, so runs advance, the rigs dispatch and their sweeps stay running with no console open */
+/** ticks forever, so runs advance and the rigs dispatch with no console open. Each tick's own
+ * kickSweeps starts a due sweep pass; this loop no longer calls sweep() itself. */
 async function loop(intervalMs: number) {
   for (;;) {
-    await sweep()
     await tick()
     await Bun.sleep(intervalMs)
   }
@@ -4042,9 +4182,10 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
 }
 
 /**
- * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, it keeps its
- * sweeps running, and `maxRuns` caps its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's
- * rigs.json is written by `factory rig add` and can be edited by hand.
+ * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, its
+ * due sweeps start one pass each under `factory sweep` (claude-factory-8pc.16), and `maxRuns` caps
+ * its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's rigs.json is written by
+ * `factory rig add` and can be edited by hand.
  */
 export type Rig = {
   name: string
@@ -4052,6 +4193,16 @@ export type Rig = {
   factory: string
   maxRuns?: number
   sweeps?: string[]
+  /** a sweep station's factory, in place of the built-in "sweeps" (factories/sweeps.ts) */
+  sweepsFactory?: string
+  /**
+   * A read-only command for the monitor sweep (claude-factory-8pc.6). It reads this rig's production
+   * watch: SLOs, error budgets, alert states. `factory sweep` runs it on the laptop, as a shell
+   * command (through `sh -c`). It never runs on a VM worker: it needs the laptop's own kube
+   * credentials and network. Monitor is due only when this is set. `rig add` refuses an explicit
+   * `--sweeps` that names `monitor` with no `--slo`.
+   */
+  slo?: string
   /** what the manager works toward there while the rig has room */
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
@@ -4227,6 +4378,9 @@ export const room = (
 /** what the last dispatch could not do, per rig: the board shows it as rows */
 const dispatchFile = () => join(HOME, 'dispatch.json')
 const syncFile = () => join(HOME, 'sync.json')
+/** the flood guard's own "already handled" marks (claude-factory-8pc.18): a sweep worker's bd
+ * labels never reach this file, so they cannot forge the mark the way `sweep:<station>` can. */
+const sweepGuardFile = () => join(HOME, 'sweep-guard.json')
 
 /** a rig with room that dispatch has nothing to start for and no goal to steer the manager by sits unnoticed unless the board says so */
 export const idle = (rig: Pick<Rig, 'goal'>, ready: number) => !rig.goal && ready === 0
@@ -4419,6 +4573,16 @@ async function dispatch() {
   const synced = existsSync(syncFile())
     ? readJson<Record<string, { at: number; error?: string }>>(syncFile())
     : {}
+  // The flood guard's own "already handled" marks (claude-factory-8pc.18). Dispatch reads this
+  // once per pass, and writes it back once at the end. A sweep worker's bd labels never reach
+  // this file.
+  let guardState: SweepGuardState = existsSync(sweepGuardFile())
+    ? readJson<SweepGuardState>(sweepGuardFile())
+    : {}
+  // Each rig's open bead ids, from this pass's own `b.every()` call (claude-factory-8pc.21).
+  // `pruneGuardState` below uses this to keep a rig's marks only for beads still open. A flat 48h
+  // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
+  const openIds: Record<string, Set<string>> = {}
   for (const rig of rigs()) {
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
@@ -4446,7 +4610,92 @@ async function dispatch() {
         })
         continue
       }
-      const ready = b.ready()
+      // the flood guard (claude-factory-8pc.5), before b.ready(). A deferred or unlabeled bead must
+      // never show up as ready work this same pass. The guard must fail closed.
+      //
+      // claude-factory-8pc.12 and .18: `guardHandled` reads sweep-guard.json. It never reads the
+      // bead's own `sweep:<station>` label. dispatch marks a bead only after its own guard scores
+      // it, and the defer-or-relabel call below lands. A sweep worker cannot forge this mark by
+      // filing a bead with the label already on it: dispatch still scores that bead the first time
+      // it sees it. Once dispatch marks a bead, a person's `factory queue` on a held bead stands.
+      // The guard does not undo that re-queue.
+      //
+      // claude-factory-8pc.13: two failure paths must fail closed. (a) When `b.every()` throws,
+      // `continue` skips the rest of this rig: no ready bead starts for it this pass. (b) The code
+      // drops from `ready` each bead the guard did not keep and allow. So a failed `defer` or
+      // `relabel` call still cannot start that bead.
+      let all: Bead[]
+      try {
+        all = b.every()
+      } catch (err) {
+        errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
+        continue // the guard read failed: start no ready bead for this rig this pass
+      }
+      openIds[rig.name] = new Set(all.filter(x => x.status !== 'closed').map(x => x.id))
+      const excluded = new Set<string>()
+      const scored = new Set<string>()
+      for (const v of sweepGuard(all, Date.now())) {
+        scored.add(v.id)
+        const current = all.find(x => x.id === v.id)
+        if (!current) continue
+        // claude-factory-8pc.22: sweepGuard above still counts a closed bead for the cap. A
+        // closed bead needs no bd write. pruneGuardState (src/sweeps.ts) drops a closed bead's
+        // mark each pass: this pass's open-ids set never names it. With no check here, a closed
+        // in-window sweep bead would get a fresh bd defer or bd update call every pass, forever.
+        if (current.status === 'closed') continue
+        if (guardHandled(guardState, rig.name, v.id)) continue // scored before: leave it alone
+        if (!v.kept || !v.allowed) excluded.add(v.id) // never start this pass, win or lose the call below
+        const hasFactory = !!current.labels?.includes(LABEL)
+        try {
+          if (!v.kept) {
+            b.defer(
+              v.id,
+              `sweep flood guard: rig ${rig.name} already has 5 sweep-filed beads in the last 24h`,
+            )
+            b.relabel(v.id, { add: [`sweep:${v.station}`], remove: hasFactory ? [LABEL] : [] })
+          } else {
+            const remove = v.allowed || !hasFactory ? [] : [LABEL]
+            b.relabel(v.id, { add: [`sweep:${v.station}`], remove })
+          }
+          guardState = markGuardHandled(guardState, rig.name, v.id, Date.now()) // only on success: a failed call retries next pass
+        } catch (err) {
+          errors.push({ id: v.id, error: (err as Error).message })
+        }
+      }
+      // claude-factory-8pc.21: `sweepGuard` only scores a bead inside its own 24h window. Dispatch
+      // can miss a bead for over 24h: the rig can stay full, the factory can halt, or `b.every()`
+      // can keep throwing. That bead then ages out of the window with no mark at all. Hold it the
+      // same way a past-the-cap bead is held above: strip `factory`, add `sweep:<station>`, and
+      // mark it. Only a mark lets a sweep-filed bead start. An unmarked one never starts, however
+      // old it is.
+      for (const current of all) {
+        const station = sweepFiler(current)
+        if (!station || scored.has(current.id) || guardHandled(guardState, rig.name, current.id)) continue
+        if (current.status === 'closed') continue // claude-factory-8pc.22: no bd write on a closed bead
+        excluded.add(current.id)
+        const hasFactory = !!current.labels?.includes(LABEL)
+        try {
+          b.defer(
+            current.id,
+            `sweep flood guard: rig ${rig.name}'s ${current.id} aged out of the 24h guard window unscored`,
+          )
+          b.relabel(current.id, { add: [`sweep:${station}`], remove: hasFactory ? [LABEL] : [] })
+          guardState = markGuardHandled(guardState, rig.name, current.id, Date.now())
+        } catch (err) {
+          errors.push({ id: current.id, error: (err as Error).message })
+        }
+      }
+      // claude-factory-8pc.17 and .18: a sweep pass can file a new bead. This can happen between
+      // the `b.every()` read above and the `b.ready()` read below. Neither loop above scores this
+      // bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and no
+      // allowlist check. Drop it here too, the same as any other unmarked sweep-filed bead: a
+      // bead this fresh cannot already carry a sweep-guard mark from an earlier pass.
+      const ready = b.ready().filter(x => {
+        if (excluded.has(x.id)) return false
+        const station = sweepFiler(x)
+        if (!station) return true // not a sweep-filed bead: not this guard's concern
+        return guardHandled(guardState, rig.name, x.id) // only a mark from an earlier pass lets it start
+      })
       // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
       // lost its own claim on the bead, to a reaper, say). `dispatchable` below drops this bead from
       // `candidates`, so no second run starts for it. This loop still leaves one comment naming the
@@ -4524,6 +4773,7 @@ async function dispatch() {
       errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
     }
   }
+  writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
   writeJson(dispatchFile(), errors)
 }
 
@@ -5178,6 +5428,7 @@ async function defineRig(
   {
     max,
     sweeps,
+    slo,
     goal,
     runner,
     agent,
@@ -5191,6 +5442,7 @@ async function defineRig(
   }: {
     max?: string
     sweeps?: string
+    slo?: string
     goal?: string
     runner?: string
     agent?: string
@@ -5258,13 +5510,21 @@ async function defineRig(
     if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
     rig.maxRuns = Number(max)
   }
+  if (slo !== undefined) {
+    if (!slo.trim()) fail('--slo is a read-only command, e.g. --slo "kubectl get pods -A | grep -v Running"')
+    rig.slo = slo
+  }
   if (sweeps !== undefined) {
     rig.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
-    const unknown = rig.sweeps.filter(s => !SWEEPS.includes(s) || !def.nodes[s])
+    const sweepsDef = await loadFactory(factorySource(rig.sweepsFactory ?? 'sweeps', repo))
+    const names = sweepNames(sweepsDef)
+    const unknown = rig.sweeps.filter(s => !names.includes(s))
     if (unknown.length)
-      fail(
-        `no sweep ${unknown.join(', ')} in ${def.name}: ${SWEEPS.filter(s => def.nodes[s]).join(', ') || 'none'}`,
-      )
+      fail(`no sweep ${unknown.join(', ')} in ${sweepsDef.name}: ${names.join(', ') || 'none'}`)
+    // monitor reads rig.slo; an explicit opt-in with no command set would never fire (src/sweeps.ts's
+    // dueSweeps already gates it), which is a silent no-op a person is better off told about now
+    if (rig.sweeps.includes('monitor') && !rig.slo)
+      fail('monitor needs --slo "<read-only command>": add it, or drop monitor from --sweeps')
   }
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
@@ -5832,6 +6092,11 @@ const usage = `factory — herdr software factories on xstate
                                      never a live run or an unmerged branch; --dry-run only prints
                                      what it would remove (each tick starts one, at most daily,
                                      FACTORY_GC_WORKTREES_MS; FACTORY_GC_WORKTREES=0 turns it off)
+  sweep                              one run per due (rig, sweep) pass, under factory "sweeps"
+                                     (factories/sweeps.ts), parked at that station; writes
+                                     sweeps.json and sweeps.jsonl (each tick starts one, at most
+                                     every FACTORY_SWEEP_MS (default 300000); FACTORY_SWEEPS=0 turns
+                                     it off)
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
@@ -6441,9 +6706,10 @@ if (import.meta.main && !outboxCmd)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
-        const [max, sweeps, runner, agent, mcp, linear, linearProjects, linearLabels] = [
+        const [max, sweeps, slo, runner, agent, mcp, linear, linearProjects, linearLabels] = [
           opt('--max'),
           opt('--sweeps'),
+          opt('--slo'),
           opt('--runner'),
           opt('--agent'),
           opt('--mcp'),
@@ -6462,11 +6728,12 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
             sweeps,
+            slo,
             goal,
             runner,
             agent,
@@ -6510,10 +6777,19 @@ if (import.meta.main && !outboxCmd)
           for (const r of rigs()) {
             // a stuck run holds this rig's own slot, so it counts here too (not the town's)
             const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
+            let sweepsLine = r.sweeps
+            if (sweepsLine === undefined) {
+              try {
+                sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
+              } catch {
+                sweepsLine = []
+              }
+            }
             console.log(
-              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${(r.sweeps ?? SWEEPS).join(',') || 'none'}`,
+              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
             )
             if (r.goal) console.log(`  goal: ${r.goal}`)
+            if (r.slo) console.log(`  slo: ${r.slo}`)
             if (r.agent) console.log(`  agent: ${r.agent}`)
             if (personOnlyContexts(r)?.length)
               console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
@@ -6579,6 +6855,22 @@ if (import.meta.main && !outboxCmd)
         try {
           writeFileSync(join(HOME, 'gc.stamp'), '') // a failed pass waits for the next window too, not every tick
           gcPass(days, dryRun)
+        } finally {
+          release()
+        }
+        break
+      }
+      case 'sweep': {
+        const release = hold('sweeps.lock')
+        if (!release) {
+          console.log('a sweep pass is already running: skipped this one')
+          break
+        }
+        try {
+          // a failed pass waits for the next window too, not every tick (the same rule as gc.stamp
+          // and gc-worktrees.stamp): write this before the pass, not after
+          writeFileSync(join(HOME, 'sweeps.stamp'), '')
+          await sweep()
         } finally {
           release()
         }

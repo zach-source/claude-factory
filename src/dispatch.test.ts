@@ -54,6 +54,7 @@ function fakeBd(extRef: string | undefined) {
     'case "$1" in',
     `  ready) printf '%s' '${bead}';;`,
     "  children) printf '%s' '[]';;",
+    "  list) printf '%s' '[]';;", // the flood guard's b.every() (claude-factory-8pc.5): no sweep-filed beads here
     '  dolt) echo "No remotes configured";;',
     '  *) exit 0;;',
     'esac',
@@ -152,6 +153,7 @@ function fakeBdTwo(p1: number, p2: number) {
     'case "$1" in',
     `  ready) printf '%s' '${beads}';;`,
     "  children) printf '%s' '[]';;",
+    "  list) printf '%s' '[]';;", // the flood guard's b.every() (claude-factory-8pc.5): no sweep-filed beads here
     '  dolt) echo "No remotes configured";;',
     '  *) exit 0;;',
     'esac',
@@ -357,6 +359,7 @@ function fakePrecheckBd(extra: Record<string, unknown> = {}) {
     `    else printf '%s' '${bead}'`,
     '    fi;;',
     "  children) printf '%s' '[]';;",
+    "  list) printf '%s' '[]';;", // the flood guard's b.every() (claude-factory-8pc.5): no sweep-filed beads here
     '  update)',
     `    case " $* " in *" --add-label rejected "*) : > "${rejectedFlag}";; esac`,
     `    case "$*" in *dispatch_skip=*) echo "$*" | sed -n 's/.*dispatch_skip=\\([^ ]*\\).*/\\1/p' > "${skipFlag}";; esac`,
@@ -399,6 +402,7 @@ function fakePrecheckBdTwo() {
     'case "$1" in',
     `  ready) printf '%s' '${beadsJson}';;`,
     "  children) printf '%s' '[]';;",
+    "  list) printf '%s' '[]';;", // the flood guard's b.every() (claude-factory-8pc.5): no sweep-filed beads here
     '  update)',
     `    case " $* " in *" --add-label rejected "*) : > "${rejectedFlag}";; esac`,
     '    exit 0;;',
@@ -687,4 +691,496 @@ test('a merged PR matching only by an ended run’s head branch (no bead id in t
   const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
   expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
   expect(calls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
+})
+
+// claude-factory-8pc.5: the flood guard. dispatch() applies it per rig, before b.ready(), so a
+// deferred or unlabeled bead never shows up as ready work the same pass. This harness's fake `bd`
+// tracks which beads lost the `factory` label (a file per id), and its `ready` reads that state
+// back: a real bd would reflect the same-pass label change this way too.
+const gdir = join(tmpdir(), `dispatch-guard-${process.pid}`)
+const ghome = join(gdir, 'home')
+const gbin = join(gdir, 'bin')
+const gClaudeConfig = join(gdir, 'claude-config')
+const gCallsLog = join(gdir, 'bd-calls.log')
+
+afterEach(() => rmSync(gdir, { recursive: true, force: true }))
+
+function gfactory(args: string[], env: Record<string, string> = {}) {
+  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const p = Bun.spawnSync([CLI, ...args], {
+    env: {
+      ...laptop,
+      FACTORY_HOME: ghome,
+      PATH: `${gbin}:${laptop.PATH}`,
+      CLAUDE_CONFIG_DIR: gClaudeConfig,
+      FACTORY_SELF_UPDATE: '0',
+      ...env,
+    },
+  })
+  return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
+}
+
+/** 6 sweep-filed beads for rig `a`, oldest (acme-1) to newest (acme-6): a cap of 5 holds back
+ * acme-6. Only acme-2 carries an allowed `sweep-queue:*` label; the rest are "unclassed". `list`
+ * (b.every()) answers all 6, with their real `created_by` and starting labels. `ready` answers only
+ * the ones that still carry `factory`, reading the removal markers `update` writes below -- so it
+ * reflects this same pass's own relabeling, as a real bd would. */
+function fakeGuardBd() {
+  mkdirSync(gbin, { recursive: true })
+  const bead = (i: number) => ({
+    id: `acme-${i}`,
+    created_by: `factory/sweeps-run${i}/maintain`,
+    created_at: new Date(Date.now() - (7 - i) * 60_000).toISOString(),
+    labels: i === 2 ? ['factory', 'sweep-queue:incident'] : ['factory'],
+  })
+  const all = [1, 2, 3, 4, 5, 6].map(bead)
+  const readyCase = [1, 2, 3, 4, 5, 6]
+    .map(
+      i =>
+        `    if [ ! -f "${gdir}/removed-acme-${i}" ]; then out="$out$sep{\\"id\\":\\"acme-${i}\\",\\"title\\":\\"t\\",\\"labels\\":[\\"factory\\"]}"; sep=","; fi`,
+    )
+    .join('\n')
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify(all)}';;`,
+    '  ready)',
+    '    out="["',
+    '    sep=""',
+    readyCase,
+    '    out="$out]"',
+    '    printf \'%s\' "$out";;',
+    '  update)',
+    `    id="$2"`,
+    '    case " $* " in *" --remove-label factory "*) touch "' + gdir + '/removed-$id";; esac',
+    '    exit 0;;',
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+function fakeGuardHerdr() {
+  const worktree = join(gdir, 'worktree-stub')
+  const script = [
+    '#!/bin/sh',
+    'case "$1 $2" in',
+    `  "worktree create") printf '%s' '{"result":{"workspace":{"workspace_id":"ws1"},"worktree":{"path":"${worktree}"}}}';;`,
+    '  "worktree remove") exit 0;;',
+    '  *) echo "herdr-stub: unexpected $*" >&2; exit 1;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'herdr'), script)
+  chmodSync(join(gbin, 'herdr'), 0o755)
+}
+
+function guardReset() {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeGuardBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+}
+
+const gRunDirs = () => (existsSync(join(ghome, 'runs')) ? readdirSync(join(ghome, 'runs')) : [])
+const gBeadOf = (runId: string) =>
+  (JSON.parse(readFileSync(join(ghome, 'runs', runId, 'run.json'), 'utf8')) as { bead?: string }).bead
+
+test('the flood guard defers the 6th sweep-filed bead and strips the unclassed ones: only the allowed one starts', () => {
+  guardReset()
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  const started = gRunDirs().map(gBeadOf)
+  expect(started).toEqual(['acme-2']) // the only kept AND allowed bead
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer acme-6\b/.test(l))).toBe(true) // the 6th: past the cap
+  expect(calls.some(l => /^bd update acme-6\b.*--remove-label factory\b/.test(l))).toBe(true)
+  for (const id of ['acme-1', 'acme-3', 'acme-4', 'acme-5']) {
+    expect(calls.some(l => new RegExp(`^bd update ${id}\\b.*--remove-label factory\\b`).test(l))).toBe(true)
+    expect(calls.some(l => new RegExp(`^bd update ${id}\\b.*--add-label sweep:maintain\\b`).test(l))).toBe(
+      true,
+    )
+  }
+  expect(calls.some(l => /^bd update acme-2\b.*--remove-label factory\b/.test(l))).toBe(false) // kept, allowed: untouched
+  expect(calls.some(l => /^bd update acme-2\b.*--add-label sweep:maintain\b/.test(l))).toBe(true)
+})
+
+test('a second pass makes no new defer or relabel call: the guard is idempotent', () => {
+  guardReset()
+  gfactory(['beads'])
+  const firstCount = readFileSync(gCallsLog, 'utf8').trim().split('\n').length
+  rmSync(join(ghome, 'dispatch.stamp'), { force: true }) // the 30s throttle would else skip pass 2
+  gfactory(['beads'])
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.length).toBeGreaterThan(firstCount) // the pass still ran (list, ready, etc.)
+  // acme-2 (the only bead still labeled `factory`) never gets a second defer or relabel call
+  expect(calls.filter(l => /^bd defer acme-2\b/.test(l))).toHaveLength(0)
+  expect(calls.filter(l => /^bd update acme-2\b.*--remove-label factory\b/.test(l))).toHaveLength(0)
+})
+
+// --- claude-factory-8pc.12, .13 and .18: the guard must handle each bead once, fail closed, and
+// trust no mark the bead's own labels (a sweep worker's bd calls) can set ---
+
+/** a bead carrying `sweep:maintain` and, again, `factory`: what a person's `factory queue` on a
+ * held bead leaves behind. `list` and `ready` both answer it with those labels: a real bd would,
+ * once `factory queue` landed. */
+function fakeRequeuedBd() {
+  mkdirSync(gbin, { recursive: true })
+  const bead = {
+    id: 'acme-1',
+    created_by: 'factory/sweeps-run1/maintain',
+    created_at: new Date(Date.now() - 60_000).toISOString(),
+    labels: ['factory', 'sweep:maintain'],
+  }
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify([bead])}';;`,
+    `  ready) printf '%s' '${JSON.stringify([{ id: bead.id, title: 't', labels: bead.labels }])}';;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test("a person's re-queue of a held sweep bead stands: a mark in sweep-guard.json, not the bead's own label, is what lets it through", () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeRequeuedBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  // claude-factory-8pc.18: an earlier pass already scored this bead (deferred it, then a person
+  // re-queued it). That pass is what wrote this mark; the bead's `sweep:maintain` label alone
+  // (fakeRequeuedBd above) never would.
+  writeFileSync(join(ghome, 'sweep-guard.json'), JSON.stringify({ a: { 'acme-1': Date.now() - 60_000 } }))
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  expect(gRunDirs().map(gBeadOf)).toEqual(['acme-1']) // it started
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer acme-1\b/.test(l))).toBe(false)
+  // `bd update acme-1 --claim` still happens (createTracked claims the bead); no label call does
+  expect(calls.some(l => /^bd update acme-1\b.*--(add|remove)-label\b/.test(l))).toBe(false)
+})
+
+/** 6 beads born already carrying `sweep:maintain`, as a sweep worker filing one with
+ * `-l factory -l sweep:maintain` would: the label a worker's own bd call can set. No sweep-guard.json
+ * mark exists for any of them: dispatch has never scored them before. */
+function fakeSelfLabeledBd() {
+  mkdirSync(gbin, { recursive: true })
+  const bead = (i: number) => ({
+    id: `acme-${i}`,
+    created_by: `factory/sweeps-run${i}/maintain`,
+    created_at: new Date(Date.now() - (7 - i) * 60_000).toISOString(),
+    labels: ['factory', 'sweep:maintain'],
+  })
+  const all = [1, 2, 3, 4, 5, 6].map(bead)
+  const readyCase = [1, 2, 3, 4, 5, 6]
+    .map(
+      i =>
+        `    if [ ! -f "${gdir}/removed-acme-${i}" ]; then out="$out$sep{\\"id\\":\\"acme-${i}\\",\\"title\\":\\"t\\",\\"labels\\":[\\"factory\\",\\"sweep:maintain\\"]}"; sep=","; fi`,
+    )
+    .join('\n')
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify(all)}';;`,
+    '  ready)',
+    '    out="["',
+    '    sep=""',
+    readyCase,
+    '    out="$out]"',
+    '    printf \'%s\' "$out";;',
+    '  update)',
+    `    id="$2"`,
+    '    case " $* " in *" --remove-label factory "*) touch "' + gdir + '/removed-$id";; esac',
+    '    exit 0;;',
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('claude-factory-8pc.18: a bead born with sweep:<station> already on it gets no free pass; none of 6 starts, the 6th is deferred', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeSelfLabeledBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  expect(gRunDirs()).toEqual([]) // none started: the label alone buys no bead a free pass
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer acme-6\b/.test(l))).toBe(true) // the 6th: past the cap
+})
+
+/** `list` (b.every()) itself fails: no bead here is a sweep-filed one, but the guard read must still
+ * fail closed. `ready` answers one ordinary, non-sweep bead with `factory`. */
+function fakeEveryFailsBd() {
+  mkdirSync(gbin, { recursive: true })
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    '  list) echo "bd down" >&2; exit 1;;',
+    `  ready) printf '%s' '${JSON.stringify([{ id: 'acme-1', title: 't', labels: ['factory'] }])}';;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('a b.every() failure fails closed: no ready bead starts for that rig this pass', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeEveryFailsBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(ghome, 'runs'))).toBe(false) // acme-1 would else start: the guard read failed
+  const errors = JSON.parse(readFileSync(join(ghome, 'dispatch.json'), 'utf8')) as {
+    id: string
+    error?: string
+  }[]
+  expect(errors.some(e => e.id === 'rig:a' && /bd down/.test(e.error ?? ''))).toBe(true)
+})
+
+/** one sweep-filed bead the guard must relabel (kept, not allowed: it has no `sweep-queue:*` label
+ * yet). `update` fails for it, as a transient bd error would. `ready` still answers it with
+ * `factory`, as a real bd's would when that relabel never landed. */
+function fakeRelabelFailsBd() {
+  mkdirSync(gbin, { recursive: true })
+  const bead = {
+    id: 'acme-1',
+    created_by: 'factory/sweeps-run1/maintain',
+    created_at: new Date().toISOString(),
+    labels: ['factory'],
+  }
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify([bead])}';;`,
+    `  ready) printf '%s' '${JSON.stringify([{ id: bead.id, title: 't', labels: ['factory'] }])}';;`,
+    '  update)',
+    '    case " $* " in', // fail only the guard's own relabel call, not createTracked's --claim
+    '      *" --add-label "*|*" --remove-label "*) echo "bd down" >&2; exit 1;;',
+    '      *) exit 0;;',
+    '    esac;;',
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('a relabel failure fails closed: the bead it could not relabel never starts this pass', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeRelabelFailsBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(ghome, 'runs'))).toBe(false) // ready still names it with `factory`, but excluded
+  const errors = JSON.parse(readFileSync(join(ghome, 'dispatch.json'), 'utf8')) as {
+    id: string
+    error?: string
+  }[]
+  expect(errors.some(e => e.id === 'acme-1')).toBe(true)
+})
+
+/** `list` (`b.every()`) answers before a sweep pass files its bead: it sees none. `ready` answers
+ * after: it names a fresh sweep-filed bead (`created_by` matches the sweep-filer pattern) with
+ * only `factory`, no `sweep:<station>` label yet. A real bd would read this way when a sweep
+ * pass's own `bd create` lands in the gap between the two calls (claude-factory-8pc.17). */
+function fakeLateFiledBd() {
+  mkdirSync(gbin, { recursive: true })
+  const bead = {
+    id: 'acme-1',
+    created_by: 'factory/sweeps-run1/maintain',
+    title: 't',
+    labels: ['factory'],
+  }
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    "  list) printf '%s' '[]';;", // the guard above sees no sweep-filed bead this pass
+    `  ready) printf '%s' '${JSON.stringify([bead])}';;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('a sweep bead filed between b.every() and b.ready() never starts unguarded (claude-factory-8pc.17)', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeLateFiledBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(ghome, 'runs'))).toBe(false) // acme-1 would else start with no cap check at all
+})
+
+/** one sweep-filed bead born 25h ago: older than `sweepGuard`'s own 24h cap window, so `sweepGuard`
+ * drops it from its results and never scores it. No sweep-guard.json mark exists for it either:
+ * dispatch never reached it in time (a full rig or a halt, past 24h, say). `ready` reflects this
+ * pass's own relabel, the same way `fakeGuardBd` above does. */
+function fakeAgedOutBd() {
+  mkdirSync(gbin, { recursive: true })
+  const bead = {
+    id: 'acme-1',
+    created_by: 'factory/sweeps-run1/maintain',
+    created_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    labels: ['factory'],
+  }
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify([bead])}';;`,
+    '  ready)',
+    `    if [ ! -f "${gdir}/removed-acme-1" ]; then printf '%s' '${JSON.stringify([
+      { id: bead.id, title: 't', labels: ['factory'] },
+    ])}'; else printf '%s' '[]'; fi;;`,
+    '  update)',
+    '    id="$2"',
+    '    case " $* " in *" --remove-label factory "*) touch "' + gdir + '/removed-$id";; esac',
+    '    exit 0;;',
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('claude-factory-8pc.21: a sweep bead aged out of the guard window unscored never starts', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeAgedOutBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  const out = gfactory(['beads'])
+  expect(out.code).toBe(0)
+  expect(existsSync(join(ghome, 'runs'))).toBe(false) // acme-1 would else start with no cap or allowlist check
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
+  expect(calls.some(l => /^bd update acme-1\b.*--remove-label factory\b/.test(l))).toBe(true)
+  expect(calls.some(l => /^bd update acme-1\b.*--add-label sweep:maintain\b/.test(l))).toBe(true)
+})
+
+/** 7 CLOSED sweep-filed beads for rig `a`:
+ * - `acme-aged`: 25h old, past `sweepGuard`'s own 24h window, no mark in `sweep-guard.json`. Only
+ *   the aged-out loop (`src/cli.ts` near line 4496) ever sees it.
+ * - `acme-1`..`acme-6`: inside the 24h window, each with a mark already in `sweep-guard.json`. An
+ *   earlier pass scored each one while it was still open. Each bead closed after that.
+ * `list` (`b.every()`) answers all 7 beads, each with `status: 'closed'`. `ready` answers none: a
+ * closed bead is never ready. */
+function fakeClosedBd() {
+  mkdirSync(gbin, { recursive: true })
+  const aged = {
+    id: 'acme-aged',
+    created_by: 'factory/sweeps-run1/maintain',
+    created_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    status: 'closed',
+    labels: ['sweep:maintain'],
+  }
+  const inWindow = (i: number) => ({
+    id: `acme-${i}`,
+    created_by: `factory/sweeps-run${i}/maintain`,
+    created_at: new Date(Date.now() - (7 - i) * 60_000).toISOString(),
+    status: 'closed',
+    labels: ['sweep:maintain'],
+  })
+  const all = [aged, ...[1, 2, 3, 4, 5, 6].map(inWindow)]
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify(all)}';;`,
+    "  ready) printf '%s' '[]';;", // a closed bead is never ready
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('claude-factory-8pc.22: the flood guard does no bd write on a closed sweep bead', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeClosedBd()
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  // An earlier pass scored acme-1..acme-6 while each was still open. sweep-guard.json carries
+  // their marks. `pruneGuardState` drops a mark when its id is not in this pass's open-ids set
+  // (`claude-factory-8pc.21`). These 6 beads are closed, so this pass's open-ids set never names
+  // them. Without this station's fix, pass 1 drops their marks, and pass 2's scoring loop writes
+  // to them again.
+  writeFileSync(
+    join(ghome, 'sweep-guard.json'),
+    JSON.stringify({
+      a: Object.fromEntries([1, 2, 3, 4, 5, 6].map(i => [`acme-${i}`, Date.now() - 60_000])),
+    }),
+  )
+  gfactory(['beads'])
+  rmSync(join(ghome, 'dispatch.stamp'), { force: true }) // the 30s throttle would else skip pass 2
+  gfactory(['beads'])
+  expect(existsSync(join(ghome, 'runs'))).toBe(false) // no closed bead ever starts
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  for (const id of ['acme-aged', 'acme-1', 'acme-2', 'acme-3', 'acme-4', 'acme-5', 'acme-6']) {
+    expect(calls.some(l => new RegExp(`^bd defer ${id}\\b`).test(l))).toBe(false)
+    expect(calls.some(l => new RegExp(`^bd update ${id}\\b.*--(add|remove)-label\\b`).test(l))).toBe(false)
+  }
 })

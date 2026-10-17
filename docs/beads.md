@@ -79,7 +79,7 @@ What the factory writes:
 
 - each station's report, as a comment on the bead (a sweep's routine passes excepted);
 - the plan's tasks, as children, and their closes;
-- new beads for separate work that a worker finds, linked with `discovered-from:<bead>`. Work that should start on its own gets the `factory` label. Work for you to prioritize does not. Sweeps file incidents and security fixes with the label and the rest without it.
+- new beads for separate work that a worker finds, linked with `discovered-from:<bead>`. Work that should start on its own gets the `factory` label. Work for you to prioritize does not. A sweep pass labels each bead it files `sweep:<name>` (e.g. `sweep:maintain`) and keeps at most 5 such beads per rig in any 24-hour window; a later one that day still gets filed, just held for you instead of started. A kept one gets the `factory` label too, so it starts on its own, only when it also carries `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. The console's [Backlog tab](console.md#backlog-key-2) groups beads by their `sweep:<name>` label.
 
 How the run's end settles the bead:
 

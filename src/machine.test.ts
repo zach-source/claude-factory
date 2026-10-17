@@ -322,6 +322,18 @@ test('a station that reports one outcome more than its rounds is held for the ma
   ).toThrow('rounds is at least 1')
 })
 
+test('everyMin marks a sweep station, and must be greater than 0', () => {
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, implement: { ...def.nodes.implement!, everyMin: 30 } } }),
+  ).not.toThrow()
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, implement: { ...def.nodes.implement!, everyMin: 0 } } }),
+  ).toThrow('everyMin is greater than 0')
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, implement: { ...def.nodes.implement!, everyMin: -5 } } }),
+  ).toThrow('everyMin is greater than 0')
+})
+
 test('a handoff starts a fresh worker at the same station without spending an attempt', () => {
   const { send } = run()
   let s = send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 1 })

@@ -30,6 +30,9 @@ export function track(trail: readonly string[], current: string): Stop[] {
 /** the bead types the backlog filters by, after `all` */
 export const BEAD_TYPES = ['bug', 'feature', 'task', 'epic', 'chore']
 
+/** a sweep pass's own station name, read off its `sweep:<name>` label (src/sweeps.ts's `sweepGuard`) */
+export const sweepOf = (b: FactoryBead) => b.labels?.find(l => l.startsWith('sweep:'))?.slice('sweep:'.length)
+
 /** one drawn backlog row: `connector` is the tree prefix of a child, `kids` how many children are listed */
 export type TierRow = { bead: FactoryBead; depth: number; connector: string; kids: number; isOpen: boolean }
 
@@ -69,15 +72,35 @@ export function tiers(
   let drawn = 0
   let more = 0
   const roots = list.filter(b => !b.parent || !ids.has(b.parent))
+  // a sweep pass's own beads (labeled sweep:<name>) group under their own heading, apart from a
+  // person's priority tiers (claude-factory-8pc.8): the station name sorts the groups
+  const sweepGroups = new Map<string, FactoryBead[]>()
+  const priRoots: FactoryBead[] = []
+  for (const b of roots) {
+    const sw = sweepOf(b)
+    if (sw) sweepGroups.set(sw, [...(sweepGroups.get(sw) ?? []), b])
+    else priRoots.push(b)
+  }
   for (const p of [0, 1, 2, 3, 4, undefined]) {
     const rows: TierRow[] = []
     // ponytail: a priority outside 0-4 is not drawn; bd allows only those
-    for (const b of roots.filter(r => r.priority === p)) {
+    for (const b of priRoots.filter(r => r.priority === p)) {
       if (drawn + rows.length < limit) rows.push(...family(b, 0, ''))
       else more++
     }
     drawn += rows.length
     if (rows.length) out.push({ tier: p === undefined ? 'no priority' : `P${p}`, priority: p, rows })
+  }
+  for (const name of [...sweepGroups.keys()].sort()) {
+    const rows: TierRow[] = []
+    for (const b of sweepGroups.get(name)!) {
+      if (drawn + rows.length < limit) rows.push(...family(b, 0, ''))
+      else more++
+    }
+    drawn += rows.length
+    // claude-factory-8pc.15: the heading counts the group's own beads, not `rows.length` (each
+    // bead's child rows count too there, so one bead with one child showed "(2)")
+    if (rows.length) out.push({ tier: `sweep:${name} (${sweepGroups.get(name)!.length})`, rows })
   }
   return { tiers: out, total: list.length, drawn, more }
 }

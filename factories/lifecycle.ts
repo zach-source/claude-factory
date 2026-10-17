@@ -9,14 +9,16 @@ import type { Factory } from '../src/machine'
 //   refactor   characterize → plan → implement ⇄ verify (pinned behavior holds) → … → soak
 //   operate    soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem
 //   incident   incident → rollback | plan → … → soak resolved → postmortem
-//   sweeps     monitor (30 min) · maintain (daily) · improve (daily, rotating refactor/performance/cost)
-//              loop forever and file what they find as separate work
 //
-// The pull request is the one place a person must act: deploy waits for a person to merge it and never
-// merges itself, so nothing reaches the default branch or production without them.
+// The standing sweeps (monitor, maintain, improve) are not here: they live in factories/sweeps.ts,
+// their own factory, one pass per run, started by `factory sweep` on each sweep's own cadence
+// (src/sweeps.ts). A pinned run from before claude-factory-8pc still loads this file's own copy of
+// them if its factory.json holds one; see that bead for the move.
+//
+// The pull request is the one place a person must act. Deploy waits for a person to merge it and
+// never merges itself, so nothing reaches the default branch or production without them.
 // In a repo with beads, a run's bead is its epic: plan records the tasks as its children,
-// implement works them, verify and review file findings as more, release needs them all
-// closed, and sweeps file to the backlog, where `factory` labels what starts on its own.
+// implement works them, verify and review file findings as more, and release needs them all closed.
 //
 // `factory adopt <repo>` copies this file into the repo as .factory/lifecycle.ts. From then on the
 // factory is the repo's code: improve's factory lens and postmortems file changes to it, and they ship
@@ -65,7 +67,6 @@ export default {
 - optimize: make something faster or cheaper (a latency, throughput, memory or cost goal)
 - refactor: restructure code without changing behavior
 - incident: production is broken or degraded now
-- monitor, maintain or improve: start that standing sweep (the goal names it)
 - reject: unclear, already tracked (a run in \`factory status\`, an open issue), or not worth doing; say why
 Summary: the goal restated as a testable outcome, its constraints, and the files and systems involved.`,
       next: {
@@ -74,9 +75,6 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
         optimize: 'baseline',
         refactor: 'characterize',
         incident: 'incident',
-        monitor: 'monitor',
-        maintain: 'maintain',
-        improve: 'improve',
         reject: { to: 'done', reject: true },
       },
     },
@@ -237,35 +235,6 @@ Report rollback when a recent release caused it (name it and the version to retu
       timeoutMin: 45,
       prompt: `Write the blameless postmortem from the journal: impact, timeline, root cause, contributing factors, what went well, and the action items. File each action item that needs work (missing tests, alerts, runbooks, guardrails) as separate work for a person to prioritize, except a guardrail without which the incident can recur this week, which starts on its own. When the factory itself let this happen (a station that missed it, a prompt, a rule, a gate), file the change to .factory/ the same way, for a person to prioritize. Your summary is the postmortem.`,
       next: { filed: 'done' },
-    },
-
-    // ── standing sweeps: each loops on a timer and files work as runs ────────
-    monitor: {
-      runner: LAPTOP,
-      timeoutMin: 20,
-      prompt: `One pass of production watch, read-only: SLOs and error budgets, alert states, error rates and new error types, latency, saturation, failing jobs, certificate and quota expiry, and the health of recent deploys. Compare with the previous passes in the journal.
-File what hurts users now as separate work that starts on its own at the incident station, at priority 0. File defects that can wait as separate work for a person to prioritize. Never file what is already tracked or running.
-Report watching with the key numbers, which the next pass compares against; stop only when the goal says to.`,
-      next: { watching: { to: 'monitor', delayMin: 30 }, stop: 'done' },
-    },
-    maintain: {
-      timeoutMin: 60,
-      prompt: `One pass of maintenance. Look for, most urgent first: security advisories on dependencies and base images; failing or flaky tests and CI jobs; deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code.
-File each item worth doing as separate work, at most five per pass, skipping what is already tracked: security advisories start on their own at the plan station; everything else is for a person to prioritize.
-Report again with what you filed and what you skipped on purpose, which the next pass reads; stop only when the goal says to.`,
-      next: { again: { to: 'maintain', delayMin: 1440 }, stop: 'done' },
-    },
-    improve: {
-      agent: OPUS,
-      timeoutMin: 90,
-      prompt: `One pass of continuous improvement, through the next lens in rotation after the journal's last pass: refactor, then performance, then cost, then the factory itself.
-- refactor: hotspots where churn meets complexity, duplication, modules too large to change safely
-- performance: the slowest endpoints, queries and jobs in production telemetry; slow tests and builds
-- cost: over-provisioned or idle resources, expensive queries, storage and transfer, CI minutes, model token spend, this factory's own runs included (retries, loops, the model each station uses)
-- the factory itself: how recent runs went, from \`factory status\` and, with beads, the closed factory beads' comments (bd list -l factory --status closed, bd comments <id>): stations that fail or retry often, implement ⇄ verify or review loops a better plan or prompt would have avoided, stuck runs, gates that are always answered the same way, timeouts, cadences and models that cost more than they return. Each finding is one proposed change to .factory/, with the journals that show it
-Rank what you find by expected gain over effort, with evidence, and file the top items as separate work for a person to prioritize, set to start at the characterize station (refactor), the baseline station (performance, cost) or the plan station (the factory itself), at most three per pass, skipping what is already tracked.
-Report again with the lens, the findings and what you filed; stop only when the goal says to.`,
-      next: { again: { to: 'improve', delayMin: 1440 }, stop: 'done' },
     },
   },
 } satisfies Factory

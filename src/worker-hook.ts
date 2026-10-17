@@ -255,6 +255,36 @@ function realCommand(words: string[]): string[] {
   }
 }
 
+// claude-factory-8pc.24: bd fills a bead's created_by field from the BEADS_ACTOR variable.
+// See src/cli.ts lines 1089 and 1198.
+// The flood guard's sweepFiler (src/sweeps.ts) trusts created_by to find a sweep-filed bead.
+// A worker can set, clear or re-export BEADS_ACTOR itself.
+// That files a bead the guard never sees, with no cap and no sweep-queue allowlist.
+//
+// This check is defense in depth, not a full fix.
+// A worker can still write around a denied command in other ways.
+// The real boundary stays server-side: the flood guard must never trust a label or field the
+// filer itself controls.
+// claude-factory-8pc.18 fixed the same gap for the sweep:<station> label.
+export const BEADS_ACTOR_REASON =
+  'The factory denies this command: do not set, clear, export, or re-export BEADS_ACTOR. ' +
+  "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
+  'sweep-filed bead. Do not retry this command.'
+
+/** true when a word in `words` sets, clears or (re-)exports BEADS_ACTOR, anywhere in the segment */
+function touchesBeadsActor(words: string[]): boolean {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (/^BEADS_ACTOR=/.test(w)) return true
+    const b = baseWord(w)
+    if ((b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') && words[i + 1]) {
+      if (/^BEADS_ACTOR(=|$)/.test(words[i + 1]!)) return true
+    }
+    if (b === 'unset' && words.slice(i + 1).includes('BEADS_ACTOR')) return true
+  }
+  return false
+}
+
 // claude-factory-25z: global flags that take a separate value word, so the verb search can step past
 // them even when they come before the verb (`kubectl -n ax --context acme rollout restart ...`)
 const KUBECTL_VALUE_FLAGS = new Set([
@@ -649,6 +679,10 @@ function denyAt(
   let hasRm = false
   let hasCd = false
   for (const words of segments(command)) {
+    // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
+    // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
+    // ...` both still show the assignment here.
+    if (touchesBeadsActor(words)) return BEADS_ACTOR_REASON
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
