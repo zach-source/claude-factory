@@ -754,9 +754,42 @@ function graphqlTexts(apiArgs: string[], gate: HookGate): { texts: string[]; unr
     if (content === undefined) unresolved = true
     else texts.push(content)
   }
+  // claude-factory-zl5.24: The `--input` flag sends the whole JSON request body to `gh api`
+  // for the GraphQL call. The body is not raw query text.
+  //
+  // GitHub decodes a backslash-u escape in the `query` string. The decoded name can be
+  // `mergePullRequest`.
+  //
+  // A scan of the raw file bytes as plain text does not find this escape. In the raw bytes,
+  // the escape stays as literal characters.
+  //
+  // This function reads the body as JSON first. It reads only the `query` string in the
+  // body. GitHub uses that string for the call.
+  //
+  // If the body is not correct JSON, this function cannot read the query. The function
+  // then fails closed and sets `unresolved`.
+  const takeInputBody = (v: string) => {
+    if (SHELL_UNSAFE.test(v)) {
+      unresolved = true
+      return
+    }
+    const content = v.startsWith('@') ? gate.readFile?.(v.slice(1)) : undefined
+    if (content === undefined) {
+      unresolved = true
+      return
+    }
+    try {
+      const body: unknown = JSON.parse(content)
+      if (body && typeof body === 'object' && typeof (body as { query?: unknown }).query === 'string') {
+        texts.push((body as { query: string }).query)
+      }
+    } catch {
+      unresolved = true
+    }
+  }
   for (const f of ghApiFields(apiArgs)) if (f.name === 'query' || f.name === 'input') take(f.value)
   const inputFile = flagValue(apiArgs, new Set(['--input']))
-  if (inputFile !== undefined) take(`@${inputFile}`)
+  if (inputFile !== undefined) takeInputBody(`@${inputFile}`)
   return { texts, unresolved }
 }
 
@@ -768,6 +801,22 @@ function hasGraphqlMutation(apiArgs: string[], gate: HookGate, mutations: string
 }
 
 /**
+ * Strips a trailing `#fragment`, then a trailing `?query`, then a trailing `/`, from `endpoint`
+ * (claude-factory-zl5.25).
+ *
+ * The real `gh` tool drops a `#fragment` before it sends the request. A check that reads the
+ * raw endpoint text, fragment and all, can miss a path this function's callers must catch:
+ * `pulls/5/merge#x`, `merges#x`, `git/refs#x`, `git/refs/heads/main#x` and `graphql#x` all reach
+ * the same real endpoint as the same path with no fragment.
+ *
+ * Every endpoint check in this file (`isGraphqlEndpoint`, `ghApiMergeDenied`, `ghApiPushDenied`)
+ * must read this one normalized form, not the raw endpoint text.
+ */
+function normalizeEndpoint(endpoint: string): string {
+  return endpoint.split('#')[0]!.split('?')[0]!.replace(/\/+$/, '')
+}
+
+/**
  * True when `endpoint` names the GraphQL endpoint, in any form that `gh api` accepts
  * (claude-factory-zl5.17).
  * The bare word `graphql` is the common form.
@@ -775,10 +824,11 @@ function hasGraphqlMutation(apiArgs: string[], gate: HookGate, mutations: string
  * host's own `.../api/graphql`) names the same endpoint.
  *
  * Each form skips the merge, ready and push mutation checks, unless this function reads it.
- * A trailing slash or query string does not change the endpoint.
+ * A trailing slash, query string or `#fragment` does not change the endpoint
+ * (claude-factory-zl5.25).
  */
 function isGraphqlEndpoint(endpoint: string): boolean {
-  const path = endpoint.split('?')[0]!.replace(/\/+$/, '')
+  const path = normalizeEndpoint(endpoint)
   if (path === 'graphql' || path === '/graphql') return true
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/.*\/graphql$/.test(path)
 }
@@ -806,11 +856,14 @@ function ghApiMergeDenied(apiArgs: string[], gate: HookGate): boolean {
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
   if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, MERGE_MUTATIONS)
+  // claude-factory-zl5.25: gh drops a `#fragment` before it sends the request, so this guard
+  // must read the normalized path, not the raw endpoint text.
+  const path = normalizeEndpoint(endpoint)
   const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
   const hasData = ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
   const effective = method || (hasData ? 'POST' : 'GET')
-  if (effective === 'PUT' && /\/pulls\/[^/?]+\/merge(\?.*)?$/.test(endpoint)) return true
-  return (effective === 'POST' || effective === 'PUT') && /\/merges(\?.*)?$/.test(endpoint)
+  if (effective === 'PUT' && /\/pulls\/[^/?#]+\/merge$/.test(path)) return true
+  return (effective === 'POST' || effective === 'PUT') && /\/merges$/.test(path)
 }
 
 /**
@@ -830,11 +883,36 @@ function ghApiReadyDenied(apiArgs: string[], gate: HookGate): boolean {
 // claude-factory-zl5.10: a REST path that updates or deletes an existing branch ref.
 // Like the merge check above, this reads the path's tail, as in `/pulls/<n>/merge`.
 // A `/repos/<owner>/<repo>/` prefix is optional. An endpoint can be a full URL or a short path.
-const REF_HEADS_PATH = /\/git\/refs\/heads\/([^/?]+)/
+//
+// claude-factory-zl5.26: this captures every character up to a `?` or `#`, not only up to the
+// first `/`. A branch name can itself have a slash, for example `acme/deploy`. The old pattern
+// stopped there and read only `acme` as the branch name. GitHub also accepts the singular
+// `git/ref/heads/<branch>` path for this same read and write, so this pattern matches `refs?`.
+const REF_HEADS_PATH = /\/git\/refs?\/heads\/([^?#]+)/
 // a REST path that creates a new ref. The caller names the new ref in a `ref` field.
-const REFS_CREATE_PATH = /\/git\/refs\/?(\?.*)?$/
+// claude-factory-zl5.25: `normalizeEndpoint` already strips a `?query` and `#fragment`, so this
+// pattern no longer needs to match one.
+const REFS_CREATE_PATH = /\/git\/refs\/?$/
 // a REST path that creates or replaces a file. It commits to a branch. It does not use `git push`.
 const CONTENTS_PATH = /\/contents\/.+/
+
+/**
+ * Decodes a percent-encoded REST path segment, such as the branch name after
+ * `/git/refs/heads/` (claude-factory-zl5.26).
+ *
+ * GitHub itself decodes this text before it reads the branch name. For example, `%6Dain` reaches
+ * the branch `main`. A check against the raw, still-encoded text misses that branch.
+ *
+ * Returns undefined when the text is not valid percent-encoding. The caller then fails closed,
+ * the same rule `SHELL_UNSAFE` uses for a shell expansion this hook cannot read.
+ */
+function decodeRefTail(raw: string): string | undefined {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * True when a `gh api` call writes to a protected branch through the REST or GraphQL API.
@@ -862,24 +940,38 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
   if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, PUSH_MUTATIONS)
+  // claude-factory-zl5.25: read the normalized path, with no `#fragment` or `?query`, for every
+  // REST pattern below.
+  const path = normalizeEndpoint(endpoint)
   const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
   const fields = ghApiFields(apiArgs)
   const hasData = fields.length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
   const effective = method || (hasData ? 'POST' : 'GET')
   const { branches: protectedSet, unresolved } = protectedBranchSet(gate)
-  const refMatch = REF_HEADS_PATH.exec(endpoint)
-  if (refMatch)
-    return (effective === 'PATCH' || effective === 'DELETE') && (unresolved || protectedSet.has(refMatch[1]!))
-  if (REFS_CREATE_PATH.test(endpoint) && effective === 'POST') {
+  const refMatch = REF_HEADS_PATH.exec(path)
+  if (refMatch) {
+    if (effective !== 'PATCH' && effective !== 'DELETE') return false
+    if (unresolved) return true
+    // claude-factory-zl5.26: decode the branch name, then strip a `refs/heads/` or `heads/`
+    // prefix that the decode can reveal, before this checks it against the protected set.
+    const branch = decodeRefTail(refMatch[1]!)
+    return branch === undefined || protectedSet.has(stripRefsHeads(branch))
+  }
+  if (REFS_CREATE_PATH.test(path) && effective === 'POST') {
     const ref = fields.find(f => f.name === 'ref')?.value
     return ref === undefined || unresolved || SHELL_UNSAFE.test(ref) || protectedSet.has(stripRefsHeads(ref))
   }
-  if (
-    CONTENTS_PATH.test(endpoint) &&
-    (effective === 'PUT' || effective === 'POST' || effective === 'DELETE')
-  ) {
+  if (CONTENTS_PATH.test(path) && (effective === 'PUT' || effective === 'POST' || effective === 'DELETE')) {
+    // claude-factory-zl5.26: strip a `refs/heads/` or `heads/` prefix here too, the same as the
+    // `ref` field above. Without this, `branch=refs/heads/main` and `branch=heads/main` named
+    // the protected branch `main`, but matched no entry in the protected set.
     const branch = fields.find(f => f.name === 'branch')?.value
-    return branch === undefined || unresolved || SHELL_UNSAFE.test(branch) || protectedSet.has(branch)
+    return (
+      branch === undefined ||
+      unresolved ||
+      SHELL_UNSAFE.test(branch) ||
+      protectedSet.has(stripRefsHeads(branch))
+    )
   }
   return false
 }
@@ -914,7 +1006,7 @@ function ghReason(cmd: string[], gate: HookGate): string | undefined {
     if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
     return undefined
   }
-  if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1), gate)
+  if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
   if (uncertain) {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
     if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
@@ -924,41 +1016,30 @@ function ghReason(cmd: string[], gate: HookGate): string | undefined {
 }
 
 /**
- * True when `words[0]` is or acts as a `gh` command word, for the expansion check in
- * `ghAliasDenied` (claude-factory-zl5.22).
- * An alias expansion names its command with no leading `gh` word.
- * For example, `gh alias set m "pr merge"` expands to `pr merge`, not `gh pr merge`.
- * So this adds a `gh` word when the expansion has none, before `ghReason` runs on it.
- */
-function asGhCommand(words: string[]): string[] {
-  return baseWord(words[0]!) === 'gh' ? words : ['gh', ...words]
-}
-
-/**
  * The reason to deny `subArgs`, a `gh alias` call's own arguments after the `alias` word.
- * Returns undefined to allow the call (claude-factory-zl5.22).
- * `gh alias set <name> <expansion>` defines a short name for another command.
- * A later `gh <name> ...` call runs that command. That call has no `gh pr merge` or similar word.
+ * Returns undefined to allow the call.
  *
- * This hook checks one command line at a time.
- * It has no memory of an alias that a prior command set, so it cannot catch that later call.
- * Instead, it denies the defining call when the expansion's own text already denies through
- * `ghReason`.
+ * `gh alias set <name> <expansion>` defines a short name for another command. A later
+ * `gh <name> ...` call runs that command, with no `gh pr merge` or similar word of its own.
+ * This hook checks one command line at a time. It has no memory of an alias that a prior
+ * command set, so it cannot catch that later call.
  *
- * `gh alias import <file>` reads a whole file of aliases.
- * This hook cannot see that file.
- * The hook denies that call outright, with `ALIAS_REASON`.
+ * claude-factory-zl5.27: an expansion text scan cannot catch every way `set` can hide a denied
+ * command. Real gh and real git confirmed 3 such gaps: a `!` shell-command expansion (gh runs it
+ * with the shell, not as a `gh` subcommand, so it has no `gh pr merge` word for a text scan to
+ * find); the `-` form, which reads the expansion from stdin, a stream this hook cannot read; and
+ * a later call to the new short name with its own extra arguments, for example `gh p merge 5`
+ * after `gh alias set p pr`, where `merge` sits on a command line this guard never sees.
+ *
+ * So this guard denies every `gh alias set` call outright, not only one whose own expansion
+ * text already denies.
+ *
+ * `gh alias import <file>` reads a whole file of aliases. This hook cannot see that file.
+ * The hook denies that call outright too, with the same `ALIAS_REASON`.
  */
-function ghAliasDenied(subArgs: string[], gate: HookGate): string | undefined {
+function ghAliasDenied(subArgs: string[]): string | undefined {
   const sub = subArgs[0]
-  if (sub === 'import') return ALIAS_REASON
-  if (sub !== 'set') return undefined
-  const operands = subArgs.slice(1).filter(w => w !== '--' && !w.startsWith('-'))
-  const expansion = operands[1]
-  if (expansion === undefined) return undefined
-  const words = expansion.trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return undefined
-  return ghReason(asGhCommand(words), gate)
+  return sub === 'set' || sub === 'import' ? ALIAS_REASON : undefined
 }
 
 /**
@@ -1158,12 +1239,6 @@ function gitPushDenied(tail: string[], currentBranch: string | undefined, gate: 
   return false
 }
 
-// claude-factory-zl5.21: an `alias.<name>` config value runs a push. It does so by itself, or as
-// its first word. For example, `push` or `push --force`.
-function isPushAliasValue(value: string): boolean {
-  return value === 'push' || value.startsWith('push ')
-}
-
 // claude-factory-zl5.21: a `remote.<name>.push` config key sets the default push refspec for that
 // remote. A later bare `git push <name>` sends there, not to the current branch.
 // That later command line has no refspec of its own for this guard to read.
@@ -1176,17 +1251,52 @@ function isAliasName(name: string): boolean {
   return /^alias\.[^.=]+$/i.test(name)
 }
 
+// claude-factory-zl5.28: the `push.default` config key. Its value picks the remote branch a bare
+// `git push` reaches, with no refspec of its own on that later command line.
+function isPushDefaultName(name: string): boolean {
+  return name.toLowerCase() === 'push.default'
+}
+
+// claude-factory-zl5.28: real git confirmed both `upstream` and its older name `tracking` make a
+// bare `git push` on branch `feature` reach `feature`'s own configured upstream branch, for
+// example `main`, not a branch named `feature`.
+function isUpstreamPushDefaultValue(value: string): boolean {
+  const v = value.toLowerCase()
+  return v === 'upstream' || v === 'tracking'
+}
+
 /**
- * True when `tail` sets a `-c alias.<name>=<value>` or `-c remote.<name>.push=<value>` config key
- * (claude-factory-zl5.10, extended by claude-factory-zl5.21 to the `remote.*.push` key).
+ * True when `name` and `value` together set up a later push to a branch this guard cannot check
+ * on that later command line (claude-factory-zl5.21, extended by claude-factory-zl5.28).
+ *
+ * An `alias.<name>` key denies on any value. Real git confirmed that a `!` shell command value,
+ * for example `!git push`, runs a push the same way a plain `push` value does. A scan for only
+ * the word `push` in the value missed that form, so this guard no longer reads the value at all:
+ * any `alias.<name>` write denies.
+ *
+ * A `remote.<name>.push` key denies on any value. A `push.default` key denies only on the value
+ * `upstream` or `tracking` (claude-factory-zl5.28).
+ *
+ * `value` is undefined for a read with no value operand. This guard allows that: it only denies
+ * a write.
+ */
+function isPushConfigWrite(name: string, value: string | undefined): boolean {
+  if (isRemotePushName(name)) return true
+  if (value === undefined) return false
+  if (isAliasName(name)) return true
+  return isPushDefaultName(name) && isUpstreamPushDefaultValue(value)
+}
+
+/**
+ * True when `tail` sets a config key `isPushConfigWrite` denies, through a `-c name=value` flag
+ * (claude-factory-zl5.10, extended by claude-factory-zl5.21 and claude-factory-zl5.28).
  * For example, `git -c alias.p=push p origin main` runs a push. The command line has no `push` word.
  * `git -c remote.origin.push=HEAD:refs/heads/main push` sends a bare `push` to `main`.
  * That push has no refspec of its own.
  *
- * This guard does not read the branch that a `remote.*.push` value names.
- * It also does not read the branch that a push alias reaches.
- * A worker has no normal reason to set either key.
- * So this guard denies the write itself.
+ * This guard does not read the branch that a `remote.*.push` value names, or the one a push
+ * alias reaches. A worker has no normal reason to set any of these 3 keys. So this guard denies
+ * the write itself.
  *
  * It uses the same fail-closed rule as `REFSPEC_UNSAFE`, for a value that this guard does not
  * read in full.
@@ -1200,10 +1310,7 @@ function gitDashCPushDenied(tail: string[]): boolean {
     const pair = tail[i + 1]
     const eq = pair?.indexOf('=') ?? -1
     if (pair === undefined || eq < 0) continue
-    const name = pair.slice(0, eq)
-    const value = pair.slice(eq + 1)
-    if (isRemotePushName(name)) return true
-    if (isAliasName(name) && isPushAliasValue(value)) return true
+    if (isPushConfigWrite(pair.slice(0, eq), pair.slice(eq + 1))) return true
   }
   return false
 }
@@ -1213,12 +1320,16 @@ function gitDashCPushDenied(tail: string[]): boolean {
 const GIT_CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '-t', '--type', '--default'])
 
 /**
- * True when `configArgs`, the arguments of a `git config` call after the `config` word, sets an
- * `alias.<name>` key to a value that runs a push.
- * It also returns true when `configArgs` sets a `remote.<name>.push` key, whatever the value
- * (claude-factory-zl5.21).
- * This is the `git config` form of the `-c` write that `gitDashCPushDenied` already denies.
- * For example, `git config alias.p push` replaces `git -c alias.p=push`.
+ * True when `configArgs`, the arguments of a `git config` call after the `config` word, sets a
+ * key `isPushConfigWrite` denies. This is the `git config` form of the `-c` write that
+ * `gitDashCPushDenied` already denies. For example, `git config alias.p push` replaces
+ * `git -c alias.p=push`.
+ *
+ * claude-factory-zl5.28: git 2.46 adds a `set` subcommand: `git config set <name> <value>`. Real
+ * git confirmed this new form writes the same key as the old, subcommand-less
+ * `git config <name> <value>`. Without a check for the leading `set` word, this guard read it as
+ * the key name, and the real key name as the value, so it checked the wrong pair and let the
+ * write through. This guard now skips one leading `set` word before it reads the key and value.
  */
 function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
   const operands: string[] = []
@@ -1235,11 +1346,10 @@ function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
     }
     operands.push(w)
   }
-  const name = operands[0]
-  const value = operands[1]
+  const start = operands[0] === 'set' ? 1 : 0
+  const name = operands[start]
   if (name === undefined) return false
-  if (isRemotePushName(name)) return true
-  return value !== undefined && isAliasName(name) && isPushAliasValue(value)
+  return isPushConfigWrite(name, operands[start + 1])
 }
 
 /**
