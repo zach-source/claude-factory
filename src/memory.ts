@@ -584,10 +584,29 @@ const runKey = (by: string | undefined, at: number) => (by ? by.split('/')[0]! :
 // How notes get used. A search shows a note. A worker says it helped. The dream orders notes by this.
 // `runs` counts the distinct runs that helped a note (its `by`, up to the first `/`). For an older line
 // with no `by`, it counts the distinct UTC day instead. decide()'s promote threshold reads `runs`.
-export type Use = { path: string; shown: number; helped: number; at: number; runs: number }
+export type Use = {
+  path: string
+  shown: number
+  helped: number
+  confirmed: number
+  contradicted: number
+  at: number
+  runs: number
+}
 const usageFile = (dir: string) => join(dir, '.usage.jsonl')
-/** appended only while workers search, one short line each, so concurrent writers do not interleave */
-export const use = (dir: string, paths: string[], kind: 'shown' | 'helped', at = Date.now(), by?: string) => {
+/**
+ * appended only while workers search, one short line each, so concurrent writers do not interleave.
+ * 'confirmed' is a duplicate `memory add` hit on an existing note (claude-factory-3u1.1.2: FR-008,
+ * replacing the old 'helped' log there, which inflated helped on a note nobody read). 'contradicted'
+ * is a note a `--supersedes` write marks stale.
+ */
+export const use = (
+  dir: string,
+  paths: string[],
+  kind: 'shown' | 'helped' | 'confirmed' | 'contradicted',
+  at = Date.now(),
+  by?: string,
+) => {
   if (paths.length)
     appendFileSync(
       usageFile(dir),
@@ -598,6 +617,8 @@ type RawTally = {
   path: string
   shown: number
   helped: number
+  confirmed: number
+  contradicted: number
   at: number
   runsBase: number
   keys: Set<string>
@@ -612,9 +633,20 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
   for (const line of lines.filter(Boolean)) {
     const u: Partial<Use> & { path: string; at: number; by?: string; keys?: string[] } = JSON.parse(line)
     const path = renamed[u.path] ?? u.path
-    const t = out.get(path) ?? { path, shown: 0, helped: 0, at: 0, runsBase: 0, keys: new Set<string>() }
+    const t = out.get(path) ?? {
+      path,
+      shown: 0,
+      helped: 0,
+      confirmed: 0,
+      contradicted: 0,
+      at: 0,
+      runsBase: 0,
+      keys: new Set<string>(),
+    }
     t.shown += u.shown ?? 0
     t.helped += u.helped ?? 0
+    t.confirmed += u.confirmed ?? 0
+    t.contradicted += u.contradicted ?? 0
     t.at = Math.max(t.at, u.at)
     if (Array.isArray(u.keys)) for (const k of u.keys) t.keys.add(k)
     else if (typeof u.runs === 'number')
@@ -628,7 +660,15 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
 export const tally = (lines: string[], renamed: Record<string, string> = {}) => {
   const result = new Map<string, Use>()
   for (const [path, t] of tallyRaw(lines, renamed))
-    result.set(path, { path, shown: t.shown, helped: t.helped, at: t.at, runs: t.runsBase + t.keys.size })
+    result.set(path, {
+      path,
+      shown: t.shown,
+      helped: t.helped,
+      confirmed: t.confirmed,
+      contradicted: t.contradicted,
+      at: t.at,
+      runs: t.runsBase + t.keys.size,
+    })
   return result
 }
 export const usage = (dir: string, renamed?: Record<string, string>) =>
@@ -645,6 +685,48 @@ export function noteExists(dir: string, path: string): boolean {
   if (i < 0) return existsSync(join(dir, path))
   const file = join(dir, path.slice(0, i))
   return existsSync(file) && parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))
+}
+
+/**
+ * Mark oldPath as replaced by newPath (claude-factory-3u1.1.2, FR-009's `--supersedes`).
+ *
+ * For a short note (a plain file path with no `#`), this function writes one frontmatter line:
+ * `superseded: <newPath>`. The newPath is relative to dir, the same shape that noteExists() and
+ * resolvePath() use. The function returns `{ marked: true }`, and decide() archives the note on the
+ * next tiering pass with the reason "superseded by <newPath>". See the `n.superseded` branch in
+ * this file.
+ *
+ * A LONG.md path uses `#id`. A CORE.md path uses `#hash`.
+ * A CORE.md bullet is one line in CORE.md, not a frontmatter block. A LONG.md entry schema has no
+ * superseded field. For either path, this function changes no file and returns `{ marked: false }`.
+ *
+ * The caller must log a 'contradicted' usage event for that path. claude-factory-3u1.3.3 reads that
+ * event to demote a core fact.
+ *
+ * This function edits the frontmatter block as text. It does not use parse() and format() together.
+ * The format() function writes only the fields that the Note type knows. A round trip through
+ * parse() and format() drops, without a warning, any frontmatter key that this schema does not yet
+ * define.
+ */
+export function supersede(dir: string, oldPath: string, newPath: string): { marked: boolean } {
+  if (oldPath.includes('#')) return { marked: false }
+  const file = join(dir, oldPath)
+  const text = readFileSync(file, 'utf8')
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)
+  const line = `superseded: ${newPath}`
+  let out: string
+  if (m) {
+    const metaLines = m[1]!.split('\n')
+    const already = metaLines.findIndex(l => /^superseded:/.test(l))
+    if (already >= 0) metaLines[already] = line
+    else metaLines.push(line)
+    out = `---\n${metaLines.join('\n')}\n---\n${text.slice(m[0].length)}`
+  } else {
+    out = `---\n${line}\n---\n${text}`
+  }
+  writeFileSync(`${file}.tmp`, out)
+  renameSync(`${file}.tmp`, file)
+  return { marked: true }
 }
 
 const renamesFile = (dir: string) => join(dir, '.renames.jsonl')
@@ -694,6 +776,8 @@ export function compact(dir: string, renamed: Record<string, string>) {
             path: t.path,
             shown: t.shown,
             helped: t.helped,
+            confirmed: t.confirmed,
+            contradicted: t.contradicted,
             at: t.at,
             runs: t.runsBase + t.keys.size,
             ...(t.keys.size ? { keys: [...t.keys] } : {}),

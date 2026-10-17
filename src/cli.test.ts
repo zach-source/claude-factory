@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1035,4 +1036,294 @@ test('memory add that cites nothing needs no --until', () => {
   const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body'])
   expect(r.code).toBe(0)
   expect(inboxFiles(home)).toHaveLength(1)
+}, 30_000)
+
+// claude-factory-3u1.1.2: `factory memory add --supersedes <note path>`. FR-009.
+const usageLinesOf = (home: string) =>
+  existsSync(join(home, 'memory', '.usage.jsonl'))
+    ? readFileSync(join(home, 'memory', '.usage.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l))
+    : []
+
+test('memory add --supersedes with no value after it exits 2 and writes nothing', () => {
+  const home = freshMemoryAddHome('supersedes-no-value')
+  // --supersedes must be the very last token: the CLI's opt() takes whatever follows a flag as its
+  // value, so putting it mid-command would make it swallow 'a plain summary' as a bogus path instead
+  const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body', '--supersedes'])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+}, 30_000)
+
+test('memory add --supersedes with a value that looks like a flag exits 2 and writes nothing', () => {
+  const home = freshMemoryAddHome('supersedes-flag-value')
+  mkdirSync(join(home, 'memory'), { recursive: true })
+  // a real note literally named "--anyway": if the flag-like-value guard were missing,
+  // noteExists() alone would accept this path, so this proves the guard, not noteExists()
+  const before = '---\nsummary: a trap note\n---\nbody\n'
+  writeFileSync(join(home, 'memory', '--anyway'), before)
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    '--anyway',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+  expect(readFileSync(join(home, 'memory', '--anyway'), 'utf8')).toBe(before)
+}, 30_000)
+
+test('memory add --supersedes ../outside.md exits 2 and writes nothing, even when that file is real', () => {
+  const home = freshMemoryAddHome('supersedes-outside')
+  // a real file one level above the memory dir: if the '..' guard were missing, noteExists() alone
+  // would accept this path (it only checks the filesystem), so this proves the guard, not noteExists()
+  const before = '---\nsummary: a file outside the memory\n---\nbody\n'
+  writeFileSync(join(home, 'outside.md'), before)
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    '../outside.md',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+  expect(readFileSync(join(home, 'outside.md'), 'utf8')).toBe(before)
+}, 30_000)
+
+test('memory add --supersedes into a hidden (dot) segment exits 2 even when that file really exists', () => {
+  const home = freshMemoryAddHome('supersedes-hidden')
+  mkdirSync(join(home, 'memory', '.archive'), { recursive: true })
+  const before = '---\nsummary: an archived note\n---\nbody\n'
+  writeFileSync(join(home, 'memory', '.archive', 'x.md'), before)
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    '.archive/x.md',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+  expect(readFileSync(join(home, 'memory', '.archive', 'x.md'), 'utf8')).toBe(before)
+}, 30_000)
+
+test("memory add --supersedes a topic's whole README.md exits 2 even though the file exists", () => {
+  const home = freshMemoryAddHome('supersedes-readme')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  const before = '---\nsummary: bd topic\n---\nbd notes live here\n'
+  writeFileSync(join(home, 'memory', 'beads', 'README.md'), before)
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads/README.md',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+  expect(readFileSync(join(home, 'memory', 'beads', 'README.md'), 'utf8')).toBe(before)
+}, 30_000)
+
+test("memory add --supersedes a topic's whole LONG.md (no #id) exits 2 even though the file exists", () => {
+  const home = freshMemoryAddHome('supersedes-long-whole')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  const before = '## bd init locks every repo {#lock}\nmerged\n'
+  writeFileSync(join(home, 'memory', 'beads', 'LONG.md'), before)
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads/LONG.md',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+  expect(readFileSync(join(home, 'memory', 'beads', 'LONG.md'), 'utf8')).toBe(before)
+}, 30_000)
+
+test('memory add --supersedes the whole CORE.md (no #hash) exits 2 even though the file exists', () => {
+  const home = freshMemoryAddHome('supersedes-core-whole')
+  mkdirSync(join(home, 'memory'), { recursive: true })
+  const before = '- a core lesson\n'
+  writeFileSync(join(home, 'memory', 'CORE.md'), before)
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'CORE.md',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+  expect(readFileSync(join(home, 'memory', 'CORE.md'), 'utf8')).toBe(before)
+}, 30_000)
+
+test('memory add --supersedes a note that does not exist exits 2 and writes nothing', () => {
+  const home = freshMemoryAddHome('supersedes-missing')
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads/missing.md',
+    'a plain summary',
+    'a plain body',
+  ])
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--supersedes')
+  expect(inboxFiles(home)).toEqual([])
+}, 30_000)
+
+test('memory add --supersedes on a short note writes one superseded: line, keeps every other byte, and logs contradicted', () => {
+  const home = freshMemoryAddHome('supersedes-success')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  const before = '---\nsummary: an old short note\nunknown: kept\n---\nold body text\n'
+  writeFileSync(join(home, 'memory', 'beads', 'old.md'), before)
+  const r = runMemoryAdd(home, [
+    '--from',
+    'run1/implement',
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads/old.md',
+    'a new replacement note',
+    'a new body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  expect(files).toHaveLength(1)
+  const after = readFileSync(join(home, 'memory', 'beads', 'old.md'), 'utf8')
+  expect(after).toBe(
+    `---\nsummary: an old short note\nunknown: kept\nsuperseded: inbox/${files[0]}\n---\nold body text\n`,
+  )
+  const lines = usageLinesOf(home)
+  const contradicted = lines.find(l => l.path === 'beads/old.md' && l.contradicted === 1)
+  expect(contradicted?.by).toBe('run1/implement')
+}, 30_000)
+
+test('memory add --supersedes replaces an already-superseded line instead of adding a second one', () => {
+  const home = freshMemoryAddHome('supersedes-replace')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(
+    join(home, 'memory', 'beads', 'old.md'),
+    '---\nsummary: an old short note\nsuperseded: inbox/stale.md\n---\nold body text\n',
+  )
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads/old.md',
+    'a new replacement note',
+    'a new body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  const after = readFileSync(join(home, 'memory', 'beads', 'old.md'), 'utf8')
+  expect(after).toBe(`---\nsummary: an old short note\nsuperseded: inbox/${files[0]}\n---\nold body text\n`)
+}, 30_000)
+
+test("memory add --supersedes follows a rename log to the note's current path", () => {
+  const home = freshMemoryAddHome('supersedes-rename')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(join(home, 'memory', 'beads', 'new-name.md'), '---\nsummary: moved note\n---\nbody\n')
+  writeFileSync(
+    join(home, 'memory', '.renames.jsonl'),
+    `${JSON.stringify({ old: 'inbox/old-name.md', new: 'beads/new-name.md' })}\n`,
+  )
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'inbox/old-name.md',
+    'a new replacement note',
+    'a new body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  const after = readFileSync(join(home, 'memory', 'beads', 'new-name.md'), 'utf8')
+  expect(after).toBe(`---\nsummary: moved note\nsuperseded: inbox/${files[0]}\n---\nbody\n`)
+}, 30_000)
+
+test('memory add --supersedes on a CORE.md#hash fact writes no marker, says so, and still logs contradicted', () => {
+  const home = freshMemoryAddHome('supersedes-core-hash')
+  mkdirSync(join(home, 'memory'), { recursive: true })
+  const before = '- a core lesson\n'
+  writeFileSync(join(home, 'memory', 'CORE.md'), before)
+  const hash = createHash('sha1').update('a core lesson').digest('hex').slice(0, 8)
+  const r = runMemoryAdd(home, [
+    '--from',
+    'run1/implement',
+    '--kind',
+    'fact',
+    '--supersedes',
+    `CORE.md#${hash}`,
+    'a new replacement note',
+    'a new body',
+  ])
+  expect(r.code).toBe(0)
+  expect(r.out.toLowerCase()).toContain('no marker')
+  expect(readFileSync(join(home, 'memory', 'CORE.md'), 'utf8')).toBe(before) // untouched
+  const lines = usageLinesOf(home)
+  const contradicted = lines.find(l => l.path === `CORE.md#${hash}` && l.contradicted === 1)
+  expect(contradicted?.by).toBe('run1/implement')
+}, 30_000)
+
+test('memory add --supersedes on a duplicate hit logs confirmed only and does not mark the named note', () => {
+  const home = freshMemoryAddHome('supersedes-dup')
+  // the note the new attempt will match as a duplicate (same phrasing proven in memory-add-dup-from.test.ts)
+  const dupSetup = runMemoryAdd(home, [
+    '--from',
+    'run1/implement',
+    '--kind',
+    'fact',
+    'fabriek has no CHANGELOG file or per-PR version bump convention',
+    'checked the whole history',
+  ])
+  expect(dupSetup.code).toBe(0)
+  // an unrelated note, the one --supersedes names: it must be left alone
+  const targetSetup = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    'acme widget retries flush three times before it gives up',
+    'checked the code',
+  ])
+  expect(targetSetup.code).toBe(0)
+  const targetFile = inboxFiles(home).find(f => f.startsWith('acme-widget'))!
+  const targetPath = `inbox/${targetFile}`
+  const before = readFileSync(join(home, 'memory', targetPath), 'utf8')
+
+  const r = runMemoryAdd(home, [
+    '--from',
+    'run2/verify',
+    '--kind',
+    'fact',
+    '--supersedes',
+    targetPath,
+    'no changelog or version bump convention exists in fabriek',
+    'hit the same thing',
+  ])
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('already noted')
+  expect(r.out).toContain('--supersedes was not applied')
+  expect(readFileSync(join(home, 'memory', targetPath), 'utf8')).toBe(before)
+  const lines = usageLinesOf(home)
+  expect(lines.some(l => l.path === targetPath && l.contradicted === 1)).toBe(false)
+  const confirmed = lines.find(l => l.confirmed === 1)
+  expect(confirmed?.by).toBe('run2/verify')
 }, 30_000)
