@@ -1430,6 +1430,10 @@ test('denyReason allows a dashed git-core binary pushing a run branch (claude-fa
 // name) used to read only one segment's `cmd[0]`, past `realCommand`'s own strip. Real git 2.54
 // moved remote `main` for `nice -n 5 git push origin` and `bash -c 'git push origin'`, each with
 // `push.default = matching` set through the unreadable config file `GIT_CONFIG_GLOBAL` names.
+// Each row pushes the current branch (`feature`, not protected) with no explicit refspec: the
+// generic any-position git scan allows that on its own, so only the combo check can deny it, and
+// each row isolates the combo check from the unrelated "unresolved current branch" fail-closed
+// rule (claude-factory-zl5.12), which would otherwise deny every row on its own.
 const DENY_DANGEROUS_ENV_GIT_WORD_SIBLINGS = [
   'GIT_CONFIG_GLOBAL=x nice -n 5 git push origin',
   'GIT_CONFIG_GLOBAL=x command -p git push origin',
@@ -1442,7 +1446,8 @@ const DENY_DANGEROUS_ENV_GIT_WORD_SIBLINGS = [
 test.each(DENY_DANGEROUS_ENV_GIT_WORD_SIBLINGS)(
   'denyReason denies %j (claude-factory-zl5.44, a dangerous git config env var pairs with a hidden git word)',
   cmd => {
-    expect(denyReason(cmd)).toBe(PUSH_REASON)
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
   },
 )
 
