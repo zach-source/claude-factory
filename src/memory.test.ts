@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -13,6 +13,7 @@ import {
   coreNotes,
   decide,
   dreamPrompt,
+  envTopicCap,
   type EvalCase,
   evalScore,
   evaluate,
@@ -30,6 +31,7 @@ import {
   NOTE_KINDS,
   noteExists,
   outline,
+  overCapTopics,
   parse,
   parseLong,
   patrolActivity,
@@ -45,6 +47,7 @@ import {
   supersede,
   tally,
   tierCandidates,
+  TOPIC_CAP,
   usage,
   usageLines,
   use,
@@ -827,6 +830,101 @@ test('decide() archive cap counts a superseded archive against the same cap', ()
   expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/b.md'])
 })
 
+const plainOld = (path: string, over: Partial<ShortCandidate> = {}): ShortCandidate =>
+  short({ path, ageDays: 10, staleDays: 10, ...over })
+
+test('decide() topic cap: 15 short notes get no cap merge, 16 get exactly 1', () => {
+  const fifteen = Array.from({ length: 15 }, (_, i) => plainOld(`beads/n${i}.md`))
+  expect(decide(fifteen, [], [], { topicCap: 15 })).toEqual([])
+
+  const sixteen = Array.from({ length: 16 }, (_, i) => plainOld(`beads/n${i}.md`))
+  const decisions = decide(sixteen, [], [], { topicCap: 15 })
+  expect(decisions).toHaveLength(1)
+  expect(decisions[0]).toEqual({
+    kind: 'merge',
+    path: 'beads/n0.md',
+    reason: 'topic beads over the short-note cap of 15 (16 short notes)',
+  })
+})
+
+test('decide() topic cap picks the oldest notes first, by ageDays then path', () => {
+  const cands = [
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/n${i}.md`, { ageDays: 10 })),
+    plainOld('beads/oldest.md', { ageDays: 50 }),
+    plainOld('beads/older.md', { ageDays: 30 }),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions.map(d => ('path' in d ? d.path : ''))).toEqual(['beads/oldest.md', 'beads/older.md'])
+})
+
+test('decide() topic cap never picks a note under MERGE_AGE_DAYS (7) old, even when candidates run out first', () => {
+  // 20 notes, only 2 old enough to merge: the cap would need 5 removed to reach 15, but decide() must
+  // stop at 2 (out of candidates) rather than reach into the 18 young notes to hit the cap exactly
+  const cands = [
+    ...Array.from({ length: 2 }, (_, i) => plainOld(`beads/old${i}.md`, { ageDays: 10 })),
+    ...Array.from({ length: 18 }, (_, i) => plainOld(`beads/young${i}.md`, { ageDays: 6 })),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions).toEqual([
+    {
+      kind: 'merge',
+      path: 'beads/old0.md',
+      reason: 'topic beads over the short-note cap of 15 (20 short notes)',
+    },
+    {
+      kind: 'merge',
+      path: 'beads/old1.md',
+      reason: 'topic beads over the short-note cap of 15 (20 short notes)',
+    },
+  ])
+})
+
+test('decide() topic cap: 20 notes with 3 merges and 2 archives already planned leaves 15, no cap merge', () => {
+  const cands = [
+    ...Array.from({ length: 3 }, (_, i) => plainOld(`beads/shown${i}.md`, { shown: 1 })), // -> merge
+    ...Array.from({ length: 2 }, (_, i) => plainOld(`beads/stale${i}.md`, { staleDays: 31, helped: 0 })), // -> archive
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, topicCap: 15 })
+  expect(decisions.filter(d => d.kind === 'merge')).toHaveLength(3)
+  expect(decisions.filter(d => d.kind === 'archive')).toHaveLength(2)
+  expect(decisions.some(d => 'reason' in d && d.reason.includes('over the short-note cap'))).toBe(false)
+})
+
+test('decide() topic cap counts a held note (over the archive cap) as still in the topic', () => {
+  const cands = [
+    plainOld('beads/held-candidate.md', { staleDays: 31, helped: 0 }), // archive -> held (archiveCap 0)
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, topicCap: 15, archiveCap: 0 })
+  expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/held-candidate.md'])
+  const capMerges = decisions.filter(d => 'reason' in d && d.reason.includes('over the short-note cap'))
+  expect(capMerges).toHaveLength(1)
+  expect(capMerges[0]).toMatchObject({ path: 'beads/plain0.md' })
+})
+
+test('decide() topic cap counts a superseded note (archived outright) as removed from the topic', () => {
+  const cands = [
+    plainOld('beads/superseded.md', { superseded: 'beads/kept.md' }),
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions).toEqual([
+    { kind: 'archive', path: 'beads/superseded.md', reason: 'superseded by beads/kept.md' },
+  ])
+})
+
+test('decide() topic cap never touches inbox, however many notes it holds', () => {
+  const cands = Array.from({ length: 20 }, (_, i) => plainOld(`inbox/n${i}.md`, { topic: 'inbox' }))
+  expect(decide(cands, [], [], { topicCap: 15 })).toEqual([])
+})
+
+test('decide() with no topicCap (default Infinity) gives the same output as before the cap existed', () => {
+  const cands = Array.from({ length: 100 }, (_, i) => plainOld(`beads/n${i}.md`))
+  expect(decide(cands, [])).toEqual([])
+  expect(decide(cands, [], [], {})).toEqual([])
+})
+
 test('mdFileCount counts CORE.md and every topic README, LONG.md and short note, never .archive', () => {
   const dir = join(tmpdir(), `memory-count-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
@@ -947,7 +1045,9 @@ test('applyTiers() archives nothing under the usage-history guard with no usage 
   const now = Date.parse('2026-10-15T00:00:00Z')
   const paths = fixtureNeverShown30(dir, now)
 
-  const { archived, historyDays } = applyTiers(dir, { now })
+  // topicCap: Infinity keeps this test about the usage-history guard alone; the 30-note fixture would
+  // otherwise trip the unrelated topic cap (default 15) and merge some of these notes away
+  const { archived, historyDays } = applyTiers(dir, { now, topicCap: Infinity })
   expect(archived).toBe(0)
   expect(historyDays).toBe(0)
   for (const p of paths) expect(existsSync(join(dir, p))).toBe(true)
@@ -972,6 +1072,128 @@ test('applyTiers() reads the archive cap from FACTORY_MEMORY_ARCHIVE_CAP, and a 
     if (prev === undefined) delete process.env.FACTORY_MEMORY_ARCHIVE_CAP
     else process.env.FACTORY_MEMORY_ARCHIVE_CAP = prev
   }
+})
+
+// n short notes in one topic. Note 0 is startAgeDays old, note 1 is startAgeDays+1 old, and so on.
+// Each note's ageDays is distinct, so the oldest-first tie-break never has to pick between two of them.
+function fixtureOldNotes(dir: string, topic: string, n: number, now: number, startAgeDays = 10): string[] {
+  const DAY = 24 * 60 * 60 * 1000
+  mkdirSync(join(dir, topic), { recursive: true })
+  const paths: string[] = []
+  for (let i = 0; i < n; i++) {
+    const file = `n${String(i).padStart(2, '0')}.md`
+    paths.push(`${topic}/${file}`)
+    const at = new Date(now - (startAgeDays + i) * DAY).toISOString().slice(0, 10)
+    writeFileSync(join(dir, topic, file), format({ summary: `note ${i}`, at, body: 'body' }))
+  }
+  return paths
+}
+
+test('applyTiers() merges a topic down to the cap: 18 notes become 15 short notes and 3 LONG.md entries, each renamed', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const paths = fixtureOldNotes(dir, 'beads', 18, now)
+
+  const { merged, archived, renamed, overCap, topicCap } = applyTiers(dir, { now, topicCap: 15 })
+  expect(topicCap).toBe(15)
+  expect(merged).toBe(3)
+  expect(archived).toBe(0)
+  expect(Object.keys(renamed)).toHaveLength(3)
+  for (const old of Object.keys(renamed)) expect(paths).toContain(old)
+  expect(overCap).toEqual([])
+
+  const remaining = readdirSync(join(dir, 'beads')).filter(f => f.endsWith('.md') && f !== 'LONG.md')
+  expect(remaining).toHaveLength(15)
+  expect(existsSync(join(dir, 'beads', 'LONG.md'))).toBe(true)
+  // the 3 oldest (the last 3 created, ages 25, 26, 27) are the ones that merged away
+  for (const i of [15, 16, 17])
+    expect(existsSync(join(dir, 'beads', `n${String(i).padStart(2, '0')}.md`))).toBe(false)
+})
+
+test('applyTiers() topic cap, dry run: counts the same 3 merges, writes nothing, same overCap as the real pass', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-dry-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const paths = fixtureOldNotes(dir, 'beads', 18, now)
+
+  const dry = applyTiers(dir, { now, topicCap: 15, dryRun: true })
+  expect(dry.merged).toBe(3)
+  expect(dry.overCap).toEqual([])
+  for (const p of paths) expect(existsSync(join(dir, p))).toBe(true) // nothing written
+  expect(existsSync(join(dir, 'beads', 'LONG.md'))).toBe(false)
+})
+
+test('applyTiers() topic cap: a skipped merge into an unsafe LONG.md leaves the topic in overCap', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-unsafe-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 18, now)
+  // stray prose before the first entry: unsafeLongTopics() flags this file, so no merge into it can run
+  writeFileSync(join(dir, 'beads', 'LONG.md'), '---\ntier: long\n---\nstray prose with no entry\n')
+
+  const { merged, skipped, overCap } = applyTiers(dir, { now, topicCap: 15 })
+  expect(merged).toBe(0)
+  expect(skipped).toEqual([
+    { topic: 'beads', reason: expect.stringContaining('a merge would lose') as unknown as string },
+  ])
+  expect(overCap).toEqual([{ topic: 'beads', count: 18 }])
+})
+
+test('envTopicCap() reads FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
+  const prev = process.env.FACTORY_MEMORY_TOPIC_CAP
+  try {
+    delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    expect(envTopicCap()).toBe(15)
+    process.env.FACTORY_MEMORY_TOPIC_CAP = '7'
+    expect(envTopicCap()).toBe(7)
+    for (const bad of ['0', '-1', '1.5', '']) {
+      process.env.FACTORY_MEMORY_TOPIC_CAP = bad
+      expect(envTopicCap()).toBe(15)
+    }
+  } finally {
+    if (prev === undefined) delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    else process.env.FACTORY_MEMORY_TOPIC_CAP = prev
+  }
+})
+
+test('applyTiers() reads the topic cap from FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-env-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 18, now)
+
+  const prev = process.env.FACTORY_MEMORY_TOPIC_CAP
+  try {
+    process.env.FACTORY_MEMORY_TOPIC_CAP = '3'
+    expect(applyTiers(dir, { now, dryRun: true }).merged).toBe(15) // 18 - 3
+    process.env.FACTORY_MEMORY_TOPIC_CAP = 'abc'
+    expect(applyTiers(dir, { now, dryRun: true }).merged).toBe(3) // 18 - 15
+  } finally {
+    if (prev === undefined) delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    else process.env.FACTORY_MEMORY_TOPIC_CAP = prev
+  }
+})
+
+test('overCapTopics lists topics over the cap now, from the live store, sorted by count desc then topic asc', () => {
+  const dir = join(tmpdir(), `memory-overcap-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 16, now)
+  fixtureOldNotes(dir, 'ci', 20, now)
+  fixtureOldNotes(dir, 'release', 10, now) // under the cap: never listed
+
+  expect(overCapTopics(dir, 15)).toEqual([
+    { topic: 'ci', count: 20 },
+    { topic: 'beads', count: 16 },
+  ])
+  // exactly at the cap: not over it
+  expect(overCapTopics(dir, 16)).toEqual([{ topic: 'ci', count: 20 }])
 })
 
 test('applyTiers() with dryRun counts decisions but writes nothing, and a second pass is a no-op', () => {
@@ -1341,7 +1563,7 @@ test('evaluate() runs the fixed query set against a real store through search()'
   expect(r.misses).toEqual([])
 }, 60_000)
 
-test('dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate and unsafe sections', () => {
+test('dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate, unsafe and over-cap sections', () => {
   const empty = dreamPrompt('/tmp/memory', [], [], [])
   expect(empty).toContain('LONG.md')
   expect(empty).toContain("Never change an entry's `id`")
@@ -1349,7 +1571,17 @@ test('dreamPrompt names the long tier and the id rule, and adds the promotion, d
   expect(empty).toContain('## Promotion candidates')
   expect(empty).toContain('## Possible duplicates')
   expect(empty).toContain('## Unsafe LONG.md files')
+  expect(empty).toContain('## Topics over the short-note cap')
   expect(empty).toContain('(none)')
+  expect(empty).toContain(`3 to ${TOPIC_CAP} notes each`) // defaults to TOPIC_CAP when no topicCap is passed
+  expect(empty).toContain(`holds ${TOPIC_CAP} or fewer`) // step 9 tells the dream to merge or drop to the cap
+  expect(empty).toContain('already over the cap') // step 1: the list below holds only topics over the cap
+  expect(empty).toContain('7 days old or more, used or not') // step 9: the cap merge does not require use
+
+  const withCap = dreamPrompt('/tmp/memory', [], [], [], undefined, [], [], [], [], 10)
+  expect(withCap).toContain('3 to 10 notes each') // a non-default topicCap is named, not the TOPIC_CAP constant
+  expect(withCap).toContain('holds 10 or fewer')
+  expect(withCap).not.toContain(`3 to ${TOPIC_CAP} notes each`)
 
   const filled = dreamPrompt(
     '/tmp/memory',
@@ -1360,10 +1592,13 @@ test('dreamPrompt names the long tier and the id rule, and adds the promotion, d
     ['- beads/LONG.md#lock (bd init locks every repo): helped 3 times across 3 runs'],
     ['- beads/LONG.md#a (x) vs beads/LONG.md#b (y): similarity 0.90'],
     ['- beads/LONG.md holds text before its first entry that a merge would lose: stray prose'],
+    ['- ci: 23 short notes (cap 15)', '- claude-factory: 29 short notes (cap 15)'],
   )
   expect(filled).toContain('helped 3 times across 3 runs')
   expect(filled).toContain('similarity 0.90')
   expect(filled).toContain('stray prose')
+  expect(filled).toContain('## Topics over the short-note cap\n- ci: 23 short notes (cap 15)')
+  expect(filled).toContain('claude-factory: 29 short notes (cap 15)')
 })
 
 test('longSimPairs finds a near-duplicate pair of LONG.md entries in the same topic and rig, not across a topic or a rig', async () => {

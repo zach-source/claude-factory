@@ -2357,14 +2357,25 @@ function closedBeads() {
 }
 
 /**
- * one compact commit's message. Both the dream's compact step and `memory compact` use it.
- * It reads "N merged, M archived, F1 files -> F2 files".
- * It adds ", H held by the archive cap" right after the archived count.
- * It adds that clause only when the cap held notes back this pass.
+ * One compact commit's message. The dream's compact step and `memory compact` both use it.
+ * It reads "N merged, M archived, F1 files -> F2 files". It adds ", H held by the archive cap"
+ * right after the archived count, only when the cap held notes back this pass.
+ *
+ * It adds a clause for each topic still over the cap after the pass. The clause reads
+ * ", K topic(s) over the cap of N: a (17); b (16)". Each topic reads "name (count)". The worst
+ * topic comes first: the same order as tiers.overCap.
+ *
  * It keeps the trailing skipped-topics clause unchanged.
  */
 function compactMessage(
-  tiers: { merged: number; archived: number; held: number; skipped: { topic: string; reason: string }[] },
+  tiers: {
+    merged: number
+    archived: number
+    held: number
+    skipped: { topic: string; reason: string }[]
+    overCap: { topic: string; count: number }[]
+    topicCap: number
+  },
   filesBefore: number,
   filesAfter: number,
 ): string {
@@ -2372,6 +2383,9 @@ function compactMessage(
     `compact: ${tiers.merged} merged, ${tiers.archived} archived` +
     (tiers.held ? `, ${tiers.held} held by the archive cap` : '') +
     `, ${filesBefore} files -> ${filesAfter} files` +
+    (tiers.overCap.length
+      ? `, ${tiers.overCap.length} topic(s) over the cap of ${tiers.topicCap}: ${tiers.overCap.map(o => `${o.topic} (${o.count})`).join('; ')}`
+      : '') +
     (tiers.skipped.length
       ? `, ${tiers.skipped.length} topic(s) skipped: ${tiers.skipped.map(s => `${s.topic} (${s.reason})`).join('; ')}`
       : '')
@@ -2407,6 +2421,9 @@ async function dream() {
     // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
     // again, each time it skips a merge into one of them
     const unsafe = memory.unsafeLongTopics(MEMORY).map(u => `- ${u.reason}`)
+    const overCap = memory
+      .overCapTopics(MEMORY)
+      .map(t => `- ${t.topic}: ${t.count} short notes (cap ${memory.envTopicCap()})`)
     const prompt = memory.dreamPrompt(
       MEMORY,
       journal,
@@ -2416,6 +2433,8 @@ async function dream() {
       promotions,
       duplicates,
       unsafe,
+      overCap,
+      memory.envTopicCap(),
     )
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
@@ -5887,6 +5906,8 @@ const usage = `factory — herdr software factories on xstate
                                      shown and is 14+ days old, or never helped and unused 30+ days (both
                                      wait for 14 days of usage history first); FACTORY_MEMORY_ARCHIVE_CAP
                                      caps archives per pass (default 25), oldest first, the rest held;
+                                     FACTORY_MEMORY_TOPIC_CAP caps short notes per topic (default 15): a
+                                     topic over the cap merges its oldest 7+ day old notes down to it;
                                      --dry-run only prints the plan (a dream runs this itself, after it
                                      files the inbox, unless FACTORY_MEMORY_TIERS=0)
   memory eval                       search quality (recall@5, MRR) over the fixed query set in
@@ -6158,15 +6179,17 @@ if (import.meta.main && !outboxCmd)
         } else if (sub === 'compact') {
           const dryRun = words.includes('--dry-run')
           if (dryRun) {
-            const { decisions, skipped, archiveCap, historyDays } = memory.applyTiers(MEMORY, {
-              dryRun: true,
-            })
+            const { decisions, skipped, archiveCap, historyDays, overCap, topicCap } = memory.applyTiers(
+              MEMORY,
+              { dryRun: true },
+            )
             console.log(
               [
                 decisions.length
                   ? memory.planLines(decisions, { archiveCap, historyDays }).join('\n')
                   : 'nothing to merge or archive',
                 ...skipped.map(s => `skip  ${s.topic}: ${s.reason}`),
+                ...overCap.map(o => `over  ${o.topic}: ${o.count} short notes, cap ${topicCap}`),
               ].join('\n'),
             )
           } else {

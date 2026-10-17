@@ -36,7 +36,7 @@ description: "Task list for the memory lifecycle (compress, age, learn)"
 
 - [ ] T006 [US2] A pure `gate()` plus frontmatter `kind` (`fact`|`rule`|`recipe`) and `until` in `src/memory.ts` `parse`/`format`. `memory add --kind/--until` exits 2 with usage text, in `src/cli.ts` (claude-factory-3u1.1.1)
 - [x] T007 [US2] A duplicate add logs `confirmed`; add `--supersedes <path>` (writes `superseded:` and logs `contradicted`), in `src/cli.ts` ~3689 and `src/memory.ts` `use()`/`tallyRaw()` (claude-factory-3u1.1.2)
-- [ ] T008 [P] [US2] A per-topic cap of 15 in `src/memory.ts` `dreamPrompt()` and `applyTiers()` (claude-factory-3u1.1.3)
+- [x] T008 [P] [US2] A per-topic cap of 15 in `src/memory.ts` `dreamPrompt()` and `applyTiers()` (claude-factory-3u1.1.3)
 - [ ] T009 [US2] Expiry from `until:`: a `retire` decision fed by `closedBeads()`, PR state (`src/prs.ts`) and dates. If a lookup fails, keep the note and flag it (claude-factory-3u1.1.4)
 - [ ] T010 [P] [US2] Document the new flags in `src/worker-system.md`, the README memory section and the CHANGELOG (claude-factory-3u1.1.5)
 

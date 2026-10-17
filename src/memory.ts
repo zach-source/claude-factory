@@ -817,6 +817,10 @@ const ARCHIVE_NEW_DAYS = 14 // never shown at all, and this old: a candidate too
 const ARCHIVE_CAP = 25
 const PROMOTE_HELPED = 3 // a long entry helped at least this often...
 const PROMOTE_RUNS = 3 // ...across at least this many distinct runs, becomes a promotion candidate
+// a topic's short-note cap (FR-010): past this many short notes in one topic, the tier pass merges
+// the oldest ones into LONG.md so the topic keeps retrieval dense; the dream drops or merges the rest
+// the tier pass cannot (claude-factory-3u1.1.3).
+export const TOPIC_CAP = 15
 
 /** a short topic note (never inbox/*), with what decide() needs to judge it */
 export type ShortCandidate = {
@@ -841,30 +845,43 @@ export type Decision =
   | { kind: 'dedupe'; a: string; b: string; reason: string }
 
 /**
- * The tiering pass creates a plan. The plan uses no file and no clock. A table test covers each
+ * The tier pass creates a plan. The plan uses no file and no clock. A table test covers each
  * boundary: 7, 14 and 30 days; 3 helps or runs; the cap.
  *
- * `opts.historyDays` shows how far back the usage log goes.
- * If the history is shorter than ARCHIVE_NEW_DAYS (14 days), both usage-based archive rules do not apply.
- * A home with a new or lost `.usage.jsonl` file cannot tell "never shown" from "shown before logging began."
- * This is a spec edge case.
- * The default is Infinity. A caller that does not measure it, like most direct tests, keeps the old, unguarded rules.
- * The superseded rule ignores this guard. A note marked `superseded:` always archives.
+ * `opts.historyDays` sets how far back the usage log goes.
+ * Below ARCHIVE_NEW_DAYS (14 days), decide() does not use either usage-based archive rule.
+ * A new or lost `.usage.jsonl` file cannot show if a note was never shown or shown before the log started.
+ * The default is Infinity; a caller that does not pass it keeps the old rules, without this check.
+ * This check does not apply to the superseded rule. A note with `superseded:` always gets an `archive` decision.
  *
- * `opts.archiveCap` sets the maximum number of notes that one pass archives.
- * The oldest notes, by ageDays, go first. A tie breaks by path, ascending.
- * The cap applies to every topic and every archive rule, including superseded.
- * A note past the cap gets a `held` decision instead of `archive`.
- * This prevents a long-idle home from sending hundreds of notes to `.archive` on one day.
- * That day is the day they all cross their threshold.
+ * `opts.archiveCap` sets the top limit on notes that one pass can archive.
+ * The oldest notes go first, by ageDays. decide() breaks a tie by path, in ascending order.
+ * The cap applies to every topic and every archive rule, including superseded notes.
+ * A note past the cap gets a `held` decision, not an `archive` decision.
+ * So a long-idle home cannot send hundreds of notes to `.archive` on one day, when they all cross the threshold.
+ *
+ * `opts.topicCap` (FR-010) sets a per-topic cap on short notes.
+ * decide() checks it last, after every other rule above.
+ * If a topic holds more short notes than the cap, decide() adds `merge` decisions for its oldest notes.
+ * The merges stop when the topic reaches the cap. A held note still counts toward the topic.
+ *
+ * A candidate note has no decision yet. It is not superseded.
+ * It is at least MERGE_AGE_DAYS (7) days old.
+ *
+ * decide() never picks an inbox note. It never touches inbox at all.
+ * The oldest candidates go first, by ageDays descending, then path ascending.
+ * This is the same tie-break that the archive cap uses.
+ *
+ * The default is Infinity. A caller that does not pass topicCap keeps the current output.
+ * This is true for most direct tests, and for every call before claude-factory-3u1.1.3.
  */
 export function decide(
   short: ShortCandidate[],
   long: LongCandidate[],
   sims: SimPair[] = [],
-  opts: { historyDays?: number; archiveCap?: number } = {},
+  opts: { historyDays?: number; archiveCap?: number; topicCap?: number } = {},
 ): Decision[] {
-  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP } = opts
+  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP, topicCap = Infinity } = opts
   const decisions: Decision[] = []
   for (const n of short) {
     if (n.topic === 'inbox') continue // the dream files these; decide() never touches them
@@ -921,6 +938,40 @@ export function decide(
   for (const { d, i } of overCap.slice(archiveCap))
     decisions[i] = { kind: 'held', path: d.path, reason: `over the archive cap of ${archiveCap} this pass` }
 
+  // the topic cap (FR-010): runs last, once every other rule above has set its decision. A topic left
+  // with more short notes than topicCap, after its merge and archive decisions, gets extra `merge`
+  // decisions for its oldest still-undecided notes, until it is at the cap or no candidate is left.
+  if (Number.isFinite(topicCap)) {
+    const decided = new Set(
+      decisions.filter(d => d.kind !== 'promote' && d.kind !== 'dedupe').map(d => d.path),
+    )
+    const byTopic = new Map<string, ShortCandidate[]>()
+    for (const n of short) {
+      if (n.topic === 'inbox') continue
+      ;(byTopic.get(n.topic) ?? byTopic.set(n.topic, []).get(n.topic)!).push(n)
+    }
+    for (const [topic, topicNotes] of byTopic) {
+      const removed = decisions.filter(
+        d => (d.kind === 'merge' || d.kind === 'archive') && topicNotes.some(n => n.path === d.path),
+      ).length
+      let left = topicNotes.length - removed
+      if (left <= topicCap) continue
+      const candidates = topicNotes
+        .filter(n => !decided.has(n.path) && !n.superseded && n.ageDays >= MERGE_AGE_DAYS)
+        .sort((a, b) => b.ageDays - a.ageDays || a.path.localeCompare(b.path))
+      for (const n of candidates) {
+        if (left <= topicCap) break
+        decisions.push({
+          kind: 'merge',
+          path: n.path,
+          reason: `topic ${topic} over the short-note cap of ${topicCap} (${topicNotes.length} short notes)`,
+        })
+        decided.add(n.path)
+        left--
+      }
+    }
+  }
+
   return decisions
 }
 
@@ -949,6 +1000,39 @@ function envArchiveCap(): number {
   if (raw === undefined) return ARCHIVE_CAP
   const n = Number(raw)
   return Number.isInteger(n) && n >= 0 ? n : ARCHIVE_CAP
+}
+
+/** FACTORY_MEMORY_TOPIC_CAP, when it is a whole number >= 1; else the default TOPIC_CAP (15). */
+export function envTopicCap(): number {
+  const raw = process.env.FACTORY_MEMORY_TOPIC_CAP
+  if (raw === undefined) return TOPIC_CAP
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 1 ? n : TOPIC_CAP
+}
+
+/** each topic whose count is over cap, sorted by count descending, then topic ascending (FR-010). */
+function overCapFrom(counts: Map<string, number>, cap: number): { topic: string; count: number }[] {
+  return [...counts]
+    .filter(([, count]) => count > cap)
+    .map(([topic, count]) => ({ topic, count }))
+    .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic))
+}
+
+/**
+ * every topic over the short-note cap right now (FR-010), read straight from the store.
+ * This counts only short notes. It never counts README.md, LONG.md or inbox/.
+ * Pass the result to dreamPrompt(). A dream can then name each topic where it must merge or drop
+ * notes before applyTiers() runs again.
+ */
+export function overCapTopics(dir: string, cap = envTopicCap()): { topic: string; count: number }[] {
+  const counts = new Map<string, number>()
+  for (const n of walk(dir).notes) {
+    if (n.tier !== 'short') continue
+    const topic = topicOf(n)
+    if (topic === 'inbox') continue
+    counts.set(topic, (counts.get(topic) ?? 0) + 1)
+  }
+  return overCapFrom(counts, cap)
 }
 
 /** how many days of usage history the store holds: now minus the oldest note's newest recorded `at`.
@@ -1085,18 +1169,32 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
  * `skipped` names a topic a merge left untouched, and why.
  *
  * `opts.archiveCap` sets the pass's archive cap. It falls back to FACTORY_MEMORY_ARCHIVE_CAP, then 25.
+ *
+ * `opts.topicCap` sets the pass's per-topic cap on short notes (FR-010).
+ * It falls back to FACTORY_MEMORY_TOPIC_CAP, then to TOPIC_CAP (15).
+ * The return value's `overCap` field lists each topic still over the cap at the end of the pass.
+ * A skipped merge (an unsafe LONG.md) does not lower a topic's count.
+ * So that topic can still appear in `overCap`.
+ *
  * `opts.onPlan`, when given, runs once with planLines(). It runs right after decide(), before any
  * write or rmSync, and on a dry run too. This way, the plan a caller logs always matches what ran.
  */
 export function applyTiers(
   dir: string,
-  opts: { now?: number; dryRun?: boolean; archiveCap?: number; onPlan?: (lines: string[]) => void } = {},
+  opts: {
+    now?: number
+    dryRun?: boolean
+    archiveCap?: number
+    topicCap?: number
+    onPlan?: (lines: string[]) => void
+  } = {},
 ) {
   const now = opts.now ?? Date.now()
   const { notes } = walk(dir)
   const uses = usage(dir)
   const historyDays = usageHistoryDays(dir, now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
+  const topicCap = opts.topicCap ?? envTopicCap()
   const short: ShortCandidate[] = notes
     .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
     .map(n => {
@@ -1114,7 +1212,7 @@ export function applyTiers(
         helped: u?.helped ?? 0,
       }
     })
-  const decisions = decide(short, [], [], { historyDays, archiveCap })
+  const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap })
   opts.onPlan?.(planLines(decisions, { archiveCap, historyDays }))
   // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
   // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
@@ -1125,6 +1223,10 @@ export function applyTiers(
   const skipped: { topic: string; reason: string }[] = []
   let merged = 0
   let archived = 0
+  // one topic's remaining short-note count drops by one for every merge this pass writes to disk
+  // (not one a skipped, unsafe LONG.md held back) and every archive; overCap below reads this.
+  const removedByTopic = new Map<string, number>()
+  const removeOne = (topic: string) => removedByTopic.set(topic, (removedByTopic.get(topic) ?? 0) + 1)
   for (const d of decisions) {
     if (d.kind !== 'merge' && d.kind !== 'archive') continue
     const note = notes.find(n => n.path === d.path)
@@ -1142,6 +1244,7 @@ export function applyTiers(
       const longFile = join(dir, topic, 'LONG.md')
       const rawText = existsSync(longFile) ? readFileSync(longFile, 'utf8') : null
       merged++
+      removeOne(topic)
       if (opts.dryRun) continue
       const existing = rawText !== null ? parseLong(rawText) : []
       // a fresh id must not collide with an id a rename log or another entry's aliases already claim
@@ -1172,8 +1275,9 @@ export function applyTiers(
       rewriteReadmeLink(dir, topic, note.path, `LONG.md#${id}`)
     } else {
       archived++
-      if (opts.dryRun) continue
       const topic = topicOf(note)
+      removeOne(topic)
+      if (opts.dryRun) continue
       mkdirSync(join(dir, '.archive'), { recursive: true })
       const archiveFile = join(dir, '.archive', `${topic}.md`)
       const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
@@ -1188,7 +1292,13 @@ export function applyTiers(
     }
   }
   const held = decisions.filter(d => d.kind === 'held').length
-  return { decisions, renamed, merged, archived, held, skipped, archiveCap, historyDays }
+  const totalByTopic = new Map<string, number>()
+  for (const n of short) totalByTopic.set(n.topic, (totalByTopic.get(n.topic) ?? 0) + 1)
+  const overCap = overCapFrom(
+    new Map([...totalByTopic].map(([t, c]) => [t, c - (removedByTopic.get(t) ?? 0)])),
+    topicCap,
+  )
+  return { decisions, renamed, merged, archived, held, skipped, archiveCap, historyDays, topicCap, overCap }
 }
 
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */
@@ -1330,19 +1440,21 @@ export const dreamPrompt = (
   promotions: string[] = [],
   duplicates: string[] = [],
   unsafe: string[] = [],
+  overCap: string[] = [],
+  topicCap: number = TOPIC_CAP,
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
 The structure, three tiers:
 - CORE.md: the fact-and-behavior tier. The lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig; a \`## rig: <name>\` section holds what nearly every run in that rig needs, and only that rig's workers read it. Every worker re-reads it on every turn, so each part (the top, each rig section) stays under ${CORE_BUDGET} bytes, one short line per lesson (at most 200 characters: the rule, not its story; the story goes in a note). Briefs cut a part at that budget, so what is past it is lost to them: move detail into topic notes, which search finds.
 - <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
 - <topic>/LONG.md: the long tier. One merged lesson per \`## summary\` heading, followed by a comment \`<!-- id: {"id":"...", ...} -->\`. A tiering pass (\`factory memory compact\`, which runs after you finish) merges an aging, used short note in here on its own. Never change an entry's \`id\`: usage counts and renames follow it. You can still edit an entry's body, or merge two entries into one by hand (see point 7): when you do, never delete the kept id, and never remove an alias already on it.
-- <topic>/<note>.md: the short tier. One learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to 15 notes each.
+- <topic>/<note>.md: the short tier. One learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to ${topicCap} notes each.
 - inbox/: new notes from workers. Empty it every pass.
 A lesson that holds only while some bead is open (an owner's hold, a pending decision, a known outage) names that bead ("until fab-8aq4 closes") and never goes in CORE.md: when the bead closes, it is retired.
 A note about one bead's own status (already fixed on main, a duplicate of another, still live at HEAD) is not memory: it belongs in that bead's comments. Drop it, unless it teaches something about how to tell (how to check that a bead is already done, say).
 
 This pass:
-1. File every inbox note under a topic (git mv, or write a new file and git rm the old one). One that says what an existing note says: merge it into that note and git rm it.
+1. File every inbox note under a topic (git mv, or write a new file and git rm the old one). One that says what an existing note says: merge it into that note and git rm it. When its topic is already over the cap (see "Topics over the short-note cap" below), merge it into an existing note or that topic's LONG.md entry instead of adding a new short note.
 2. Merge duplicates anywhere; when two notes disagree, keep what the newer evidence shows and say so. Remove what is wrong, stale, or so specific to one run that no other would use it. Retire or rewrite whatever waits on a bead in "Closed beads" below. A note never shown in a search for 30 days and never helping is a candidate to drop, unless it is newer than that.
 3. Read the run journal below for lessons no note holds yet: a station that failed for a reason the next worker could have avoided, a fix that worked, a review finding that recurs, a person's decision later runs should follow. Write each as a note. Skip the routine.
 4. Rewrite each touched topic's README and CORE.md so their order is by importance: what helped workers most (Usage below) first, then what holds most broadly. A note that keeps helping belongs higher, its lesson in CORE.md when it holds for every rig.
@@ -1350,6 +1462,7 @@ This pass:
 6. Promotion candidates below: each is a LONG.md entry that several runs have found helpful several times. Write it as one short line (under 200 characters) in CORE.md: the top when every rig needs it, else that entry's rig's \`## rig:\` section. The LONG.md entry stays as that line's detail.
 7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry: keep the older id, add the removed entry's id to the kept entry's \`"aliases"\` list in its id line's JSON (so its usage count carries over; start the list if it has none), then delete the removed entry's heading, id line and body.
 8. Unsafe LONG.md files below: each holds text before its first \`## summary\` + id comment that a tiering pass cannot place in any entry, so it cannot merge a new note into that topic until you fix it. Rewrite the file by hand: either give that text its own \`## summary\` heading and an id comment, or delete it when it says nothing worth keeping.
+9. Topics over the short-note cap below: merge or drop notes in each one until it holds ${topicCap} or fewer. The tiering pass after you finish merges each topic's oldest notes once they are 7 days old or more, used or not, but it never drops one; where a note is under 7 days old, you decide what to merge or drop now.
 Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
 
 ## Manager skills (name: uses, last used: description)
@@ -1369,6 +1482,9 @@ ${duplicates.join('\n') || '(none)'}
 
 ## Unsafe LONG.md files (a merge cannot write into these until you fix them by hand)
 ${unsafe.join('\n') || '(none)'}
+
+## Topics over the short-note cap
+${overCap.join('\n') || '(none)'}
 
 ## Closed beads this memory names
 ${closed.join('\n') || '(none)'}
