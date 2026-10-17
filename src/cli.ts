@@ -1016,14 +1016,19 @@ function reviveWorktree(run: Run) {
   // this cannot reach the remote at all. Check reachability on its own first (claude-factory-l38.18):
   // only a genuine network failure gets its own message, never the blame-gc message below.
   const reachable =
-    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], { timeout: 30_000 })
-      .exitCode === 0
+    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], {
+      env: GIT_NETWORK_ENV,
+      timeout: GIT_NETWORK_TIMEOUT_MS,
+    }).exitCode === 0
   if (!reachable)
     fail(
       `Could not recreate ${run.worktree}: a fetch of origin failed, so this could not check whether ` +
         `${run.branch} still exists there. Check network access, then retry.`,
     )
-  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], { timeout: 30_000 })
+  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], {
+    env: GIT_NETWORK_ENV,
+    timeout: GIT_NETWORK_TIMEOUT_MS,
+  })
   if (verify(`refs/remotes/origin/${run.branch}`))
     return git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, `origin/${run.branch}`)
   const ref = `refs/factory-gc/${run.id}`
@@ -3180,11 +3185,17 @@ function originConfigUrl(repo: string): string | null {
   const p = Bun.spawnSync(['git', '-C', repo, 'config', '--get', 'remote.origin.url'])
   return p.exitCode === 0 ? p.stdout.toString().trim() : null
 }
-/** `<owner>/<repo>` from an origin URL (`https://github.com/<owner>/<repo>.git` or
- * `git@github.com:<owner>/<repo>.git`), else null. */
-function githubSlug(url: string): string | null {
-  const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/)
-  return m ? `${m[1]}/${m[2]}` : null
+/** Get `<owner>/<repo>` from an origin URL. This result controls which repo's PR state
+ * `gc --worktrees` reads before it deletes a branch (claude-factory-0u0).
+ * - Match the host `github.com` only, never a longer host that merely ends with it.
+ * - Accept `https://`, `ssh://`, `git@host:`, and a form with userinfo before the host, the
+ *   same forms `parseRemote` (src/prs.ts:99) accepts.
+ * - Give null for a path that is not exactly `<owner>/<repo>`. */
+export function githubSlug(url: string): string | null {
+  const remote = parseRemote(url)
+  if (!remote || forgeOf(remote.host) !== 'github') return null
+  const parts = remote.path.split('/')
+  return parts.length === 2 && parts[0] && parts[1] ? `${parts[0]}/${parts[1]}` : null
 }
 /** `gh pr list`, called once per rig, not once per branch. The plan for claude-factory-l38
  * rejected the per-branch call: it would run about 700 calls on the first pass. This function
@@ -3332,8 +3343,21 @@ export function deleteBranchCas(repo: string, name: string, local: string | null
 }
 
 const gcWorktreesJournal = () => join(HOME, 'gc-worktrees.jsonl')
+/** Scrubs URL userinfo from every string value of `value` (claude-factory-0lt, AC2). It walks an
+ * array or an object the same way, so a new field or a nested value can never skip the scrub. */
+function scrubDeep(value: unknown): unknown {
+  if (typeof value === 'string') return gc.scrubUrlUserinfo(value)
+  if (Array.isArray(value)) return value.map(scrubDeep)
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v)]))
+  return value
+}
 const gcLog = (entry: Record<string, unknown>) =>
-  durable(gcWorktreesJournal(), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', 'a')
+  durable(
+    gcWorktreesJournal(),
+    JSON.stringify(scrubDeep({ at: new Date().toISOString(), ...entry })) + '\n',
+    'a',
+  )
 
 /**
  * Removes a finished run's worktree. It also removes the run's factory/* branch, once
