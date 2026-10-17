@@ -837,6 +837,28 @@ test('rig add --person-only-context stores Rig.personOnlyContexts; a bad value f
   expect(space.err).toContain('--person-only-context is a kube context name')
 })
 
+// claude-factory-zl5.4: a rig's protectedBranches, repeatable --protected-branch, validated and stored;
+// defineRig refuses a comma or space in the value, so a worker can never comma-split one into many
+test('rig add --protected-branch stores Rig.protectedBranches; a bad value fails with a usage error', () => {
+  const r = repo()
+  const add = (...a: string[]) => factory(['rig', 'add', 'x', r, ...a])
+  expect(add('--protected-branch', 'acme-deploy').code).toBe(0)
+  expect(JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0]).toMatchObject({
+    protectedBranches: ['acme-deploy'],
+  })
+  const two = add('--protected-branch', 'acme-deploy', '--protected-branch', 'release')
+  expect(two.code).toBe(0)
+  expect(JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0]).toMatchObject({
+    protectedBranches: ['acme-deploy', 'release'],
+  })
+  const comma = add('--protected-branch', 'acme-deploy,release')
+  expect(comma.code).not.toBe(0)
+  expect(comma.err).toContain('--protected-branch is a branch name')
+  const space = add('--protected-branch', 'acme-deploy release')
+  expect(space.code).not.toBe(0)
+  expect(space.err).toContain('--protected-branch is a branch name')
+})
+
 test('rig add --linear writes team UUIDs to rigs.json, refuses a non-UUID naming it, and omits the key when absent', () => {
   const r = repo()
   const id1 = '04114abf-ddb7-4a6f-bb47-814fd2c44373'
@@ -912,6 +934,23 @@ test("vmClaudeFlags carries a rig's personOnlyContexts on the deny hook's own ar
   )
   // no list: today's command, unchanged
   expect(vmClaudeFlags({ maxContextK: 150 })).toEqual(vmClaudeFlags({ maxContextK: 150 }, []))
+})
+
+// claude-factory-zl5.4: vmClaudeFlags carries the rig's protectedBranches to the VM hook's own argv too
+test("vmClaudeFlags carries a rig's protectedBranches on the deny hook's own argv", () => {
+  const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, ['acme-deploy'])
+  const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
+  expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --protected-branches 'acme-deploy'",
+  )
+  // both lists together: person-only-contexts first, then protected-branches
+  const both = vmClaudeFlags({ maxContextK: 150 }, ['ctx'], ['acme-deploy'])
+  const bothSettings = JSON.parse(both[both.indexOf('--settings') + 1]!)
+  expect(bothSettings.hooks.PreToolUse[0].hooks[0].command).toBe(
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --person-only-contexts 'ctx' --protected-branches 'acme-deploy'",
+  )
+  // no list: today's command, unchanged
+  expect(vmClaudeFlags({ maxContextK: 150 })).toEqual(vmClaudeFlags({ maxContextK: 150 }, [], []))
 })
 
 test("Claude's trust dialog does not hold an AX rig's run: the VM runs the agent headless", () => {

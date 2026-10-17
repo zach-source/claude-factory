@@ -435,6 +435,47 @@ test("workerSettings carries a rig's personOnlyContexts on the deny hook's own a
   )
 })
 
+// claude-factory-zl5.4: a rig with protectedBranches gets its own worker-settings-<rig>.json too, the
+// same as personOnlyContexts, so no other rig's launch can overwrite its hook argv
+test("workerFlags writes a rig's own worker-settings-<rig>.json when it has protectedBranches, else the shared worker-settings.json", () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-flags-'))
+  const acme = { name: 'acme', protectedBranches: ['acme-deploy'] }
+  const web = { name: 'web' }
+  const extraAcme = workerFlags({ maxContextK: 200 }, acme, home)
+  const extraWeb = workerFlags({ maxContextK: 200 }, web, home)
+  expect(extraAcme).toContain(join(home, 'worker-settings-acme.json'))
+  expect(extraWeb).toContain(join(home, 'worker-settings.json'))
+  const acmeSettings = JSON.parse(readFileSync(join(home, 'worker-settings-acme.json'), 'utf8'))
+  const webSettings = JSON.parse(readFileSync(join(home, 'worker-settings.json'), 'utf8'))
+  expect(acmeSettings.hooks.PreToolUse.at(-1).hooks[0].command).toContain(
+    "--protected-branches 'acme-deploy'",
+  )
+  expect(webSettings.hooks.PreToolUse.at(-1).hooks[0].command).not.toContain('--protected-branches')
+})
+
+// claude-factory-zl5.4: both lists can reach the hook's argv together, each under its own flag, with
+// --person-only-contexts first and --protected-branches after it
+test("workerFlags carries both a rig's personOnlyContexts and protectedBranches on the hook's argv", () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-flags-'))
+  const acme = { name: 'acme', personOnlyContexts: ['acme-ctx'], protectedBranches: ['acme-deploy'] }
+  workerFlags({ maxContextK: 200 }, acme, home)
+  const settings = JSON.parse(readFileSync(join(home, 'worker-settings-acme.json'), 'utf8'))
+  const command = settings.hooks.PreToolUse.at(-1).hooks[0].command as string
+  expect(command).toMatch(/--person-only-contexts 'acme-ctx' --protected-branches 'acme-deploy'$/)
+})
+
+// claude-factory-zl5.4: a rig's protectedBranches reaches the deny hook's own argv, so it can refuse a
+// git push to one of its branches even with no live rig policy anywhere else in the worker's settings
+test("workerSettings carries a rig's protectedBranches on the deny hook's own argv", () => {
+  const withList = workerSettings({}, 200, undefined, undefined, ['acme-deploy'])
+  const pre = withList.hooks.PreToolUse as { hooks: { command: string }[] }[]
+  expect(pre.at(-1)!.hooks[0]!.command).toMatch(/--protected-branches 'acme-deploy'$/)
+  // no list, or an empty one: today's command, unchanged
+  const withNone = workerSettings({}, 200)
+  const withEmpty = workerSettings({}, 200, undefined, undefined, [])
+  expect(withNone).toEqual(withEmpty)
+})
+
 // mv9: a worker still gets no plugin but asd-ste100 -- its skill and SessionStart STE brief are lean
 // enough to carry, and the plugin brings the writing rule instead of a copy of its text
 test('a worker gets the asd-ste100 plugin alone, with bundled skills off, so it writes in ASD-STE100', () => {
