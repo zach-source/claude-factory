@@ -20,7 +20,7 @@ const LAPTOP = 'herdr'
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Follow the release recipe in the journal exactly; where it is silent, do what the repo's last release did and say so.
-- Only a person merges a pull request; only rollout and rollback touch production, and rollback alone may revert on a release branch or the default branch; nobody force-pushes.
+- Only a person merges a pull request; only rollout and rollback touch production. Nobody pushes a release branch or the default branch directly; a rollback that reverts code opens a pull request for a person to merge instead. Nobody force-pushes.
 - Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when the bead's description, a person's own comment on it, or a [factory mail] from the manager says the person approved that exact step; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: "parked, waiting on: <the owner step and the exact command>". Reads, and watching a pipeline the person's merge started, stay allowed.
 - On a retry or a resumed worker, first find out what earlier attempts already did (journal, git log, tags, pull requests, pipelines) and never repeat an external action that already happened.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
@@ -95,8 +95,8 @@ Report healthy when it holds; unsure to soak one more period (at most twice in a
       runner: LAPTOP,
       retries: 3,
       timeoutMin: 45,
-      prompt: `Restore service. Check what is already rolled back, then roll back by the recipe (redeploy the previous version, revert the release, or turn the flag off) and confirm recovery against the baseline. File the fix forward as separate work for a person to prioritize, citing the pull request that caused it.
-Report recovered with what you did and the evidence.`,
+      prompt: `Restore service. Check what is already rolled back, then roll back by the recipe: redeploy the previous version, turn the flag off, or open a pull request that reverts the release, since you never push a release branch or the default branch directly. Confirm recovery against the baseline. File the fix forward as separate work for a person to prioritize, citing the pull request that caused it.
+Report recovered with what you did, the evidence, and the revert pull request's link if you opened one.`,
       next: { recovered: 'done' },
     },
   },
