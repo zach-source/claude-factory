@@ -77,6 +77,12 @@ minor release may change the factory format, the CLI or the run state.
       `upstream` and `tracking` values. These values change the default branch of a bare
       `git push`, as a `remote.*.push` value does. All these checks, and the `remote.*.push`
       check, also read the `git config set <name> <value>` syntax that git 2.46 has.
+  - A round-4 review found 1 more bypass. The hook now closes it too.
+    - `gh api` used to match a REST pattern against the raw, still-encoded path.
+      GitHub decodes the whole path first. A percent-encoded slash, such as `heads%2Fmain`,
+      has no literal slash in the raw text. So the branch-name pattern never matched it.
+      The hook now decodes the whole path once, before any REST pattern reads it.
+      A bad encoding denies the command, the same rule it already used for a branch name alone.
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook

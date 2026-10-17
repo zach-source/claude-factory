@@ -294,6 +294,14 @@ A round-3 review found 5 more disguised forms. The hook now denies these too:
   The hook also denies a `push.default` value of `upstream` or `tracking`.
   The hook denies git 2.46's `git config set <name> <value>` subcommand form, for every one of these checks and the existing `remote.*.push` check.
 
+A round-4 review found 1 more disguised form. The hook now denies this too:
+
+- a percent-encoded slash in a `gh api` path, for example `git/refs/heads%2Fmain`. GitHub reads
+  this as the same branch that `heads/main` names. The hook now decodes the whole path once,
+  before it reads any REST pattern. A raw-text match against the still-encoded path missed
+  this match outright. A bad encoding denies the command, the rule the branch-name check
+  already used.
+
 The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
 read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook
 denies the push outright: it has no branch name, or no `origin/HEAD` name, to check.
