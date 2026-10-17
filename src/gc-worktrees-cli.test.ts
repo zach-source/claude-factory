@@ -610,3 +610,30 @@ test('i: goto after gc refuses when the branch is also gone, and starts no worke
   expect(row.pane).toBeFalsy()
   expect(existsSync(worktree)).toBe(false) // still not recreated: there is nothing to recreate it from
 })
+
+test('r: gh pr list passes -R to the origin repo, and a result at the --limit cap counts as incomplete (claude-factory-l38.13)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: false, bead: 'acme-1' })
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  const head = git(repo, 'rev-parse', branch)
+  // 1000 entries, exactly `--limit`: an older open PR past the cap would stay invisible, so this
+  // branch's CLOSED PR must never be trusted as the complete picture (claude-factory-l38.13)
+  const prs = Array.from({ length: 1000 }, (_, i) => ({
+    number: i,
+    state: i === 0 ? 'CLOSED' : 'OPEN',
+    headRefName: i === 0 ? branch : `factory/other-${i}`,
+    headRefOid: i === 0 ? head : '0'.repeat(40),
+  }))
+  fakeGh(prs)
+  const { closeBead } = fakeBd()
+  closeBead('acme-1')
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  const calls = readFileSync(join(dir, 'gh-calls.log'), 'utf8')
+  expect(calls).toContain('-R acme/widget')
+  // a closed PR plus a closed bead would delete this branch outright; a capped list must not count
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('')
+})

@@ -3022,16 +3022,31 @@ function originConfigUrl(repo: string): string | null {
   const p = Bun.spawnSync(['git', '-C', repo, 'config', '--get', 'remote.origin.url'])
   return p.exitCode === 0 ? p.stdout.toString().trim() : null
 }
-/** one `gh pr list` per rig, not one per branch (claude-factory-l38 rejected (e) in the plan: about
- * 700 calls on the first pass otherwise). null on a non-GitHub forge or any gh failure (AC5). */
+/** `<owner>/<repo>` from an origin URL (`https://github.com/<owner>/<repo>.git` or
+ * `git@github.com:<owner>/<repo>.git`), else null. */
+function githubSlug(url: string): string | null {
+  const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/)
+  return m ? `${m[1]}/${m[2]}` : null
+}
+/** `gh pr list`, called once per rig, not once per branch. The plan for claude-factory-l38
+ * rejected the per-branch call: it would run about 700 calls on the first pass. This function
+ * returns null on a non-GitHub forge, or on any `gh` failure (AC5).
+ *
+ * `-R` names the repo. Without it, `gh` can read the `upstream` remote instead of `origin` on a
+ * fork rig, and return the wrong repo's pull requests (claude-factory-l38.13). A result with
+ * exactly `--limit` entries counts as incomplete: it returns null, not "no more results". An
+ * older open PR that a shorter list would show stays hidden past the cap otherwise. */
 function prFacts(repo: string): gc.PrFact[] | null {
   const url = originConfigUrl(repo)
-  if (!url || !/github\.com[:/]/.test(url)) return null
+  const slug = url ? githubSlug(url) : null
+  if (!slug) return null
   const p = Bun.spawnSync(
     [
       'gh',
       'pr',
       'list',
+      '-R',
+      slug,
       '--state',
       'all',
       '--limit',
@@ -3043,7 +3058,9 @@ function prFacts(repo: string): gc.PrFact[] | null {
   )
   if (p.exitCode !== 0) return null
   try {
-    return JSON.parse(p.stdout.toString())
+    const list = JSON.parse(p.stdout.toString())
+    if (!Array.isArray(list) || list.length >= 1000) return null
+    return list
   } catch {
     return null
   }
