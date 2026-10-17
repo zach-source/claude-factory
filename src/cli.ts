@@ -2008,6 +2008,8 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
   const [node, sub] = where(value)
   const n = def.nodes[node]
   const retries = n?.retries ?? 2
+  // read gate-briefs.json once per row, not once per field (claude-factory-2u2.8)
+  const gateBrief = n?.gate && sub === 'working' ? gateBriefOf(run.id, c.startedAt) : undefined
   return {
     id: run.id,
     factory: def.name,
@@ -2034,7 +2036,7 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
         gate: {
           question: n.prompt.trim(),
           outcomes: Object.keys(n.next),
-          ...(gateBriefOf(run.id, c.startedAt) && { brief: gateBriefOf(run.id, c.startedAt)! }),
+          ...(gateBrief && { brief: gateBrief }),
         },
       }),
   }
