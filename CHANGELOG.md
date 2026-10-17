@@ -357,6 +357,23 @@ minor release may change the factory format, the CLI or the run state.
     still pass. A person sets `pm: true` to turn it back on, once a real fix (the manager
     process restarts, or agent registration runs on every hot reload too) closes the
     `session.start` gap.
+- Fix forward: `pm`'s `userConfig` default is `true` again (`mod/.claude-plugin/plugin.json`).
+  (claude-factory-dun)
+  - Corrected cause: the rollback bullet above named the wrong cause. The manager process
+    that looped had started on 2026-10-15, before commit f9c7bf2 (2026-10-16) added
+    `Agent` to `MANAGER_TOOLS` (`src/cli.ts`). Its own `--tools` argv had no `Agent` entry,
+    so every `$.agent.spawn` call threw. This was not a `session.start`/hot-reload
+    registration gap.
+  - Fix: `pmNow()` (`mod/hooks/register.tsx`) now checks `$.tool.list()` for `Agent`
+    before each `factory plan facts` call. With no `Agent` tool, it sets `rt.pmBlocked`
+    once per process, writes one `<home>/pm-log.jsonl` entry and one status line, and
+    returns at once on every later call: no more `factory plan facts` or
+    `$.agent.spawn` for that process, only a restart clears it (claude-factory-dun.28,
+    .29). A spawn that is denied or throws for any other reason now backs off
+    (`pmRetryDelay`: 60 s, 120 s, 240 s, doubling to a 60 minute cap) instead of a fixed
+    60 second retry. The Rigs tab shows a red "pm blocked: ..." line while blocked
+    (claude-factory-dun.30). `factory plan show` prints the newest `pm-log.jsonl` error
+    and its time when no `plan.json` exists yet (claude-factory-dun.31).
 - `decide()` now archives a never-shown short note after 14 days, caps how many
   notes one tiering pass can archive, and logs the plan before it writes
   anything. (claude-factory-503.2)

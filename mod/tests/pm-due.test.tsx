@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { pmDue } from '../hooks/view'
+import { hasAgentTool, pmDue, pmRetryDelay } from '../hooks/view'
 
 // claude-factory-dun.5: pmDue is the pm subagent's pure cadence check. These are plain function
 // calls, no `$`, no mocks. mod/tests/pm.test.tsx covers the `$` integration (spawn, turn.complete,
@@ -64,4 +64,23 @@ test('a hot reload resets pmAt to 0; a plan written 61 min ago is due', () => {
 test('a plan whose at is in the future (clock skew) does not count: read as stale', () => {
   const now = 1000 * HOUR
   expect(pmDue(now, 0, now + HOUR, false, false)).toEqual({ due: true, wanted: false })
+})
+
+// ---- claude-factory-dun.28: hasAgentTool and pmRetryDelay, pure helpers for the Agent-tool gate ----
+
+test('hasAgentTool: true only when the tool list names Agent', () => {
+  expect(hasAgentTool(['Bash', 'Agent'])).toBe(true)
+  expect(hasAgentTool(['Bash'])).toBe(false)
+})
+
+test('hasAgentTool: undefined list reads as unknown, never as blocked', () => {
+  expect(hasAgentTool(undefined)).toBeUndefined()
+})
+
+test('pmRetryDelay: exponential, capped at 60 minutes', () => {
+  expect(pmRetryDelay(1)).toBe(60_000)
+  expect(pmRetryDelay(2)).toBe(120_000)
+  expect(pmRetryDelay(3)).toBe(240_000)
+  expect(pmRetryDelay(7)).toBe(HOUR)
+  expect(pmRetryDelay(50)).toBe(HOUR)
 })
