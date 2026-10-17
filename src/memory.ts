@@ -1302,6 +1302,12 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
  *
  * `opts.onPlan`, when given, runs once with planLines(). It runs right after decide(), before any
  * write or rmSync, and on a dry run too. This way, the plan a caller logs always matches what ran.
+ *
+ * `opts.untilDeps` (claude-factory-3u1.1.4) feeds untilStatus() for each short note's `until`
+ * marker. applyTiers() always checks a date marker with untilStatus(). It checks a bead or PR
+ * marker only when the caller passes `opts.untilDeps`. With no `untilDeps` at all, a bead or PR
+ * note gets no verdict and no flag. So a caller that skips `untilDeps` keeps the output it had
+ * before this feature.
  */
 export function applyTiers(
   dir: string,
@@ -1310,6 +1316,7 @@ export function applyTiers(
     dryRun?: boolean
     archiveCap?: number
     topicCap?: number
+    untilDeps?: UntilDeps
     onPlan?: (lines: string[]) => void
   } = {},
 ) {
@@ -1319,6 +1326,7 @@ export function applyTiers(
   const historyDays = usageHistoryDays(dir, now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
   const topicCap = opts.topicCap ?? envTopicCap()
+  const isDateUntil = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v)
   const short: ShortCandidate[] = notes
     .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
     .map(n => {
@@ -1326,6 +1334,10 @@ export function applyTiers(
       const createdMs = Number.isFinite(atMs) ? atMs : (gitAddedMs(dir, n.path) ?? now)
       const u = uses.get(n.path)
       const lastMs = u?.at || createdMs
+      // a date marker is always judged; a bead or PR marker only when the caller gave untilDeps
+      // (AC8): this keeps a caller that never passes untilDeps free of any new verdict or flag.
+      const until = n.until && (isDateUntil(n.until) || opts.untilDeps) ? n.until : undefined
+      const verdict = until ? untilStatus(until, now, opts.untilDeps ?? {}) : null
       return {
         path: n.path,
         topic: topicOf(n),
@@ -1334,6 +1346,9 @@ export function applyTiers(
         staleDays: (now - lastMs) / DAY_MS,
         shown: u?.shown ?? 0,
         helped: u?.helped ?? 0,
+        expired: verdict?.state === 'ended',
+        expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
+        untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
       }
     })
   const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap })
