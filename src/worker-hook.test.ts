@@ -1523,6 +1523,25 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   // claude-factory-dgf (AC4): GNU getopt_long accepts a unique prefix of a long option name.
   ["env --spl 'git push origin main'", 'PUSH_REASON'],
   ["env --sp='git push origin main'", 'PUSH_REASON'],
+  //
+  // claude-factory-dgf.4: a prefix of a long value flag name must also skip its value word.
+  // Real GNU env 9.11 runs `--uns FOO -S` and `--ch /tmp -S`.
+  ["env --uns FOO -S 'git push origin main'", 'PUSH_REASON'],
+  ["env --ch /tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  //
+  // claude-factory-dgf.5: the attached long form (`--unset=FOO`) holds its value in one word.
+  // It must not take the next word too. That word is the real `-S`.
+  ["env --unset=FOO -S 'git push origin main'", 'PUSH_REASON'],
+  ["env --chdir=/tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  //
+  // claude-factory-dgf.6: the attached short form (`-uFOO`) holds its value in one word too.
+  // It must not take the next word. That word is the real `-S`.
+  ["env -uFOO -S 'git push origin main'", 'PUSH_REASON'],
+  ["env -C/tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  //
+  // claude-factory-dgf.7: a bare `-` is not an option word. The scan must pass it and continue.
+  // Real macOS `/usr/bin/env - -S 'echo x'` runs the string: BSD `env` reads `-` as an option.
+  ["env - -S 'git push origin main'", 'PUSH_REASON'],
 ]
 const ENV_SPLIT_STRING_REASON: Record<string, string> = {
   MERGE_REASON,
