@@ -13,6 +13,7 @@ import {
   PUSH_REASON,
   READY_REASON,
   REASON,
+  scanReason,
   XARGS_REASON,
 } from './worker-hook'
 
@@ -284,8 +285,9 @@ test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-fac
 // For n=2000, the time used is 679 ms.
 // For n=4000, the time used is 4008 ms.
 //
-// This test does not set personOnly. The 8192-character limit applies only when personOnly is set.
-// So it does not apply here.
+// This command is over 8192 characters, so denyReason denies it with LONG_COMMAND_REASON on
+// every rig (claude-factory-dts). scanReason runs the same scan with no length cap, so it still
+// proves the depth limit fix directly.
 //
 // A high load can make more time necessary for this check.
 // The time necessary can then be more than the 10 s time limit of the PreToolUse hook.
@@ -298,12 +300,17 @@ test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-fac
 // This check is much faster than the 500 ms time limit of this test.
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 const DEEP_RM_N = 4000
+const DEEP_RM_COMMAND = 'eval '.repeat(DEEP_RM_N) + 'rm '.repeat(DEEP_RM_N) + '; rm -rf x'
 
-test('denyReason denies a 4000-level stacked eval rm -rf form, fast, no personOnly (claude-factory-epz)', () => {
-  expect(denyReason('eval '.repeat(DEEP_RM_N) + 'rm '.repeat(DEEP_RM_N) + '; rm -rf x')).toBe(
-    DEEP_COMMAND_REASON,
-  )
+test('scanReason denies a 4000-level stacked eval rm -rf form, fast, no personOnly (claude-factory-epz)', () => {
+  expect(scanReason(DEEP_RM_COMMAND)).toBe(DEEP_COMMAND_REASON)
 }, 500)
+
+// claude-factory-dts: the same over-8192-character command denies with LONG_COMMAND_REASON
+// through denyReason, on every rig, with no personOnly set.
+test('denyReason denies the same 4000-level stacked eval rm -rf form with LONG_COMMAND_REASON (claude-factory-dts)', () => {
+  expect(denyReason(DEEP_RM_COMMAND)).toBe(LONG_COMMAND_REASON)
+})
 
 test('denyReason denies a command nesting 33 eval levels (claude-factory-epz)', () => {
   expect(denyReason('eval '.repeat(33) + 'ls')).toBe(DEEP_COMMAND_REASON)
@@ -328,8 +335,13 @@ test('denyReason denies a 33-level stacked eval command with personOnly set too 
 // claude-factory-25z.20: the .17 fix made the scan linear. But a command of n eval words, then n
 // bare kubectl words, then a real apply still costs about n^3. A command built to be about 26 KB
 // can push that scan past the 10 s PreToolUse hook timeout. A timed-out hook runs the command
-// unchecked. So denyReason now denies a command longer than 8192 characters outright, before any
-// scan, when personOnly is set.
+// unchecked. So denyReason denies a command longer than 8192 characters outright, before any
+// scan.
+//
+// claude-factory-dts: this cap now applies on every rig, not only one with a person-only kube
+// context. The old behavior (today's test name) was the bug this bead fixes, so this test now
+// asserts the new, approved behavior: the cap denies with no personOnly set, the same as with
+// personOnly set.
 const LONG_COMMAND_8192 = 'x'.repeat(8192)
 const LONG_COMMAND_8193 = 'x'.repeat(8193)
 
@@ -337,13 +349,19 @@ test('denyReason denies a command over 8192 characters outright when personOnly 
   expect(denyReason(LONG_COMMAND_8193, undefined, ACME)).toBe(LONG_COMMAND_REASON)
 })
 
-test('denyReason keeps today’s behavior for a command over 8192 characters when personOnly is empty or absent (claude-factory-25z.20)', () => {
-  expect(denyReason(LONG_COMMAND_8193)).toBeUndefined()
-  expect(denyReason(LONG_COMMAND_8193, undefined, [])).toBeUndefined()
+test('denyReason denies a command over 8192 characters outright on every rig, personOnly empty or absent (claude-factory-dts)', () => {
+  expect(denyReason(LONG_COMMAND_8193)).toBe(LONG_COMMAND_REASON)
+  expect(denyReason(LONG_COMMAND_8193, undefined, [])).toBe(LONG_COMMAND_REASON)
 })
 
 test('denyReason gives a normal verdict for a command at exactly 8192 characters, personOnly set (claude-factory-25z.20)', () => {
   expect(denyReason(LONG_COMMAND_8192, undefined, ACME)).toBeUndefined()
+})
+
+// claude-factory-dts: the cap applies on every rig, so a command at exactly 8192 characters still
+// gives a normal verdict with no personOnly set at all.
+test('denyReason gives a normal verdict for a command at exactly 8192 characters, personOnly absent (claude-factory-dts)', () => {
+  expect(denyReason(LONG_COMMAND_8192)).toBeUndefined()
 })
 
 // claude-factory-1by: anyShellReason calls shCFlagIndex(words.slice(j)) for each sh/bash/zsh/dash
@@ -351,9 +369,11 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
 //
 // The scan it feeds also costs O(n-j). On a miss, j moves by only 1.
 //
-// So a run of n such words with no `-c` cluster costs O(n^2). No personOnly is set here.
+// So a run of n such words with no `-c` cluster costs O(n^2).
 //
-// So the 8192-character cap (claude-factory-25z.20) does not apply. Nothing else bounds the scan.
+// Each command below is over 8192 characters. denyReason now denies each one with
+// LONG_COMMAND_REASON on every rig (claude-factory-dts). scanReason runs the same scan with no
+// length cap, so it still proves the linear-time fix directly.
 //
 // Measured on the pre-fix code, load 12-30:
 //
@@ -378,21 +398,27 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 const SCAN_N = 40000
 
-test('denyReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(denyReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(scanReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
 
-test('denyReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(denyReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(scanReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
 
-test('denyReason denies a 40000-word sh -- scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(denyReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies a 40000-word sh -- scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(scanReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
 
-test('denyReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(denyReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(scanReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
+
+// claude-factory-dts: one of the commands above, run through denyReason instead, denies with
+// LONG_COMMAND_REASON: it is over 8192 characters, and the cap applies before any scan.
+test('denyReason denies the same 40000-word sh scan with LONG_COMMAND_REASON (claude-factory-dts)', () => {
+  expect(denyReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(LONG_COMMAND_REASON)
+})
 
 // claude-factory-1by: shapes the fix must keep denying or allowing exactly as before. A fix that
 // jumps `j` blindly to the end of a segment on a cluster miss would wrongly allow the first two:
@@ -409,14 +435,23 @@ test('denyReason still denies `sh -x -lc "rm -rf x"` (claude-factory-1by)', () =
   expect(denyReason('sh -x -lc "rm -rf x"')).toBe(REASON)
 })
 
-test('denyReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
-  expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
+// claude-factory-dts: this command is also over 8192 characters, so scanReason (no length cap)
+// keeps the old allow verdict, and denyReason now denies it with LONG_COMMAND_REASON.
+test('scanReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
+  expect(scanReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
+})
+
+test('denyReason denies the same no-script sh scan with LONG_COMMAND_REASON (claude-factory-dts)', () => {
+  expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBe(LONG_COMMAND_REASON)
 })
 
 // claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it
 // runs cmd.slice(i + 1), then reads rest[0]. A slice costs O(n - i). A run of n -exec words makes
-// n such slices, so the find branch costs O(n^2). This test does not set personOnly. So the
-// 8192-character cap (claude-factory-25z.20) does not apply.
+// n such slices, so the find branch costs O(n^2).
+//
+// Each command below is over 8192 characters. denyReason now denies each one with
+// LONG_COMMAND_REASON on every rig (claude-factory-dts). scanReason runs the same scan with no
+// length cap, so it still proves the linear-time fix directly.
 //
 // Measured on the pre-fix code, load 13.81:
 //
@@ -434,24 +469,30 @@ test('denyReason still allows a 40000-word sh scan whose last word is a `-c` fla
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 const FIND_N = 200000
 
-test('denyReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)', () => {
-  expect(denyReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)', () => {
+  expect(scanReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
+
+// claude-factory-dts: the same over-8192-character command denies with LONG_COMMAND_REASON
+// through denyReason, on every rig.
+test('denyReason denies the same 200000-word find -exec scan with LONG_COMMAND_REASON (claude-factory-dts)', () => {
+  expect(denyReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(LONG_COMMAND_REASON)
+})
 
 // claude-factory-lbn: this shape still slices once per -exec word. It does so even when the fix
 // checks baseWord(cmd[i + 1]) === 'rm' before the slice (the bead's own first proposal).
 // The slice itself costs O(n), not the check before it. Each rm here carries no recursive flag.
 // So the command must stay allowed.
-test('denyReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)', () => {
-  expect(denyReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
+test('scanReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)', () => {
+  expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
 }, 500)
 
-test('denyReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)', () => {
-  expect(denyReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
+test('scanReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)', () => {
+  expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
 }, 500)
 
-test('denyReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)', () => {
-  expect(denyReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
+test('scanReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)', () => {
+  expect(scanReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
 }, 500)
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')

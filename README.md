@@ -247,8 +247,9 @@ the worker does not know its current context. The hook matches context and clust
 It cannot resolve a shell expansion. So it also refuses a `--context` or a kubectl `--cluster`
 value that is not a literal name, such as `$CTX` or a backtick.
 
-On a rig with a `--person-only-context`, the hook refuses a command longer than 8192 characters.
-A command this long can make the hook's own scan too slow.
+On every rig, the hook refuses a command longer than 8192 characters. A command this long can
+make the hook's own scan too slow. Put a long report summary, bd description or pull request
+body in a file under `.scratch/`, and pass it with `--body-file`, or as `"$(cat .scratch/<name>)"`.
 
 On every rig, the hook refuses a command that nests more than 32 `eval` or `sh -c` levels. A
 command nested this deep can make the hook's own scan too slow too.

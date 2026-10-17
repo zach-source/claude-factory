@@ -734,6 +734,33 @@ minor release may change the factory format, the CLI or the run state.
     `personOnly`. The 8192-character cap stays. The cap's own wording now
     says "characters", not "bytes": `command.length` counts UTF-16 units.
     README.md gained one sentence on the 8192-character deny.
+- Fixed: a long multi-push `git push` command can outrun the worker
+  `PreToolUse` hook's 10-second timeout and run unchecked. The 8192-character
+  length cap guarded only a rig with a `--person-only-context` set.
+  (claude-factory-dts)
+  - Cause: `gitReason` called `gate.headOf(dir)` once for each push segment,
+    and `protectedBranchSet` called `gate.originHead()` once for each push
+    segment (inside `gitPushDenied`/`sendPackDenied`). Neither call was
+    cached. A command of 583 `git push o b;` segments plus a trailing
+    protected push (8182 characters, under the old cap) took 10527 ms at a
+    load average of 52, through `bun src/worker-hook.ts`.
+  - Fix: `memoGate(gate)` (`src/worker-hook.ts`) wraps `gate.headOf` and
+    `gate.originHead` once at the `denyReason` entry. `originHead` now runs
+    at most once per call, caching an unresolved (`undefined`) result too.
+    `headOf` caches one result for each distinct `dir`, up to
+    `MAX_HEAD_DIRS` (8); past that, it returns `undefined` with no git
+    spawn, the same fail-closed rule an unresolvable `headOf` already used
+    (claude-factory-zl5.12). `denyReason` now checks `MAX_COMMAND_LENGTH` on
+    every rig, not only one with `--person-only-context`, before any scan.
+    The real scan moved to a new exported `scanReason`, with no length cap
+    of its own, so a recursive `eval`/`sh -c` call (a substring of a command
+    `denyReason` already capped) needs no cap either.
+    `LONG_COMMAND_REASON`'s own text dropped the person-only-context
+    wording and now tells the worker to put a long report summary, bd
+    description or pull request body in a file under `.scratch/`, and pass
+    it with `--body-file`, or as `"$(cat .scratch/<name>)"`.
+    `src/worker-hook.bench.ts` now times `scanReason`, matching the removed
+    cap. README.md's 8192-character sentence now says "on every rig".
 - Added: `factory memory add` now takes `--kind fact|rule|recipe` and
   `--until <bead|owner/repo#N|pull-URL|YYYY-MM-DD>`. It refuses the note
   before it checks for a duplicate. (claude-factory-3u1.1.1)

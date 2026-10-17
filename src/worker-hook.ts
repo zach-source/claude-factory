@@ -64,14 +64,20 @@ export const LIVE_REASON =
   'current context is unknown here). This guard matches context and cluster names only. ' +
   'Do not retry this command. Report blocked: "parked, waiting on: <the exact command>".'
 
-// claude-factory-25z.20: a command this long can make the guard's own scan slow enough to miss
-// the 10 s PreToolUse hook timeout, which lets the command run unchecked.
+// claude-factory-25z.20, extended on every rig by claude-factory-dts: a command this long can
+// make the guard's own scan slow enough to miss the 10 s PreToolUse hook timeout, which lets the
+// command run unchecked.
 const MAX_COMMAND_LENGTH = 8192
 
+// claude-factory-dts: this cap now applies on every rig, not only one with a person-only kube
+// context. A worker that hits this on a long report summary, bd description or PR body can put
+// that text in a file under .scratch/ and pass it with --body-file, or as "$(cat .scratch/<name>)".
 export const LONG_COMMAND_REASON =
-  'The factory denies this command: it is longer than 8192 characters, and this rig checks commands ' +
-  'against a person-only kube context. A command this long can make that check too slow. ' +
-  'Split this command into shorter commands and run them one at a time. Do not retry this exact command.'
+  'The factory denies this command: it is longer than 8192 characters. A command this long can ' +
+  "make the factory's own check too slow, on every rig. Split this command into shorter " +
+  'commands and run them one at a time. For a long report summary, bd description or pull ' +
+  'request body, put the text in a file under .scratch/ and pass it with --body-file, or as ' +
+  '"$(cat .scratch/<name>)". Do not retry this exact command.'
 
 // claude-factory-zl5
 export const MERGE_REASON =
@@ -1871,11 +1877,31 @@ function memoGate(gate: HookGate): HookGate {
  * rig's protected branches, and small reads of the live repo a test can fake out. These checks
  * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
  *
- * claude-factory-dts: `memoGate` wraps `gate` once here, so every recursion level (denyAt,
- * anyShellReason) through this one call shares one memoized `headOf`/`originHead`, in place of
- * one real git spawn for every push segment.
+ * claude-factory-dts: this checks `command.length` once, before any scan, on every rig. Past
+ * MAX_COMMAND_LENGTH it gives `LONG_COMMAND_REASON` outright. At or under that length, it calls
+ * `scanReason`, which runs the real scan with no length cap of its own.
  */
 export function denyReason(
+  command: string,
+  root?: string,
+  personOnly?: string[],
+  gate?: HookGate,
+): string | undefined {
+  if (command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
+  return scanReason(command, root, personOnly, gate)
+}
+
+/**
+ * The scan `denyReason` runs, with no length cap (claude-factory-dts). `denyReason` is the one
+ * public entry point that checks `MAX_COMMAND_LENGTH`; a recursive call (through `anyShellReason`,
+ * for `eval` or `sh -c`) reads a substring of a command `denyReason` already capped, so this inner
+ * scan needs no cap of its own.
+ *
+ * `memoGate` wraps `gate` once here, so every recursion level (`denyAt`, `anyShellReason`)
+ * through this one call shares one memoized `headOf`/`originHead`, in place of one real git spawn
+ * for every push segment (claude-factory-dts).
+ */
+export function scanReason(
   command: string,
   root?: string,
   personOnly?: string[],
@@ -1897,14 +1923,10 @@ function denyAt(
   depth: number,
 ): string | undefined {
   if (!command) return undefined
-  // claude-factory-epz: this check comes before the 8192-char check, so a deep command denies
-  // even when personOnly is empty or absent (the 8192 cap applies only when personOnly is set).
+  // claude-factory-epz: a deep command denies here, with no personOnly check at all. The
+  // MAX_COMMAND_LENGTH cap (claude-factory-25z.20) now runs once, in denyReason, before this
+  // function ever runs (claude-factory-dts). denyAt itself checks no length at all.
   if (depth > MAX_SHELL_DEPTH) return DEEP_COMMAND_REASON
-  // claude-factory-25z.20: this guard's own scan cost rises with the length of `command` (see
-  // anyLiveApplyWord and anyShellReason). A command built to be long enough can push that scan
-  // past the 10 s PreToolUse hook timeout, which lets the command run unchecked. When a
-  // person-only context list is set, deny a command this long outright instead of scanning it.
-  if (personOnly?.length && command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
   const g = gate
   let hasRm = false
   let hasCd = false
