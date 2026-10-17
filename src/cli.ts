@@ -1042,14 +1042,19 @@ function reviveWorktree(run: Run) {
   // this cannot reach the remote at all. Check reachability on its own first (claude-factory-l38.18):
   // only a genuine network failure gets its own message, never the blame-gc message below.
   const reachable =
-    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], { timeout: 30_000 })
-      .exitCode === 0
+    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], {
+      env: GIT_NETWORK_ENV,
+      timeout: GIT_NETWORK_TIMEOUT_MS,
+    }).exitCode === 0
   if (!reachable)
     fail(
       `Could not recreate ${run.worktree}: a fetch of origin failed, so this could not check whether ` +
         `${run.branch} still exists there. Check network access, then retry.`,
     )
-  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], { timeout: 30_000 })
+  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], {
+    env: GIT_NETWORK_ENV,
+    timeout: GIT_NETWORK_TIMEOUT_MS,
+  })
   if (verify(`refs/remotes/origin/${run.branch}`))
     return git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, `origin/${run.branch}`)
   const ref = `refs/factory-gc/${run.id}`
@@ -3261,8 +3266,21 @@ export function deleteBranchCas(repo: string, name: string, local: string | null
 }
 
 const gcWorktreesJournal = () => join(HOME, 'gc-worktrees.jsonl')
+/** Scrubs URL userinfo from every string value of `value` (claude-factory-0lt, AC2). It walks an
+ * array or an object the same way, so a new field or a nested value can never skip the scrub. */
+function scrubDeep(value: unknown): unknown {
+  if (typeof value === 'string') return gc.scrubUrlUserinfo(value)
+  if (Array.isArray(value)) return value.map(scrubDeep)
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v)]))
+  return value
+}
 const gcLog = (entry: Record<string, unknown>) =>
-  durable(gcWorktreesJournal(), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', 'a')
+  durable(
+    gcWorktreesJournal(),
+    JSON.stringify(scrubDeep({ at: new Date().toISOString(), ...entry })) + '\n',
+    'a',
+  )
 
 /**
  * Removes a finished run's worktree. It also removes the run's factory/* branch, once
