@@ -76,11 +76,17 @@ shrink the card.
 
 ![The Backlog tab: the bead tree of each rig](docs/images/console-backlog.png)
 
-The Backlog shows the beads of each rig as a tree. Each rig has one rule with its busy count and
-the counts of queued and waiting beads. A parent bead shows `[done/total]` for its children.
-Press `▸` to show the children and `▾` to hide them. The `⛔` mark shows a bead that an open bead
-holds back, with the id of the blocker. Use the type buttons to filter the beads. Press `queue` to
-queue a bead. Press `start now` to start a run on it.
+The Backlog shows the beads of each rig as a tree. Each rig has one rule. The rule shows the busy
+count and the counts of queued and waiting beads. A parent bead shows `[done/total]` for its children.
+
+Press `▸` to show the children. Press `▾` to hide them. The `⛔` mark shows a bead that an open bead
+blocks. The mark shows the id of the blocker.
+
+Use the type buttons to filter the beads. Press `queue` to queue a bead. Press `start now` to start
+a run on it.
+
+A sweep pass labels each bead that it files with `sweep:<name>`. The Backlog groups these beads
+under a `sweep:<name> (n)` heading. The heading is separate from the priority tiers.
 
 ### Mail (key 3)
 
@@ -193,7 +199,8 @@ the config (`/*`, `!/.gitignore`, `!/rigs.json`), and an `origin`. Every 10 minu
 and pushes it, and pushes the memory to the `memory` branch, so the factory can be rebuilt from the repo.
 
 A rig is a repo the factory works, by name. Its ready beads labeled `factory` start as runs,
-it keeps its sweeps running, and it has its own cap on busy runs under the factory's
+`factory tick` starts one of its sweeps on each sweep's own cadence (see
+[Sweeps](#sweeps)), and it has its own cap on busy runs under the factory's
 `FACTORY_MAX_RUNS`. A goal is the person's standing direction for the rig: while the rig has
 room, the manager's heartbeat patrol carries it and gives the rig the next work toward it,
 using the pm's plan when it is fresh (see [The manager drives](#the-manager-drives)).
@@ -201,9 +208,9 @@ The goal also reaches every worker's brief, under "## Rig goal", so a step it re
 the person binds every station, not only the manager.
 
 ```sh
-factory rig add web ~/repos/web --max 4                     # all of lifecycle's sweeps
+factory rig add web ~/repos/web --max 4                     # all of factories/sweeps.ts's sweeps
 factory rig add app ~/repos/app --max 3 --sweeps none --goal finish the v2 features
-factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor
+factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor --slo "kubectl get pods -n infra | grep -v Running"
 factory rig add docs ~/repos/docs review-loop --sweeps none
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig rm docs                                         # nothing new starts; its runs carry on
@@ -288,19 +295,44 @@ factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egr
 | refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
 | operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
 | incident                     | incident → rollback or plan → … → postmortem, which files the action items                         |
-| sweeps                       | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)    |
 
-Sweeps never end: each pass files what it finds as runs of its own (`lifecycle@incident`,
-`@plan`, `@baseline`, `@characterize`), skipping duplicates. `factory loop` ticks with no
-console open and keeps one run of each of a rig's sweeps: abort a sweep to stop it, `rm`
-it to let the loop start it again. **Your merge is the gate**: release marks the pull
-request ready, and deploy parks on it until you merge it on GitHub, then deploys and watches
-the rollout. It never merges itself. Request changes on the pull request to send the run back
-to implement; close it to end the run with its bead deferred.
-Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews security.
-`factories/lifecycle.test.ts` walks every loop through the machine.
+Lifecycle holds no sweep stations: see [Sweeps](#sweeps) for monitor, maintain and improve.
+
+**Your merge is the gate**: release marks the pull request ready, and deploy parks on it
+until you merge it on GitHub, then deploys and watches the rollout. It never merges itself.
+Request changes on the pull request to send the run back to implement; close it to end the
+run with its bead deferred. Models follow the tiers: Sonnet executes, Opus plans and reviews,
+Fable reviews security. `factories/lifecycle.test.ts` walks every loop through the machine.
 
 `bin/factory help` lists every command; the manager model uses the same CLI.
+
+## Sweeps
+
+[`factories/sweeps.ts`](factories/sweeps.ts) holds the standing sweeps, apart from lifecycle:
+
+| Sweep    | Cadence       | What it needs                         |
+| -------- | ------------- | -------------------------------------- |
+| monitor  | every 30 min  | a rig's `--slo '<read-only command>'` |
+| maintain | daily         | nothing extra                          |
+| improve  | daily, rotating refactor, performance, cost and factory-health lens | nothing extra |
+
+`factory tick` starts one run per due `(rig, sweep)` pass, at most every `FACTORY_SWEEP_MS`
+(default 300000ms); `FACTORY_SWEEPS=0` turns this off. Each pass goes straight to `done`: it
+files what it finds as beads, not as a standing run. `rig add --sweeps a,b|none` picks which
+sweeps a rig runs; the default is all of them. `monitor` reads the rig's `--slo` command on the
+laptop (never on a VM worker), hashes its output, and starts a run only when the hash changed
+since the last pass; the unchanged output never reaches a model. Start a pass by hand with
+`factory start sweeps@maintain <rig> 'sweep: maintain'`.
+
+**Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
+`sweep:maintain`). At most 5 such beads per rig stay labeled `factory` (so they start on their
+own) in any 24-hour window; a later one that day is still filed, just without the `factory`
+label, for a person to queue. A kept bead past the cap starts on its own only when it also
+carries `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`.
+The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
+
+A pinned run from before this design (`claude-factory-8pc`) still loads its own copy of the
+sweep stations from `factories/lifecycle.ts`, if its `factory.json` holds one.
 
 ## The factory improves itself
 
@@ -472,7 +504,7 @@ see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }` parks the r
 `goto` skips the wait.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
-edge refills it, so a sweep loops forever), `maxContextK` (200: the context, in thousands of
+edge refills it, so soak's `unsure` self-loop does not run out), `maxContextK` (200: the context, in thousands of
 tokens, past which a Claude worker hands off to a fresh one). Edits apply at the next tick.
 
 A factory can also be data: `.json`, `.yaml`/`.yml` or `.toml`, the same shape. And it can
