@@ -53,6 +53,30 @@ minor release may change the factory format, the CLI or the run state.
       deny the command outright, next to the existing `alias.<name>=push` check.
     - `gh alias set <name> "<expansion>"` now denies the command when the expansion's own
       text would deny it. `gh alias import` denies the command outright.
+  - A round-3 review found 5 more bypasses. The hook now closes each one too.
+    - `gh api graphql --input <file>` reads `<file>` as JSON. It checks only the `query` string
+      in that JSON for a mutation name. A raw-text scan missed a mutation name that GitHub
+      decodes from a backslash-u escape, for example `merge\u0050ullRequest` for
+      `mergePullRequest`. A body that is not correct JSON denies the command at once.
+    - The shared `normalizeEndpoint` function removes a trailing `#fragment`, then a `?query`,
+      then a `/`. Each REST and GraphQL endpoint check uses the result. The `gh` tool
+      removes a `#fragment` before it sends the request. A check that read the raw endpoint
+      text missed a path, such as `pulls/5/merge#x` or `graphql#x`.
+    - The branch-name check on a `git/refs/heads/<branch>` path captures a full branch name
+      with a slash, such as `acme/deploy`. Before, it stopped at the first slash. The check also
+      accepts the singular `git/ref/heads/` path and decodes a percent-encoded branch name. A
+      bad encoding denies the command. A `contents` write's `branch` field removes a
+      `refs/heads/` or `heads/` prefix, as the ref-create field does.
+    - `gh alias set` and `gh alias import` always deny the command. That scan read only the alias
+      expansion's own text. It missed a `!shell` expansion and the `-` stdin form. It also missed
+      a call that comes after the alias is set and adds its own words to the new alias name. For
+      example: `gh p merge 5` after `gh alias set p pr`.
+    - A `git -c alias.<name>=<value>` or `git config alias.<name> <value>` write denies all
+      values. The check no longer covers only a value that reads as a literal `push` command. It
+      also denies a `!shell` value, such as `!git push`. A new `push.default` check denies the
+      `upstream` and `tracking` values. These values change the default branch of a bare
+      `git push`, as a `remote.*.push` value does. All these checks, and the `remote.*.push`
+      check, also read the `git config set <name> <value>` syntax that git 2.46 has.
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook

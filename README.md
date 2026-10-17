@@ -267,8 +267,28 @@ The hook also denies an equivalent, disguised form of each command above:
   these name the same branch as `HEAD` or `refs/heads/<branch>`
 - `git -c remote.<name>.push=<value>` or `git config remote.<name>.push <value>`: either one
   can send a later, plain `git push` to a protected branch with no refspec of its own
-- `gh alias set <name> "<expansion>"` when the expansion's own text denies, and
-  `gh alias import`, since the hook cannot read the imported file
+- `gh alias set <name> "<expansion>"` when the expansion's own text contains a denied command. The hook also denies `gh alias import`, because it cannot read the imported file.
+
+A round-3 review found 5 more disguised forms. The hook now denies these too:
+
+- a `gh api graphql --input <file>` call whose JSON body names a mutation through a
+  backslash-u escape, for example `merge\u0050ullRequest` for `mergePullRequest`. The hook
+  parses the body as JSON and reads its own `query` string, not the raw file text. A body
+  that is not correct JSON makes the hook deny the command.
+- a `#fragment` on a `gh api` endpoint, for example `pulls/5/merge#x` or `graphql#x`. The hook
+  removes the `#fragment` first, then the `?query` and a trailing `/`. Only then does it read the endpoint.
+- a `git/refs/heads/<branch>` path where the branch name has a slash, for example
+  `acme/deploy`, or is percent-encoded. The hook also denies the singular `git/ref/heads/` path
+  and a `contents` write whose `branch` field has a `refs/heads/` or `heads/` prefix.
+- every `gh alias set` and `gh alias import` call, not only a call whose own expansion text
+  contains a denied command. The text scan misses a denied command in these cases:
+  - a `!shell` expansion
+  - a `-` stdin expansion
+  - a later call that adds more words to the new alias name
+- a `git -c alias.<name>=<value>` or `git config alias.<name> <value>` write with any value,
+  not only a literal `push` value. A `!shell` value runs too, such as `!git push`.
+  The hook also denies a `push.default` value of `upstream` or `tracking`.
+  The hook denies git 2.46's `git config set <name> <value>` subcommand form, for every one of these checks and the existing `remote.*.push` check.
 
 The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
 read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook
