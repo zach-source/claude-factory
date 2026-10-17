@@ -60,12 +60,22 @@ function pmMocks(
     planSetOut?: () => string
     paneOwner?: string
     calls?: string[][]
+    /** captures every `$.ui.status` call, for a test that checks the pm's own status line */
+    status?: unknown[]
+    /** the manager session's own tool names, as `$.tool.list()` would answer. Left out: no
+     * `tool.list` mock at all, the same as an old engine or an unmocked test (claude-factory-dun.29) */
+    tools?: readonly string[]
   },
 ) {
   const files = opts.files ?? new Map<string, string>()
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-  for (const event of ['ui.open', 'ui.toast', 'ui.status'] as const)
-    on(event, () => ({ value: undefined }) as never)
+  for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
+  on('ui.status', (_, e) => (opts.status?.push(e), { value: undefined }) as never)
+  if (opts.tools !== undefined)
+    on(
+      'tool.list',
+      () => ({ value: opts.tools!.map(name => ({ name, description: '', mcp: false })) }) as never,
+    )
   on('session.id', () => ({ value: 'me' }) as never)
   on('process.run', ($, e) => {
     opts.calls?.push(e.argv as string[])
@@ -384,6 +394,111 @@ test(
     await clock.advance(70 * 60_000)
 
     expect(spawns).toHaveLength(0)
+  },
+)
+
+// ---- claude-factory-dun.29: the manager has no Agent tool, so every `$.agent.spawn` throws ----
+
+test(
+  'the pm is blocked when the manager has no Agent tool: no plan facts, no spawn, one status line and one pm-log entry, even after 3 hours of ticks',
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const calls: string[][] = []
+    const status: unknown[] = []
+    const spawns: unknown[] = []
+    const files = pmMocks(on, { runs: () => [RUN('r8')], calls, status, tools: ['Bash', 'Read'] })
+    on('agent.spawn', ($, e) => {
+      spawns.push(e)
+      return { model: 'sonnet' } as never
+    })
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await clock.advance(3 * 60 * 60_000)
+
+    expect(calls.some(a => a.includes('plan') && a.includes('facts'))).toBe(false)
+    expect(spawns).toHaveLength(0)
+    const log = logOf(files)
+    expect(log).toHaveLength(1)
+    expect(log[0]).toMatchObject({ reason: 'blocked' })
+    expect(log[0].error).toContain('Agent tool')
+    expect(status.filter(s => JSON.stringify(s).includes('pm is blocked'))).toHaveLength(1)
+  },
+)
+
+test(
+  'the pm spawns normally when tool.list resolves with Agent present',
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const spawns: unknown[] = []
+    pmMocks(on, { runs: () => [RUN('r9')], tools: ['Bash', 'Agent'] })
+    on('agent.spawn', ($, e) => {
+      const ev = e as unknown as { subagent_type: string }
+      if (ev.subagent_type === 'factory:pm') spawns.push(ev)
+      return { model: 'sonnet' } as never
+    })
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    agentListMock(on, [], ['pm-9'])
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+
+    expect(spawns).toHaveLength(1)
+
+    await $.turn.complete({
+      answer: PLAN_ANSWER,
+      durationMs: 100,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'pm-9',
+    } as never)
+  },
+)
+
+test(
+  'a pm spawn that is denied every time backs off: facts gather at t0, +60s, +180s, +420s, one pm-log error line each',
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const calls: string[][] = []
+    const files = pmMocks(on, { runs: () => [RUN('r10')], calls, tools: ['Bash', 'Agent'] })
+    // a repeated throw deregisters a test's own mock after it first fires (unlike a plain denied
+    // answer), so every retry in this test uses `res.deny`, the sibling failure path pmNow treats
+    // the same way (claude-factory-dun.29): both count `rt.pmFailures` and back off the same.
+    on('agent.spawn', () => ({ deny: 'spawn blew up' }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+
+    const factsCalls = () => calls.filter(a => a.includes('plan') && a.includes('facts')).length
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(factsCalls()).toBe(1) // t0: due at once, spawn throws, failures=1, retry in 60s
+
+    await clock.advance(55_000)
+    expect(factsCalls()).toBe(1) // short of 60s since t0: no retry yet
+    await clock.advance(5_000)
+    expect(factsCalls()).toBe(2) // +60s: retry, throws again, failures=2, retry in 120s
+
+    await clock.advance(115_000)
+    expect(factsCalls()).toBe(2) // short of +180s since t0: no retry yet
+    await clock.advance(5_000)
+    expect(factsCalls()).toBe(3) // +180s: retry, throws again, failures=3, retry in 240s
+
+    await clock.advance(235_000)
+    expect(factsCalls()).toBe(3) // short of +420s since t0: no retry yet
+    await clock.advance(5_000)
+    expect(factsCalls()).toBe(4) // +420s: retry, throws again, failures=4
+
+    const log = logOf(files)
+    expect(log).toHaveLength(4)
+    for (const entry of log) {
+      expect(entry.reason).toBe('spawn-failed')
+      expect(entry.error).toContain('spawn blew up')
+    }
   },
 )
 

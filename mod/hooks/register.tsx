@@ -34,6 +34,7 @@ import {
   type UI,
 } from './views'
 import {
+  hasAgentTool,
   interviewAnswer,
   interviewPrompt,
   isValidPlan,
@@ -43,6 +44,7 @@ import {
   patrol,
   patrolsText,
   pmDue,
+  pmRetryDelay,
   quickAnswer,
   statusText,
   type Interview,
@@ -245,6 +247,13 @@ const rt = {
   liveIds: new Set<string>(),
   /** a denied pm spawn's next attempt; 0 means try at once */
   pmRetryAt: 0,
+  /** pm spawns that failed (a deny or a throw) since the last one that worked; feeds
+   * `pmRetryDelay`'s backoff (claude-factory-dun.29). A working spawn resets this to 0. */
+  pmFailures: 0,
+  /** set once this process finds the manager has no Agent tool (claude-factory-dun.29): gathers no
+   * more facts and spawns nothing until a restart starts a fresh process. `undefined` means not
+   * blocked, or not checked yet. */
+  pmBlocked: undefined as string | undefined,
   /** true while `pmNow` awaits `factory plan facts`, before `isPlanning` is set (claude-factory-dun.12):
    * `tick()` calls `pmNow` with `void`, so a later tick must not start a second facts gather */
   isGatheringFacts: false,
@@ -545,9 +554,16 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
  * `rt.isGatheringFacts` guards the gap this opens: without it, a tick that starts while an
  * earlier `plan facts` call is still running (before `rt.isPlanning` is set, just below) could
  * start a second one.
+ *
+ * claude-factory-dun.29: a manager session started before Agent joined the engine's own
+ * `--tools` list has no Agent tool, so every `$.agent.spawn` throws. A session like that must
+ * stop before `factory plan facts` (several `bd` calls on every rig), not retry forever: once
+ * `rt.pmBlocked` is set, this function returns at once on every later call. Only a restart, a
+ * fresh process, clears it. A spawn that fails for any other reason (a deny, or a throw with the
+ * Agent tool present) backs off `pmRetryDelay(rt.pmFailures)` instead of a fixed 60 s wait.
  */
 async function pmNow($: EngineInterface, runs: FactoryRun[]) {
-  if (!rt.isPmEnabled) return
+  if (!rt.isPmEnabled || rt.pmBlocked) return
   const now = await $.clock.now()
   if (rt.isPlanning && rt.pmStartedAt !== undefined && now - rt.pmStartedAt >= PM_WATCHDOG_MS) {
     rt.isPlanning = false
@@ -568,6 +584,25 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
   const { due, wanted } = pmDue(now, rt.pmAt, plan?.at, liveDropped, rt.pmWanted)
   rt.pmWanted = wanted
   if (!due) return
+  // the Agent-tool check, before any `bd` call: a missing `tool.list` event (an old engine, or a
+  // test with no mock) throws, which reads as "unknown" (claude-factory-dun.28), the same path
+  // this session took before this check existed.
+  let toolNames: string[] | undefined
+  try {
+    toolNames = (await $.tool.list()).map(t => t.name)
+  } catch {
+    toolNames = undefined
+  }
+  if (hasAgentTool(toolNames) === false) {
+    rt.pmBlocked = 'this manager has no Agent tool: restart factory manager'
+    $.ui.status(`factory: the pm is blocked: ${rt.pmBlocked}`)
+    try {
+      await appendPmLog($, { at: now, reason: 'blocked', durationMs: 0, error: rt.pmBlocked })
+    } catch (err) {
+      $.ui.status(`factory: failed to write the pm log: ${line(String(err), 160)}`)
+    }
+    return
+  }
   rt.isGatheringFacts = true
   const { isOk, out: facts } = await factory($, ['plan', 'facts']).finally(() => {
     rt.isGatheringFacts = false
@@ -583,22 +618,38 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
     const res = await $.agent.spawn({ subagentType: PM_TYPE, prompt: facts, description: 'factory pm' })
     if (res.deny) {
       rt.isPlanning = false
-      rt.pmRetryAt = now + PM_RETRY_MS
+      rt.pmFailures += 1
+      rt.pmRetryAt = now + pmRetryDelay(rt.pmFailures)
+      const error = line(res.deny, 300)
       $.ui.status(`factory: the pm spawn was denied: ${line(res.deny, 160)}`)
+      try {
+        await appendPmLog($, { at: now, reason: 'spawn-failed', durationMs: 0, error })
+      } catch (err) {
+        $.ui.status(`factory: failed to write the pm log: ${line(String(err), 160)}`)
+      }
       return
     }
     // committed only once the spawn is confirmed, the same reason patrolNow waits for its own
+    rt.pmFailures = 0
     rt.pmAt = now
     rt.pmId = res.agentId
     if (res.agentId) rt.pmIds = [...rt.pmIds, res.agentId].slice(-20)
   } catch (err) {
     // no $.prompt.submit fallback here (unlike the patrol's own catch): raw facts JSON is nothing
-    // the main chat can act on. rt.pmAt stays untouched, so the plan still reads as stale; but a
-    // throw (claude-factory-dun.11, not only `res.deny` above) must still set pmRetryAt, or every
-    // 5s tick re-runs `factory plan facts` and re-throws until the next hour mark.
+    // the main chat can act on. rt.pmAt stays untouched, so the plan still reads as stale. A throw
+    // (claude-factory-dun.11, not only `res.deny` above) backs off: 60 s, 120 s, 240 s, doubling up
+    // to a 60 min cap (claude-factory-dun.29), so a manager that throws on every spawn does not
+    // re-run `factory plan facts` every 60 s forever.
     rt.isPlanning = false
-    rt.pmRetryAt = now + PM_RETRY_MS
+    rt.pmFailures += 1
+    rt.pmRetryAt = now + pmRetryDelay(rt.pmFailures)
+    const error = line(String(err), 300)
     $.ui.status(`factory: the pm spawn failed (${line(String(err), 100)}); it will try again when next due.`)
+    try {
+      await appendPmLog($, { at: now, reason: 'spawn-failed', durationMs: 0, error })
+    } catch (e2) {
+      $.ui.status(`factory: failed to write the pm log: ${line(String(e2), 160)}`)
+    }
   }
 }
 
