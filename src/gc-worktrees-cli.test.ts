@@ -11,7 +11,7 @@
 import { afterEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createActor } from 'xstate'
 import { deleteBranchCas } from './cli'
 import { compile, type Factory } from './machine'
@@ -62,8 +62,18 @@ const noPanes = () => {
   return join(bin, 'herdr')
 }
 
-/** a fake gh: `pr list --json ...` answers the given PRs; the call is logged for a count assertion */
-function fakeGh(prs: { number: number; state: string; headRefName: string; headRefOid: string }[]) {
+/** a fake gh: `pr list --json ...` answers the given PRs; it logs the call for a count assertion.
+ * `isCrossRepository` is optional so a test can omit it on a PR entry to simulate an older `gh` or a
+ * malformed answer (claude-factory-ulv): `JSON.stringify` drops an `undefined` key from the body. */
+function fakeGh(
+  prs: {
+    number: number
+    state: string
+    headRefName: string
+    headRefOid: string
+    isCrossRepository?: boolean
+  }[],
+) {
   mkdirSync(bin, { recursive: true })
   const body = JSON.stringify(prs).replaceAll("'", "'\\''")
   writeFileSync(
@@ -78,7 +88,8 @@ const failGh = () => {
   chmodSync(join(bin, 'gh'), 0o755)
 }
 
-/** a fake bd: `show <id> --json` answers closed when a marker file for the id exists */
+/** a fake bd: `show <id> --json` answers closed when a marker file for the id exists. It logs every
+ * `show` call to bd-calls.log (claude-factory-ulv: proves a fork bead's id is never looked up). */
 function fakeBd() {
   mkdirSync(bin, { recursive: true })
   const closedDir = join(dir, 'bd-closed')
@@ -88,6 +99,7 @@ function fakeBd() {
     [
       '#!/bin/sh',
       `if [ "$1" = "show" ]; then`,
+      `  echo "$*" >> '${join(dir, 'bd-calls.log')}'`,
       `  if [ -f "${closedDir}/$2" ]; then`,
       `    printf '%s' '{"id":"'"$2"'","title":"t","status":"closed"}'`,
       '  else',
@@ -113,6 +125,25 @@ function spyGit(logFile: string) {
       '#!/bin/sh',
       'if [ "$3" = "fetch" ] || [ "$3" = "ls-remote" ] || [ "$3" = "push" ]; then',
       `  printf '%s GIT_TERMINAL_PROMPT=%s\\n' "$*" "$GIT_TERMINAL_PROMPT" >> '${logFile}'`,
+      'fi',
+      `exec '${REAL_GIT}' "$@"`,
+    ].join('\n'),
+  )
+  chmodSync(join(bin, 'git'), 0o755)
+}
+
+/** a `git` shim that, on `git -C <path> add ...`, logs `$GIT_INDEX_FILE` and the mode bits of its
+ * directory (read before the real git runs, while the dir still exists), then runs the real git
+ * (claude-factory-ulv: proves snapshotWorktree's index dir is private, not a shared tmpdir path). */
+function spyGitIndex(logFile: string) {
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(
+    join(bin, 'git'),
+    [
+      '#!/bin/sh',
+      'if [ "$3" = "add" ] && [ -n "$GIT_INDEX_FILE" ]; then',
+      '  d=$(dirname "$GIT_INDEX_FILE")',
+      `  printf '%s %s\\n' "$GIT_INDEX_FILE" "$(ls -ld "$d" | awk '{print $1}')" >> '${logFile}'`,
       'fi',
       `exec '${REAL_GIT}' "$@"`,
     ].join('\n'),
@@ -314,6 +345,32 @@ test('d: a dirty worktree is snapshotted to refs/factory-gc/<id> before it is re
   expect(sha).not.toBe('')
   const files = git(repo, 'show', '--name-only', '--format=', sha)
   expect(files.split('\n')).toContain('scratch.txt')
+})
+
+test('T-a: the snapshot index lives in a private per-run dir, not the shared tmpdir (claude-factory-ulv)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: false })
+  writeFileSync(join(worktree, 'scratch.txt'), 'uncommitted work')
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([])
+  const logFile = join(dir, 'git-index.log')
+  spyGitIndex(logFile)
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  const lines = readFileSync(logFile, 'utf8').trim().split('\n')
+  expect(lines).toHaveLength(1) // exactly one `add -A` during the snapshot
+  const [indexFile, mode] = lines[0]!.split(' ')
+  const indexDir = dirname(indexFile!)
+  const tmp = realpathSync(tmpdir())
+  expect(indexDir).not.toBe(tmpdir())
+  expect(indexDir).not.toBe(tmp)
+  // the first 10 chars are the owner-only mode bits; macOS appends an extra `@`/`+` flag after them
+  expect(mode!.slice(0, 10)).toBe('drwx------')
+  expect(existsSync(indexDir)).toBe(false) // removed in snapshotWorktree's finally
+  expect(git(repo, 'rev-parse', `refs/factory-gc/${id}`)).not.toBe('')
 })
 
 test('e: gh exits 1: no branch is deleted, worktrees are still removed', () => {
@@ -566,8 +623,20 @@ test('a CLOSED PR with the bead closed deletes the branch; bead open keeps it', 
   writeRigs([{ name: 'r1', repo }])
   const herdr = noPanes()
   fakeGh([
-    { number: 1, state: 'CLOSED', headRefName: `factory/${closedId}`, headRefOid: closedHead },
-    { number: 2, state: 'CLOSED', headRefName: `factory/${openId}`, headRefOid: openHead },
+    {
+      number: 1,
+      state: 'CLOSED',
+      headRefName: `factory/${closedId}`,
+      headRefOid: closedHead,
+      isCrossRepository: false,
+    },
+    {
+      number: 2,
+      state: 'CLOSED',
+      headRefName: `factory/${openId}`,
+      headRefOid: openHead,
+      isCrossRepository: false,
+    },
   ])
   const { closeBead } = fakeBd()
   closeBead('acme-1')
@@ -575,6 +644,44 @@ test('a CLOSED PR with the bead closed deletes the branch; bead open keeps it', 
   expect(out.code).toBe(0)
   expect(git(repo, 'branch', '--list', `factory/${closedId}`)).toBe('')
   expect(git(repo, 'branch', '--list', `factory/${openId}`)).not.toBe('')
+})
+
+test('a cross-repo CLOSED PR with a closed bead never covers the tip, and gh is asked for isCrossRepository (claude-factory-ulv)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('fork')
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, bead: 'acme-1' })
+  const head = git(repo, 'rev-parse', `factory/${id}`)
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([
+    { number: 1, state: 'CLOSED', headRefName: `factory/${id}`, headRefOid: head, isCrossRepository: true },
+  ])
+  const { closeBead } = fakeBd()
+  closeBead('acme-1')
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(git(repo, 'branch', '--list', `factory/${id}`)).not.toBe('')
+  const calls = readFileSync(join(dir, 'gh-calls.log'), 'utf8')
+  expect(calls).toContain('isCrossRepository')
+  // beadClosedFacts must drop the fork PR before it ever looks at a bead (AC5): no `bd show acme-1`
+  const bdCalls = existsSync(join(dir, 'bd-calls.log')) ? readFileSync(join(dir, 'bd-calls.log'), 'utf8') : ''
+  expect(bdCalls).not.toContain('acme-1')
+})
+
+test('a PR answer missing isCrossRepository fails closed: the branch is kept, reason facts-unavailable (claude-factory-ulv)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  const head = git(repo, 'rev-parse', `factory/${id}`)
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  // no isCrossRepository key at all: an older `gh`, or a malformed answer
+  fakeGh([{ number: 1, state: 'MERGED', headRefName: `factory/${id}`, headRefOid: head }])
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(git(repo, 'branch', '--list', `factory/${id}`)).not.toBe('')
 })
 
 // claude-factory-0u0 AC4: a host must not read as GitHub only because it ends in "github.com"
@@ -724,6 +831,7 @@ test('r: gh pr list passes -R to the origin repo, and a result at the --limit ca
     state: i === 0 ? 'CLOSED' : 'OPEN',
     headRefName: i === 0 ? branch : `factory/other-${i}`,
     headRefOid: i === 0 ? head : '0'.repeat(40),
+    isCrossRepository: false,
   }))
   fakeGh(prs)
   const { closeBead } = fakeBd()
