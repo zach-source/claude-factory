@@ -102,6 +102,13 @@ export const PUSH_REASON =
   'for the change, or a revert pull request for a rollback. Only a person pushes or merges a ' +
   'protected branch. Do not retry this command.'
 
+// claude-factory-vco
+export const ENV_SPLIT_ESCAPE_REASON =
+  'The factory denies this command: an env -S or env --split-string value holds a backslash or ' +
+  'a newline. env reads an escape such as \\_ as a word break, so this guard cannot read the ' +
+  'real command. Write the command words plainly, without env -S. Do not retry this exact ' +
+  'command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -1759,6 +1766,11 @@ function anyShellReason(
     if (bw === 'env') {
       const val = envSplitStringValue(words, j)
       if (val === undefined) continue
+      // claude-factory-vco: GNU env 9.11 and macOS /usr/bin/env read an unquoted backslash or a
+      // real newline inside this value as a word break. denyAt's own tokenizer does not, so it
+      // can read a hidden command such as 'git\_push\_origin\_main' as one harmless word. Fail
+      // closed instead of chasing every parser gap this escape can open.
+      if (/[\\\n]/.test(val)) return ENV_SPLIT_ESCAPE_REASON
       const r = denyAt(val, root, personOnly, gate, depth + 1)
       if (r) return r
       break
