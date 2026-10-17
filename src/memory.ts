@@ -28,6 +28,14 @@ import { dirname, join } from 'node:path'
 // <topic>/LONG.md, one entry per `## ` heading), fact (a distilled CORE.md bullet). search ranks higher
 // tiers above short notes with TIER_BONUS, because they already survived a dream's judgment.
 export type Tier = 'short' | 'long' | 'fact'
+
+// A note's kind. gate() requires it on every new add (claude-factory-3u1.1.1): fact is a verified,
+// reusable lesson; rule is a convention or requirement; recipe is a working command sequence, kept
+// even when it names a bead or PR. This is not Decision['kind'] below. An old note with no kind
+// stays valid.
+export type NoteKind = 'fact' | 'rule' | 'recipe'
+export const NOTE_KINDS: readonly NoteKind[] = ['fact', 'rule', 'recipe']
+
 export type Note = {
   path: string
   summary: string
@@ -36,6 +44,8 @@ export type Note = {
   at?: string
   body: string
   tier?: Tier
+  kind?: NoteKind
+  until?: string // frontmatter `until: <bead id | owner/repo#N | YYYY-MM-DD>`: when a cited bead/PR goes stale
   superseded?: string // frontmatter `superseded: <path>`: this note is stale, replaced by that one
 }
 
@@ -64,6 +74,8 @@ export const parse = (path: string, text: string): Note => {
     from: meta.from,
     at: meta.at,
     body,
+    kind: NOTE_KINDS.includes(meta.kind as NoteKind) ? (meta.kind as NoteKind) : undefined,
+    until: meta.until,
     superseded: meta.superseded,
   }
 }
@@ -75,6 +87,8 @@ export const format = (n: Omit<Note, 'path'>) =>
     ...(n.rig ? [`rig: ${n.rig}`] : []),
     ...(n.from ? [`from: ${n.from}`] : []),
     ...(n.at ? [`at: ${n.at}`] : []),
+    ...(n.kind ? [`kind: ${n.kind}`] : []),
+    ...(n.until ? [`until: ${n.until}`] : []),
     ...(n.superseded ? [`superseded: ${n.superseded}`] : []),
     '---',
     n.body.trim(),

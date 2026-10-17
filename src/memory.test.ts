@@ -59,6 +59,48 @@ test('a note keeps its summary, rig and provenance through a write and a read', 
   expect(parse('inbox/y.md', 'no frontmatter\nmore').summary).toBe('no frontmatter')
 })
 
+test('a note keeps its kind and until through a write and a read', () => {
+  const note = {
+    summary: 'bd init locks every repo',
+    at: '2026-10-06',
+    body: 'why\nhow',
+    kind: 'rule' as const,
+    until: 'acme-1x2.3',
+  }
+  expect(parse('beads/x.md', format(note))).toEqual({ path: 'beads/x.md', ...note })
+})
+
+test('kind and until frontmatter land between at and superseded', () => {
+  const text = format({
+    summary: 's',
+    at: '2026-10-06',
+    superseded: 'beads/new.md',
+    body: 'b',
+    kind: 'fact',
+    until: '2026-12-31',
+  })
+  const lines = text.split('\n')
+  expect(lines.indexOf('at: 2026-10-06')).toBeLessThan(lines.indexOf('kind: fact'))
+  expect(lines.indexOf('kind: fact')).toBeLessThan(lines.indexOf('until: 2026-12-31'))
+  expect(lines.indexOf('until: 2026-12-31')).toBeLessThan(lines.indexOf('superseded: beads/new.md'))
+})
+
+test('parse() of an old note with no kind or until leaves both undefined, no throw', () => {
+  const n = parse('beads/x.md', '---\nsummary: s\n---\nbody')
+  expect(n.kind).toBeUndefined()
+  expect(n.until).toBeUndefined()
+})
+
+test('parse() drops an invalid kind value instead of throwing', () => {
+  const n = parse('beads/x.md', '---\nsummary: s\nkind: bogus\n---\nbody')
+  expect(n.kind).toBeUndefined()
+})
+
+test('format() of a note without kind or until is byte-identical to a note with no such fields today', () => {
+  const note = { summary: 's', at: '2026-10-06', body: 'b' }
+  expect(format(note)).toBe('---\nsummary: s\nat: 2026-10-06\n---\nb\n')
+})
+
 test('a LONG.md entry keeps its id, rig, from, at and body through a write and a read', () => {
   const entries: LongEntry[] = [
     {
