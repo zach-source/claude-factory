@@ -350,6 +350,23 @@ test('j: git worktree remove failing keeps the worktree and its branch, and jour
   }
 })
 
+test('k: a worktree whose git status fails is kept whole, never removed (claude-factory-l38.7)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeFileSync(join(worktree, '.git'), 'gitdir: /nonexistent-xyz\n') // breaks `git status` in this worktree
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([])
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(out.out).toContain(`keep worktree ${worktree} (run ${id}, reason: dirty-unknown)`)
+  expect(out.out).toContain('reclaimed: 0 worktrees')
+  expect(existsSync(worktree)).toBe(true)
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('')
+})
+
 test('h: 2 live runs among finished ones leaves 2 owned worktrees after a pass (AC11)', () => {
   reset()
   const { repo } = makeRig('r1')

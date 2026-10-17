@@ -2881,31 +2881,35 @@ function worktreeFacts(repo: string): gc.WorktreeFact[] {
   return worktreeEntries(repo).flatMap(e => {
     if (e.prunable || !existsSync(e.path)) return [] // gone already: nothing for gc to remove here
     const status = Bun.spawnSync(['git', '-C', e.path, 'status', '--porcelain'])
-    const lines =
-      status.exitCode === 0
-        ? status.stdout
+    let dirty: gc.WorktreeFact['dirty'] = 'clean'
+    if (status.exitCode !== 0) {
+      // a failed read must never read as clean (claude-factory-l38.7): worktreePlan() then keeps it
+      dirty = 'unknown'
+    } else {
+      const lines = status.stdout
+        .toString()
+        .split('\n')
+        .filter(l => l.length > 3 && l.slice(3) !== UNTRACKED_IGNORE)
+      if (lines.length) {
+        const others = Bun.spawnSync(['git', '-C', e.path, 'ls-files', '--others', '--exclude-standard'])
+        if (others.exitCode !== 0) {
+          // a failed read must never read as small (claude-factory-l38.7): never force-remove on a guess
+          dirty = 'unknown'
+        } else {
+          const bytes = others.stdout
             .toString()
             .split('\n')
-            .filter(l => l.length > 3 && l.slice(3) !== UNTRACKED_IGNORE)
-        : []
-    let dirty: gc.WorktreeFact['dirty'] = 'clean'
-    if (lines.length) {
-      const others = Bun.spawnSync(['git', '-C', e.path, 'ls-files', '--others', '--exclude-standard'])
-      const bytes =
-        others.exitCode === 0
-          ? others.stdout
-              .toString()
-              .split('\n')
-              .filter(Boolean)
-              .reduce((a, rel) => {
-                try {
-                  return a + lstatSync(join(e.path, rel)).size
-                } catch {
-                  return a
-                }
-              }, 0)
-          : 0
-      dirty = bytes > gc.UNTRACKED_MAX_BYTES ? 'large' : 'small'
+            .filter(Boolean)
+            .reduce((a, rel) => {
+              try {
+                return a + lstatSync(join(e.path, rel)).size
+              } catch {
+                return a
+              }
+            }, 0)
+          dirty = bytes > gc.UNTRACKED_MAX_BYTES ? 'large' : 'small'
+        }
+      }
     }
     const du = Bun.spawnSync(['du', '-sk', e.path])
     const kb = du.exitCode === 0 ? Number(du.stdout.toString().split('\t')[0]) : 0

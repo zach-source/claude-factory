@@ -349,6 +349,14 @@ test('15: a branch checked out in a kept worktree is not deleted', () => {
   expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'checked-out' })
 })
 
+test("17: a worktree whose dirty state is 'unknown' (a failed status or ls-files read) is kept, never snapshotted (claude-factory-l38.7)", () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({ worktrees: [wt('/wt/r1', 'factory/r1', { dirty: 'unknown' })] })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'worktree', runId: 'r1', name: '/wt/r1', reason: 'dirty-unknown' })
+})
+
 test('16: a non-factory branch on a run worktree path removes the worktree, never the branch', () => {
   const runs = [ref('r1', 'done')]
   const rig = rigFacts({ worktrees: [wt('/wt/r1', 'main')] })

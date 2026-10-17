@@ -124,8 +124,10 @@ export type WorktreeFact = {
   /** the branch it has checked out, or null when detached */
   branch: string | null
   locked: boolean
-  /** clean: no uncommitted or untracked change; small: under UNTRACKED_MAX_BYTES, snapshot first; large: kept whole */
-  dirty: 'clean' | 'small' | 'large'
+  /** clean: no uncommitted or untracked change; small: under UNTRACKED_MAX_BYTES, snapshot first; large: kept
+   * whole; unknown: a git status or ls-files read failed, so the real state can be anything, never
+   * removed or snapshotted (claude-factory-l38.7: a failed read must never read as clean or small) */
+  dirty: 'clean' | 'small' | 'large' | 'unknown'
   bytes: number
 }
 
@@ -241,7 +243,9 @@ export function worktreePlan(
                   ? 'recent'
                   : w.dirty === 'large'
                     ? 'dirty-large'
-                    : null
+                    : w.dirty === 'unknown'
+                      ? 'dirty-unknown'
+                      : null
       if (reason) {
         keep.push({ kind: 'worktree', runId: owner.id, name: w.path, reason })
         if (w.branch) keptBranches.add(w.branch)
