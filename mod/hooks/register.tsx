@@ -79,8 +79,6 @@ const PM_TYPE = 'factory:pm'
 const PM_WATCHDOG_MS = 15 * 60_000
 /** pm-log.jsonl keeps at most this many lines, oldest dropped first */
 const PM_LOG_CAP = 50
-/** a denied pm spawn waits this long before the next attempt, instead of asking again every tick */
-const PM_RETRY_MS = 60_000
 /** verbs act()'s own args[0] uses for the same run-acting commands, for the console's buttons */
 const TOUCH_VERBS = new Set(['mail', 'poke', 'retry', 'goto', 'fork', 'abort', 'rm', 'decide'])
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
@@ -133,9 +131,11 @@ When the person says a skill proposal needs review (the patrol's report toasted 
 const PATROL = (cli: string) => `## Factory patrol
 You are the factory manager's patrol, a subagent it spawns on a timer or on new mail so this work never queues behind the person's own chat with the manager. Nothing you say here reaches the person directly: mail a worker, decide nothing a person must decide, and end with the short report below.
 You get what is new and the board; work through it in this order, acting only through the factory CLI below:
-1. Mail: answer a worker's question yourself (\`mail\`) when the goal, the journal or the factory's memory (\`${cli} memory search <query>\`) settles it. Otherwise mail that worker's own station to report blocked, with a line \`Question: <the decision, in plain words>\` and \`Options: <label>: <effect> | <label>: <effect>\`, so the person sees it in the console's Interview tab; never wait on them yourself. Save a decision later runs should follow too: \`${cli} memory add "<summary>" "<the decision and why>"\`.
+1. Mail: answer a worker's question yourself (\`mail\`) when the goal, the journal or the factory's memory (\`${cli} memory search <query>\`) settles it. Otherwise mail that worker's own station to report blocked, with a line \`Question: <the decision, in plain words>\` and \`Options: <label>: <effect> | <label>: <effect>\`, so the person sees it in the console's Interview tab; never wait on them yourself. Save a decision later runs should follow too: \`${cli} memory add --kind rule "<summary>" "<the decision and why>"\` (add \`--until <bead|owner/repo#N|YYYY-MM-DD>\` too if the summary or body names a bead or PR).
 2. Stuck stations: read the error, the journal and the worker's screen, then retry, goto, fork with a note, or abort. Say what you chose and why.
    Parked stations mail you "<station> is parked, waiting on: …": a worker reported blocked, so no attempt is spent and a fresh one rechecks on its own. When it waits on the person (a review, a merge, a decision), mail that station to report blocked with Question:/Options: as above, naming the pull request if there is one: deploy parks on a pull request until the person merges it, which is their ship decision, so never merge it for them. \`${cli} waiting\` lists everything that waits on the person, with how to answer each.
+   A stuck mail that says "<station> already re-planned once" means its round cap has an onRounds target: it already went to plan once and hit the cap again. Never goto it to implement, or to another station in its own loop. Instead, goto plan with a note, abort, or report it to the person.
+   A mail that says "<station> reported <outcome> again on <AC ids>" names a station that reported the same outcome twice in a row on the same acceptance criterion. Read both of its reports. Then mail implement one concrete steer, or goto plan. Never goto implement with no new direction.
 3. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
 4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig. When the prompt carries a Plan, give each rig with room its next work from that list, in order, skipping a bead already in a run or refused; with no Plan, choose as above.
 5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no way to install or reject one yourself, so put it in your report's first line ("N skill proposal(s) need review") instead of your usual line there: this toasts straight to the person, who can ask the manager to work it.
@@ -245,10 +245,11 @@ const rt = {
   pmWanted: false,
   /** the live run ids as of the last pmNow call, to notice a drop (live -> not live) next tick */
   liveIds: new Set<string>(),
-  /** a denied pm spawn's next attempt; 0 means try at once */
+  /** the next attempt after a failed spawn or a failed `factory plan facts` call; 0 means try at once */
   pmRetryAt: 0,
-  /** pm spawns that failed (a deny or a throw) since the last one that worked; feeds
-   * `pmRetryDelay`'s backoff (claude-factory-dun.29). A working spawn resets this to 0. */
+  /** pm spawns that failed (a deny or a throw), or `factory plan facts` calls that failed
+   * (claude-factory-4hb), since the last spawn that worked; feeds `pmRetryDelay`'s backoff
+   * (claude-factory-dun.29). A working spawn resets this to 0. */
   pmFailures: 0,
   /** set once this process finds the manager has no Agent tool (claude-factory-dun.29): gathers no
    * more facts and spawns nothing until a restart starts a fresh process. `undefined` means not
@@ -561,6 +562,11 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
  * `rt.pmBlocked` is set, this function returns at once on every later call. Only a restart, a
  * fresh process, clears it. A spawn that fails for any other reason (a deny, or a throw with the
  * Agent tool present) backs off `pmRetryDelay(rt.pmFailures)` instead of a fixed 60 s wait.
+ *
+ * claude-factory-4hb: a failed `factory plan facts` call backs off and logs the same way. A
+ * `bd` outage is one cause. It uses the same `rt.pmFailures` counter. A mixed run of facts and
+ * spawn failures still doubles its wait, up to the 60 min cap. This stops `factory plan facts`
+ * from retrying every 60 s forever.
  */
 async function pmNow($: EngineInterface, runs: FactoryRun[]) {
   if (!rt.isPmEnabled || rt.pmBlocked) return
@@ -608,8 +614,14 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
     rt.isGatheringFacts = false
   })
   if (!isOk) {
-    rt.pmRetryAt = now + PM_RETRY_MS
+    rt.pmFailures += 1
+    rt.pmRetryAt = now + pmRetryDelay(rt.pmFailures)
     $.ui.status(`factory: plan facts failed: ${line(facts, 160)}`)
+    try {
+      await appendPmLog($, { at: now, reason: 'facts-failed', durationMs: 0, error: line(facts, 300) })
+    } catch (err) {
+      $.ui.status(`factory: failed to write the pm log: ${line(String(err), 160)}`)
+    }
     return
   }
   rt.isPlanning = true

@@ -140,7 +140,13 @@ export type BranchFact = {
   remoteMerged: boolean
 }
 
-export type PrFact = { state: 'OPEN' | 'MERGED' | 'CLOSED'; headRefName: string; headRefOid: string }
+export type PrFact = {
+  state: 'OPEN' | 'MERGED' | 'CLOSED'
+  headRefName: string
+  headRefOid: string
+  /** a fork's pull request: its branch is not ours to have merged, so coverTip() must ignore it */
+  isCrossRepository: boolean
+}
 
 /** a run, as worktreePlan() needs it: enough to decide ownership, liveness and bead state */
 export type RunRef = { id: string; node: string; finishedAt: number; worktree: string; bead?: string }
@@ -189,7 +195,9 @@ const ownerOfPath = (path: string, branch: string | null, runs: RunRef[]): RunRe
  * the default branch, the headRefOid of a MERGED PR, or of a CLOSED one whose run's bead is closed */
 function coverTip(sha: string, mergedAncestor: boolean, prs: PrFact[], branch: string, beadClosed: boolean) {
   if (mergedAncestor) return 'covered' as const
-  const hit = prs.filter(p => p.headRefName === branch && p.headRefOid === sha)
+  // a cross-repo (fork) PR's branch is not ours to have merged (claude-factory-ulv): a fork branch
+  // named factory/<id> with a CLOSED PR at the tip sha must never cover it, even with the bead closed
+  const hit = prs.filter(p => !p.isCrossRepository && p.headRefName === branch && p.headRefOid === sha)
   if (hit.some(p => p.state === 'MERGED')) return 'covered' as const
   if (hit.some(p => p.state === 'CLOSED')) return beadClosed ? ('covered' as const) : ('bead-open' as const)
   return 'uncovered' as const
@@ -297,4 +305,17 @@ export function worktreePlan(
     }
     return { rig: rig.name, removeWorktrees, removeBranches, keep, owned, live, unowned }
   })
+}
+
+/** This function removes the userinfo part of each URL in `text` (claude-factory-0lt).
+ * A git error message can print the remote URL in full. A URL with a secret in its userinfo
+ * (user:pass@host, or a bare token@host) then puts that secret in cli.ts's gc-worktrees.jsonl
+ * journal.
+ *
+ * This function finds each `scheme://` in `text`, and the userinfo after it, up to the next
+ * `@`. It removes that userinfo, and it keeps the scheme and the host. It does not change an
+ * scp-style remote (git@github.com:acme/widget, with no `scheme://`). It does not change plain
+ * text with no URL. */
+export function scrubUrlUserinfo(text: string): string {
+  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, '$1')
 }

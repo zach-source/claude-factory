@@ -2,7 +2,16 @@ import { expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import { createActor } from 'xstate'
 import { ruleLines } from '../src/cli'
-import { compile, isPrWait, validate, where, WATCHED_PARK_MIN, type Factory } from '../src/machine'
+import {
+  compile,
+  isPrWait,
+  repeatQuestion,
+  timeoutOf,
+  validate,
+  where,
+  WATCHED_PARK_MIN,
+  type Factory,
+} from '../src/machine'
 import lifecycle from './lifecycle'
 import release from './release'
 
@@ -205,6 +214,130 @@ test('release reporting ready with no pull request link starts deploy at once (c
   expect(s.context.seq).toBe(seq + 1)
 })
 
+// claude-factory-3t2: 5/65 security visits timed out ("no report within 45 min"), all on one large
+// rig. A first timeout gets a longer limit (75 min) and a diff summary instead of the whole branch; a
+// second timeout in a row mails the manager once and stops, instead of burning more launches.
+// claude-factory-wnn: `check` is the small route's combined verify+review. It also routes into
+// security on the same outcome. The retry rule must hold for either sender.
+for (const from of ['review', 'check']) {
+  test(`security retries a timeout at a longer limit, then a 2nd timeout in a row mails the manager once (claude-factory-3t2, from ${from})`, () => {
+    const actor = createActor(compile(lifecycle)).start()
+    actor.send({ type: 'GOTO', node: from, at: 0 })
+    const toSecurity = actor.getSnapshot().context.seq
+    actor.send({
+      type: 'DONE',
+      seq: toSecurity,
+      outcome: 'security',
+      summary: 'approved, security-sensitive: raises a limit. git diff --stat origin/main...HEAD: 3 files',
+      at: 1000,
+    })
+    expect(where(actor.getSnapshot().value)).toEqual(['security', 'working'])
+    const reviewReport = actor.getSnapshot().context.mail.security
+
+    // attempt 1 times out at the plain 45 min limit
+    const attempt1 = actor.getSnapshot().context.seq
+    actor.send({ type: 'FAIL', seq: attempt1, reason: 'no report within 45 min', at: 2000 })
+    expect(where(actor.getSnapshot().value)).toEqual(['security', 'backoff'])
+    const retryAt = actor.getSnapshot().context.retryAt
+    actor.send({ type: 'TICK', at: retryAt })
+    expect(where(actor.getSnapshot().value)).toEqual(['security', 'working'])
+    expect(actor.getSnapshot().context.attempt).toBe(2)
+
+    // the retry gets the longer limit and still sees the sender's whole report (the box is not cleared mid-visit)
+    expect(timeoutOf(lifecycle.nodes.security!, actor.getSnapshot().context, 'security')).toBe(75)
+    expect(actor.getSnapshot().context.mail.security).toEqual(reviewReport)
+
+    // attempt 2 times out too, at the longer limit: a 2nd timeout in a row is stuck, not a 3rd attempt
+    const attempt2 = actor.getSnapshot().context.seq
+    actor.send({ type: 'FAIL', seq: attempt2, reason: 'no report within 75 min', at: 3000 })
+    const stuck = actor.getSnapshot()
+    expect(where(stuck.value)).toEqual(['security', 'stuck'])
+    expect(stuck.context.error).toBe(repeatQuestion('security', 'no report within 75 min'))
+    expect(stuck.context.mail.manager?.filter(m => m.from === 'security')).toHaveLength(1)
+
+    // more ticks while stuck mail the manager no further
+    for (const at of [4000, 5000, 6000]) actor.send({ type: 'TICK', at })
+    expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'security')).toHaveLength(1)
+  })
+}
+
+test("security's onTimeout prompt points the retry at review's or check's diff summary, not the whole branch, and both prompts promise one (claude-factory-3t2 AC5, extended by claude-factory-wnn.6 for check)", () => {
+  const onTimeout = lifecycle.nodes.security!.onTimeout!
+  expect(onTimeout.timeoutMin).toBe(75)
+  expect(onTimeout.prompt).toContain('diff summary')
+  expect(onTimeout.prompt).toContain('changed-files')
+  expect(onTimeout.prompt).toContain("review's or check's report")
+  expect(onTimeout.prompt).toMatch(/Do not re-read/)
+
+  expect(lifecycle.nodes.review!.prompt).toContain('git diff --stat origin/main...HEAD')
+  expect(lifecycle.nodes.review!.prompt).toContain('60 files')
+  expect(lifecycle.nodes.review!.prompt).toContain('+N more')
+
+  // claude-factory-wnn.6: security's main prompt checks the diff against the plan's risk section,
+  // but a small run has no plan; it must also name triage's summary.
+  expect(lifecycle.nodes.security!.prompt).toContain(
+    "plan's risk section, or triage's summary on a small run",
+  )
+})
+
+// claude-factory-wnn: a small run (docs-only, test-only, a tiny fix) skips plan and security, and
+// trades verify+review for one combined `check` station, so it ships without paying the full loop.
+test('small AC1: triage -> quick -> check -> release -> deploy -> done, no plan/verify/review/security/soak', () => {
+  const { visited } = walk(lifecycle, ['small', 'ready', 'approve', 'ready', 'published'])
+  expect(visited).toEqual(['triage', 'quick', 'check', 'release', 'deploy', 'done'])
+  for (const skipped of ['plan', 'verify', 'review', 'security', 'soak'])
+    expect(visited).not.toContain(skipped)
+})
+
+test('small AC2: check flags security, the same node security reviews unchanged, then release ships', () => {
+  const { visited } = walk(lifecycle, ['small', 'ready', 'security', 'approve', 'ready'])
+  expect(visited).toEqual(['triage', 'quick', 'check', 'security', 'release', 'deploy'])
+})
+
+test('small AC3: check changes loops back through quick; quick full joins the full loop at plan; quick abandon ends it', () => {
+  expect(walk(lifecycle, ['small', 'ready', 'changes', 'ready']).visited).toEqual([
+    'triage',
+    'quick',
+    'check',
+    'quick',
+    'check',
+  ])
+  expect(walk(lifecycle, ['small', 'full']).visited).toEqual(['triage', 'quick', 'plan'])
+  expect(walk(lifecycle, ['small', 'abandon']).visited).toEqual(['triage', 'quick', 'done'])
+  expect(lifecycle.nodes.check!.rounds).toBe(3)
+})
+
+test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for security; quick is Sonnet, check is Opus', () => {
+  const check = lifecycle.nodes.check!
+  for (const needle of [
+    'draft',
+    'gh pr review --comment',
+    'security-sensitive',
+    'git diff --stat origin/main...HEAD',
+    '60 files',
+    '+N more',
+  ])
+    expect(check.prompt).toContain(needle)
+  expect(check.prompt).not.toContain('mark it ready')
+  expect(lifecycle.nodes.release!.prompt).toContain('mark it ready')
+  expect(check.agent).toContain('{judge_model}')
+  expect((lifecycle as Factory).nodes.quick!.agent).toBeUndefined()
+})
+
+test('claude-factory-wnn.4: quick closes each task check filed, with its commit, so release never finds one open', () => {
+  const quick = lifecycle.nodes.quick!
+  expect(quick.prompt).toContain('closing each task check filed')
+  expect(quick.prompt).toContain('its commit')
+  expect(quick.prompt).toContain('Tracking')
+})
+
+test('small AC7/AC8: triage names the small route and its exclusions; deploy counts docs/test-only as published', () => {
+  expect(lifecycle.nodes.triage!.prompt).toContain('small:')
+  expect(lifecycle.nodes.triage!.prompt).toContain('security-sensitive')
+  expect(lifecycle.nodes.triage!.prompt).toContain('factories/')
+  expect(lifecycle.nodes.deploy!.prompt).toContain('docs-only')
+})
+
 test('sweeps loop on their timers past any step budget', () => {
   for (const sweep of ['monitor', 'maintain', 'improve']) {
     const again = sweep === 'monitor' ? 'watching' : 'again'
@@ -212,4 +345,120 @@ test('sweeps loop on their timers past any step budget', () => {
     expect(new Set(visited)).toEqual(new Set([sweep]))
     expect(where(snapshot.value)).toEqual([sweep, 'working'])
   }
+})
+
+// claude-factory-qgz: review hits its round cap (3) and re-plans once with the round's findings,
+// instead of holding for a hand goto; a second cap in the same run still holds for the manager.
+test("review's round cap re-plans to plan with the findings, then holds on a second cap (claude-factory-qgz AC1-AC3, AC7)", () => {
+  expect(lifecycle.nodes.review!.onRounds).toBe('plan')
+  expect(lifecycle.nodes.review!.rounds).toBe(3)
+
+  const actor = createActor(compile(lifecycle)).start()
+  let now = 0
+  const sendChanges = (i: number) => {
+    actor.send({ type: 'GOTO', node: 'review', at: now })
+    const { seq } = actor.getSnapshot().context
+    actor.send({ type: 'DONE', seq, outcome: 'changes', summary: `round ${i} findings AC${i}`, at: ++now })
+  }
+
+  for (let i = 1; i <= 3; i++) {
+    sendChanges(i)
+    expect(where(actor.getSnapshot().value)[0]).toBe('implement') // changes 1-3: the normal edge
+  }
+
+  sendChanges(4) // changes 4 == rounds + 1: re-plan instead of holding
+  expect(where(actor.getSnapshot().value)[0]).toBe('plan')
+  const plan = actor.getSnapshot().context.mail.plan?.at(-1)
+  expect(plan?.from).toBe('review')
+  for (let i = 1; i <= 4; i++) {
+    expect(plan?.text).toContain(`### review round ${i}`)
+    expect(plan?.text).toContain(`round ${i} findings AC${i}`)
+  }
+  expect(actor.getSnapshot().context.mail.manager).toBeUndefined() // AC2: re-plan mails no manager
+
+  for (let i = 5; i <= 7; i++) {
+    sendChanges(i)
+    expect(where(actor.getSnapshot().value)[0]).toBe('implement') // changes 5-7: the normal edge again
+  }
+
+  sendChanges(8) // changes 8 == 2*rounds + 2: held for the manager, re-plan already spent
+  const s = actor.getSnapshot()
+  expect(where(s.value)).toEqual(['review', 'stuck'])
+  expect(s.context.error).toBe('review reported changes more than 3 times')
+  const managerMail = s.context.mail.manager?.find(m => m.from === 'review')
+  expect(managerMail?.text).toContain('already re-planned once, to plan')
+})
+
+// claude-factory-qgz: verify reporting red twice in a row on the same acceptance-criterion id mails
+// the manager (from 'factory', not from verify), while the run still goes on to implement as today.
+test("verify's repeated red on the same AC id mails the manager; a different AC id does not (claude-factory-qgz AC6, AC7)", () => {
+  expect(lifecycle.nodes.verify!.repeatMail).toBe('red')
+
+  const red = createActor(compile(lifecycle)).start()
+  red.send({ type: 'GOTO', node: 'verify', at: 0 })
+  let seq = red.getSnapshot().context.seq
+  red.send({
+    type: 'DONE',
+    seq,
+    outcome: 'red',
+    summary: '1. fails AC2 2. fails AC3\nFailing: AC2, AC3',
+    at: 1000,
+  })
+  expect(where(red.getSnapshot().value)[0]).toBe('implement')
+
+  red.send({ type: 'GOTO', node: 'verify', at: 1000 })
+  seq = red.getSnapshot().context.seq
+  red.send({ type: 'DONE', seq, outcome: 'red', summary: 'still fails AC2\nFailing: AC2', at: 2000 })
+  const s = red.getSnapshot()
+  expect(where(s.value)[0]).toBe('implement') // the normal edge still runs
+  const mail = s.context.mail.manager?.at(-1)
+  expect(mail?.from).toBe('factory') // never from 'verify': cli.ts's isAsking keys on from === node
+  expect(mail?.text).toContain('verify reported red again on AC2')
+
+  const noShare = createActor(compile(lifecycle)).start()
+  noShare.send({ type: 'GOTO', node: 'verify', at: 0 })
+  seq = noShare.getSnapshot().context.seq
+  noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC1\nFailing: AC1', at: 1000 })
+  noShare.send({ type: 'GOTO', node: 'verify', at: 1000 })
+  seq = noShare.getSnapshot().context.seq
+  noShare.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2\nFailing: AC2', at: 2000 })
+  expect(noShare.getSnapshot().context.mail.manager).toBeUndefined()
+})
+
+// claude-factory-qgz, review round 2 finding .11.
+// Review runs only after verify's green outcome. A review re-plan, with its `replan: true` log entry,
+// cannot sit between two verify reds.
+//
+// A manager `goto plan` after the first repeat mail writes no log entry.
+// Only the later report from `plan` writes one.
+// `plan` is review's `onRounds` target. The streak must break there too.
+//
+// A re-plan renumbers the acceptance criteria.
+// A shared id after a re-plan is a false repeat.
+// With no fix, the renumbered AC2 in the post-replan red looks like the same repeat again.
+test('a manager goto plan between two verify reds breaks the repeat streak (claude-factory-qgz finding .11)', () => {
+  const actor = createActor(compile(lifecycle)).start()
+  actor.send({ type: 'GOTO', node: 'verify', at: 0 })
+  let seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2\nFailing: AC2', at: 1000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+
+  actor.send({ type: 'GOTO', node: 'verify', at: 1000 })
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'still fails AC2\nFailing: AC2', at: 2000 })
+  expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1) // the 1st repeat mail
+
+  // the manager's hand goto plan, with the findings; the run re-plans and goes on as usual
+  actor.send({ type: 'GOTO', node: 'plan', at: 2000 })
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 're-planned', at: 3000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 'fixed', at: 4000 })
+  expect(where(actor.getSnapshot().value)[0]).toBe('verify')
+
+  seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'DONE', seq, outcome: 'red', summary: 'fails AC2 again\nFailing: AC2', at: 5000 })
+  // the re-plan renumbered AC2, so this is not a real repeat: still only the 1st mail
+  expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
 })

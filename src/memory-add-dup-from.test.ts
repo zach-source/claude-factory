@@ -27,6 +27,8 @@ test('a duplicate `memory add` logs the finding run under its own note, not with
     'fabriek',
     '--from',
     'run1/implement',
+    '--kind',
+    'fact',
     'fabriek has no CHANGELOG file or per-PR version bump convention',
     'checked the whole history',
   ])
@@ -39,6 +41,8 @@ test('a duplicate `memory add` logs the finding run under its own note, not with
     'fabriek',
     '--from',
     'run2/verify',
+    '--kind',
+    'fact',
     'no changelog or version bump convention exists in fabriek',
     'hit the same thing',
   ])
@@ -49,6 +53,7 @@ test('a duplicate `memory add` logs the finding run under its own note, not with
     .trim()
     .split('\n')
     .map(l => JSON.parse(l))
-  const helped = lines.find(l => l.helped === 1)
-  expect(helped?.by).toBe('run2/verify')
+  const confirmed = lines.find(l => l.confirmed === 1)
+  expect(confirmed?.by).toBe('run2/verify')
+  expect(lines.some(l => l.helped === 1)).toBe(false) // a duplicate confirms, it never logs helped (claude-factory-3u1.1.2)
 }, 60_000)

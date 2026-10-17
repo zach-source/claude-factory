@@ -1208,6 +1208,108 @@ test(
 )
 
 test(
+  "an older patrol the watchdog freed, still calling Bash late, is not re-adopted over the one now running; its stale command never lands in the running one's own report (claude-factory-72v.17, claude-factory-cb9)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const spawns: unknown[] = []
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/home/factory',
+      files,
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    // agent.spawn delivers no agentId for a registered type in this test kit (claude-factory-72v
+    // memory): both patrol A and patrol B learn rt.patrolId only from their own first Bash call
+    on('agent.spawn', () => (spawns.push({}), { model: 'sonnet' }) as never)
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
+    // mutable: agent.list reads this array fresh on every call, so it can grow as later patrols
+    // start, the way a real session's own list would
+    const listed = ['patrol-A']
+    agentListMock(on, listed)
+
+    // patrol A spawns, then adopts rt.patrolId from its own first, non-logging Bash call
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(spawns).toHaveLength(1)
+    await $.tool.call({ tool: 'Bash', command: 'factory status', agentId: 'patrol-A' } as never)
+
+    // past 15 minutes with no turn.complete: the watchdog frees A (rt.isPatrolling only), and new
+    // mail lets patrol B start. A's id stays in rt.patrolIds; B's own spawn resolves no agentId
+    // either, so rt.patrolId goes back to undefined until a Bash call confirms one
+    queued = [mail(2)]
+    await clock.advance(16 * 60_000)
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(spawns).toHaveLength(2)
+
+    // B is now a second real factory:patrol agent too, confirmed by agent.list, exactly as a real
+    // session would show while A's own loop has not noticed the watchdog freed it and runs on
+    listed.push('patrol-B')
+
+    // A calls Bash first, late, with a command the patrol log would otherwise record
+    await $.tool.call({
+      tool: 'Bash',
+      command: 'factory mail r1 implement "late from A"',
+      agentId: 'patrol-A',
+    } as never)
+    // B's own first command
+    await $.tool.call({
+      tool: 'Bash',
+      command: 'factory mail r1 implement "from B"',
+      agentId: 'patrol-B',
+    } as never)
+
+    // B's own turn.complete must still free isPatrolling and log only B's own action
+    await $.turn.complete({
+      answer: "B's own report",
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-B',
+    } as never)
+
+    const log = (files.get('/home/factory/patrol-log.jsonl') ?? '').trim().split('\n').filter(Boolean)
+    expect(log).toHaveLength(1)
+    const entry = JSON.parse(log[0]!)
+    expect(entry.agentId).toBe('patrol-B')
+    expect(entry.actions).toEqual(['factory mail r1 implement "from B"'])
+    expect(entry.report).toBe("B's own report")
+
+    // isPatrolling is free: past the next 10-minute mark, with new mail, a third patrol starts
+    queued = [mail(3)]
+    await clock.advance(10 * 60_000)
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(spawns).toHaveLength(3)
+
+    // leave no patrol running, so a later test in this file is not blocked by it
+    listed.push('patrol-C')
+    await $.tool.call({ tool: 'Bash', command: 'factory status', agentId: 'patrol-C' } as never)
+    await $.turn.complete({
+      answer: 'done',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't2',
+      agentId: 'patrol-C',
+    } as never)
+  },
+)
+
+test(
   'patrolNow reads <home>/plan.json and carries a fresh plan into the prompt; a corrupt or malshaped plan.json reads as none, the same as a missing one (claude-factory-dun.4, .18)',
   SLOW,
   async ($, on) => {
@@ -1336,5 +1438,35 @@ test(
       turnId: 't4',
       agentId: 'patrol-4',
     } as never)
+  },
+)
+
+// claude-factory-qgz AC8: the patrol's own system prompt (registered once at session.start, not the
+// per-turn `agent.spawn` text) forbids a hand goto past a station's round cap, and steers a
+// repeat-red notice toward a concrete steer or a re-plan, never a bare retry.
+test(
+  "the patrol's registered prompt forbids goto implement past a round cap, and steers a repeat-red notice",
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    on('session.start', ($, e) => ({ cwd: e.cwd }) as never)
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+    on('command.register', () => ({ value: { command: 'factory' } }) as never)
+    const registered: { name: string; prompt: string }[] = []
+    on('agent.register', ($, e) => {
+      registered.push(e as unknown as { name: string; prompt: string })
+      return { value: { agent: `factory:${(e as unknown as { name: string }).name}` } } as never
+    })
+
+    await $.session.start({ cwd: '/repo', surface: null, isInteractive: false } as never)
+
+    const patrol = registered.find(r => r.name === 'patrol')
+    expect(patrol).toBeDefined()
+    expect(patrol!.prompt).toContain('already re-planned once')
+    expect(patrol!.prompt).toMatch(/[Nn]ever goto it to implement/)
+    expect(patrol!.prompt).toMatch(/reported <outcome> again on/)
+    expect(patrol!.prompt).toContain('Never goto implement with no new direction')
   },
 )

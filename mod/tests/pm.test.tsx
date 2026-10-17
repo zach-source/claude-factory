@@ -57,6 +57,9 @@ function pmMocks(
     clearManager?: () => void
     files?: Map<string, string>
     facts?: string
+    /** called on every `factory plan facts` invocation. Returns the stderr text to fail that
+     * call with (exitCode 1), or `undefined` to let it succeed with `opts.facts`. */
+    factsFail?: () => string | undefined
     planSetOut?: () => string
     paneOwner?: string
     calls?: string[][]
@@ -91,8 +94,11 @@ function pmMocks(
       return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
     }
     if (e.argv.includes('home')) return { value: { exitCode: 0, stdout: HOME, stderr: '' } as never }
-    if (e.argv.includes('plan') && e.argv.includes('facts'))
+    if (e.argv.includes('plan') && e.argv.includes('facts')) {
+      const failErr = opts.factsFail?.()
+      if (failErr !== undefined) return { value: { exitCode: 1, stdout: '', stderr: failErr } as never }
       return { value: { exitCode: 0, stdout: opts.facts ?? '{"rigs":{}}', stderr: '' } as never }
+    }
     if (e.argv.includes('plan') && e.argv.includes('set')) {
       // a real `factory plan set` writes plan.json on success: this mock does the same, so a
       // later `readPlan` in the same test sees a fresh plan, the same as the real CLI
@@ -499,6 +505,119 @@ test(
       expect(entry.reason).toBe('spawn-failed')
       expect(entry.error).toContain('spawn blew up')
     }
+  },
+)
+
+// ---- claude-factory-4hb: a failed 'factory plan facts' call backs off and logs, the same as a failed spawn ----
+
+test(
+  "a 'plan facts' call that fails every time backs off the same as a denied spawn: 8 calls over 3 hours (t0,+60s,+180s,+420s,+900s,+1860s,+3780s,+7380s), not ~180, one pm-log 'facts-failed' line each, no spawn",
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const calls: string[][] = []
+    const spawns: unknown[] = []
+    const files = pmMocks(on, {
+      runs: () => [RUN('r12')],
+      calls,
+      tools: ['Bash', 'Agent'],
+      factsFail: () => 'bd: connection refused',
+    })
+    on('agent.spawn', ($, e) => {
+      spawns.push(e)
+      return { model: 'sonnet' } as never
+    })
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+
+    const factsCalls = () => calls.filter(a => a.includes('plan') && a.includes('facts')).length
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(factsCalls()).toBe(1) // t0: due at once, facts fails, failures=1, retry in 60s
+
+    await clock.advance(55_000)
+    expect(factsCalls()).toBe(1) // short of 60s since t0: no retry yet
+    await clock.advance(5_000)
+    expect(factsCalls()).toBe(2) // +60s: retry, fails again, failures=2, retry in 120s
+
+    await clock.advance(115_000)
+    expect(factsCalls()).toBe(2) // short of +180s since t0: no retry yet
+    await clock.advance(5_000)
+    expect(factsCalls()).toBe(3) // +180s: retry, fails again, failures=3, retry in 240s
+
+    await clock.advance(235_000)
+    expect(factsCalls()).toBe(3) // short of +420s since t0: no retry yet
+    await clock.advance(5_000)
+    expect(factsCalls()).toBe(4) // +420s: retry, fails again, failures=4
+
+    // the remaining retries (+900s,+1860s,+3780s,+7380s) land inside the 3 hour window; the 60
+    // minute cap then holds off the next one past it, so the count stops at 8, not ~180
+    await clock.advance(3 * 60 * 60_000 - 420_000)
+    expect(factsCalls()).toBe(8)
+    expect(spawns).toHaveLength(0)
+
+    const log = logOf(files)
+    expect(log).toHaveLength(8)
+    for (const entry of log) {
+      expect(entry.reason).toBe('facts-failed')
+      expect(entry.error).toContain('bd: connection refused')
+    }
+  },
+)
+
+test(
+  "a 'plan facts' call that fails once then works spawns the pm at +60s, with one 'facts-failed' pm-log line, and the next working call resets rt.pmFailures",
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const calls: string[][] = []
+    const spawns: { subagent_type: string }[] = []
+    let failedOnce = false
+    const files = pmMocks(on, {
+      runs: () => [RUN('r13')],
+      calls,
+      tools: ['Bash', 'Agent'],
+      factsFail: () => {
+        if (failedOnce) return undefined
+        failedOnce = true
+        return 'bd: connection refused'
+      },
+    })
+    on('agent.spawn', ($, e) => {
+      const ev = e as unknown as { subagent_type: string }
+      if (ev.subagent_type === 'factory:pm') spawns.push(ev)
+      return { model: 'sonnet' } as never
+    })
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    agentListMock(on, [], ['pm-13'])
+
+    const factsCalls = () => calls.filter(a => a.includes('plan') && a.includes('facts')).length
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(factsCalls()).toBe(1) // t0: fails, failures=1, retry in 60s
+    expect(spawns).toHaveLength(0)
+
+    await clock.advance(59_000)
+    expect(spawns).toHaveLength(0) // short of +60s: no retry yet
+    await clock.advance(1_000)
+    expect(factsCalls()).toBe(2) // +60s: retry, this time succeeds, spawns the pm
+    expect(spawns).toHaveLength(1)
+
+    const log = logOf(files)
+    expect(log).toHaveLength(1)
+    expect(log[0]).toMatchObject({ reason: 'facts-failed' })
+    expect(log[0].error).toContain('bd: connection refused')
+
+    // leave no pm turn running, so a later test in this file is not blocked by it
+    await $.turn.complete({
+      answer: PLAN_ANSWER,
+      durationMs: 100,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'pm-13',
+    } as never)
   },
 )
 

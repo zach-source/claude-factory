@@ -1,33 +1,41 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   add,
   applyTiers,
+  citesTracker,
   close,
   compact,
   CORE_BUDGET,
   coreFor,
   coreNotes,
   decide,
+  type Decision,
   dreamPrompt,
+  envTopicCap,
   type EvalCase,
   evalScore,
   evaluate,
   format,
   formatLong,
+  gate,
   inboxCount,
   installSkill,
+  isUntil,
   type LongEntry,
   longAliasRenames,
   longSimPairs,
   managerActivity,
   mdFileCount,
+  NOTE_KINDS,
   noteExists,
   outline,
+  overCapTopics,
   parse,
   parseLong,
+  planLines,
   patrolActivity,
   pendingSkills,
   rank,
@@ -38,8 +46,12 @@ import {
   skillsDir,
   skillSources,
   search,
+  supersede,
   tally,
   tierCandidates,
+  TOPIC_CAP,
+  type UntilDeps,
+  untilStatus,
   usage,
   usageLines,
   use,
@@ -57,6 +69,48 @@ test('a note keeps its summary, rig and provenance through a write and a read', 
   }
   expect(parse('beads/x.md', format(note))).toEqual({ path: 'beads/x.md', ...note })
   expect(parse('inbox/y.md', 'no frontmatter\nmore').summary).toBe('no frontmatter')
+})
+
+test('a note keeps its kind and until through a write and a read', () => {
+  const note = {
+    summary: 'bd init locks every repo',
+    at: '2026-10-06',
+    body: 'why\nhow',
+    kind: 'rule' as const,
+    until: 'acme-1x2.3',
+  }
+  expect(parse('beads/x.md', format(note))).toEqual({ path: 'beads/x.md', ...note })
+})
+
+test('kind and until frontmatter land between at and superseded', () => {
+  const text = format({
+    summary: 's',
+    at: '2026-10-06',
+    superseded: 'beads/new.md',
+    body: 'b',
+    kind: 'fact',
+    until: '2026-12-31',
+  })
+  const lines = text.split('\n')
+  expect(lines.indexOf('at: 2026-10-06')).toBeLessThan(lines.indexOf('kind: fact'))
+  expect(lines.indexOf('kind: fact')).toBeLessThan(lines.indexOf('until: 2026-12-31'))
+  expect(lines.indexOf('until: 2026-12-31')).toBeLessThan(lines.indexOf('superseded: beads/new.md'))
+})
+
+test('parse() of an old note with no kind or until leaves both undefined, no throw', () => {
+  const n = parse('beads/x.md', '---\nsummary: s\n---\nbody')
+  expect(n.kind).toBeUndefined()
+  expect(n.until).toBeUndefined()
+})
+
+test('parse() drops an invalid kind value instead of throwing', () => {
+  const n = parse('beads/x.md', '---\nsummary: s\nkind: bogus\n---\nbody')
+  expect(n.kind).toBeUndefined()
+})
+
+test('format() of a note without kind or until is byte-identical to a note with no such fields today', () => {
+  const note = { summary: 's', at: '2026-10-06', body: 'b' }
+  expect(format(note)).toBe('---\nsummary: s\nat: 2026-10-06\n---\nb\n')
 })
 
 test('a LONG.md entry keeps its id, rig, from, at and body through a write and a read', () => {
@@ -261,6 +315,8 @@ test('usage follows a note the dream files, and is dropped with a note it remove
     path: 'inbox/lock.md',
     shown: 2,
     helped: 1,
+    confirmed: 0,
+    contradicted: 0,
     at: day + 2,
     runs: 1, // all three lines fall on the same UTC day
   })
@@ -283,7 +339,15 @@ test('tally counts runs by distinct `by`, or by distinct UTC day for an older li
     JSON.stringify({ path: 'a.md', helped: 1, at: at + 1000, by: 'run1/verify' }), // same run again: still 1
     JSON.stringify({ path: 'a.md', helped: 1, at: at + 2000, by: 'run2/implement' }),
   ]
-  expect(tally(withBy).get('a.md')).toEqual({ path: 'a.md', shown: 0, helped: 3, at: at + 2000, runs: 2 })
+  expect(tally(withBy).get('a.md')).toEqual({
+    path: 'a.md',
+    shown: 0,
+    helped: 3,
+    confirmed: 0,
+    contradicted: 0,
+    at: at + 2000,
+    runs: 2,
+  })
 
   const legacy = [
     JSON.stringify({ path: 'b.md', helped: 1, at }),
@@ -296,7 +360,48 @@ test('tally counts runs by distinct `by`, or by distinct UTC day for an older li
     JSON.stringify({ path: 'c.md', shown: 5, helped: 2, at, runs: 2 }),
     JSON.stringify({ path: 'c.md', helped: 1, at: at + 2000, by: 'run3/verify' }),
   ]
-  expect(tally(folded).get('c.md')).toEqual({ path: 'c.md', shown: 5, helped: 3, at: at + 2000, runs: 3 })
+  expect(tally(folded).get('c.md')).toEqual({
+    path: 'c.md',
+    shown: 5,
+    helped: 3,
+    confirmed: 0,
+    contradicted: 0,
+    at: at + 2000,
+    runs: 3,
+  })
+})
+
+test('tally counts each of the 4 kinds (shown, helped, confirmed, contradicted), claude-factory-3u1.1.2', () => {
+  const dir = join(tmpdir(), `memory-4kinds-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const at = Date.parse('2026-10-06T12:00:00Z')
+  use(dir, ['a.md'], 'shown', at)
+  use(dir, ['a.md'], 'helped', at + 1000)
+  use(dir, ['a.md'], 'confirmed', at + 2000)
+  use(dir, ['a.md'], 'contradicted', at + 3000)
+  expect(usage(dir).get('a.md')).toEqual({
+    path: 'a.md',
+    shown: 1,
+    helped: 1,
+    confirmed: 1,
+    contradicted: 1,
+    at: at + 3000,
+    runs: 1,
+  })
+})
+
+test('compact() keeps confirmed and contradicted in its folded line: compact then tally gives the same counts', () => {
+  const dir = join(tmpdir(), `memory-compact-4kinds-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'a.md'), format({ summary: 'a short note', body: 'body' }))
+  const at = Date.parse('2026-10-06T12:00:00Z')
+  use(dir, ['beads/a.md'], 'confirmed', at, 'run1/verify')
+  use(dir, ['beads/a.md'], 'contradicted', at + 1000, 'run1/verify')
+  const before = usage(dir).get('beads/a.md')
+  compact(dir, {})
+  expect(usage(dir).get('beads/a.md')).toEqual(before!)
 })
 
 test("compact() keeps a LONG.md entry's usage under its #id, and drops it only when the id is gone", () => {
@@ -312,6 +417,35 @@ test("compact() keeps a LONG.md entry's usage under its #id, and drops it only w
   expect(noteExists(dir, 'beads/LONG.md#gone')).toBe(false)
   compact(dir, {})
   expect(usage(dir).get('beads/LONG.md#lock')?.helped).toBe(1)
+})
+
+// claude-factory-5o7: noteExists()'s no-'#' branch was only existsSync(join(dir,path)), so a
+// directory ('beads', '.' -> '') or any non-.md file passed. walk() only ever lists .md files
+// (memory.ts's walk()), so a real note path always ends in .md.
+test('noteExists refuses a topic directory, ".", and a non-.md file; a real note still passes', () => {
+  const dir = join(tmpdir(), `memory-note-exists-dir-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'a short note', body: 'body' }))
+  writeFileSync(join(dir, 'beads', 'notes.txt'), 'plain text, not a note\n')
+  expect(noteExists(dir, 'beads')).toBe(false)
+  expect(noteExists(dir, '')).toBe(false)
+  expect(noteExists(dir, 'beads/notes.txt')).toBe(false)
+  expect(noteExists(dir, 'beads/x.md')).toBe(true)
+})
+
+test('compact() drops a usage line logged against a directory path, and keeps a real note', () => {
+  const dir = join(tmpdir(), `memory-compact-dir-usage-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'x.md'), format({ summary: 'a short note', body: 'body' }))
+  // simulate the pre-fix bug's bad usage line: a 'helped' event logged against a bare directory
+  use(dir, ['beads'], 'helped')
+  use(dir, ['beads/x.md'], 'helped')
+  expect(usage(dir).get('beads')?.helped).toBe(1)
+  compact(dir, {})
+  expect(usage(dir).get('beads')).toBeUndefined()
+  expect(usage(dir).get('beads/x.md')?.helped).toBe(1)
 })
 
 test('noteExists and compact() know a CORE.md#<hash> fact note, and drop it once its bullet is gone (claude-factory-59r.12)', () => {
@@ -330,6 +464,74 @@ test('noteExists and compact() know a CORE.md#<hash> fact note, and drop it once
   writeFileSync(join(dir, 'CORE.md'), '- a different lesson entirely\n')
   compact(dir, {})
   expect(usage(dir).has(bullet!.path)).toBe(false) // dropped: that bullet is gone
+})
+
+test('supersede() writes one superseded: line, byte-exact on every other line, keeping an unknown frontmatter key', () => {
+  const dir = join(tmpdir(), `memory-supersede-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const before = '---\nsummary: a short note\nunknown: kept as is\n---\nbody text\n'
+  writeFileSync(join(dir, 'beads', 'x.md'), before)
+  expect(supersede(dir, 'beads/x.md', 'inbox/y.md')).toEqual({ marked: true })
+  expect(readFileSync(join(dir, 'beads', 'x.md'), 'utf8')).toBe(
+    '---\nsummary: a short note\nunknown: kept as is\nsuperseded: inbox/y.md\n---\nbody text\n',
+  )
+})
+
+test('supersede() replaces an old superseded: line instead of adding a second one', () => {
+  const dir = join(tmpdir(), `memory-supersede-replace-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(
+    join(dir, 'beads', 'x.md'),
+    '---\nsummary: a short note\nsuperseded: inbox/old.md\n---\nbody text\n',
+  )
+  supersede(dir, 'beads/x.md', 'inbox/new.md')
+  expect(readFileSync(join(dir, 'beads', 'x.md'), 'utf8')).toBe(
+    '---\nsummary: a short note\nsuperseded: inbox/new.md\n---\nbody text\n',
+  )
+})
+
+test('supersede() prepends a frontmatter block to a note with none', () => {
+  const dir = join(tmpdir(), `memory-supersede-nofm-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'inbox'), { recursive: true })
+  writeFileSync(join(dir, 'inbox', 'x.md'), 'no frontmatter\nmore body\n')
+  supersede(dir, 'inbox/x.md', 'inbox/y.md')
+  expect(readFileSync(join(dir, 'inbox', 'x.md'), 'utf8')).toBe(
+    '---\nsuperseded: inbox/y.md\n---\nno frontmatter\nmore body\n',
+  )
+})
+
+test('supersede() changes no file for a LONG.md#id or CORE.md#hash path, and says so', () => {
+  const dir = join(tmpdir(), `memory-supersede-hash-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(
+    join(dir, 'beads', 'LONG.md'),
+    formatLong([{ id: 'lock', summary: 'bd init locks every repo', body: 'merged' }]),
+  )
+  writeFileSync(join(dir, 'CORE.md'), '- a core lesson\n')
+  const longBefore = readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')
+  const coreBefore = readFileSync(join(dir, 'CORE.md'), 'utf8')
+  expect(supersede(dir, 'beads/LONG.md#lock', 'inbox/y.md')).toEqual({ marked: false })
+  expect(supersede(dir, 'CORE.md#deadbeef', 'inbox/y.md')).toEqual({ marked: false })
+  expect(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).toBe(longBefore)
+  expect(readFileSync(join(dir, 'CORE.md'), 'utf8')).toBe(coreBefore)
+})
+
+test('applyTiers dry run archives a note supersede() just marked', () => {
+  const dir = join(tmpdir(), `memory-supersede-applytiers-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'old.md'), format({ summary: 'an old note', body: 'body' }))
+  supersede(dir, 'beads/old.md', 'inbox/new.md')
+  const { decisions } = applyTiers(dir, { dryRun: true })
+  expect(decisions).toContainEqual({
+    kind: 'archive',
+    path: 'beads/old.md',
+    reason: 'superseded by inbox/new.md',
+  })
 })
 
 test('compact() logs a rename so a later `helped <old path>` still resolves, even through a chain', () => {
@@ -661,6 +863,199 @@ test('decide() archive cap counts a superseded archive against the same cap', ()
   expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/b.md'])
 })
 
+const plainOld = (path: string, over: Partial<ShortCandidate> = {}): ShortCandidate =>
+  short({ path, ageDays: 10, staleDays: 10, ...over })
+
+test('decide() topic cap: 15 short notes get no cap merge, 16 get exactly 1', () => {
+  const fifteen = Array.from({ length: 15 }, (_, i) => plainOld(`beads/n${i}.md`))
+  expect(decide(fifteen, [], [], { topicCap: 15 })).toEqual([])
+
+  const sixteen = Array.from({ length: 16 }, (_, i) => plainOld(`beads/n${i}.md`))
+  const decisions = decide(sixteen, [], [], { topicCap: 15 })
+  expect(decisions).toHaveLength(1)
+  expect(decisions[0]).toEqual({
+    kind: 'merge',
+    path: 'beads/n0.md',
+    reason: 'topic beads over the short-note cap of 15 (16 short notes)',
+  })
+})
+
+test('decide() topic cap picks the oldest notes first, by ageDays then path', () => {
+  const cands = [
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/n${i}.md`, { ageDays: 10 })),
+    plainOld('beads/oldest.md', { ageDays: 50 }),
+    plainOld('beads/older.md', { ageDays: 30 }),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions.map(d => ('path' in d ? d.path : ''))).toEqual(['beads/oldest.md', 'beads/older.md'])
+})
+
+test('decide() topic cap never picks a note under MERGE_AGE_DAYS (7) old, even when candidates run out first', () => {
+  // 20 notes, only 2 old enough to merge: the cap would need 5 removed to reach 15, but decide() must
+  // stop at 2 (out of candidates) rather than reach into the 18 young notes to hit the cap exactly
+  const cands = [
+    ...Array.from({ length: 2 }, (_, i) => plainOld(`beads/old${i}.md`, { ageDays: 10 })),
+    ...Array.from({ length: 18 }, (_, i) => plainOld(`beads/young${i}.md`, { ageDays: 6 })),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions).toEqual([
+    {
+      kind: 'merge',
+      path: 'beads/old0.md',
+      reason: 'topic beads over the short-note cap of 15 (20 short notes)',
+    },
+    {
+      kind: 'merge',
+      path: 'beads/old1.md',
+      reason: 'topic beads over the short-note cap of 15 (20 short notes)',
+    },
+  ])
+})
+
+test('decide() topic cap: 20 notes with 3 merges and 2 archives already planned leaves 15, no cap merge', () => {
+  const cands = [
+    ...Array.from({ length: 3 }, (_, i) => plainOld(`beads/shown${i}.md`, { shown: 1 })), // -> merge
+    ...Array.from({ length: 2 }, (_, i) => plainOld(`beads/stale${i}.md`, { staleDays: 31, helped: 0 })), // -> archive
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, topicCap: 15 })
+  expect(decisions.filter(d => d.kind === 'merge')).toHaveLength(3)
+  expect(decisions.filter(d => d.kind === 'archive')).toHaveLength(2)
+  expect(decisions.some(d => 'reason' in d && d.reason.includes('over the short-note cap'))).toBe(false)
+})
+
+test('decide() topic cap counts a held note (over the archive cap) as still in the topic', () => {
+  const cands = [
+    plainOld('beads/held-candidate.md', { staleDays: 31, helped: 0 }), // archive -> held (archiveCap 0)
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { historyDays: 100, topicCap: 15, archiveCap: 0 })
+  expect(decisions.filter(d => d.kind === 'held').map(d => d.path)).toEqual(['beads/held-candidate.md'])
+  const capMerges = decisions.filter(d => 'reason' in d && d.reason.includes('over the short-note cap'))
+  expect(capMerges).toHaveLength(1)
+  expect(capMerges[0]).toMatchObject({ path: 'beads/plain0.md' })
+})
+
+test('decide() topic cap counts a superseded note (archived outright) as removed from the topic', () => {
+  const cands = [
+    plainOld('beads/superseded.md', { superseded: 'beads/kept.md' }),
+    ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
+  ]
+  const decisions = decide(cands, [], [], { topicCap: 15 })
+  expect(decisions).toEqual([
+    { kind: 'archive', path: 'beads/superseded.md', reason: 'superseded by beads/kept.md' },
+  ])
+})
+
+test('decide() topic cap never touches inbox, however many notes it holds', () => {
+  const cands = Array.from({ length: 20 }, (_, i) => plainOld(`inbox/n${i}.md`, { topic: 'inbox' }))
+  expect(decide(cands, [], [], { topicCap: 15 })).toEqual([])
+})
+
+test('decide() with no topicCap (default Infinity) gives the same output as before the cap existed', () => {
+  const cands = Array.from({ length: 100 }, (_, i) => plainOld(`beads/n${i}.md`))
+  expect(decide(cands, [])).toEqual([])
+  expect(decide(cands, [], [], {})).toEqual([])
+})
+
+// AC5: an expired note retires at any age or usage count, even under 7 days old.
+test('decide() retires an expired note, at any age or usage count, even under 7 days old', () => {
+  expect(
+    decide([short({ expired: true, expiredReason: 'date 2026-01-01 passed', helped: 5, ageDays: 1 })], []),
+  ).toEqual([{ kind: 'retire', path: 'beads/x.md', reason: 'date 2026-01-01 passed' }])
+})
+
+test('decide() never retires an inbox note, however expired', () => {
+  expect(
+    decide([short({ topic: 'inbox', expired: true, expiredReason: 'date 2026-01-01 passed' })], []),
+  ).toEqual([])
+})
+
+test('decide() archives, not retires, an expired note that is also superseded: superseded wins', () => {
+  expect(
+    decide([short({ expired: true, expiredReason: 'date 2026-01-01 passed', superseded: 'beads/y.md' })], []),
+  ).toEqual([{ kind: 'archive', path: 'beads/x.md', reason: 'superseded by beads/y.md' }])
+})
+
+// AC6: a flag never blocks another rule. Other rules still run and can add their own decision.
+test('decide() flags an untilFlag note, and still archives it under the normal archive rule', () => {
+  expect(
+    decide([short({ untilFlag: 'bead acme-widget-h7c not found', helped: 0, staleDays: 31 })], [], [], {
+      historyDays: 100,
+    }),
+  ).toEqual([
+    { kind: 'flag', path: 'beads/x.md', reason: 'bead acme-widget-h7c not found' },
+    { kind: 'archive', path: 'beads/x.md', reason: 'never helped, unused for 31 days' },
+  ])
+})
+
+test('decide() flags an untilFlag note alone, when no other rule fires', () => {
+  expect(decide([short({ untilFlag: 'no lookup' })], [])).toEqual([
+    { kind: 'flag', path: 'beads/x.md', reason: 'no lookup' },
+  ])
+})
+
+// AC7: the archive cap treats a retire the same as an archive: the oldest note keeps its kind.
+test('decide() archive cap treats a retire the same as an archive: the older note keeps its kind', () => {
+  const decisions = decide(
+    [
+      short({ path: 'beads/old.md', ageDays: 40, expired: true, expiredReason: 'date passed' }),
+      short({ path: 'beads/new.md', ageDays: 20, shown: 0, helped: 0, staleDays: 35 }),
+    ],
+    [],
+    [],
+    { historyDays: 100, archiveCap: 1 },
+  )
+  expect(decisions).toEqual([
+    { kind: 'retire', path: 'beads/old.md', reason: 'date passed' },
+    { kind: 'held', path: 'beads/new.md', reason: 'over the archive cap of 1 this pass' },
+  ])
+})
+
+// AC7: the topic cap counts a retire as removed from the topic, the same as an archive or a merge.
+test('decide() topic cap counts a retire as removed from the topic, same as an archive or merge', () => {
+  const notes = [
+    short({ path: 'beads/a.md', expired: true, expiredReason: 'date passed' }),
+    ...Array.from({ length: 14 }, (_, i) => short({ path: `beads/n${i}.md` })),
+  ]
+  const decisions = decide(notes, [], [], { topicCap: 14 })
+  expect(decisions.filter(d => d.kind === 'retire')).toHaveLength(1)
+  expect(decisions.filter(d => d.kind === 'merge')).toHaveLength(0)
+})
+
+// AC7: a flag is not a decision for the topic cap, like a promote or a dedupe. It never stops the
+// cap from picking that same note for a merge.
+test('decide() topic cap still merges an untilFlag note: the flag does not block it', () => {
+  const notes = [
+    short({ path: 'beads/a.md', untilFlag: 'no lookup', ageDays: 10, staleDays: 10 }),
+    ...Array.from({ length: 15 }, (_, i) => short({ path: `beads/n${i}.md` })),
+  ]
+  const decisions = decide(notes, [], [], { topicCap: 15 })
+  expect(decisions).toContainEqual({ kind: 'flag', path: 'beads/a.md', reason: 'no lookup' })
+  expect(decisions).toContainEqual({
+    kind: 'merge',
+    path: 'beads/a.md',
+    reason: 'topic beads over the short-note cap of 15 (16 short notes)',
+  })
+})
+
+// AC9: the header counts retire and flag too, and each line still reads `kind  path: reason`.
+test('planLines() header counts retire and flag, and each line reads kind  path: reason', () => {
+  const decisions: Decision[] = [
+    { kind: 'merge', path: 'a/a.md', reason: 'r1' },
+    { kind: 'archive', path: 'a/b.md', reason: 'r2' },
+    { kind: 'retire', path: 'a/c.md', reason: 'r3' },
+    { kind: 'held', path: 'a/d.md', reason: 'r4' },
+    { kind: 'flag', path: 'a/e.md', reason: 'r5' },
+  ]
+  const lines = planLines(decisions, { archiveCap: 25, historyDays: 10 })
+  expect(lines[0]).toBe(
+    'tier plan: 1 merge, 1 archive, 1 retire, 1 held (cap 25), 1 flag, usage history 10 days',
+  )
+  expect(lines).toContain('retire  a/c.md: r3')
+  expect(lines).toContain('flag  a/e.md: r5')
+})
+
 test('mdFileCount counts CORE.md and every topic README, LONG.md and short note, never .archive', () => {
   const dir = join(tmpdir(), `memory-count-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })
@@ -765,7 +1160,9 @@ test('applyTiers() caps a mass of never-shown notes at 25, holds the rest, and p
   expect(archiveCap).toBe(25)
   expect(Math.floor(historyDays)).toBe(20)
   expect(plans).toHaveLength(1)
-  expect(plans[0]![0]).toBe('tier plan: 0 merge, 25 archive, 5 held (cap 25), usage history 20 days')
+  expect(plans[0]![0]).toBe(
+    'tier plan: 0 merge, 25 archive, 0 retire, 5 held (cap 25), 0 flag, usage history 20 days',
+  )
   expect(plans[0]!.filter(l => l.startsWith('archive  ')).length).toBe(25)
   expect(plans[0]!.filter(l => l.startsWith('held  ')).length).toBe(5)
 
@@ -781,7 +1178,9 @@ test('applyTiers() archives nothing under the usage-history guard with no usage 
   const now = Date.parse('2026-10-15T00:00:00Z')
   const paths = fixtureNeverShown30(dir, now)
 
-  const { archived, historyDays } = applyTiers(dir, { now })
+  // topicCap: Infinity keeps this test about the usage-history guard alone; the 30-note fixture would
+  // otherwise trip the unrelated topic cap (default 15) and merge some of these notes away
+  const { archived, historyDays } = applyTiers(dir, { now, topicCap: Infinity })
   expect(archived).toBe(0)
   expect(historyDays).toBe(0)
   for (const p of paths) expect(existsSync(join(dir, p))).toBe(true)
@@ -806,6 +1205,128 @@ test('applyTiers() reads the archive cap from FACTORY_MEMORY_ARCHIVE_CAP, and a 
     if (prev === undefined) delete process.env.FACTORY_MEMORY_ARCHIVE_CAP
     else process.env.FACTORY_MEMORY_ARCHIVE_CAP = prev
   }
+})
+
+// n short notes in one topic. Note 0 is startAgeDays old, note 1 is startAgeDays+1 old, and so on.
+// Each note's ageDays is distinct, so the oldest-first tie-break never has to pick between two of them.
+function fixtureOldNotes(dir: string, topic: string, n: number, now: number, startAgeDays = 10): string[] {
+  const DAY = 24 * 60 * 60 * 1000
+  mkdirSync(join(dir, topic), { recursive: true })
+  const paths: string[] = []
+  for (let i = 0; i < n; i++) {
+    const file = `n${String(i).padStart(2, '0')}.md`
+    paths.push(`${topic}/${file}`)
+    const at = new Date(now - (startAgeDays + i) * DAY).toISOString().slice(0, 10)
+    writeFileSync(join(dir, topic, file), format({ summary: `note ${i}`, at, body: 'body' }))
+  }
+  return paths
+}
+
+test('applyTiers() merges a topic down to the cap: 18 notes become 15 short notes and 3 LONG.md entries, each renamed', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const paths = fixtureOldNotes(dir, 'beads', 18, now)
+
+  const { merged, archived, renamed, overCap, topicCap } = applyTiers(dir, { now, topicCap: 15 })
+  expect(topicCap).toBe(15)
+  expect(merged).toBe(3)
+  expect(archived).toBe(0)
+  expect(Object.keys(renamed)).toHaveLength(3)
+  for (const old of Object.keys(renamed)) expect(paths).toContain(old)
+  expect(overCap).toEqual([])
+
+  const remaining = readdirSync(join(dir, 'beads')).filter(f => f.endsWith('.md') && f !== 'LONG.md')
+  expect(remaining).toHaveLength(15)
+  expect(existsSync(join(dir, 'beads', 'LONG.md'))).toBe(true)
+  // the 3 oldest (the last 3 created, ages 25, 26, 27) are the ones that merged away
+  for (const i of [15, 16, 17])
+    expect(existsSync(join(dir, 'beads', `n${String(i).padStart(2, '0')}.md`))).toBe(false)
+})
+
+test('applyTiers() topic cap, dry run: counts the same 3 merges, writes nothing, same overCap as the real pass', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-dry-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  const paths = fixtureOldNotes(dir, 'beads', 18, now)
+
+  const dry = applyTiers(dir, { now, topicCap: 15, dryRun: true })
+  expect(dry.merged).toBe(3)
+  expect(dry.overCap).toEqual([])
+  for (const p of paths) expect(existsSync(join(dir, p))).toBe(true) // nothing written
+  expect(existsSync(join(dir, 'beads', 'LONG.md'))).toBe(false)
+})
+
+test('applyTiers() topic cap: a skipped merge into an unsafe LONG.md leaves the topic in overCap', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-unsafe-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 18, now)
+  // stray prose before the first entry: unsafeLongTopics() flags this file, so no merge into it can run
+  writeFileSync(join(dir, 'beads', 'LONG.md'), '---\ntier: long\n---\nstray prose with no entry\n')
+
+  const { merged, skipped, overCap } = applyTiers(dir, { now, topicCap: 15 })
+  expect(merged).toBe(0)
+  expect(skipped).toEqual([
+    { topic: 'beads', reason: expect.stringContaining('a merge would lose') as unknown as string },
+  ])
+  expect(overCap).toEqual([{ topic: 'beads', count: 18 }])
+})
+
+test('envTopicCap() reads FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
+  const prev = process.env.FACTORY_MEMORY_TOPIC_CAP
+  try {
+    delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    expect(envTopicCap()).toBe(15)
+    process.env.FACTORY_MEMORY_TOPIC_CAP = '7'
+    expect(envTopicCap()).toBe(7)
+    for (const bad of ['0', '-1', '1.5', '']) {
+      process.env.FACTORY_MEMORY_TOPIC_CAP = bad
+      expect(envTopicCap()).toBe(15)
+    }
+  } finally {
+    if (prev === undefined) delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    else process.env.FACTORY_MEMORY_TOPIC_CAP = prev
+  }
+})
+
+test('applyTiers() reads the topic cap from FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
+  const dir = join(tmpdir(), `memory-apply-topiccap-env-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 18, now)
+
+  const prev = process.env.FACTORY_MEMORY_TOPIC_CAP
+  try {
+    process.env.FACTORY_MEMORY_TOPIC_CAP = '3'
+    expect(applyTiers(dir, { now, dryRun: true }).merged).toBe(15) // 18 - 3
+    process.env.FACTORY_MEMORY_TOPIC_CAP = 'abc'
+    expect(applyTiers(dir, { now, dryRun: true }).merged).toBe(3) // 18 - 15
+  } finally {
+    if (prev === undefined) delete process.env.FACTORY_MEMORY_TOPIC_CAP
+    else process.env.FACTORY_MEMORY_TOPIC_CAP = prev
+  }
+})
+
+test('overCapTopics lists topics over the cap now, from the live store, sorted by count desc then topic asc', () => {
+  const dir = join(tmpdir(), `memory-overcap-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 16, now)
+  fixtureOldNotes(dir, 'ci', 20, now)
+  fixtureOldNotes(dir, 'release', 10, now) // under the cap: never listed
+
+  expect(overCapTopics(dir, 15)).toEqual([
+    { topic: 'ci', count: 20 },
+    { topic: 'beads', count: 16 },
+  ])
+  // exactly at the cap: not over it
+  expect(overCapTopics(dir, 16)).toEqual([{ topic: 'ci', count: 20 }])
 })
 
 test('applyTiers() with dryRun counts decisions but writes nothing, and a second pass is a no-op', () => {
@@ -1109,6 +1630,82 @@ test('applyTiers() ages a note with no at: from the commit that added it, not th
   ])
 })
 
+test('applyTiers() retires a note whose date until marker passed, and writes it to .archive like an archive', () => {
+  const dir = join(tmpdir(), `memory-apply-retire-date-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'stale-fact.md'),
+    format({ summary: 'a fact that holds only until a date', until: '2026-01-01', body: 'body' }),
+  )
+  const { retired, archived, merged, decisions } = applyTiers(dir, { now })
+  expect(retired).toBe(1)
+  expect(archived).toBe(0)
+  expect(merged).toBe(0)
+  expect(decisions).toEqual([
+    { kind: 'retire', path: 'beads/stale-fact.md', reason: 'date 2026-01-01 passed' },
+  ])
+  expect(existsSync(join(dir, 'beads', 'stale-fact.md'))).toBe(false)
+  expect(readFileSync(join(dir, '.archive', 'beads.md'), 'utf8')).toContain(
+    'a fact that holds only until a date',
+  )
+})
+
+test('applyTiers() dry run counts a retire but writes nothing', () => {
+  const dir = join(tmpdir(), `memory-apply-retire-dry-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'stale-fact.md'),
+    format({ summary: 'a fact that holds only until a date', until: '2026-01-01', body: 'body' }),
+  )
+  const { retired } = applyTiers(dir, { now, dryRun: true })
+  expect(retired).toBe(1)
+  expect(existsSync(join(dir, 'beads', 'stale-fact.md'))).toBe(true)
+  expect(existsSync(join(dir, '.archive', 'beads.md'))).toBe(false)
+})
+
+test('applyTiers() flags, and keeps, a bead-until note whose lookup throws', () => {
+  const dir = join(tmpdir(), `memory-apply-flag-throw-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'cites-bead.md'),
+    format({ summary: 'a fact that cites a bead', until: 'acme-widget-h7c', body: 'body' }),
+  )
+  const untilDeps: UntilDeps = {
+    bead: () => {
+      throw new Error('secret-e2e: bd down')
+    },
+  }
+  const { retired, flagged, decisions } = applyTiers(dir, { now, untilDeps })
+  expect(retired).toBe(0)
+  expect(flagged).toBe(1)
+  expect(decisions).toEqual([
+    { kind: 'flag', path: 'beads/cites-bead.md', reason: 'bead acme-widget-h7c lookup failed' },
+  ])
+  expect(existsSync(join(dir, 'beads', 'cites-bead.md'))).toBe(true)
+})
+
+test('applyTiers() with no untilDeps at all leaves a bead-until note untouched, with no flag', () => {
+  const dir = join(tmpdir(), `memory-apply-no-untildeps-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'cites-bead.md'),
+    format({ summary: 'a fact that cites a bead', until: 'acme-widget-h7c', body: 'body' }),
+  )
+  const { retired, flagged, decisions } = applyTiers(dir, { now })
+  expect(retired).toBe(0)
+  expect(flagged).toBe(0)
+  expect(decisions).toEqual([])
+  expect(existsSync(join(dir, 'beads', 'cites-bead.md'))).toBe(true)
+})
+
 test('tally keys a run by its id before the slash, so two stations of one run count as one run, not two (claude-factory-59r.16)', () => {
   const at = Date.parse('2026-10-06T12:00:00Z')
   const lines = [
@@ -1116,7 +1713,15 @@ test('tally keys a run by its id before the slash, so two stations of one run co
     JSON.stringify({ path: 'a.md', helped: 1, at: at + 1000, by: 'run1/implement' }), // same run, another station
     JSON.stringify({ path: 'a.md', helped: 1, at: at + 2000, by: 'run2/implement' }),
   ]
-  expect(tally(lines).get('a.md')).toEqual({ path: 'a.md', shown: 0, helped: 3, at: at + 2000, runs: 2 })
+  expect(tally(lines).get('a.md')).toEqual({
+    path: 'a.md',
+    shown: 0,
+    helped: 3,
+    confirmed: 0,
+    contradicted: 0,
+    at: at + 2000,
+    runs: 2,
+  })
 })
 
 test('compact() keeps the run ids its own fold already counted, so a later line for the same run does not count again (claude-factory-59r.17)', () => {
@@ -1167,7 +1772,7 @@ test('evaluate() runs the fixed query set against a real store through search()'
   expect(r.misses).toEqual([])
 }, 60_000)
 
-test('dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate and unsafe sections', () => {
+test('dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate, unsafe and over-cap sections', () => {
   const empty = dreamPrompt('/tmp/memory', [], [], [])
   expect(empty).toContain('LONG.md')
   expect(empty).toContain("Never change an entry's `id`")
@@ -1175,7 +1780,17 @@ test('dreamPrompt names the long tier and the id rule, and adds the promotion, d
   expect(empty).toContain('## Promotion candidates')
   expect(empty).toContain('## Possible duplicates')
   expect(empty).toContain('## Unsafe LONG.md files')
+  expect(empty).toContain('## Topics over the short-note cap')
   expect(empty).toContain('(none)')
+  expect(empty).toContain(`3 to ${TOPIC_CAP} notes each`) // defaults to TOPIC_CAP when no topicCap is passed
+  expect(empty).toContain(`holds ${TOPIC_CAP} or fewer`) // step 9 tells the dream to merge or drop to the cap
+  expect(empty).toContain('already over the cap') // step 1: the list below holds only topics over the cap
+  expect(empty).toContain('7 days old or more, used or not') // step 9: the cap merge does not require use
+
+  const withCap = dreamPrompt('/tmp/memory', [], [], [], undefined, [], [], [], [], 10)
+  expect(withCap).toContain('3 to 10 notes each') // a non-default topicCap is named, not the TOPIC_CAP constant
+  expect(withCap).toContain('holds 10 or fewer')
+  expect(withCap).not.toContain(`3 to ${TOPIC_CAP} notes each`)
 
   const filled = dreamPrompt(
     '/tmp/memory',
@@ -1186,10 +1801,13 @@ test('dreamPrompt names the long tier and the id rule, and adds the promotion, d
     ['- beads/LONG.md#lock (bd init locks every repo): helped 3 times across 3 runs'],
     ['- beads/LONG.md#a (x) vs beads/LONG.md#b (y): similarity 0.90'],
     ['- beads/LONG.md holds text before its first entry that a merge would lose: stray prose'],
+    ['- ci: 23 short notes (cap 15)', '- claude-factory: 29 short notes (cap 15)'],
   )
   expect(filled).toContain('helped 3 times across 3 runs')
   expect(filled).toContain('similarity 0.90')
   expect(filled).toContain('stray prose')
+  expect(filled).toContain('## Topics over the short-note cap\n- ci: 23 short notes (cap 15)')
+  expect(filled).toContain('claude-factory: 29 short notes (cap 15)')
 })
 
 test('longSimPairs finds a near-duplicate pair of LONG.md entries in the same topic and rig, not across a topic or a rig', async () => {
@@ -1288,3 +1906,225 @@ test('tierCandidates composes decide(), longSimPairs() and usage() into dream-pr
   expect(duplicates[0]).toContain('beads/LONG.md#x')
   expect(duplicates[0]).toContain('beads/LONG.md#y')
 }, 60_000)
+
+// citesTracker() must find a bead id or a PR reference in free text. It drives gate()'s --until
+// requirement (claude-factory-3u1.1.1.2). Bead-id matching is case sensitive.
+test('citesTracker() finds a bead id or a PR reference', () => {
+  for (const s of [
+    'claude-factory-3u1.1.1',
+    'fab-6otc',
+    'infra-blocks-38e0',
+    'ax-706',
+    'acme-6kw.2',
+    'fab-bb1.1.7',
+    'ama-pr9',
+    'PR #70',
+    'pr 70',
+    'acme/widget#12',
+    'https://github.com/acme/widget/pull/3',
+  ])
+    expect(citesTracker(s)).not.toBeNull()
+})
+
+test('citesTracker() does not fire on ordinary words that merely look like an id', () => {
+  for (const s of [
+    'dry-run',
+    're-run',
+    'pre-fix',
+    'k0s-workloads-prod',
+    'fabriek-m1-reviewer',
+    'asd-ste100',
+    'runtime-config-sha256',
+    'bge-small-en-v1.5',
+    'utf-8',
+    'step #2',
+    'PRs',
+  ])
+    expect(citesTracker(s)).toBeNull()
+})
+
+test('citesTracker() accepts two known false positives rather than add a special case for them', () => {
+  // "ui-e2e" and "sha-256" both look like <prefix>-<3-5 alnum chars with a digit>. This is the same
+  // shape as a real bead id, for example "fab-6otc". The plan accepts this trade-off. A person who
+  // sees a false --until demand can tell these apart at a glance. A narrower regex would also drop
+  // real ids such as "ama-pr9".
+  expect(citesTracker('ui-e2e')).not.toBeNull()
+  expect(citesTracker('sha-256')).not.toBeNull()
+})
+
+test('isUntil() accepts a bead id, an owner/repo#N, a GitHub pull URL, and a real calendar date', () => {
+  expect(isUntil('claude-factory-3u1.1.1')).toBe(true)
+  expect(isUntil('acme/widget#12')).toBe(true)
+  expect(isUntil('https://github.com/acme/widget/pull/3')).toBe(true)
+  expect(isUntil('2026-12-31')).toBe(true)
+})
+
+test('isUntil() refuses a fake date, the wrong date format, and plain words', () => {
+  expect(isUntil('2026-02-30')).toBe(false) // February has no 30th
+  expect(isUntil('12/31/2026')).toBe(false)
+  expect(isUntil('soon')).toBe(false)
+  expect(isUntil('#5')).toBe(false)
+})
+
+// AC1: a date ends at 00:00Z the day after it. "Today" (UTC) stays live, and so does a later date.
+test('untilStatus() date: ends the day after it passes, at 00:00Z, not before', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  expect(untilStatus('2026-10-16', now)).toEqual({ state: 'ended', reason: 'date 2026-10-16 passed' })
+  expect(untilStatus('2026-10-17', now)).toEqual({ state: 'live' })
+  expect(untilStatus('2026-10-18', now)).toEqual({ state: 'live' })
+})
+
+// AC2: closed ends it; any other status is live; null (not found) and a throw give different reasons;
+// a missing deps.bead gives "no lookup", never a verdict.
+test('untilStatus() bead: closed ends it, open is live, not-found and a lookup failure differ', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  const id = 'acme-widget-h7c'
+  expect(untilStatus(id, now, { bead: () => 'closed' })).toEqual({
+    state: 'ended',
+    reason: `bead ${id} closed`,
+  })
+  expect(untilStatus(id, now, { bead: () => 'open' })).toEqual({ state: 'live' })
+  expect(untilStatus(id, now, { bead: () => null })).toEqual({
+    state: 'unknown',
+    reason: `bead ${id} not found`,
+  })
+  expect(
+    untilStatus(id, now, {
+      bead: () => {
+        throw new Error('secret-e2e')
+      },
+    }),
+  ).toEqual({ state: 'unknown', reason: `bead ${id} lookup failed` })
+  expect(untilStatus(id, now, {})).toEqual({ state: 'unknown', reason: 'no lookup' })
+})
+
+// AC3: both spellings look up the same URL form; MERGED/CLOSED end it; OPEN is live; UNKNOWN, null and
+// a throw all read as a lookup failure; a missing deps.pr gives "no lookup".
+test('untilStatus() PR: owner/repo#N and the pull URL resolve to the same lookup, by state', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  const url = 'https://github.com/acme/widget/pull/12'
+  for (const ref of ['acme/widget#12', url]) {
+    const seen: string[] = []
+    const pr = (u: string) => {
+      seen.push(u)
+      return 'MERGED' as const
+    }
+    expect(untilStatus(ref, now, { pr })).toEqual({ state: 'ended', reason: `PR ${ref} merged` })
+    expect(seen).toEqual([url]) // both spellings call deps.pr with the https URL form
+  }
+  expect(untilStatus(url, now, { pr: () => 'CLOSED' })).toEqual({
+    state: 'ended',
+    reason: `PR ${url} closed`,
+  })
+  expect(untilStatus(url, now, { pr: () => 'OPEN' })).toEqual({ state: 'live' })
+  expect(untilStatus(url, now, { pr: () => 'UNKNOWN' })).toEqual({
+    state: 'unknown',
+    reason: `PR ${url} lookup failed`,
+  })
+  expect(untilStatus(url, now, { pr: () => null })).toEqual({
+    state: 'unknown',
+    reason: `PR ${url} lookup failed`,
+  })
+  expect(
+    untilStatus(url, now, {
+      pr: () => {
+        throw new Error('secret-e2e')
+      },
+    }),
+  ).toEqual({ state: 'unknown', reason: `PR ${url} lookup failed` })
+  expect(untilStatus(url, now, {})).toEqual({ state: 'unknown', reason: 'no lookup' })
+})
+
+// AC4: a value isUntil() refuses is always unknown, no matter what deps the caller gives.
+test('untilStatus() refuses a value isUntil() refuses, regardless of deps', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  expect(untilStatus('soon', now, { bead: () => 'closed', pr: () => 'MERGED' })).toEqual({
+    state: 'unknown',
+    reason: 'not a valid until value',
+  })
+})
+
+// no reason ever carries a thrown error's own message: fixed text only.
+test('untilStatus() reasons never leak a thrown error message', () => {
+  const now = Date.parse('2026-10-17T00:00:00Z')
+  const deps: UntilDeps = {
+    bead: () => {
+      throw new Error('secret-e2e')
+    },
+    pr: () => {
+      throw new Error('secret-e2e')
+    },
+  }
+  const beadResult = untilStatus('acme-widget-h7c', now, deps)
+  const prResult = untilStatus('acme/widget#12', now, deps)
+  expect(beadResult.state).toBe('unknown')
+  expect(prResult.state).toBe('unknown')
+  expect((beadResult as { reason: string }).reason).not.toContain('secret-e2e')
+  expect((prResult as { reason: string }).reason).not.toContain('secret-e2e')
+})
+
+test('gate() refuses a note with no --kind, naming --kind and all three kinds', () => {
+  const r = gate({ summary: 's', body: 'b' })
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    expect(r.flag).toBe('--kind')
+    for (const k of NOTE_KINDS) expect(r.reason).toContain(k)
+  }
+})
+
+test('gate() refuses an invalid --kind value, naming --kind and the bad value', () => {
+  const r = gate({ summary: 's', body: 'b', kind: 'Fact' })
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    expect(r.flag).toBe('--kind')
+    expect(r.reason).toContain('Fact')
+  }
+})
+
+test('gate() refuses a fact or rule note that cites a bead with no --until', () => {
+  for (const kind of ['fact', 'rule'] as const) {
+    const r = gate({ summary: 'claude-factory-3u1.1.1 taught us this', body: 'b', kind })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.flag).toBe('--until')
+      expect(r.reason).toContain('claude-factory-3u1.1.1')
+      expect(r.reason.toLowerCase()).toContain('tracker')
+      expect(r.reason).toContain('--until')
+    }
+  }
+})
+
+test('gate() accepts a recipe that cites a bead with no --until', () => {
+  expect(gate({ summary: 'claude-factory-3u1.1.1 taught us this', body: 'b', kind: 'recipe' })).toEqual({
+    ok: true,
+  })
+})
+
+test('gate() accepts a fact or rule note that cites a bead when --until is a valid bead id', () => {
+  expect(
+    gate({
+      summary: 'claude-factory-3u1.1.1 taught us this',
+      body: 'b',
+      kind: 'fact',
+      until: 'claude-factory-3u1.1.1',
+    }),
+  ).toEqual({ ok: true })
+})
+
+test('gate() accepts a note that cites nothing, with no --until', () => {
+  expect(gate({ summary: 's', body: 'b', kind: 'fact' })).toEqual({ ok: true })
+})
+
+test('gate() refuses an invalid --until value even on a note that cites nothing', () => {
+  const r = gate({ summary: 's', body: 'b', kind: 'fact', until: 'soon' })
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    expect(r.flag).toBe('--until')
+    expect(r.reason).toContain('soon')
+  }
+})
+
+test('gate() is pure: the same input always returns the same decision', () => {
+  const n = { summary: 'claude-factory-3u1.1.1', body: 'b', kind: 'fact' as const }
+  expect(gate(n)).toEqual(gate(n))
+})

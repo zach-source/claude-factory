@@ -1,17 +1,24 @@
 import { expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
 import {
+  acIdsIn,
+  afterTimeout,
+  capReplanMail,
   compile,
   failClass,
+  failingAcIds,
   isPrWait,
   mrsIn,
   parkDelayMin,
+  prevReport,
   prsIn,
   reach,
+  timeoutOf,
   unread,
   validate,
   where,
   WATCHED_PARK_MIN,
+  type Ctx,
   type Ev,
   type Factory,
 } from './machine'
@@ -319,6 +326,282 @@ test('a station that reports one outcome more than its rounds is held for the ma
   ).toThrow('rounds is at least 1')
 })
 
+// claude-factory-qgz AC1-AC3: a station with onRounds re-plans at its cap instead of holding, carrying
+// every round's findings; a second cap in the same run still holds for the manager.
+test('onRounds re-plans a capped station with its findings, then holds for the manager on a second cap', () => {
+  const withPlan: Factory = {
+    ...def,
+    nodes: {
+      ...def.nodes,
+      plan: { prompt: 'plan it', next: { planned: 'implement' } },
+      review: { ...def.nodes.review!, rounds: 2, onRounds: 'plan' },
+    },
+  }
+  const { send } = run(withPlan)
+  let seq = 1
+  let t = 0
+  const toReview = (note: string) => {
+    send({ type: 'DONE', seq: seq++, outcome: 'ready', summary: 'built', at: ++t })
+    return send({ type: 'DONE', seq: seq++, outcome: 'changes', summary: note, at: ++t })
+  }
+
+  expect(where(toReview('round 1: fix the nil check').value)).toEqual(['implement', 'working'])
+  expect(where(toReview('round 2: fix the race').value)).toEqual(['implement', 'working'])
+  let s = toReview('round 3: still flaky')
+  expect(where(s.value)).toEqual(['plan', 'working']) // AC1: the (R+1)th report re-plans, not stuck
+  expect(s.context.log.filter(e => e.node === 'review' && e.outcome === 'changes')).toHaveLength(3)
+  // claude-factory-qgz finding .8: only the machine's own re-plan carries `replan: true`
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'review', outcome: 'changes', replan: true })
+  expect(s.context.mail.manager).toBeUndefined() // AC2: no manager mail on this path
+  const findings = s.context.mail.plan?.[0]
+  expect(findings?.from).toBe('review')
+  expect(findings?.text).toContain('round 1')
+  expect(findings?.text.indexOf('round 1')).toBeLessThan(findings!.text.indexOf('round 2'))
+  expect(findings?.text.indexOf('round 2')).toBeLessThan(findings!.text.indexOf('round 3'))
+  expect(findings?.text).toContain('fix the nil check')
+  expect(findings?.text).toContain('fix the race')
+  expect(findings?.text).toContain('still flaky')
+
+  // AC3: plan reports planned, then reports R+2..2R+1 (the 4th and 5th changes) follow the normal edge
+  s = send({ type: 'DONE', seq: seq++, outcome: 'planned', summary: 're-planned', at: ++t })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(where(toReview('round 4: normal').value)).toEqual(['implement', 'working'])
+  expect(where(toReview('round 5: normal').value)).toEqual(['implement', 'working'])
+  // the 6th (2R+2) holds for the manager, same as with no onRounds, plus "already re-planned once"
+  s = toReview('round 6: still broken')
+  expect(where(s.value)).toEqual(['review', 'stuck'])
+  expect(s.context.error).toBe('review reported changes more than 2 times')
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('already re-planned once')
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('held instead of going to implement')
+})
+
+// claude-factory-qgz AC2: the re-plan mail stays near 24000 chars even when every round's summary is huge.
+test('capReplanMail clips each round so the whole mail stays under 24000 chars plus its header', () => {
+  const big = 'x'.repeat(50_000)
+  const prior = [
+    { node: 'review', attempt: 1, outcome: 'changes', summary: big, at: 1 },
+    { node: 'review', attempt: 1, outcome: 'changes', summary: big, at: 2 },
+  ]
+  const text = capReplanMail(prior, 'review', 'changes', big)
+  expect(text).toContain('### review round 1')
+  expect(text).toContain('### review round 2')
+  expect(text).toContain('### review round 3')
+  expect(text.length).toBeLessThan(24_000 + 1_000) // 3 rounds clipped to floor(24000/3) each, plus the header
+})
+
+// claude-factory-qgz AC5: validate refuses each broken onRounds and a repeatMail that is not an outcome.
+test('validate refuses onRounds with no rounds, to an unknown node, to done, or to itself; and repeatMail not in next', () => {
+  const graph = (node: object) => ({ name: 'x', start: 'a', nodes: { a: node } }) as unknown as Factory
+  expect(() => validate(graph({ prompt: 'x', next: { ok: 'a' }, onRounds: 'a' }))).toThrow(
+    'a: onRounds needs rounds',
+  )
+  expect(() => validate(graph({ prompt: 'x', next: { ok: 'a' }, rounds: 2, onRounds: 'ghost' }))).toThrow(
+    'a: onRounds goes to unknown node "ghost"',
+  )
+  expect(() => validate(graph({ prompt: 'x', next: { ok: 'a' }, rounds: 2, onRounds: 'done' }))).toThrow(
+    'a: onRounds must not be "done"',
+  )
+  expect(() => validate(graph({ prompt: 'x', next: { ok: 'a' }, rounds: 2, onRounds: 'a' }))).toThrow(
+    'a: onRounds must not be the node itself',
+  )
+  expect(() =>
+    validate({
+      name: 'x',
+      start: 'a',
+      nodes: {
+        a: { prompt: 'x', next: { ok: 'b' }, repeatMail: 'nope' },
+        b: { prompt: 'x', next: { ok: 'a' } },
+      },
+    }),
+  ).toThrow('a: repeatMail "nope" is not an outcome in next')
+})
+
+// claude-factory-qgz AC6: repeatMail mails the manager once a station repeats one outcome twice in a
+// row, both summaries citing the same AC id on their own "Failing:" line, skipping fail/blocked/
+// handoff in between. Review round 1 finding .9: a passing AC named elsewhere in the report must
+// not count, since verify's prompt has it name passing ACs too.
+test('repeatMail mails the manager once two reports in a row share a failing AC id', () => {
+  const verifyLoop: Factory = {
+    name: 'verify-loop',
+    start: 'verify',
+    nodes: {
+      verify: {
+        prompt: 'verify',
+        next: { green: 'verify', red: 'implement' },
+        repeatMail: 'red',
+        retries: 2,
+      },
+      implement: { prompt: 'fix', next: { ready: 'verify' } },
+    },
+  }
+  const repeatMails = (s: ReturnType<ReturnType<typeof run>['send']>) =>
+    s.context.mail.manager?.filter(m => m.from === 'factory') ?? []
+
+  // red(AC2, AC3), a fail at verify (skipped), then red(AC2): one mail from 'factory' naming AC2
+  {
+    const { send } = run(verifyLoop)
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'checked everything.\nFailing: AC2, AC3', at: 1 })
+    send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+    send({ type: 'FAIL', seq: 3, reason: 'flaky', at: 3 })
+    send({ type: 'TICK', at: 1_000_000 })
+    const s = send({
+      type: 'DONE',
+      seq: 4,
+      outcome: 'red',
+      summary: 'still broken.\nFailing: AC2',
+      at: 1_000_001,
+    })
+    expect(where(s.value)).toEqual(['implement', 'working'])
+    expect(repeatMails(s)).toHaveLength(1)
+    expect(repeatMails(s)[0]).toMatchObject({ from: 'factory' })
+    expect(repeatMails(s)[0]!.text).toContain('AC2')
+    expect(repeatMails(s)[0]!.text).toContain('verify')
+  }
+
+  // red(AC1) then red(AC2): no shared failing id, no mail
+  {
+    const { send } = run(verifyLoop)
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC1', at: 1 })
+    send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+    const s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'Failing: AC2', at: 3 })
+    expect(repeatMails(s)).toHaveLength(0)
+  }
+
+  // red(AC2), green(AC2), red(AC2): the intervening green (a key of next) breaks the streak
+  {
+    const { send } = run(verifyLoop)
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC2', at: 1 })
+    send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+    send({ type: 'DONE', seq: 3, outcome: 'green', summary: 'AC2 still open', at: 3 })
+    const s = send({ type: 'DONE', seq: 4, outcome: 'red', summary: 'Failing: AC2', at: 4 })
+    expect(repeatMails(s)).toHaveLength(0)
+  }
+
+  // 'AC-2' and 'ac2' both normalize to AC2
+  {
+    const { send } = run(verifyLoop)
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC-2', at: 1 })
+    send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+    const s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'still fails.\nFailing: ac2', at: 3 })
+    expect(repeatMails(s)).toHaveLength(1)
+  }
+
+  // no AC id on either side: no mail
+  {
+    const { send } = run(verifyLoop)
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'no id here', at: 1 })
+    send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+    const s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'still no id', at: 3 })
+    expect(repeatMails(s)).toHaveLength(0)
+  }
+
+  // finding .9: both reports name AC2 as passing in their prose, but fail only on a different id
+  // each time; sharing a passing mention must never look like a repeat
+  {
+    const { send } = run(verifyLoop)
+    send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'AC2 passes.\nFailing: AC3', at: 1 })
+    send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+    const s = send({
+      type: 'DONE',
+      seq: 3,
+      outcome: 'red',
+      summary: 'AC2 passes again.\nFailing: AC5',
+      at: 3,
+    })
+    expect(repeatMails(s)).toHaveLength(0)
+  }
+})
+
+// claude-factory-qgz finding .9: a re-plan between two same-outcome reports renumbers acceptance
+// criteria, so a shared id across it is coincidence, not a real repeat on the same criterion.
+test('repeatMail does not fire across a re-plan, even when the failing id is the same by coincidence', () => {
+  const graph: Factory = {
+    name: 'replan-then-repeat',
+    start: 'verify',
+    nodes: {
+      verify: { prompt: 'verify', next: { red: 'review', green: 'done' }, repeatMail: 'red' },
+      review: {
+        prompt: 'review',
+        next: { changes: 'implement', approve: 'verify' },
+        rounds: 1,
+        onRounds: 'plan',
+      },
+      implement: { prompt: 'implement', next: { ready: 'review' } },
+      plan: { prompt: 'plan', next: { planned: 'verify' } },
+    },
+  }
+  const { send } = run(graph)
+  let s = send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC2', at: 1 })
+  expect(where(s.value)).toEqual(['review', 'working'])
+  s = send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'round 1', at: 2 })
+  expect(where(s.value)).toEqual(['implement', 'working']) // review's 1st round: the normal edge, no cap yet
+  s = send({ type: 'DONE', seq: 3, outcome: 'ready', summary: 'fixed', at: 3 })
+  expect(where(s.value)).toEqual(['review', 'working'])
+  s = send({ type: 'DONE', seq: 4, outcome: 'changes', summary: 'round 2, not converging', at: 4 })
+  expect(where(s.value)).toEqual(['plan', 'working']) // the 2nd round hits review's cap: re-plan
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'review', replan: true })
+  s = send({ type: 'DONE', seq: 5, outcome: 'planned', summary: 're-planned', at: 5 })
+  expect(where(s.value)).toEqual(['verify', 'working'])
+  s = send({ type: 'DONE', seq: 6, outcome: 'red', summary: 'Failing: AC2', at: 6 })
+  expect(s.context.mail.manager?.filter(m => m.from === 'factory') ?? []).toHaveLength(0)
+})
+
+// claude-factory-qgz, review round 2 finding .11.
+// A manager GOTO writes no log entry of its own.
+// A hand `goto plan` after a repeat mail leaves no `replan: true` entry to find.
+//
+// `plan` is still a re-plan target: it is review's `onRounds` value.
+// So `plan`'s own later report must break the streak too.
+test('a manager GOTO to a re-plan target breaks the repeatMail streak, with no replan:true entry', () => {
+  const graph: Factory = {
+    name: 'goto-then-repeat',
+    start: 'verify',
+    nodes: {
+      verify: { prompt: 'verify', next: { red: 'implement', green: 'review' }, repeatMail: 'red' },
+      implement: { prompt: 'implement', next: { ready: 'verify' } },
+      review: {
+        prompt: 'review',
+        next: { changes: 'implement', approve: 'done' },
+        rounds: 1,
+        onRounds: 'plan',
+      },
+      plan: { prompt: 'plan', next: { planned: 'implement' } },
+    },
+  }
+  const { send } = run(graph)
+  let s = send({ type: 'DONE', seq: 1, outcome: 'red', summary: 'Failing: AC2', at: 1 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  s = send({ type: 'DONE', seq: 2, outcome: 'ready', summary: 'fixed', at: 2 })
+  expect(where(s.value)).toEqual(['verify', 'working'])
+  s = send({ type: 'DONE', seq: 3, outcome: 'red', summary: 'still fails\nFailing: AC2', at: 3 })
+  expect(s.context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1) // the 1st repeat mail
+
+  // no `replan: true` entry anywhere: this re-plan is a hand GOTO, not review's own onRounds jump
+  s = send({ type: 'GOTO', node: 'plan', at: 3 })
+  expect(s.context.log.some(e => e.replan)).toBe(false)
+  s = send({ type: 'DONE', seq: s.context.seq, outcome: 'planned', summary: 're-planned', at: 4 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  s = send({ type: 'DONE', seq: s.context.seq, outcome: 'ready', summary: 'fixed again', at: 5 })
+  expect(where(s.value)).toEqual(['verify', 'working'])
+  s = send({ type: 'DONE', seq: s.context.seq, outcome: 'red', summary: 'fails again\nFailing: AC2', at: 6 })
+  expect(s.context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1) // still just the 1st
+})
+
+test('acIdsIn normalizes AC ids, failingAcIds reads only the Failing: line, and prevReport skips outcomes that are not a key of next', () => {
+  expect(acIdsIn('fails AC2, AC-3 and ac4')).toEqual(['AC2', 'AC3', 'AC4'])
+  expect(acIdsIn('no ids here')).toEqual([])
+  expect(failingAcIds('AC2 passes.\nFailing: AC3, AC-5')).toEqual(['AC3', 'AC5'])
+  expect(failingAcIds('no Failing line, just AC2')).toEqual([])
+  const next = { red: 'implement', green: 'done' }
+  const log = [
+    { node: 'verify', attempt: 1, outcome: 'red', summary: 'r1', at: 1 },
+    { node: 'implement', attempt: 1, outcome: 'ready', summary: 'fix', at: 2 },
+    { node: 'verify', attempt: 1, outcome: 'fail', summary: 'flaky', at: 3 },
+  ]
+  expect(prevReport(log, 'verify', next)).toMatchObject({ outcome: 'red', summary: 'r1' })
+  expect(prevReport(log, 'verify', {})).toBeUndefined()
+})
+
 test('a handoff starts a fresh worker at the same station without spending an attempt', () => {
   const { send } = run()
   let s = send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 1 })
@@ -366,6 +649,88 @@ test('failures of different kinds still retry', () => {
   send({ type: 'TICK', at: 11_000 })
   const s = send({ type: 'FAIL', seq: 2, reason: 'stalled: no output for 40 min', at: 12_000 })
   expect(where(s.value)).toEqual(['implement', 'backoff'])
+})
+
+// claude-factory-3t2: a timeout retry gets a longer limit and an extra brief section.
+test('afterTimeout is true right after a timeout fail, stays true through another fail kind in the same tail, and is false with no timeout fail in it', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { ...def.nodes.implement!, retries: 2 } },
+  })
+  // attempt 1 fails some other way: no timeout fail in the tail yet (AC2)
+  let s = send({ type: 'FAIL', seq: 1, reason: 'worker pane w1:p1 was closed', at: 500 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(false)
+  s = send({ type: 'TICK', at: 1_000_000 })
+
+  s = send({ type: 'FAIL', seq: s.context.seq, reason: 'no report within 45 min', at: 1_000_100 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+  s = send({ type: 'TICK', at: 2_000_000 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+
+  // a later fail of another kind in the same tail does not drop the escalation: the timeout
+  // entry is still in the node's run of log entries, which only a new visit (a different node) ends
+  s = send({ type: 'FAIL', seq: s.context.seq, reason: 'worker pane w1:p1 was closed', at: 2_000_100 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+
+  // a node that never failed has no timeout tail
+  expect(afterTimeout(s.context as Ctx, 'review')).toBe(false)
+})
+
+test("afterTimeout stays true across a stuck state and the manager's RETRY (the log tail still holds it)", () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { ...def.nodes.implement!, retries: 1 } },
+  })
+  send({ type: 'FAIL', seq: 1, reason: 'no report within 45 min', at: 1000 })
+  const retried = send({ type: 'TICK', at: 11_000 })
+  let s = send({ type: 'FAIL', seq: retried.context.seq, reason: 'no report within 45 min', at: 12_000 })
+  expect(where(s.value)).toEqual(['implement', 'stuck'])
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+
+  s = send({ type: 'RETRY', at: 13_000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(true)
+})
+
+test('timeoutOf gives the plain timeoutMin with no onTimeout, and the escalated one only after a timeout fail', () => {
+  const plain = def.nodes.implement!
+  const escalated = { ...plain, timeoutMin: 45, onTimeout: { timeoutMin: 75 } }
+  const { send, now } = run({ ...def, nodes: { ...def.nodes, implement: escalated } })
+  const fresh = now()
+  expect(timeoutOf(plain, fresh.context as Ctx, 'implement')).toBe(60) // no timeoutMin set: falls back to 60
+  expect(timeoutOf(escalated, fresh.context as Ctx, 'implement')).toBe(45) // no timeout fail yet
+
+  const s = send({ type: 'FAIL', seq: 1, reason: 'no report within 45 min', at: 1000 })
+  expect(timeoutOf(escalated, s.context as Ctx, 'implement')).toBe(75)
+  expect(timeoutOf(plain, s.context as Ctx, 'implement')).toBe(60) // no onTimeout: unaffected
+})
+
+test('validate refuses onTimeout on a gate, and onTimeout.timeoutMin at or under timeoutMin, each alone', () => {
+  const graph = (node: object) => ({ name: 'x', start: 'a', nodes: { a: node } }) as unknown as Factory
+  expect(() =>
+    validate(
+      graph({
+        prompt: '?',
+        gate: true,
+        agent: undefined,
+        next: { ok: 'done' },
+        onTimeout: { timeoutMin: 75 },
+      }),
+    ),
+  ).toThrow('a: a gate has no worker, so no onTimeout')
+  expect(() =>
+    validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 45 } })),
+  ).toThrow('a: onTimeout.timeoutMin must be greater than timeoutMin (45)')
+  expect(() =>
+    validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 30 } })),
+  ).toThrow('a: onTimeout.timeoutMin must be greater than timeoutMin (45)')
+  expect(
+    validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 75 } })),
+  ).toBeTruthy()
+  // no timeoutMin set: the default of 60 is the floor onTimeout must clear
+  expect(() => validate(graph({ prompt: 'x', next: { ok: 'done' }, onTimeout: { timeoutMin: 60 } }))).toThrow(
+    'a: onTimeout.timeoutMin must be greater than timeoutMin (60)',
+  )
 })
 
 // claude-factory-960.1: an awaitsPr station (deploy, for example) parks before its first worker starts.

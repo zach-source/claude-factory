@@ -34,6 +34,9 @@ const DENY = [
   'rm -f a && rm -rf .scratch/c && git status',
   'ls | xargs rm -rf',
   'find . -name x -exec rm -rf {} +',
+  // claude-factory-lbn: a bare `-exec` word right after another `-exec` must not stop the find
+  // loop from reaching the `-exec rm -rf x` pair that follows.
+  'find . -exec -exec rm -rf x',
   "bash -c 'rm -rf x'",
   '(rm -rf x)',
   'timeout 5 rm -rf x',
@@ -84,6 +87,11 @@ const ALLOW = [
   'echo a\\\nb',
   // claude-factory-25z.23: a backslash-newline inside a quoted argument stays allowed too.
   'git commit -m "a\\\nb"',
+  // claude-factory-lbn: the rm after -exec here carries no recursive flag.
+  'find . -exec rm -f x \\;',
+  // claude-factory-lbn: a mutant that drops the `baseWord(cmd[i + 1]) === 'rm'` check before
+  // isRecursiveRm would deny this (isRecursiveRm reads `ls`'s own `-rf` flag as recursive).
+  'find . -exec ls -rf x',
 ]
 
 // stay allowed even though they mention $ or a glob char, because none is an rm operand: claude-factory-99d.1
@@ -336,6 +344,114 @@ test('denyReason keeps today’s behavior for a command over 8192 characters whe
 test('denyReason gives a normal verdict for a command at exactly 8192 characters, personOnly set (claude-factory-25z.20)', () => {
   expect(denyReason(LONG_COMMAND_8192, undefined, ACME)).toBeUndefined()
 })
+
+// claude-factory-1by: anyShellReason calls shCFlagIndex(words.slice(j)) for each sh/bash/zsh/dash
+// word. words.slice(j) costs O(n-j).
+//
+// The scan it feeds also costs O(n-j). On a miss, j moves by only 1.
+//
+// So a run of n such words with no `-c` cluster costs O(n^2). No personOnly is set here.
+//
+// So the 8192-character cap (claude-factory-25z.20) does not apply. Nothing else bounds the scan.
+//
+// Measured on the pre-fix code, load 12-30:
+//
+// 'sh '.repeat(40000) + '; rm -rf x' took 13.6 s.
+//
+// 'bash -x '.repeat(40000) + '; rm -rf x' took 36.3 s.
+//
+// 'sh -- '.repeat(40000) + '; rm -rf x' took 875 ms. The slice alone is quadratic.
+//
+// The inner scan stops at the first word there, because '--' matches right away.
+//
+// 'eval ' + 'sh '.repeat(40000) + '; rm -rf x' took 9.5 s.
+//
+// The eval recursion reaches the same sh-word loop at depth 1, at the same cost.
+//
+// Each time is far past the 500 ms limit this test sets below.
+//
+// The PreToolUse hook has a 10 s limit (src/cli.ts). Past that limit, the hook fails open.
+//
+// The command's `rm -rf` then runs.
+//
+// This test does not read or measure the time used. `test()`'s own time limit does that check.
+const SCAN_N = 40000
+
+test('denyReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(denyReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+test('denyReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(denyReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+test('denyReason denies a 40000-word sh -- scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(denyReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+test('denyReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(denyReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+// claude-factory-1by: shapes the fix must keep denying or allowing exactly as before. A fix that
+// jumps `j` blindly to the end of a segment on a cluster miss would wrongly allow the first two:
+// the real `-c` script sits past a plain word (`eval`) or past a literal `--`.
+test('denyReason still denies `sh eval rm -rf x` (claude-factory-1by)', () => {
+  expect(denyReason('sh eval rm -rf x')).toBe(REASON)
+})
+
+test('denyReason still denies `sh foo -- bash -c "rm -rf x"` (claude-factory-1by)', () => {
+  expect(denyReason('sh foo -- bash -c "rm -rf x"')).toBe(REASON)
+})
+
+test('denyReason still denies `sh -x -lc "rm -rf x"` (claude-factory-1by)', () => {
+  expect(denyReason('sh -x -lc "rm -rf x"')).toBe(REASON)
+})
+
+test('denyReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
+  expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
+})
+
+// claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it
+// runs cmd.slice(i + 1), then reads rest[0]. A slice costs O(n - i). A run of n -exec words makes
+// n such slices, so the find branch costs O(n^2). This test does not set personOnly. So the
+// 8192-character cap (claude-factory-25z.20) does not apply.
+//
+// Measured on the pre-fix code, load 13.81:
+//
+// denyReason('find . ' + '-exec '.repeat(20000)) took 75.5 ms.
+//
+// denyReason('find . ' + '-exec '.repeat(40000)) took 233.0 ms (3.09x).
+//
+// denyReason('find . ' + '-exec '.repeat(80000)) took 1445.0 ms (6.20x). Each time n doubles,
+// the ratio nears 4x. This ratio shows an O(n^2) scan.
+//
+// denyReason('find . ' + '-exec '.repeat(200000) + '; rm -rf x') took 11451.9 ms. This time is
+// past the 10 s PreToolUse hook timeout (src/cli.ts). When the time passes that limit, the hook
+// fails open. The command's `rm -rf` then runs unchecked.
+//
+// This test does not read or measure the time used. `test()`'s own time limit does that check.
+const FIND_N = 200000
+
+test('denyReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)', () => {
+  expect(denyReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
+}, 500)
+
+// claude-factory-lbn: this shape still slices once per -exec word. It does so even when the fix
+// checks baseWord(cmd[i + 1]) === 'rm' before the slice (the bead's own first proposal).
+// The slice itself costs O(n), not the check before it. Each rm here carries no recursive flag.
+// So the command must stay allowed.
+test('denyReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)', () => {
+  expect(denyReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
+}, 500)
+
+test('denyReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)', () => {
+  expect(denyReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
+}, 500)
+
+test('denyReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)', () => {
+  expect(denyReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
+}, 500)
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 

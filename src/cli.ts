@@ -8,6 +8,7 @@ import {
   fsyncSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -25,6 +26,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
+  afterTimeout,
   compile,
   extend,
   fill,
@@ -34,6 +36,7 @@ import {
   parkDelayMin,
   prsIn,
   reach,
+  timeoutOf,
   unread,
   validate,
   where,
@@ -116,6 +119,7 @@ import {
   type Gh,
   type MergedPr,
   type PrsFile,
+  type PrState,
   type RunMeta,
 } from './prs'
 
@@ -875,6 +879,14 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
         ]
       : []),
     ...(lastFail ? ['', '## The previous attempt failed', clipReport(lastFail.summary)] : []),
+    ...(n.onTimeout && afterTimeout(c, node)
+      ? [
+          '',
+          '## The previous attempt timed out',
+          `This attempt has ${n.onTimeout.timeoutMin} min.`,
+          ...(n.onTimeout.prompt ? [n.onTimeout.prompt] : []),
+        ]
+      : []),
     ...(handedOff
       ? [
           '',
@@ -942,7 +954,7 @@ function remembered(run: Run, node: string) {
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
     `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
-    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node}${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so. A lesson that holds only while a bead is open names it ("until <bead> closes"). What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
+    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     helpedHint(run, node),
   ]
 }
@@ -1005,14 +1017,19 @@ function reviveWorktree(run: Run) {
   // this cannot reach the remote at all. Check reachability on its own first (claude-factory-l38.18):
   // only a genuine network failure gets its own message, never the blame-gc message below.
   const reachable =
-    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], { timeout: 30_000 })
-      .exitCode === 0
+    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], {
+      env: GIT_NETWORK_ENV,
+      timeout: GIT_NETWORK_TIMEOUT_MS,
+    }).exitCode === 0
   if (!reachable)
     fail(
       `Could not recreate ${run.worktree}: a fetch of origin failed, so this could not check whether ` +
         `${run.branch} still exists there. Check network access, then retry.`,
     )
-  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], { timeout: 30_000 })
+  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], {
+    env: GIT_NETWORK_ENV,
+    timeout: GIT_NETWORK_TIMEOUT_MS,
+  })
   if (verify(`refs/remotes/origin/${run.branch}`))
     return git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, `origin/${run.branch}`)
   const ref = `refs/factory-gc/${run.id}`
@@ -1820,7 +1837,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (step) send({ type: 'NUDGED', seq: c.seq })
     return step ? 'relaunching' : 'starting'
   }
-  const timeoutMin = n.timeoutMin ?? 60
+  const timeoutMin = timeoutOf(n, c, node)
   const inbox = unread(c, node)
   // a worker waiting on the manager's answer is idle by design: no nudges until the answer arrives
   const asked = (c.mail.manager ?? []).findLast(m => m.from === node && m.at >= c.startedAt)
@@ -2350,21 +2367,137 @@ function closedBeads() {
 }
 
 /**
- * one compact commit's message. Both the dream's compact step and `memory compact` use it.
- * It reads "N merged, M archived, F1 files -> F2 files".
- * It adds ", H held by the archive cap" right after the archived count.
- * It adds that clause only when the cap held notes back this pass.
+ * untilStatus() needs the bd and gh lookups for the `until` marker of a short note (claude-factory-3u1.1.4).
+ * dream() and `memory compact` give these lookups to applyTiers(). Each pass checks a bead or PR marker
+ * against the real tracker. It does not check only the date.
+ *
+ * `bead(id)` needs the prefix of every bead-tracking rig. It loads that list on the first call. So
+ * a pass with no bead marker at all runs no `bd config get` command.
+ *
+ * `bead(id)` uses `prefixStrict()`, not the lenient `prefix()`. A rig's own prefix lookup can fail
+ * (bd down, a timeout). `prefixStrict()` throws in that case, instead of reading it as "no prefix"
+ * by mistake. `bead(id)` sets that rig apart, as a rig it cannot speak for.
+ *
+ * `bead(id)` then picks the healthy rig whose prefix matches `${prefix}-`. The longest prefix wins.
+ * For example, "acme-widget" wins over "acme", because two rigs can share a short prefix.
+ *
+ * Two cases give no matching healthy rig. First: every prefix lookup worked, and the id belongs to
+ * no rig. Then `bead(id)` returns null, the same result bd itself gives for "not found" (AC2).
+ * Second: a rig's prefix lookup failed, so `bead(id)` cannot tell whether that rig would have
+ * matched. Then `bead(id)` throws, instead of a wrong guess of "not found". untilStatus() reports
+ * "lookup failed" for this case, never "ended".
+ *
+ * When `bead(id)` finds a healthy owner, it calls `beads(repo, 'factory/dream').lookup(id)`. A
+ * throw there (bd down or slow, after the prefix call worked) reaches untilStatus() the same way.
+ *
+ * The `bd()` helper in `beads.ts` sets no timeout. A hung bd process hangs this pass, and the
+ * dream.lock that it runs under, instead of throwing. Only a bd process that exits non-zero, or
+ * exits 0 with an answer untilStatus() cannot use, throws or returns null here.
+ *
+ * `pr(url)` runs `gh pr view <url> --json state` with a 30 s timeout. If the exit code is 0,
+ * `pr(url)` reads the `.state` value from the output. Any other exit code returns null.
+ *
+ * One pass makes at most 50 gh calls. The worst case is 50 x 30 s = 25 min, when every call hangs
+ * to its timeout. A PR after the 50th stays unmatched (null). untilStatus() flags that PR, and
+ * does not guess (AC11).
+ *
+ * Both lookups keep each result by value, for the one pass that calls this function. A marker
+ * that two notes share costs one bd or gh call, not two.
+ */
+function untilDeps(): memory.UntilDeps {
+  const beadCache = new Map<string, 'closed' | 'open' | null>()
+  const prCache = new Map<string, PrState | null>()
+  let ghCalls = 0
+  // loaded on the first bead() call, not here: a pass with no bead marker runs no bd command
+  let owners: { repo: string; prefix: string }[] | null = null
+  let someRigPrefixFailed = false
+  const loadOwners = () => {
+    if (owners) return
+    const healthy: { repo: string; prefix: string }[] = []
+    for (const r of rigs().filter(r => hasBeads(r.repo))) {
+      try {
+        healthy.push({ repo: r.repo, prefix: beads(r.repo, 'factory/dream').prefixStrict() })
+      } catch {
+        someRigPrefixFailed = true // this rig cannot be ruled out as the owner of an unmatched id
+      }
+    }
+    // longest prefix first, so "acme-widget" wins over "acme" for an id that starts with both
+    owners = healthy.sort((a, b) => b.prefix.length - a.prefix.length)
+  }
+  return {
+    bead: (id: string) => {
+      if (beadCache.has(id)) return beadCache.get(id)!
+      loadOwners()
+      const owner = owners!.find(o => id.startsWith(`${o.prefix}-`))
+      if (!owner) {
+        if (someRigPrefixFailed) throw new Error(`bead ${id}: a rig's prefix lookup failed`)
+        beadCache.set(id, null)
+        return null
+      }
+      const bead = beads(owner.repo, 'factory/dream').lookup(id)
+      const result: 'closed' | 'open' | null =
+        bead === null ? null : bead.status === 'closed' ? 'closed' : 'open'
+      beadCache.set(id, result)
+      return result
+    },
+    pr: (url: string) => {
+      if (prCache.has(url)) return prCache.get(url)!
+      if (ghCalls >= 50) {
+        prCache.set(url, null) // past the budget: stays unmatched, so untilStatus() flags it, never retires it
+        return null
+      }
+      ghCalls++
+      const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state'], { timeout: 30_000 })
+      const state: PrState | null =
+        p.exitCode === 0 ? ((JSON.parse(p.stdout.toString()).state as PrState) ?? null) : null
+      prCache.set(url, state)
+      return state
+    },
+  }
+}
+
+/**
+ * One compact commit's message. The dream's compact step and `memory compact` both use it.
+ * It reads "N merged, M archived, F1 files -> F2 files". It adds ", H held by the archive cap"
+ * right after the archived count, only when the cap held notes back this pass.
+ *
+ * It adds ", R retired" right after the held clause. It adds this clause only when tiers.retired
+ * is over 0 (AC10). A retire is a note whose `until` marker ended. It writes to .archive like an
+ * archive, but it keeps its own count, so a compact log line shows the two apart.
+ *
+ * It adds ", F flagged" right after the retired clause. It adds this clause only when
+ * tiers.flagged is over 0 (AC10). A flag never removes a note. It marks only an `until` marker
+ * that untilStatus() failed to check.
+ *
+ * It adds a clause for each topic still over the cap after the pass. The clause reads
+ * ", K topic(s) over the cap of N: a (17); b (16)". Each topic reads "name (count)". The worst
+ * topic comes first: the same order as tiers.overCap.
+ *
  * It keeps the trailing skipped-topics clause unchanged.
  */
 function compactMessage(
-  tiers: { merged: number; archived: number; held: number; skipped: { topic: string; reason: string }[] },
+  tiers: {
+    merged: number
+    archived: number
+    retired: number
+    flagged: number
+    held: number
+    skipped: { topic: string; reason: string }[]
+    overCap: { topic: string; count: number }[]
+    topicCap: number
+  },
   filesBefore: number,
   filesAfter: number,
 ): string {
   return (
     `compact: ${tiers.merged} merged, ${tiers.archived} archived` +
     (tiers.held ? `, ${tiers.held} held by the archive cap` : '') +
+    (tiers.retired ? `, ${tiers.retired} retired` : '') +
+    (tiers.flagged ? `, ${tiers.flagged} flagged` : '') +
     `, ${filesBefore} files -> ${filesAfter} files` +
+    (tiers.overCap.length
+      ? `, ${tiers.overCap.length} topic(s) over the cap of ${tiers.topicCap}: ${tiers.overCap.map(o => `${o.topic} (${o.count})`).join('; ')}`
+      : '') +
     (tiers.skipped.length
       ? `, ${tiers.skipped.length} topic(s) skipped: ${tiers.skipped.map(s => `${s.topic} (${s.reason})`).join('; ')}`
       : '')
@@ -2400,6 +2533,9 @@ async function dream() {
     // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
     // again, each time it skips a merge into one of them
     const unsafe = memory.unsafeLongTopics(MEMORY).map(u => `- ${u.reason}`)
+    const overCap = memory
+      .overCapTopics(MEMORY)
+      .map(t => `- ${t.topic}: ${t.count} short notes (cap ${memory.envTopicCap()})`)
     const prompt = memory.dreamPrompt(
       MEMORY,
       journal,
@@ -2409,6 +2545,8 @@ async function dream() {
       promotions,
       duplicates,
       unsafe,
+      overCap,
+      memory.envTopicCap(),
     )
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
@@ -2458,6 +2596,7 @@ async function dream() {
       // appended, since line 2327 above already overwrote it with this dream's own exit text
       const tiers = memory.applyTiers(MEMORY, {
         now: start,
+        untilDeps: untilDeps(),
         onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
       })
       memory.compact(MEMORY, tiers.renamed)
@@ -3065,11 +3204,17 @@ function originConfigUrl(repo: string): string | null {
   const p = Bun.spawnSync(['git', '-C', repo, 'config', '--get', 'remote.origin.url'])
   return p.exitCode === 0 ? p.stdout.toString().trim() : null
 }
-/** `<owner>/<repo>` from an origin URL (`https://github.com/<owner>/<repo>.git` or
- * `git@github.com:<owner>/<repo>.git`), else null. */
-function githubSlug(url: string): string | null {
-  const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/)
-  return m ? `${m[1]}/${m[2]}` : null
+/** Get `<owner>/<repo>` from an origin URL. This result controls which repo's PR state
+ * `gc --worktrees` reads before it deletes a branch (claude-factory-0u0).
+ * - Match the host `github.com` only, never a longer host that merely ends with it.
+ * - Accept `https://`, `ssh://`, `git@host:`, and a form with userinfo before the host, the
+ *   same forms `parseRemote` (src/prs.ts:99) accepts.
+ * - Give null for a path that is not exactly `<owner>/<repo>`. */
+export function githubSlug(url: string): string | null {
+  const remote = parseRemote(url)
+  if (!remote || forgeOf(remote.host) !== 'github') return null
+  const parts = remote.path.split('/')
+  return parts.length === 2 && parts[0] && parts[1] ? `${parts[0]}/${parts[1]}` : null
 }
 /** `gh pr list`, called once per rig, not once per branch. The plan for claude-factory-l38
  * rejected the per-branch call: it would run about 700 calls on the first pass. This function
@@ -3095,7 +3240,7 @@ function prFacts(repo: string): gc.PrFact[] | null {
       '--limit',
       '1000',
       '--json',
-      'number,state,headRefName,headRefOid',
+      'number,state,headRefName,headRefOid,isCrossRepository',
     ],
     { cwd: repo, timeout: 60_000 },
   )
@@ -3103,6 +3248,9 @@ function prFacts(repo: string): gc.PrFact[] | null {
   try {
     const list = JSON.parse(p.stdout.toString())
     if (!Array.isArray(list) || list.length >= 1000) return null
+    // a missing or non-boolean isCrossRepository (an older `gh`, a malformed entry) must fail
+    // closed (AC4/AC5): trusting a fork PR as same-repo can cover an unmerged tip
+    if (!list.every(it => typeof it?.isCrossRepository === 'boolean')) return null
     return list
   } catch {
     return null
@@ -3114,7 +3262,10 @@ type GcRunRef = gc.RunRef & { repo: string }
  * a failed or missing read counts as open (AC5), never as closed. */
 function beadClosedFacts(repo: string, runs: GcRunRef[], prs: gc.PrFact[] | null): Record<string, boolean> {
   if (!prs) return {}
-  const closed = new Set(prs.filter(p => p.state === 'CLOSED').map(p => p.headRefName))
+  // a fork's CLOSED PR is not ours to have merged (claude-factory-ulv): never trust it to close a tip
+  const closed = new Set(
+    prs.filter(p => p.state === 'CLOSED' && !p.isCrossRepository).map(p => p.headRefName),
+  )
   const out: Record<string, boolean> = {}
   for (const r of runs) {
     if (!r.bead || !['done', 'aborted'].includes(r.node)) continue
@@ -3150,7 +3301,11 @@ function allRunRefs(): GcRunRef[] {
 /** commits every change in `path` (tracked and untracked, `.gitignore` honored) to a local-only ref
  * at `refs/factory-gc/<runId>`: a dirty-small worktree's work survives its removal (AC6). Returns the sha. */
 function snapshotWorktree(path: string, runId: string): string {
-  const indexFile = join(tmpdir(), `factory-gc-index-${runId}-${process.pid}`)
+  // a private, unpredictably named dir (claude-factory-ulv): `factory-gc-index-<runId>-<pid>` in the
+  // shared tmpdir let another user on the same host pre-create the index path, or race the write
+  // between `add -A` and `write-tree` below
+  const indexDir = mkdtempSync(join(tmpdir(), 'factory-gc-index-'))
+  const indexFile = join(indexDir, 'index')
   const env = { ...process.env, GIT_INDEX_FILE: indexFile }
   // every step must succeed, or the caller must never force-remove on the strength of this snapshot
   // (claude-factory-l38.8): an ignored failure here silently commits an empty or stale tree instead
@@ -3182,7 +3337,7 @@ function snapshotWorktree(path: string, runId: string): string {
     git(path, 'update-ref', `refs/factory-gc/${runId}`, commit)
     return commit
   } finally {
-    rmSync(indexFile, { force: true })
+    rmSync(indexDir, { recursive: true, force: true })
   }
 }
 
@@ -3217,8 +3372,21 @@ export function deleteBranchCas(repo: string, name: string, local: string | null
 }
 
 const gcWorktreesJournal = () => join(HOME, 'gc-worktrees.jsonl')
+/** Scrubs URL userinfo from every string value of `value` (claude-factory-0lt, AC2). It walks an
+ * array or an object the same way, so a new field or a nested value can never skip the scrub. */
+function scrubDeep(value: unknown): unknown {
+  if (typeof value === 'string') return gc.scrubUrlUserinfo(value)
+  if (Array.isArray(value)) return value.map(scrubDeep)
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v)]))
+  return value
+}
 const gcLog = (entry: Record<string, unknown>) =>
-  durable(gcWorktreesJournal(), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', 'a')
+  durable(
+    gcWorktreesJournal(),
+    JSON.stringify(scrubDeep({ at: new Date().toISOString(), ...entry })) + '\n',
+    'a',
+  )
 
 /**
  * Removes a finished run's worktree. It also removes the run's factory/* branch, once
@@ -5587,6 +5755,41 @@ async function status(id: string | undefined) {
   }
 }
 
+// shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
+// message, so the three never drift apart (claude-factory-3u1.1.1)
+const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] <summary> [body...]`
+
+/**
+ * Check a `memory add --supersedes <path>` value (claude-factory-3u1.1.2, FR-009).
+ *
+ * Call this after the path resolves through the rename log. The function returns a reason to
+ * refuse the path, or null when the path names a real note. The `add` case calls this after
+ * gate() and before same(). A bad path must cost no embedding call and write nothing.
+ *
+ * `memory helped` already refuses a path with no matching note. This function adds four more
+ * checks. Each one catches a path that exists on disk, so noteExists() alone wrongly accepts it:
+ * - a path under a dot segment, such as `.archive/x.md` (walk() hides this path)
+ * - a topic's whole README.md or LONG.md file, named with no `#id`
+ * - CORE.md itself, named with no `#hash`
+ * - for a path with no `#` at all, any path that is not a real `.md` file: a directory, or a
+ *   file whose name does not end in `.md`
+ *
+ * claude-factory-3u1.1.2.6: for a path with no `#`, noteExists() was only existsSync(). A topic
+ * directory, `inbox`, or `.` (which resolves to `''`) passed that check. supersede() then crashed
+ * with EISDIR.
+ */
+function supersedesRefusal(dir: string, p: string): string | null {
+  if (p.startsWith('..')) return `"${p}" is outside ${dir}`
+  if (p.split('/').some(seg => seg.startsWith('.'))) return `"${p}" is in a hidden path`
+  const base = p.split('/').pop()
+  if (base === 'README.md' || base === 'LONG.md' || p === 'CORE.md')
+    return `"${p}" names a whole file, not one note`
+  if (!memory.noteExists(dir, p)) return `no note at "${p}" in ${dir}`
+  if (!p.includes('#') && (!p.endsWith('.md') || !statSync(join(dir, p)).isFile()))
+    return `"${p}" is not a note file`
+  return null
+}
+
 const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
 
@@ -5623,13 +5826,16 @@ const usage = `factory — herdr software factories on xstate
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
   memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
-  memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]   save a learning to the memory's
-                                     inbox; one an existing note already says counts as that note helping
+  memory add ${MEMORY_ADD_USAGE}   save a learning to the memory's
+                                     inbox; one an existing note already says counts as that note helping;
+                                     a note that names a bead or PR needs --until unless --kind recipe
   memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
   memory compact [--dry-run]        merge old, used short notes into LONG.md; archive one that was never
                                      shown and is 14+ days old, or never helped and unused 30+ days (both
                                      wait for 14 days of usage history first); FACTORY_MEMORY_ARCHIVE_CAP
                                      caps archives per pass (default 25), oldest first, the rest held;
+                                     FACTORY_MEMORY_TOPIC_CAP caps short notes per topic (default 15): a
+                                     topic over the cap merges its oldest 7+ day old notes down to it;
                                      --dry-run only prints the plan (a dream runs this itself, after it
                                      files the inbox, unless FACTORY_MEMORY_TIERS=0)
   memory eval                       search quality (recall@5, MRR) over the fixed query set in
@@ -5789,7 +5995,16 @@ if (import.meta.main && !outboxCmd)
       case 'memory': {
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
-        const [rig, from] = [opt('--rig'), opt('--from')]
+        // Capture this before opt('--supersedes') below runs. Otherwise a bare trailing flag (no
+        // value) looks the same as a caller who never passed --supersedes at all.
+        const hasSupersedes = args.includes('--supersedes')
+        const [rig, from, kind, until, supersedesArg] = [
+          opt('--rig'),
+          opt('--from'),
+          opt('--kind'),
+          opt('--until'),
+          opt('--supersedes'),
+        ]
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
           const found = await memory.search(MEMORY, words.join(' '), { rig })
@@ -5814,18 +6029,69 @@ if (import.meta.main && !outboxCmd)
         } else if (sub === 'add' && words[0]) {
           const isAnyway = words.includes('--anyway')
           const [summary, ...body] = words.filter(w => w !== '--anyway')
-          const note = { summary: summary!, body: body.join(' '), rig }
+          const note = { summary: summary!, body: body.join(' '), rig, kind, until }
+          // gate() first, so a refusal costs no embedding and logs no helped/confirmed event; --anyway
+          // skips memory.same()'s dedupe below, never this gate (claude-factory-3u1.1.1)
+          const refusal = memory.gate(note)
+          if (!refusal.ok) {
+            console.error(`factory memory add: ${refusal.reason}`)
+            console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+            process.exitCode = 2
+            break
+          }
+          // --supersedes names an older note this one replaces (claude-factory-3u1.1.2, FR-009).
+          // Check it after gate() runs, before same() runs. A bad path must cost no embedding.
+          // A bad path must write nothing, the same as any other usage error here.
+          let supersedesPath: string | undefined
+          if (hasSupersedes) {
+            if (supersedesArg === undefined || supersedesArg.startsWith('--')) {
+              console.error(`factory memory add: --supersedes needs a note path`)
+              console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+              process.exitCode = 2
+              break
+            }
+            const resolved = memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, supersedesArg)))
+            const bad = supersedesRefusal(MEMORY, resolved)
+            if (bad) {
+              console.error(`factory memory add: --supersedes ${bad}`)
+              console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+              process.exitCode = 2
+              break
+            }
+            supersedesPath = resolved
+          }
           const dup = isAnyway ? null : await memory.same(MEMORY, note)
           if (dup) {
-            // a hit, not a new note: the copy would only crowd search results until a dream merged it
-            memory.use(MEMORY, [dup.note.path], 'helped', Date.now(), from)
+            // a hit, not a new note: the copy would only crowd search results until a dream merged it.
+            // It logs 'confirmed', not 'helped' (claude-factory-3u1.1.2, FR-008): 'helped' means a
+            // worker found and used the note; a duplicate add only confirms it is still true.
+            memory.use(MEMORY, [dup.note.path], 'confirmed', Date.now(), from)
             console.log(
               `already noted (${dup.score.toFixed(2)}): ${join(MEMORY, dup.note.path)}\n  ${dup.note.summary}\n` +
-                `counted as helping instead. If yours adds something it lacks, add it again with --anyway.`,
+                `counted as a confirmation instead. If yours adds something it lacks, add it again with --anyway.` +
+                // A duplicate hit is often the old note itself. Superseding it would make it
+                // replace itself. --supersedes applies only to a genuinely new note
+                // (claude-factory-3u1.1.2).
+                (supersedesPath
+                  ? `\n--supersedes was not applied: this was a duplicate, not a new note.`
+                  : ''),
             )
           } else {
             const at = new Date().toISOString().slice(0, 10)
-            console.log(memory.add(MEMORY, { ...note, from, at }))
+            // gate() above already confirmed kind is one of memory.NOTE_KINDS
+            const file = memory.add(MEMORY, { ...note, kind: kind as memory.NoteKind, from, at })
+            console.log(file)
+            if (supersedesPath) {
+              const newPath = relative(MEMORY, file)
+              const { marked } = memory.supersede(MEMORY, supersedesPath, newPath)
+              memory.use(MEMORY, [supersedesPath], 'contradicted', Date.now(), from)
+              console.log(
+                marked
+                  ? `marked superseded: ${join(MEMORY, supersedesPath)}`
+                  : `no marker was written on ${supersedesPath} (a LONG.md or CORE.md entry has no ` +
+                      `frontmatter of its own); logged contradicted instead`,
+              )
+            }
           }
         } else if (sub === 'helped' && words.length) {
           const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
@@ -5836,15 +6102,17 @@ if (import.meta.main && !outboxCmd)
         } else if (sub === 'compact') {
           const dryRun = words.includes('--dry-run')
           if (dryRun) {
-            const { decisions, skipped, archiveCap, historyDays } = memory.applyTiers(MEMORY, {
-              dryRun: true,
-            })
+            const { decisions, skipped, archiveCap, historyDays, overCap, topicCap } = memory.applyTiers(
+              MEMORY,
+              { dryRun: true, untilDeps: untilDeps() },
+            )
             console.log(
               [
                 decisions.length
                   ? memory.planLines(decisions, { archiveCap, historyDays }).join('\n')
                   : 'nothing to merge or archive',
                 ...skipped.map(s => `skip  ${s.topic}: ${s.reason}`),
+                ...overCap.map(o => `over  ${o.topic}: ${o.count} short notes, cap ${topicCap}`),
               ].join('\n'),
             )
           } else {
@@ -5862,6 +6130,7 @@ if (import.meta.main && !outboxCmd)
               const filesBefore = memory.mdFileCount(MEMORY)
               // the plan reaches dream.log before applyTiers writes or removes anything (claude-factory-503.2)
               const tiers = memory.applyTiers(MEMORY, {
+                untilDeps: untilDeps(),
                 onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
               })
               // runs before the commit, so its .usage.jsonl/.renames.jsonl writes land inside it and
@@ -5890,7 +6159,7 @@ if (import.meta.main && !outboxCmd)
           )
         } else
           fail(
-            'usage: factory memory search [--rig r] <query...> | add [--rig r] [--from run/station] [--anyway] <summary> [body...] | helped [--from run/station] <note path...> | compact [--dry-run] | eval',
+            `usage: factory memory search [--rig r] <query...> | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval`,
           )
         break
       }

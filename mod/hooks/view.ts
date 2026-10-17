@@ -549,9 +549,10 @@ export function hasAgentTool(names: readonly string[] | undefined): boolean | un
   return names.includes('Agent')
 }
 
-/** Backs off a pm spawn that failed (claude-factory-dun.29): 60 s, 120 s, 240 s, doubling up to a
- * 60 minute cap. `failures` counts spawns that failed since the last one that worked; a working
- * spawn resets it to 0. */
+/** Backs off a pm spawn that failed (claude-factory-dun.29), or a `factory plan facts` call
+ * that failed (claude-factory-4hb): 60 s, 120 s, 240 s, doubling up to a 60 minute cap.
+ * `failures` counts facts and spawn failures since the last spawn that worked; a working spawn
+ * resets it to 0. */
 export function pmRetryDelay(failures: number): number {
   return Math.min(60_000 * 2 ** (failures - 1), 3_600_000)
 }

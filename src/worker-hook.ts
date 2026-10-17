@@ -246,9 +246,19 @@ function recursiveFlag(w: string): boolean {
   return false
 }
 
-/** true when `words` (the rm command and its args) ask for a recursive delete, stopping flag scanning at `--` or the first non-flag word */
-function isRecursiveRm(words: string[]): boolean {
-  for (const w of words.slice(1)) {
+/**
+ * `words` is an rm command and its args. `words[start]` is the rm word itself.
+ * This function returns true when `words` asks for a recursive delete.
+ * It stops at the first `--` word or the first non-flag word.
+ *
+ * claude-factory-lbn: this function reads `words` by index. It does not call
+ * `words.slice(start + 1)`. The find branch below calls this function once for each
+ * `-exec rm` or `-execdir rm` word. A slice there would still cost O(n) for each call, and
+ * O(n^2) in total.
+ */
+function isRecursiveRm(words: string[], start = 0): boolean {
+  for (let k = start + 1; k < words.length; k++) {
+    const w = words[k]!
     if (w === '--') return false
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
@@ -570,21 +580,17 @@ function firstVerbIndex(words: string[], valueFlags: Set<string>): { index: numb
 }
 
 /**
- * Index of a short-flag cluster that holds `c` (for example `-c`, `-lc`, `-ec`), used to find the
- * `-c "script"` argument of a `sh`, `bash`, `zsh` or `dash` call.
+ * true when `w` is a short-flag cluster that holds `c` (for example `-c`, `-lc`, `-ec`).
+ * This finds the `-c "script"` argument of a `sh`, `bash`, `zsh` or `dash` call.
+ *
  * claude-factory-25z.10: `bash -lc "..."` and `sh -ec "..."` bundle other short flags with `c`.
- * A plain `cmd.indexOf('-c')` misses them, which also hides an `rm -rf` or a live-apply command
- * inside the quoted script from both guards.
- * Skips a long flag (`--context`) and stops at a literal `--`. Returns -1 when no cluster matches.
+ * A plain `cmd.indexOf('-c')` misses them. That also hides an `rm -rf` or a live-apply command
+ * that sits inside the quoted script, from both guards.
+ *
+ * This is false for a long flag (`--context`) and for a literal `--`, since both start with `--`.
  */
-function shCFlagIndex(words: string[]): number {
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]!
-    if (w === '--') return -1
-    if (w.startsWith('--')) continue
-    if (w.startsWith('-') && w.length > 1 && /c/.test(w.slice(1))) return i
-  }
-  return -1
+function isShCCluster(w: string): boolean {
+  return !w.startsWith('--') && w.startsWith('-') && w.length > 1 && /c/.test(w.slice(1))
 }
 
 /** true when some word in `words`, before a literal `--` separator (if any), is in `verbs`. */
@@ -1698,6 +1704,24 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * word's own flags: the plain `-S`/`--split-string` form with the value as a separate word, the
  * attached form (`-S'git push origin main'`, tokenized with the quote stripped as one word
  * `-Sgit push origin main`), a short-flag cluster (`-vS`), and `--split-string=...`.
+ *
+ * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
+ * pointers that only move up.
+ *
+ * `nc` holds the next index at or after the current `j` whose word passes `isShCCluster`.
+ * `nd` holds the next index at or after `j` whose word is a literal `--`.
+ *
+ * Each pointer keeps its old value until `j` moves past it. Then the code scans forward from `j`
+ * to find the pointer's new value; it never scans from the start. So over the whole call, each
+ * pointer crosses each word at most once: O(n) in total. The old code called
+ * `shCFlagIndex(words.slice(j))` at every `j`. Its slice copy and its scan each cost O(n-j). That
+ * was the O(n^2) bug this change fixes.
+ *
+ * A cluster counts only when it comes before the next `--` (`nc < nd`). That is why
+ * `sh foo -- bash -c "..."` still finds the cluster after the `--`, and `sh -- ...` still finds
+ * none before it. This is an exact match for the old `shCFlagIndex` return value, not an
+ * approximation: see src/worker-hook.test.ts for the differential checks and for the two
+ * regression shapes that a blind jump past a miss would break.
  */
 /**
  * Reads the value an `env -S`/`env --split-string` word at `words[j]` would split and run, or
@@ -1728,6 +1752,8 @@ function anyShellReason(
   gate: HookGate,
   depth: number,
 ): string | undefined {
+  let nc = -1
+  let nd = -1
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
     if (bw === 'env') {
@@ -1738,9 +1764,16 @@ function anyShellReason(
       break
     }
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
-      const ci = shCFlagIndex(words.slice(j))
-      if (ci < 0) continue
-      let k = j + ci + 1
+      if (nc < j) {
+        nc = j
+        while (nc < words.length && !isShCCluster(words[nc]!)) nc++
+      }
+      if (nd < j) {
+        nd = j
+        while (nd < words.length && words[nd] !== '--') nd++
+      }
+      if (nc >= nd) continue
+      let k = nc + 1
       let found: string | undefined
       for (; k < words.length; k++) {
         const w = words[k]!
@@ -1847,10 +1880,14 @@ function denyAt(
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'find') {
+      // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
+      // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
+      // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a
+      // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
+      // O(n), not O(n^2).
       for (let i = 0; i < cmd.length; i++) {
         if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-        const rest = cmd.slice(i + 1)
-        if (rest.length && baseWord(rest[0]!) === 'rm' && isRecursiveRm(rest)) return REASON
+        if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
       }
     }
   }

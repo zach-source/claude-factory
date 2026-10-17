@@ -143,6 +143,194 @@ minor release may change the factory format, the CLI or the run state.
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
     only after a person rebuilds and pushes its worker image (`hack/push-worker.sh`).
 
+- A station at its round cap now re-plans once with the round's findings instead of holding for a
+  hand goto, and a repeated red on the same acceptance criterion mails the manager on its own.
+  (claude-factory-qgz)
+  - Cause: a run review found 40% of reviews send work back, but a run held at its round cap most
+    often got a hand goto to implement, so the loop kept going (one run: 8 review rounds, 10
+    implement passes).
+  - `src/machine.ts`: `Node.onRounds` names the node a capped report re-plans to, carrying every
+    round's own-outcome summary (oldest first, each clipped to fit near 24,000 characters). The
+    first report past `rounds` re-plans; a second cap in the same run still holds for the manager,
+    now naming the earlier re-plan. With no `onRounds`, a station's rounds cap holds for the
+    manager exactly as before. The re-plan's own log entry sets a new `Entry.replan: true` field,
+    so metrics and the repeat-mail check can tell it apart from a manager's own `goto plan`.
+    `Node.repeatMail` names an outcome in `next`; when a station reports it twice in a row and
+    both reports name the same `AC<n>` id on their own `Failing: AC2, AC6` line, the machine mails
+    the manager from `'factory'`, naming the station, the shared ids and both report times, and
+    the run still follows the normal edge. A `replan` entry between the two reports breaks the
+    streak, since a re-plan can renumber acceptance criteria. New exports `acIdsIn`,
+    `failingAcIds`, `prevReport`, `repeatMailText` and `capReplanMail`. `validate()` refuses an
+    `onRounds` with no `rounds`, or one that names an unknown node, `'done'`, or the node itself;
+    it refuses a `repeatMail` that is not a key of `next`.
+
+  - A manager `goto` command writes no log entry. A hand `goto plan` after a repeat mail left no
+    `replan: true` entry (claude-factory-qgz, review round 2, finding .11).
+
+    The streak check now also breaks on an entry for a `replanTargets` node between the two
+    reports. A `replanTargets` node is a node named in a different node's `onRounds` field.
+    `replanTargets` is a new export in `src/machine.ts`.
+
+  - `factories/lifecycle.ts`: `review` sets `onRounds: 'plan'` (`rounds` stays 3); `verify` sets
+    `repeatMail: 'red'` and its prompt now asks for one fixed `Failing: AC2, AC6` line naming only
+    the still-failing ids. `plan`'s prompt numbers acceptance criteria `AC1`, `AC2`, ....
+  - `mod/hooks/register.tsx`: the manager's patrol prompt now forbids a goto to implement past a
+    station's round cap (a stuck mail that says "already re-planned once" already went through one
+    re-plan), and tells the manager to steer implement or goto plan on a mail that says a station
+    "reported `<outcome>` again on `<AC ids>`", never goto implement with no new direction.
+  - `src/metrics.ts`: `metrics()` adds `runsWith3PlusReviewRounds`, `implementPassesPerShippedRun`
+    (null at 0 shipped runs; skips `handoff`, `blocked` and a pre-launch PR park) and `capReplans`
+    (counts only a log entry with `replan: true`, never any `review` -> `plan` pair, so a
+    manager's own goto plan after a stuck hold or a review fail does not count). `render()` prints
+    them on one line.
+- A short note's `until` marker (a bead id, `owner/repo#N`, a GitHub pull URL, or a `YYYY-MM-DD`
+  date) now retires the note on its own schedule, apart from the dream's own judgment. `dream`
+  and `memory compact` retire a note once its date has passed, its named bead has closed, or its
+  named PR has merged or closed. A lookup that fails or finds nothing only flags the note; it
+  never retires it. (claude-factory-3u1.1.4, FR-016)
+  - `src/memory.ts`: new `untilStatus(until, now, deps)` gives the verdict for one marker, from
+    injected `UntilDeps` (`bead`, `pr`) with no file or network access of its own. `ShortCandidate`
+    gains `expired`, `expiredReason` and `untilFlag`. `decide()` emits a `retire` decision for an
+    expired note (right after the superseded check, at any age or usage) and a `flag` decision for
+    an unreachable marker; a retire shares the archive cap with `archive`, and a flag never counts
+    toward the topic cap. `applyTiers(dir, { untilDeps })` judges each short note's marker, writes
+    a retire like an archive (`.archive/<topic>.md`, removed file, rewritten README link), and
+    returns `retired` and `flagged` counts. With no `untilDeps`, a bead or PR marker gets no
+    verdict, so a caller that skips it keeps its old output; a date marker is always judged.
+  - `src/cli.ts`: new `untilDeps()` looks up a bead through the rig whose bd prefix matches it
+    (longest match first) and `gh pr view <url> --json state` for a PR, each memoized for one pass
+    and capped at 50 `gh` calls. A rig whose own prefix lookup fails is set apart. That rig cannot
+    rule out owning an id, so the lookup reads "lookup failed" for it, never "not found". `dream()`
+    and both `memory compact` paths (`--dry-run` and real) now pass it to `applyTiers()`.
+    `compactMessage()` adds `, N retired` and `, N flagged` clauses when either count is over 0.
+- Fixed: `denyAt`'s `find` branch (`src/worker-hook.ts`) no longer scans the
+  `-exec`/`-execdir` words of a `find` command in quadratic time. (claude-factory-lbn)
+  - Before this fix, a long `find ... -exec` command can time out the 10-second
+    PreToolUse hook. The hook then fails open and skips the deny check.
+  - Cause: for each `-exec`/`-execdir` word, the branch ran `cmd.slice(i + 1)`. It
+    then checked the first word of the slice. A run of n such words cost O(n^2).
+    Proof: this took 1.36 s at n=80000 words (480 KB). Past about 1.3 MB, this runs
+    past the hook's 10-second timeout.
+  - Fix: `isRecursiveRm()` now takes a start index. It reads `cmd` in place, with
+    no slice. The `find` branch first checks `baseWord(cmd[i + 1]) === 'rm'` in
+    O(1) time. It then calls `isRecursiveRm(cmd, i + 1)`. Each scan starts at an
+    `rm` word, and stops at the first non-flag word. The scans do not overlap, so
+    the whole loop costs O(n).
+  - Proof: `bun run src/worker-hook.bench.ts find 200000` now takes 191.2 ms.
+    Before the fix, the same shape with a trailing `rm -rf x` took 11451.9 ms.
+  - `find . -exec rm -f x \;` still allows. `find . -name x -exec rm -rf {} +`
+    still denies. All 230 `worker-hook.test.ts` tests pass.
+- The lifecycle factory has a new triage outcome, `small`, for a docs-only, test-only or tiny
+  change. Before this fix, every run paid for the full loop. The full loop has an Opus plan, a
+  separate verify station, a separate review station, security and soak. A small run now takes
+  a shorter path: `triage -> quick -> check -> release -> deploy`. This path skips the Opus
+  plan. It also skips security, unless `check` flags the diff as security-sensitive, or the
+  diff touches a factory definition (`.factory/` or `factories/`). In that case the run still
+  goes through security before release. (claude-factory-wnn)
+  - `factories/lifecycle.ts`: `triage`'s prompt names the new `small` outcome. It also names the
+    rules that exclude a run from this outcome: a security-sensitive goal, or a change to a
+    factory definition. Two new stations support this route. `quick` runs on Sonnet with a
+    60-minute limit; on a `full` outcome it joins the plan loop, because the work was bigger
+    than small. `check` runs on Opus with a 60-minute limit and 3 rounds; on a `changes` outcome
+    it loops back to `quick` and closes each task it filed, with its commit, the same way
+    `implement` closes `review`'s findings; on a `security` outcome it goes to the existing
+    `security` station. `check`'s prompt keeps the pull request a draft; only `release` marks
+    it ready. `security`'s prompts now name `check`'s report and `triage`'s summary, as well as
+    `review`'s report and the plan's risk section, so a small run's security pass reads the
+    right station.
+  - `src/metrics.ts`: `metrics()` now reports `small: { runs, hoursToShip: { median, p90 } }`.
+    `runs` counts every run that `triage` ever sent down the `small` route, found anywhere in
+    its log, not only in its first entry. This way a run that failed triage once, then went
+    `small`, still counts. `hoursToShip` covers only the runs that shipped, and excludes any run
+    that `quick` sent to the full loop. `reviewLoops` now also counts `check`'s `changes`
+    outcome. `render()` adds one line: `small runs N, to ship Xh median / Yh p90`.
+  - `README.md`: the lifecycle table gains a `small` row. Two new paragraphs say when `triage`
+    picks this route, and what the route skips.
+
+- `factory gc --worktrees` fixes two gaps the PR #70 security review found. (claude-factory-ulv)
+  - `src/cli.ts`: `snapshotWorktree()` used to set `GIT_INDEX_FILE` to a path that other
+    processes can predict: `factory-gc-index-<runId>-<pid>` in the shared tmpdir. A write race
+    between `git add -A` and `git write-tree` can snapshot the wrong tree before the caller
+    force-removes the worktree. The function now uses `mkdtempSync` to make a private,
+    unpredictable 0700 directory for the index file. It removes this directory in its `finally`
+    block.
+  - `src/gc.ts`: `coverTip()` used to trust a cross-repo (fork) PR's CLOSED or MERGED state as
+    proof that a tip merged. `PrFact` now carries a required `isCrossRepository` field.
+    `coverTip()` ignores each `PrFact` where this field is `true`. `prFacts()` (`src/cli.ts`)
+    asks `gh` for `isCrossRepository`. It fails closed, with no branch deletes in that rig, when
+    a PR entry has no boolean `isCrossRepository` value. `beadClosedFacts()` builds its CLOSED
+    set from non-cross-repo PRs only. It never runs `bd show` for a fork PR's bead.
+
+- `factory gc --worktrees` now matches a GitHub origin only on the exact host `github.com`. The
+  old regex had no host anchor. An origin like `https://mygithub.com/owner/repo` parsed as the
+  GitHub slug `owner/repo`. `gc` then read PR state for a different repo on `github.com`. It
+  could apply that repo's MERGED or CLOSED state to this rig's own branch deletes.
+  (claude-factory-0u0)
+  - `src/cli.ts`: `githubSlug()` now uses `parseRemote()` (`src/prs.ts`) and `forgeOf()`. This is
+    the same parser that `originRef()` uses for GitLab. `githubSlug()` is now exported. It also
+    accepts origin forms with userinfo, for example `https://user@github.com/...` and
+    token-auth clone URLs. The old regex rejected these forms.
+
+- `reconcile()` now has a direct test for the escalated deadline from `timeoutOf()` (`onTimeout`,
+  claude-factory-3t2). `src/remote.test.ts` sends a real `factory tick` through a timeout fail, a
+  backoff and a new spawn. The test checks the warn and fail minutes against the escalated
+  limit, not the plain `timeoutMin`. (claude-factory-9ff)
+- `factory plan facts` failures now back off and log, the same as a failed spawn. The old
+  code retried every 60 s forever and wrote no log, even with `bd` down. (claude-factory-4hb)
+  - `mod/hooks/register.tsx`: the facts-failed branch in `pmNow()` now:
+    - runs `rt.pmFailures += 1`
+    - waits `pmRetryDelay(rt.pmFailures)` (60 s doubling, capped at 60 min), not the fixed
+      60 s `PM_RETRY_MS` (removed)
+    - adds a `pm-log.jsonl` entry `{ reason: 'facts-failed', error }`, the same shape as the
+      two spawn-failed sites
+- `factory gc --worktrees` no longer journals a secret from a remote URL's userinfo
+  (`user:pass@` or a bare `token@`). A failed `git push` or `git worktree remove` can print the
+  URL in its stderr. That stderr line used to reach `HOME/gc-worktrees.jsonl` unscrubbed.
+  (claude-factory-0lt)
+  - `src/gc.ts`: new export `scrubUrlUserinfo(text)`. It removes the userinfo part of each
+    `scheme://` URL in `text`. It leaves an scp-style remote (`git@github.com:acme/widget`) alone.
+  - `src/cli.ts`: `gcLog()` now scrubs every string value of its entry with
+    `scrubUrlUserinfo()`, before it writes the journal line. This covers arrays and objects too.
+    `reviveWorktree`'s `ls-remote` and `fetch` calls now also run with `GIT_NETWORK_ENV`
+    (`GIT_TERMINAL_PROMPT=0`) and the `GIT_NETWORK_TIMEOUT_MS` timeout (still 30 s), the same as
+    every other network-reaching git call in this file. A stuck credential prompt now fails fast
+    instead of waiting out the timeout.
+- `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
+  `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
+  path. `memory compact` now removes such a usage line. (claude-factory-5o7)
+  - `src/memory.ts`: `noteExists()` for a path with no `#` now needs
+    `path.endsWith('.md') && statSync().isFile()`, the same `.md`-only rule as `walk()`.
+- Each memory topic now has a cap of 15 short notes (`TOPIC_CAP`). Set
+  `FACTORY_MEMORY_TOPIC_CAP` to override it. `decide()` merges a topic's oldest notes once the
+  topic holds more notes than the cap. `dream` and `memory compact` name topics still over the
+  cap after a pass. (claude-factory-3u1.1.3)
+  - `src/memory.ts`: `TOPIC_CAP = 15`. `envTopicCap()` reads the env override. It needs a whole
+    number of 1 or more; any other value falls back to 15. `decide(short, long, sims, {
+    topicCap })` adds a `merge` decision for a topic's oldest notes once the topic holds more
+    notes than the cap. Each picked note is 7 or more days old, has no decision yet, is not
+    superseded, and is not in inbox. `applyTiers()` passes `envTopicCap()` into `decide()`. It
+    returns `overCap`: the topics still over the cap, with their counts. The new export
+    `overCapTopics(dir)` reads the live store. `dreamPrompt()` now takes the over-cap topics and
+    a `topicCap`. It adds a "Topics over the short-note cap" section that tells the dream to
+    merge or drop notes there.
+  - `src/cli.ts`: `dream()` passes `overCapTopics(MEMORY)` and `envTopicCap()` into
+    `dreamPrompt()`. The `memory compact` commit message and its `--dry-run` output name topics
+    still over the cap. The help text names `FACTORY_MEMORY_TOPIC_CAP` (default 15).
+- A station can now set `onTimeout: { timeoutMin, prompt? }`: the attempt right after a timeout
+  fail gets this longer limit and an extra brief section instead of the plain retry. lifecycle's
+  `security` uses it (45 min, then 75 min with a prompt that works from review's diff summary
+  instead of rereading the whole branch); a 2nd timeout in a row still goes to `isRepeatFail`'s
+  stuck state and one manager mail, unchanged. (claude-factory-3t2)
+  - Cause: a run review found 5 of 65 security visits (8%) timed out at 45 min, all on one large
+    AX rig, 4 in a row on two runs until the launch budget held them.
+  - `src/machine.ts`: `Node.onTimeout`, `afterTimeout(c, id)` (true when the node's own run of log
+    entries, read back from the end, holds a timeout fail), `timeoutOf(node, c, id)`, and two
+    `validate()` refusals (`onTimeout` on a gate; `onTimeout.timeoutMin` at or under `timeoutMin`).
+  - `src/cli.ts`: `reconcile()`'s deadline check now reads the limit from `timeoutOf()`; `brief()`
+    adds a "The previous attempt timed out" section with the longer limit and the node's prompt.
+  - `factories/lifecycle.ts`: `security.onTimeout` (75 min); `review`'s prompt now says its report,
+    when it reaches security, carries `git diff --stat origin/main...HEAD` (at most 60 files, then
+    "+N more") and one line per changed area.
 - Dispatch now checks a ready bead before it starts a run for it, and skips a bead a merged
   pull request or a live run already covers. (claude-factory-6as)
   - Cause: a 3-day review (2026-10-13 to 16) found 40 of 319 triage visits (12.5%) were
@@ -517,6 +705,71 @@ minor release may change the factory format, the CLI or the run state.
     `personOnly`. The 8192-character cap stays. The cap's own wording now
     says "characters", not "bytes": `command.length` counts UTF-16 units.
     README.md gained one sentence on the 8192-character deny.
+- Added: `factory memory add` now takes `--kind fact|rule|recipe` and
+  `--until <bead|owner/repo#N|pull-URL|YYYY-MM-DD>`. It refuses the note
+  before it checks for a duplicate. (claude-factory-3u1.1.1)
+  - `gate(note)` (`src/memory.ts`) is a pure, exported check. It uses no
+    `fs`, clock or env access. It refuses a note with a missing or invalid
+    `--kind`. It refuses a note with an invalid `--until` value. It refuses
+    a `fact` or `rule` note that cites a bead id or a pull request in its
+    summary or body, with no `--until`; a `recipe` note is exempt from this
+    last check. `citesTracker(text)` finds a bead id or a pull request
+    reference in the text. `isUntil(value)` checks a bead id, an
+    `owner/repo#N` reference, a GitHub pull request URL, or a real
+    `YYYY-MM-DD` date.
+  - `memory add` in `src/cli.ts` calls `gate()` before `memory.same()`, the
+    duplicate check. A refused note costs no embedding call. It logs no
+    `helped` or `confirmed` event. A refusal sets exit code 2 and names the
+    missing or bad flag on stderr. It never throws `fail()`, which sets exit
+    code 1. `--anyway` still skips only the duplicate check; it never skips
+    the gate.
+  - `parse()` and `format()` (`src/memory.ts`) carry `kind` and `until`
+    frontmatter fields between `at:` and `superseded:`. An old note with no
+    `kind` still parses. Its `kind` and `until` both come out `undefined`.
+    `format()` of such a note stays byte-identical to the output before this
+    change.
+  - `mod/hooks/register.tsx` and the worker brief's usage text now show the
+    `--kind` and `--until` flags.
+- Fixed: `anyShellReason` (`src/worker-hook.ts`) no longer scans a long
+  sh/bash/zsh/dash word segment in quadratic time. (claude-factory-1by)
+  - Before this fix, a 120 KB command can time out the 10-second
+    PreToolUse hook. The hook then fails open.
+  - Cause: each sh/bash/zsh/dash word with no `-c` cluster called
+    `shCFlagIndex(words.slice(j))`. This is an O(n-j) slice and scan. It
+    then moved on by one word. A segment of n such words cost O(n^2).
+    Proof: 9.0 s at n=40000 (120 KB), 34 s at n=80000 (240 KB). Both times
+    are past the hook's timeout.
+  - Fix: keep two monotone forward pointers per segment across calls, in
+    place of the per-word slice and rescan. One pointer tracks the next
+    short-flag `-c` cluster index. The other tracks the next literal `--`
+    index. The scan is now amortized O(n) per segment. Proof: 5 ms at
+    n=40000, 22 ms at n=80000.
+  - `sh eval rm -rf x`, `sh foo -- bash -c "rm -rf x"`, and `sh -x -lc "rm
+    -rf x"` still deny. A trailing bare `-c` with no script still allows.
+    All 230 `worker-hook.test.ts` tests pass.
+- `factory memory add` now logs a duplicate hit as `confirmed`, not `helped`.
+  It also takes a new `--supersedes <note path>` flag. (claude-factory-3u1.1.2)
+  - When `memory.same()` finds a note that is already there, `src/cli.ts`
+    logs `confirmed` in `.usage.jsonl`. `memory.use()`, `tallyRaw()` and
+    `tally()` (`src/memory.ts`) now carry `confirmed` and `contradicted`
+    counts per note, next to `shown` and `helped`. Each count defaults to
+    0. `compact()` folds `confirmed` and `contradicted` into each note's
+    line. A compact, then a tally, give the same counts.
+  - `--supersedes <note path>` resolves the path through `resolvePath()`
+    (the rename log). It writes the new note, adds one `superseded: <new
+    note path>` frontmatter line to the old note, and logs a
+    `contradicted` event on the old note.
+  - The flag refuses with exit 2 and writes nothing in each of these
+    cases: the path is missing a value; the path starts with `--` or
+    `..`; the path has a dot segment (such as `.archive`); the path names
+    a topic's whole `README.md`, `LONG.md` or `CORE.md` with no `#`; the
+    path is a directory; or the path is a `#` path whose file part is a
+    directory.
+  - PR #73 first shipped the last two refusals above as a crash
+    (`EISDIR`, exit 1) that left a note behind with no `superseded:`
+    marker. PR #76 fixed the directory-as-`--supersedes` case. PR #78
+    fixed the `#`-path case (for example `beads#x`, where `beads` is a
+    directory).
 
 ## 0.12.0 (2026-10-15)
 

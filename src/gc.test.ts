@@ -5,6 +5,7 @@ import { expect, test } from 'bun:test'
 import {
   gcPlan,
   LAUNCH_MIN_AGE_MS,
+  scrubUrlUserinfo,
   worktreePlan,
   WORKTREE_MIN_AGE_MS,
   type BranchFact,
@@ -203,7 +204,9 @@ test('3: unmerged with no PR keeps the branch, but still removes the worktree', 
 
 test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the merge is kept', () => {
   const runs = [ref('r1', 'done'), ref('r2', 'done')]
-  const prs: PrFact[] = [{ state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa' }]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const r1 = rigFacts({
     worktrees: [],
     branches: [branch('factory/r1', { local: 'aaa', remote: 'aaa' })],
@@ -212,7 +215,9 @@ test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the mer
   expect(planOf(r1, runs).removeBranches).toEqual([
     { runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'aaa' },
   ])
-  const prs2: PrFact[] = [{ state: 'MERGED', headRefName: 'factory/r2', headRefOid: 'aaa' }]
+  const prs2: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r2', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const r2 = rigFacts({
     worktrees: [],
     branches: [branch('factory/r2', { local: 'ccc', remote: 'aaa' })],
@@ -224,8 +229,8 @@ test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the mer
 test('5: a CLOSED PR with the bead closed deletes; open or unknown bead keeps', () => {
   const runs = [ref('r1', 'done', '/wt/r1', { bead: 'b-1' }), ref('r2', 'done', '/wt/r2', { bead: 'b-2' })]
   const prs: PrFact[] = [
-    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa' },
-    { state: 'CLOSED', headRefName: 'factory/r2', headRefOid: 'aaa' },
+    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+    { state: 'CLOSED', headRefName: 'factory/r2', headRefOid: 'aaa', isCrossRepository: false },
   ]
   const rig = rigFacts({
     worktrees: [],
@@ -238,9 +243,48 @@ test('5: a CLOSED PR with the bead closed deletes; open or unknown bead keeps', 
   expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r2', name: 'factory/r2', reason: 'bead-open' })
 })
 
+test('5a: a cross-repo CLOSED PR with a closed bead never covers a tip (claude-factory-ulv)', () => {
+  const runs = [ref('r1', 'done', '/wt/r1', { bead: 'b-1' })]
+  const prs: PrFact[] = [
+    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: true },
+  ]
+  const rig = rigFacts({
+    worktrees: [],
+    branches: [branch('factory/r1')],
+    prs,
+    beadClosed: { 'b-1': true },
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'unmerged' })
+})
+
+test('5b: a cross-repo MERGED PR never covers a tip (claude-factory-ulv)', () => {
+  const runs = [ref('r1', 'done')]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: true },
+  ]
+  const rig = rigFacts({ worktrees: [], branches: [branch('factory/r1')], prs })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'unmerged' })
+})
+
+test('5c: a same-repo MERGED PR still covers (control for 5a/5b)', () => {
+  const runs = [ref('r1', 'done')]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
+  const rig = rigFacts({ worktrees: [], branches: [branch('factory/r1')], prs })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([{ runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'aaa' }])
+})
+
 test('6: an OPEN PR with an ancestor tip keeps', () => {
   const runs = [ref('r1', 'done')]
-  const prs: PrFact[] = [{ state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa' }]
+  const prs: PrFact[] = [
+    { state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const rig = rigFacts({
     worktrees: [],
     branches: [branch('factory/r1', { localMerged: true, remoteMerged: true })],
@@ -363,4 +407,40 @@ test('16: a non-factory branch on a run worktree path removes the worktree, neve
   const p = planOf(rig, runs)
   expect(p.removeWorktrees).toEqual([{ runId: 'r1', path: '/wt/r1', bytes: 1_000, snapshot: false }])
   expect(p.removeBranches).toEqual([])
+})
+
+// scrubUrlUserinfo() (claude-factory-0lt, AC1): removes "user:pass@" or "token@" from each URL in a
+// string, so a secret in a git remote's userinfo never lands in the gc-worktrees.jsonl journal.
+test('scrubUrlUserinfo: a user:pass@ userinfo is removed from an https URL', () => {
+  expect(scrubUrlUserinfo('https://e2e-user:e2e-tok3n@github.com/acme/widget.git')).toBe(
+    'https://github.com/acme/widget.git',
+  )
+})
+
+test('scrubUrlUserinfo: a token-only userinfo (no colon) is removed too', () => {
+  expect(scrubUrlUserinfo('https://e2e-tok3n@h/x')).toBe('https://h/x')
+})
+
+test('scrubUrlUserinfo: an ssh URL loses its git@ userinfo', () => {
+  expect(scrubUrlUserinfo('ssh://git@h/x')).toBe('ssh://h/x')
+})
+
+test('scrubUrlUserinfo: every URL in a string with 2 URLs is scrubbed', () => {
+  const text =
+    "fatal: unable to access 'https://e2e-user:e2e-tok3n@github.com/acme/widget.git/': " +
+    'also see ssh://git@h/x for details'
+  const scrubbed = scrubUrlUserinfo(text)
+  expect(scrubbed).toBe(
+    "fatal: unable to access 'https://github.com/acme/widget.git/': also see ssh://h/x for details",
+  )
+  expect(scrubbed).not.toContain('e2e-tok3n')
+  expect(scrubbed).not.toContain('e2e-user')
+})
+
+test('scrubUrlUserinfo: an scp-style remote (no scheme) is left alone', () => {
+  expect(scrubUrlUserinfo('git@github.com:acme/widget.git')).toBe('git@github.com:acme/widget.git')
+})
+
+test('scrubUrlUserinfo: plain text with no URL is unchanged', () => {
+  expect(scrubUrlUserinfo('fatal: not a git repository')).toBe('fatal: not a git repository')
 })

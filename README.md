@@ -421,14 +421,15 @@ factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egr
 
 [`factories/lifecycle.ts`](factories/lifecycle.ts) is the whole software lifecycle in one graph:
 
-| Loop                         | Stations                                                                                           |
-| ---------------------------- | -------------------------------------------------------------------------------------------------- |
-| build                        | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
-| optimize (performance, cost) | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
-| refactor                     | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
-| operate                      | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
-| incident                     | incident → rollback or plan → … → postmortem, which files the action items                         |
-| sweeps                       | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)    |
+| Loop                          | Stations                                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- |
+| build                         | triage → plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (**you merge**) → soak |
+| small (docs, test-only, tiny) | triage → quick ⇄ check (→ security only when flagged) → release → deploy (**you merge**)           |
+| optimize (performance, cost)  | baseline → plan → implement ⇄ verify against the target → … → soak; abandon when disproved         |
+| refactor                      | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
+| operate                       | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
+| incident                      | incident → rollback or plan → … → postmortem, which files the action items                         |
+| sweeps                        | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)    |
 
 Sweeps never end: each pass files what it finds as runs of its own (`lifecycle@incident`,
 `@plan`, `@baseline`, `@characterize`), skipping duplicates. `factory loop` ticks with no
@@ -438,6 +439,15 @@ request ready, and deploy parks on it until you merge it on GitHub, then deploys
 the rollout. It never merges itself. Request changes on the pull request to send the run back
 to implement; close it to end the run with its bead deferred.
 Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews security.
+
+Triage picks `small` for a change that is docs-only, test-only, or tiny. A tiny change has
+about 50 changed lines or fewer, in 3 files or fewer, with no new dependency, migration, or
+public API change. Triage does not pick `small` when the change is security-sensitive or
+touches a factory definition.
+
+The `small` loop skips the Opus plan step. It pays for security only when `check` flags
+the change. Deploy reports `published`, with no soak, for a docs-only or test-only change.
+This is the same as for a library or a change to `.factory/` only.
 `factories/lifecycle.test.ts` walks every loop through the machine.
 
 `bin/factory help` lists every command; the manager model uses the same CLI.
@@ -605,11 +615,46 @@ export default {
 
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
-the manager; lifecycle's review has 3), `gate: true` for a station the person decides instead of a
-worker, and `awaitsPr: true` for a station that must wait for someone to merge, close or update a
-pull or merge request an arrival's report links, before it starts a worker (lifecycle's `deploy`;
-see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }` parks the run with no worker;
-`goto` skips the wait.
+the manager; lifecycle's review has 3), `onRounds` (a node for a re-plan at the round cap, below),
+`repeatMail` (an outcome that mails the manager on a repeat, below), `gate: true` for a station the
+person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
+to merge, close or update a pull or merge request an arrival's report links, before it starts a
+worker (lifecycle's `deploy`; see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }`
+parks the run with no worker; `goto` skips the wait.
+
+`onRounds` names the node that takes the first capped report, instead of the manager. The run
+carries the round's findings to that node. A second capped report in the same run still goes to
+the manager, and the mail names the earlier re-plan. Lifecycle's review sets `onRounds` to `plan`.
+
+`repeatMail` names an outcome in `next`. A station can report this outcome two times in a row.
+
+Each report must name the same `AC<n>` id on its own `Failing: AC2, AC6` line. An id named only as
+passing elsewhere in a report does not count.
+
+When both reports share a failing id, the machine mails the manager from `'factory'`. The mail
+names the station, the shared ids and both report times.
+
+The run still follows the outcome's normal edge in every case. With no shared failing id, the
+machine sends no mail.
+
+A re-plan between the two reports also sends no mail, because a re-plan can renumber the acceptance
+criteria.
+
+A re-plan has two cases. In the first case, the capped node's own `onRounds` jump occurs. Its log
+entry carries `replan: true`.
+
+In the second case, a manager `goto` reaches a node that another node's `onRounds` names. That node
+then reports in between. It has no `replan` entry of its own.
+
+Lifecycle's verify sets `repeatMail` to `red`. Its prompt asks for the `Failing:` line.
+
+`onTimeout: { timeoutMin, prompt? }` gives the attempt right after a timeout fail a longer limit
+than the station's own `timeoutMin`, plus an extra brief section carrying `prompt`, instead of the
+same limit and a brief with no extra text (lifecycle's `security`: 45 min, then 75 min with a
+prompt that works from review's diff summary instead of the whole branch again). A 2nd timeout in
+a row still goes to `isRepeatFail`'s stuck state and one manager mail, same as any other repeated
+silent failure. `validate` refuses `onTimeout` on a gate, and refuses `onTimeout.timeoutMin` at or
+under `timeoutMin`.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
 edge refills it, so a sweep loops forever), `maxContextK` (200: the context, in thousands of
