@@ -1288,3 +1288,85 @@ test('denyReason denies git send-pack to a protected branch (claude-factory-zl5.
 test('denyReason allows git send-pack to a run branch (claude-factory-zl5.35)', () => {
   expect(denyReason('git send-pack origin refs/heads/feature')).toBeUndefined()
 })
+
+// claude-factory-zl5.39: review-r2 found that xargs ahead of a bare `git`/`gh` word denies
+// (zl5.33), but real git still moved `main` through 3 sibling forms: a value flag with its value
+// as its own word, a wrapper between xargs and git, and a long flag with no value. Each row below
+// is a bare push with no refspec of its own, on a run branch (`feature`): a guard that stops at
+// the first word after xargs reads each one as a safe push of the current branch.
+const DENY_XARGS_VALUE_FLAG_OR_WRAPPER = [
+  'echo main | xargs -n 1 git push origin',
+  'xargs -L 1 git push origin',
+  'xargs env git push origin',
+  'xargs sudo git push origin',
+  'xargs timeout 5 git push origin',
+]
+
+test.each(DENY_XARGS_VALUE_FLAG_OR_WRAPPER)(
+  'denyReason denies %j (claude-factory-zl5.39, an xargs value flag or wrapper still hides git)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(XARGS_REASON)
+  },
+)
+
+test('denyReason allows xargs with a flag ahead of a command that is not git or gh (claude-factory-zl5.39)', () => {
+  expect(denyReason('xargs -n 1 echo hi')).toBeUndefined()
+  expect(denyReason('xargs -L 1 sudo echo hi')).toBeUndefined()
+})
+
+// claude-factory-zl5.40: review-r2 found that `sendPackDenied` (zl5.35) read no ref as a push of
+// `HEAD` alone, and ignored `--stdin` and `--mirror`. Real git moved `main` for each row below.
+const DENY_SEND_PACK_BROAD = [
+  'git send-pack ../remote.git',
+  'echo refs/heads/main | git send-pack --stdin ../remote.git',
+  'git send-pack --mirror ../remote.git',
+]
+
+test.each(DENY_SEND_PACK_BROAD)(
+  'denyReason denies %j (claude-factory-zl5.40, no ref, --stdin and --mirror all push broadly)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows git send-pack with an explicit run-branch ref and no --stdin or --mirror (claude-factory-zl5.40)', () => {
+  expect(denyReason('git send-pack ../remote.git refs/heads/feature')).toBeUndefined()
+})
+
+// claude-factory-zl5.41: review-r2 found 3 siblings of the zl5.21/zl5.28/zl5.34 config-write
+// guard: `remote.*.mirror` (acts like `--mirror` on every later push to that remote),
+// `include.path`/`includeIf.*.path` (loads another config file this guard cannot read), and the
+// `GIT_CONFIG_*` environment variables (replace git's own config lookup outright). Each row is a
+// bare push with no refspec of its own, on a run branch (`feature`).
+const DENY_CONFIG_WRITE_SIBLINGS = [
+  'git config remote.origin.mirror true',
+  'git -c remote.origin.mirror=true push origin',
+  'git --config-env=remote.origin.mirror=ENVVAR push origin',
+  'git config include.path /x/cfg',
+  'git -c include.path=/x/cfg push origin',
+  'git config includeIf.onbranch:main.path /x/cfg',
+  'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.default GIT_CONFIG_VALUE_0=matching git push origin',
+  'export GIT_CONFIG_COUNT=1; git push origin',
+  'GIT_CONFIG_PARAMETERS="count=1 key0=push.default value0=matching" git push origin',
+  'GIT_CONFIG=/x/cfg git push origin',
+  'GIT_CONFIG_GLOBAL=/x/cfg git push origin',
+  'GIT_CONFIG_SYSTEM=/x/cfg git push origin',
+]
+
+test.each(DENY_CONFIG_WRITE_SIBLINGS)(
+  'denyReason denies %j (claude-factory-zl5.41, a config-write or GIT_CONFIG_* env sibling)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows an unrelated config key and an unrelated env var (claude-factory-zl5.41)', () => {
+  expect(denyReason('git config remote.origin.url https://example.test/r.git')).toBeUndefined()
+  expect(denyReason('git config user.name "A Name"')).toBeUndefined()
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason('MY_OWN_VAR=1 git push origin', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('GIT_CONFIG_COUNT=1 echo hi')).toBeUndefined()
+})

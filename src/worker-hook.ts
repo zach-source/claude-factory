@@ -326,41 +326,57 @@ function realCommand(words: string[]): string[] {
 }
 
 /**
- * True when `words` runs xargs right before a git or gh word, after the same leading `VAR=val`,
- * wrapper and `timeout <n>` prefixes that `realCommand` skips.
+ * True when `words` has an `xargs` word, with a `git` or `gh` word after it in the same segment.
  *
- * claude-factory-zl5.33: xargs can append its own operand, read from its own stdin, after every
- * word on this command line. That operand can be a push refspec or a gh verb. This guard reads only
- * the command text, so it cannot read an operand that xargs adds at run time. So this guard denies
- * the whole command, because it does not trust text that can be incomplete.
+ * claude-factory-zl5.33: xargs can read its own operand from stdin. It appends that operand after
+ * every word on this command line. That operand can be a push refspec or a gh verb. This guard
+ * reads only the command text. It cannot read an operand xargs adds at run time. So it denies the
+ * whole command: it does not trust text that can be incomplete.
+ *
+ * claude-factory-zl5.39: an earlier version of this guard skipped only a fixed list of prefixes,
+ * then xargs's own flags, then read one word after that. Real git moved `main` through 3 forms
+ * this missed: a value flag with its value as a separate word (`xargs -n 1 git push origin`), a
+ * wrapper between xargs and git (`xargs env git push origin`, `xargs sudo ...`), and a long flag
+ * with no value (`xargs -L 1 git push origin`). This guard no longer parses xargs's own flags. It
+ * denies on a `git` or `gh` word anywhere after `xargs` in the same segment, flag, wrapper or
+ * value word included.
  */
 function xargsHidesOperand(words: string[]): boolean {
-  let w = words
-  for (;;) {
-    if (!w.length) return false
-    const head = w[0]!
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
-      w = w.slice(1)
-      continue
+  for (let i = 0; i < words.length; i++) {
+    if (baseWord(words[i]!) !== 'xargs') continue
+    for (let j = i + 1; j < words.length; j++) {
+      const b = baseWord(words[j]!)
+      if (b === 'git' || b === 'gh') return true
     }
-    const b = baseWord(head)
-    if (WRAPPERS.has(b)) {
-      w = w.slice(1)
-      continue
-    }
-    if (b === 'timeout') {
-      w = w.slice(1)
-      if (/^[\d.]+[smhd]?$/.test(w[0] ?? '')) w = w.slice(1)
-      continue
-    }
-    if (b === 'xargs') {
-      w = w.slice(1)
-      while (w.length && w[0]!.startsWith('-')) w = w.slice(1)
-      const next = baseWord(w[0] ?? '')
-      return next === 'git' || next === 'gh'
-    }
-    return false
   }
+  return false
+}
+
+// claude-factory-zl5.41: these 7 environment variables replace git's own config lookup. Real git
+// reads `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` as an injected list of
+// config pairs, of any length. `GIT_CONFIG_PARAMETERS` is the same list in git's own internal
+// encoding. `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` point git at a whole config
+// file this guard cannot read. Any one of them can set a key `isPushConfigWrite` denies, such as
+// `push.default=matching`, with no value on this command line for this guard to check.
+const DANGEROUS_GIT_CONFIG_ENV = /^GIT_CONFIG(_GLOBAL|_SYSTEM|_COUNT|_PARAMETERS|_KEY_\d+|_VALUE_\d+)?$/
+
+/**
+ * True when `words` has a plain `NAME=value` word, or an `export NAME=value` word, that sets one
+ * of the `DANGEROUS_GIT_CONFIG_ENV` names, anywhere in the segment.
+ *
+ * claude-factory-zl5.41: a plain assignment right before a git word sets that one git call's own
+ * environment. An `export` sets a shell variable that stays set for every later command in the
+ * same shell, including a git call on a later, `;`-separated line. This check reads either form
+ * the same way: it does not track which statement runs `export`, so a export in one segment and a
+ * git call in another still deny, through `hasDangerousConfigEnv` in `denyAt`.
+ */
+function setsDangerousGitConfigEnv(words: string[]): boolean {
+  for (const w of words) {
+    const eq = w.indexOf('=')
+    if (eq <= 0) continue
+    if (DANGEROUS_GIT_CONFIG_ENV.test(w.slice(0, eq))) return true
+  }
+  return false
 }
 
 // claude-factory-25z: global flags that take a separate value word, so the verb search can step past
@@ -1310,6 +1326,22 @@ function isRemotePushName(name: string): boolean {
   return /^remote\.[^.]+\.push$/i.test(name)
 }
 
+// claude-factory-zl5.41: a `remote.<name>.mirror` config key makes a later push to that remote
+// act like `git push --mirror`. It sends and deletes refs to match the local repo. That later
+// push has no refspec of its own. Real git confirmed `git config remote.origin.mirror true`,
+// then `git push origin`, moves `main`.
+function isRemoteMirrorName(name: string): boolean {
+  return /^remote\.[^.]+\.mirror$/i.test(name)
+}
+
+// claude-factory-zl5.41: an `include.path` or `includeIf.<cond>.path` key loads another config
+// file into this one. That file can set any key this guard already denies, such as
+// `push.default = matching`. This guard cannot read that file. So it denies the write itself, on
+// any value, the same way `isRemotePushName` does.
+function isIncludeName(name: string): boolean {
+  return /^include\.path$/i.test(name) || /^includeif\.[^.]+\.path$/i.test(name)
+}
+
 // claude-factory-zl5.21: an `alias.<name>` config key. The name has no dot and no `=`.
 function isAliasName(name: string): boolean {
   return /^alias\.[^.=]+$/i.test(name)
@@ -1348,11 +1380,14 @@ function isUpstreamPushDefaultValue(value: string): boolean {
  * A `remote.<name>.push` key denies on any value. A `push.default` key denies only on the value
  * `upstream` or `tracking` (claude-factory-zl5.28).
  *
+ * A `remote.<name>.mirror` key, `include.path` and `includeIf.<cond>.path` deny on any value, the
+ * same way `remote.<name>.push` does (claude-factory-zl5.41).
+ *
  * `value` is undefined for a read with no value operand. This guard allows that: it only denies
  * a write.
  */
 function isPushConfigWrite(name: string, value: string | undefined): boolean {
-  if (isRemotePushName(name)) return true
+  if (isRemotePushName(name) || isRemoteMirrorName(name) || isIncludeName(name)) return true
   if (value === undefined) return false
   if (isAliasName(name)) return true
   return isPushDefaultName(name) && isUpstreamPushDefaultValue(value)
@@ -1385,14 +1420,23 @@ function gitDashCPushDenied(tail: string[]): boolean {
       // claude-factory-zl5.34: This guard can read the name of `<envvar>`, but not the text of the
       // environment variable that it names.
       //
-      // It cannot check that text against the value rule of `isPushConfigWrite` for `push.default`.
-      // So this guard denies any `alias.*`, `remote.*.push` or `push.default` key that this flag sets.
-      // It does not check a value, so it fails closed.
+      // It cannot check that text against the `push.default` value rule in `isPushConfigWrite`.
+      // So this guard denies any of these keys that this flag sets: `alias.*`, `remote.*.push`,
+      // `remote.*.mirror`, `push.default`, `include.path`, `includeIf.*.path`
+      // (claude-factory-zl5.41 adds the mirror and include keys). It checks no value, so it
+      // fails closed.
       const rest = w.slice(CONFIG_ENV_PREFIX.length)
       const eq = rest.indexOf('=')
       if (eq < 0) continue
       const name = rest.slice(0, eq)
-      if (isRemotePushName(name) || isAliasName(name) || isPushDefaultName(name)) return true
+      if (
+        isRemotePushName(name) ||
+        isRemoteMirrorName(name) ||
+        isAliasName(name) ||
+        isPushDefaultName(name) ||
+        isIncludeName(name)
+      )
+        return true
       continue
     }
     // real git reads `-c name=value` only as 2 separate words: no `=` form, no `--config` form.
@@ -1445,30 +1489,46 @@ function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
 // claude-factory-zl5.35: `git send-pack` is the plumbing command that `git push` itself calls.
 // It moves refs to a remote over the same transports that `push` uses, such as ssh.
 //
-// It has no `push` word of its own, and its synopsis is `git send-pack [--all] [--dry-run] [<host>:]<directory> [<ref>...]`.
-// The first word that is not a flag is the destination, not a refspec. The other words use the
-// same refspec syntax that `gitPushDenied` already reads. So this guard reuses `refspecTarget`
-// on each one.
+// It has no `push` word of its own, and its synopsis is `git send-pack [--all] [--dry-run]
+// [--mirror] [--stdin] [<host>:]<directory> [<ref>...]`. The first word that is not a flag is
+// the destination, not a refspec. The other words use the same refspec syntax that
+// `gitPushDenied` already reads. So this guard reuses `refspecTarget` on each one.
+//
+// claude-factory-zl5.40: an earlier version of this guard read no ref as a push of `HEAD` alone.
+// Real git confirmed the real rule: with no ref and no `--all`, send-pack pushes every local
+// branch to a same-named remote branch, the same broad reach as `push.default=matching`.
+//
+// This guard also ignored 2 flags. `--stdin` reads refs from its own stdin, text this guard
+// cannot read. `--mirror` has the same broad reach as `--all`, and also deletes refs.
+//
+// This guard now denies outright on `--mirror`, `--stdin`, or no ref at all. It still checks a
+// named ref against the protected branch set, the same as before.
 function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
   const operands: string[] = []
   let broad = false
   let dryRun = false
+  let stdin = false
   for (const w of tail) {
     if (w === '--') continue
     if (w.startsWith('-') && w !== '-') {
-      if (w === '--all') broad = true
+      if (w === '--all' || w === '--mirror') broad = true
       else if (w === '--dry-run' || w === '-n') dryRun = true
+      else if (w === '--stdin') stdin = true
+      else if (w === '--no-stdin') stdin = false
       continue
     }
     operands.push(w)
   }
   if (dryRun) return false
-  if (broad) return true
+  if (broad || stdin) return true
   const refspecs = operands.slice(1)
-  const specs = refspecs.length ? refspecs : ['HEAD']
+  // claude-factory-zl5.40: no ref means a broad, matching-style push. This guard cannot name
+  // every branch that reaches, so it denies the whole call (fail closed) instead of defaulting
+  // to `HEAD`.
+  if (refspecs.length === 0) return true
   const { branches: protectedSet, unresolved } = protectedBranchSet(gate)
   if (unresolved) return true
-  for (const spec of specs) {
+  for (const spec of refspecs) {
     const { target, unsafe } = refspecTarget(spec, currentBranch)
     if (unsafe) return true
     if (target !== undefined && protectedSet.has(target)) return true
@@ -1671,13 +1731,23 @@ function denyAt(
   const g = gate
   let hasRm = false
   let hasCd = false
+  // claude-factory-zl5.41: these 2 flags accumulate across every segment of `command`, not one
+  // segment alone. An `export GIT_CONFIG_COUNT=1` and a later, `;`-separated `git push` are 2
+  // different segments, and either order of the 2 checks below still denies.
+  let hasDangerousConfigEnv = false
+  let hasGitWord = false
   for (const words of segments(command)) {
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
+    if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
+    // claude-factory-zl5.41: `b` is already the basename of this segment's real command, past any
+    // leading `VAR=val` word, wrapper or `timeout <n>` word that `realCommand` strips. A bare
+    // `git` word there is cheap to read: no extra scan of `words` on top of the scans below.
+    if (b === 'git') hasGitWord = true
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
@@ -1707,6 +1777,7 @@ function denyAt(
       }
     }
   }
+  if (hasDangerousConfigEnv && hasGitWord) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
