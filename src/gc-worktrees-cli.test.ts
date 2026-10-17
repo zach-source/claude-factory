@@ -121,9 +121,9 @@ function spyGit(logFile: string) {
 }
 
 /** a bare "origin" and a clone the test treats as the rig's own repo, with `main` as the one commit
- * every branch starts from. The origin's URL reads as github.com (so cli.ts's forge check passes)
- * but `insteadOf` sends fetch/push to the real local bare repo. */
-function makeRig(name: string) {
+ * every branch starts from. The origin's URL reads as `originUrl` (default: a github.com URL, so
+ * cli.ts's forge check passes) but `insteadOf` sends fetch/push to the real local bare repo. */
+function makeRig(name: string, originUrl = 'https://github.com/acme/widget.git') {
   const origin = join(dir, `${name}-origin.git`)
   const repo = join(dir, name)
   mkdirSync(origin, { recursive: true })
@@ -133,8 +133,8 @@ function makeRig(name: string) {
   git(repo, 'add', 'README.md')
   git(repo, 'commit', '-q', '-m', 'init')
   git(repo, 'push', '-q', 'origin', 'main')
-  git(repo, 'remote', 'set-url', 'origin', 'https://github.com/acme/widget.git')
-  git(repo, 'config', `url.file://${origin}.insteadOf`, 'https://github.com/acme/widget.git')
+  git(repo, 'remote', 'set-url', 'origin', originUrl)
+  git(repo, 'config', `url.file://${origin}.insteadOf`, originUrl)
   git(repo, 'fetch', '--quiet', 'origin')
   git(repo, 'remote', 'set-head', 'origin', 'main')
   return { origin, repo }
@@ -555,6 +555,28 @@ test('a CLOSED PR with the bead closed deletes the branch; bead open keeps it', 
   expect(out.code).toBe(0)
   expect(git(repo, 'branch', '--list', `factory/${closedId}`)).toBe('')
   expect(git(repo, 'branch', '--list', `factory/${openId}`)).not.toBe('')
+})
+
+// claude-factory-0u0 AC4: a host must not read as GitHub only because it ends in "github.com"
+// (mygithub.com). Before this fix, githubSlug read the mygithub.com/acme/widget origin as
+// GitHub's acme/widget. gc then called `gh pr list` for that unrelated repo, and used its CLOSED
+// PR state here. This deleted a branch that this rig had not merged.
+test('AC4: a mygithub.com origin never calls gh pr list, and a CLOSED-PR branch stays', () => {
+  reset()
+  const { repo } = makeRig('r1', 'https://mygithub.com/acme/widget.git')
+  const id = freshId('closed')
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, bead: 'acme-1' })
+  const head = git(repo, 'rev-parse', `factory/${id}`)
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([{ number: 1, state: 'CLOSED', headRefName: `factory/${id}`, headRefOid: head }])
+  const { closeBead } = fakeBd()
+  closeBead('acme-1')
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(git(repo, 'branch', '--list', `factory/${id}`)).not.toBe('') // stays: no PR facts for this host
+  const log = join(dir, 'gh-calls.log')
+  if (existsSync(log)) expect(readFileSync(log, 'utf8')).not.toContain('pr list')
 })
 
 /** a fake herdr that answers `tab create` and `pane run` the way a real worker launch needs
