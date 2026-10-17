@@ -61,6 +61,23 @@ export const linearSourced = (b: Bead) => !!b.external_ref?.toLowerCase().includ
 export const stationOf = (b: Bead) =>
   (!linearSourced(b) && b.labels?.find(l => l.startsWith('station:'))?.slice('station:'.length)) || undefined
 
+/** a `factory:<name>` or `station:<name>` label's name: lowercase, hyphenated, no path */
+export const NAME = /^[a-z][a-z0-9-]{0,63}$/
+
+/**
+ * A `factory:<name>` label picks the factory that a run compiles for this bead. `stationOf`'s
+ * `station:<name>` label picks where in it to start (the requeue edge, claude-factory-wnm).
+ * `factoryOf` uses the same guards as `stationOf`. It never reads this label from a Linear-sourced
+ * bead (claude-factory-b6c.27). It never reads a name that fails `NAME`, such as a path like
+ * `factory:../x` or `factory:/tmp/x`. The bare `factory` label, with no colon, marks queue
+ * membership, not a factory name, and never matches here.
+ */
+export const factoryOf = (b: Bead) => {
+  if (linearSourced(b)) return undefined
+  const name = b.labels?.find(l => l.startsWith('factory:'))?.slice('factory:'.length)
+  return name && NAME.test(name) ? name : undefined
+}
+
 /** a bead's parent: bd's parent-child edge, else the id's own `<parent>.<n>` */
 export const parentOf = (b: Bead) =>
   b.parent ?? (/\.\d+$/.test(b.id) ? b.id.replace(/\.\d+$/, '') : undefined)
@@ -329,6 +346,60 @@ export const beads = (repo: string, actor: string) => ({
         `rejected_at=${new Date().toISOString()}`,
         '--set-metadata',
         `reject_reason=${reason}`,
+      ),
+      'update',
+    )
+  },
+  /**
+   * Ends a run on a requeue edge (claude-factory-wnm). It releases the claim and keeps the bead open,
+   * ready and `factory`-labeled; it never closes or defers it. The next dispatch starts a new run for
+   * the bead.
+   *
+   * With `to`, it removes every existing `factory:*`/`station:*` label, then adds
+   * `factory:<to.factory>` and `station:<to.station>`. With no `to`, the labels the worker set stay as
+   * they are.
+   *
+   * Metadata counts the hop: `requeued_from=<runId>`, `requeued_at`, `requeues=<n+1>`. A retried tick
+   * that calls this again with the same `runId` leaves the count alone, because `requeued_from` already
+   * names it.
+   */
+  requeue: (id: string, runId: string, to?: { factory?: string; station?: string }) => {
+    bd(repo, actor, 'unclaim', id)
+    const r = bd(repo, actor, 'show', id, '--json')
+    const parsed = r.isOk ? JSON.parse(r.out) : null
+    const b: Bead | null = Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
+    const already = b?.metadata?.requeued_from === runId
+    const requeues = already ? Number(b?.metadata?.requeues ?? 0) : Number(b?.metadata?.requeues ?? 0) + 1
+    const oldLabels = to
+      ? (b?.labels ?? []).filter(l => l.startsWith('factory:') || l.startsWith('station:'))
+      : []
+    const newLabels = to
+      ? [to.factory && `factory:${to.factory}`, to.station && `station:${to.station}`].filter(
+          (l): l is string => !!l,
+        )
+      : []
+    return must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        ...oldLabels.flatMap(l => ['--remove-label', l]),
+        '--add-label',
+        LABEL,
+        '--remove-label',
+        REJECTED,
+        ...newLabels.flatMap(l => ['--add-label', l]),
+        ...(already
+          ? []
+          : [
+              '--set-metadata',
+              `requeued_from=${runId}`,
+              '--set-metadata',
+              `requeued_at=${new Date().toISOString()}`,
+              '--set-metadata',
+              `requeues=${requeues}`,
+            ]),
       ),
       'update',
     )
