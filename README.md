@@ -235,9 +235,10 @@ command nested this deep can make the hook's own scan too slow too.
 
 The hook reads only the command text Claude Code is about to run, so it stops a worker that
 runs the command directly. It cannot read a script that reaches a shell by another path: a pipe
-(`echo "kubectl --context acme apply -f x" | bash`), a here-string, `env -S`, `su -c`,
-`nix-shell --run`, or a variable or `$(...)` that holds the real command. The brief's own rule
-still applies there.
+(`echo "kubectl --context acme apply -f x" | bash`), a here-string, `su -c`, `nix-shell --run`,
+or a variable or `$(...)` that holds the real command. The brief's own rule still applies there.
+(`env -S`/`env --split-string` is not in this list: the hook reads that value off the command
+line itself and checks it the same way it checks an `eval` or `sh -c` argument.)
 
 A rig can name branches that only a person may push, in addition to `main` and `master`.
 Use `--protected-branch` to add one branch. Repeat the flag to add more branches.
@@ -349,6 +350,28 @@ these forms:
 
   These environment variables replace git's own config lookup outright. No value stays on the
   command line for the hook to check.
+
+A later review found 4 more disguised forms. The hook now denies these too:
+
+- `env -S '<command>'` or `env --split-string='<command>'`. This also covers a short-flag
+  cluster, for example `-vS`, and the attached form `-S'<command>'`. BSD and GNU `env` split
+  `<command>` into words and run it. This is the same hazard as `eval`. The hook reads that
+  value off the command line. It checks the value the same way it checks an `eval` or `sh -c`
+  argument.
+- a dashed git-core binary name, for example `git-push` or `git-send-pack`. A real shell finds
+  one of these on `PATH` or under `git --exec-path`. It runs the same code as `git push` or
+  `git send-pack`. No `git` word appears anywhere in the command line. The hook now reads a
+  `git-<verb>` basename as `git <verb>`.
+- a `nice -n 5`, `command -p` or `stdbuf -o0` wrapper ahead of `git push`, paired with one of
+  the `GIT_CONFIG_*` environment variables above. The same pairing also applies behind an
+  `eval` or `bash -c` argument, or a separate `export` statement. The check for this pairing
+  used to read only one segment's own first word, past wrapper-stripping. It now reads a `git`
+  word anywhere in the full raw command text.
+- `HOME=<dir>` or `XDG_CONFIG_HOME=<dir>`, paired with a `git` word. Git reads
+  `$HOME/.gitconfig` as its own global config. Git reads `$XDG_CONFIG_HOME/git/config` the same
+  way. Each one is the same unreadable-file hazard as `GIT_CONFIG_GLOBAL`. `GIT_DIR=<dir>` and
+  `GIT_COMMON_DIR=<dir>` point git at a different repository. That repository's config file
+  denies the same way.
 
 The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
 read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook

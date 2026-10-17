@@ -120,6 +120,24 @@ minor release may change the factory format, the CLI or the run state.
       text, even on a later, `;`-separated line. These environment variables replace git's
       own config lookup outright, with no value left on the command line for the hook to
       check.
+  - A later review found 4 more bypasses. The hook now closes each one too.
+    - `env -S '<command>'` and `env --split-string='<command>'` (also a short-flag cluster
+      and the attached `-S'<command>'` form) now deny the command. BSD and GNU `env` split
+      `<command>` into words and run it, the same hazard as `eval`. The hook now reads that
+      value and checks it the same way it checks an `eval` or `sh -c` argument.
+    - A dashed git-core binary name, such as `git-push` or `git-send-pack`, now denies the
+      same way `git push` or `git send-pack` does. It runs the same code, found on `PATH`
+      or under `git --exec-path`, with no `git` word anywhere in the command line.
+    - The check that denies a `GIT_CONFIG_*` environment variable paired with a `git` word
+      used to read only one segment's own first word, past wrapper-stripping. Real git moved
+      `main` through `nice -n 5 git push origin`, `command -p git push origin`,
+      `stdbuf -o0 git push origin`, and the same pairing behind an `eval` or `bash -c`
+      argument. The check now reads a `git` word anywhere in the full raw command text.
+    - `HOME=<dir>` and `XDG_CONFIG_HOME=<dir>` now deny the command when paired with a `git`
+      word, the same as `GIT_CONFIG_GLOBAL`: git reads `$HOME/.gitconfig` and
+      `$XDG_CONFIG_HOME/git/config` as its own global config. `GIT_DIR=<dir>` and
+      `GIT_COMMON_DIR=<dir>` deny the same way: each one points git at a different
+      repository's config file.
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
