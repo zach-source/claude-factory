@@ -3233,8 +3233,21 @@ export function deleteBranchCas(repo: string, name: string, local: string | null
 }
 
 const gcWorktreesJournal = () => join(HOME, 'gc-worktrees.jsonl')
+/** Scrubs URL userinfo from every string value of `value` (claude-factory-0lt, AC2). It walks an
+ * array or an object the same way, so a new field or a nested value can never skip the scrub. */
+function scrubDeep(value: unknown): unknown {
+  if (typeof value === 'string') return gc.scrubUrlUserinfo(value)
+  if (Array.isArray(value)) return value.map(scrubDeep)
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v)]))
+  return value
+}
 const gcLog = (entry: Record<string, unknown>) =>
-  durable(gcWorktreesJournal(), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', 'a')
+  durable(
+    gcWorktreesJournal(),
+    JSON.stringify(scrubDeep({ at: new Date().toISOString(), ...entry })) + '\n',
+    'a',
+  )
 
 /**
  * Removes a finished run's worktree. It also removes the run's factory/* branch, once

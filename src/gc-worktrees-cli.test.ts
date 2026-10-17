@@ -120,6 +120,26 @@ function spyGit(logFile: string) {
   chmodSync(join(bin, 'git'), 0o755)
 }
 
+/** a `git` shim on PATH (T2/T2b, claude-factory-0lt.2). `sub` and `sub2` match argv[3] and
+ * argv[4]. On that match it prints `stderr`, then exits with `exitCode`. On every other call it
+ * runs real git. `stderr` must hold no single quote. */
+function failGit(sub: string, sub2: string | null, stderr: string, exitCode: number) {
+  mkdirSync(bin, { recursive: true })
+  const cond = sub2 ? `[ "$3" = "${sub}" ] && [ "$4" = "${sub2}" ]` : `[ "$3" = "${sub}" ]`
+  writeFileSync(
+    join(bin, 'git'),
+    [
+      '#!/bin/sh',
+      `if ${cond}; then`,
+      `  printf '%s\\n' '${stderr}' >&2`,
+      `  exit ${exitCode}`,
+      'fi',
+      `exec '${REAL_GIT}' "$@"`,
+    ].join('\n'),
+  )
+  chmodSync(join(bin, 'git'), 0o755)
+}
+
 /** a bare "origin" and a clone the test treats as the rig's own repo, with `main` as the one commit
  * every branch starts from. The origin's URL reads as github.com (so cli.ts's forge check passes)
  * but `insteadOf` sends fetch/push to the real local bare repo. */
@@ -784,4 +804,58 @@ test("x: reviveWorktree's ls-remote and fetch run with GIT_TERMINAL_PROMPT=0 (cl
   const lines = readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean)
   expect(lines.find(l => l.includes(' ls-remote '))).toContain('GIT_TERMINAL_PROMPT=0')
   expect(lines.find(l => l.includes(' fetch '))).toContain('GIT_TERMINAL_PROMPT=0')
+})
+
+test('v: a failing push scrubs URL userinfo from the journaled error (claude-factory-0lt.2, T2)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  failGit(
+    'push',
+    null,
+    'fatal: unable to access https://e2e-user:e2e-tok3n@github.com/acme/widget.git/: e2e',
+    128,
+  )
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes() })
+  expect(out.code).toBe(0)
+  const text = readFileSync(join(home, 'gc-worktrees.jsonl'), 'utf8')
+  expect(text).not.toContain('e2e-tok3n')
+  expect(text).not.toContain('e2e-user')
+  const lines = text
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  const errLine = lines.find(l => l.type === 'error' && l.run === id)
+  expect(errLine).toBeDefined()
+  expect(errLine.reason).toContain('https://github.com/acme/widget.git')
+})
+
+test('w: a failing "git worktree remove" scrubs URL userinfo from the journaled error (claude-factory-0lt.2, T2b)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  failGit(
+    'worktree',
+    'remove',
+    'error: unable to unlink file: see https://e2e-user:e2e-tok3n@github.com/acme/widget.git for help',
+    1,
+  )
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes() })
+  expect(out.code).toBe(0)
+  const text = readFileSync(join(home, 'gc-worktrees.jsonl'), 'utf8')
+  expect(text).not.toContain('e2e-tok3n')
+  expect(text).not.toContain('e2e-user')
+  const lines = text
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  const errLine = lines.find(l => l.type === 'error' && l.run === id)
+  expect(errLine).toBeDefined()
+  expect(errLine.reason).toContain('https://github.com/acme/widget.git')
 })
