@@ -380,6 +380,31 @@ minor release may change the factory format, the CLI or the run state.
     `personOnly`. The 8192-character cap stays. The cap's own wording now
     says "characters", not "bytes": `command.length` counts UTF-16 units.
     README.md gained one sentence on the 8192-character deny.
+- Added: `factory memory add` now takes `--kind fact|rule|recipe` and
+  `--until <bead|owner/repo#N|pull-URL|YYYY-MM-DD>`. It refuses the note
+  before it checks for a duplicate. (claude-factory-3u1.1.1)
+  - `gate(note)` (`src/memory.ts`) is a pure, exported check. It uses no
+    `fs`, clock or env access. It refuses a note with a missing or invalid
+    `--kind`. It refuses a note with an invalid `--until` value. It refuses
+    a `fact` or `rule` note that cites a bead id or a pull request in its
+    summary or body, with no `--until`; a `recipe` note is exempt from this
+    last check. `citesTracker(text)` finds a bead id or a pull request
+    reference in the text. `isUntil(value)` checks a bead id, an
+    `owner/repo#N` reference, a GitHub pull request URL, or a real
+    `YYYY-MM-DD` date.
+  - `memory add` in `src/cli.ts` calls `gate()` before `memory.same()`, the
+    duplicate check. A refused note costs no embedding call. It logs no
+    `helped` or `confirmed` event. A refusal sets exit code 2 and names the
+    missing or bad flag on stderr. It never throws `fail()`, which sets exit
+    code 1. `--anyway` still skips only the duplicate check; it never skips
+    the gate.
+  - `parse()` and `format()` (`src/memory.ts`) carry `kind` and `until`
+    frontmatter fields between `at:` and `superseded:`. An old note with no
+    `kind` still parses. Its `kind` and `until` both come out `undefined`.
+    `format()` of such a note stays byte-identical to the output before this
+    change.
+  - `mod/hooks/register.tsx` and the worker brief's usage text now show the
+    `--kind` and `--until` flags.
 
 ## 0.12.0 (2026-10-15)
 
