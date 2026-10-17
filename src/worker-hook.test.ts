@@ -12,6 +12,7 @@ import {
   PUSH_REASON,
   READY_REASON,
   REASON,
+  XARGS_REASON,
 } from './worker-hook'
 
 const DENY = [
@@ -1179,3 +1180,96 @@ test('run as `bun src/worker-hook.ts`, gh api graphql -f query=@file reads the r
     },
   })
 }, 10_000)
+
+// claude-factory-zl5.31: real git confirmed `push.default matching` sends every local branch to
+// a remote branch of the same name, with no refspec on that later command line. `tracking` is
+// upstream's older name; `matching` and any value this guard does not recognize now deny too,
+// since this guard cannot tell a safe value from a risky one without a real git to ask.
+const DENY_PUSH_DEFAULT_MATCHING_OR_UNKNOWN = [
+  'git config push.default matching',
+  'git config set push.default matching',
+  'git -c push.default=matching push origin main',
+  'git config push.default banana',
+]
+
+test.each(DENY_PUSH_DEFAULT_MATCHING_OR_UNKNOWN)(
+  'denyReason denies %j (claude-factory-zl5.31, matching or an unknown value fails closed)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the push.default values this guard already knows are safe (claude-factory-zl5.31)', () => {
+  expect(denyReason('git config push.default current')).toBeUndefined()
+  expect(denyReason('git config push.default simple')).toBeUndefined()
+  expect(denyReason('git config push.default nothing')).toBeUndefined()
+})
+
+// claude-factory-zl5.32: real git confirmed a bare `:` refspec pushes every branch with a
+// matching name on both ends, the same broad reach as `--all`. This guard used to read `:` as
+// naming no branch at all, which let the push through with no protected-branch check.
+const DENY_PUSH_MATCHING_COLON = ['git push origin :', 'git push origin +:']
+
+test.each(DENY_PUSH_MATCHING_COLON)(
+  'denyReason denies %j (claude-factory-zl5.32, a bare colon pushes every matching branch)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-zl5.33: xargs can read an operand from its own stdin and append it after the
+// text already on this command line. That operand can be the push refspec or the gh verb this
+// guard would otherwise check, so it denies the whole command instead of trusting the text that
+// stays visible.
+const DENY_XARGS_BEFORE_GIT_OR_GH = [
+  'xargs git push origin main',
+  'echo main | xargs git push origin',
+  'sudo xargs gh pr ready 5',
+  'ls | xargs -n1 git push origin',
+]
+
+test.each(DENY_XARGS_BEFORE_GIT_OR_GH)(
+  'denyReason denies %j (claude-factory-zl5.33, xargs can append a hidden operand)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(XARGS_REASON)
+  },
+)
+
+test('denyReason allows xargs ahead of a command that is not git or gh (claude-factory-zl5.33)', () => {
+  expect(denyReason('echo hi | xargs echo')).toBeUndefined()
+  expect(denyReason('git log | xargs -n1 echo')).toBeUndefined()
+})
+
+// claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` from an environment
+// variable this guard cannot read. It denies the same 3 keys `-c <name>=<value>` denies, with no
+// value check of its own, since it has no value to check.
+const DENY_CONFIG_ENV_PUSH = [
+  'git --config-env=alias.p=ENVVAR p origin main',
+  'git --config-env=remote.origin.push=ENVVAR push origin main',
+  'git --config-env=push.default=ENVVAR push origin main',
+]
+
+test.each(DENY_CONFIG_ENV_PUSH)('denyReason denies %j (claude-factory-zl5.34)', cmd => {
+  expect(denyReason(cmd)).toBe(PUSH_REASON)
+})
+
+test('denyReason allows --config-env on an unrelated key (claude-factory-zl5.34)', () => {
+  expect(denyReason('git --config-env=user.name=ENVVAR push origin feature')).toBeUndefined()
+})
+
+// claude-factory-zl5.35: `git send-pack` is the plumbing `git push` itself calls, with no `push`
+// word on its own command line. It takes the same refspec syntax, so this guard checks it the
+// same way, through `refspecTarget` and `protectedBranchSet`.
+test('denyReason denies git send-pack to a protected branch (claude-factory-zl5.35)', () => {
+  expect(denyReason('git send-pack origin refs/heads/main')).toBe(PUSH_REASON)
+  expect(denyReason('git send-pack --all origin')).toBe(PUSH_REASON)
+  expect(denyReason('git send-pack origin', undefined, undefined, { headOf: () => 'main' })).toBe(
+    PUSH_REASON,
+  )
+  // the uncertain-verb path: an unrecognized global flag ahead of send-pack
+  expect(denyReason('git --unknown-flag send-pack origin main')).toBe(PUSH_REASON)
+})
+
+test('denyReason allows git send-pack to a run branch (claude-factory-zl5.35)', () => {
+  expect(denyReason('git send-pack origin refs/heads/feature')).toBeUndefined()
+})
