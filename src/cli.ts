@@ -3040,11 +3040,18 @@ function allRunRefs(): GcRunRef[] {
 function snapshotWorktree(path: string, runId: string): string {
   const indexFile = join(tmpdir(), `factory-gc-index-${runId}-${process.pid}`)
   const env = { ...process.env, GIT_INDEX_FILE: indexFile }
+  // every step must succeed, or the caller must never force-remove on the strength of this snapshot
+  // (claude-factory-l38.8): an ignored failure here silently commits an empty or stale tree instead
+  const run = (...args: string[]) => {
+    const p = Bun.spawnSync(['git', '-C', path, ...args], { env })
+    if (p.exitCode !== 0) throw new Error(`git ${args[0]}: ${p.stderr.toString().trim()}`)
+    return p.stdout.toString().trim()
+  }
   try {
-    Bun.spawnSync(['git', '-C', path, 'add', '-A'], { env })
-    const tree = Bun.spawnSync(['git', '-C', path, 'write-tree'], { env }).stdout.toString().trim()
-    const head = Bun.spawnSync(['git', '-C', path, 'rev-parse', 'HEAD']).stdout.toString().trim()
-    const commit = Bun.spawnSync(
+    run('add', '-A')
+    const tree = run('write-tree')
+    const head = run('rev-parse', 'HEAD')
+    const commitP = Bun.spawnSync(
       [
         'git',
         '-C',
@@ -3058,8 +3065,8 @@ function snapshotWorktree(path: string, runId: string): string {
       ],
       { env: { ...env, ...MEMORY_GIT_IDENTITY_FALLBACK } },
     )
-      .stdout.toString()
-      .trim()
+    if (commitP.exitCode !== 0) throw new Error(`git commit-tree: ${commitP.stderr.toString().trim()}`)
+    const commit = commitP.stdout.toString().trim()
     git(path, 'update-ref', `refs/factory-gc/${runId}`, commit)
     return commit
   } finally {

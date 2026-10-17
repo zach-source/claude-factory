@@ -367,6 +367,38 @@ test('k: a worktree whose git status fails is kept whole, never removed (claude-
   expect(git(repo, 'branch', '--list', branch)).not.toBe('')
 })
 
+test('l: a failed git add -A during the snapshot keeps the worktree, commits no empty tree (claude-factory-l38.8)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: false })
+  const scratch = join(worktree, 'scratch.txt')
+  writeFileSync(scratch, 'uncommitted work') // dirty-small: a snapshot is attempted
+  // GIT_INDEX_FILE's path never gets created when `git add -A` fails this way: a naive `write-tree`
+  // right after then reads as an empty index and succeeds with the well-known empty-tree sha, exit
+  // 0, masking the add failure entirely (claude-factory-l38.8's "partial snapshot" risk)
+  chmodSync(scratch, 0o000)
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([])
+  try {
+    const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+    expect(out.code).toBe(0)
+    expect(out.out).toContain('reclaimed: 0 worktrees')
+    expect(existsSync(worktree)).toBe(true) // never force-removed on a failed snapshot
+    expect(git(repo, 'branch', '--list', branch)).not.toBe('')
+    expect(git(repo, 'for-each-ref', `refs/factory-gc/${id}`)).toBe('') // no bogus ref written
+    const lines = readFileSync(join(home, 'gc-worktrees.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l))
+    expect(lines.some(l => l.type === 'error' && l.run === id)).toBe(true)
+    expect(lines.some(l => l.type === 'snapshot')).toBe(false)
+  } finally {
+    if (existsSync(scratch)) chmodSync(scratch, 0o644)
+  }
+})
+
 test('h: 2 live runs among finished ones leaves 2 owned worktrees after a pass (AC11)', () => {
   reset()
   const { repo } = makeRig('r1')
