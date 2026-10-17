@@ -396,7 +396,7 @@ test('afterTimeout is true right after a timeout fail, stays true through anothe
   expect(afterTimeout(s.context as Ctx, 'review')).toBe(false)
 })
 
-test('afterTimeout stays true across a stuck state and the manager\'s RETRY (the log tail still holds it)', () => {
+test("afterTimeout stays true across a stuck state and the manager's RETRY (the log tail still holds it)", () => {
   const { send } = run({
     ...def,
     nodes: { ...def.nodes, implement: { ...def.nodes.implement!, retries: 1 } },
@@ -429,7 +429,13 @@ test('validate refuses onTimeout on a gate, and onTimeout.timeoutMin at or under
   const graph = (node: object) => ({ name: 'x', start: 'a', nodes: { a: node } }) as unknown as Factory
   expect(() =>
     validate(
-      graph({ prompt: '?', gate: true, agent: undefined, next: { ok: 'done' }, onTimeout: { timeoutMin: 75 } }),
+      graph({
+        prompt: '?',
+        gate: true,
+        agent: undefined,
+        next: { ok: 'done' },
+        onTimeout: { timeoutMin: 75 },
+      }),
     ),
   ).toThrow('a: a gate has no worker, so no onTimeout')
   expect(() =>
@@ -438,12 +444,13 @@ test('validate refuses onTimeout on a gate, and onTimeout.timeoutMin at or under
   expect(() =>
     validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 30 } })),
   ).toThrow('a: onTimeout.timeoutMin must be greater than timeoutMin (45)')
-  expect(validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 75 } })))
-    .toBeTruthy()
+  expect(
+    validate(graph({ prompt: 'x', next: { ok: 'done' }, timeoutMin: 45, onTimeout: { timeoutMin: 75 } })),
+  ).toBeTruthy()
   // no timeoutMin set: the default of 60 is the floor onTimeout must clear
-  expect(() =>
-    validate(graph({ prompt: 'x', next: { ok: 'done' }, onTimeout: { timeoutMin: 60 } })),
-  ).toThrow('a: onTimeout.timeoutMin must be greater than timeoutMin (60)')
+  expect(() => validate(graph({ prompt: 'x', next: { ok: 'done' }, onTimeout: { timeoutMin: 60 } }))).toThrow(
+    'a: onTimeout.timeoutMin must be greater than timeoutMin (60)',
+  )
 })
 
 // claude-factory-960.1: an awaitsPr station (deploy, for example) parks before its first worker starts.

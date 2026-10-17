@@ -781,6 +781,77 @@ test('brief() tells an awaitsPr pre-launch park apart from a worker-reported blo
   expect(workerBlocked).not.toContain('No worker ran yet')
 })
 
+// claude-factory-3t2: the attempt right after a timeout gets an extra brief section naming the longer limit.
+test("brief() adds 'The previous attempt timed out' only right after a timeout fail on a node with onTimeout, never on attempt 1 or after another fail kind", () => {
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-3t2-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-3t2-test',
+    branch: 'b',
+  }
+  const def = {
+    name: 'f',
+    start: 'implement',
+    nodes: {
+      implement: {
+        prompt: 'do the thing',
+        timeoutMin: 45,
+        onTimeout: { timeoutMin: 75, prompt: 'Narrow your read to the diff summary.' },
+        next: { ready: 'verify' },
+      },
+    },
+  }
+  const baseC = {
+    seq: 2,
+    attempt: 2,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+  }
+  const afterTimeoutFail = brief(
+    run,
+    def,
+    'implement',
+    {
+      ...baseC,
+      log: [{ node: 'implement', attempt: 1, outcome: 'fail', summary: 'no report within 45 min', at: 1 }],
+    },
+    [],
+  )
+  expect(afterTimeoutFail).toContain('## The previous attempt timed out')
+  expect(afterTimeoutFail).toContain('This attempt has 75 min.')
+  expect(afterTimeoutFail).toContain('Narrow your read to the diff summary.')
+
+  const afterOtherFail = brief(
+    run,
+    def,
+    'implement',
+    {
+      ...baseC,
+      log: [
+        { node: 'implement', attempt: 1, outcome: 'fail', summary: 'worker pane w1:p1 was closed', at: 1 },
+      ],
+    },
+    [],
+  )
+  expect(afterOtherFail).not.toContain('## The previous attempt timed out')
+
+  const attemptOne = brief(run, def, 'implement', { ...baseC, attempt: 1, log: [] }, [])
+  expect(attemptOne).not.toContain('## The previous attempt timed out')
+})
+
 test('ruleLines names a rig’s person-only contexts under the Rig goal section (claude-factory-25z.3)', () => {
   const def = { rules: '- rule one' }
   const axGoal = 'Skip owner-only live applies and surface them instead.'
