@@ -307,6 +307,8 @@ test('usage follows a note the dream files, and is dropped with a note it remove
     path: 'inbox/lock.md',
     shown: 2,
     helped: 1,
+    confirmed: 0,
+    contradicted: 0,
     at: day + 2,
     runs: 1, // all three lines fall on the same UTC day
   })
@@ -329,7 +331,15 @@ test('tally counts runs by distinct `by`, or by distinct UTC day for an older li
     JSON.stringify({ path: 'a.md', helped: 1, at: at + 1000, by: 'run1/verify' }), // same run again: still 1
     JSON.stringify({ path: 'a.md', helped: 1, at: at + 2000, by: 'run2/implement' }),
   ]
-  expect(tally(withBy).get('a.md')).toEqual({ path: 'a.md', shown: 0, helped: 3, at: at + 2000, runs: 2 })
+  expect(tally(withBy).get('a.md')).toEqual({
+    path: 'a.md',
+    shown: 0,
+    helped: 3,
+    confirmed: 0,
+    contradicted: 0,
+    at: at + 2000,
+    runs: 2,
+  })
 
   const legacy = [
     JSON.stringify({ path: 'b.md', helped: 1, at }),
@@ -342,7 +352,48 @@ test('tally counts runs by distinct `by`, or by distinct UTC day for an older li
     JSON.stringify({ path: 'c.md', shown: 5, helped: 2, at, runs: 2 }),
     JSON.stringify({ path: 'c.md', helped: 1, at: at + 2000, by: 'run3/verify' }),
   ]
-  expect(tally(folded).get('c.md')).toEqual({ path: 'c.md', shown: 5, helped: 3, at: at + 2000, runs: 3 })
+  expect(tally(folded).get('c.md')).toEqual({
+    path: 'c.md',
+    shown: 5,
+    helped: 3,
+    confirmed: 0,
+    contradicted: 0,
+    at: at + 2000,
+    runs: 3,
+  })
+})
+
+test('tally counts each of the 4 kinds (shown, helped, confirmed, contradicted), claude-factory-3u1.1.2', () => {
+  const dir = join(tmpdir(), `memory-4kinds-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const at = Date.parse('2026-10-06T12:00:00Z')
+  use(dir, ['a.md'], 'shown', at)
+  use(dir, ['a.md'], 'helped', at + 1000)
+  use(dir, ['a.md'], 'confirmed', at + 2000)
+  use(dir, ['a.md'], 'contradicted', at + 3000)
+  expect(usage(dir).get('a.md')).toEqual({
+    path: 'a.md',
+    shown: 1,
+    helped: 1,
+    confirmed: 1,
+    contradicted: 1,
+    at: at + 3000,
+    runs: 1,
+  })
+})
+
+test("compact() keeps confirmed and contradicted in its folded line: compact then tally gives the same counts", () => {
+  const dir = join(tmpdir(), `memory-compact-4kinds-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  writeFileSync(join(dir, 'beads', 'a.md'), format({ summary: 'a short note', body: 'body' }))
+  const at = Date.parse('2026-10-06T12:00:00Z')
+  use(dir, ['beads/a.md'], 'confirmed', at, 'run1/verify')
+  use(dir, ['beads/a.md'], 'contradicted', at + 1000, 'run1/verify')
+  const before = usage(dir).get('beads/a.md')
+  compact(dir, {})
+  expect(usage(dir).get('beads/a.md')).toEqual(before!)
 })
 
 test("compact() keeps a LONG.md entry's usage under its #id, and drops it only when the id is gone", () => {
@@ -1162,7 +1213,15 @@ test('tally keys a run by its id before the slash, so two stations of one run co
     JSON.stringify({ path: 'a.md', helped: 1, at: at + 1000, by: 'run1/implement' }), // same run, another station
     JSON.stringify({ path: 'a.md', helped: 1, at: at + 2000, by: 'run2/implement' }),
   ]
-  expect(tally(lines).get('a.md')).toEqual({ path: 'a.md', shown: 0, helped: 3, at: at + 2000, runs: 2 })
+  expect(tally(lines).get('a.md')).toEqual({
+    path: 'a.md',
+    shown: 0,
+    helped: 3,
+    confirmed: 0,
+    contradicted: 0,
+    at: at + 2000,
+    runs: 2,
+  })
 })
 
 test('compact() keeps the run ids its own fold already counted, so a later line for the same run does not count again (claude-factory-59r.17)', () => {
