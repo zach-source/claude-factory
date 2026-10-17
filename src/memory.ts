@@ -8,6 +8,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -684,7 +685,8 @@ export function noteExists(dir: string, path: string): boolean {
   const i = path.indexOf('#')
   if (i < 0) return existsSync(join(dir, path))
   const file = join(dir, path.slice(0, i))
-  return existsSync(file) && parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))
+  if (!existsSync(file) || !statSync(file).isFile()) return false
+  return parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))
 }
 
 /**
