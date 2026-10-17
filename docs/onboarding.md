@@ -148,6 +148,11 @@ The pm never changes a P0 or P1 bead's priority, a rig's goal, or an owner-only 
 only proposes a change. The proposal becomes a decision item in the Interview tab. You must
 decide on it. Set `pm` to `false` in the plugin's `userConfig` to turn off the pm.
 
+The pm's `userConfig` default is `false` for now, a rollback for claude-factory-dun (see
+CHANGELOG): a manager session already running when the pm shipped cannot register the pm
+agent, so it retries every 60 seconds, forever. Set `pm` back to `true` only after a fix
+closes that gap.
+
 To tick with no console, run `factory loop [--interval ms]` in the factory directory.
 
 ## 6. Your first run

@@ -113,7 +113,7 @@ const logOf = (files: Map<string, string>) =>
 
 test(
   'the pm spawns once at the first tick with no plan yet, and not again before 60 minutes once it has one',
-  SLOW,
+  { ...SLOW, options: { pm: true } },
   async ($, on) => {
     const clock = mock.clock(on)
     const spawns: { subagent_type: string; description: string; prompt: string }[] = []
@@ -168,7 +168,7 @@ test(
 
 test(
   'a run going from live to not live wakes the pm again, after a 5 minute debounce',
-  SLOW,
+  { ...SLOW, options: { pm: true } },
   async ($, on) => {
     const clock = mock.clock(on)
     const spawns: unknown[] = []
@@ -240,7 +240,7 @@ test(
 
 test(
   'a fenced json answer writes plan-answer.json, runs plan set, and logs its summary',
-  SLOW,
+  { ...SLOW, options: { pm: true } },
   async ($, on) => {
     const clock = mock.clock(on)
     const calls: string[][] = []
@@ -280,36 +280,40 @@ test(
   },
 )
 
-test('a fenceless pm answer logs an error and never calls plan set', SLOW, async ($, on) => {
-  const clock = mock.clock(on)
-  const calls: string[][] = []
-  const files = pmMocks(on, { runs: () => [RUN('r5')], calls })
-  on('agent.spawn', () => ({ model: 'sonnet' }) as never)
-  on('turn.complete', ($, e) => ({ text: e.answer }) as never)
-  agentListMock(on, [], ['pm-5'])
+test(
+  'a fenceless pm answer logs an error and never calls plan set',
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const calls: string[][] = []
+    const files = pmMocks(on, { runs: () => [RUN('r5')], calls })
+    on('agent.spawn', () => ({ model: 'sonnet' }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    agentListMock(on, [], ['pm-5'])
 
-  await $.command.run({ command: 'factory', args: 'status' } as never)
-  await clock.settle()
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
 
-  await $.turn.complete({
-    answer: 'no fenced block here, sorry',
-    durationMs: 100,
-    isAborted: false,
-    reason: 'answer',
-    turnId: 't1',
-    agentId: 'pm-5',
-  } as never)
+    await $.turn.complete({
+      answer: 'no fenced block here, sorry',
+      durationMs: 100,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'pm-5',
+    } as never)
 
-  expect(calls.some(a => a.includes('plan') && a.includes('set'))).toBe(false)
-  expect(files.has(`${HOME}/plan.json`)).toBe(false)
-  const log = logOf(files)
-  expect(log).toHaveLength(1)
-  expect(log[0].error).toBe("the pm's answer had no fenced json block")
-})
+    expect(calls.some(a => a.includes('plan') && a.includes('set'))).toBe(false)
+    expect(files.has(`${HOME}/plan.json`)).toBe(false)
+    const log = logOf(files)
+    expect(log).toHaveLength(1)
+    expect(log[0].error).toBe("the pm's answer had no fenced json block")
+  },
+)
 
 test(
   "a pm turn.complete never frees the patrol, and the patrol's own turn never frees the pm",
-  SLOW,
+  { ...SLOW, options: { pm: true } },
   async ($, on) => {
     const clock = mock.clock(on)
     let queued: readonly unknown[] = [mail(1)]

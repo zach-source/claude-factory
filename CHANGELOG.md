@@ -264,6 +264,23 @@ minor release may change the factory format, the CLI or the run state.
   shows each rig's top 3 next-up items and its findings; the header and the band
   show the plan's own age, or "plan stale" past 2 hours. `pm` in the plugin's
   `userConfig` turns the pm off. (claude-factory-dun)
+- Rollback: `pm`'s `userConfig` default is now `false` (`mod/.claude-plugin/plugin.json`).
+  (claude-factory-dun)
+  - Cause: a manager session already running when PR #58 merged (4f695d1) never re-ran its
+    `session.start` hook, so it never called `$.agent.register('pm', ...)`. A hot reload
+    picks up most code changes, but not that call. `pmNow()` inside `tick()` is not
+    `session.start`-gated, so it kept calling `$.agent.spawn('pm', ...)` every
+    `PM_RETRY_MS` (60 s), forever, against an agent type the engine never learned. 56+
+    minutes after the merge, `<home>/plan.json` and `<home>/pm-log.jsonl` had never once
+    appeared, while `<home>/plan-facts.json` kept churning on every retry.
+  - Fix: the `userConfig` schema's declared default flips from `true` to `false`
+    (`mod/.claude-plugin/plugin.json`). A manager process reloads `plugin.json` on every
+    file change under `mod/` and recomputes `options.pm` from it each time (no stored
+    override existed), so this stops `pmNow()` at its own `if (!rt.isPmEnabled) return`
+    guard without a process restart. This bullet touches no pm code or test; all pm tests
+    still pass. A person sets `pm: true` to turn it back on, once a real fix (the manager
+    process restarts, or agent registration runs on every hot reload too) closes the
+    `session.start` gap.
 - `decide()` now archives a never-shown short note after 14 days, caps how many
   notes one tiering pass can archive, and logs the plan before it writes
   anything. (claude-factory-503.2)
