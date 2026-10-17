@@ -34,7 +34,7 @@ const LAPTOP = 'herdr'
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
-- Never commit secrets. Only a person merges a pull request; only deploy and rollback touch production, and rollback alone may revert on the default branch; nobody force-pushes.
+- Never commit secrets. Only a person merges a pull request; only deploy and rollback touch production. Nobody pushes the default branch directly; a rollback that reverts code opens a pull request for a person to merge instead. Nobody force-pushes.
 - Production is read-only for every station but deploy and rollback.
 - Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when the bead's description, a person's own comment on it, or a [factory mail] from the manager says the person approved that exact step; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: "parked, waiting on: <the owner step and the exact command>". Reads, and watching a pipeline the person's merge started, stay allowed.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
@@ -117,7 +117,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
     implement: {
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line.
-Before you report ready, do what review would: merge origin/main and resolve any conflict; for each new branch, error path and guard, break it and see a test fail; check each claim you wrote in a doc, ADR or docstring against the code, and run each command you documented exactly as written. Say in the summary that you did.
+Before you report ready, do what review would: merge origin/main and resolve any conflict; for each new branch, error path and guard, break it and see a test fail; check each claim you wrote in a doc, ADR or docstring against the code, and run each command you documented exactly as written. Push the branch and open it as a draft pull request if this run has none yet. Say in the summary that you did, and give the pull request link.
 For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, mail the manager the question and wait for the answer.
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
       next: { ready: 'verify', abandon: 'done' },
@@ -137,7 +137,7 @@ Report green with the evidence, or red with a numbered list of every failure, th
       onRounds: 'plan', // a capped run re-plans with its findings instead of parking for a hand goto
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
-Post the review on the pull request: push the branch and open it as a draft if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
+Post the review on the pull request: implement opens it as a draft; push the branch and open one yourself if this run still has none. Then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
 Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/main...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
       next: { approve: 'release', changes: 'implement', security: 'security' },
     },
@@ -180,7 +180,7 @@ Report approve; or changes with one numbered list of every failure and finding, 
     // ── the outer loop: ship it, watch it, undo it ───────────────────────────
     release: {
       timeoutMin: 75,
-      prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and update the pull request review opened (open one if there is none) and mark it ready for review. Its description carries the plan's summary (triage's on a small run), the verification evidence and the rollback plan. Wait for CI and read every failing check.
+      prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and update the pull request implement opened (open one if there is none). Release is the only station that can mark it ready for review: do that now. Its description carries the plan's summary (triage's on a small run), the verification evidence and the rollback plan. Wait for CI and read every failing check.
 Report ready with the pull request link, the CI status and exactly what shipping will do; or red with the failures.`,
       next: { ready: 'deploy', red: 'implement' },
     },
@@ -220,8 +220,8 @@ Report healthy when it holds, or resolved instead when this run began with an in
       runner: LAPTOP,
       retries: 3,
       timeoutMin: 45,
-      prompt: `Restore service. Check what is already rolled back, then roll back the release your inbox names the repo's way (redeploy the previous version, revert the merge, or turn the flag off) and confirm recovery against the baseline.
-Report recovered with what you did, the evidence of recovery and everything learned about the cause: plan takes it from there to fix forward.`,
+      prompt: `Restore service. Check what is already rolled back, then roll back the release your inbox names the repo's way: redeploy the previous version, turn the flag off, or open a pull request that reverts the merge, since you never push the default branch directly. Confirm recovery against the baseline.
+Report recovered with what you did, the evidence of recovery, the revert pull request's link if you opened one, and everything learned about the cause: plan takes it from there to fix forward.`,
       next: { recovered: 'plan' },
     },
 

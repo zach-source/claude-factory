@@ -1188,7 +1188,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     model: ax.modelOf(agent),
     harness: harness!,
     provider: ax.providerOf(agent),
-    claudeFlags: harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig)) : undefined,
+    claudeFlags:
+      harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
     gitlabHost,
     env: {
       ...env,
@@ -1224,16 +1225,23 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 /**
  * A PreToolUse entry that runs `bun` on `file`. It denies rm -r/-rf, a cd+rm chain, an rm with a
  * $variable or glob target, and an rm outside the worktree root. It gives a reason.
- * `contexts` is the rig's list of kube contexts a person alone may change (claude-factory-25z).
- * When the list is non-empty, the hook's own argv carries it in: `--person-only-contexts a,b`.
- * An older VM image's hook copy ignores this unknown argv.
+ * `contexts` names kube contexts the rig reserves for a person alone (claude-factory-25z).
+ * When the list is not empty, the hook's own argv carries it: `--person-only-contexts a,b`.
+ * `branches` names branches, over main and master, the rig reserves for a person's push
+ * (claude-factory-zl5). Its own argv is `--protected-branches a,b`.
+ * An older VM image's hook copy ignores argv it does not know.
  */
-const denyHook = (bun: string, file: string, contexts?: string[]) => ({
+const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[]) => ({
   matcher: 'Bash',
   hooks: [
     {
       type: 'command',
-      command: `${sq(bun)} ${sq(file)}${contexts?.length ? ` --person-only-contexts ${sq(contexts.join(','))}` : ''}`,
+      command: [
+        sq(bun),
+        sq(file),
+        ...(contexts?.length ? ['--person-only-contexts', sq(contexts.join(','))] : []),
+        ...(branches?.length ? ['--protected-branches', sq(branches.join(','))] : []),
+      ].join(' '),
       timeout: 10,
     },
   ],
@@ -1250,7 +1258,7 @@ const denyHook = (bun: string, file: string, contexts?: string[]) => ({
  * It gets one hook. The hook is the same deny-rm PreToolUse hook that a laptop worker gets (claude-factory-cr6, claude-factory-99d).
  * The VM image runs its own copy of `worker-hook.ts`, at `${ax.FACTORY_DIR}/src/worker-hook.ts`.
  */
-export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: string[]) {
+export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: string[], branches?: string[]) {
   if (process.env.FACTORY_LEAN === '0') return []
   const settings = {
     autoMemoryEnabled: false,
@@ -1259,7 +1267,9 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
     autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
     disableBundledSkills: true,
     hooks: {
-      PreToolUse: [denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts)],
+      PreToolUse: [
+        denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches),
+      ],
     },
   }
   return [
@@ -1497,13 +1507,14 @@ export const workerSettings = (
   maxContextK: number,
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
   personOnly?: string[],
+  branches?: string[],
 ) => {
   const ste = Object.entries(user.enabledPlugins ?? {}).filter(([k, v]) => v && k.startsWith('asd-ste100@'))
   const hooks: Record<string, unknown[]> = {
     ...user.hooks,
     PreToolUse: [
       ...(user.hooks?.PreToolUse ?? []),
-      denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly),
+      denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly, branches),
     ],
   }
   return {
@@ -1551,14 +1562,17 @@ export const commitIdentity = (home: string) => {
 export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSearch,ToolSearch,Skill'
 
 /**
- * the flags that give a Claude worker its own settings, system prompt and tools; FACTORY_LEAN=0 turns them off.
- * A rig with `personOnlyContexts` gets its own `worker-settings-<rig.name>.json` (claude-factory-25z):
- * one shared `worker-settings.json` for every rig's launch would let another rig's launch, which writes
- * the same file with no argv, overwrite this rig's hook argv before its own worker reads it.
+ * These flags give a Claude worker its own settings, system prompt and tools.
+ * FACTORY_LEAN=0 turns them off.
+ * A rig with `personOnlyContexts` or `protectedBranches` gets its own file, `worker-settings-<rig.name>.json`
+ * (claude-factory-25z, claude-factory-zl5).
+ * Without this, every rig would share one `worker-settings.json`.
+ * A launch for a different rig writes that shared file with no argv.
+ * It would overwrite this rig's hook argv before this rig's worker reads it.
  */
 export function workerFlags(
   def: Pick<Factory, 'maxContextK'>,
-  rig?: Pick<Rig, 'name' | 'personOnlyContexts'>,
+  rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches'>,
   home = HOME,
 ) {
   if (process.env.FACTORY_LEAN === '0') return ` --settings '${JSON.stringify(withoutFleet())}'`
@@ -1569,8 +1583,12 @@ export function workerFlags(
     // no user settings: nothing to carry over
   }
   const contexts = personOnlyContexts(rig)
-  const file = join(home, contexts?.length ? `worker-settings-${rig!.name}.json` : 'worker-settings.json')
-  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts)
+  const branches = protectedBranches(rig)
+  const file = join(
+    home,
+    contexts?.length || branches?.length ? `worker-settings-${rig!.name}.json` : 'worker-settings.json',
+  )
+  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches)
   const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
   const prompt = join(home, 'worker-system.md')
@@ -4157,6 +4175,13 @@ export type Rig = {
    * It also refuses one that names no context at all (fail closed).
    */
   personOnlyContexts?: string[]
+  /**
+   * branches, over main and master, that only a person may push here (claude-factory-zl5).
+   * Set them with `factory rig add --protected-branch <b>` (repeatable).
+   * A worker's deny hook refuses a `git push` to one of these branches, or to the branch
+   * `origin/HEAD` names, no matter what this list holds.
+   */
+  protectedBranches?: string[]
   /** opts this rig into the Linear pull loop (claude-factory-b6c).
    * It names the rig's team(s).
    * It also names the project and label names that route an issue to it (claude-factory-b6c.18). */
@@ -4252,6 +4277,11 @@ const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
   Array.isArray(rig?.personOnlyContexts) && rig.personOnlyContexts.every(c => typeof c === 'string')
     ? rig.personOnlyContexts
+    : undefined
+/** `rig.protectedBranches`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
+const protectedBranches = (rig?: Pick<Rig, 'protectedBranches'>): string[] | undefined =>
+  Array.isArray(rig?.protectedBranches) && rig.protectedBranches.every(b => typeof b === 'string')
+    ? rig.protectedBranches
     : undefined
 const expand = (path: string) => resolve(path.replace(/^~(?=\/|$)/, homedir()))
 const toplevel = (path: string) => git(expand(path), 'rev-parse', '--show-toplevel')
@@ -5327,6 +5357,7 @@ async function defineRig(
     params,
     egress,
     personOnlyContext,
+    protectedBranch,
     linear,
     linearProjects,
     linearLabels,
@@ -5340,6 +5371,7 @@ async function defineRig(
     params?: string[]
     egress?: string[]
     personOnlyContext?: string[]
+    protectedBranch?: string[]
     linear?: string
     linearProjects?: string
     linearLabels?: string
@@ -5413,6 +5445,11 @@ async function defineRig(
     if (bad.length)
       fail(`--person-only-context is a kube context name, letters/digits/._@:/- (not "${bad[0]}")`)
     rig.personOnlyContexts = personOnlyContext
+  }
+  if (protectedBranch?.length) {
+    const bad = protectedBranch.filter(b => !/^[A-Za-z0-9._/-]+$/.test(b))
+    if (bad.length) fail(`--protected-branch is a branch name, letters/digits/._/- (not "${bad[0]}")`)
+    rig.protectedBranches = protectedBranch
   }
   if (linear !== undefined) {
     try {
@@ -6733,11 +6770,13 @@ if (import.meta.main && !outboxCmd)
         const personOnlyContext: string[] = []
         while (args.includes('--person-only-context'))
           personOnlyContext.push(opt('--person-only-context') ?? '')
+        const protectedBranch: string[] = []
+        while (args.includes('--protected-branch')) protectedBranch.push(opt('--protected-branch') ?? '')
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
@@ -6749,6 +6788,7 @@ if (import.meta.main && !outboxCmd)
             params,
             egress,
             personOnlyContext,
+            protectedBranch,
             linear,
             linearProjects,
             linearLabels,
@@ -6792,6 +6832,8 @@ if (import.meta.main && !outboxCmd)
             if (r.agent) console.log(`  agent: ${r.agent}`)
             if (personOnlyContexts(r)?.length)
               console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
+            if (protectedBranches(r)?.length)
+              console.log(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
             if (r.mcp) console.log(`  mcp: ${r.mcp}`)
             for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
             if (r.linear) {

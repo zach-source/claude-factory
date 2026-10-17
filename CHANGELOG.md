@@ -34,7 +34,142 @@ minor release may change the factory format, the CLI or the run state.
     started that one run.
   - `src/metrics.ts`: `fate()` returns `requeued` before `rejected`/`closed`; `shipRate` leaves it
     out of the ended-run count.
-
+- A worker can never merge or push its own default branch. Only a person's merge, through
+  auto-merge, can ship a pull request. (claude-factory-zl5)
+  - Cause: the owner's ruleset decision (2026-10-16) lets GitHub merge a pull request on
+    green through auto-merge. But admin bypass on the ruleset also lets a worker's own
+    `gh pr merge` or push skip review. `ax-aw1` found two pull requests that merged before
+    their own review ran.
+  - Fix: `implement` now opens the draft pull request (`factories/lifecycle.ts`). `review`
+    opens one only as a fallback, when none exists yet. Only `release` marks a pull request
+    ready for review. No station, `release` included, ever runs `gh pr merge`; only a person
+    merges, through GitHub's own auto-merge on green.
+  - The worker `PreToolUse` hook (`src/worker-hook.ts`) denies these commands at every other
+    station: `gh pr merge` (plain, `--auto`, `--admin`, or wrapped in `sudo`, `env`,
+    `timeout`, `watch`, `bash -lc`, or `eval`); `gh pr ready`; and the GraphQL
+    `enablePullRequestAutoMerge` and `markPullRequestReadyForReview` mutations. The hook
+    finds a mutation by name in `-f`/`-F`/`--field=`/`--raw-field=` text, or in an
+    `@file`/`--input` payload.
+  - The hook also denies `git push` to a protected branch, and a REST or GraphQL API write
+    to one. A write is `PATCH`/`DELETE .../git/refs/heads/<branch>`,
+    `PUT`/`POST`/`DELETE .../contents/<path>`, `createCommitOnBranch`, `updateRef(s)`,
+    `deleteRef`, or `git -c alias.<x>=push`. A protected branch is `main`, `master`, a rig's
+    own `protectedBranches` list, or its `origin/HEAD` target. The hook reads `origin/HEAD`
+    and the current branch live from the worktree, and denies the push when either read
+    fails: a timeout, a detached `HEAD`, or no `origin` remote.
+  - Added: `factory rig add <rig> <repo> --protected-branch <name>` (repeat the flag for
+    more than one branch). Use it for a rig whose default branch is not `main` or `master`,
+    for example `factory rig add ax ~/repos/ax --protected-branch acme-deploy`. A rig with
+    the list gets its own `worker-settings-<rig>.json` file, the same pattern the
+    `--person-only-context` flag already uses.
+  - No station, `rollback` included, pushes straight to the default branch any more.
+    `rollback` now opens a pull request that reverts the merge instead.
+  - A round-2 review found 8 more bypasses. The hook now closes each one.
+    - `gh api` now reads a `-p`/`--preview` value word. The real endpoint can no longer hide
+      behind it.
+    - `gh api` now reads a `-f`/`-F` field pair in its `-f=name=value` form. It also splits a
+      clustered short flag, such as `-iXPUT` or `-if`, into separate flags first.
+    - The hook treats `/graphql` and a full `https://.../graphql` URL the same as a bare
+      `graphql` endpoint.
+    - A `$name` or a `` `cmd` `` in a field value or a path segment now denies the command.
+      The hook reads only the command's own text. It cannot read what the shell puts there
+      later.
+    - A `git push` refspec of `@` or `head`, in any letter case, now denies the same as the
+      current branch name would. A `heads/<branch>` refspec denies the same as
+      `refs/heads/<branch>`.
+    - `git -c remote.<name>.push=<value>` and `git config remote.<name>.push <value>` now
+      deny the command outright, next to the existing `alias.<name>=push` check.
+    - `gh alias set <name> "<expansion>"` now denies the command when the expansion's own
+      text would deny it. `gh alias import` denies the command outright.
+  - A round-3 review found 5 more bypasses. The hook now closes each one too.
+    - `gh api graphql --input <file>` reads `<file>` as JSON. It checks only the `query` string
+      in that JSON for a mutation name. A raw-text scan missed a mutation name that GitHub
+      decodes from a backslash-u escape, for example `merge\u0050ullRequest` for
+      `mergePullRequest`. A body that is not correct JSON denies the command at once.
+    - The shared `normalizeEndpoint` function removes a trailing `#fragment`, then a `?query`,
+      then a `/`. Each REST and GraphQL endpoint check uses the result. The `gh` tool
+      removes a `#fragment` before it sends the request. A check that read the raw endpoint
+      text missed a path, such as `pulls/5/merge#x` or `graphql#x`.
+    - The branch-name check on a `git/refs/heads/<branch>` path captures a full branch name
+      with a slash, such as `acme/deploy`. Before, it stopped at the first slash. The check also
+      accepts the singular `git/ref/heads/` path and decodes a percent-encoded branch name. A
+      bad encoding denies the command. A `contents` write's `branch` field removes a
+      `refs/heads/` or `heads/` prefix, as the ref-create field does.
+    - `gh alias set` and `gh alias import` always deny the command. That scan read only the alias
+      expansion's own text. It missed a `!shell` expansion and the `-` stdin form. It also missed
+      a call that comes after the alias is set and adds its own words to the new alias name. For
+      example: `gh p merge 5` after `gh alias set p pr`.
+    - A `git -c alias.<name>=<value>` or `git config alias.<name> <value>` write denies all
+      values. The check no longer covers only a value that reads as a literal `push` command. It
+      also denies a `!shell` value, such as `!git push`. A new `push.default` check denies the
+      `upstream` and `tracking` values. These values change the default branch of a bare
+      `git push`, as a `remote.*.push` value does. All these checks, and the `remote.*.push`
+      check, also read the `git config set <name> <value>` syntax that git 2.46 has.
+  - A round-4 review found 1 more bypass. The hook now closes it too.
+    - `gh api` used to match a REST pattern against the raw, still-encoded path.
+      GitHub decodes the whole path first. A percent-encoded slash, such as `heads%2Fmain`,
+      has no literal slash in the raw text. So the branch-name pattern never matched it.
+      The hook now decodes the whole path once, before any REST pattern reads it.
+      A bad encoding denies the command, the same rule it already used for a branch name alone.
+  - Security's first review round found 5 more bypasses. The hook now closes each one too.
+    - `git -c push.default=matching` and any `push.default` value the hook does not know now
+      deny the command. Real git confirmed `matching` sends every local branch to a remote
+      branch of the same name, with no refspec that names any of them. Only `current`,
+      `simple` and `nothing` stay allowed.
+    - A bare `:` refspec, such as `git push origin :`, now denies the command. Real git
+      confirmed it pushes every matching branch, the same broad reach as `--all`.
+    - `xargs` right before a `git` or `gh` word now denies the command. `xargs` can read its
+      own operand from stdin, a push refspec or a `gh` verb, that the hook's own text scan
+      never sees.
+    - `git --config-env=<name>=<envvar>` now denies the same 3 config keys `-c <name>=<value>`
+      already denies (`alias.*`, `remote.*.push`, `push.default`). The hook cannot read the
+      named environment variable's own text, so it denies the write itself.
+    - `git send-pack`, the plumbing command `git push` calls, now goes through the same
+      refspec and protected-branch check as `git push` itself. It had no `push` word of its
+      own for the hook's verb search to find.
+  - A review round after security's first round found 3 sibling bypasses of those 5. The hook
+    now closes each one too.
+    - `xargs` denies on a `git` or `gh` word anywhere after it in the same segment, not only
+      the word right after `xargs`'s own flags. Real git moved `main` through a value flag
+      with its value as a separate word (`xargs -n 1 git push origin`) and a wrapper between
+      `xargs` and `git` (`xargs env git push origin`, `xargs sudo ...`, `xargs timeout 5 ...`).
+    - `git send-pack` with no ref denies the command. Real git confirmed this pushes every
+      local branch to a same-named remote branch, the same broad reach as
+      `push.default=matching`, not a push of `HEAD` alone. `--stdin` (refs read from the
+      command's own stdin) and `--mirror` (the same broad reach as `--all`, with deletes)
+      now deny outright too.
+    - `git -c remote.<name>.mirror=<value>` and `git config remote.<name>.mirror <value>` now
+      deny the command, the same as the existing `remote.*.push` check. `include.path` and
+      `includeIf.<cond>.path` deny too: either one loads another config file the hook cannot
+      read, and that file can set any key the hook already denies. The hook also denies a
+      command that sets `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`,
+      `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG`, `GIT_CONFIG_GLOBAL` or `GIT_CONFIG_SYSTEM` (a
+      plain assignment or an `export`) together with a `git` word anywhere in the command
+      text, even on a later, `;`-separated line. These environment variables replace git's
+      own config lookup outright, with no value left on the command line for the hook to
+      check.
+  - A later review found 4 more bypasses. The hook now closes each one too.
+    - `env -S '<command>'` and `env --split-string='<command>'` (also a short-flag cluster
+      and the attached `-S'<command>'` form) now deny the command. BSD and GNU `env` split
+      `<command>` into words and run it, the same hazard as `eval`. The hook now reads that
+      value and checks it the same way it checks an `eval` or `sh -c` argument.
+    - A dashed git-core binary name, such as `git-push` or `git-send-pack`, now denies the
+      same way `git push` or `git send-pack` does. It runs the same code, found on `PATH`
+      or under `git --exec-path`, with no `git` word anywhere in the command line.
+    - The check that denies a `GIT_CONFIG_*` environment variable paired with a `git` word
+      used to read only one segment's own first word, past wrapper-stripping. Real git moved
+      `main` through `nice -n 5 git push origin`, `command -p git push origin`,
+      `stdbuf -o0 git push origin`, and the same pairing behind an `eval` or `bash -c`
+      argument. The check now reads a `git` word anywhere in the full raw command text.
+    - `HOME=<dir>` and `XDG_CONFIG_HOME=<dir>` now deny the command when paired with a `git`
+      word, the same as `GIT_CONFIG_GLOBAL`: git reads `$HOME/.gitconfig` and
+      `$XDG_CONFIG_HOME/git/config` as its own global config. `GIT_DIR=<dir>` and
+      `GIT_COMMON_DIR=<dir>` deny the same way: each one points git at a different
+      repository's config file.
+  - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
+    non-`main` default branch stays unprotected until a person adds it with
+    `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
+    only after a person rebuilds and pushes its worker image (`hack/push-worker.sh`).
 - `factory gc --worktrees` now reclaims a merged `factory/*` branch on a rig with 1000 or more
   pull requests. `prFacts()` used to call `gh pr list --limit 1000`. A rig with more pull
   requests than the cap always read as facts-unavailable. So gc never removed a branch on a
