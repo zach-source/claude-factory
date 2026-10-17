@@ -1132,6 +1132,7 @@ function actions($: EngineInterface): Actions {
 export const register: Register = (on, options) => {
   rt.isAutopilot = options.autopilot !== false
   rt.isPmEnabled = options.pm !== false
+  rt.isBrieferEnabled = options.briefer !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -1174,6 +1175,21 @@ export const register: Register = (on, options) => {
         omitClaudeMd: true,
       })
       .catch(err => $.ui.status(`factory: could not register the pm agent: ${line(String(err), 160)}`))
+    await $.agent
+      .register({
+        name: 'briefer',
+        description:
+          "The factory manager's hidden briefer: writes an evidence brief into a gate's decision item, once for each gate visit.",
+        prompt: BRIEFER(),
+        // No tool at all, the same reason the pm has none (claude-factory-dun.10): nobody vets a
+        // pull request's title or a run's journal text. With Bash, that text can make the briefer
+        // run `gh` or a `factory` verb of its own, instead of only reading the facts it got.
+        tools: [],
+        model: 'sonnet',
+        maxTurns: 3,
+        omitClaudeMd: true,
+      })
+      .catch(err => $.ui.status(`factory: could not register the briefer agent: ${line(String(err), 160)}`))
     return next(e)
   })
 
@@ -1296,6 +1312,8 @@ export const register: Register = (on, options) => {
   on('agent.offer', { agent: PATROL_TYPE }, () => ({ isOffered: false }))
   // same, for the pm: only pmNow's own `$.agent.spawn` of PM_TYPE starts it
   on('agent.offer', { agent: PM_TYPE }, () => ({ isOffered: false }))
+  // same, for the briefer: only briefNow's own `$.agent.spawn` of BRIEFER_TYPE starts it
+  on('agent.offer', { agent: BRIEFER_TYPE }, () => ({ isOffered: false }))
 
   // Clears patrolNow's one-at-a-time guard once the subagent's own turn ends, win or not. The
   // watchdog in patrolNow also clears it, for a turn that never completes.
@@ -1412,6 +1430,64 @@ export const register: Register = (on, options) => {
         $.ui.status(`factory: failed to write the pm log: ${line(String(err), 160)}`)
       }
     }
+
+    // This clears briefNow's one-at-a-time guard once the briefer's own turn ends, win or not.
+    // It uses the same agentId check the pm's own branch above uses for a mod test. A briefer
+    // turn touches neither `rt.isPlanning` nor `rt.isPatrolling`. The three subagents run apart
+    // from each other.
+    //
+    // On a match, this writes the whole answer to `<home>/gate-brief-answer.txt`. It then runs
+    // `factory gate-brief set <key> <file>` on that answer. `rt.briefKey` holds the key; this
+    // code reads it before the state below clears it. `gate-brief set` cleans and clips the
+    // text itself (`gatebrief.clipBrief`). This hook trusts the CLI for that step. It does not
+    // trust the model's own claim of 8 lines.
+    if (
+      rt.isBriefing &&
+      e.agentId &&
+      (e.agentId === rt.briefId ||
+        (rt.briefId === undefined &&
+          !rt.briefIds.includes(e.agentId) &&
+          (await isBrieferAgent($, e.agentId))))
+    ) {
+      const key = rt.briefKey
+      rt.isBriefing = false
+      rt.briefId = undefined
+      rt.briefKey = undefined
+      rt.briefStartedAt = undefined
+      const base = {
+        at: await $.clock.now(),
+        key: key ?? '',
+        agentId: e.agentId,
+        reason: e.reason,
+        durationMs: e.durationMs,
+        tokens: e.usage ? e.usage.input_tokens + e.usage.output_tokens : undefined,
+      }
+      let entry: FactoryBriefLogEntry
+      if (!key) {
+        entry = { ...base, error: 'no gate key for this briefer turn' }
+      } else if (!rt.home) {
+        entry = { ...base, error: 'no factory home yet' }
+      } else if (!e.answer.trim()) {
+        entry = { ...base, error: "the briefer's answer was empty" }
+      } else {
+        const answerPath = `${rt.home}/gate-brief-answer.txt`
+        try {
+          await $.fs.write(answerPath, e.answer)
+          const { isOk, out } = await factory($, ['gate-brief', 'set', key, answerPath])
+          entry = isOk ? base : { ...base, error: line(out, 300) }
+        } catch (err) {
+          entry = { ...base, error: line(String(err), 300) }
+        }
+      }
+      // a write failure here must not skip next(e): isBriefing is already cleared above, so the
+      // next briefer turn still runs either way (mirrors the pm log's own try/catch above)
+      try {
+        await appendBriefLog($, entry)
+        if (entry.error) $.ui.status(`factory: the briefer turn failed: ${line(entry.error, 160)}`)
+      } catch (err) {
+        $.ui.status(`factory: failed to write the brief log: ${line(String(err), 160)}`)
+      }
+    }
     return next(e)
   })
 
@@ -1420,8 +1496,8 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'task-notification') {
       const id = e.text.match(/<task-id>([^<]+)<\/task-id>/)?.[1]
-      if (id && (rt.patrolIds.includes(id) || rt.pmIds.includes(id)))
-        return { drop: "a patrol or pm subagent's own task-notification" }
+      if (id && (rt.patrolIds.includes(id) || rt.pmIds.includes(id) || rt.briefIds.includes(id)))
+        return { drop: "a patrol, pm or briefer subagent's own task-notification" }
     }
     return next(e)
   })
