@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import type { PrState } from './prs'
 
 // A factory's shared memory: what its workers learned, tiered so a brief stays short and a search finds
 // the rest.
@@ -126,8 +127,9 @@ export function citesTracker(text: string): string | null {
   return null
 }
 
-/** Is `v` a value gate() accepts for --until: a bead id, "owner/repo#N", a GitHub pull URL, or a real
- * YYYY-MM-DD calendar date (checked by round-tripping through Date, so "2026-02-30" fails)? */
+/** Check that `v` is a valid --until value for gate(). gate() accepts a bead id, "owner/repo#N", a
+ * GitHub pull URL, or a real YYYY-MM-DD calendar date. This checks a date by converting it to a Date
+ * object and back. So a fake date, such as "2026-02-30", fails. */
 export const isUntil = (v: string): boolean => {
   if (BEAD_ID_FULL_RE.test(v)) return true
   if (/^[\w.-]+\/[\w.-]+#\d+$/.test(v)) return true
@@ -140,6 +142,99 @@ export const isUntil = (v: string): boolean => {
     d.getUTCMonth() + 1 === Number(m[2]) &&
     d.getUTCDate() === Number(m[3])
   )
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+const PR_URL_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/
+/** Convert "owner/repo#N" or a GitHub pull URL to the GitHub pull URL form. Return null when `v` is
+ * neither. untilStatus() looks up a PR only by this URL form. A note can use either spelling.
+ * isUntil() accepts both. So this conversion makes both spellings resolve to the same lookup. */
+const prUrlOf = (v: string): string | null => {
+  if (PR_URL_RE.test(v)) return v
+  const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(v)
+  return m ? `https://github.com/${m[1]}/pull/${m[2]}` : null
+}
+
+/** The lookups that a caller gives to untilStatus(). Each lookup turns an `until` bead id or PR ref
+ * into its current status.
+ *
+ * The `bead` field takes a bead id. It returns 'closed', 'open', or null when bd finds no such bead.
+ * It can throw when bd is down or times out.
+ *
+ * The `pr` field takes a PR URL. It returns the PR state, or null. It can throw too.
+ *
+ * Both fields are optional. If a caller omits a field, untilStatus() returns 'unknown' with the reason
+ * "no lookup". So untilStatus() never guesses a wrong verdict. */
+export type UntilDeps = {
+  bead?: (id: string) => 'closed' | 'open' | null
+  pr?: (url: string) => PrState | null
+}
+
+/** The verdict of untilStatus(). 'ended' retires the note, and 'live' keeps it.
+ * 'unknown' flags the note. A lookup failed, or did not run. 'unknown' never retires the note. */
+export type UntilStatus =
+  { state: 'ended'; reason: string } | { state: 'live' } | { state: 'unknown'; reason: string }
+
+/**
+ * Give the verdict for one note's `until` marker (FR-016). This function checks three things: whether
+ * the bead that the marker names has closed, whether the PR that the marker names has merged or closed,
+ * and whether the date that the marker names has passed.
+ *
+ * This function takes `now` and `deps` as arguments. So it reads no file and no real clock. Only
+ * `deps.bead` and `deps.pr` can throw or do I/O. This function wraps both calls in try/catch.
+ *
+ * This function checks isUntil() first. A note's `until` field is free text on disk. A person, or a bad
+ * dream edit, can change it by hand. So this function never trusts a value only because gate() checked
+ * it once, at write time.
+ *
+ * A failed lookup always returns 'unknown'. This also applies to a value with no dependency to check it.
+ * It never returns 'ended'.
+ *
+ * This rule also applies to an unreachable tracker, for example a deleted bead, another forge, or bd or
+ * gh when they are down. The edge-case rule at spec.md:120 says a note must never retire by accident.
+ *
+ * Each reason uses fixed text. The code never adds a thrown error's message, a raw URL query, or any other
+ * value that can hold a secret.
+ */
+export function untilStatus(until: string, now: number, deps: UntilDeps = {}): UntilStatus {
+  if (!isUntil(until)) return { state: 'unknown', reason: 'not a valid until value' }
+
+  const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(until)
+  if (dm) {
+    // This date ends at 00:00Z on the next day. A note dated today (UTC) stays live through today.
+    const endMs = Date.parse(`${until}T00:00:00Z`) + DAY_MS
+    return now >= endMs ? { state: 'ended', reason: `date ${until} passed` } : { state: 'live' }
+  }
+
+  if (BEAD_ID_FULL_RE.test(until)) {
+    if (!deps.bead) return { state: 'unknown', reason: 'no lookup' }
+    let status: 'closed' | 'open' | null
+    try {
+      status = deps.bead(until)
+    } catch {
+      return { state: 'unknown', reason: `bead ${until} lookup failed` }
+    }
+    if (status === null) return { state: 'unknown', reason: `bead ${until} not found` }
+    return status === 'closed' ? { state: 'ended', reason: `bead ${until} closed` } : { state: 'live' }
+  }
+
+  const url = prUrlOf(until)
+  if (url) {
+    if (!deps.pr) return { state: 'unknown', reason: 'no lookup' }
+    let state: PrState | null
+    try {
+      state = deps.pr(url)
+    } catch {
+      return { state: 'unknown', reason: `PR ${until} lookup failed` }
+    }
+    if (state === 'MERGED') return { state: 'ended', reason: `PR ${until} merged` }
+    if (state === 'CLOSED') return { state: 'ended', reason: `PR ${until} closed` }
+    if (state === 'OPEN') return { state: 'live' }
+    return { state: 'unknown', reason: `PR ${until} lookup failed` } // null or 'UNKNOWN'
+  }
+
+  return { state: 'unknown', reason: 'not a valid until value' }
 }
 
 export type GateResult = { ok: true } | { ok: false; flag: '--kind' | '--until'; reason: string }
@@ -810,7 +905,6 @@ export const usageLines = (dir: string) => {
 // Tiering, after each dream: a pure function picks what to merge, archive, promote or flag as a possible
 // duplicate. It reads no file and no clock. The caller gathers every input from the real store
 // (applyTiers does that). Because it is pure, a test can hit every boundary with a table and no fixture dir.
-const DAY_MS = 24 * 60 * 60 * 1000
 const MERGE_AGE_DAYS = 7 // a short note waits this long before it can merge: a fresh note may still be wrong
 const ARCHIVE_STALE_DAYS = 30 // never shown or helped in this long, and this old: a candidate to archive
 const ARCHIVE_NEW_DAYS = 14 // never shown at all, and this old: a candidate too, once usage history is old enough to trust "never shown"
@@ -825,7 +919,7 @@ const PROMOTE_RUNS = 3 // ...across at least this many distinct runs, becomes a 
 // the tier pass cannot (claude-factory-3u1.1.3).
 export const TOPIC_CAP = 15
 
-/** a short topic note (never inbox/*), with what decide() needs to judge it */
+/** a short topic note (never inbox/*); what decide() needs to judge it */
 export type ShortCandidate = {
   path: string
   topic: string
@@ -834,6 +928,11 @@ export type ShortCandidate = {
   staleDays: number // since it was last shown or helped; ageDays when it never was
   shown: number
   helped: number
+  // applyTiers() sets these three fields from untilStatus() before it calls decide(); decide() itself
+  // never calls untilStatus(), so it stays pure and a table test can set them with no fixture or lookup
+  expired?: boolean // true when untilStatus() says the until marker ended: decide() retires the note
+  expiredReason?: string // untilStatus()'s reason; decide() copies it onto the retire decision
+  untilFlag?: string // untilStatus()'s unknown reason: decide() flags the note, but never retires it
 }
 /** a LONG.md entry, with what decide() needs to judge it */
 export type LongCandidate = { path: string; helped: number; runs: number }
@@ -846,10 +945,21 @@ export type Decision =
   | { kind: 'held'; path: string; reason: string }
   | { kind: 'promote'; path: string; reason: string }
   | { kind: 'dedupe'; a: string; b: string; reason: string }
+  | { kind: 'retire'; path: string; reason: string }
+  | { kind: 'flag'; path: string; reason: string }
 
 /**
  * The tier pass creates a plan. The plan uses no file and no clock. A table test covers each
  * boundary: 7, 14 and 30 days; 3 helps or runs; the cap.
+ *
+ * A note with `n.expired` set gets a `retire` decision (FR-016). This check runs right after the
+ * superseded check, and before every other rule. It holds at any age and any shown/helped count.
+ * Superseded still wins over expired.
+ *
+ * A note with `n.untilFlag` set gets a `flag` decision. Every other rule still runs for it. A flag
+ * never blocks an archive, a merge, or a retire. The archive cap below treats a retire the same as
+ * an archive. The topic cap below treats a flag like a promote or a dedupe: none of the three count
+ * as a decision there.
  *
  * `opts.historyDays` sets how far back the usage log goes.
  * Below ARCHIVE_NEW_DAYS (14 days), decide() does not use either usage-based archive rule.
@@ -892,6 +1002,14 @@ export function decide(
       decisions.push({ kind: 'archive', path: n.path, reason: `superseded by ${n.superseded}` })
       continue
     }
+    // FR-016: a note whose until marker ended retires now, at any age and any shown/helped count.
+    // This runs right after the superseded check, so superseded still wins when both apply.
+    if (n.expired) {
+      decisions.push({ kind: 'retire', path: n.path, reason: n.expiredReason ?? 'until marker ended' })
+      continue
+    }
+    // untilFlag never retires or archives the note by itself; every other rule below still runs
+    if (n.untilFlag) decisions.push({ kind: 'flag', path: n.path, reason: n.untilFlag })
     if (historyDays >= ARCHIVE_NEW_DAYS && n.helped === 0 && n.staleDays >= ARCHIVE_STALE_DAYS) {
       decisions.push({
         kind: 'archive',
@@ -926,13 +1044,14 @@ export function decide(
     if (s.score >= SAME)
       decisions.push({ kind: 'dedupe', a: s.a, b: s.b, reason: `similarity ${s.score.toFixed(2)}` })
 
-  // the archive cap: the oldest decisions (by the note's ageDays) keep their `archive` kind; the rest
-  // of this pass's archive decisions become `held`, so nothing past the cap is ever written this pass.
-  type ArchiveDecision = Extract<Decision, { kind: 'archive' }>
+  // the archive cap: the oldest decisions (by the note's ageDays) keep their `archive` or `retire`
+  // kind; the rest of this pass's archive/retire decisions become `held`, so nothing past the cap is
+  // ever written this pass. A retire shares the same cap as archive (AC7): both remove a short note.
+  type CappedDecision = Extract<Decision, { kind: 'archive' | 'retire' }>
   const ageOf = new Map(short.map(n => [n.path, n.ageDays]))
-  const overCap: { d: ArchiveDecision; i: number }[] = []
+  const overCap: { d: CappedDecision; i: number }[] = []
   decisions.forEach((d, i) => {
-    if (d.kind === 'archive') overCap.push({ d, i })
+    if (d.kind === 'archive' || d.kind === 'retire') overCap.push({ d, i })
   })
   overCap.sort((x, y) => {
     const diff = (ageOf.get(y.d.path) ?? 0) - (ageOf.get(x.d.path) ?? 0)
@@ -946,7 +1065,9 @@ export function decide(
   // decisions for its oldest still-undecided notes, until it is at the cap or no candidate is left.
   if (Number.isFinite(topicCap)) {
     const decided = new Set(
-      decisions.filter(d => d.kind !== 'promote' && d.kind !== 'dedupe').map(d => d.path),
+      decisions
+        .filter(d => d.kind !== 'promote' && d.kind !== 'dedupe' && d.kind !== 'flag')
+        .map(d => d.path),
     )
     const byTopic = new Map<string, ShortCandidate[]>()
     for (const n of short) {
@@ -955,7 +1076,9 @@ export function decide(
     }
     for (const [topic, topicNotes] of byTopic) {
       const removed = decisions.filter(
-        d => (d.kind === 'merge' || d.kind === 'archive') && topicNotes.some(n => n.path === d.path),
+        d =>
+          (d.kind === 'merge' || d.kind === 'archive' || d.kind === 'retire') &&
+          topicNotes.some(n => n.path === d.path),
       ).length
       let left = topicNotes.length - removed
       if (left <= topicCap) continue
@@ -992,8 +1115,9 @@ export function planLines(
   const count = (kind: Decision['kind']) => decisions.filter(d => d.kind === kind).length
   const describe = (d: Decision) => ('path' in d ? d.path : `${d.a} ~ ${d.b}`)
   const header =
-    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('held')} held ` +
-    `(cap ${opts.archiveCap}), usage history ${Math.floor(opts.historyDays)} days`
+    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('retire')} retire, ` +
+    `${count('held')} held (cap ${opts.archiveCap}), ${count('flag')} flag, ` +
+    `usage history ${Math.floor(opts.historyDays)} days`
   return [header, ...decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`)]
 }
 
@@ -1181,6 +1305,12 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
  *
  * `opts.onPlan`, when given, runs once with planLines(). It runs right after decide(), before any
  * write or rmSync, and on a dry run too. This way, the plan a caller logs always matches what ran.
+ *
+ * `opts.untilDeps` (claude-factory-3u1.1.4) feeds untilStatus() for each short note's `until`
+ * marker. applyTiers() always checks a date marker with untilStatus(). It checks a bead or PR
+ * marker only when the caller passes `opts.untilDeps`. With no `untilDeps` at all, a bead or PR
+ * note gets no verdict and no flag. So a caller that skips `untilDeps` keeps the output it had
+ * before this feature.
  */
 export function applyTiers(
   dir: string,
@@ -1189,6 +1319,7 @@ export function applyTiers(
     dryRun?: boolean
     archiveCap?: number
     topicCap?: number
+    untilDeps?: UntilDeps
     onPlan?: (lines: string[]) => void
   } = {},
 ) {
@@ -1198,6 +1329,7 @@ export function applyTiers(
   const historyDays = usageHistoryDays(dir, now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
   const topicCap = opts.topicCap ?? envTopicCap()
+  const isDateUntil = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v)
   const short: ShortCandidate[] = notes
     .filter(n => n.tier === 'short' && topicOf(n) !== 'inbox')
     .map(n => {
@@ -1205,6 +1337,10 @@ export function applyTiers(
       const createdMs = Number.isFinite(atMs) ? atMs : (gitAddedMs(dir, n.path) ?? now)
       const u = uses.get(n.path)
       const lastMs = u?.at || createdMs
+      // a date marker is always judged; a bead or PR marker only when the caller gave untilDeps
+      // (AC8): this keeps a caller that never passes untilDeps free of any new verdict or flag.
+      const until = n.until && (isDateUntil(n.until) || opts.untilDeps) ? n.until : undefined
+      const verdict = until ? untilStatus(until, now, opts.untilDeps ?? {}) : null
       return {
         path: n.path,
         topic: topicOf(n),
@@ -1213,6 +1349,9 @@ export function applyTiers(
         staleDays: (now - lastMs) / DAY_MS,
         shown: u?.shown ?? 0,
         helped: u?.helped ?? 0,
+        expired: verdict?.state === 'ended',
+        expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
+        untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
       }
     })
   const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap })
@@ -1226,12 +1365,13 @@ export function applyTiers(
   const skipped: { topic: string; reason: string }[] = []
   let merged = 0
   let archived = 0
+  let retired = 0
   // one topic's remaining short-note count drops by one for every merge this pass writes to disk
-  // (not one a skipped, unsafe LONG.md held back) and every archive; overCap below reads this.
+  // (not one a skipped, unsafe LONG.md held back) and every archive or retire; overCap below reads this.
   const removedByTopic = new Map<string, number>()
   const removeOne = (topic: string) => removedByTopic.set(topic, (removedByTopic.get(topic) ?? 0) + 1)
   for (const d of decisions) {
-    if (d.kind !== 'merge' && d.kind !== 'archive') continue
+    if (d.kind !== 'merge' && d.kind !== 'archive' && d.kind !== 'retire') continue
     const note = notes.find(n => n.path === d.path)
     if (!note) continue
     if (d.kind === 'merge') {
@@ -1277,7 +1417,10 @@ export function applyTiers(
       renamed[note.path] = `${topic}/LONG.md#${id}`
       rewriteReadmeLink(dir, topic, note.path, `LONG.md#${id}`)
     } else {
-      archived++
+      // archive and retire write the same way (AC8): a retire is an archive whose reason is an
+      // ended until marker. Only the counter differs, so a caller can tell the two apart.
+      if (d.kind === 'retire') retired++
+      else archived++
       const topic = topicOf(note)
       removeOne(topic)
       if (opts.dryRun) continue
@@ -1291,9 +1434,12 @@ export function applyTiers(
       )
       rmSync(join(dir, note.path))
       rewriteReadmeLink(dir, topic, note.path, `../.archive/${topic}.md`)
-      // no rename logged: decide() never archives a helped note, so no helped count is owed here
+      // no rename logged: a superseded archive or a retire can drop a note at any helped count
+      // (FR-016), so there is no helped count here to keep. Only the "never helped, stale" archive
+      // rule requires helped === 0.
     }
   }
+  const flagged = decisions.filter(d => d.kind === 'flag').length
   const held = decisions.filter(d => d.kind === 'held').length
   const totalByTopic = new Map<string, number>()
   for (const n of short) totalByTopic.set(n.topic, (totalByTopic.get(n.topic) ?? 0) + 1)
@@ -1301,7 +1447,20 @@ export function applyTiers(
     new Map([...totalByTopic].map(([t, c]) => [t, c - (removedByTopic.get(t) ?? 0)])),
     topicCap,
   )
-  return { decisions, renamed, merged, archived, held, skipped, archiveCap, historyDays, topicCap, overCap }
+  return {
+    decisions,
+    renamed,
+    merged,
+    archived,
+    retired,
+    flagged,
+    held,
+    skipped,
+    archiveCap,
+    historyDays,
+    topicCap,
+    overCap,
+  }
 }
 
 /** where the manager's skills live: in the memory, so the dream grooms them and git keeps every version */
