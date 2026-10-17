@@ -6,6 +6,7 @@ import {
   gcPlan,
   LAUNCH_MIN_AGE_MS,
   parsePrPages,
+  scrubUrlUserinfo,
   worktreePlan,
   WORKTREE_MIN_AGE_MS,
   type BranchFact,
@@ -204,7 +205,9 @@ test('3: unmerged with no PR keeps the branch, but still removes the worktree', 
 
 test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the merge is kept', () => {
   const runs = [ref('r1', 'done'), ref('r2', 'done')]
-  const prs: PrFact[] = [{ state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa' }]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const r1 = rigFacts({
     worktrees: [],
     branches: [branch('factory/r1', { local: 'aaa', remote: 'aaa' })],
@@ -213,7 +216,9 @@ test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the mer
   expect(planOf(r1, runs).removeBranches).toEqual([
     { runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'aaa' },
   ])
-  const prs2: PrFact[] = [{ state: 'MERGED', headRefName: 'factory/r2', headRefOid: 'aaa' }]
+  const prs2: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r2', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const r2 = rigFacts({
     worktrees: [],
     branches: [branch('factory/r2', { local: 'ccc', remote: 'aaa' })],
@@ -225,8 +230,8 @@ test('4: a MERGED PR whose headRefOid equals the tip deletes; a tip past the mer
 test('5: a CLOSED PR with the bead closed deletes; open or unknown bead keeps', () => {
   const runs = [ref('r1', 'done', '/wt/r1', { bead: 'b-1' }), ref('r2', 'done', '/wt/r2', { bead: 'b-2' })]
   const prs: PrFact[] = [
-    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa' },
-    { state: 'CLOSED', headRefName: 'factory/r2', headRefOid: 'aaa' },
+    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+    { state: 'CLOSED', headRefName: 'factory/r2', headRefOid: 'aaa', isCrossRepository: false },
   ]
   const rig = rigFacts({
     worktrees: [],
@@ -239,9 +244,48 @@ test('5: a CLOSED PR with the bead closed deletes; open or unknown bead keeps', 
   expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r2', name: 'factory/r2', reason: 'bead-open' })
 })
 
+test('5a: a cross-repo CLOSED PR with a closed bead never covers a tip (claude-factory-ulv)', () => {
+  const runs = [ref('r1', 'done', '/wt/r1', { bead: 'b-1' })]
+  const prs: PrFact[] = [
+    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: true },
+  ]
+  const rig = rigFacts({
+    worktrees: [],
+    branches: [branch('factory/r1')],
+    prs,
+    beadClosed: { 'b-1': true },
+  })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'unmerged' })
+})
+
+test('5b: a cross-repo MERGED PR never covers a tip (claude-factory-ulv)', () => {
+  const runs = [ref('r1', 'done')]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: true },
+  ]
+  const rig = rigFacts({ worktrees: [], branches: [branch('factory/r1')], prs })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'branch', runId: 'r1', name: 'factory/r1', reason: 'unmerged' })
+})
+
+test('5c: a same-repo MERGED PR still covers (control for 5a/5b)', () => {
+  const runs = [ref('r1', 'done')]
+  const prs: PrFact[] = [
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
+  const rig = rigFacts({ worktrees: [], branches: [branch('factory/r1')], prs })
+  const p = planOf(rig, runs)
+  expect(p.removeBranches).toEqual([{ runId: 'r1', name: 'factory/r1', local: 'aaa', remote: 'aaa' }])
+})
+
 test('6: an OPEN PR with an ancestor tip keeps', () => {
   const runs = [ref('r1', 'done')]
-  const prs: PrFact[] = [{ state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa' }]
+  const prs: PrFact[] = [
+    { state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+  ]
   const rig = rigFacts({
     worktrees: [],
     branches: [branch('factory/r1', { localMerged: true, remoteMerged: true })],
@@ -373,19 +417,21 @@ const node = (
   state: 'OPEN' | 'MERGED' | 'CLOSED',
   headRefName: string,
   headRefOid: string,
+  isCrossRepository = false,
 ) => ({
   number,
   state,
   headRefName,
   headRefOid,
+  isCrossRepository,
 })
 const pageLine = (totalCount: number, nodes: unknown[]) => JSON.stringify({ totalCount, nodes })
 
 test('parsePrPages: a single page returns every PR as a PrFact', () => {
   const stdout = pageLine(2, [node(1, 'MERGED', 'factory/r1', 'aaa'), node(2, 'OPEN', 'factory/r2', 'bbb')])
   expect(parsePrPages(stdout)).toEqual([
-    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa' },
-    { state: 'OPEN', headRefName: 'factory/r2', headRefOid: 'bbb' },
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
+    { state: 'OPEN', headRefName: 'factory/r2', headRefOid: 'bbb', isCrossRepository: false },
   ])
 })
 
@@ -402,7 +448,12 @@ test('parsePrPages: an 11-page, 1050-PR stdout returns every PR, none dropped', 
   const out = parsePrPages(pages.join('\n'))
   expect(out).not.toBeNull()
   expect(out!.length).toBe(1050)
-  expect(out).toContainEqual({ state: 'OPEN', headRefName: 'factory/r1049', headRefOid: 'sha1049' })
+  expect(out).toContainEqual({
+    state: 'OPEN',
+    headRefName: 'factory/r1049',
+    headRefOid: 'sha1049',
+    isCrossRepository: false,
+  })
 })
 
 test('parsePrPages: empty stdout (no line) returns null', () => {
@@ -433,17 +484,39 @@ test('parsePrPages: a node with a state outside OPEN/MERGED/CLOSED returns null'
 })
 
 test('parsePrPages: a node with a non-number `number` returns null', () => {
-  const bad = { number: '1', state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa' }
+  const bad = {
+    number: '1',
+    state: 'OPEN',
+    headRefName: 'factory/r1',
+    headRefOid: 'aaa',
+    isCrossRepository: false,
+  }
   expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
 })
 
 test('parsePrPages: a node with a non-string headRefName returns null', () => {
-  const bad = { number: 1, state: 'OPEN', headRefName: 7, headRefOid: 'aaa' }
+  const bad = { number: 1, state: 'OPEN', headRefName: 7, headRefOid: 'aaa', isCrossRepository: false }
   expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
 })
 
 test('parsePrPages: a node with a non-string headRefOid returns null', () => {
-  const bad = { number: 1, state: 'OPEN', headRefName: 'factory/r1', headRefOid: 7 }
+  const bad = { number: 1, state: 'OPEN', headRefName: 'factory/r1', headRefOid: 7, isCrossRepository: false }
+  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
+})
+
+test('parsePrPages: a node with a missing isCrossRepository returns null (claude-factory-ph8.4)', () => {
+  const bad = { number: 1, state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa' }
+  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
+})
+
+test('parsePrPages: a node with a non-boolean isCrossRepository returns null (claude-factory-ph8.4)', () => {
+  const bad = {
+    number: 1,
+    state: 'OPEN',
+    headRefName: 'factory/r1',
+    headRefOid: 'aaa',
+    isCrossRepository: 'false',
+  }
   expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
 })
 
@@ -457,7 +530,50 @@ test('parsePrPages: a repeated PR number across pages is deduped, not double-cou
   const p2 = pageLine(2, [node(1, 'MERGED', 'factory/r1', 'bbb'), node(2, 'OPEN', 'factory/r2', 'ccc')])
   const out = parsePrPages([p1, p2].join('\n'))
   expect(out).toEqual([
-    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'bbb' },
-    { state: 'OPEN', headRefName: 'factory/r2', headRefOid: 'ccc' },
+    { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'bbb', isCrossRepository: false },
+    { state: 'OPEN', headRefName: 'factory/r2', headRefOid: 'ccc', isCrossRepository: false },
   ])
+})
+
+test('parsePrPages: a cross-repository PR keeps isCrossRepository: true', () => {
+  const stdout = pageLine(1, [node(1, 'CLOSED', 'factory/r1', 'aaa', true)])
+  expect(parsePrPages(stdout)).toEqual([
+    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: true },
+  ])
+})
+
+// scrubUrlUserinfo() (claude-factory-0lt, AC1): removes "user:pass@" or "token@" from each URL in a
+// string, so a secret in a git remote's userinfo never lands in the gc-worktrees.jsonl journal.
+test('scrubUrlUserinfo: a user:pass@ userinfo is removed from an https URL', () => {
+  expect(scrubUrlUserinfo('https://e2e-user:e2e-tok3n@github.com/acme/widget.git')).toBe(
+    'https://github.com/acme/widget.git',
+  )
+})
+
+test('scrubUrlUserinfo: a token-only userinfo (no colon) is removed too', () => {
+  expect(scrubUrlUserinfo('https://e2e-tok3n@h/x')).toBe('https://h/x')
+})
+
+test('scrubUrlUserinfo: an ssh URL loses its git@ userinfo', () => {
+  expect(scrubUrlUserinfo('ssh://git@h/x')).toBe('ssh://h/x')
+})
+
+test('scrubUrlUserinfo: every URL in a string with 2 URLs is scrubbed', () => {
+  const text =
+    "fatal: unable to access 'https://e2e-user:e2e-tok3n@github.com/acme/widget.git/': " +
+    'also see ssh://git@h/x for details'
+  const scrubbed = scrubUrlUserinfo(text)
+  expect(scrubbed).toBe(
+    "fatal: unable to access 'https://github.com/acme/widget.git/': also see ssh://h/x for details",
+  )
+  expect(scrubbed).not.toContain('e2e-tok3n')
+  expect(scrubbed).not.toContain('e2e-user')
+})
+
+test('scrubUrlUserinfo: an scp-style remote (no scheme) is left alone', () => {
+  expect(scrubUrlUserinfo('git@github.com:acme/widget.git')).toBe('git@github.com:acme/widget.git')
+})
+
+test('scrubUrlUserinfo: plain text with no URL is unchanged', () => {
+  expect(scrubUrlUserinfo('fatal: not a git repository')).toBe('fatal: not a git repository')
 })

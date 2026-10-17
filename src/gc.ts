@@ -140,13 +140,20 @@ export type BranchFact = {
   remoteMerged: boolean
 }
 
-export type PrFact = { state: 'OPEN' | 'MERGED' | 'CLOSED'; headRefName: string; headRefOid: string }
+export type PrFact = {
+  state: 'OPEN' | 'MERGED' | 'CLOSED'
+  headRefName: string
+  headRefOid: string
+  /** a fork's pull request: its branch is not ours to have merged, so coverTip() must ignore it */
+  isCrossRepository: boolean
+}
 
 type PrPageNode = {
   number: number
   state: 'OPEN' | 'MERGED' | 'CLOSED'
   headRefName: string
   headRefOid: string
+  isCrossRepository: boolean
 }
 type PrPage = { totalCount: number; nodes: PrPageNode[] }
 
@@ -157,7 +164,10 @@ function isPrPageNode(n: unknown): n is PrPageNode {
     typeof o.number === 'number' &&
     (o.state === 'OPEN' || o.state === 'MERGED' || o.state === 'CLOSED') &&
     typeof o.headRefName === 'string' &&
-    typeof o.headRefOid === 'string'
+    typeof o.headRefOid === 'string' &&
+    // a missing or non-boolean isCrossRepository (an older `gh`, a malformed entry) must fail
+    // closed (claude-factory-ph8.4): trusting a fork PR as same-repo can cover an unmerged tip
+    typeof o.isCrossRepository === 'boolean'
   )
 }
 function isPrPage(p: unknown): p is PrPage {
@@ -178,6 +188,8 @@ function isPrPage(p: unknown): p is PrPage {
  *   wrong type (for example, a null `repository` causes this)
  * - A node's `state` is not `OPEN`, `MERGED` or `CLOSED`
  * - A node's `number` is not a number, or its `headRefName` or `headRefOid` is not a string
+ * - A node's `isCrossRepository` is missing or not a boolean (claude-factory-ph8.4): coverTip()
+ *   must never trust a fork PR's branch as ours to have merged
  * - Across all pages, the count of distinct PR numbers is less than the first page's `totalCount`
  *
  * A lost or incomplete page can hide an OPEN PR. This can make gc delete a branch that still has
@@ -199,7 +211,12 @@ export function parsePrPages(stdout: string): PrFact[] | null {
     if (!isPrPage(page)) return null
     if (totalCount === undefined) totalCount = page.totalCount
     for (const n of page.nodes) {
-      byNumber.set(n.number, { state: n.state, headRefName: n.headRefName, headRefOid: n.headRefOid })
+      byNumber.set(n.number, {
+        state: n.state,
+        headRefName: n.headRefName,
+        headRefOid: n.headRefOid,
+        isCrossRepository: n.isCrossRepository,
+      })
     }
   }
   if (totalCount === undefined || byNumber.size < totalCount) return null
@@ -253,7 +270,9 @@ const ownerOfPath = (path: string, branch: string | null, runs: RunRef[]): RunRe
  * the default branch, the headRefOid of a MERGED PR, or of a CLOSED one whose run's bead is closed */
 function coverTip(sha: string, mergedAncestor: boolean, prs: PrFact[], branch: string, beadClosed: boolean) {
   if (mergedAncestor) return 'covered' as const
-  const hit = prs.filter(p => p.headRefName === branch && p.headRefOid === sha)
+  // a cross-repo (fork) PR's branch is not ours to have merged (claude-factory-ulv): a fork branch
+  // named factory/<id> with a CLOSED PR at the tip sha must never cover it, even with the bead closed
+  const hit = prs.filter(p => !p.isCrossRepository && p.headRefName === branch && p.headRefOid === sha)
   if (hit.some(p => p.state === 'MERGED')) return 'covered' as const
   if (hit.some(p => p.state === 'CLOSED')) return beadClosed ? ('covered' as const) : ('bead-open' as const)
   return 'uncovered' as const
@@ -361,4 +380,17 @@ export function worktreePlan(
     }
     return { rig: rig.name, removeWorktrees, removeBranches, keep, owned, live, unowned }
   })
+}
+
+/** This function removes the userinfo part of each URL in `text` (claude-factory-0lt).
+ * A git error message can print the remote URL in full. A URL with a secret in its userinfo
+ * (user:pass@host, or a bare token@host) then puts that secret in cli.ts's gc-worktrees.jsonl
+ * journal.
+ *
+ * This function finds each `scheme://` in `text`, and the userinfo after it, up to the next
+ * `@`. It removes that userinfo, and it keeps the scheme and the host. It does not change an
+ * scp-style remote (git@github.com:acme/widget, with no `scheme://`). It does not change plain
+ * text with no URL. */
+export function scrubUrlUserinfo(text: string): string {
+  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, '$1')
 }

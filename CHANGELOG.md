@@ -6,6 +6,43 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `factory gc --worktrees` now reclaims a merged `factory/*` branch on a rig with 1000 or more
+  pull requests. `prFacts()` used to call `gh pr list --limit 1000`. A rig with more pull
+  requests than the cap always read as facts-unavailable. So gc never removed a branch on a
+  large rig (one real rig has about 3058 pull requests). (claude-factory-ph8)
+  - `src/cli.ts`: `prFacts()` now runs `gh api graphql --paginate` once per rig. Its query reads
+    `number`, `state`, `headRefName`, `headRefOid` and `isCrossRepository` for every pull
+    request, ordered by `CREATED_AT`. It passes `owner` and `name` with `-f`, not `-F`
+    (claude-factory-ph8.5). `-F` reads a value as a JSON type, or as a file path. So a repo
+    named `2048`, or one that starts with `@`, broke the query forever.
+  - `src/gc.ts`: new export `parsePrPages(stdout)` parses the paginated NDJSON stdout into
+    `PrFact[]`. It returns `null` on any doubt: a line that fails to parse, a wrong shape, a
+    missing or non-boolean `isCrossRepository`, or a count of distinct pull request numbers
+    under the first page's `totalCount` (a lost page).
+- `reconcile()` now has a direct test for the escalated deadline from `timeoutOf()` (`onTimeout`,
+  claude-factory-3t2). `src/remote.test.ts` sends a real `factory tick` through a timeout fail, a
+  backoff and a new spawn. The test checks the warn and fail minutes against the escalated
+  limit, not the plain `timeoutMin`. (claude-factory-9ff)
+- `factory plan facts` failures now back off and log, the same as a failed spawn. The old
+  code retried every 60 s forever and wrote no log, even with `bd` down. (claude-factory-4hb)
+  - `mod/hooks/register.tsx`: the facts-failed branch in `pmNow()` now:
+    - runs `rt.pmFailures += 1`
+    - waits `pmRetryDelay(rt.pmFailures)` (60 s doubling, capped at 60 min), not the fixed
+      60 s `PM_RETRY_MS` (removed)
+    - adds a `pm-log.jsonl` entry `{ reason: 'facts-failed', error }`, the same shape as the
+      two spawn-failed sites
+- `factory gc --worktrees` no longer journals a secret from a remote URL's userinfo
+  (`user:pass@` or a bare `token@`). A failed `git push` or `git worktree remove` can print the
+  URL in its stderr. That stderr line used to reach `HOME/gc-worktrees.jsonl` unscrubbed.
+  (claude-factory-0lt)
+  - `src/gc.ts`: new export `scrubUrlUserinfo(text)`. It removes the userinfo part of each
+    `scheme://` URL in `text`. It leaves an scp-style remote (`git@github.com:acme/widget`) alone.
+  - `src/cli.ts`: `gcLog()` now scrubs every string value of its entry with
+    `scrubUrlUserinfo()`, before it writes the journal line. This covers arrays and objects too.
+    `reviveWorktree`'s `ls-remote` and `fetch` calls now also run with `GIT_NETWORK_ENV`
+    (`GIT_TERMINAL_PROMPT=0`) and the `GIT_NETWORK_TIMEOUT_MS` timeout (still 30 s), the same as
+    every other network-reaching git call in this file. A stuck credential prompt now fails fast
+    instead of waiting out the timeout.
 - `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
   `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
   path. `memory compact` now removes such a usage line. (claude-factory-5o7)
