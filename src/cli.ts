@@ -53,12 +53,13 @@ import {
   goalOf,
   hasBeads,
   isOwned,
+  LABEL,
   parentOf,
   stationOf,
   type Bead,
 } from './beads'
 import * as plan from './plan'
-import { dueSweeps, sweepGoal, sweepNames, type SweepState } from './sweeps'
+import { dueSweeps, sweepGoal, sweepGuard, sweepNames, type SweepState } from './sweeps'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
@@ -4334,6 +4335,35 @@ async function dispatch() {
           error: 'Linear label strip unresolved: dispatch held back until the retry confirms it',
         })
         continue
+      }
+      // the flood guard (claude-factory-8pc.5), before b.ready(): a deferred or unlabeled bead must
+      // never show up as ready work this same pass
+      try {
+        const all = b.every()
+        for (const v of sweepGuard(all, Date.now())) {
+          const current = all.find(x => x.id === v.id)
+          if (!current) continue
+          const hasFactory = !!current.labels?.includes(LABEL)
+          const hasStationLabel = !!current.labels?.includes(`sweep:${v.station}`)
+          try {
+            if (!v.kept) {
+              if (!hasFactory && current.status === 'deferred') continue // already done, a prior pass
+              b.defer(
+                v.id,
+                `sweep flood guard: rig ${rig.name} already has 5 sweep-filed beads in the last 24h`,
+              )
+              if (hasFactory) b.relabel(v.id, { remove: [LABEL] })
+            } else {
+              const add = hasStationLabel ? [] : [`sweep:${v.station}`]
+              const remove = v.allowed || !hasFactory ? [] : [LABEL]
+              if (add.length || remove.length) b.relabel(v.id, { add, remove })
+            }
+          } catch (err) {
+            errors.push({ id: v.id, error: (err as Error).message })
+          }
+        }
+      } catch (err) {
+        errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
       }
       const ready = b.ready()
       // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it

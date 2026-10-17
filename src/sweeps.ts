@@ -26,6 +26,59 @@ export type LiveRun = { repo: string; goal: string }
  *
  * `liveRuns` must already exclude done and aborted runs: this function only matches repo and goal.
  */
+const SWEEP_FILER = /^factory\/sweeps-[^/]+\/([^/]+)$/
+
+/** Reads the sweep station that filed a bead, from its `created_by` field. A sweep run's actor
+ * looks like `factory/sweeps-<run>/maintain` (beads.ts's `actorOf`, plus `/<station>`). This
+ * returns undefined for a bead a person created, or for a bead any other kind of run created. */
+export const sweepFiler = (b: { created_by?: string }): string | undefined =>
+  SWEEP_FILER.exec(b.created_by ?? '')?.[1]
+
+/** A kept, sweep-filed bead carrying one of these labels starts on its own, past the flood guard
+ * (claude-factory-8pc.5): an incident, a red main-branch CI run, or a critical security advisory. */
+export const SWEEP_QUEUE_LABELS = [
+  'sweep-queue:incident',
+  'sweep-queue:main-ci-red',
+  'sweep-queue:critical-advisory',
+]
+
+export type GuardedBead = { id: string; created_by?: string; created_at?: string; labels?: string[] }
+export type GuardVerdict = { id: string; station: string; kept: boolean; allowed: boolean }
+
+/**
+ * This is the flood guard (claude-factory-8pc.5). At most `cap` (default 5) sweep-filed beads per
+ * rig stay inside any rolling `windowMs` (default 24h) window. It keeps the oldest ones first, by
+ * `created_at`. `beads` is one rig's full bead list. Only beads a sweep pass filed (`sweepFiler`)
+ * appear in the result. The caller must leave every other bead alone: a person's, or another run's.
+ *
+ * `kept` false means the bead is past the cap: the caller must defer it and strip its `factory`
+ * label. `kept` true and `allowed` false means the bead is inside the cap, but carries no allowed
+ * `sweep-queue:*` label: the caller must still strip `factory` (it then waits for a person to queue
+ * it by hand). `kept` and `allowed` both true means the caller must leave `factory` alone, so
+ * dispatch starts the bead as before.
+ */
+export function sweepGuard(
+  beads: GuardedBead[],
+  now: number,
+  cap = 5,
+  windowMs = 24 * 60 * 60 * 1000,
+): GuardVerdict[] {
+  return beads
+    .flatMap(b => {
+      const station = sweepFiler(b)
+      return station ? [{ b, station }] : []
+    })
+    .map(x => ({ ...x, at: x.b.created_at ? new Date(x.b.created_at).getTime() : 0 }))
+    .filter(x => now - x.at < windowMs)
+    .sort((a, c) => a.at - c.at)
+    .map((x, i) => ({
+      id: x.b.id,
+      station: x.station,
+      kept: i < cap,
+      allowed: i < cap && !!x.b.labels?.some(l => SWEEP_QUEUE_LABELS.includes(l)),
+    }))
+}
+
 export function dueSweeps(
   def: Factory,
   rig: { name: string; repo: string; sweeps?: string[]; slo?: string },

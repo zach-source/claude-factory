@@ -26,6 +26,9 @@ export type Bead = {
   closed_at?: string
   /** `bd linear pull` writes this to the issue's Linear URL; a person-made bead never carries one */
   external_ref?: string
+  /** the actor that created this bead: a worker writes `factory/<run>/<station>` (BEADS_ACTOR).
+   * src/sweeps.ts's `sweepFiler` reads this to find a sweep pass's own filed beads. */
+  created_by?: string
 }
 
 export const LABEL = 'factory'
@@ -225,6 +228,21 @@ export const beads = (repo: string, actor: string) => ({
     ),
   /** atomic: false when someone else holds it */
   claim: (id: string) => bd(repo, actor, 'update', id, '--claim').isOk,
+  /** adds and removes labels in one call, with no other change: the flood guard
+   * (src/sweeps.ts's `sweepGuard`) uses this to tag a kept bead `sweep:<station>` and to strip its
+   * `factory` label when it is held back, not auto-started */
+  relabel: (id: string, { add = [] as string[], remove = [] as string[] } = {}) =>
+    must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        ...add.flatMap(l => ['--add-label', l]),
+        ...remove.flatMap(l => ['--remove-label', l]),
+      ),
+      'update',
+    ),
   /**
    * a create bd itself may have lost the answer to (a timeout after the write landed): tags the attempt
    * with a token in its metadata, so a failure is checked against that token before any retry, instead of
