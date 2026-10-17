@@ -6,6 +6,11 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
+  `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
+  path. `memory compact` now removes such a usage line. (claude-factory-5o7)
+  - `src/memory.ts`: `noteExists()` for a path with no `#` now needs
+    `path.endsWith('.md') && statSync().isFile()`, the same `.md`-only rule as `walk()`.
 - Each memory topic now has a cap of 15 short notes (`TOPIC_CAP`). Set
   `FACTORY_MEMORY_TOPIC_CAP` to override it. `decide()` merges a topic's oldest notes once the
   topic holds more notes than the cap. `dream` and `memory compact` name topics still over the
