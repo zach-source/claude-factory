@@ -918,6 +918,26 @@ test('a run revived with GOTO after a requeue ending drops the stale requeued fl
   expect(t.requeued).toBeUndefined() // the stale flag from the ended run must not survive the revive
 })
 
+test('a requeue edge on a Linear-sourced bead defers instead of looping: dispatch never reads its factory:/station: labels (claude-factory-wnm.22)', () => {
+  const showJson = JSON.stringify([
+    {
+      id: 'acme-1',
+      title: 't',
+      labels: ['factory', 'factory:lifecycle', 'station:implement'],
+      external_ref: 'https://linear.app/acme/issue/STI-1',
+    },
+  ])
+  reqReset(showJson)
+  requeuedRun('run-8', 'acme-1', 'ship')
+  const out = pfactory(['beads'])
+  expect(out.code).toBe(0)
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer acme-1\b/.test(l) && l.includes('Linear-sourced'))).toBe(true)
+  expect(calls.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0) // never requeued
+  expect(trackOf('run-8')).toMatchObject({ isSettled: true })
+  expect(trackOf('run-8').requeued).toBeUndefined()
+})
+
 // claude-factory-wnm (A4, A6, A7): the `factory:<name>` dispatch label.
 // A bead's `factory:<name>` label picks a different factory to compile the run from.
 // `station:<name>` (already honored, claude-factory-b6c.27) still picks where in it to start.

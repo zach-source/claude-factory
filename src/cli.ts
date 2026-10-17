@@ -57,6 +57,7 @@ import {
   goalOf,
   hasBeads,
   isOwned,
+  linearSourced,
   parentOf,
   stationOf,
   type Bead,
@@ -2179,17 +2180,28 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     // run. `b.requeue` below is idempotent for that case.
     else if (typeof edge === 'object' && edge.requeue) {
       const current = b.lookup(id)
-      const already = current?.metadata?.requeued_from === run.id
-      const requeues = Number(current?.metadata?.requeues ?? 0)
-      // The cap defer must reset the counter. Without this reset, a person's undefer sends the bead
-      // straight into a new defer on its next requeue. `requeues` would still read 5 or more
-      // (claude-factory-wnm.17).
-      if (!already && requeues >= REQUEUE_MAX) {
-        b.defer(id, `requeued ${REQUEUE_MAX} times`)
-        b.setMetadata(id, { requeues: '0' })
+      // dispatch never reads a factory:/station: label off a Linear-sourced bead (beads.ts
+      // linearSourced, claude-factory-b6c.27). A requeue of that bead would restart the whole rig
+      // factory at its own start station, not the edge's target, up to REQUEUE_MAX times in a row.
+      // Defer it for a person instead (claude-factory-wnm.22).
+      if (current && linearSourced(current)) {
+        b.defer(
+          id,
+          `run ${run.id} ended on a requeue edge, but this bead is Linear-sourced: dispatch cannot read a factory:/station: label off it`,
+        )
       } else {
-        b.requeue(id, run.id, edge.requeue === true ? undefined : edge.requeue)
-        t.requeued = true
+        const already = current?.metadata?.requeued_from === run.id
+        const requeues = Number(current?.metadata?.requeues ?? 0)
+        // The cap defer must reset the counter. Without this reset, a person's undefer sends the bead
+        // straight into a new defer on its next requeue. `requeues` would still read 5 or more
+        // (claude-factory-wnm.17).
+        if (!already && requeues >= REQUEUE_MAX) {
+          b.defer(id, `requeued ${REQUEUE_MAX} times`)
+          b.setMetadata(id, { requeues: '0' })
+        } else {
+          b.requeue(id, run.id, edge.requeue === true ? undefined : edge.requeue)
+          t.requeued = true
+        }
       }
     } else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
     // not the factory's to do: left open for a person, who queues it again or closes it
