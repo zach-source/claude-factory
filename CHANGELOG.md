@@ -22,6 +22,51 @@ minor release may change the factory format, the CLI or the run state.
     from claude-factory-ulv working: the query, `PrPageNode` and `isPrPageNode` all need it
     as a boolean, and fail closed on a missing or wrong-typed value (claude-factory-ph8.4).
 
+- Fixed: `denyAt`'s `find` branch (`src/worker-hook.ts`) no longer scans the
+  `-exec`/`-execdir` words of a `find` command in quadratic time. (claude-factory-lbn)
+  - Before this fix, a long `find ... -exec` command can time out the 10-second
+    PreToolUse hook. The hook then fails open and skips the deny check.
+  - Cause: for each `-exec`/`-execdir` word, the branch ran `cmd.slice(i + 1)`. It
+    then checked the first word of the slice. A run of n such words cost O(n^2).
+    Proof: this took 1.36 s at n=80000 words (480 KB). Past about 1.3 MB, this runs
+    past the hook's 10-second timeout.
+  - Fix: `isRecursiveRm()` now takes a start index. It reads `cmd` in place, with
+    no slice. The `find` branch first checks `baseWord(cmd[i + 1]) === 'rm'` in
+    O(1) time. It then calls `isRecursiveRm(cmd, i + 1)`. Each scan starts at an
+    `rm` word, and stops at the first non-flag word. The scans do not overlap, so
+    the whole loop costs O(n).
+  - Proof: `bun run src/worker-hook.bench.ts find 200000` now takes 191.2 ms.
+    Before the fix, the same shape with a trailing `rm -rf x` took 11451.9 ms.
+  - `find . -exec rm -f x \;` still allows. `find . -name x -exec rm -rf {} +`
+    still denies. All 230 `worker-hook.test.ts` tests pass.
+
+- The lifecycle factory has a new triage outcome, `small`, for a docs-only, test-only or tiny
+  change. Before this fix, every run paid for the full loop. The full loop has an Opus plan, a
+  separate verify station, a separate review station, security and soak. A small run now takes
+  a shorter path: `triage -> quick -> check -> release -> deploy`. This path skips the Opus
+  plan. It also skips security, unless `check` flags the diff as security-sensitive, or the
+  diff touches a factory definition (`.factory/` or `factories/`). In that case the run still
+  goes through security before release. (claude-factory-wnn)
+  - `factories/lifecycle.ts`: `triage`'s prompt names the new `small` outcome. It also names the
+    rules that exclude a run from this outcome: a security-sensitive goal, or a change to a
+    factory definition. Two new stations support this route. `quick` runs on Sonnet with a
+    60-minute limit; on a `full` outcome it joins the plan loop, because the work was bigger
+    than small. `check` runs on Opus with a 60-minute limit and 3 rounds; on a `changes` outcome
+    it loops back to `quick` and closes each task it filed, with its commit, the same way
+    `implement` closes `review`'s findings; on a `security` outcome it goes to the existing
+    `security` station. `check`'s prompt keeps the pull request a draft; only `release` marks
+    it ready. `security`'s prompts now name `check`'s report and `triage`'s summary, as well as
+    `review`'s report and the plan's risk section, so a small run's security pass reads the
+    right station.
+  - `src/metrics.ts`: `metrics()` now reports `small: { runs, hoursToShip: { median, p90 } }`.
+    `runs` counts every run that `triage` ever sent down the `small` route, found anywhere in
+    its log, not only in its first entry. This way a run that failed triage once, then went
+    `small`, still counts. `hoursToShip` covers only the runs that shipped, and excludes any run
+    that `quick` sent to the full loop. `reviewLoops` now also counts `check`'s `changes`
+    outcome. `render()` adds one line: `small runs N, to ship Xh median / Yh p90`.
+  - `README.md`: the lifecycle table gains a `small` row. Two new paragraphs say when `triage`
+    picks this route, and what the route skips.
+
 - `factory gc --worktrees` fixes two gaps the PR #70 security review found. (claude-factory-ulv)
   - `src/cli.ts`: `snapshotWorktree()` used to set `GIT_INDEX_FILE` to a path that other
     processes can predict: `factory-gc-index-<runId>-<pid>` in the shared tmpdir. A write race
