@@ -837,7 +837,7 @@ test('open children still win over a requeue edge: the bead is released, not req
   expect(trackOf('run-3').requeued).toBeUndefined()
 })
 
-test('REQUEUE_MAX (5) stops the loop: a bead already requeued 5 times is deferred, not requeued again (A3)', () => {
+test('REQUEUE_MAX (5) stops the loop: a bead already requeued 5 times is deferred, not requeued again, and its requeues counter resets to 0 so an undefer does not defer again at once (A3, claude-factory-wnm.17)', () => {
   const showJson = JSON.stringify([
     {
       id: 'acme-1',
@@ -852,7 +852,9 @@ test('REQUEUE_MAX (5) stops the loop: a bead already requeued 5 times is deferre
   expect(out.code).toBe(0)
   const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
   expect(calls.some(l => /^bd defer acme-1\b/.test(l) && l.includes('requeued 5 times'))).toBe(true)
-  expect(calls.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0) // no label swap: deferred, not requeued
+  const updates = calls.filter(l => l.startsWith('bd update acme-1'))
+  expect(updates.some(l => l.includes('--add-label') || l.includes('--remove-label'))).toBe(false) // no label swap: deferred, not requeued
+  expect(updates.some(l => l.includes('--set-metadata requeues=0'))).toBe(true) // resets the counter for the next undefer
   expect(trackOf('run-4')).toMatchObject({ isSettled: true })
   expect(trackOf('run-4').requeued).toBeUndefined()
 })

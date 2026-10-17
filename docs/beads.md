@@ -98,7 +98,7 @@ How the run's end settles the bead:
 | held for you, or aborted                  | deferred and unassigned. `bd undefer <id>` hands it back to the factory                                                              |
 | rejected by a station (not the factory's) | open and ready, `factory` swapped for `rejected`, metadata `rejected_by`, `rejected_at`, `reject_reason`. Queue it again or close it |
 | ended with open children                  | open and unassigned, for the children                                                                                                |
-| ended on a `requeue` edge                 | open, ready, unassigned and `factory`-labeled. Metadata `requeued_from`, `requeued_at`, `requeues`. With `requeue: { factory?, station? }`, old `factory:*`/`station:*` labels are removed first, then the new ones are added; with `requeue: true`, the labels stay as the worker set them. Capped at `REQUEUE_MAX` (5) hops, then deferred |
+| ended on a `requeue` edge                 | open, ready, unassigned and `factory`-labeled. Metadata `requeued_from`, `requeued_at`, `requeues`. With `requeue: { factory?, station? }`, old `factory:*`/`station:*` labels are removed first, then the new ones are added; with `requeue: true`, the labels stay as the worker set them. Capped at `REQUEUE_MAX` (5) hops, then deferred, with `requeues` reset to 0 so `bd undefer <id>` starts a fresh count |
 
 ### What not to touch
 

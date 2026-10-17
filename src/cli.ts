@@ -2146,18 +2146,23 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     }
     // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
     else if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
-    // a requeue edge keeps the bead ready and factory-labeled for the next dispatch, in the factory and
-    // station it names. REQUEUE_MAX stops a factory that always requeues from looping forever.
-    // `lookup` throws on a real bd failure. `show` returns null instead, which a retried tick could
-    // misread as zero requeues so far (claude-factory-wnm.10). A retried tick whose requeue already
-    // landed skips the cap: `requeued_from` already names this run, and `b.requeue` below is
-    // idempotent for it.
+    // A requeue edge keeps the bead ready and factory-labeled for the next dispatch, in the factory
+    // and station the edge names. REQUEUE_MAX stops a loop, because a factory that always requeues
+    // must not run forever. `lookup` throws on a real bd failure, but `show` returns null instead.
+    // A retried tick can misread that null as zero requeues so far (claude-factory-wnm.10). A retried
+    // tick whose requeue already landed skips the cap, because `requeued_from` already names this
+    // run. `b.requeue` below is idempotent for that case.
     else if (typeof edge === 'object' && edge.requeue) {
       const current = b.lookup(id)
       const already = current?.metadata?.requeued_from === run.id
       const requeues = Number(current?.metadata?.requeues ?? 0)
-      if (!already && requeues >= REQUEUE_MAX) b.defer(id, `requeued ${REQUEUE_MAX} times`)
-      else {
+      // The cap defer must reset the counter. Without this reset, a person's undefer sends the bead
+      // straight into a new defer on its next requeue. `requeues` would still read 5 or more
+      // (claude-factory-wnm.17).
+      if (!already && requeues >= REQUEUE_MAX) {
+        b.defer(id, `requeued ${REQUEUE_MAX} times`)
+        b.setMetadata(id, { requeues: '0' })
+      } else {
         b.requeue(id, run.id, edge.requeue === true ? undefined : edge.requeue)
         t.requeued = true
       }

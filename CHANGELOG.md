@@ -22,7 +22,8 @@ minor release may change the factory format, the CLI or the run state.
     `factory`-labeled, swaps labels when `to` names one, and stamps `requeued_from`,
     `requeued_at`, `requeues` in metadata.
   - `src/cli.ts`: `track()` settles a `requeue` edge (capped by `REQUEUE_MAX = 5`, then
-    deferred). `dispatch()` resolves each bead's `factory:<name>` through a new
+    deferred, with the `requeues` metadata reset to 0 so an undefer starts a fresh count).
+    `dispatch()` resolves each bead's `factory:<name>` through a new
     `namedFactorySource(name, repo)` (never `factorySource`'s literal-path branch), and defers
     only that bead on an unknown name. `precheckSkip` makes 0 `gh` calls for a bead with
     `requeued_from` set.
