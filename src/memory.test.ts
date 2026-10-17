@@ -1546,7 +1546,7 @@ test('evaluate() runs the fixed query set against a real store through search()'
   expect(r.misses).toEqual([])
 }, 60_000)
 
-test('dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate and unsafe sections', () => {
+test('dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate, unsafe and over-cap sections', () => {
   const empty = dreamPrompt('/tmp/memory', [], [], [])
   expect(empty).toContain('LONG.md')
   expect(empty).toContain("Never change an entry's `id`")
@@ -1554,7 +1554,10 @@ test('dreamPrompt names the long tier and the id rule, and adds the promotion, d
   expect(empty).toContain('## Promotion candidates')
   expect(empty).toContain('## Possible duplicates')
   expect(empty).toContain('## Unsafe LONG.md files')
+  expect(empty).toContain('## Topics over the short-note cap')
   expect(empty).toContain('(none)')
+  expect(empty).toContain(`3 to ${TOPIC_CAP} notes each`) // names the TOPIC_CAP value, not a bare "15"
+  expect(empty).toContain(`holds ${TOPIC_CAP} or fewer`) // step 9 tells the dream to merge or drop to the cap
 
   const filled = dreamPrompt(
     '/tmp/memory',
@@ -1565,10 +1568,13 @@ test('dreamPrompt names the long tier and the id rule, and adds the promotion, d
     ['- beads/LONG.md#lock (bd init locks every repo): helped 3 times across 3 runs'],
     ['- beads/LONG.md#a (x) vs beads/LONG.md#b (y): similarity 0.90'],
     ['- beads/LONG.md holds text before its first entry that a merge would lose: stray prose'],
+    ['- ci: 23 short notes (cap 15)', '- claude-factory: 29 short notes (cap 15)'],
   )
   expect(filled).toContain('helped 3 times across 3 runs')
   expect(filled).toContain('similarity 0.90')
   expect(filled).toContain('stray prose')
+  expect(filled).toContain('## Topics over the short-note cap\n- ci: 23 short notes (cap 15)')
+  expect(filled).toContain('claude-factory: 29 short notes (cap 15)')
 })
 
 test('longSimPairs finds a near-duplicate pair of LONG.md entries in the same topic and rig, not across a topic or a rig', async () => {
