@@ -760,3 +760,28 @@ test("u: branchFacts' fetch and ls-remote, and deleteBranchCas' push, run with G
   expect(lines.find(l => l.includes(' ls-remote '))).toContain('GIT_TERMINAL_PROMPT=0')
   expect(lines.find(l => l.includes(' push '))).toContain('GIT_TERMINAL_PROMPT=0')
 })
+
+test("x: reviveWorktree's ls-remote and fetch run with GIT_TERMINAL_PROMPT=0 (claude-factory-0lt.3, T3)", () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  expect(factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes() }).code).toBe(0)
+  expect(git(repo, 'branch', '--list', branch)).toBe('') // merged: gc deleted it; revive must fetch
+
+  expect(factory(['goto', id, 'implement']).code).toBe(0)
+  const logFile = join(dir, 'git-calls.log')
+  spyGit(logFile) // origin stays reachable: unlike test t, this run exercises fetch too, not just ls-remote
+  const out = factory(['tick'], {
+    FACTORY_HERDR: noPanes(),
+    CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+    FACTORY_GC: '0',
+    GIT_TERMINAL_PROMPT: '1',
+  })
+  expect(out.code).toBe(0)
+  const lines = readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean)
+  expect(lines.find(l => l.includes(' ls-remote '))).toContain('GIT_TERMINAL_PROMPT=0')
+  expect(lines.find(l => l.includes(' fetch '))).toContain('GIT_TERMINAL_PROMPT=0')
+})

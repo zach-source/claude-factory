@@ -1015,14 +1015,19 @@ function reviveWorktree(run: Run) {
   // this cannot reach the remote at all. Check reachability on its own first (claude-factory-l38.18):
   // only a genuine network failure gets its own message, never the blame-gc message below.
   const reachable =
-    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], { timeout: 30_000 })
-      .exitCode === 0
+    Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], {
+      env: GIT_NETWORK_ENV,
+      timeout: GIT_NETWORK_TIMEOUT_MS,
+    }).exitCode === 0
   if (!reachable)
     fail(
       `Could not recreate ${run.worktree}: a fetch of origin failed, so this could not check whether ` +
         `${run.branch} still exists there. Check network access, then retry.`,
     )
-  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], { timeout: 30_000 })
+  Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], {
+    env: GIT_NETWORK_ENV,
+    timeout: GIT_NETWORK_TIMEOUT_MS,
+  })
   if (verify(`refs/remotes/origin/${run.branch}`))
     return git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, `origin/${run.branch}`)
   const ref = `refs/factory-gc/${run.id}`
