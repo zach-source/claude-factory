@@ -217,56 +217,125 @@ test('release reporting ready with no pull request link starts deploy at once (c
 // claude-factory-3t2: 5/65 security visits timed out ("no report within 45 min"), all on one large
 // rig. A first timeout gets a longer limit (75 min) and a diff summary instead of the whole branch; a
 // second timeout in a row mails the manager once and stops, instead of burning more launches.
-test('security retries a timeout at a longer limit, then a 2nd timeout in a row mails the manager once (claude-factory-3t2)', () => {
-  const actor = createActor(compile(lifecycle)).start()
-  actor.send({ type: 'GOTO', node: 'review', at: 0 })
-  const toSecurity = actor.getSnapshot().context.seq
-  actor.send({
-    type: 'DONE',
-    seq: toSecurity,
-    outcome: 'security',
-    summary: 'approved, security-sensitive: raises a limit. git diff --stat origin/main...HEAD: 3 files',
-    at: 1000,
+// claude-factory-wnn: `check` is the small route's combined verify+review. It also routes into
+// security on the same outcome. The retry rule must hold for either sender.
+for (const from of ['review', 'check']) {
+  test(`security retries a timeout at a longer limit, then a 2nd timeout in a row mails the manager once (claude-factory-3t2, from ${from})`, () => {
+    const actor = createActor(compile(lifecycle)).start()
+    actor.send({ type: 'GOTO', node: from, at: 0 })
+    const toSecurity = actor.getSnapshot().context.seq
+    actor.send({
+      type: 'DONE',
+      seq: toSecurity,
+      outcome: 'security',
+      summary: 'approved, security-sensitive: raises a limit. git diff --stat origin/main...HEAD: 3 files',
+      at: 1000,
+    })
+    expect(where(actor.getSnapshot().value)).toEqual(['security', 'working'])
+    const reviewReport = actor.getSnapshot().context.mail.security
+
+    // attempt 1 times out at the plain 45 min limit
+    const attempt1 = actor.getSnapshot().context.seq
+    actor.send({ type: 'FAIL', seq: attempt1, reason: 'no report within 45 min', at: 2000 })
+    expect(where(actor.getSnapshot().value)).toEqual(['security', 'backoff'])
+    const retryAt = actor.getSnapshot().context.retryAt
+    actor.send({ type: 'TICK', at: retryAt })
+    expect(where(actor.getSnapshot().value)).toEqual(['security', 'working'])
+    expect(actor.getSnapshot().context.attempt).toBe(2)
+
+    // the retry gets the longer limit and still sees the sender's whole report (the box is not cleared mid-visit)
+    expect(timeoutOf(lifecycle.nodes.security!, actor.getSnapshot().context, 'security')).toBe(75)
+    expect(actor.getSnapshot().context.mail.security).toEqual(reviewReport)
+
+    // attempt 2 times out too, at the longer limit: a 2nd timeout in a row is stuck, not a 3rd attempt
+    const attempt2 = actor.getSnapshot().context.seq
+    actor.send({ type: 'FAIL', seq: attempt2, reason: 'no report within 75 min', at: 3000 })
+    const stuck = actor.getSnapshot()
+    expect(where(stuck.value)).toEqual(['security', 'stuck'])
+    expect(stuck.context.error).toBe(repeatQuestion('security', 'no report within 75 min'))
+    expect(stuck.context.mail.manager?.filter(m => m.from === 'security')).toHaveLength(1)
+
+    // more ticks while stuck mail the manager no further
+    for (const at of [4000, 5000, 6000]) actor.send({ type: 'TICK', at })
+    expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'security')).toHaveLength(1)
   })
-  expect(where(actor.getSnapshot().value)).toEqual(['security', 'working'])
-  const reviewReport = actor.getSnapshot().context.mail.security
+}
 
-  // attempt 1 times out at the plain 45 min limit
-  const attempt1 = actor.getSnapshot().context.seq
-  actor.send({ type: 'FAIL', seq: attempt1, reason: 'no report within 45 min', at: 2000 })
-  expect(where(actor.getSnapshot().value)).toEqual(['security', 'backoff'])
-  const retryAt = actor.getSnapshot().context.retryAt
-  actor.send({ type: 'TICK', at: retryAt })
-  expect(where(actor.getSnapshot().value)).toEqual(['security', 'working'])
-  expect(actor.getSnapshot().context.attempt).toBe(2)
-
-  // the retry gets the longer limit and still sees review's whole report (the box is not cleared mid-visit)
-  expect(timeoutOf(lifecycle.nodes.security!, actor.getSnapshot().context, 'security')).toBe(75)
-  expect(actor.getSnapshot().context.mail.security).toEqual(reviewReport)
-
-  // attempt 2 times out too, at the longer limit: a 2nd timeout in a row is stuck, not a 3rd attempt
-  const attempt2 = actor.getSnapshot().context.seq
-  actor.send({ type: 'FAIL', seq: attempt2, reason: 'no report within 75 min', at: 3000 })
-  const stuck = actor.getSnapshot()
-  expect(where(stuck.value)).toEqual(['security', 'stuck'])
-  expect(stuck.context.error).toBe(repeatQuestion('security', 'no report within 75 min'))
-  expect(stuck.context.mail.manager?.filter(m => m.from === 'security')).toHaveLength(1)
-
-  // more ticks while stuck mail the manager no further
-  for (const at of [4000, 5000, 6000]) actor.send({ type: 'TICK', at })
-  expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'security')).toHaveLength(1)
-})
-
-test("security's onTimeout prompt points the retry at review's diff summary, not the whole branch, and review's prompt promises one (claude-factory-3t2 AC5)", () => {
+test("security's onTimeout prompt points the retry at review's or check's diff summary, not the whole branch, and both prompts promise one (claude-factory-3t2 AC5, extended by claude-factory-wnn.6 for check)", () => {
   const onTimeout = lifecycle.nodes.security!.onTimeout!
   expect(onTimeout.timeoutMin).toBe(75)
   expect(onTimeout.prompt).toContain('diff summary')
   expect(onTimeout.prompt).toContain('changed-files')
+  expect(onTimeout.prompt).toContain("review's or check's report")
   expect(onTimeout.prompt).toMatch(/Do not re-read/)
 
   expect(lifecycle.nodes.review!.prompt).toContain('git diff --stat origin/main...HEAD')
   expect(lifecycle.nodes.review!.prompt).toContain('60 files')
   expect(lifecycle.nodes.review!.prompt).toContain('+N more')
+
+  // claude-factory-wnn.6: security's main prompt checks the diff against the plan's risk section,
+  // but a small run has no plan; it must also name triage's summary.
+  expect(lifecycle.nodes.security!.prompt).toContain(
+    "plan's risk section, or triage's summary on a small run",
+  )
+})
+
+// claude-factory-wnn: a small run (docs-only, test-only, a tiny fix) skips plan and security, and
+// trades verify+review for one combined `check` station, so it ships without paying the full loop.
+test('small AC1: triage -> quick -> check -> release -> deploy -> done, no plan/verify/review/security/soak', () => {
+  const { visited } = walk(lifecycle, ['small', 'ready', 'approve', 'ready', 'published'])
+  expect(visited).toEqual(['triage', 'quick', 'check', 'release', 'deploy', 'done'])
+  for (const skipped of ['plan', 'verify', 'review', 'security', 'soak'])
+    expect(visited).not.toContain(skipped)
+})
+
+test('small AC2: check flags security, the same node security reviews unchanged, then release ships', () => {
+  const { visited } = walk(lifecycle, ['small', 'ready', 'security', 'approve', 'ready'])
+  expect(visited).toEqual(['triage', 'quick', 'check', 'security', 'release', 'deploy'])
+})
+
+test('small AC3: check changes loops back through quick; quick full joins the full loop at plan; quick abandon ends it', () => {
+  expect(walk(lifecycle, ['small', 'ready', 'changes', 'ready']).visited).toEqual([
+    'triage',
+    'quick',
+    'check',
+    'quick',
+    'check',
+  ])
+  expect(walk(lifecycle, ['small', 'full']).visited).toEqual(['triage', 'quick', 'plan'])
+  expect(walk(lifecycle, ['small', 'abandon']).visited).toEqual(['triage', 'quick', 'done'])
+  expect(lifecycle.nodes.check!.rounds).toBe(3)
+})
+
+test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for security; quick is Sonnet, check is Opus', () => {
+  const check = lifecycle.nodes.check!
+  for (const needle of [
+    'draft',
+    'gh pr review --comment',
+    'security-sensitive',
+    'git diff --stat origin/main...HEAD',
+    '60 files',
+    '+N more',
+  ])
+    expect(check.prompt).toContain(needle)
+  expect(check.prompt).not.toContain('mark it ready')
+  expect(lifecycle.nodes.release!.prompt).toContain('mark it ready')
+  expect(check.agent).toContain('{judge_model}')
+  expect((lifecycle as Factory).nodes.quick!.agent).toBeUndefined()
+})
+
+test('claude-factory-wnn.4: quick closes each task check filed, with its commit, so release never finds one open', () => {
+  const quick = lifecycle.nodes.quick!
+  expect(quick.prompt).toContain('closing each task check filed')
+  expect(quick.prompt).toContain('its commit')
+  expect(quick.prompt).toContain('Tracking')
+})
+
+test('small AC7/AC8: triage names the small route and its exclusions; deploy counts docs/test-only as published', () => {
+  expect(lifecycle.nodes.triage!.prompt).toContain('small:')
+  expect(lifecycle.nodes.triage!.prompt).toContain('security-sensitive')
+  expect(lifecycle.nodes.triage!.prompt).toContain('factories/')
+  expect(lifecycle.nodes.deploy!.prompt).toContain('docs-only')
 })
 
 test('sweeps loop on their timers past any step budget', () => {

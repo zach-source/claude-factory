@@ -20,6 +20,62 @@ minor release may change the factory format, the CLI or the run state.
     brief through `gate-brief set` and logs one line to `<home>/brief-log.jsonl`. `tool.call`
     denies every Bash call from a briefer agent, `factory decide` included. The person still
     decides every gate. `userConfig.briefer` (default `true`) turns the briefer off.
+
+- The lifecycle factory has a new triage outcome, `small`, for a docs-only, test-only or tiny
+  change. Before this fix, every run paid for the full loop. The full loop has an Opus plan, a
+  separate verify station, a separate review station, security and soak. A small run now takes
+  a shorter path: `triage -> quick -> check -> release -> deploy`. This path skips the Opus
+  plan. It also skips security, unless `check` flags the diff as security-sensitive, or the
+  diff touches a factory definition (`.factory/` or `factories/`). In that case the run still
+  goes through security before release. (claude-factory-wnn)
+  - `factories/lifecycle.ts`: `triage`'s prompt names the new `small` outcome. It also names the
+    rules that exclude a run from this outcome: a security-sensitive goal, or a change to a
+    factory definition. Two new stations support this route. `quick` runs on Sonnet with a
+    60-minute limit; on a `full` outcome it joins the plan loop, because the work was bigger
+    than small. `check` runs on Opus with a 60-minute limit and 3 rounds; on a `changes` outcome
+    it loops back to `quick` and closes each task it filed, with its commit, the same way
+    `implement` closes `review`'s findings; on a `security` outcome it goes to the existing
+    `security` station. `check`'s prompt keeps the pull request a draft; only `release` marks
+    it ready. `security`'s prompts now name `check`'s report and `triage`'s summary, as well as
+    `review`'s report and the plan's risk section, so a small run's security pass reads the
+    right station.
+  - `src/metrics.ts`: `metrics()` now reports `small: { runs, hoursToShip: { median, p90 } }`.
+    `runs` counts every run that `triage` ever sent down the `small` route, found anywhere in
+    its log, not only in its first entry. This way a run that failed triage once, then went
+    `small`, still counts. `hoursToShip` covers only the runs that shipped, and excludes any run
+    that `quick` sent to the full loop. `reviewLoops` now also counts `check`'s `changes`
+    outcome. `render()` adds one line: `small runs N, to ship Xh median / Yh p90`.
+  - `README.md`: the lifecycle table gains a `small` row. Two new paragraphs say when `triage`
+    picks this route, and what the route skips.
+
+- `factory gc --worktrees` fixes two gaps the PR #70 security review found. (claude-factory-ulv)
+  - `src/cli.ts`: `snapshotWorktree()` used to set `GIT_INDEX_FILE` to a path that other
+    processes can predict: `factory-gc-index-<runId>-<pid>` in the shared tmpdir. A write race
+    between `git add -A` and `git write-tree` can snapshot the wrong tree before the caller
+    force-removes the worktree. The function now uses `mkdtempSync` to make a private,
+    unpredictable 0700 directory for the index file. It removes this directory in its `finally`
+    block.
+  - `src/gc.ts`: `coverTip()` used to trust a cross-repo (fork) PR's CLOSED or MERGED state as
+    proof that a tip merged. `PrFact` now carries a required `isCrossRepository` field.
+    `coverTip()` ignores each `PrFact` where this field is `true`. `prFacts()` (`src/cli.ts`)
+    asks `gh` for `isCrossRepository`. It fails closed, with no branch deletes in that rig, when
+    a PR entry has no boolean `isCrossRepository` value. `beadClosedFacts()` builds its CLOSED
+    set from non-cross-repo PRs only. It never runs `bd show` for a fork PR's bead.
+
+- `factory gc --worktrees` now matches a GitHub origin only on the exact host `github.com`. The
+  old regex had no host anchor. An origin like `https://mygithub.com/owner/repo` parsed as the
+  GitHub slug `owner/repo`. `gc` then read PR state for a different repo on `github.com`. It
+  could apply that repo's MERGED or CLOSED state to this rig's own branch deletes.
+  (claude-factory-0u0)
+  - `src/cli.ts`: `githubSlug()` now uses `parseRemote()` (`src/prs.ts`) and `forgeOf()`. This is
+    the same parser that `originRef()` uses for GitLab. `githubSlug()` is now exported. It also
+    accepts origin forms with userinfo, for example `https://user@github.com/...` and
+    token-auth clone URLs. The old regex rejected these forms.
+
+- `reconcile()` now has a direct test for the escalated deadline from `timeoutOf()` (`onTimeout`,
+  claude-factory-3t2). `src/remote.test.ts` sends a real `factory tick` through a timeout fail, a
+  backoff and a new spawn. The test checks the warn and fail minutes against the escalated
+  limit, not the plain `timeoutMin`. (claude-factory-9ff)
 - `factory plan facts` failures now back off and log, the same as a failed spawn. The old
   code retried every 60 s forever and wrote no log, even with `bd` down. (claude-factory-4hb)
   - `mod/hooks/register.tsx`: the facts-failed branch in `pmNow()` now:
@@ -28,7 +84,6 @@ minor release may change the factory format, the CLI or the run state.
       60 s `PM_RETRY_MS` (removed)
     - adds a `pm-log.jsonl` entry `{ reason: 'facts-failed', error }`, the same shape as the
       two spawn-failed sites
-
 - `factory gc --worktrees` no longer journals a secret from a remote URL's userinfo
   (`user:pass@` or a bare `token@`). A failed `git push` or `git worktree remove` can print the
   URL in its stderr. That stderr line used to reach `HOME/gc-worktrees.jsonl` unscrubbed.
@@ -41,7 +96,6 @@ minor release may change the factory format, the CLI or the run state.
     (`GIT_TERMINAL_PROMPT=0`) and the `GIT_NETWORK_TIMEOUT_MS` timeout (still 30 s), the same as
     every other network-reaching git call in this file. A stuck credential prompt now fails fast
     instead of waiting out the timeout.
-
 - `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
   `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
   path. `memory compact` now removes such a usage line. (claude-factory-5o7)
