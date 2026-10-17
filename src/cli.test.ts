@@ -107,7 +107,7 @@ test("a repo's own copy loads without this project and says how it is changed", 
   compile(def)
   // what reads or changes production needs the laptop, whatever runner the rig sends its workers to
   const pinned = Object.keys(def.nodes).filter(id => def.nodes[id]!.runner === 'herdr')
-  expect(pinned.sort()).toEqual(['baseline', 'deploy', 'incident', 'monitor', 'rollback', 'soak'])
+  expect(pinned.sort()).toEqual(['baseline', 'deploy', 'incident', 'rollback', 'soak'])
 })
 
 test("a rig has room under its own cap and the town's", () => {

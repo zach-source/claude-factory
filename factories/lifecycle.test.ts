@@ -205,11 +205,27 @@ test('release reporting ready with no pull request link starts deploy at once (c
   expect(s.context.seq).toBe(seq + 1)
 })
 
-test('sweeps loop on their timers past any step budget', () => {
-  for (const sweep of ['monitor', 'maintain', 'improve']) {
-    const again = sweep === 'monitor' ? 'watching' : 'again'
-    const { visited, snapshot } = walk(lifecycle, Array(lifecycle.maxSteps + 5).fill(again), sweep)
-    expect(new Set(visited)).toEqual(new Set([sweep]))
-    expect(where(snapshot.value)).toEqual([sweep, 'working'])
+// claude-factory-8pc.7: lifecycle no longer holds the sweep nodes (they moved to factories/sweeps.ts,
+// one pass each, started by `factory sweep` on its own cadence, not a self-loop). A run that started
+// before this move still carries the old shape in its own pinned factory.json (createRun snapshots
+// the factory it started from): it must still load, validate, compile and tick, unaffected by this
+// repo's current lifecycle.ts.
+test("a run pinned to lifecycle's old shape, with the sweep nodes, still loads and ticks (AC7)", () => {
+  const pinned: Factory = {
+    ...lifecycle,
+    nodes: {
+      ...lifecycle.nodes,
+      monitor: {
+        runner: 'herdr',
+        timeoutMin: 20,
+        prompt: 'watch',
+        next: { watching: { to: 'monitor', delayMin: 30 }, stop: 'done' },
+      },
+    },
   }
+  const def = validate(pinned)
+  expect(() => compile(def)).not.toThrow()
+  const { visited, snapshot } = walk(def, Array(def.maxSteps! + 5).fill('watching'), 'monitor')
+  expect(new Set(visited)).toEqual(new Set(['monitor']))
+  expect(where(snapshot.value)).toEqual(['monitor', 'working'])
 })
