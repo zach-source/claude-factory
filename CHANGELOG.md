@@ -6,6 +6,22 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Each memory topic now has a cap of 15 short notes (`TOPIC_CAP`). Set
+  `FACTORY_MEMORY_TOPIC_CAP` to override it. `decide()` merges a topic's oldest notes once the
+  topic holds more notes than the cap. `dream` and `memory compact` name topics still over the
+  cap after a pass. (claude-factory-3u1.1.3)
+  - `src/memory.ts`: `TOPIC_CAP = 15`. `envTopicCap()` reads the env override. It needs a whole
+    number of 1 or more; any other value falls back to 15. `decide(short, long, sims, {
+    topicCap })` adds a `merge` decision for a topic's oldest notes once the topic holds more
+    notes than the cap. Each picked note is 7 or more days old, has no decision yet, is not
+    superseded, and is not in inbox. `applyTiers()` passes `envTopicCap()` into `decide()`. It
+    returns `overCap`: the topics still over the cap, with their counts. The new export
+    `overCapTopics(dir)` reads the live store. `dreamPrompt()` now takes the over-cap topics and
+    a `topicCap`. It adds a "Topics over the short-note cap" section that tells the dream to
+    merge or drop notes there.
+  - `src/cli.ts`: `dream()` passes `overCapTopics(MEMORY)` and `envTopicCap()` into
+    `dreamPrompt()`. The `memory compact` commit message and its `--dry-run` output name topics
+    still over the cap. The help text names `FACTORY_MEMORY_TOPIC_CAP` (default 15).
 - A station can now set `onTimeout: { timeoutMin, prompt? }`: the attempt right after a timeout
   fail gets this longer limit and an extra brief section instead of the plain retry. lifecycle's
   `security` uses it (45 min, then 75 min with a prompt that works from review's diff summary
