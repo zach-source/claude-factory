@@ -405,6 +405,23 @@ minor release may change the factory format, the CLI or the run state.
     change.
   - `mod/hooks/register.tsx` and the worker brief's usage text now show the
     `--kind` and `--until` flags.
+- Fixed: `anyShellReason` (`src/worker-hook.ts`) no longer scans a long
+  sh/bash/zsh/dash word segment in quadratic time. (claude-factory-1by)
+  - Before this fix, a 120 KB command can time out the 10-second
+    PreToolUse hook. The hook then fails open.
+  - Cause: each sh/bash/zsh/dash word with no `-c` cluster called
+    `shCFlagIndex(words.slice(j))`. This is an O(n-j) slice and scan. It
+    then moved on by one word. A segment of n such words cost O(n^2).
+    Proof: 9.0 s at n=40000 (120 KB), 34 s at n=80000 (240 KB). Both times
+    are past the hook's timeout.
+  - Fix: keep two monotone forward pointers per segment across calls, in
+    place of the per-word slice and rescan. One pointer tracks the next
+    short-flag `-c` cluster index. The other tracks the next literal `--`
+    index. The scan is now amortized O(n) per segment. Proof: 5 ms at
+    n=40000, 22 ms at n=80000.
+  - `sh eval rm -rf x`, `sh foo -- bash -c "rm -rf x"`, and `sh -x -lc "rm
+    -rf x"` still deny. A trailing bare `-c` with no script still allows.
+    All 230 `worker-hook.test.ts` tests pass.
 
 ## 0.12.0 (2026-10-15)
 
