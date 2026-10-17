@@ -6,6 +6,24 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `factory gc --worktrees` no longer journals a secret from a remote URL's userinfo
+  (`user:pass@` or a bare `token@`). A failed `git push` or `git worktree remove` can print the
+  URL in its stderr. That stderr line used to reach `HOME/gc-worktrees.jsonl` unscrubbed.
+  (claude-factory-0lt)
+  - `src/gc.ts`: new export `scrubUrlUserinfo(text)`. It removes the userinfo part of each
+    `scheme://` URL in `text`. It leaves an scp-style remote (`git@github.com:acme/widget`) alone.
+  - `src/cli.ts`: `gcLog()` now scrubs every string value of its entry with
+    `scrubUrlUserinfo()`, before it writes the journal line. This covers arrays and objects too.
+    `reviveWorktree`'s `ls-remote` and `fetch` calls now also run with `GIT_NETWORK_ENV`
+    (`GIT_TERMINAL_PROMPT=0`) and the `GIT_NETWORK_TIMEOUT_MS` timeout (still 30 s), the same as
+    every other network-reaching git call in this file. A stuck credential prompt now fails fast
+    instead of waiting out the timeout.
+
+- `memory helped` now refuses a directory, `.`, or a non-`.md` file: exit 1, print
+  `not a note in <dir>: <path>`. Before this fix it exited 0 and added a usage line for the
+  path. `memory compact` now removes such a usage line. (claude-factory-5o7)
+  - `src/memory.ts`: `noteExists()` for a path with no `#` now needs
+    `path.endsWith('.md') && statSync().isFile()`, the same `.md`-only rule as `walk()`.
 - Each memory topic now has a cap of 15 short notes (`TOPIC_CAP`). Set
   `FACTORY_MEMORY_TOPIC_CAP` to override it. `decide()` merges a topic's oldest notes once the
   topic holds more notes than the cap. `dream` and `memory compact` name topics still over the
