@@ -371,7 +371,7 @@ these forms:
   These environment variables replace git's own config lookup outright. No value stays on the
   command line for the hook to check.
 
-A later review found 4 more disguised forms. The hook now denies these too:
+A later review found 5 more disguised forms. The hook now denies these too:
 
 - `env -S '<command>'` or `env --split-string='<command>'` has the same risk as `eval`.
   BSD and GNU `env` split `<command>` into words.
@@ -381,11 +381,12 @@ A later review found 4 more disguised forms. The hook now denies these too:
   The hook checks the value the same way it checks an `eval` or `sh -c` argument.
 
 - An `env -S` or `--split-string` value can hold a backslash.
-  The value can also hold a newline.
   One example is `env -S 'git\_push acme/widget main'`.
-  BSD and GNU `env` split words at an unquoted backslash or a newline.
-  A value such as `git\_push\_origin\_main` stays as one word.
-  The hook cannot check this word, so it denies the command.
+  BSD and GNU `env` read `\_` or a newline character as a break between words.
+  BSD and GNU `env` read `\t` as a tab inside one word.
+  A different backslash use stops `env`, with exit status 1.
+  The hook's own check does not break a value such as `git\_push\_origin\_main` at a
+  backslash, so it denies the whole value.
 
 - A dash can hide a git-core binary name.
   Two examples are `git-push` and `git-send-pack`.

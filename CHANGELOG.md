@@ -829,9 +829,9 @@ minor release may change the factory format, the CLI or the run state.
     directory).
 
 - The worker-hook deny gate now denies an `env -S`/`--split-string` value with a backslash or a
-  real newline, for example `env -S 'git\_push acme/widget main'`. `env` reads that mark as a
-  word break. The old gate read the whole value as one word, so it let the command pass.
-  (claude-factory-vco)
+  real newline, for example `env -S 'git\_push acme/widget main'`. `env` reads `\_` or a real
+  newline there as a word break, but the old gate read the whole value as one word, so it let
+  the command pass. (claude-factory-vco)
   - `src/worker-hook.ts` adds the `ENV_SPLIT_ESCAPE_REASON` constant. `anyShellReason` checks
     for this mark before it calls `denyAt`.
 

@@ -1527,8 +1527,8 @@ test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.4
   expect(denyReason('env -i git status')).toBeUndefined()
 })
 
-// claude-factory-vco: GNU env 9.11 and macOS /usr/bin/env split an env -S value at each unquoted
-// backslash and at each real newline. denyAt's tokenizer does not split there, so a value such
+// claude-factory-vco: GNU env and macOS /usr/bin/env split an env -S value at each \_ and at
+// each real newline, quoted or not. denyAt's tokenizer does not split there, so a value such
 // as 'git\_push\_origin\_main' stays one word and never matches the push check. Each row below
 // holds a backslash or a newline and must deny with ENV_SPLIT_ESCAPE_REASON.
 const DENY_ENV_SPLIT_ESCAPE: string[] = [
@@ -1542,9 +1542,12 @@ const DENY_ENV_SPLIT_ESCAPE: string[] = [
   "env --split-string='git\\_push origin main'",
   'env -S "git\\_push origin main"',
   "/usr/bin/env -S 'git\\_push origin main'",
-  // a real newline inside the value, and a backslash with no following letter
+  // a real newline inside the value
   "env -S 'git\npush origin main'",
+  // another \_ word break, later in the value
   "env -S 'rm\\_-rf\\_/'",
+  // a lone trailing backslash, with no character after it before the closing quote
+  "env -S 'git push origin main\\'",
 ]
 
 test.each(DENY_ENV_SPLIT_ESCAPE)(
