@@ -294,3 +294,98 @@ test(
     expect(briefer!.tools).toEqual([])
   },
 )
+
+// ---- claude-factory-2u2.4: tool.call denies every Bash call from a briefer, decide included ----
+
+test(
+  '[SECURITY] tool.call denies a `decide` from the briefer, with no dialog, before the briefer ever runs it',
+  SLOW,
+  async ($, on) => {
+    let asked = 0
+    let ran = 0
+    on(
+      'agent.list',
+      () =>
+        ({
+          value: [{ id: 'brief-1', type: 'factory:briefer', description: '', status: 'running' }],
+        }) as never,
+    )
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      asked += 1
+      const question = e.questions[0]!.question
+      return { result: { questions: e.questions, answers: { [question]: 'Allow' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'decided', stderr: '', interrupted: false } }
+    })
+
+    const denied = await $.tool.call({
+      tool: 'Bash',
+      command: '/repo/bin/factory decide r1 ship "looks good"',
+      agentId: 'brief-1',
+    } as never)
+
+    expect(denied.deny).toBe('a briefer runs no command: it only writes the gate brief')
+    expect(asked).toBe(0) // no dialog: a subagent gets none, the same reason a patrol gets none
+    expect(ran).toBe(0) // the Bash mock never runs
+  },
+)
+
+test(
+  '[SECURITY] tool.call denies an ungated `factory status` from the briefer too, not only a gated command',
+  SLOW,
+  async ($, on) => {
+    let ran = 0
+    on(
+      'agent.list',
+      () =>
+        ({
+          value: [{ id: 'brief-2', type: 'factory:briefer', description: '', status: 'running' }],
+        }) as never,
+    )
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+
+    const denied = await $.tool.call({
+      tool: 'Bash',
+      command: '/repo/bin/factory status',
+      agentId: 'brief-2',
+    } as never)
+
+    expect(denied.deny).toBe('a briefer runs no command: it only writes the gate brief')
+    expect(ran).toBe(0)
+  },
+)
+
+test(
+  'a `decide` from a non-briefer subagent is still denied, but by the generic gated-command path',
+  SLOW,
+  async ($, on) => {
+    let asked = 0
+    let ran = 0
+    on('agent.list', () => ({ value: [] }) as never) // confirms no subagent as a briefer: the generic path alone denies this
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      asked += 1
+      const question = e.questions[0]!.question
+      return { result: { questions: e.questions, answers: { [question]: 'Allow' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'decided', stderr: '', interrupted: false } }
+    })
+
+    const denied = await $.tool.call({
+      tool: 'Bash',
+      command: '/repo/bin/factory decide r1 ship "looks good"',
+      agentId: 'some-other-agent',
+    } as never)
+
+    expect(denied.deny).toContain('did not confirm')
+    expect(denied.deny).toContain('A patrol never decides this')
+    expect(asked).toBe(0)
+    expect(ran).toBe(0)
+  },
+)

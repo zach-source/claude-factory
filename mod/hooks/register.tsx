@@ -1239,6 +1239,19 @@ export const register: Register = (on, options) => {
       rt.patrolId = e.agentId
       rt.patrolIds = [...rt.patrolIds, e.agentId].slice(-20)
     }
+    // [SECURITY] the briefer runs no command at all, gated or not (claude-factory-2u2).
+    // Its only job is to write a gate's brief. The write does not happen in a tool call.
+    // turn.complete runs `factory gate-brief set` itself. It does this after the briefer's own turn ends.
+    //
+    // This check must come before the generic gated-command deny below.
+    // An ungated command, such as `factory status` or a plain `ls`, would otherwise reach `next(pinned)` there.
+    //
+    // `rt.briefIds` checks the briefer's own id. This is fast. It makes no `agent.list` call.
+    // `isBrieferAgent` is the fallback for a mod test.
+    // The callers of `isPatrolAgent` use the same pattern above.
+    if (e.agentId && (rt.briefIds.includes(e.agentId) || (await isBrieferAgent($, e.agentId))))
+      return { deny: 'a briefer runs no command: it only writes the gate brief' }
+
     // the model's shell cd's into rigs to read them: its factory commands still work this factory.
     // claude-factory-72v.19: a subagent's prefix also carries FACTORY_PATROL=1. This is a second,
     // CLI-side layer behind the gated-command regex deny below. A command can obfuscate the gated
