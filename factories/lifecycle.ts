@@ -159,7 +159,8 @@ Report approve, or changes with each finding, its severity and its fix, each als
     quick: {
       timeoutMin: 60,
       prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. Merge origin/main, run the formatter and the tests of what you touched, commit.
-If the work proves bigger than small (more files, a security-sensitive surface, a new dependency, a design choice), report full with why, and plan takes it. Fix every finding check sends back and say how.`,
+Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
+If the work proves bigger than small (more files, a security-sensitive surface, a new dependency, a design choice), report full with why, and plan takes it.`,
       next: { ready: 'check', full: 'plan', abandon: 'done' },
     },
     check: {

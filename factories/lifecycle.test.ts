@@ -317,6 +317,13 @@ test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for sec
   expect((lifecycle as Factory).nodes.quick!.agent).toBeUndefined()
 })
 
+test('claude-factory-wnn.4: quick closes each task check filed, with its commit, so release never finds one open', () => {
+  const quick = lifecycle.nodes.quick!
+  expect(quick.prompt).toContain('closing each task check filed')
+  expect(quick.prompt).toContain('its commit')
+  expect(quick.prompt).toContain('Tracking')
+})
+
 test('small AC7/AC8: triage names the small route and its exclusions; deploy counts docs/test-only as published', () => {
   expect(lifecycle.nodes.triage!.prompt).toContain('small:')
   expect(lifecycle.nodes.triage!.prompt).toContain('security-sensitive')
