@@ -17,16 +17,6 @@ export type SweepState = Record<string, Record<string, { lastAt: number; sig?: s
 
 export type LiveRun = { repo: string; goal: string }
 
-/**
- * The sweeps due now for `rig`. A sweep is due when all of these hold:
- * - it is in `rig.sweeps` (unset means every sweep station `def` has)
- * - it is not `monitor` on a rig with no `rig.slo` set (monitor has nothing to read there)
- * - the rig's repo has no live run with its goal (`sweepGoal`), in any factory: a pinned lifecycle
- *   sweep run still blocks a new one, the same as a run of `def` itself
- * - its last pass, from `state`, is at least `everyMin` minutes old
- *
- * `liveRuns` must already exclude done and aborted runs: this function only matches repo and goal.
- */
 const SWEEP_FILER = /^factory\/sweeps-[^/]+\/([^/]+)$/
 
 /** Reads the sweep station that filed a bead, from its `created_by` field. A sweep run's actor
@@ -139,6 +129,16 @@ export function clipUtf8(text: string, maxBytes = 4096): string {
   return `${cut}\n[clipped: ${maxBytes} of ${bytes.length} bytes]`
 }
 
+/**
+ * The sweeps due now for `rig`. A sweep is due when all of these hold:
+ * - it is in `rig.sweeps` (unset means every sweep station `def` has)
+ * - it is not `monitor` on a rig with no `rig.slo` set (monitor has nothing to read there)
+ * - the rig's repo has no live run with its goal (`sweepGoal`), in any factory: a pinned lifecycle
+ *   sweep run still blocks a new one, the same as a run of `def` itself
+ * - its last pass, from `state`, is at least `everyMin` minutes old
+ *
+ * `liveRuns` must already exclude done and aborted runs: this function only matches repo and goal.
+ */
 export function dueSweeps(
   def: Factory,
   rig: { name: string; repo: string; sweeps?: string[]; slo?: string },
