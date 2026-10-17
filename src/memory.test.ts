@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   add,
   applyTiers,
+  citesTracker,
   close,
   compact,
   CORE_BUDGET,
@@ -17,13 +18,16 @@ import {
   evaluate,
   format,
   formatLong,
+  gate,
   inboxCount,
   installSkill,
+  isUntil,
   type LongEntry,
   longAliasRenames,
   longSimPairs,
   managerActivity,
   mdFileCount,
+  NOTE_KINDS,
   noteExists,
   outline,
   parse,
@@ -57,6 +61,48 @@ test('a note keeps its summary, rig and provenance through a write and a read', 
   }
   expect(parse('beads/x.md', format(note))).toEqual({ path: 'beads/x.md', ...note })
   expect(parse('inbox/y.md', 'no frontmatter\nmore').summary).toBe('no frontmatter')
+})
+
+test('a note keeps its kind and until through a write and a read', () => {
+  const note = {
+    summary: 'bd init locks every repo',
+    at: '2026-10-06',
+    body: 'why\nhow',
+    kind: 'rule' as const,
+    until: 'acme-1x2.3',
+  }
+  expect(parse('beads/x.md', format(note))).toEqual({ path: 'beads/x.md', ...note })
+})
+
+test('kind and until frontmatter land between at and superseded', () => {
+  const text = format({
+    summary: 's',
+    at: '2026-10-06',
+    superseded: 'beads/new.md',
+    body: 'b',
+    kind: 'fact',
+    until: '2026-12-31',
+  })
+  const lines = text.split('\n')
+  expect(lines.indexOf('at: 2026-10-06')).toBeLessThan(lines.indexOf('kind: fact'))
+  expect(lines.indexOf('kind: fact')).toBeLessThan(lines.indexOf('until: 2026-12-31'))
+  expect(lines.indexOf('until: 2026-12-31')).toBeLessThan(lines.indexOf('superseded: beads/new.md'))
+})
+
+test('parse() of an old note with no kind or until leaves both undefined, no throw', () => {
+  const n = parse('beads/x.md', '---\nsummary: s\n---\nbody')
+  expect(n.kind).toBeUndefined()
+  expect(n.until).toBeUndefined()
+})
+
+test('parse() drops an invalid kind value instead of throwing', () => {
+  const n = parse('beads/x.md', '---\nsummary: s\nkind: bogus\n---\nbody')
+  expect(n.kind).toBeUndefined()
+})
+
+test('format() of a note without kind or until is byte-identical to a note with no such fields today', () => {
+  const note = { summary: 's', at: '2026-10-06', body: 'b' }
+  expect(format(note)).toBe('---\nsummary: s\nat: 2026-10-06\n---\nb\n')
 })
 
 test('a LONG.md entry keeps its id, rig, from, at and body through a write and a read', () => {
@@ -1288,3 +1334,128 @@ test('tierCandidates composes decide(), longSimPairs() and usage() into dream-pr
   expect(duplicates[0]).toContain('beads/LONG.md#x')
   expect(duplicates[0]).toContain('beads/LONG.md#y')
 }, 60_000)
+
+// citesTracker() must find a bead id or a PR reference in free text. It drives gate()'s --until
+// requirement (claude-factory-3u1.1.1.2). Bead-id matching is case sensitive.
+test('citesTracker() finds a bead id or a PR reference', () => {
+  for (const s of [
+    'claude-factory-3u1.1.1',
+    'fab-6otc',
+    'infra-blocks-38e0',
+    'ax-706',
+    'acme-6kw.2',
+    'fab-bb1.1.7',
+    'ama-pr9',
+    'PR #70',
+    'pr 70',
+    'acme/widget#12',
+    'https://github.com/acme/widget/pull/3',
+  ])
+    expect(citesTracker(s)).not.toBeNull()
+})
+
+test('citesTracker() does not fire on ordinary words that merely look like an id', () => {
+  for (const s of [
+    'dry-run',
+    're-run',
+    'pre-fix',
+    'k0s-workloads-prod',
+    'fabriek-m1-reviewer',
+    'asd-ste100',
+    'runtime-config-sha256',
+    'bge-small-en-v1.5',
+    'utf-8',
+    'step #2',
+    'PRs',
+  ])
+    expect(citesTracker(s)).toBeNull()
+})
+
+test('citesTracker() accepts two known false positives rather than add a special case for them', () => {
+  // "ui-e2e" and "sha-256" both look like <prefix>-<3-5 alnum chars with a digit>. This is the same
+  // shape as a real bead id, for example "fab-6otc". The plan accepts this trade-off. A person who
+  // sees a false --until demand can tell these apart at a glance. A narrower regex would also drop
+  // real ids such as "ama-pr9".
+  expect(citesTracker('ui-e2e')).not.toBeNull()
+  expect(citesTracker('sha-256')).not.toBeNull()
+})
+
+test('isUntil() accepts a bead id, an owner/repo#N, a GitHub pull URL, and a real calendar date', () => {
+  expect(isUntil('claude-factory-3u1.1.1')).toBe(true)
+  expect(isUntil('acme/widget#12')).toBe(true)
+  expect(isUntil('https://github.com/acme/widget/pull/3')).toBe(true)
+  expect(isUntil('2026-12-31')).toBe(true)
+})
+
+test('isUntil() refuses a fake date, the wrong date format, and plain words', () => {
+  expect(isUntil('2026-02-30')).toBe(false) // February has no 30th
+  expect(isUntil('12/31/2026')).toBe(false)
+  expect(isUntil('soon')).toBe(false)
+  expect(isUntil('#5')).toBe(false)
+})
+
+test('gate() refuses a note with no --kind, naming --kind and all three kinds', () => {
+  const r = gate({ summary: 's', body: 'b' })
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    expect(r.flag).toBe('--kind')
+    for (const k of NOTE_KINDS) expect(r.reason).toContain(k)
+  }
+})
+
+test('gate() refuses an invalid --kind value, naming --kind and the bad value', () => {
+  const r = gate({ summary: 's', body: 'b', kind: 'Fact' })
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    expect(r.flag).toBe('--kind')
+    expect(r.reason).toContain('Fact')
+  }
+})
+
+test('gate() refuses a fact or rule note that cites a bead with no --until', () => {
+  for (const kind of ['fact', 'rule'] as const) {
+    const r = gate({ summary: 'claude-factory-3u1.1.1 taught us this', body: 'b', kind })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.flag).toBe('--until')
+      expect(r.reason).toContain('claude-factory-3u1.1.1')
+      expect(r.reason.toLowerCase()).toContain('tracker')
+      expect(r.reason).toContain('--until')
+    }
+  }
+})
+
+test('gate() accepts a recipe that cites a bead with no --until', () => {
+  expect(gate({ summary: 'claude-factory-3u1.1.1 taught us this', body: 'b', kind: 'recipe' })).toEqual({
+    ok: true,
+  })
+})
+
+test('gate() accepts a fact or rule note that cites a bead when --until is a valid bead id', () => {
+  expect(
+    gate({
+      summary: 'claude-factory-3u1.1.1 taught us this',
+      body: 'b',
+      kind: 'fact',
+      until: 'claude-factory-3u1.1.1',
+    }),
+  ).toEqual({ ok: true })
+})
+
+test('gate() accepts a note that cites nothing, with no --until', () => {
+  expect(gate({ summary: 's', body: 'b', kind: 'fact' })).toEqual({ ok: true })
+})
+
+test('gate() refuses an invalid --until value even on a note that cites nothing', () => {
+  const r = gate({ summary: 's', body: 'b', kind: 'fact', until: 'soon' })
+  expect(r.ok).toBe(false)
+  if (!r.ok) {
+    expect(r.flag).toBe('--until')
+    expect(r.reason).toContain('soon')
+  }
+})
+
+test('gate() is pure: the same input always returns the same decision', () => {
+  const n = { summary: 'claude-factory-3u1.1.1', body: 'b', kind: 'fact' as const }
+  expect(gate(n)).toEqual(gate(n))
+})

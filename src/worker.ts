@@ -53,7 +53,8 @@ export function queue(argv: string[]) {
 export const OUTBOX_USAGE = {
   report: 'usage: factory report <run> <seq> <outcome> <summary...>',
   mail: 'usage: factory mail <run> <node|manager> <text...>',
-  memory: 'usage: factory memory add [--rig r] [--from run/station] [--anyway] <summary> [body...]',
+  memory:
+    'usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] <summary> [body...]',
 }
 
 /**
