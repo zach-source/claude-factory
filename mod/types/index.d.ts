@@ -228,6 +228,23 @@ export type FactoryPmLogEntry = {
   error?: string
 }
 
+/** one briefer subagent attempt's outcome. register.tsx's briefer `turn.complete` branch, and
+ * `briefNow` itself on a failed facts gather, spawn deny or spawn throw, append one of these to
+ * `<home>/brief-log.jsonl`, capped at 50 lines (claude-factory-2u2). `key` is the gate visit's own
+ * key (`gateKey()`, src/gatebrief.ts). `error` is set instead of a clean write when the facts call,
+ * the spawn, or `factory gate-brief set` failed. */
+export type FactoryBriefLogEntry = {
+  at: number
+  key: string
+  agentId?: string
+  reason?: string
+  durationMs: number
+  /** input + output tokens the briefer's turn cost; absent when the turn reported none, or when
+   * this entry was written before a turn ever ran (a facts-gather or a spawn-deny/throw) */
+  tokens?: number
+  error?: string
+}
+
 /** one ranked bead in a rig's plan (mirrors `PlanItem`, src/plan.ts). `why` is the pm's one-line
  * reason for the bead's place in the order. `why` is 120 characters or fewer. */
 export type FactoryPlanItem = { id: string; title: string; priority: number; why: string }
