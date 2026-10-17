@@ -61,6 +61,7 @@ import {
   type Bead,
 } from './beads'
 import * as plan from './plan'
+import * as gatebrief from './gatebrief'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
 import { tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
@@ -227,7 +228,7 @@ export type Row = {
   ws?: string
   error?: string | null
   last?: Entry
-  gate?: { question: string; outcomes: string[] }
+  gate?: { question: string; outcomes: string[]; brief?: string }
   bead?: string
   /** the rig whose repo the run works, when one is defined for it */
   rig?: string
@@ -1989,10 +1990,27 @@ function agentOf(def: Factory, value: unknown, c: Ctx) {
   }
 }
 
+/** `HOME/gate-briefs.json`: the briefer's cleaned text for each live gate visit, keyed by `gatebrief.gateKey`. */
+type GateBriefsFile = Record<string, { text: string; at: number }>
+const gateBriefsFile = () => join(HOME, 'gate-briefs.json')
+const readGateBriefs = (): GateBriefsFile =>
+  existsSync(gateBriefsFile()) ? readJson<GateBriefsFile>(gateBriefsFile()) : {}
+
+/** the stored brief for this run's current gate visit, or undefined when the briefer has not written one yet */
+const gateBriefOf = (id: string, startedAt: number): string | undefined => {
+  try {
+    return readGateBriefs()[gatebrief.gateKey(id, startedAt)]?.text
+  } catch {
+    return undefined // a corrupt gate-briefs.json must not break every run's row
+  }
+}
+
 function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | null, error?: string): Row {
   const [node, sub] = where(value)
   const n = def.nodes[node]
   const retries = n?.retries ?? 2
+  // read gate-briefs.json once per row, not once per field (claude-factory-2u2.8)
+  const gateBrief = n?.gate && sub === 'working' ? gateBriefOf(run.id, c.startedAt) : undefined
   return {
     id: run.id,
     factory: def.name,
@@ -2015,7 +2033,13 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     ...(c.wakeAt && { wakeAt: c.wakeAt }),
     ...(c.mail[node]?.length && { mailedAt: Math.max(...c.mail[node]!.map(m => m.at ?? 0)) }),
     ...(n?.gate &&
-      sub === 'working' && { gate: { question: n.prompt.trim(), outcomes: Object.keys(n.next) } }),
+      sub === 'working' && {
+        gate: {
+          question: n.prompt.trim(),
+          outcomes: Object.keys(n.next),
+          ...(gateBrief && { brief: gateBrief }),
+        },
+      }),
   }
 }
 
@@ -5404,6 +5428,116 @@ const glabKnows = (host: string) =>
 
 const prsFile = (id: string) => join(runDir(id), 'prs.json')
 
+/** Check whether `id` is at a gate node now, working, with this exact gate visit's `startedAt`.
+ * `gate-brief set` uses this check to refuse a stale key.
+ * It also uses this check to prune old keys from `gate-briefs.json` (claude-factory-2u2). */
+async function isLiveGateVisit(id: string, startedAt: number): Promise<boolean> {
+  try {
+    const { run, value, c } = current(id)
+    const [node, sub] = where(value)
+    if (sub !== 'working' || c.startedAt !== startedAt) return false
+    return (await loadFactory(run.factory)).nodes[node]?.gate === true
+  } catch {
+    return false // the run is gone, or its state is unreadable: not a live gate either way
+  }
+}
+
+/** `factory gate-brief facts <run>` gathers the facts a briefer subagent needs to write one gate's brief
+ * (claude-factory-2u2). The briefer itself never shells out to `gh` or reads untrusted journal text through
+ * a tool that can also run other commands. It fails, exit 1, unless `run` is at a gate, working. */
+async function gateBriefFacts(id: string | undefined) {
+  const { run, value, c } = current(id)
+  const [node, sub] = where(value)
+  const def = await loadFactory(run.factory)
+  const n = def.nodes[node]
+  if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
+  const file = existsSync(prsFile(run.id))
+    ? asPrsFile(readJson(prsFile(run.id)))
+    : { version: 1 as const, prs: [] }
+  const prs = await Promise.all(
+    file.prs.map(async pr => {
+      let additions: number | null = null
+      let deletions: number | null = null
+      let changedFiles: number | null = null
+      // the diff stat costs one more `gh pr view`; only for a code-role PR, and only on GitHub (a GitLab
+      // merge request would need `glab`'s own fields, skipped here rather than guessed at)
+      if (pr.role === 'code' && pr.forge !== 'gitlab') {
+        try {
+          const res = await spawnGh(['pr', 'view', pr.url, '--json', 'additions,deletions,changedFiles'], {
+            cwd: run.repo,
+            timeout: 30_000,
+          })
+          if (res.code === 0) {
+            const parsed = JSON.parse(res.out) as {
+              additions?: number
+              deletions?: number
+              changedFiles?: number
+            }
+            additions = typeof parsed.additions === 'number' ? parsed.additions : null
+            deletions = typeof parsed.deletions === 'number' ? parsed.deletions : null
+            changedFiles = typeof parsed.changedFiles === 'number' ? parsed.changedFiles : null
+          }
+        } catch {
+          // fail soft (the design's own rule): additions/deletions/changedFiles stay null
+        }
+      }
+      return {
+        title: pr.title,
+        url: pr.url,
+        role: pr.role,
+        state: pr.state,
+        isDraft: pr.isDraft,
+        checks: pr.checks,
+        reviewDecision: pr.reviewDecision,
+        mergeStateStatus: pr.mergeStateStatus,
+        additions,
+        deletions,
+        changedFiles,
+      }
+    }),
+  )
+  return {
+    key: gatebrief.gateKey(run.id, c.startedAt),
+    rig: rigOf(run.repo)?.name,
+    bead: run.bead,
+    goal: clip(run.goal, 2000),
+    gate: { question: n!.prompt.trim(), outcomes: Object.keys(n!.next) },
+    verify: clip(c.log.findLast(e => e.node === 'verify')?.summary ?? '', 1500),
+    review: clip(c.log.findLast(e => e.node === 'review' || e.node === 'security')?.summary ?? '', 1500),
+    prs,
+  }
+}
+
+/** `factory gate-brief set <key> <file>` is the briefer's only write (claude-factory-2u2).
+ * It refuses a worker or patrol env, the same two checks `decide` uses (claude-factory-72v's pattern).
+ * It refuses a malformed key, and a key whose gate visit ended.
+ * A key's gate visit ends when the run moves on, or was never at that gate.
+ * The person must never see a brief for the wrong decision.
+ * `gatebrief.clipBrief` cleans `<file>`'s text before storage, because the text is the briefer's model
+ * output, built from untrusted PR and journal text. */
+async function gateBriefSet(key: string | undefined, filePath: string | undefined) {
+  if (process.env.FACTORY_FROM) fail('a worker cannot set a gate brief: only the briefer may')
+  if (process.env.FACTORY_PATROL) fail('a patrol cannot set a gate brief: leave it for the briefer')
+  if (!key || !filePath) fail('usage: factory gate-brief set <key> <file>')
+  const m = /^gate:(.+)@(\d+)$/.exec(key!)
+  if (!m) fail(`malformed gate-brief key "${key}"`)
+  const id = m![1]!
+  const startedAt = Number(m![2])
+  if (!(await isLiveGateVisit(id, startedAt))) fail(`"${key}" is not a live gate visit`)
+  if (!existsSync(filePath!)) fail(`no file ${filePath}`)
+  const text = gatebrief.clipBrief(readFileSync(filePath!, 'utf8'))
+  if (!text) fail('the brief is empty once cleaned')
+  const briefs = readGateBriefs()
+  briefs[key!] = { text, at: Date.now() }
+  for (const k of Object.keys(briefs)) {
+    if (k === key) continue
+    const km = /^gate:(.+)@(\d+)$/.exec(k)
+    if (!km || !(await isLiveGateVisit(km[1]!, Number(km[2])))) delete briefs[k]
+  }
+  writeJson(gateBriefsFile(), briefs)
+  console.log(`brief set for ${key}`)
+}
+
 /**
  * every run's own pull requests (AC1): mentions out of its reports and mail, corroborated by its rig's
  * branch listing or a search for its bead, kept and refreshed in runs/<id>/prs.json so a restart loses
@@ -5779,6 +5913,9 @@ const usage = `factory — herdr software factories on xstate
                                      pm (writes plan-facts.json); set <file> reads the pm's answer, writes
                                      plan.json and files findings/proposals as beads; show (or bare plan)
                                      prints the plan as text
+  gate-brief facts <run> | set <key> <file>   the gate briefer: facts gathers one gate's PR, verify and
+                                     review/security facts as JSON; set <key> <file> stores the briefer's
+                                     cleaned text in gate-briefs.json, for the gate's Interview item
   metrics [--rig r] [--since 7d] [--json]   how the factory performs: fates, ship rate, time to ship and on
                                      the approve gate, review loops, failures by kind, each station's outcomes
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
@@ -6286,6 +6423,19 @@ if (import.meta.main && !outboxCmd)
           break
         }
         fail(`unknown plan command "${sub}": facts, set <file> or show`)
+        break
+      }
+      case 'gate-brief': {
+        const [sub, a1, a2] = args
+        if (sub === 'facts') {
+          console.log(JSON.stringify(await gateBriefFacts(a1)))
+          break
+        }
+        if (sub === 'set') {
+          await gateBriefSet(a1, a2)
+          break
+        }
+        fail(`unknown gate-brief command "${sub}": facts <run> or set <key> <file>`)
         break
       }
       case 'queue': {

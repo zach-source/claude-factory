@@ -6,6 +6,20 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A hidden `briefer` subagent writes an evidence brief into each gate's decision item. The
+  manager no longer needs to read the pull request and the journal itself. (claude-factory-2u2)
+  - `src/gatebrief.ts`: `gateKey()` and `clipBrief()`. `src/cli.ts`: `factory gate-brief facts
+    <run>` prints the pull request, the verify and review summaries, and the run's goal as
+    JSON, only at a live gate; `factory gate-brief set <key> <file>` checks the key against
+    the live gate, strips control characters, keeps 8 lines of 200 characters or fewer each,
+    and stores the brief in `<home>/gate-briefs.json`; `row()` adds `gate.brief`.
+  - `mod/hooks/view.ts`: `briefContext()` and `interviews()` put the brief into the gate
+    Interview item: `context` is a redacted one-line summary, `details` is the whole brief.
+  - `mod/hooks/register.tsx`: a new `factory:briefer` subagent (`BRIEFER_TYPE`), spawned once
+    for each gate visit by `briefNow()`, with no tools at all. Its `turn.complete` writes the
+    brief through `gate-brief set` and logs one line to `<home>/brief-log.jsonl`. `tool.call`
+    denies every Bash call from a briefer agent, `factory decide` included. The person still
+    decides every gate. `userConfig.briefer` (default `true`) turns the briefer off.
 - A short note's `until` marker (a bead id, `owner/repo#N`, a GitHub pull URL, or a `YYYY-MM-DD`
   date) now retires the note on its own schedule, apart from the dream's own judgment. `dream`
   and `memory compact` retire a note once its date has passed, its named bead has closed, or its
