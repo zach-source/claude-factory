@@ -51,15 +51,43 @@ export const isOwned = (b: Bead) => !!b.metadata?.owner_decisions
  */
 export const linearSourced = (b: Bead) => !!b.external_ref?.toLowerCase().includes('linear.app')
 
+/** a `factory:<name>` or `station:<name>` label's name: lowercase, hyphenated, no path */
+export const NAME = /^[a-z][a-z0-9-]{0,63}$/
+
+/**
+ * Reads one `<prefix>:<name>` label's name off a bead. It returns `undefined` with no such label.
+ * It throws when two or more labels share the prefix, for example two `factory:` labels.
+ * The first one by label order can start a run in a place nobody chose on purpose
+ * (claude-factory-wnm.11). A name that fails `NAME`, such as a path like `factory:../x`, reads as
+ * absent, the same as no label.
+ */
+function oneLabel(b: Bead, prefix: 'factory' | 'station') {
+  const hits = b.labels?.filter(l => l.startsWith(`${prefix}:`)) ?? []
+  if (hits.length > 1) throw new Error(`ambiguous ${prefix} labels: ${hits.join(', ')}`)
+  const name = hits[0]?.slice(prefix.length + 1)
+  return name && NAME.test(name) ? name : undefined
+}
+
 /**
  * A `station:<name>` label starts the run there, not at the factory's start station.
  * A person adds this label by hand: `bd create ... -l station:<name>`.
  * A Linear-sourced bead (`linearSourced`) never uses this label to pick a station.
  * A Linear-side label must never skip the stations before the named one (claude-factory-b6c.27).
  * A person can still send such a run to a chosen station, with `factory fork <run> <station>`.
+ * Throws on two or more `station:` labels (`oneLabel`).
  */
-export const stationOf = (b: Bead) =>
-  (!linearSourced(b) && b.labels?.find(l => l.startsWith('station:'))?.slice('station:'.length)) || undefined
+export const stationOf = (b: Bead) => (linearSourced(b) ? undefined : oneLabel(b, 'station'))
+
+/**
+ * A `factory:<name>` label picks the factory that a run compiles for this bead. `stationOf`'s
+ * `station:<name>` label picks where in it to start (the requeue edge, claude-factory-wnm).
+ * `factoryOf` uses the same guards as `stationOf`. It never reads this label from a Linear-sourced
+ * bead (claude-factory-b6c.27). It never reads a name that fails `NAME`, such as a path like
+ * `factory:../x` or `factory:/tmp/x`. The bare `factory` label, with no colon, marks queue
+ * membership, not a factory name, and never matches here. Throws on two or more `factory:` labels
+ * (`oneLabel`).
+ */
+export const factoryOf = (b: Bead) => (linearSourced(b) ? undefined : oneLabel(b, 'factory'))
 
 /** a bead's parent: bd's parent-child edge, else the id's own `<parent>.<n>` */
 export const parentOf = (b: Bead) =>
@@ -142,6 +170,34 @@ const must = (r: ReturnType<typeof bd>, what: string) => {
   return r.out
 }
 
+/**
+ * null only for bd's own "not found" (a real answer); any other failure (a timeout, bd down) throws
+ * instead of being indistinguishable from a 404. For a goal that is shaped like one of this rig's own
+ * bead ids, a failed lookup must never fall through to creating a bead titled with the id itself.
+ *
+ * bd 1.3.0 prints the *same* "no issues found matching the provided IDs" JSON body on stdout, exit 1,
+ * both for a genuine not-found and for a query-time failure after the store opened (e.g. a timeout) --
+ * the stdout body alone cannot tell them apart. Only stderr can: a real not-found says exactly
+ * "Issue <id> not found" (plus a "Hint:" line); a query-time failure says "Error fetching <id>: <err>"
+ * instead. A loose /not found/i match on stderr is not enough: a store-open failure (the shared server
+ * up but this rig's own database missing) also says "not found" -- "database ... not found on Dolt
+ * server at ..." -- and must throw, not read as a genuine not-found.
+ *
+ * `requeue` and `queue` (below) use this, not the lenient `show`, to read a bead's current labels
+ * and metadata: a `bd show` failure must never read as "this bead has no labels, requeues=0"
+ * (claude-factory-wnm.9, claude-factory-wnm.12).
+ */
+function lookupBead(repo: string, actor: string, id: string): Bead | null {
+  const r = bd(repo, actor, 'show', id, '--json')
+  if (r.isOk) {
+    const parsed = JSON.parse(r.out)
+    return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
+  }
+  if (/^Error fetching\b/m.test(r.stderr)) throw new Error(`bd show ${id}: ${r.stderr.split('\n')[0]}`)
+  if (/^Issue \S+ not found$/m.test(r.stderr)) return null
+  throw new Error(`bd show ${id}: ${(r.stderr || r.out).split('\n')[0]}`)
+}
+
 export const beads = (repo: string, actor: string) => ({
   prefix: () => {
     const r = bd(repo, actor, 'config', 'get', 'issue_prefix')
@@ -152,29 +208,7 @@ export const beads = (repo: string, actor: string) => ({
     const parsed = r.isOk ? JSON.parse(r.out) : null
     return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
   },
-  /**
-   * null only for bd's own "not found" (a real answer); any other failure (a timeout, bd down) throws
-   * instead of being indistinguishable from a 404. For a goal that is shaped like one of this rig's own
-   * bead ids, a failed lookup must never fall through to creating a bead titled with the id itself.
-   *
-   * bd 1.3.0 prints the *same* "no issues found matching the provided IDs" JSON body on stdout, exit 1,
-   * both for a genuine not-found and for a query-time failure after the store opened (e.g. a timeout) --
-   * the stdout body alone cannot tell them apart. Only stderr can: a real not-found says exactly
-   * "Issue <id> not found" (plus a "Hint:" line); a query-time failure says "Error fetching <id>: <err>"
-   * instead. A loose /not found/i match on stderr is not enough: a store-open failure (the shared server
-   * up but this rig's own database missing) also says "not found" -- "database ... not found on Dolt
-   * server at ..." -- and must throw, not read as a genuine not-found.
-   */
-  lookup: (id: string): Bead | null => {
-    const r = bd(repo, actor, 'show', id, '--json')
-    if (r.isOk) {
-      const parsed = JSON.parse(r.out)
-      return Array.isArray(parsed) ? (parsed[0] ?? null) : parsed
-    }
-    if (/^Error fetching\b/m.test(r.stderr)) throw new Error(`bd show ${id}: ${r.stderr.split('\n')[0]}`)
-    if (/^Issue \S+ not found$/m.test(r.stderr)) return null
-    throw new Error(`bd show ${id}: ${(r.stderr || r.out).split('\n')[0]}`)
-  },
+  lookup: (id: string): Bead | null => lookupBead(repo, actor, id),
   /** the rig's bead-id prefix, thrown on failure instead of prefix()'s lenient "" (bd down looks the same as no prefix) */
   prefixStrict: () => must(bd(repo, actor, 'config', 'get', 'issue_prefix'), 'config get issue_prefix'),
   ready: (): Bead[] =>
@@ -207,14 +241,23 @@ export const beads = (repo: string, actor: string) => ({
   /** answers a human-flagged bead: a comment, and bd closes it */
   respond: (id: string, text: string) =>
     must(bd(repo, actor, 'human', 'respond', id, '-r', text), 'human respond'),
-  /** hands a bead to the factory: a rig starts it at the next dispatch, a rejected one too */
-  queue: (id: string, station?: string) =>
-    must(
+  /**
+   * Hands a bead to the factory: a rig starts it at the next dispatch, a rejected one too.
+   * It removes every old `factory:*`/`station:*` label first, then adds `station:<station>` when
+   * given one. Without this, a bead a requeue left pointed at another factory would queue there
+   * again, not at the rig's own factory (claude-factory-wnm.12).
+   */
+  queue: (id: string, station?: string) => {
+    const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(
+      l => l.startsWith('factory:') || l.startsWith('station:'),
+    )
+    return must(
       bd(
         repo,
         actor,
         'update',
         id,
+        ...old.flatMap(l => ['--remove-label', l]),
         '--add-label',
         LABEL,
         '--remove-label',
@@ -222,7 +265,8 @@ export const beads = (repo: string, actor: string) => ({
         ...(station ? ['--add-label', `station:${station}`] : []),
       ),
       'update',
-    ),
+    )
+  },
   /** atomic: false when someone else holds it */
   claim: (id: string) => bd(repo, actor, 'update', id, '--claim').isOk,
   /**
@@ -300,6 +344,13 @@ export const beads = (repo: string, actor: string) => ({
       ),
       'update',
     ),
+  /**
+   * removes metadata keys, with no other change. Dispatch uses this to drop `requeued_from` and
+   * `requeued_at` right after it starts the one run that label's pre-check exemption was for, so the
+   * exemption lasts one dispatch pass, not forever (claude-factory-wnm.13).
+   */
+  unsetMetadata: (id: string, ...keys: string[]) =>
+    must(bd(repo, actor, 'update', id, ...keys.flatMap(k => ['--unset-metadata', k])), 'update'),
   /** false when bd refuses, e.g. while the bead still has open tasks */
   close: (id: string, reason: string) => bd(repo, actor, 'close', id, '--reason', reason).isOk,
   /** unassigned and out of bd ready until a person undefers it, which hands it back to the factory */
@@ -329,6 +380,63 @@ export const beads = (repo: string, actor: string) => ({
         `rejected_at=${new Date().toISOString()}`,
         '--set-metadata',
         `reject_reason=${reason}`,
+      ),
+      'update',
+    )
+  },
+  /**
+   * Ends a run on a requeue edge (claude-factory-wnm). It releases the claim and keeps the bead open,
+   * ready and `factory`-labeled; it never closes or defers it. The next dispatch starts a new run for
+   * the bead.
+   *
+   * With `to.factory`, it removes every existing `factory:*` label, then adds `factory:<to.factory>`.
+   * With `to.station`, it does the same for `station:*` and `station:<to.station>`. Each kind of label
+   * moves on its own: `to: { station }` alone leaves `factory:*` untouched. With no `to`, the labels
+   * the worker set stay as they are.
+   *
+   * Metadata counts the hop: `requeued_from=<runId>`, `requeued_at`, `requeues=<n+1>`. A retried tick
+   * that calls this again with the same `runId` leaves the count alone, because `requeued_from` already
+   * names it.
+   *
+   * Reads the bead with `lookupBead`, not the lenient `show`: a `bd show` failure here must throw,
+   * not read as a bead with no labels and `requeues=0` (which would reset the loop counter and skip
+   * the old-label cleanup, claude-factory-wnm.9).
+   */
+  requeue: (id: string, runId: string, to?: { factory?: string; station?: string }) => {
+    bd(repo, actor, 'unclaim', id)
+    const b = lookupBead(repo, actor, id)
+    const already = b?.metadata?.requeued_from === runId
+    const requeues = already ? Number(b?.metadata?.requeues ?? 0) : Number(b?.metadata?.requeues ?? 0) + 1
+    const oldLabels = (b?.labels ?? []).filter(
+      l => (to?.factory && l.startsWith('factory:')) || (to?.station && l.startsWith('station:')),
+    )
+    const newLabels = to
+      ? [to.factory && `factory:${to.factory}`, to.station && `station:${to.station}`].filter(
+          (l): l is string => !!l,
+        )
+      : []
+    return must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        ...oldLabels.flatMap(l => ['--remove-label', l]),
+        '--add-label',
+        LABEL,
+        '--remove-label',
+        REJECTED,
+        ...newLabels.flatMap(l => ['--add-label', l]),
+        ...(already
+          ? []
+          : [
+              '--set-metadata',
+              `requeued_from=${runId}`,
+              '--set-metadata',
+              `requeued_at=${new Date().toISOString()}`,
+              '--set-metadata',
+              `requeues=${requeues}`,
+            ]),
       ),
       'update',
     )

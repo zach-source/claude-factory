@@ -599,10 +599,18 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
   abort defers it, unassigned (undefer it to hand it back); a reject leaves it open and ready but
   out of the queue, swapping the `factory` label for `rejected` and recording `rejected_by`,
   `rejected_at` and `reject_reason` in its metadata (queue it again, or close it yourself); with
-  open child beads, however the run ended, it stays open and unassigned for them.
+  open child beads, however the run ended, it stays open and unassigned for them; an edge with
+  `requeue: true` (see below) leaves the bead open, ready and `factory`-labeled instead. The next
+  dispatch starts a new run on it, in the factory and station its labels name.
 - **The backlog dispatches itself**: every rig's ready, unassigned, top-level beads labeled
   `factory` become runs, every 30 s while the rig and the town have room. A
-  `station:<name>` label starts one at that station.
+  `station:<name>` label starts one at that station. A `factory:<name>` label compiles that
+  factory instead of the rig's own, so a run can hand a bead to another factory with no hand
+  start (for example, lifecycle to release). Dispatch reads both labels together. A bad label
+  defers that one bead, never the rest of the rig: two `factory:` or two `station:` labels on one
+  bead, an unknown factory name ('no factory \<name\>'), a factory file that fails to load, or a
+  `station:<name>` the named factory lacks. Neither label is read from a Linear-sourced bead; a
+  requeue edge on one defers instead of looping.
 - **Dispatch checks a bead before it starts a run**: it looks for a merged pull request that
   already names the bead's id. It also looks for a live run that already holds the bead. On a
   hit, it rejects the bead (`rejected_by: dispatch`) or leaves one comment, and starts no run.
@@ -654,7 +662,13 @@ the manager; lifecycle's review has 3), `onRounds` (a node for a re-plan at the 
 person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
 to merge, close or update a pull or merge request an arrival's report links, before it starts a
 worker (lifecycle's `deploy`; see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }`
-parks the run with no worker; `goto` skips the wait.
+parks the run with no worker; `goto` skips the wait. An edge into `done` can carry `defer: true`
+(the bead goes back to a person) or `reject: true` (the bead stays open and ready, out of the
+queue, until someone queues it again). It can instead carry `requeue: true`, or
+`requeue: { factory?, station? }`. Either way the bead stays open, ready and `factory`-labeled.
+The next dispatch starts it in the factory and station the `requeue` object names, or in the
+labels the worker already set when `requeue` is `true` (claude-factory-wnm; see "The backlog
+dispatches itself" above).
 
 `onRounds` names the node that takes the first capped report, instead of the manager. The run
 carries the round's findings to that node. A second capped report in the same run still goes to
