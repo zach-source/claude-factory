@@ -6,6 +6,21 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- A station can now set `onTimeout: { timeoutMin, prompt? }`: the attempt right after a timeout
+  fail gets this longer limit and an extra brief section instead of the plain retry. lifecycle's
+  `security` uses it (45 min, then 75 min with a prompt that works from review's diff summary
+  instead of rereading the whole branch); a 2nd timeout in a row still goes to `isRepeatFail`'s
+  stuck state and one manager mail, unchanged. (claude-factory-3t2)
+  - Cause: a run review found 5 of 65 security visits (8%) timed out at 45 min, all on one large
+    AX rig, 4 in a row on two runs until the launch budget held them.
+  - `src/machine.ts`: `Node.onTimeout`, `afterTimeout(c, id)` (true when the node's own run of log
+    entries, read back from the end, holds a timeout fail), `timeoutOf(node, c, id)`, and two
+    `validate()` refusals (`onTimeout` on a gate; `onTimeout.timeoutMin` at or under `timeoutMin`).
+  - `src/cli.ts`: `reconcile()`'s deadline check now reads the limit from `timeoutOf()`; `brief()`
+    adds a "The previous attempt timed out" section with the longer limit and the node's prompt.
+  - `factories/lifecycle.ts`: `security.onTimeout` (75 min); `review`'s prompt now says its report,
+    when it reaches security, carries `git diff --stat origin/main...HEAD` (at most 60 files, then
+    "+N more") and one line per changed area.
 - Dispatch now checks a ready bead before it starts a run for it, and skips a bead a merged
   pull request or a live run already covers. (claude-factory-6as)
   - Cause: a 3-day review (2026-10-13 to 16) found 40 of 319 triage visits (12.5%) were
