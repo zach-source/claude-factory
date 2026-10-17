@@ -1701,13 +1701,17 @@ test('denyReason keeps its old verdict when cd comes after the push or in an unr
   expect(denyReason('git -C dir push origin main')).toBe(PUSH_REASON)
 })
 
-// AC6: a cd in an outer segment must still deny a HEAD push recursed into through sh -c, bash -c,
-// eval, or env -S. `anyShellReason` reads `movedSoFar` into each recursion site, and `denyAt`
-// seeds its own `movedSoFar` from the `movedBefore` it receives.
+// AC6: a cd in an outer segment must still deny a HEAD push. The push can run through sh -c,
+// bash -c, eval, or env -S. `anyShellReason` reads `movedSoFar` at each recursion site. `denyAt`
+// seeds its own `movedSoFar` from the `movedBefore` value it gets.
+// The `eval` row quotes its argument (`eval 'git push origin HEAD'`). This makes the one word
+// not a bare `git` token. So the row tests `anyShellReason`'s own eval recursion (line ~1897).
+// It does not test `anyGitReason`'s flat scan. An unquoted `eval git push origin HEAD` would
+// pass that flat scan on its own, with no help from the recursion this AC tests.
 const DENY_PUSH_AFTER_DIR_CHANGE_THROUGH_RECURSION = [
   "cd /other && sh -c 'git push origin HEAD'",
   "cd /other && bash -c 'git push origin HEAD'",
-  'cd /other && eval git push origin HEAD',
+  "cd /other && eval 'git push origin HEAD'",
   "cd /other && env -S 'git push origin HEAD'",
 ]
 
