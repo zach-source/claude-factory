@@ -845,6 +845,10 @@ minor release may change the factory format, the CLI or the run state.
   - The `moved` state threads through `denyAt`'s `sh -c`/`bash -c`/`eval`/
     `env -S` recursion too, so a `cd` before one of those still denies a
     `HEAD` push inside the recursed script.
+- `worker-hook` now denies an `env -S`/`env --split-string` value that holds a dollar sign, for
+  example `git ${FOO} origin main`. `env` changes a `${NAME}` word into one command word when it
+  runs, so the old check on the typed text alone can miss a real push or merge hidden this way.
+  (claude-factory-z1p)
 
 ## 0.12.0 (2026-10-15)
 
