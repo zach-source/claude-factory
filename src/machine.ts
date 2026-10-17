@@ -251,8 +251,9 @@ export const repeatQuestion = (node: string, reason: string) =>
 /**
  * whether the node's own run of log entries, read back from the end, holds a timeout fail. A fresh
  * arrival from elsewhere ends that run at once: its last entry belongs to another station. A backoff
- * retry, a handoff, or the manager's RETRY all keep the timeout entry in the log. Each of those still
- * sees it as true, until a non-timeout outcome or a new visit replaces it.
+ * retry, a handoff, or the manager's RETRY all keep the timeout entry in the log, so each still sees
+ * it as true. A later fail of another kind at the same node does not end the run either: the timeout
+ * entry is still in it, so this stays true until the node is left for a different one.
  */
 export const afterTimeout = (c: Ctx, node: string) => {
   for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node; i--) {
