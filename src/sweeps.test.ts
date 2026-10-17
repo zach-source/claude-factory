@@ -255,3 +255,31 @@ test('pruneGuardState drops a rig entirely once every one of its marks is stale'
   const pruned = pruneGuardState(state, now)
   expect(pruned.a).toBeUndefined()
 })
+
+// claude-factory-8pc.21: a mark must outlive maxAgeMs as long as its bead stays open, or a held
+// bead re-queued after 48h gets held again right away.
+test('pruneGuardState keeps a mark past maxAgeMs when openIds says its bead is still open', () => {
+  const now = Date.now()
+  let state: SweepGuardState = {}
+  state = markGuardHandled(state, 'a', 'still-open', now - 49 * 60 * 60 * 1000)
+  const pruned = pruneGuardState(state, now, { a: new Set(['still-open']) })
+  expect(guardHandled(pruned, 'a', 'still-open')).toBe(true)
+})
+
+test('pruneGuardState drops a mark openIds says is closed or gone, even inside maxAgeMs', () => {
+  const now = Date.now()
+  let state: SweepGuardState = {}
+  state = markGuardHandled(state, 'a', 'closed', now - 60 * 60 * 1000)
+  const pruned = pruneGuardState(state, now, { a: new Set() })
+  expect(guardHandled(pruned, 'a', 'closed')).toBe(false)
+})
+
+test('pruneGuardState falls back to maxAgeMs for a rig openIds has no entry for', () => {
+  const now = Date.now()
+  let state: SweepGuardState = {}
+  state = markGuardHandled(state, 'a', 'stale', now - 49 * 60 * 60 * 1000)
+  state = markGuardHandled(state, 'b', 'fresh', now - 60 * 60 * 1000)
+  const pruned = pruneGuardState(state, now, { b: new Set() }) // 'b's mark drops: openIds says closed
+  expect(guardHandled(pruned, 'a', 'stale')).toBe(false) // 'a' has no openIds entry: age rule applies
+  expect(guardHandled(pruned, 'b', 'fresh')).toBe(false)
+})
