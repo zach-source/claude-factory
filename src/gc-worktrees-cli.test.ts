@@ -634,6 +634,19 @@ test('p: --dry-run never fetches, so refs/remotes/origin stay exactly as before 
   expect(git(repo, 'for-each-ref', 'refs/remotes/origin/factory/ghost')).toBe('') // never fetched
 })
 
+test('q: an unknown --rig name fails, naming the known rigs, and never holds the lock (claude-factory-l38.16)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  fakeGh([])
+  const out = factory(['gc', '--worktrees', '--rig', 'nope'], { FACTORY_HERDR: herdr })
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('nope')
+  expect(out.err).toContain('r1')
+  expect(existsSync(join(home, 'gc-worktrees.lock'))).toBe(false)
+})
+
 test('r: gh pr list passes -R to the origin repo, and a result at the --limit cap counts as incomplete (claude-factory-l38.13)', () => {
   reset()
   const { repo } = makeRig('r1')
