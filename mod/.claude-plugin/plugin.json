@@ -16,8 +16,8 @@
     "pm": {
       "type": "boolean",
       "title": "Let a hidden pm subagent rank each rig's next work",
-      "description": "On: a hidden 'pm' subagent ranks each rig's ready work into a plan once an hour, and again soon after a run finishes. It has no Bash: it only ranks and explains, and the factory CLI writes the plan and files any finding. The patrol and dispatch then use that plan while it is fresh (under 2 hours old). Off: they keep today's order.",
-      "default": true
+      "description": "On: a hidden 'pm' subagent ranks each rig's ready work into a plan once an hour, and again soon after a run finishes. It has no Bash: it only ranks and explains, and the factory CLI writes the plan and files any finding. The patrol and dispatch then use that plan while it is fresh (under 2 hours old). Off: they keep today's order. Default is off for now: a claude-factory-dun rollback (see CHANGELOG). A manager session already running when the pm shipped cannot register the pm agent, so it retries every 60 seconds, forever. Set this back to true only after a fix closes that gap.",
+      "default": false
     }
   }
 }

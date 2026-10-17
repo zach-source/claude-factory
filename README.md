@@ -168,7 +168,9 @@ The pm shows two types of problem as decision items. The first type is a starved
 
 A plan gap is different. In one kind, an epic stays open after all its children close. In the other kind, a goal has no bead in the plan. For each plan gap, the pm makes an unlabeled bead. A person must add a label to triage it.
 
-The pm does not change the priority of a P0 or P1 bead, a rig goal, or an owner-only setting. It can only propose such a change. The proposal becomes a decision item in the Interview tab. A person must decide on the item. To turn off the pm, set `pm` to `false` in the plugin's `userConfig`.
+The pm does not change the priority of a P0 or P1 bead, a rig goal, or an owner-only setting. It can only propose such a change. The proposal becomes a decision item in the Interview tab. A person must decide on the item. Set `pm` to `false` in the plugin's `userConfig` to turn off the pm.
+
+The pm's `userConfig` default is `false` for now. This is a rollback for claude-factory-dun (see CHANGELOG). A manager session that was already running when the pm shipped cannot register the agent type the pm spawns. So it retried every 60 seconds, forever. Set `pm` back to `true` only after a fix closes that gap.
 
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats

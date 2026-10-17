@@ -298,6 +298,23 @@ minor release may change the factory format, the CLI or the run state.
   shows each rig's top 3 next-up items and its findings; the header and the band
   show the plan's own age, or "plan stale" past 2 hours. `pm` in the plugin's
   `userConfig` turns the pm off. (claude-factory-dun)
+- Rollback: `pm`'s `userConfig` default is now `false` (`mod/.claude-plugin/plugin.json`).
+  (claude-factory-dun)
+  - Cause: a manager session already running when PR #58 merged (4f695d1) never re-ran its
+    `session.start` hook, so it never called `$.agent.register('pm', ...)`. A hot reload
+    picks up most code changes, but not that call. `pmNow()` inside `tick()` is not
+    `session.start`-gated, so it kept calling `$.agent.spawn('pm', ...)` every
+    `PM_RETRY_MS` (60 s), forever, against an agent type the engine never learned. 56+
+    minutes after the merge, `<home>/plan.json` and `<home>/pm-log.jsonl` had never once
+    appeared, while `<home>/plan-facts.json` kept churning on every retry.
+  - Fix: the `userConfig` schema's declared default flips from `true` to `false`
+    (`mod/.claude-plugin/plugin.json`). A manager process reloads `plugin.json` on every
+    file change under `mod/` and recomputes `options.pm` from it each time (no stored
+    override existed), so this stops `pmNow()` at its own `if (!rt.isPmEnabled) return`
+    guard without a process restart. This bullet touches no pm code or test; all pm tests
+    still pass. A person sets `pm: true` to turn it back on, once a real fix (the manager
+    process restarts, or agent registration runs on every hot reload too) closes the
+    `session.start` gap.
 - `decide()` now archives a never-shown short note after 14 days, caps how many
   notes one tiering pass can archive, and logs the plan before it writes
   anything. (claude-factory-503.2)
@@ -343,6 +360,22 @@ minor release may change the factory format, the CLI or the run state.
     `HEAD`, since no commit exists yet to diff against at that point.
   - Migration: a home with the old gitignore and an untracked `.usage.jsonl`
     starts tracking the file on its next dream.
+- Fixed: the worker `PreToolUse` hook's `rm` guard can time out and fail
+  open. `anyShellReason` (`src/worker-hook.ts`) recurses into `denyReason`
+  once for each stacked `eval` or `sh -c` level, with no depth limit, and the
+  8192-character length cap only fired when a rig passed `personOnly`.
+  (claude-factory-epz)
+  - Cause: `denyReason('eval '.repeat(4000) + 'rm '.repeat(4000) + '; rm -rf
+    x')` with no `personOnly` took about 4 seconds at 32 KB, and grew 4-6x
+    per doubling. Past the hook's 10-second timeout (`src/cli.ts`), a
+    PreToolUse hook that times out lets the command run, so the `rm` guard
+    had no bound on every rig that does not pass `personOnly`.
+  - Fix: `denyAt(command, root, personOnly, depth)` now threads a `depth`
+    through all 3 recursion sites and denies past `MAX_SHELL_DEPTH` (32),
+    before the length check, so the limit applies with or without
+    `personOnly`. The 8192-character cap stays. The cap's own wording now
+    says "characters", not "bytes": `command.length` counts UTF-16 units.
+    README.md gained one sentence on the 8192-character deny.
 
 ## 0.12.0 (2026-10-15)
 
