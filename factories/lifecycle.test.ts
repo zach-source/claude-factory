@@ -261,16 +261,23 @@ for (const from of ['review', 'check']) {
   })
 }
 
-test("security's onTimeout prompt points the retry at review's diff summary, not the whole branch, and review's prompt promises one (claude-factory-3t2 AC5)", () => {
+test("security's onTimeout prompt points the retry at review's or check's diff summary, not the whole branch, and both prompts promise one (claude-factory-3t2 AC5, extended by claude-factory-wnn.6 for check)", () => {
   const onTimeout = lifecycle.nodes.security!.onTimeout!
   expect(onTimeout.timeoutMin).toBe(75)
   expect(onTimeout.prompt).toContain('diff summary')
   expect(onTimeout.prompt).toContain('changed-files')
+  expect(onTimeout.prompt).toContain("review's or check's report")
   expect(onTimeout.prompt).toMatch(/Do not re-read/)
 
   expect(lifecycle.nodes.review!.prompt).toContain('git diff --stat origin/main...HEAD')
   expect(lifecycle.nodes.review!.prompt).toContain('60 files')
   expect(lifecycle.nodes.review!.prompt).toContain('+N more')
+
+  // claude-factory-wnn.6: security's main prompt checks the diff against the plan's risk section,
+  // but a small run has no plan; it must also name triage's summary.
+  expect(lifecycle.nodes.security!.prompt).toContain(
+    "plan's risk section, or triage's summary on a small run",
+  )
 })
 
 // claude-factory-wnn: a small run (docs-only, test-only, a tiny fix) skips plan and security, and

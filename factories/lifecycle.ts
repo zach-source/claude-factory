@@ -147,9 +147,9 @@ Report approve; changes with a numbered list of everything to fix, found in one 
       // and the whole branch again; a 2nd timeout in a row still goes to isRepeatFail's stuck+mail.
       onTimeout: {
         timeoutMin: 75,
-        prompt: `Do not re-read the whole branch. Start from the changed-files list and the diff summary in review's report in your Inbox. If there is none, run \`git diff --stat origin/main...HEAD\`. Read the hunks of the riskiest files first (auth, input parsing, secrets, permissions, .factory/). Post each finding on the pull request as you find it. Report before the limit, and name the files you did not read.`,
+        prompt: `Do not re-read the whole branch. Start from the changed-files list and the diff summary in review's or check's report in your Inbox. If there is none, run \`git diff --stat origin/main...HEAD\`. Read the hunks of the riskiest files first (auth, input parsing, secrets, permissions, .factory/). Post each finding on the pull request as you find it. Report before the limit, and name the files you did not read.`,
       },
-      prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section. Change no code.
+      prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section, or triage's summary on a small run. Change no code.
 Post it on the pull request the way review does.
 Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
       next: { approve: 'release', changes: 'implement' },
