@@ -88,7 +88,8 @@ const failGh = () => {
   chmodSync(join(bin, 'gh'), 0o755)
 }
 
-/** a fake bd: `show <id> --json` answers closed when a marker file for the id exists */
+/** a fake bd: `show <id> --json` answers closed when a marker file for the id exists. It logs every
+ * `show` call to bd-calls.log (claude-factory-ulv: proves a fork bead's id is never looked up). */
 function fakeBd() {
   mkdirSync(bin, { recursive: true })
   const closedDir = join(dir, 'bd-closed')
@@ -98,6 +99,7 @@ function fakeBd() {
     [
       '#!/bin/sh',
       `if [ "$1" = "show" ]; then`,
+      `  echo "$*" >> '${join(dir, 'bd-calls.log')}'`,
       `  if [ -f "${closedDir}/$2" ]; then`,
       `    printf '%s' '{"id":"'"$2"'","title":"t","status":"closed"}'`,
       '  else',
@@ -642,6 +644,9 @@ test('a cross-repo CLOSED PR with a closed bead never covers the tip, and gh is 
   expect(git(repo, 'branch', '--list', `factory/${id}`)).not.toBe('')
   const calls = readFileSync(join(dir, 'gh-calls.log'), 'utf8')
   expect(calls).toContain('isCrossRepository')
+  // beadClosedFacts must drop the fork PR before it ever looks at a bead (AC5): no `bd show acme-1`
+  const bdCalls = existsSync(join(dir, 'bd-calls.log')) ? readFileSync(join(dir, 'bd-calls.log'), 'utf8') : ''
+  expect(bdCalls).not.toContain('acme-1')
 })
 
 test('a PR answer missing isCrossRepository fails closed: the branch is kept, reason facts-unavailable (claude-factory-ulv)', () => {
