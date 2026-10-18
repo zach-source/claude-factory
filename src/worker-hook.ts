@@ -203,6 +203,22 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-wmsr: segments() skips a clear word-start comment. A hash that is not clearly a
+// comment can still be one in the shell, and a quote in its line can hide the next command.
+export const COMMENT_REASON =
+  'The factory denies this command: it holds a # that this guard cannot read as a comment or as ' +
+  'part of a word, and its line holds a quote or a backtick. The shell can read the text after ' +
+  'the # as a comment, so this guard cannot find the real command words. Remove the # text, or ' +
+  'put it on a line of its own after a newline. Do not retry this exact command.'
+
+// claude-factory-wmsr: segments() reads a here-document body only when it can tell where the body
+// ends and whether the shell runs it.
+export const HEREDOC_REASON =
+  'The factory denies this command: it holds a here-document that this guard cannot read. The ' +
+  'delimiter, the end line or the body is unclear, or the body runs a command and holds a quote. ' +
+  "Use a quoted delimiter such as <<'EOF', or write the text to a file. Do not retry this exact " +
+  'command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -643,6 +659,17 @@ function isCatHeredoc(body: string): boolean {
   return false
 }
 
+/** What segments() reports to its caller. A set flag makes denyAt deny the command. */
+type SegInfo = {
+  dollarQuote: boolean
+  state?: ScanState
+  deep?: boolean
+  // claude-factory-wmsr: a # that may start a comment holds a quote in its line
+  comment?: boolean
+  // claude-factory-wmsr: a here-document that segments() cannot read with certainty
+  heredoc?: boolean
+}
+
 /**
  * Splits a command string into segments (shell words).
  * It splits on &&, ||, ;, |, &, a newline, ( ), $( and a backtick.
@@ -664,11 +691,7 @@ function isCatHeredoc(body: string): boolean {
  * When `subs` is set, segments() pushes the body of each command substitution found inside a
  * double-quoted span. The caller must scan each body. The word keeps its raw text.
  */
-function segments(
-  cmd: string,
-  info?: { dollarQuote: boolean; state?: ScanState; deep?: boolean },
-  subs?: DqSubstitution[],
-): string[][] {
+function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[][] {
   const segs: string[][] = []
   let cur: string[] = []
   let word = ''
@@ -689,11 +712,23 @@ function segments(
     cur = []
   }
   let redirPrev = false
+  // claude-factory-wmsr: the last char read (a backslash-newline pair does not count), and whether
+  // that char was a `&` or `|` read as a separator. `braceDepth` counts open unquoted `${`.
+  // `arith` counts open parens that belong to a `((` or `$((` pair.
+  let lastSig: string = '\n'
+  let lastSep: boolean = false
+  let braceDepth = 0
+  let arith = 0
+  const arithStack: boolean[] = []
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir = redirPrev
     redirPrev = false
+    const prevSig: string = lastSig
+    const prevSep: boolean = lastSep
+    lastSig = c
+    lastSep = false
     if (quote === "'") {
       if (c === "'") quote = null
       else word += c
@@ -739,15 +774,42 @@ function segments(
       // does not keep a literal newline.
       if (cmd[i + 1] === '\n') {
         i++
+        lastSig = prevSig
+        lastSep = prevSep
         continue
       }
       word += cmd[++i]
       hasWord = true
       continue
     }
+    if (c === '#' && !hasWord) {
+      // claude-factory-wmsr: bash and zsh read a word-start # as a comment. The last char must be
+      // a start, a blank, a newline or a separator, and the # must be outside `${ }` and `(( ))`.
+      // A backslash in a comment is literal, so the next raw newline ends it.
+      // Any other word-start # can be a comment too. This guard reads its text as words.
+      // If a quote is in its line, this guard sets info.comment.
+      const clear =
+        braceDepth === 0 &&
+        arith === 0 &&
+        (prevSig === '\n' ||
+          prevSig === ' ' ||
+          prevSig === '\t' ||
+          prevSig === ';' ||
+          ((prevSig === '&' || prevSig === '|') && prevSep))
+      if (clear) {
+        while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+        continue
+      }
+      if (info) {
+        let e = cmd.indexOf('\n', i)
+        if (e < 0) e = cmd.length
+        if (/['"`]/.test(cmd.slice(i, e))) info.comment = true
+      }
+    }
     if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) {
       endSeg()
       i++
+      lastSep = true
       continue
     }
     if (c === '(' || c === ')') {
@@ -758,13 +820,23 @@ function segments(
       if (c === '(') {
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
+        const pair = prevSig === '('
+        if (pair && !arithStack[arithStack.length - 1]) {
+          arithStack[arithStack.length - 1] = true
+          arith++
+        }
+        arithStack.push(pair)
+        if (pair) arith++
         if (arg) {
           endWord()
           cur.push('(')
         }
-      } else if (parens.pop()) {
-        endWord()
-        cur.push(')')
+      } else {
+        if (arithStack.pop()) arith--
+        if (parens.pop()) {
+          endWord()
+          cur.push(')')
+        }
       }
       endSeg()
       continue
@@ -790,6 +862,7 @@ function segments(
     }
     if (';|&\n'.includes(c)) {
       endSeg()
+      lastSep = c === '&' || c === '|'
       continue
     }
     if (/\s/.test(c)) {
@@ -804,6 +877,8 @@ function segments(
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
+    if (c === '{' && prevSig === '$') braceDepth++
+    else if (c === '}' && braceDepth > 0) braceDepth--
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
@@ -5198,13 +5273,15 @@ function denyAt(
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
   const subs: DqSubstitution[] = []
-  const quoteInfo: { dollarQuote: boolean; state: ScanState; deep?: boolean } = {
+  const quoteInfo: SegInfo = {
     dollarQuote: false,
     state,
   }
   const segs = segments(command, quoteInfo, subs)
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  if (quoteInfo.heredoc) return HEREDOC_REASON
+  if (quoteInfo.comment) return COMMENT_REASON
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.

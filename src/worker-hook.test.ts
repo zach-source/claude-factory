@@ -6,6 +6,7 @@ import {
   ALIAS_REASON,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
+  COMMENT_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
   DOLLAR_QUOTE_REASON,
@@ -15,6 +16,7 @@ import {
   GH_BUILTIN_VERBS,
   GIT_BUILTIN_VERBS,
   type HookGate,
+  HEREDOC_REASON,
   LIVE_REASON,
   LONG_COMMAND_REASON,
   MERGE_REASON,
@@ -4681,6 +4683,44 @@ test.each(ALLOW_DQ_SUBST)('denyReason allows %j (double-quoted text)', cmd => {
 
 test('denyReason keeps a gh api graphql file query in double quotes denied', () => {
   expect(denyReason('gh api graphql -f query="$(cat f)"', '/root/repo', ['acme'], DQ_GATE)).toBe(MERGE_REASON)
+})
+
+// claude-factory-wmsr: a word-start comment and a here-document body are text. A quote char in them
+// must not hide the next command from segments().
+const WM = 'git push origin main'
+const DENY_WMSR_COMMENT: [string, string][] = [
+  [`true # don't\n${WM}`, PUSH_REASON],
+  [`true;# it's\n${WM}`, PUSH_REASON],
+  [`true |# it's\n${WM}`, PUSH_REASON],
+  [`true &# it's\n${WM}`, PUSH_REASON],
+  [`true &&# it's\n${WM}`, PUSH_REASON],
+  [`# don't\n${WM}`, PUSH_REASON],
+  [`true # a\\\n${WM}`, PUSH_REASON],
+  [`echo $(true # a\\\n${WM}\n)`, PUSH_REASON],
+  [`echo $(true)#' \n${WM}\n'`, COMMENT_REASON],
+]
+test.each(DENY_WMSR_COMMENT)('denyReason denies %j (comment text, wmsr)', (cmd, reason) => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBe(reason)
+})
+
+const DENY_WMSR_COMMENT_ANY = [
+  `echo $(true)#x ; 'g'it push origin main`,
+  `x=ab; echo $(( #x )); ${WM}`,
+  `echo \${x:- #}; ${WM}`,
+]
+test.each(DENY_WMSR_COMMENT_ANY)('denyReason denies %j (hash that is no comment, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_COMMENT = [
+  "true # don't\necho hi",
+  'echo a#b',
+  'echo $((1+2))',
+  "gh pr view 1 # it's ok",
+  "git push origin factory/x # don't",
+]
+test.each(ALLOW_WMSR_COMMENT)('denyReason allows %j (comment text, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
 })
 
 test('denyReason denies a deep double-quoted substitution nest', () => {
