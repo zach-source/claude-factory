@@ -2574,12 +2574,12 @@ test.each([
   "env -S 'echo hi' there",
   "env -S 'git status'",
   "env -S 'sh' -c 'echo it'\\''s'",
-])('denyReason allows %j (claude-factory-s1fj)', (cmd) => {
+])('denyReason allows %j (claude-factory-s1fj)', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
 
 test('denyReason bounds a long env -S chain that ends in a push (claude-factory-s1fj)', () => {
-  const cmd = "env -S env ".repeat(40) + "-S sh -c 'git push origin main'"
+  const cmd = 'env -S env '.repeat(40) + "-S sh -c 'git push origin main'"
   const t0 = Date.now()
   expect(denyReason(cmd)).toBeDefined()
   expect(Date.now() - t0).toBeLessThan(1000)

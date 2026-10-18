@@ -3633,7 +3633,22 @@ function anyShellReason(
       if (val.includes('$')) return ENV_SPLIT_VAR_REASON
       const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
       if (r) return r
-      break
+      // claude-factory-s1fj: env inserts the split words into argv and keeps parsing the words
+      // after the value. Rebuild that argv and scan it, so a shell word in the value reaches
+      // the sh -c scan with the script that follows it. The shape matches envOptionScan.
+      const span = envSplitStringScan(words, j)!
+      const sWord = words[span.sIndex]!
+      const prefix =
+        sWord.startsWith('-') && !sWord.startsWith('--') ? sWord.slice(1, sWord.indexOf('S')) : ''
+      const argv = [
+        'env',
+        ...words.slice(j + 1, span.sIndex),
+        ...(prefix ? ['-' + prefix] : []),
+        ...segments(val).flat(),
+        ...words.slice(span.end),
+      ]
+      const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
+      return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
     }
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
       if (nc < j) {
