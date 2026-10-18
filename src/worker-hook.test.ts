@@ -2499,13 +2499,13 @@ const DENY_ENV_SPLIT_TAIL: Array<[string, string]> = [
 test.each(DENY_ENV_SPLIT_TAIL)(
   'denyReason denies %j (claude-factory-s1fj, argv after an env -S value is part of the command)',
   (cmd, reasonName) => {
-    const gate = { headOf: (d: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
+    const gate = { headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(ENV_SPLIT_STRING_REASON[reasonName])
   },
 )
 
 test('denyReason allows harmless argv after an env -S value (claude-factory-s1fj)', () => {
-  const gate = { headOf: (d: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
+  const gate = { headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
   for (const cmd of [
     "env -S 'sh' -c 'echo x'",
     "env -S 'sh -c' 'echo x'",

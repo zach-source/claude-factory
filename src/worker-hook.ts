@@ -3033,7 +3033,12 @@ function anyShellReason(
       // each quote inside a word becomes '\'' so segments() reads it back as a literal quote.
       let text = val
       if (scan.end < words.length) {
-        text += ' ' + words.slice(scan.end).map(w => `'${w.replace(/'/g, `'\\''`)}'`).join(' ')
+        text +=
+          ' ' +
+          words
+            .slice(scan.end)
+            .map(w => `'${w.replace(/'/g, `'\\''`)}'`)
+            .join(' ')
       }
       const r = denyAt(text, root, personOnly, gate, depth + 1, state, moved)
       if (r) return r
