@@ -571,13 +571,13 @@ function namesFunctionDefinition(words: string[]): boolean {
   let k = 0
   while (k < words.length && FUNCTION_PREFIX_WORDS.has(words[k]!)) k++
   if (words[k] === 'function') return true
-  // claude-factory-4i60.5: a command position also follows `{`, `always` and the like inside
+  // claude-factory-4i60.5: a command position also follows `{` and the like inside
   // the segment (zsh `repeat 1 {`, `if [[ 1 ]] {`, `} always {`), `repeat <word>`, and `time --`.
   for (let j = 1; j < words.length; j++) {
     if (words[j] !== 'function') continue
     const prev = words[j - 1]!
     if (FUNCTION_PREFIX_WORDS.has(prev) && prev !== '-p' && prev !== 'time') return true
-    if (prev === 'always' || words[j - 2] === 'repeat') return true
+    if (words[j - 2] === 'repeat') return true
     if (prev === '--' && (words[j - 2] === 'time' || words[j - 2] === '-p')) return true
   }
   // the zsh functions table, a bash BASH_FUNC_ import, and a bash function-import value
