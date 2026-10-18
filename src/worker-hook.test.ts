@@ -3131,6 +3131,52 @@ test('denyReason denies cd into the global git config directory (claude-factory-
   )
 })
 
+// ty8y.14-18 (review r3): work trees outside the root, gh clone, the .config directory, dot segments.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R3 = [
+  'git --work-tree=/Users/acme checkout HEAD -- .',
+  'git --work-tree ~ checkout -f HEAD',
+  'GIT_WORK_TREE=~ git checkout -f HEAD',
+  'git --work-tree=/etc checkout HEAD -- .',
+  'git --work-tree=../x checkout HEAD -- .',
+  "git --work-tree=/Users/acme checkout HEAD -- ':(glob)*config'",
+  'git --git-dir=/r/acme/widget/.git checkout HEAD -- .gitconfig',
+  'GIT_DIR=/r/acme/widget/.git git checkout HEAD -- .gitconfig',
+  'gh repo clone acme/evil ~/.config/git',
+  'gh gist clone abc ~/.config/git',
+  'rsync -a /r/acme/evil/ ~/.config/',
+  'cp -R /r/acme/evil ~/.config',
+  'mv /r/acme/evil ~/.config',
+  'ln -sfn /r/acme/evil ~/.config',
+  'tar -C ~/.config -xf x.tar',
+  'unzip -d ~/.config x.zip',
+  'cp x ~/.config/git/.',
+  'cp x ~/.config/git/./',
+  'cp x ~/.config/git/./config',
+  'cp x ~/.config//git/config',
+  'printf x > ~/./.gitconfig',
+  'bun test --reporter-outfile=~/.gitconfig',
+  'bun test --reporter-outfile ~/.gitconfig',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R3)(
+  'denyReason denies %j alone (claude-factory-ty8y r3)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'git --work-tree=. status',
+  'git --work-tree=/r/acme/widget/sub status',
+  'ls ~/.config',
+  'cat ~/.config/git/config',
+  'gh pr list --search clone',
+])('denyReason allows %j (claude-factory-ty8y r3)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
 // ty8y.5: a quoted or escaped git word still counts as a git word.
 const DENY_QUOTED_GIT_WORD = [
   'printf x >> ~/.gitconfig; "gi"t push',

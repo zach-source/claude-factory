@@ -892,7 +892,7 @@ const GLOBAL_GIT_CONFIG_RE =
 // claude-factory-ty8y: the alternatives of GLOBAL_GIT_CONFIG_RE that name the file itself, not a
 // directory on the way to it. A non-reader command that holds such a word writes, or can write.
 const GLOBAL_GIT_CONFIG_FILE_RE =
-  /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|(^|[^A-Za-z0-9_.-])\.config\/git\/?["']?$|XDG_CONFIG_HOME/i
+  /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|(^|[^A-Za-z0-9_.-])\.config(\/git)?\/?["']?$|XDG_CONFIG_HOME/i
 
 // claude-factory-ty8y: paths a glob word is tested against, to find a glob that can name the file.
 const GLOBAL_GIT_CONFIG_SAMPLES = [
@@ -951,25 +951,57 @@ function globNamesGlobalGitConfig(word: string): boolean {
   }
 }
 
-/**
- * claude-factory-ty8y: classifies one segment's raw words.
- * `write`: a redirect target, a `dd` `of=` target, or an operand of a command that is not a reader
- * names the global git config file, or a glob that can name it.
- * `mention`: a word names a directory on the way to it (`.config`), or the file where the
- * segment skips operands.
- *
- * A git segment and a reader segment skip their non-redirect operands. They only name a path.
- * A git `--output` or `-o` flag stays checked, because it writes its value.
- */
 type OperandSkip = 'none' | 'reader' | 'operands'
 
 // claude-factory-ty8y.9: a git segment with one of these words can write a path operand: the work
 // tree moves, or a clone or worktree creates the path. Such a segment keeps its operands checked.
-const GIT_OPERAND_WRITER_RE = /^(--work-tree|-C|GIT_WORK_TREE=|clone$|worktree$)/
+const GIT_OPERAND_WRITER_RE = /^(--work-tree|--git-dir|-C|GIT_WORK_TREE=|GIT_DIR=|clone$|worktree$)/
 
-// claude-factory-ty8y.12: a flag that makes a skipped command write its value.
-const OUTPUT_FLAG_RE = /^(--output|-o|-O|-D|--dir)/
+// claude-factory-ty8y.12, .18: flags that make a skipped command write their value.
+const OUTPUT_FLAG_SOURCE = '--output|-o|-O|-D|--dir|--reporter-outfile'
+const OUTPUT_FLAG_RE = new RegExp(`^(${OUTPUT_FLAG_SOURCE})`)
+const OUTPUT_FLAG_EXACT_RE = new RegExp(`^(${OUTPUT_FLAG_SOURCE})$`)
 
+// claude-factory-ty8y.14: true when a work tree flag or env word moves the work tree out of `root`.
+// A git checkout or restore into another work tree can write the global git config.
+function gitWorkTreeOutside(words: string[], root: string): boolean {
+  const bad = (raw: string | undefined): boolean => {
+    const v = (raw ?? '').replace(/^["']+|["']+$/g, '')
+    if (v === '.') return false
+    if (v === root || v.startsWith(root + '/')) return false
+    return !v || v.startsWith('/') || /[~$`\\]|(^|\/)\.\.(\/|$)/.test(v)
+  }
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--work-tree') {
+      if (bad(words[i + 1])) return true
+    } else if (w.startsWith('--work-tree=')) {
+      if (bad(w.slice(12))) return true
+    } else if (w.startsWith('GIT_WORK_TREE=')) {
+      if (bad(w.slice(14))) return true
+    }
+  }
+  return false
+}
+
+// claude-factory-ty8y.17: collapses `//`, `/./` and a trailing `/.` so a path spelling cannot dodge the regexes.
+function normalizeConfigPath(word: string): string {
+  return word
+    .replace(/\/+/g, '/')
+    .replace(/\/(\.\/)+/g, '/')
+    .replace(/\/\.(["']?)$/, '$1')
+}
+
+/**
+ * claude-factory-ty8y: classifies one segment's raw words.
+ * `write`: a redirect target, a `dd` `of=` target, or an operand of a command that is not a reader
+ * names the global git config file, the `.config` directory, or a glob that can name the file.
+ * `mention`: a word names a directory on the way to it (`.config`), or the file where the
+ * segment skips operands.
+ *
+ * A git segment and a reader segment skip their non-redirect operands. They only name a path.
+ * A skipped command still checks the value of an output flag, because it writes that value.
+ */
 function globalGitConfigUse(
   words: string[],
   skip: OperandSkip,
@@ -980,10 +1012,10 @@ function globalGitConfigUse(
   let prevWriterFlag = false
   for (const word of words) {
     const afterWriterFlag = prevWriterFlag
-    prevWriterFlag = skip === 'operands' && /^(--output|-o|-O|-D|--dir)$/.test(word)
+    prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
     const wasPending = pending
     pending = false
-    let candidate = word
+    let candidate = normalizeConfigPath(word)
     let redirect = wasPending
     const m = word.match(REDIRECT_PREFIX_RE)
     if (m && m[0].length === word.length) {
@@ -991,10 +1023,10 @@ function globalGitConfigUse(
       continue
     }
     if (m) {
-      candidate = word.slice(m[0].length)
+      candidate = normalizeConfigPath(word.slice(m[0].length))
       redirect = true
     } else if (!wasPending && /^of=/i.test(word)) {
-      candidate = word.slice(3)
+      candidate = normalizeConfigPath(word.slice(3))
       redirect = true
     }
     if (!redirect) {
@@ -4099,7 +4131,7 @@ function denyAt(
     const operandSkip: OperandSkip = READER_COMMANDS.has(b)
       ? 'reader'
       : (isGitSegment && !words.some(w => GIT_OPERAND_WRITER_RE.test(w))) ||
-          TEXT_OPERAND_COMMANDS.has(b) ||
+          (TEXT_OPERAND_COMMANDS.has(b) && !(b === 'gh' && words.includes('clone'))) ||
           (b === 'bun' && cmd[1] === 'test')
         ? 'operands'
         : 'none'
@@ -4135,7 +4167,7 @@ function denyAt(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
-    if (configUse === 'write') return GLOBAL_GIT_CONFIG_REASON
+    if (configUse === 'write' || gitWorkTreeOutside(words, root)) return GLOBAL_GIT_CONFIG_REASON
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
