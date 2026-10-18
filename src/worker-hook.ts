@@ -63,7 +63,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs'
-import { resolve as resolvePath } from 'node:path'
+import { posix, resolve as resolvePath } from 'node:path'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -1352,6 +1352,19 @@ const SHELL_VALUE_LONG_FLAGS = new Set(['--rcfile', '--init-file'])
  * That is true when it has no -c script and no literal script file operand: a bare shell, `-s`,
  * a lone `-`, a process substitution, a dynamic operand, or /dev/stdin and /dev/fd/N.
  */
+/**
+ * claude-factory-l43b.10/.11: true when a shell operand names stdin. It drops a glued redirect,
+ * then folds //, ./ and .. so `//dev/stdin` and `/dev/../dev/stdin` match. A relative path with
+ * leading ../ and a dev/stdin tail also matches, because the working directory is unknown.
+ */
+function stdinPathOperand(word: string): boolean {
+  const w = word.replace(/[<>][\s\S]*$/, '')
+  const n = posix.normalize(w)
+  return (
+    /^\/dev\/(stdin|fd\/\d+)$|^\/proc\/[^/]+\/fd\/\d+$/.test(n) || /^(\.\.\/)+dev\/(stdin|fd\/\d+)$/.test(n)
+  )
+}
+
 function shellReadsStdin(words: string[], k: number): boolean {
   let afterDashDash = false
   for (let i = k + 1; i < words.length; i++) {
@@ -1377,12 +1390,12 @@ function shellReadsStdin(words: string[], k: number): boolean {
       if (w.startsWith('-') || w.startsWith('+')) {
         const flags = w.slice(1)
         if (flags.includes('s')) return true
-        if (/[oO]/.test(flags)) i++
+        i += (flags.match(/[oO]/g) ?? []).length
         continue
       }
     }
     if (dynamicWord(w)) return true
-    return /^\/dev\/(stdin|fd\/\d+)$|^\/proc\/[^/]+\/fd\/\d+$/.test(w)
+    return stdinPathOperand(w)
   }
   return true
 }
