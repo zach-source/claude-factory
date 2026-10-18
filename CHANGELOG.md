@@ -210,6 +210,10 @@ minor release may change the factory format, the CLI or the run state.
   | `NAME=value` operand after a wrapper's own name or flags | `env A=1 $G $V origin main` | claude-factory-p43v.25 |
   | `timeout`'s duration word after its own `--` | `timeout -- 5 $G $V origin main` | claude-factory-p43v.26 |
   | The `MAX_COMMAND_ANCHORS` cap on many unknown flag/value pairs in a row | `sudo` plus 16 `-R /` pairs plus `$G $V origin main` | claude-factory-p43v.27 |
+  | A `{}` word (`find -exec`, `xargs -I {}`) at the git or gh verb slot | `find push -maxdepth 0 -exec git {} origin main ;` | claude-factory-p43v.29 |
+  | `NAME=value` operand with a dot, a dash or a leading digit in the name, or after a wrapper's own `--` | `env a.b=1 $G $V origin main`, `env -- A=1 $G $V origin main` | claude-factory-p43v.30 |
+  | `timeout`'s duration operand in the GNU `1e1` or `inf` form | `timeout 1e1 $G $V origin main` | claude-factory-p43v.31 |
+  | A nested wrapper's own name, or an unpaired dynamic flag value, stopping the chase early | `sudo -Z "$P" env $G $V origin main` | claude-factory-p43v.32 |
 
   `commandAnchors` (`src/worker-hook.ts`) gives a short list of start indices. It replaces the
   old single verb-slot index. It goes around a wrapper's flags, known or unknown. An unknown

@@ -4229,10 +4229,7 @@ test.each(DENY_CHASE_PAST_CAP_SKIPS_FLAGS)(
   },
 )
 
-const ALLOW_CHASE_PAST_NESTED_WRAPPER = [
-  'sudo -u x cp "$A" "$B"',
-  'env -i "$PY" -c x',
-]
+const ALLOW_CHASE_PAST_NESTED_WRAPPER = ['sudo -u x cp "$A" "$B"', 'env -i "$PY" -c x']
 
 test.each(ALLOW_CHASE_PAST_NESTED_WRAPPER)(
   'denyReason allows %j (claude-factory-p43v.32: no over-deny from the chase restart or the post-cap pair scan)',
