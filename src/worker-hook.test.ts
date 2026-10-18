@@ -2681,7 +2681,7 @@ test.each(DENY_DYNAMIC_GH_VERB)(
   },
 )
 
-test('denyReason denies %j (claude-factory-p43v.3 AC4: a dynamic gh sub slot denies even with a later git push)', () => {
+test('denyReason denies "gh pr $S 5; git push o HEAD" (claude-factory-p43v.3 AC4: a dynamic gh sub slot denies even with a later git push)', () => {
   expect(denyReason('gh pr $S 5; git push o HEAD', '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
 })
 
