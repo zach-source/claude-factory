@@ -2416,9 +2416,9 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
 ])
 
 /**
- * Returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real command
- * (claude-factory-p43v.5). No wrapper that this hook knows by name has named the command.
- * No `git`, `gh` or `git-*` word has named it either. Returns undefined to allow `words`.
+ * The function returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real
+ * command (claude-factory-p43v.5). No wrapper that this hook knows by name names the command.
+ * No `git`, `gh` or `git-*` word names it either. It returns undefined to allow `words`.
  *
  * This function checks two cases.
  *
@@ -2428,24 +2428,46 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
  * backtick (claude-factory-p43v.2). Both forms mean that a substitution gives the command name.
  * This hook cannot read that substitution. It denies the segment outright.
  *
- * AC7: a one-pass, lazy-pointer scan over the rest of the segment. It costs O(n).
+ * AC7: the function uses a one-pass, lazy-pointer scan over the rest of the segment.
+ * Its cost is O(n).
  *
- * No dynamic word starts its own rescan (claude-factory-p43v.5 AC10). The scan tracks one fact.
- * That fact is whether a literal `git`, `gh` or `git-*` word has run yet.
- * Before that word runs, a dynamic word denies in two cases.
+ * No dynamic word starts its own scan (claude-factory-p43v.5 AC10). The scan keeps track of
+ * one fact. That fact is whether a literal `git`, `gh` or `git-*` word ran earlier.
+ * Before such a word runs, the hook denies a dynamic word in two cases.
  *
  * - First, its next non-flag word is in `DYNAMIC_COMMAND_TRIGGER`.
  *   The scan skips the value word of a `GIT_VALUE_FLAGS` or `GH_VALUE_FLAGS` flag.
- * - Second, a `-c name=value` flag runs right after it.
+ * - Second, a `-c name=value` flag follows it directly.
  *   The key is one that `isPushConfigWrite` denies. This is the dynamic-command-word form of
  *   `gitDashCPushDenied`.
  *
- * A flag run does not count as "the next word" on its own.
- * It carries the pending dynamic word forward.
+ * A run of flags does not count as "the next word" by itself.
+ * The run passes the dynamic word on to the next word.
+ *
+ * claude-factory-p43v.8: the AC7 scan above marks a dynamic word as "shown" when it reads it.
+ * The scan never checks the word right after a dynamic word against `dynamicWord`.
+ * It checks that word only against `DYNAMIC_COMMAND_TRIGGER`.
+ * So `$G $V origin main` (after `G=git V=push`) reads `$G` as the command.
+ * It never checks `$V`. `$V` is not in `DYNAMIC_COMMAND_TRIGGER`, so the old scan moves on.
+ *
+ * This check runs first. It starts at `cmd[0]`, the real command word that `realCommand` finds.
+ * It denies when `cmd[0]` is dynamic and the next non-flag word in `cmd` is dynamic too.
+ * Because of this start point, `cp "$A" "$B"` and `"$PY" -c 'print(1)'` pass the check.
+ * Neither `cp` nor the script word of `"$PY" -c` is the second dynamic word in a pair that
+ * starts at the command slot.
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
   const cmd = realCommand(words)
   if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
+  if (cmd.length > 0 && dynamicWord(cmd[0]!)) {
+    let k = 1
+    while (k < cmd.length) {
+      const w = cmd[k]!
+      if (!w.startsWith('-') || w === '-') break
+      k += GIT_VALUE_FLAGS.has(w) || GH_VALUE_FLAGS.has(w) ? 2 : 1
+    }
+    if (k < cmd.length && dynamicWord(cmd[k]!)) return DYNAMIC_VERB_REASON
+  }
 
   let sawGitWord = false
   let pendingDynamic = false

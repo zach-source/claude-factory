@@ -2831,3 +2831,66 @@ test.each(DENY_DYNAMIC_LIVE_APPLY_VERB)(
 test('denyReason allows kubectl $V -f x --context kind-x with personOnly acme (claude-factory-p43v.6 AC11: an unlisted context stays allowed)', () => {
   expect(denyReason('kubectl $V -f x --context kind-x', undefined, ACME)).toBeUndefined()
 })
+
+// claude-factory-p43v.8: two dynamic words in a row hide the wrapper word and the verb.
+const DENY_TWO_DYNAMIC_COMMAND_WORDS = [
+  'G=git V=push; $G $V origin main',
+  '$G ${V} origin main',
+  '"$G" "$V" origin main',
+]
+
+test.each(DENY_TWO_DYNAMIC_COMMAND_WORDS)(
+  'denyReason denies %j (claude-factory-p43v.8: two dynamic words in a row hide git and its verb)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// claude-factory-p43v.8 AC9: a dynamic word after a literal command word is an argument, not a second command word.
+const ALLOW_TWO_DYNAMIC_COMMAND_WORDS = ['cp "$A" "$B"', '"$PY" -c \'print(1)\'']
+
+test.each(ALLOW_TWO_DYNAMIC_COMMAND_WORDS)(
+  'denyReason allows %j (claude-factory-p43v.8: no over-deny from the two-dynamic-word check)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.10: a dynamic command word before a mutating kubectl, ko or helm verb hides it.
+const DENY_DYNAMIC_LIVE_APPLY_COMMAND_WORD = [
+  'K=kubectl; $K apply -f x --context acme',
+  '$K delete pod x --context acme',
+]
+
+test.each(DENY_DYNAMIC_LIVE_APPLY_COMMAND_WORD)(
+  'denyReason denies %j with personOnly acme (claude-factory-p43v.10: a dynamic command word before a mutating kubectl/ko/helm verb fails closed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+  },
+)
+
+test('denyReason allows $K apply -f x --context kind-x with personOnly acme (claude-factory-p43v.10: an unlisted context stays allowed)', () => {
+  expect(denyReason('$K apply -f x --context kind-x', undefined, ACME)).toBeUndefined()
+})
+
+// claude-factory-p43v.11: a dynamic gh api endpoint or method hides a merge or push call.
+const DENY_DYNAMIC_GH_API = [
+  'gh api repos/acme/widget/pulls/1/$M -X PUT',
+  'gh api $E -X PUT',
+  'gh api -X $X repos/acme/widget/pulls/1/merge',
+]
+
+test.each(DENY_DYNAMIC_GH_API)(
+  'denyReason denies %j (claude-factory-p43v.11: a dynamic gh api endpoint or method fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason allows gh api repos/acme/widget/pulls/$N (claude-factory-p43v.11: a GET of a dynamic endpoint stays allowed)', () => {
+  expect(denyReason('gh api repos/acme/widget/pulls/$N', '/x', undefined, P43V_GATE)).toBeUndefined()
+})
+
+test('denyReason allows gh api $E -X GET (claude-factory-p43v.11: an explicit GET of a dynamic endpoint stays allowed)', () => {
+  expect(denyReason('gh api $E -X GET', '/x', undefined, P43V_GATE)).toBeUndefined()
+})
