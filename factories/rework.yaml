@@ -6,7 +6,7 @@ start: resolve
 agent: "{claude} --dangerously-skip-permissions --model '{exec_model}'"
 params:
   claude: claude-smart --new --no-channels
-  exec_model: claude-sonnet-5[1m]
+  exec_model: claude-sonnet-5-5[1m]
 rules: |-
   - Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions and commands win over your habits.
   - Change what the PR needs and nothing else. Never skip or weaken a test, never rebase or force-push.

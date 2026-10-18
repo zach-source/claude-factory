@@ -185,6 +185,24 @@ export interface HookGate {
   station?: string
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
+  /** This field holds the tool call's own cwd (`i.cwd`). It is not the worktree root.
+   * Claude Code keeps one Bash cwd across calls.
+   * After an earlier `cd`, the cwd can differ from `root` (claude-factory-3f2z).
+   *
+   * `main()` sets this field from `i.cwd` alone. It has no fallback to `root`.
+   * If the hook input has no cwd, this field stays undefined.
+   *
+   * `gitReason` resolves a `git push` dir against `gate.cwd ?? root`.
+   * So an undefined value falls back to `root` at that call site.
+   * `readFile` resolves a `gh api` file argument with a similar fallback.
+   * It uses its own `i.cwd || root` expression.
+   *
+   * `cwdInsideGitDir` (claude-factory-9zd5) reads this field directly.
+   * It reads the field through `scanReason`'s R4 check.
+   * On undefined, it reports false.
+   * It does not know where the command runs.
+   * So it denies nothing on that fact alone. */
+  cwd?: string
   /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
    * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
   headOf?: (dir?: string, timeoutMs?: number) => string | undefined
@@ -194,10 +212,6 @@ export interface HookGate {
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
-  /** claude-factory-9zd5: the tool call's own cwd, from `input.cwd`. `main()` sets this field from
-   * `i.cwd`, with no fallback to `root`. The field stays undefined when the hook input carries no
-   * cwd. `cwdInsideGitDir` then reports false: it does not know where the command runs. */
-  cwd?: string
 }
 
 /**
@@ -2903,14 +2917,71 @@ function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
 }
 
 /**
+ * `gitChdir` returns this value instead of a dir string when it cannot trust the dir that it folded.
+ * A caller must then treat the dir as unknown. It must not call `gate.headOf` with it.
+ */
+const GIT_CHDIR_UNSAFE = Symbol('git-chdir-unsafe')
+
+/**
+ * The function folds every `-C` value in `words` into `base`, in order.
+ * Real git folds a repeated `-C` global flag in the same way.
+ *
+ * An absolute value replaces the dir. For a relative value, the function resolves it against
+ * the dir so far, through `resolvePath`. An empty value (`-C ""`) changes nothing.
+ *
+ * `words` must hold only the words before the git verb (`vi`, see claude-factory-zl5.3).
+ * A `-C` after the verb is a refspec word or a similar word. It is not a git global flag.
+ * Real git also rejects it as a global flag in that position.
+ *
+ * claude-factory-3f2z: This change closes the gap. Before this change, a relative `-C <dir>`
+ * resolved against the cwd of the hook process. It now resolves against the cwd of the tool
+ * call (`base`, from `gate.cwd`).
+ *
+ * claude-factory-3f2z.7: `-c`, `--git-dir`, `--work-tree` and `--namespace` (the rest of
+ * `GIT_VALUE_FLAGS`) also take a value word, with no `=`. The function must step over that
+ * value word, the same way `firstVerbIndex` does. So it never reads that word as a `-C` flag.
+ *
+ * A word before the verb that this function does not know can take a value word of its own.
+ * This happens with a git version or flag that this hook does not know.
+ * The word is not in `GIT_VALUE_FLAGS`, so `firstVerbIndex` already marks the verb search `uncertain`.
+ *
+ * In this case, the word after the unknown flag can look like a `-C` flag. That word is really
+ * the value of the unknown flag. The word after that can look like the value of a `-C` flag. That
+ * word is really the start of the folded dir.
+ *
+ * This function cannot tell a real `-C <dir>` apart from this case when the value it would fold
+ * starts with `-`. A real directory name almost never starts with `-`. So the function fails
+ * closed. It returns `GIT_CHDIR_UNSAFE` instead of folding a dir that it cannot trust.
+ */
+function gitChdir(words: string[], base: string | undefined): string | undefined | typeof GIT_CHDIR_UNSAFE {
+  let dir = base
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '-C') {
+      const v = words[i + 1]
+      i++
+      if (!v) continue
+      if (v.startsWith('-') && v !== '-') return GIT_CHDIR_UNSAFE
+      dir = v.startsWith('/') ? v : resolvePath(dir ?? '', v)
+      continue
+    }
+    if (!w.includes('=') && GIT_VALUE_FLAGS.has(w)) {
+      i++
+      continue
+    }
+  }
+  return dir
+}
+
+/**
  * Returns the reason to deny `cmd`, a command that starts with a `git` word.
  * Returns undefined to allow `cmd`.
  *
- * claude-factory-zl5.3: this finds the `push` verb past git's own global flags.
- * Those flags are `-C`, `-c`, `--git-dir`, `--work-tree` and `--namespace`.
+ * claude-factory-zl5.3: This finds the `push` verb after the git global flags.
+ * These flags are `-C`, `-c`, `--git-dir`, `--work-tree` and `--namespace`.
  * It uses the same method that `ghReason` uses to find the verb of `gh`.
- * `dir` is the value of `-C` when given. Otherwise, `dir` is `root`.
- * `gate.headOf(dir)` reads the current branch there.
+ * `dir` folds every `-C` before the verb onto `gate.cwd`. If `gate.cwd` is unset, `dir` uses
+ * `root` instead (claude-factory-3f2z; see `gitChdir`). `gate.headOf(dir)` reads the current branch there.
  *
  * claude-factory-zl5.35: This guard checks `send-pack` in the same way as `push`, through `sendPackDenied`.
  *
@@ -2965,9 +3036,18 @@ function gitReason(
   }
   let pushTail: string[] | undefined
   let isSendPack = false
-  if (vi >= 0 && tail[vi] === 'push') {
+  let verbIndex = vi
+  // claude-factory-3f2z.8: `vi` can be an unknown flag's value word that reads `push` or
+  // `send-pack`. The two branches above now check `!uncertain`, so they no longer trust that word
+  // as the verb. The branch below then scans all of `tail` for the first `push` or `send-pack`
+  // word instead. That scan can still find the same wrong word, with the real verb later. A `-C`
+  // word this guard must read can then sit between the wrong word and the real verb. A literal
+  // `-C` word inside `pushTail` is a warning sign of that case: this guard denies the push and
+  // does not call `gate.headOf`.
+  let uncertainChdirUnsafe = false
+  if (vi >= 0 && !uncertain && tail[vi] === 'push') {
     pushTail = tail.slice(vi + 1)
-  } else if (vi >= 0 && tail[vi] === 'send-pack') {
+  } else if (vi >= 0 && !uncertain && tail[vi] === 'send-pack') {
     pushTail = tail.slice(vi + 1)
     isSendPack = true
   } else if (uncertain && hasMutatingWordBeforeDashDash(tail, new Set(['push', 'send-pack']))) {
@@ -2975,20 +3055,43 @@ function gitReason(
     const si = tail.indexOf('send-pack')
     if (pi >= 0 && (si < 0 || pi < si)) {
       pushTail = tail.slice(pi + 1)
+      verbIndex = pi
     } else if (si >= 0) {
       pushTail = tail.slice(si + 1)
       isSendPack = true
+      verbIndex = si
     }
+    // claude-factory-3f2z.8: see the comment above `uncertainChdirUnsafe`.
+    if (pushTail?.includes('-C')) uncertainChdirUnsafe = true
   }
   if (!pushTail) return undefined
+  // claude-factory-3f2z.9: `uncertainChdirUnsafe` can have the value `true`.
+  // When it has this value, the verb position that this code finds is not correct.
+  // Then `pushTail` is also incorrect, not only `dir`.
+  // The correct refspec can be hard to see in an incorrect `pushTail`.
+  // It can look like a remote name or one more operand.
+  //
+  // Git reads the correct verb. That verb is after the incorrect one in the command. Git pushes the current branch to that verb.
+  // This guard does not trust `pushTail`, so it cannot parse it.
+  // It denies the push directly. It does not get to `gitPushDenied` or `sendPackDenied`.
+  if (uncertainChdirUnsafe) return PUSH_DIR_REASON
   if (pushReadsCurrentBranch(pushTail, isSendPack)) state.headPush = true
   // claude-factory-68gn: a --git-dir flag moves the push the same way a cd does, so it folds into
   // `moved` here instead of into `dir`. Once `moved`, a -C value is not trusted either: a relative
   // -C resolves against the directory this hook started in, not the one a cd already moved to.
+  //
+  // claude-factory-3f2z: When not moved, `dir` folds every `-C` flag before the verb onto
+  // `gate.cwd`, through `gitChdir`. `gate.cwd` is the tool call's own cwd, not the process cwd
+  // and not `root` alone.
   const effectiveMoved = moved || flagValue(tail, new Set(['--git-dir'])) !== undefined
-  const dir = effectiveMoved ? undefined : (flagValue(tail, new Set(['-C'])) ?? root)
-  const currentBranch = effectiveMoved ? undefined : gate.headOf?.(dir)
-  const reason = effectiveMoved ? PUSH_DIR_REASON : PUSH_REASON
+  const dir = effectiveMoved ? undefined : gitChdir(tail.slice(0, verbIndex), gate.cwd ?? root)
+  // claude-factory-3f2z.7: `dir` is `GIT_CHDIR_UNSAFE` when `gitChdir` cannot trust the fold
+  // (an unknown flag's value word can be misread as `-C`, and the word after that as the `-C`
+  // value). This guard then must not call `gate.headOf` with that symbol: it treats the branch
+  // as unknown, the same way it treats `effectiveMoved`, and reports `PUSH_DIR_REASON`.
+  const dirUnsafe = dir === GIT_CHDIR_UNSAFE || uncertainChdirUnsafe
+  const currentBranch = effectiveMoved || dirUnsafe ? undefined : gate.headOf?.(dir)
+  const reason = effectiveMoved || dirUnsafe ? PUSH_DIR_REASON : PUSH_REASON
   if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? reason : undefined
   return gitPushDenied(pushTail, currentBranch, gate) ? reason : undefined
 }
@@ -3931,8 +4034,9 @@ async function main() {
     // claude-factory-zl5.8: this resolves against the tool call's own cwd, not `root`.
     // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`.
     readFile: path => readSmallFile(path, i.cwd || root),
-    // claude-factory-9zd5: the tool call's own cwd, with no fallback to `root`. `cwdInsideGitDir`
-    // reads this field directly, through `scanReason`'s R4 check.
+    // claude-factory-3f2z.2 / claude-factory-9zd5: the tool call's own cwd, with no fallback to
+    // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
+    // read this field; `gitReason` falls back to `root` itself at its own call site.
     cwd: i.cwd,
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
