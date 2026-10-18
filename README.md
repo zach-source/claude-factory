@@ -499,10 +499,17 @@ gives it. An absolute path replaces the directory, and a relative path joins ont
 tool call has no cwd of its own, the hook uses the worktree root as the directory.
 
 `-c`, `--git-dir`, `--work-tree` and `--namespace` also each take one value word. The hook
-steps over that value word. The hook never reads that value word as a `-C` flag. A flag the
-hook does not know can also take a value word.
-When that value word starts with a dash, the hook cannot tell it apart from a real `-C`
-flag. The hook then denies the push, with the same `PUSH_DIR_REASON`.
+skips that value word. The hook does not read that value word as a `-C` flag. A flag that
+the hook does not know can also take a value word.
+When that value word starts with a dash, the hook cannot tell it apart from a `-C` flag.
+The hook then denies the push, with the same `PUSH_DIR_REASON`.
+
+A flag that the hook does not know can also take a value word that reads `push` or `send-pack`.
+The hook does not use that word as the verb by itself. As an alternative, the hook looks for
+the `push` or `send-pack` word anywhere in the command. When the arguments of that word hold a
+literal `-C` word, the hook cannot tell which one applies. The `-C` word can be a missed flag,
+or a plain `-C` word in a refspec. The hook then denies the push too, with the same
+`PUSH_DIR_REASON`.
 
 If either read fails, the hook denies the push outright. A read can fail with a timeout, a
 detached `HEAD`, or no `origin` remote. The hook then has no branch name, or no `origin/HEAD`

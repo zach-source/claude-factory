@@ -27,6 +27,14 @@ minor release may change the factory format, the CLI or the run state.
     real `-C` after it can get ignored (a fail-open). `gitChdir` now
     also denies the push when an unknown flag's value word looks like
     `-C`. (claude-factory-3f2z.7)
+  - Fix: `gitReason`'s two certain-verb branches now also check `!uncertain`.
+    An unknown flag's own value word can read `push` or `send-pack`.
+    `gitReason` trusted that word as the verb, even when `firstVerbIndex`
+    marked the verb search `uncertain`. It then missed a real `-C` word
+    between the fake verb and the true, later verb. `gate.headOf` then
+    read the wrong, unprotected dir (a fail-open). The uncertain-verb
+    fallback now also denies the push when its own guessed `pushTail`
+    holds a literal `-C` word. (claude-factory-3f2z.8)
 - `worker-hook`: fail closed when one command changes the branch (`checkout`,
   `switch`, `branch -m`/`-M`, `symbolic-ref HEAD`, `rebase <upstream> <branch>`,
   `rebase --root <branch>`, `stash branch`, `bisect reset <ref>`, `update-ref --stdin`,
