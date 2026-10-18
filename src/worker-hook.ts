@@ -356,7 +356,7 @@ function baseWord(w: string): string {
  * outside them. Both characters drop and the text around them joins into one word, the same as a
  * real shell. This never ends a word. It never keeps a literal newline.
  */
-function segments(cmd: string): string[][] {
+function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
   const segs: string[][] = []
   let cur: string[] = []
   let word = ''
@@ -420,6 +420,9 @@ function segments(cmd: string): string[][] {
       endWord()
       continue
     }
+    // claude-factory-hewq: an unquoted $' or $" starts a quote the shell decodes. Flag it. The word
+    // output stays the same, and denyAt denies the whole command.
+    if (info && c === '$' && (cmd[i + 1] === "'" || cmd[i + 1] === '"')) info.dollarQuote = true
     word += c
     hasWord = true
   }
@@ -3915,7 +3918,10 @@ function denyAt(
   // claude-factory-bemr: the same kind of flag, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
-  for (const words of segments(command)) {
+  const quoteInfo = { dollarQuote: false }
+  const commandSegments = segments(command, quoteInfo)
+  if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  for (const words of commandSegments) {
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.

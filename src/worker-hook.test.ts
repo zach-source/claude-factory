@@ -2643,14 +2643,14 @@ const DENY_DOLLAR_QUOTE = [
 ]
 
 test.each(DENY_DOLLAR_QUOTE)('denyReason denies %j (claude-factory-hewq, $-quote hides words)', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, { headOf: () => 'factory/x', originHead: () => 'main' })).toBe(
-    DOLLAR_QUOTE_REASON,
-  )
+  expect(
+    denyReason(cmd, '/root/repo', undefined, { headOf: () => 'factory/x', originHead: () => 'main' }),
+  ).toBe(DOLLAR_QUOTE_REASON)
 })
 
 test('denyReason allows a $ that does not start a $-quote (claude-factory-hewq)', () => {
   const gate = { headOf: () => 'factory/x', originHead: () => 'main' }
-  for (const cmd of ["echo \\$'x'", "echo '$'\"x\"", 'echo "$\'x\'"', 'git push origin factory/x']) {
+  for (const cmd of ["echo \\$'x'", 'echo \'$\'"x"', 'echo "$\'x\'"', 'git push origin factory/x']) {
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
   }
 })
