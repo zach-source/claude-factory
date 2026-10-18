@@ -827,6 +827,10 @@ minor release may change the factory format, the CLI or the run state.
     marker. PR #76 fixed the directory-as-`--supersedes` case. PR #78
     fixed the `#`-path case (for example `beads#x`, where `beads` is a
     directory).
+- `worker-hook` now denies an `env -S`/`env --split-string` value that holds a dollar sign, for
+  example `git ${FOO} origin main`. `env` changes a `${NAME}` word into one command word when it
+  runs, so the old check on the typed text alone can miss a real push or merge hidden this way.
+  (claude-factory-z1p)
 
 - The worker-hook deny gate now denies an `env -S`/`--split-string` value with a backslash or a
   real newline, for example `env -S 'git\_push acme/widget main'`. `env` reads `\_` or a real
