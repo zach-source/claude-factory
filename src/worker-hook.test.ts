@@ -1029,6 +1029,42 @@ test.each(GIT_CHDIR_ROWS)(
   },
 )
 
+// claude-factory-3f2z.4: an unknown flag before the verb makes the verb search uncertain.
+// One example is `--attr-source HEAD`. The fallback then finds the verb by `indexOf`.
+// It must set `verbIndex` to that found position.
+//
+// Without that set, `dir` folds only the words before the wrong, early guess. It then
+// misses the `-C sub` word that comes after the guess. The push then reads the wrong branch.
+test('denyReason folds -C before push, through the uncertain-verb fallback (claude-factory-3f2z.4)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/cwd/sub' ? 'main' : 'factory/x'
+    },
+  }
+  expect(denyReason('git --attr-source HEAD -C sub push origin HEAD', '/acme/root', undefined, gate)).toBe(
+    PUSH_REASON,
+  )
+  expect(dirs).toEqual(['/acme/cwd/sub'])
+})
+
+test('denyReason folds -C before send-pack, through the uncertain-verb fallback (claude-factory-3f2z.4)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/cwd/sub' ? 'main' : 'factory/x'
+    },
+  }
+  expect(
+    denyReason('git --attr-source HEAD -C sub send-pack origin HEAD', '/acme/root', undefined, gate),
+  ).toBe(PUSH_REASON)
+  expect(dirs).toEqual(['/acme/cwd/sub'])
+})
+
 // claude-factory-3f2z.1 (AC2): the same -C fold must not over-deny. When the real dir's branch
 // is not protected, the push still allows.
 test('denyReason allows git -C sub push origin HEAD when the resolved dir is on an unprotected branch (claude-factory-3f2z.1)', () => {
