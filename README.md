@@ -381,6 +381,9 @@ A later review found 4 more disguised forms. The hook now denies these too:
   `<command>` into words and run it. This is the same hazard as `eval`. The hook reads that
   value off the command line. It checks the value the same way it checks an `eval` or `sh -c`
   argument.
+- any `<command>` value above that holds a dollar sign, for example `git ${FOO} origin main`.
+  `env` changes a `${NAME}` word into one command word when it runs. A check on the typed text
+  alone would miss the real, changed command.
 - a dashed git-core binary name, for example `git-push` or `git-send-pack`. A real shell finds
   one of these on `PATH` or under `git --exec-path`. It runs the same code as `git push` or
   `git send-pack`. No `git` word appears anywhere in the command line. The hook now reads a
