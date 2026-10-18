@@ -2494,6 +2494,8 @@ const DENY_ENV_SPLIT_TAIL: Array<[string, string]> = [
   ["env -S 'gh pr' merge 5", 'MERGE_REASON'],
   ["env -S 'eval' 'git push origin main'", 'PUSH_DIR_REASON'],
   ["env -S 'env' sh -c 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -S '-i' -S 'sh -c' 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -S '-i' -S 'git' push origin main", 'PUSH_DIR_REASON'],
 ]
 
 test.each(DENY_ENV_SPLIT_TAIL)(

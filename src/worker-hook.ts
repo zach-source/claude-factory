@@ -3031,7 +3031,8 @@ function anyShellReason(
       // claude-factory-s1fj: env runs the split words PLUS every later argv word as one command.
       // Scan them together. Single quotes keep each later word one literal word in denyAt, and
       // each quote inside a word becomes '\'' so segments() reads it back as a literal quote.
-      let text = val
+      // The split words can hold env options such as -i or another -S. Scan them as an env command.
+      let text = 'env ' + val
       if (scan.end < words.length) {
         text +=
           ' ' +
