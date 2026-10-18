@@ -3267,6 +3267,9 @@ function gitReason(
   // This guard does not trust `pushTail`, so it cannot parse it.
   // It denies the push directly. It does not get to `gitPushDenied` or `sendPackDenied`.
   if (uncertainChdirUnsafe) return PUSH_DIR_REASON
+  // claude-factory-cu5m.6: a dynamic word before the verb can expand to `-c remote.X.push=...` or
+  // to a pair that `gitDashCPushDenied` cannot read. This guard denies it before any dry-run check.
+  if (tail.slice(0, verbIndex).some(w => REFSPEC_UNSAFE.test(w))) return PUSH_REASON
   if (pushReadsCurrentBranch(pushTail, isSendPack)) state.headPush = true
   // claude-factory-68gn: a --git-dir flag moves the push the same way a cd does, so it folds into
   // `moved` here instead of into `dir`. Once `moved`, a -C value is not trusted either: a relative

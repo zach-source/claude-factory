@@ -2457,7 +2457,24 @@ test.each(DENY_DYNAMIC_PUSH_WORD)('denyReason denies %j (claude-factory-cu5m, dy
   expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
 })
 
+const DENY_DYNAMIC_GLOBAL_WORD = [
+  'git -c $Y push origin',
+  'git -c "$Y" push origin feature',
+  'git -c ${Y} push origin',
+  'git -c x$Y=1 push origin',
+  'git --config-env=$Y push origin',
+  'git --config-env $Y push origin',
+  'git -c $Y send-pack ../r.git feature',
+  'git -c user.name=$N push origin feature',
+]
+
+test.each(DENY_DYNAMIC_GLOBAL_WORD)('denyReason denies %j (claude-factory-cu5m.6, dynamic global word)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
 const ALLOW_DYNAMIC_PUSH_WORD = [
+  'git -c core.pager=$P log',
+  'git -c $Y status',
   'git push origin feature',
   'git push -u origin feature',
   'git push origin +feature',
