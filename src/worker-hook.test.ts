@@ -1675,6 +1675,13 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   'git symbolic-ref -d HEAD; git push',
   'git branch --mo main; git push',
   'git branch -fM main; git push',
+  // claude-factory-c63.7: with `--root`, rebase takes no `<upstream>`, so 1 operand is the
+  // explicit `<branch>` and checks it out first.
+  'git rebase --root main && git push o HEAD',
+  'git rebase -i --root main; git push',
+  // claude-factory-c63.8: `git bisect reset <commit>` checks out `<commit>` and ends the bisect.
+  'git bisect start HEAD HEAD~1; git bisect reset main; git push o HEAD',
+  'git --bogus value bisect reset main && git push o HEAD',
 ]
 
 test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(
@@ -1698,6 +1705,12 @@ const ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH = [
   'git stash pop && git push o HEAD',
   // claude-factory-c63.6: `--merged` is a list flag, not the rename flag `-m`/`-M`/`--move`.
   'git branch --merged && git push o HEAD',
+  // claude-factory-c63.7: `--root` with no operand names no `<branch>`, so rebase keeps the
+  // current branch checked out.
+  'git rebase --root && git push o HEAD',
+  // claude-factory-c63.8: `git bisect reset` with no operand returns to the branch bisect
+  // started from. It does not name a new one.
+  'git bisect reset && git push o HEAD',
 ]
 
 test.each(ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH)(

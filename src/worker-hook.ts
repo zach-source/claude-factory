@@ -48,8 +48,9 @@
  *   - `git switch`
  *   - `git branch` with a rename flag
  *   - a `git symbolic-ref` write
- *   - `git rebase` with an explicit `<branch>` operand
+ *   - `git rebase` with an explicit `<branch>` operand, or `git rebase --root <branch>`
  *   - `git stash branch <name>`
+ *   - `git bisect reset <commit>`
  *   - `gh pr checkout`
  * This hook denies the combination without the new branch name.
  *
@@ -172,8 +173,9 @@ export interface HookGate {
  *   - `git switch`
  *   - `git branch` with a rename flag
  *   - a `git symbolic-ref` write
- *   - `git rebase` with an explicit `<branch>` operand
+ *   - `git rebase` with an explicit `<branch>` operand, or `git rebase --root <branch>`
  *   - `git stash branch <name>`
+ *   - `git bisect reset <commit>`
  *   - `gh pr checkout`
  *
  * `headPush` becomes true when a segment holds a `git push` or `git send-pack` call.
@@ -1644,7 +1646,17 @@ function sendPackDenied(tail: string[], currentBranch: string | undefined, gate:
 // claude-factory-c63 added `rebase` and `stash` to this set. A rebase with an explicit `<branch>`
 // word can change the branch first. The subcommand `git stash branch <name>` makes a new branch
 // and checks it out.
-const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set(['checkout', 'switch', 'symbolic-ref', 'rebase', 'stash'])
+//
+// claude-factory-c63.8 added `bisect`. `git bisect reset <commit>` checks out `<commit>` and
+// ends the bisect.
+const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set([
+  'checkout',
+  'switch',
+  'symbolic-ref',
+  'rebase',
+  'stash',
+  'bisect',
+])
 
 /**
  * True when `args`, the arguments of a `git branch` call, holds a rename flag (claude-factory-c63):
@@ -1677,20 +1689,51 @@ function symbolicRefWrites(args: string[]): boolean {
 }
 
 /**
- * True when `args`, the arguments of a `git rebase` call, name 2 or more non-flag words
- * (claude-factory-c63.4). `git rebase [<upstream> [<branch>]]` checks out `<branch>` first,
- * when the call gives it. With 0 or 1 non-flag words, the call gives no `<branch>`. `rebase`
- * then keeps the current branch checked out. A value flag such as `--onto <newbase>` can make
- * this function over-count and deny a safe command. It never under-counts an unsafe one.
+ * True when `args`, the arguments of a `git rebase` call, contain an explicit `<branch>`
+ * (claude-factory-c63.4, claude-factory-c63.7).
+ *
+ * If `args` has 2 or more words that are not flags, `git rebase [<upstream> [<branch>]]`
+ * checks out `<branch>` first. With `--root`, the call skips `<upstream>`. Then, if `args`
+ * has 1 word that is not a flag, that word is `<branch>`. `git rebase --root <branch>` then
+ * checks out `<branch>`.
+ *
+ * If `args` has fewer words that are not flags, the call contains no `<branch>`.
+ * `rebase` then keeps the current branch checked out. A value flag such as `--onto <newbase>`
+ * can make this function wrongly deny a safe command. It never allows an unsafe command.
  */
 function rebaseChangesBranch(args: string[]): boolean {
   let operands = 0
+  let root = false
   for (const w of args) {
     if (w === '--') break
+    if (w === '--root') root = true
     if (w.startsWith('-')) continue
     operands++
   }
-  return operands >= 2
+  return operands >= (root ? 1 : 2)
+}
+
+/**
+ * True when `args`, the arguments of a `git bisect` call, contain `reset` followed by an
+ * explicit ref (claude-factory-c63.8). `git bisect reset <commit>` checks out `<commit>` and
+ * stops the bisect.
+ *
+ * Plain `git bisect reset`, with no ref after `reset`, returns to the branch that the bisect
+ * started from. That branch is not new. This scan has already listed it.
+ */
+function bisectChangesBranch(args: string[]): boolean {
+  let sawReset = false
+  for (const w of args) {
+    if (w === '--') break
+    if (w.startsWith('-')) continue
+    if (!sawReset) {
+      if (w !== 'reset') return false
+      sawReset = true
+      continue
+    }
+    return true
+  }
+  return false
 }
 
 /**
@@ -1709,8 +1752,9 @@ function stashChangesBranch(args: string[]): boolean {
 /**
  * True when `verb`, a git subcommand word, can change the branch `gate.headOf` names next
  * (claude-factory-c63). `checkout` and `switch` always can, with any `args`. `branch`,
- * `symbolic-ref`, `rebase` and `stash` can only with the `args` that `branchRenameDenied`,
- * `symbolicRefWrites`, `rebaseChangesBranch` and `stashChangesBranch` examine.
+ * `symbolic-ref`, `rebase`, `stash` and `bisect` can only with the `args` that
+ * `branchRenameDenied`, `symbolicRefWrites`, `rebaseChangesBranch`, `stashChangesBranch`
+ * and `bisectChangesBranch` examine.
  */
 function gitChangesBranch(verb: string, args: string[]): boolean {
   if (verb === 'checkout' || verb === 'switch') return true
@@ -1718,6 +1762,7 @@ function gitChangesBranch(verb: string, args: string[]): boolean {
   if (verb === 'symbolic-ref') return symbolicRefWrites(args)
   if (verb === 'rebase') return rebaseChangesBranch(args)
   if (verb === 'stash') return stashChangesBranch(args)
+  if (verb === 'bisect') return bisectChangesBranch(args)
   return false
 }
 

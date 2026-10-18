@@ -277,10 +277,23 @@ A worker's PreToolUse hook denies these commands:
   update or delete, a `contents` write with no `branch` field or a protected one, and the
   `createCommitOnBranch`, `updateRef`, `updateRefs` and `deleteRef` GraphQL mutations)
 - `gh pr ready`, except in the release station
-- a `HEAD` push (a bare `git push`, or `git push <remote> HEAD` or `@`) in the same command as a
-  branch change, through `git checkout`, `git switch`, `git branch -m`/`-M`, a `git symbolic-ref`
-  write, a `git rebase` with an explicit `<branch>` operand, `git stash branch <name>`, or
-  `gh pr checkout`: run the branch change and the push as 2 separate commands
+- a `HEAD` push in the same command as a branch change. The push can use one of these forms:
+  - a bare `git push`
+  - `git push <remote> HEAD`
+  - `git push <remote> @`
+
+  A branch change is one of these commands:
+  - `git checkout`
+  - `git switch`
+  - `git branch -m`/`-M`
+  - a `git symbolic-ref` write
+  - `git rebase` with an explicit `<branch>` operand
+  - `git rebase --root <branch>`
+  - `git stash branch <name>`
+  - `git bisect reset <commit>`
+  - `gh pr checkout`
+
+  Run the branch change and the push as 2 separate commands.
 
 The hook also denies an equivalent, disguised form of each command above:
 
