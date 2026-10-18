@@ -62,6 +62,27 @@
  * The "find" bead (claude-factory-lbn) reports 80 ms at `n=20000`, 400 ms at `n=40000`, and 1.36 s at `n=80000`.
  * That bead does not give a load average.
  * Compare your time at the same `n` with those numbers to judge the effect of load noise on your run.
+ *
+ * Shape "dynamic" (claude-factory-p43v.5 AC10) measures `anyDynamicCommandReason`
+ * (`src/worker-hook.ts`). This function examines a segment one time. It uses a lazy pointer. The
+ * scan finds a dynamic word that hides a git or gh verb or subcommand. No dynamic word starts a
+ * new scan.
+ *
+ * This row checks the scan's `O(n)` cost on a long run of `$A push` words. The default `n=1024`
+ * gives an 8192-byte command (`'$A push '` is 8 bytes). Run
+ * `bun run src/worker-hook.bench.ts dynamic` to see this row alone.
+ *
+ * Shape "wrapper-lead" (claude-factory-p43v.21 AC19) measures `commandAnchors`
+ * (`src/worker-hook.ts`). This function walks past a wrapper's own flags. The wrapper can be
+ * `sudo`, `env`, `nice`, `time`, `exec`, `command`, `nohup`, `timeout` or `xargs`. The walk finds
+ * each possible start index of the real command.
+ *
+ * An unknown flag sets `mayBeValue` to true. The walk then reads one word at a time, until it
+ * finds a dynamic word. This row checks that walk's `O(n)` cost on a long run of unknown `-Z v`
+ * flag/value pairs before the dynamic payload.
+ *
+ * The default `n=1024` builds a `sudo` command with 1024 `-Z v` pairs, then `$G $V o main`. Run
+ * `bun run src/worker-hook.bench.ts wrapper-lead` to see this row alone.
  */
 import { scanReason } from './worker-hook'
 
@@ -71,6 +92,14 @@ function shellRun(n: number): string {
 
 function findRun(n: number): string {
   return 'find . ' + '-exec '.repeat(n)
+}
+
+function dynamicRun(n: number): string {
+  return '$A push '.repeat(n).trimEnd()
+}
+
+function wrapperLeadRun(n: number): string {
+  return 'sudo ' + '-Z v '.repeat(n) + '$G $V o main'
 }
 
 function timeOnce(command: string): number {
@@ -85,10 +114,20 @@ function fmtBytes(n: number): string {
 
 async function main() {
   const args = process.argv.slice(2)
-  const shape = args[0] === 'find' || args[0] === 'shell' ? args[0] : 'shell'
-  const sizeArg = args[0] === 'find' || args[0] === 'shell' ? args[1] : args[0]
-  const buildRun = shape === 'find' ? findRun : shellRun
-  const sizes = Number(sizeArg ?? 0) > 0 ? [Number(sizeArg)] : [2500, 5000, 10000, 20000, 40000]
+  const shapes = new Set(['find', 'shell', 'dynamic', 'wrapper-lead'])
+  const shape = shapes.has(args[0] ?? '') ? args[0]! : 'shell'
+  const sizeArg = shapes.has(args[0] ?? '') ? args[1] : args[0]
+  const buildRun =
+    shape === 'find'
+      ? findRun
+      : shape === 'dynamic'
+        ? dynamicRun
+        : shape === 'wrapper-lead'
+          ? wrapperLeadRun
+          : shellRun
+  const defaultSizes =
+    shape === 'dynamic' || shape === 'wrapper-lead' ? [1024] : [2500, 5000, 10000, 20000, 40000]
+  const sizes = Number(sizeArg ?? 0) > 0 ? [Number(sizeArg)] : defaultSizes
   console.log(
     `node ${process.version ?? ''} bun ${process.versions?.bun ?? ''} pid ${process.pid} shape ${shape}`,
   )

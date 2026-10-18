@@ -204,6 +204,18 @@ export const XARGS_REASON =
   'Run the git or gh command directly, with every argument in the command line itself. ' +
   'Do not retry this exact command.'
 
+// claude-factory-p43v: a command or subcommand word can hold a dollar sign, a backtick, a glob
+// character, a brace, or a leading tilde. The shell has not expanded that word yet. This guard
+// reads the typed text. It does not read the shell's own expansion of that text.
+//
+// A check for one literal verb, such as push, cannot match an unexpanded word. Every check after
+// it then reads the wrong verb, or no verb at all.
+export const DYNAMIC_VERB_REASON =
+  'The factory denies this command: a word at the command or subcommand slot holds a shell ' +
+  'expansion ($, a backtick, a glob, a brace, or a leading ~). The shell expands this word at ' +
+  'run time, so the guard cannot read the real command. Write the git, gh, kubectl, ko or helm ' +
+  'command and subcommand words plainly. Do not retry this exact command.'
+
 /**
  * `gate` carries the context this guard needs for the merge-gate checks (claude-factory-zl5): the
  * running station's name, the rig's protected branch names, and small reads of the live repo and
@@ -348,6 +360,9 @@ function baseWord(w: string): string {
  * A backslash right before a real newline is a POSIX line continuation, inside double quotes or
  * outside them. Both characters drop and the text around them joins into one word, the same as a
  * real shell. This never ends a word. It never keeps a literal newline.
+ *
+ * claude-factory-p43v: an opening backtick keeps a backtick mark in the word it ends. A closing
+ * backtick keeps no mark of its own.
  */
 function segments(cmd: string): string[][] {
   const segs: string[][] = []
@@ -355,6 +370,8 @@ function segments(cmd: string): string[][] {
   let word = ''
   let hasWord = false
   let quote: '"' | "'" | null = null
+  // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
+  let inBacktick = false
   const endWord = () => {
     if (hasWord) cur.push(word)
     word = ''
@@ -405,7 +422,19 @@ function segments(cmd: string): string[][] {
       i++
       continue
     }
-    if (';|&\n()`'.includes(c)) {
+    // claude-factory-p43v: an opening backtick starts a command substitution. This guard cannot
+    // read it, so it ends the segment here. It keeps a backtick mark in the word it ends, so a
+    // later scan can see that this word is unsafe. A closing backtick only ends the segment.
+    if (c === '`') {
+      if (!inBacktick) {
+        word += c
+        hasWord = true
+      }
+      inBacktick = !inBacktick
+      endSeg()
+      continue
+    }
+    if (';|&\n()'.includes(c)) {
       endSeg()
       continue
     }
@@ -488,6 +517,117 @@ function riskyTarget(t: string, root?: string): boolean {
   return !resolved.startsWith(base + '/')
 }
 
+// claude-factory-p43v.15: a shell reserved word can come right before the real command word.
+// realCommand skips each reserved word.
+// The p43v.8 and p43v.10 checks then find the real command word behind it.
+//
+// claude-factory-p43v.19: bash's `coproc NAME? command` starts a background job in the same way.
+// realCommand treats coproc as a reserved word too.
+// coproc takes no flag of its own. The real command follows it.
+const RESERVED_LEADING_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', 'coproc'])
+
+// claude-factory-p43v.19: this map lists the flags that take a separate value word.
+// It covers each wrapper above and `timeout`.
+// realCommand must skip that value word too.
+//
+// If realCommand does not skip the value word, that word becomes `cmd[0]`.
+// Then `cmd[0]` is the value word, not the real command.
+// A dynamic word after the wrapper's own flags then never reaches the p43v.8 pair check.
+//
+// Source: each wrapper's own man page.
+// sudo takes a value after -u, -g, -C, -D, -h, -p, -U, -r and -t.
+// env takes a value after -u, -C, -P, -L, -U and -a.
+// nice takes a value after -n.
+//
+// time takes a value after -o and -f.
+// exec takes a value after -a.
+// timeout takes a value after -s and -k.
+const WRAPPER_VALUE_FLAGS: Record<string, Set<string>> = {
+  sudo: new Set(['-u', '-g', '-C', '-D', '-h', '-p', '-U', '-r', '-t']),
+  env: new Set(['-u', '-C', '-P', '-L', '-U', '-a']),
+  nice: new Set(['-n']),
+  time: new Set(['-o', '-f']),
+  exec: new Set(['-a']),
+  timeout: new Set(['-s', '-k']),
+}
+
+// claude-factory-p43v.19: this map lists each wrapper's own bare flags.
+// A bare flag takes no value word.
+// `skipWrapperFlags` must know each of these flags by name.
+//
+// It must not skip every unknown flag.
+// `env -S` and `env --split-string` take a value.
+// This hook reads that value in `envSplitStringValue`.
+// A generic skip would also skip that value word, and can empty `cmd`.
+// An empty `cmd` makes `denyAt` skip the whole segment (claude-factory-dts).
+// Then `denyAt` would also skip the `env -S` check.
+//
+// `skipWrapperFlags` skips a flag only when it knows that flag by name for that wrapper.
+// It stops at the first flag that it does not know.
+// It leaves that flag word, and each word after it, in place.
+// This way, a wrapper flag that this hook does not recognize is never silently skipped.
+const WRAPPER_BARE_FLAGS: Record<string, Set<string>> = {
+  sudo: new Set(['-i']),
+  env: new Set(['-i']),
+  time: new Set(['-p']),
+  exec: new Set(['-c', '-l']),
+  command: new Set(['-p']),
+}
+
+/**
+ * The function skips each flag word after a known wrapper's own name.
+ * It handles one word pair at a time.
+ * It skips only a flag that this hook knows by name for that wrapper.
+ * The known flags appear in `WRAPPER_VALUE_FLAGS` or `WRAPPER_BARE_FLAGS`.
+ *
+ * A flag in `WRAPPER_VALUE_FLAGS[wrapperName]` also skips the word after it.
+ * That word is the value word of the flag.
+ * A flag in `WRAPPER_BARE_FLAGS[wrapperName]` skips only itself.
+ *
+ * The scan stops at the first word that is not a known flag of that wrapper.
+ * A bare `-` also stops the scan, because it is not a flag.
+ * A `--` word also stops the scan.
+ * The scan skips that `--` word first, because it ends the wrapper's own option list.
+ */
+function skipWrapperFlags(wrapperName: string, words: string[]): string[] {
+  const valueFlags = WRAPPER_VALUE_FLAGS[wrapperName]
+  const bareFlags = WRAPPER_BARE_FLAGS[wrapperName]
+  let w = words
+  while (w.length && w[0] !== '-' && w[0]!.startsWith('-')) {
+    const flag = w[0]!
+    if (flag === '--') {
+      w = w.slice(1)
+      break
+    }
+    if (valueFlags?.has(flag)) {
+      w = w.slice(2)
+      continue
+    }
+    if (bareFlags?.has(flag)) {
+      w = w.slice(1)
+      continue
+    }
+    break
+  }
+  return w
+}
+
+// claude-factory-p43v.25/.30: true when `w` is a `NAME=value` operand. A wrapper such as `sudo`
+// or `env` reads this word as an environment assignment for the command it runs next. It does
+// not read this word as that command.
+//
+// This matches any word with an `=` sign after its first letter. The name before the `=` need
+// not be a shell identifier. Proof, run on this host: `env a.b=1 sh -c 'echo x'`,
+// `env 1A=x sh -c 'echo x'` and `env -- A=1 sh -c 'echo $A'` each read the word before `sh` as an
+// assignment, not as the command (claude-factory-p43v.30).
+//
+// A word that starts with `-` never matches, even one with an `=` in it, for example an unknown
+// `--name=value` flag. `commandAnchors` reads such a word through its own dash-flag branch, in
+// place of this one.
+function wrapperAssignmentOperand(w: string): boolean {
+  return w[0] !== '-' && w.indexOf('=') > 0
+}
+
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   let w = words
@@ -498,13 +638,17 @@ function realCommand(words: string[]): string[] {
       w = w.slice(1)
       continue
     }
-    const b = baseWord(head)
-    if (WRAPPERS.has(b)) {
+    if (RESERVED_LEADING_WORDS.has(head)) {
       w = w.slice(1)
       continue
     }
+    const b = baseWord(head)
+    if (WRAPPERS.has(b)) {
+      w = skipWrapperFlags(b, w.slice(1))
+      continue
+    }
     if (b === 'timeout') {
-      w = w.slice(1)
+      w = skipWrapperFlags('timeout', w.slice(1))
       if (/^[\d.]+[smhd]?$/.test(w[0] ?? '')) w = w.slice(1)
       continue
     }
@@ -514,6 +658,303 @@ function realCommand(words: string[]): string[] {
       continue
     }
     return w
+  }
+}
+
+// claude-factory-p43v.21: This list contains `WRAPPERS`, plus `timeout` and `xargs`.
+// `commandAnchors` reads the flags of each wrapper, as `realCommand` does.
+// It uses the same `WRAPPER_VALUE_FLAGS` and `WRAPPER_BARE_FLAGS` maps.
+// `realCommand` keeps only one index, the index where it stops.
+// `commandAnchors` can keep more than one index.
+const LEAD_WRAPPERS = new Set([...WRAPPERS, 'timeout', 'xargs'])
+
+// claude-factory-p43v.21: This limit sets the maximum number of candidate indices.
+// `commandAnchors` gives no more indices than this limit.
+// Each row that this hook must deny resolves in one of the first candidates.
+// For the full rule, read the doc comment of the function.
+//
+// `MAX_COMMAND_LENGTH` (8192) sets the maximum number of words in the full command.
+// This limit adds a second, low-cost safeguard.
+// It stops `commandAnchors` before it reads a long list of plain, non-dynamic words, one at a time.
+// This occurs if no wrapper flag is unknown to this hook.
+const MAX_COMMAND_ANCHORS = 16
+
+/**
+ * Gives each index in `words` where the shell can start the actual command.
+ *
+ * claude-factory-p43v.21: Before this change, `anyDynamicCommandReason` and
+ * `anyDynamicLiveApplyReason` read only `realCommand(words)[0]`.
+ * These checks use that index as the only index where the actual command starts.
+ * `realCommand` stops at a wrapper flag that `skipWrapperFlags` does not know by name.
+ * Then it keeps that flag word, or a word after it, at index 0.
+ * So the dynamic-word checks read the incorrect word.
+ *
+ * This function gives a short list of candidate start indices.
+ * It replaces the one index.
+ * The caller checks each candidate with `words.slice(a)`.
+ * The earlier code checked `realCommand(words)` in the same manner.
+ *
+ * It first skips a `VAR=val` word or a `RESERVED_LEADING_WORDS` word at the start.
+ * For example: `do`, `then`, `if`, `coproc` (claude-factory-p43v.15/.19).
+ *
+ * If the next word is not a known wrapper, that word is the only candidate.
+ *
+ * If it is a known wrapper (`sudo`, `env`, `nice`, `time`, `exec`, `command`, `builtin`,
+ * `nohup`, `timeout`, `xargs`), this function reads the flags of that wrapper.
+ *
+ * - The function skips each flag that this hook knows for that wrapper.
+ *   If the flag has a value, the function also skips the value word.
+ *
+ * - `timeout` also skips one word that gives the time (`5`, `30s`) after its own flags.
+ *
+ * - `--` ends the wrapper's own flags. The word after it is the only candidate.
+ *   No more checks occur. A literal `--` shows clearly where the actual command starts.
+ *
+ * - If a word is itself a known wrapper, this function starts the same walk again at that word.
+ *   This function checks a nested wrapper (for example `sudo env sh -c ...`) in one step.
+ *
+ * - For each other flag, this hook does not know the flag by name.
+ *   The function skips that flag. The next word can be a value of that flag.
+ *   That word is not the actual command.
+ *
+ * The first plain word that this walk finds is always a candidate.
+ * After that, this function adds the next non-flag word as a candidate if one of these
+ * conditions applies:
+ *
+ * - The added word is dynamic (claude-factory-p43v.1).
+ *
+ * - An unknown flag can have taken an earlier word as its value.
+ *
+ * This function stops adding candidates if one of these conditions applies:
+ *
+ * - After it adds a dynamic word, it adds one more word and stops.
+ *   The pair check of claude-factory-p43v.8 checks no more words than this.
+ *
+ * - There are no more words.
+ *
+ * - The number of candidates becomes equal to `MAX_COMMAND_ANCHORS`.
+ */
+// claude-factory-p43v.32/p43v.33: `commandAnchors`, below this comment, has two capped exits.
+// Both exits call this one function.
+//
+// The scan reads `words` from `start` onward.
+// It looks for the first dynamic pair.
+// A dynamic pair is 2 non-flag words, one right after the other, with only flag words in between.
+// The function `dynamicCommandWord` must give `true` for the first word.
+// The function `dynamicWord` must give `true` for the second word.
+//
+// The scan skips each flag word.
+// The scan skips a flag word even when its value has a `$` or a backtick.
+// A flag word is never the real command.
+// The scan must not stop on a flag word.
+// If a later pair exists, the scan must not accept one dynamic word with no partner.
+//
+// claude-factory-p43v.33: a real command can hide behind one dynamic word.
+// The tail after this word has only literal words.
+// One example is a resolved binary from `$(which git)`.
+// `segments()` splits this binary into 2 words.
+// The split happens at the parentheses.
+// A literal `push` word comes after the split.
+//
+// A second example is `$K apply -f x`.
+// In this example, `apply` is a plain word, not a dynamic word.
+// The pair rule alone never anchors this single dynamic word.
+// Some later checks need only `cmd[0]` to be dynamic.
+// These checks never run on the word in this example.
+// Two examples of these checks are the bare `$` or backtick check, and the live-apply check.
+//
+// This scan remembers the first dynamic word.
+// The word can have a partner.
+// The word can have no partner.
+// The scan pushes the word as a fallback index.
+// The forward scan must find no pair first.
+// A later pair always wins over the fallback.
+//
+// The padding shape `-R / ... $G $V o main` still gives `$G`/`$V` as a pair.
+// An earlier, unrelated dynamic word in the padding never hides this pair.
+//
+// The scan pushes at most 2 more indices onto `anchors`.
+// The scan never pushes more than 2 indices.
+// The scan runs in O(n) time.
+function scanForFirstDynamicPair(words: string[], start: number, anchors: number[]): void {
+  let firstSingle = -1
+  for (let m = start; m < words.length; m++) {
+    const mw = words[m]!
+    if (mw.startsWith('-') && mw !== '-') continue
+    if (!dynamicCommandWord(mw)) continue
+    if (firstSingle < 0) firstSingle = m
+    let m2 = m + 1
+    while (m2 < words.length && words[m2]!.startsWith('-') && words[m2] !== '-') m2++
+    if (m2 >= words.length || !dynamicWord(words[m2]!)) continue
+    anchors.push(m)
+    anchors.push(m2)
+    return
+  }
+  if (firstSingle >= 0) anchors.push(firstSingle)
+}
+
+function commandAnchors(words: string[]): number[] {
+  let i = 0
+  while (i < words.length) {
+    const w = words[i]!
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+      i++
+      continue
+    }
+    if (w === 'coproc') {
+      i++
+      // claude-factory-p43v.22: `coproc NAME { cmd; }` names the coprocess before the brace
+      // group. `NAME` is a plain word, not the real command. Skip it too, when the word after it
+      // opens a brace group or a subshell (`{` or `(`). `coproc { cmd; }` has no such name.
+      const name = words[i]
+      const after = words[i + 1]
+      if (name !== undefined && name !== '{' && name !== '(' && (after === '{' || after === '(')) i++
+      continue
+    }
+    if (RESERVED_LEADING_WORDS.has(w)) {
+      i++
+      continue
+    }
+    break
+  }
+  if (i >= words.length) return []
+  let base = baseWord(words[i]!)
+  if (!LEAD_WRAPPERS.has(base)) return [i]
+
+  const anchors: number[] = []
+  let j = i + 1
+  let mayBeValue = false
+  let timeoutDurationPending = base === 'timeout'
+
+  // claude-factory-p43v.32: the outer loop can run more than once. One pass walks a wrapper's own
+  // flags and finds `j`, the first candidate after them. If the chase below then finds that the
+  // next candidate word is itself a known wrapper (for example `env` in
+  // `sudo -Z "$P" env $G $V origin main`), this hook has not yet read that wrapper's own flags.
+  // The outer loop runs the flag walk again, with `base` and `j` set to that wrapper, in place of
+  // adding the wrapper's own name as a flat, unchecked candidate.
+  outer: for (;;) {
+    for (;;) {
+      if (j >= words.length) return anchors
+      const w = words[j]!
+      const valueFlags = WRAPPER_VALUE_FLAGS[base]
+      const bareFlags = WRAPPER_BARE_FLAGS[base]
+      if (w === '--') {
+        j++
+        // A literal `--` ends the wrapper's own option list. The word right after it is the
+        // real command, once this branch skips a `timeout` duration or a `NAME=value` operand.
+        // It is never an unknown flag's own value. Clear `mayBeValue` here. An earlier unknown
+        // flag, before this `--`, must not make the chase below add a later, non-dynamic word
+        // as a candidate too.
+        mayBeValue = false
+        // claude-factory-p43v.26/.31: `timeout` always takes one duration operand (`5`, `30s`,
+        // `1e1`, `inf`), right after its own flags, or right after its own `--`. Skip that word
+        // here, whatever shape it has (claude-factory-p43v.31). `timeoutDurationPending` is
+        // `false` once this skip runs, so a later numeral word is read as a real argument, not
+        // skipped again.
+        if (base === 'timeout' && timeoutDurationPending && j < words.length) {
+          j++
+          timeoutDurationPending = false
+        }
+        // claude-factory-p43v.30: a `NAME=value` operand (claude-factory-p43v.25) can also
+        // follow a wrapper's own `--`. Skip each one here too.
+        while (j < words.length && wrapperAssignmentOperand(words[j]!)) j++
+        if (j >= words.length) return anchors
+        const nb = baseWord(words[j]!)
+        if (LEAD_WRAPPERS.has(nb)) {
+          base = nb
+          j++
+          mayBeValue = false
+          timeoutDurationPending = nb === 'timeout'
+          continue
+        }
+        break
+      }
+      if (valueFlags?.has(w)) {
+        j += 2
+        continue
+      }
+      if (bareFlags?.has(w)) {
+        j += 1
+        continue
+      }
+      // claude-factory-p43v.25/.30: a `NAME=value` word (see `wrapperAssignmentOperand`) can
+      // follow a wrapper's own name or flags. `sudo` and `env` both read this form as an
+      // environment variable to set for the real command, not as that command. Skip each one;
+      // `realCommand` already skips this form before it reads the wrapper's own name.
+      if (wrapperAssignmentOperand(w)) {
+        j++
+        continue
+      }
+      if (w.startsWith('-') && w !== '-') {
+        j++
+        mayBeValue = true
+        continue
+      }
+      if (base === 'timeout' && timeoutDurationPending) {
+        j++
+        timeoutDurationPending = false
+        continue
+      }
+      const nb = baseWord(w)
+      if (LEAD_WRAPPERS.has(nb)) {
+        base = nb
+        j++
+        mayBeValue = false
+        timeoutDurationPending = nb === 'timeout'
+        continue
+      }
+      break
+    }
+
+    anchors.push(j)
+    let k = j
+    for (;;) {
+      // claude-factory-p43v.29: this chase reads a word as if it names the real command (the git
+      // or gh binary, or a kubectl/ko/helm tool word). `dynamicCommandWord` reads `{}` as not
+      // dynamic here; see the comment above that function.
+      const dyn = dynamicCommandWord(words[k]!)
+      if (!dyn && !mayBeValue) break
+      let k2 = k + 1
+      while (k2 < words.length && words[k2]!.startsWith('-') && words[k2] !== '-') k2++
+      if (k2 >= words.length) break
+      // claude-factory-p43v.32: `k2` can itself be a known wrapper's own name (see the comment
+      // above the outer loop). Restart the flag walk there, in place of adding it as a flat
+      // candidate.
+      const nb2 = baseWord(words[k2]!)
+      if (LEAD_WRAPPERS.has(nb2)) {
+        anchors.push(k2)
+        // claude-factory-p43v.32: a long run of `-Z v env -Z v env ...` restarts this chase once
+        // per repeat. With no cap here, `anchors` grows by 2 for each repeat, with no bound. The
+        // caller then re-slices `words` once per anchor. Many such slices, each over the same
+        // long `words` array, cost O(n) each, so an unbounded `anchors` array costs O(n^2)
+        // overall. Cap it the same way the plain branch below does, with the same scan for one
+        // more pair past the cap.
+        if (anchors.length >= MAX_COMMAND_ANCHORS) {
+          scanForFirstDynamicPair(words, k2 + 1, anchors)
+          return anchors
+        }
+        base = nb2
+        j = k2 + 1
+        mayBeValue = false
+        timeoutDurationPending = nb2 === 'timeout'
+        continue outer
+      }
+      anchors.push(k2)
+      // claude-factory-p43v.35: `dyn` alone must not stop the chase here.
+      // A true `mayBeValue` can mark word `k` as an unknown flag's own value, not the real
+      // command. A flag word between `k` and `k2` can also mark `k2` as a flag's value.
+      // This pair is not a true anchor in that case. The chase must go on from `k2`.
+      if (dyn && (!mayBeValue || k2 === k + 1)) break
+      if (anchors.length >= MAX_COMMAND_ANCHORS) {
+        // claude-factory-p43v.27/.32: the loop above stops at a set number of candidates. Many
+        // unknown flags in a row can use up that number before the loop finds the actual
+        // dynamic word. After the cap, `scanForFirstDynamicPair` finds one more pair, past `k2`.
+        scanForFirstDynamicPair(words, k2, anchors)
+        return anchors
+      }
+      k = k2
+    }
+    return anchors
   }
 }
 
@@ -1263,16 +1704,21 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
     const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS)
     const verb = vi >= 0 ? tail[vi]! : undefined
     const sub = vi >= 0 ? tail[vi + 1] : undefined
+    // claude-factory-p43v.6: a dynamic verb hides the real kubectl command. A dynamic sub word
+    // hides the real rollout, auth or certificate action. This guard fails closed on either one,
+    // the same way it fails closed on a listed verb or sub name.
     let mutating =
-      verb === undefined
-        ? false
-        : verb === 'rollout'
-          ? !!sub && KUBECTL_ROLLOUT_MUTATING.has(sub)
-          : verb === 'auth'
-            ? !!sub && KUBECTL_AUTH_MUTATING.has(sub)
-            : verb === 'certificate'
-              ? !!sub && KUBECTL_CERTIFICATE_MUTATING.has(sub)
-              : KUBECTL_MUTATING_VERBS.has(verb)
+      verb !== undefined && dynamicWord(verb)
+        ? true
+        : verb === undefined
+          ? false
+          : verb === 'rollout'
+            ? !!sub && (dynamicWord(sub) || KUBECTL_ROLLOUT_MUTATING.has(sub))
+            : verb === 'auth'
+              ? !!sub && (dynamicWord(sub) || KUBECTL_AUTH_MUTATING.has(sub))
+              : verb === 'certificate'
+                ? !!sub && (dynamicWord(sub) || KUBECTL_CERTIFICATE_MUTATING.has(sub))
+                : KUBECTL_MUTATING_VERBS.has(verb)
     if (!mutating && uncertain) {
       mutating =
         hasMutatingWordBeforeDashDash(tail, KUBECTL_MUTATING_VERBS) ||
@@ -1293,7 +1739,8 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
   }
   if (b === 'ko') {
     const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS)
-    let mutating = vi >= 0 && KO_MUTATING_VERBS.has(tail[vi]!)
+    // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
+    let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || KO_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, KO_MUTATING_VERBS)
     if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--context']))
@@ -1301,7 +1748,8 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
   }
   if (b === 'helm') {
     const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS)
-    let mutating = vi >= 0 && HELM_MUTATING_VERBS.has(tail[vi]!)
+    // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
+    let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || HELM_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, HELM_MUTATING_VERBS)
     if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--kube-context']))
@@ -1835,6 +2283,16 @@ function ghReason(
   const tail = cmd.slice(1)
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
   const verb = vi >= 0 ? tail[vi] : undefined
+  const sub = vi >= 0 ? tail[vi + 1] : undefined
+  // claude-factory-p43v: a dynamic verb word can hide the real gh command. The same risk applies
+  // at the git verb slot, where dynamicWord denies it. A dynamic sub word under pr, repo or alias
+  // can hide the real merge, sync, ready, checkout or alias-set call, and this guard denies both
+  // words. This check runs before the alias-resolution block below. So a dynamic verb never
+  // reaches the alias table as a literal verb name.
+  if (verb !== undefined && dynamicWord(verb)) return DYNAMIC_VERB_REASON
+  if ((verb === 'pr' || verb === 'repo' || verb === 'alias') && sub !== undefined && dynamicWord(sub)) {
+    return DYNAMIC_VERB_REASON
+  }
   // claude-factory-bemr: resolve a pre-existing gh alias at the verb slot.
   // Skip this when the verb search itself is uncertain.
   // `firstVerbIndex` then does not know if `verb` is the real word.
@@ -1854,7 +2312,6 @@ function ghReason(
     // no entry for this word: an unrecognized word, fall through to the checks below unchanged,
     // the same as before this guard existed.
   }
-  const sub = vi >= 0 ? tail[vi + 1] : undefined
   if (verb === 'pr' && sub === 'checkout') state.branchChange = true
   if (verb === 'pr' && sub === 'merge') return MERGE_REASON
   if (verb === 'repo' && sub === 'sync') return MERGE_REASON
@@ -1869,6 +2326,22 @@ function ghReason(
     if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
     if (ghApiReadyDenied(apiArgs, gate)) return gate.station === 'release' ? undefined : READY_REASON
     if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
+
+    // claude-factory-p43v.11: a dynamic endpoint or method can still hide a merge or push call
+    // that the 3 literal checks above miss, because they compare the word's raw, unresolved
+    // text against a fixed pattern or method name.
+    // A dynamic -X or --method value fails closed at once.
+    // A dynamic endpoint fails closed only when the effective method is not GET.
+    const methodRaw = flagValue(apiArgs, new Set(['-X', '--method']))
+    if (methodRaw !== undefined && dynamicWord(methodRaw)) return DYNAMIC_VERB_REASON
+    const { index: dei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+    const dynamicEndpoint = dei >= 0 ? apiArgs[dei] : undefined
+    if (dynamicEndpoint !== undefined && dynamicWord(dynamicEndpoint)) {
+      const hasData =
+        ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
+      const effective = (methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase()
+      if (effective !== 'GET') return DYNAMIC_VERB_REASON
+    }
     return undefined
   }
   if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
@@ -2021,6 +2494,48 @@ const PUSH_BROAD_FLAGS = ['--all', '--branches', '--mirror', '--prune']
 // This guard cannot resolve any of these before git does. It treats the refspec as unknown and
 // fails closed. It denies the push.
 const REFSPEC_UNSAFE = /[$`*?[\]{}]/
+
+// claude-factory-p43v: dynamicWord checks a command or subcommand word, in place of a push
+// refspec. It uses the same character set as REFSPEC_UNSAFE.
+//
+// dynamicWord also treats a leading tilde as dynamic. The shell reads a leading tilde as a home
+// directory, before it runs the word as a command. A matched word hides the real verb this
+// guard must read.
+//
+// claude-factory-p43v.28/.29: the word `{}` is dynamic. `find -exec` and `xargs -I {}` fill it in
+// at run time. Example: `find push -maxdepth 0 -exec git {} origin main ;` runs
+// `git push origin main`. `dynamicWord` must read `{}` as dynamic. Then `gitReason`, `ghReason`
+// and the AC7 scan in `anyDynamicCommandReason` deny a `{}` word at the git or gh verb slot.
+//
+// claude-factory-p43v.28 made `dynamicWord('{}')` give `false` to stop an incorrect deny of
+// `xargs -I {} cp {} dest`. That command names no `git` or `gh` word. `commandAnchors` read the
+// first `{}`, the value of the `-I` flag, as a command-slot candidate. The guard then read the
+// next word, `cp`, as the actual command. `cp` matched a `kubectl` mutating verb, so
+// `anyDynamicLiveApplyReason` denied the command incorrectly.
+//
+// The `false` result stopped that one incorrect deny. It also let all git or gh verb-slot commands
+// go through without a deny.
+//
+// claude-factory-p43v.29 is the correct change: `dynamicCommandWord`, which is right below. Three
+// sites use `dynamicCommandWord`, not `dynamicWord`. They are `commandAnchors`, and the `cmd[0]`
+// check in `anyDynamicCommandReason` and in `anyDynamicLiveApplyReason`. All other uses keep
+// `dynamicWord`, where `{}` stays dynamic.
+//
+// A word with text between `{` and `}`, for example `{push,}`, continues to match
+// `REFSPEC_UNSAFE`. It stays dynamic in the two functions.
+function dynamicWord(w: string): boolean {
+  return REFSPEC_UNSAFE.test(w) || w.startsWith('~')
+}
+
+// claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
+// `{}` as not dynamic. Three sites use it, not `dynamicWord`: `commandAnchors`, and the `cmd[0]`
+// check in `anyDynamicCommandReason` and in `anyDynamicLiveApplyReason`. Each site reads a word as
+// the actual command. That command is the git or gh binary, or a kubectl, ko or helm tool word.
+// A `{}` word there is usually a wrapper's placeholder value, such as `xargs -I {}`, not a tool
+// name. This exemption lets `xargs -I {} cp {} dest` and `xargs -I {} delete {}` run.
+function dynamicCommandWord(w: string): boolean {
+  return w !== '{}' && dynamicWord(w)
+}
 
 /**
  * Removes a leading `refs/heads/` or `heads/` from `ref`.
@@ -2333,16 +2848,34 @@ function isPushConfigWrite(name: string, value: string | undefined): boolean {
  * A scan that breaks there, or that does not step over that value word, misses a `-c` or
  * `--config-env` word right after it.
  */
-// claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` from the text of the
-// environment variable named `<envvar>`. It sets the same key that `-c <name>=<value>` sets from
-// the command line.
+// claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` to the text of the
+// environment variable `<envvar>`. It sets the same key as `-c <name>=<value>`.
+//
+// claude-factory-p43v.20: Git 2.54 accepts two forms of `--config-env`. The attached form is
+// `--config-env=<name>=<envvar>`. The two-word form is `--config-env <name>=<envvar>`.
+// Git 2.54 reads the same environment variable for both forms. `gitDashCPushDenied` checks
+// both forms. claude-factory-bemr.13 added the two-word form.
 const CONFIG_ENV_PREFIX = '--config-env='
 
 /**
- * Checks `name` against the same key list that `gitDashCPushDenied` denies for a `-c name=value`
- * write: `alias.*`, `remote.*.push`, `remote.*.mirror`, `push.default`, `include.path`,
- * `includeIf.*.path`. Shared by the attached `--config-env=` form and the bare 2-word form
- * (claude-factory-bemr.13).
+ * This function checks `name` against the key list. For a `-c name=value` write,
+ * `gitDashCPushDenied` denies these keys:
+ * - `alias.*`
+ * - `remote.*.push`
+ * - `remote.*.mirror`
+ * - `push.default`
+ * - `include.path`
+ * - `includeIf.*.path`
+ *
+ * The attached `--config-env=` form uses this check. The two-word form uses it too
+ * (claude-factory-bemr.13, claude-factory-p43v.20).
+ *
+ * This check does not read a value (claude-factory-zl5.34). The guard can read the name of
+ * `<envvar>`. It cannot read the text that `<envvar>` holds.
+ *
+ * The guard cannot test that text against the `push.default` value rule in
+ * `isPushConfigWrite`. Without a value to test, this check fails closed.
+ * claude-factory-zl5.41 adds the mirror and include keys to the list.
  */
 function isDeniedConfigEnvName(name: string): boolean {
   return (
@@ -2358,14 +2891,6 @@ function gitDashCPushDenied(tail: string[]): boolean {
   for (let i = 0; i < tail.length; i++) {
     const w = tail[i]!
     if (w.startsWith(CONFIG_ENV_PREFIX)) {
-      // claude-factory-zl5.34: This guard can read the name of `<envvar>`, but not the text of the
-      // environment variable that it names.
-      //
-      // It cannot check that text against the `push.default` value rule in `isPushConfigWrite`.
-      // So this guard denies any of these keys that this flag sets: `alias.*`, `remote.*.push`,
-      // `remote.*.mirror`, `push.default`, `include.path`, `includeIf.*.path`
-      // (claude-factory-zl5.41 adds the mirror and include keys). It checks no value, so it
-      // fails closed.
       const rest = w.slice(CONFIG_ENV_PREFIX.length)
       const eq = rest.indexOf('=')
       if (eq < 0) continue
@@ -2402,6 +2927,58 @@ function gitDashCPushDenied(tail: string[]): boolean {
   return false
 }
 
+/**
+ * True when `pair` hides its key from `isPushConfigWrite`.
+ * `pair` is the key=value text of a `-c` or `--config-env` value word.
+ * The caller removes the flag name and any `=` prefix first.
+ * claude-factory-p43v.9 added this check. claude-factory-p43v.13 extended it.
+ *
+ * When `pair` has a literal `=`, this function checks only the key part, which is the text before
+ * that `=`.
+ *
+ * `pair` can also be dynamic as a whole, with no literal `=` of its own.
+ * The shell expands one word, such as `$KV`, into the whole `key=value` text at run time.
+ * `gitDashCKeyDynamic` and `isPushConfigWrite` cannot read a key inside that expansion, so this
+ * function checks all of `pair`.
+ * For example, `git -c "$KV" p origin main` can set `alias.p=push` through a `$KV` that holds that
+ * whole pair. The command line has no `=` to split.
+ */
+function dashCPairKeyDynamic(pair: string | undefined): boolean {
+  if (pair === undefined) return false
+  const eq = pair.indexOf('=')
+  return dynamicWord(eq >= 0 ? pair.slice(0, eq) : pair)
+}
+
+/**
+ * True when the key part of a `-c name=value` or `--config-env=name=envvar` flag is dynamic.
+ * This check comes from claude-factory-p43v.9.
+ * It is the sibling of `gitConfigKeyDynamic`, for the global `-c` or `--config-env` flag that
+ * `gitDashCPushDenied` reads right above.
+ *
+ * `isPushConfigWrite` compares the key with a fixed list of names.
+ * The shell does not resolve a dynamic key yet.
+ * That comparison cannot match the dynamic key, so the write passes without a check.
+ * For example, `git -c $K=push p origin main` can set `alias.p` to `push` with no check at all.
+ *
+ * This function denies the dynamic key itself, with `DYNAMIC_VERB_REASON`, before
+ * `isPushConfigWrite` reads it.
+ * `dashCPairKeyDynamic` also covers the case where the whole `-c`/`--config-env` value is dynamic,
+ * with no literal `=` of its own (claude-factory-p43v.13).
+ */
+function gitDashCKeyDynamic(tail: string[]): boolean {
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
+    if (w === '--') break
+    if (w.startsWith(CONFIG_ENV_PREFIX)) {
+      if (dashCPairKeyDynamic(w.slice(CONFIG_ENV_PREFIX.length))) return true
+      continue
+    }
+    if (w !== '-c') continue
+    if (dashCPairKeyDynamic(tail[i + 1])) return true
+  }
+  return false
+}
+
 // claude-factory-zl5.21: `git config` flags that take a value word of their own. The operand
 // search below steps past them, the same way `GIT_PUSH_VALUE_FLAGS` does for `git push`.
 const GIT_CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '-t', '--type', '--default'])
@@ -2418,7 +2995,14 @@ const GIT_CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '-t', '--type', '--defau
  * the key name, and the real key name as the value, so it checked the wrong pair and let the
  * write through. This guard now skips one leading `set` word before it reads the key and value.
  */
-function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
+/**
+ * Reads the key and value operands of a `git config` call's own arguments (`configArgs`).
+ * gitConfigSubcommandPushDenied and gitConfigKeyDynamic each need this same scan, so it is one
+ * function, not two copies.
+ *
+ * Returns undefined when `configArgs` names no key operand.
+ */
+function gitConfigKeyValue(configArgs: string[]): { name: string; value: string | undefined } | undefined {
   const operands: string[] = []
   for (let i = 0; i < configArgs.length; i++) {
     const w = configArgs[i]!
@@ -2435,8 +3019,23 @@ function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
   }
   const start = operands[0] === 'set' ? 1 : 0
   const name = operands[start]
-  if (name === undefined) return false
-  return isPushConfigWrite(name, operands[start + 1])
+  if (name === undefined) return undefined
+  return { name, value: operands[start + 1] }
+}
+
+function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
+  const kv = gitConfigKeyValue(configArgs)
+  return kv !== undefined && isPushConfigWrite(kv.name, kv.value)
+}
+
+/**
+ * True when the key operand of `configArgs` is dynamic (claude-factory-p43v). The shell has not
+ * resolved this key yet, so isPushConfigWrite cannot check it. The caller denies with
+ * DYNAMIC_VERB_REASON, not PUSH_REASON, so it learns to write the key plainly.
+ */
+function gitConfigKeyDynamic(configArgs: string[]): boolean {
+  const kv = gitConfigKeyValue(configArgs)
+  return kv !== undefined && dynamicWord(kv.name)
 }
 
 // claude-factory-zl5.35: `git send-pack` is the plumbing command that `git push` itself calls.
@@ -2567,6 +3166,19 @@ const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set([
   'bisect',
   'update-ref',
 ])
+
+// claude-factory-p43v: true when a word in the list is dynamic, before a literal -- word, if
+// any. This is the dynamicWord form of hasMutatingWordBeforeDashDash.
+//
+// One of these words, for one of the branch-change verbs, can hide a rename flag, a stdin flag,
+// or a branch name. This guard fails closed on an unread word. It sets state.branchChange.
+function hasDynamicWordBeforeDashDash(words: string[]): boolean {
+  for (const w of words) {
+    if (w === '--') return false
+    if (dynamicWord(w)) return true
+  }
+  return false
+}
 
 /**
  * True when `word` equals `longFlag`, a long flag such as `--stdin`.
@@ -3088,22 +3700,49 @@ function gitReason(
   aliasDepth = 0,
 ): string | undefined {
   const tail = cmd.slice(1)
+  // claude-factory-p43v.9: a dynamic -c or --config-env key fails closed before
+  // gitDashCPushDenied reads it against a fixed list of names.
+  if (gitDashCKeyDynamic(tail)) return DYNAMIC_VERB_REASON
   if (gitDashCPushDenied(tail)) return PUSH_REASON
   const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS, GIT_NO_VALUE_GLOBAL_FLAGS)
-  // See claude-factory-68gn. A --git-dir flag moves the command, the same as a cd word.
-  // The effectiveMoved value includes this flag. The dir value does not include this flag.
+  // claude-factory-p43v: the shell can change a dynamic word at the verb slot to any git
+  // subcommand. The checks below test the word against a fixed list of names. They miss a
+  // dynamic word. This check denies the word first.
   //
-  // If effectiveMoved is true, this function must not trust the -C value.
-  // A relative -C path resolves against the directory where this hook started.
-  // It must not resolve against a directory that an earlier cd moved the command to.
+  // This check runs before the alias-resolution block below. So that block cannot read the
+  // dynamic word as a literal verb name. It cannot look up that word in the alias table.
+  if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
+  //
+  // claude-factory-p43v: a dynamic word in the arguments of branch, symbolic-ref, rebase, stash,
+  // bisect or update-ref can hide a rename flag, a stdin flag or a branch name. This guard fails
+  // closed on that word. It does the same for a literal word.
+  //
+  // Each verb in BRANCH_CHANGE_UNCERTAIN_VERBS is also in GIT_BUILTIN_VERBS. So this check does
+  // not reach the alias-resolution block below with one of these verbs. That block skips a
+  // builtin verb.
+  if (
+    vi >= 0 &&
+    (gitChangesBranch(tail[vi]!, tail.slice(vi + 1)) ||
+      (BRANCH_CHANGE_UNCERTAIN_VERBS.has(tail[vi]!) && hasDynamicWordBeforeDashDash(tail.slice(vi + 1))))
+  ) {
+    state.branchChange = true
+  } else if (uncertain && hasMutatingWordBeforeDashDash(tail, BRANCH_CHANGE_UNCERTAIN_VERBS)) {
+    state.branchChange = true
+  }
+  // See claude-factory-68gn. A --git-dir flag moves the command. It acts the same as a cd word.
+  // The effectiveMoved value includes this flag. The dir value does not.
+  //
+  // If effectiveMoved is true, the function must not use the -C value. A relative -C path
+  // resolves against the directory where this hook started. Do not resolve it against the
+  // directory where an earlier cd moved the command.
   //
   // claude-factory-bemr.10: --bare moves the command, as --git-dir does. Real git reads a
-  // different config file there.
-  // `git --bare status` still passes below. The word status is a builtin word, so it never
-  // reaches the alias-resolution block.
+  // different config file with --bare.
+  // `git --bare status` still passes the checks below. The word status is a builtin word, so it
+  // never reaches the alias-resolution block.
   //
-  // claude-factory-bemr.16: hasGitDirWord is a plain whole-tail word test. It does not fold a
-  // -C directory any more; see gate.gitAliases's own comment for why.
+  // claude-factory-bemr.16: hasGitDirWord is a plain whole-tail word test. It no longer includes
+  // a -C directory value. For the reason, read the comment in gate.gitAliases.
   const effectiveMoved = moved || hasGitDirWord(tail) || tail.includes('--bare')
   const verb = vi >= 0 ? tail[vi] : undefined
   //
@@ -3185,14 +3824,10 @@ function gitReason(
       if (table.has(lw)) return ALIAS_USE_REASON
     }
   }
-  if (vi >= 0 && gitChangesBranch(tail[vi]!, tail.slice(vi + 1))) {
-    state.branchChange = true
-  } else if (uncertain && hasMutatingWordBeforeDashDash(tail, BRANCH_CHANGE_UNCERTAIN_VERBS)) {
-    state.branchChange = true
-  }
   // claude-factory-zl5.21: the `git config` subcommand's own form of the same two writes.
-  if (vi >= 0 && tail[vi] === 'config' && gitConfigSubcommandPushDenied(tail.slice(vi + 1))) {
-    return PUSH_REASON
+  if (vi >= 0 && tail[vi] === 'config') {
+    if (gitConfigKeyDynamic(tail.slice(vi + 1))) return DYNAMIC_VERB_REASON
+    if (gitConfigSubcommandPushDenied(tail.slice(vi + 1))) return PUSH_REASON
   }
   let pushTail: string[] | undefined
   let isSendPack = false
@@ -3321,6 +3956,138 @@ function anyGitReason(
   return undefined
 }
 
+// claude-factory-p43v.5: `anyGitReason` and `anyGhReason` check these words in a `gitReason` or
+// `ghReason` call. A dynamic word can sit in the command or subcommand slot and hide one of
+// them, with no literal `git` or `gh` word before it. This set names each hidden word.
+const DYNAMIC_COMMAND_TRIGGER = new Set([
+  'push',
+  'send-pack',
+  'checkout',
+  'switch',
+  'branch',
+  'symbolic-ref',
+  'rebase',
+  'stash',
+  'bisect',
+  'update-ref',
+  'config',
+  'pr',
+  'repo',
+  'alias',
+  'api',
+])
+
+/**
+ * The function returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real
+ * command (claude-factory-p43v.5). No wrapper that this hook knows by name names the command.
+ * No `git`, `gh` or `git-*` word names it either. It returns undefined to allow `words`.
+ *
+ * This function checks two cases.
+ *
+ * AC8: `realCommand(words)` reduces to one bare word. That word is `$`.
+ *
+ * It can also end in the backtick marker that `segments()` leaves on an unquoted opening
+ * backtick (claude-factory-p43v.2). Both forms mean that a substitution gives the command name.
+ * This hook cannot read that substitution. It denies the segment outright.
+ *
+ * AC7: the function uses a one-pass, lazy-pointer scan over the rest of the segment.
+ * Its cost is O(n).
+ *
+ * No dynamic word starts its own scan (claude-factory-p43v.5 AC10). The scan keeps track of
+ * one fact. That fact is whether a literal `git`, `gh` or `git-*` word ran earlier.
+ * Before such a word runs, the hook denies a dynamic word in two cases.
+ *
+ * - First, its next non-flag word is in `DYNAMIC_COMMAND_TRIGGER`.
+ *   The scan skips the value word of a `GIT_VALUE_FLAGS` or `GH_VALUE_FLAGS` flag.
+ * - Second, a `-c name=value` flag follows it directly.
+ *   The key is one that `isPushConfigWrite` denies. This is the dynamic-command-word form of
+ *   `gitDashCPushDenied`.
+ * - Third, a `--config-env name=envvar` or `--config-env=name=envvar` flag follows it directly.
+ *   The key is one that `isDeniedConfigEnvName` denies (claude-factory-p43v.20). This is the
+ *   dynamic-command-word form of the `--config-env` check in `gitDashCPushDenied`.
+ *
+ * A run of flags does not count as "the next word" by itself.
+ * The run passes the dynamic word on to the next word.
+ *
+ * claude-factory-p43v.8: the AC7 scan above marks a dynamic word as "shown" when it reads it.
+ * The scan never checks the word right after a dynamic word against `dynamicWord`.
+ * It checks that word only against `DYNAMIC_COMMAND_TRIGGER`.
+ * So `$G $V origin main` (after `G=git V=push`) reads `$G` as the command.
+ * It never checks `$V`. `$V` is not in `DYNAMIC_COMMAND_TRIGGER`, so the old scan moves on.
+ *
+ * This check runs first, for each index `a` in `commandAnchors(words)`.
+ * It uses `cmd = words.slice(a)` each time.
+ *
+ * Claude-factory-p43v.21: `commandAnchors` can find an index behind a wrapper flag this hook
+ * does not know by name. `realCommand(words)[0]` alone used to find the wrong word there, or no
+ * word at all.
+ *
+ * The check denies when `cmd[0]` is dynamic and the next non-flag word in `cmd` is dynamic too.
+ * Because of this start point, `cp "$A" "$B"` and `"$PY" -c 'print(1)'` pass the check.
+ * Neither `cp` nor the script word of `"$PY" -c` is the second dynamic word in a pair that
+ * starts at the command slot.
+ */
+function anyDynamicCommandReason(words: string[]): string | undefined {
+  for (const a of commandAnchors(words)) {
+    const cmd = words.slice(a)
+    if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
+    // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
+    // binary). `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
+    if (cmd.length > 0 && dynamicCommandWord(cmd[0]!)) {
+      let k = 1
+      while (k < cmd.length) {
+        const w = cmd[k]!
+        if (!w.startsWith('-') || w === '-') break
+        k += GIT_VALUE_FLAGS.has(w) || GH_VALUE_FLAGS.has(w) ? 2 : 1
+      }
+      if (k < cmd.length && dynamicWord(cmd[k]!)) return DYNAMIC_VERB_REASON
+    }
+  }
+
+  let sawGitWord = false
+  let pendingDynamic = false
+  for (let i = 0; i < words.length;) {
+    const w = words[i]!
+    const b = baseWord(w)
+    if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
+      sawGitWord = true
+      pendingDynamic = false
+      i++
+      continue
+    }
+    if (w.startsWith('-') && w !== '-') {
+      if ((w === '-c' || w === '--config-env') && !sawGitWord && pendingDynamic) {
+        const pair = words[i + 1]
+        // claude-factory-p43v.14: a dynamic key, or a pair with no literal `=` of its own,
+        // fails closed the same way `gitDashCKeyDynamic` does for a literal `git` command.
+        if (dashCPairKeyDynamic(pair)) return DYNAMIC_VERB_REASON
+        const eq = pair?.indexOf('=') ?? -1
+        if (pair !== undefined && eq >= 0) {
+          const name = pair.slice(0, eq)
+          // claude-factory-p43v.20: `--config-env`'s two-word form reads an envvar name, not a
+          // value, so it uses `isDeniedConfigEnvName`'s key-only check, not `isPushConfigWrite`.
+          const denied =
+            w === '-c' ? isPushConfigWrite(name, pair.slice(eq + 1)) : isDeniedConfigEnvName(name)
+          if (denied) return DYNAMIC_VERB_REASON
+        }
+      }
+      // claude-factory-p43v.20: the attached `--config-env=name=envvar` form of the same flag.
+      if (w.startsWith(CONFIG_ENV_PREFIX) && !sawGitWord && pendingDynamic) {
+        const pair = w.slice(CONFIG_ENV_PREFIX.length)
+        if (dashCPairKeyDynamic(pair)) return DYNAMIC_VERB_REASON
+        const eq = pair.indexOf('=')
+        if (eq >= 0 && isDeniedConfigEnvName(pair.slice(0, eq))) return DYNAMIC_VERB_REASON
+      }
+      i += GIT_VALUE_FLAGS.has(w) || GH_VALUE_FLAGS.has(w) || w === '--config-env' ? 2 : 1
+      continue
+    }
+    if (!sawGitWord && pendingDynamic && DYNAMIC_COMMAND_TRIGGER.has(w)) return DYNAMIC_VERB_REASON
+    pendingDynamic = !sawGitWord && dynamicWord(w)
+    i++
+  }
+  return undefined
+}
+
 /**
  * True when a word in `words` is a bare `kubectl`, `ko` or `helm` token. From that word on, the
  * words must start a mutating command denied by `personOnly`.
@@ -3338,6 +4105,69 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
     }
   }
   return false
+}
+
+/**
+ * Returns true when `liveApplyDenied` denies `cmd`, with `tool` substituted at its own position 0.
+ * The `anyDynamicLiveApplyReason` function does not know which of `kubectl`, `ko` or `helm` a dynamic word resolves to at run time.
+ * This function checks all 3 tools. It fails closed when any one of them is denied (claude-factory-p43v.16).
+ */
+function anyToolLiveApplyDenied(tail: string[], personOnly: string[]): boolean {
+  return ['kubectl', 'ko', 'helm'].some(tool => liveApplyDenied([tool, ...tail], personOnly))
+}
+
+/**
+ * Returns `DYNAMIC_VERB_REASON` when a dynamic word hides a mutating `kubectl`, `ko` or `helm` call.
+ * Returns undefined to allow `words`.
+ *
+ * `liveApplyDenied` runs only after `anyLiveApplyWord` finds a literal `kubectl`, `ko` or `helm` word.
+ * A dynamic word, such as `$K` in `$K apply -f x --context acme`, is none of those 3 literal words.
+ * That scan never calls `liveApplyDenied` for such a word (claude-factory-p43v.10).
+ *
+ * This function checks two cases. Both cases use `anyToolLiveApplyDenied`, which owns every verb,
+ * sub-verb, flag and context rule that `liveApplyDenied` has.
+ *
+ * First, `realCommand(words)` can open with a dynamic word. This is the `cmd[0]` anchor from
+ * claude-factory-p43v.8. This case also covers a dynamic kubectl rollout, auth or certificate
+ * sub-verb, such as `$K rollout restart deploy/x --context acme` (claude-factory-p43v.16).
+ * The old code checked only a flat verb set, so it missed every sub-verb rule.
+ *
+ * Second, an unknown wrapper, such as `caffeinate`, can move a dynamic word past position 0
+ * (claude-factory-p43v.16). This case checks every position in `words`, the same way
+ * `anyLiveApplyWord` checks a literal tool name.
+ *
+ * This wider check applies only when an explicit `--context` or `--kube-context` flag names a
+ * context in `personOnly`. A rule that fails closed when the command names no context, applied
+ * at every position, would deny far too much. The word after any dynamic word need not name a
+ * live-apply tool at all (claude-factory-p43v.17).
+ *
+ * Either case returns `DYNAMIC_VERB_REASON`, not `LIVE_REASON`. `LIVE_REASON` names `kubectl`,
+ * `ko` or `helm` outright.
+ *
+ * This function never reads one of those 3 literal words. A dynamic word, such as `$PIP` in
+ * `$PIP install requests`, can also match a mutating verb of a tool that this hook never names
+ * (claude-factory-p43v.17). `DYNAMIC_VERB_REASON` names the real cause instead. An unreadable
+ * word sits at the command slot.
+ */
+function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): string | undefined {
+  // claude-factory-p43v.21: `commandAnchors` can name an index behind a wrapper flag this hook
+  // does not know by name, where `realCommand(words)[0]` alone finds the wrong word.
+  // claude-factory-p43v.29: this reads `cmd[0]` as if it names a kubectl, ko or helm tool word.
+  // `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
+  for (const a of commandAnchors(words)) {
+    const cmd = words.slice(a)
+    if (cmd.length && dynamicCommandWord(cmd[0]!) && anyToolLiveApplyDenied(cmd.slice(1), personOnly)) {
+      return DYNAMIC_VERB_REASON
+    }
+  }
+  for (let j = 0; j < words.length; j++) {
+    if (!dynamicWord(words[j]!)) continue
+    const rest = words.slice(j + 1)
+    const ctx = flagValue(rest, new Set(['--context', '--kube-context']))
+    if (ctx === undefined || !personOnly.includes(ctx)) continue
+    if (anyToolLiveApplyDenied(rest, personOnly)) return DYNAMIC_VERB_REASON
+  }
+  return undefined
 }
 
 /**
@@ -3925,9 +4755,17 @@ function denyAt(
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
     const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
     if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
-    // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
-    // strip by name cannot hide a kubectl, ko or helm word that follows it.
-    if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
+    // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
+    // hide a kubectl, ko or helm word that follows it.
+    //
+    // claude-factory-p43v.10/.16/.17: a dynamic word can also hide kubectl, ko or helm itself.
+    // anyLiveApplyWord never finds that word. The dynamic-word check returns its own reason,
+    // DYNAMIC_VERB_REASON, not LIVE_REASON.
+    if (personOnly?.length) {
+      if (anyLiveApplyWord(words, personOnly)) return LIVE_REASON
+      const dynamicLiveApply = anyDynamicLiveApplyReason(words, personOnly)
+      if (dynamicLiveApply) return dynamicLiveApply
+    }
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
     // timeout) can push past position 0.
     const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar)
@@ -3937,6 +4775,11 @@ function denyAt(
     // into this one.
     const gitFound = anyGitReason(words, root, g, state, movedSoFar)
     if (gitFound) return gitFound
+    // claude-factory-p43v.5: a dynamic word, with no git or gh word of its own before it, can
+    // still hide a verb or subcommand that anyGitReason and anyGhReason never see, because no
+    // literal git or gh word ever starts this segment.
+    const dynamicCmdFound = anyDynamicCommandReason(words)
+    if (dynamicCmdFound) return dynamicCmdFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
