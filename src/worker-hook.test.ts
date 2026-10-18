@@ -2545,9 +2545,15 @@ test.each(DENY_REDIRECT_AMP_GT)('denyReason denies %j (claude-factory-cu5m.13, &
 
 // claude-factory-abmq: bash joins a backslash-newline inside a redirect operator, so `>BSNL&1` is `>&1`.
 // segments() dropped the continuation and then read the `&` or `|` as a segment end.
-const DENY_REDIRECT_CONT = ['>\\\n&1', '>\\\n|log', '<\\\n&0', '2>\\\n&1', '>\\\n\\\n&1', '&\\\n>log', '&\\\n>>log'].flatMap(
-  op => [`git push origin feature ${op} main`, `git send-pack ../r.git feature ${op} main`],
-)
+const DENY_REDIRECT_CONT = [
+  '>\\\n&1',
+  '>\\\n|log',
+  '<\\\n&0',
+  '2>\\\n&1',
+  '>\\\n\\\n&1',
+  '&\\\n>log',
+  '&\\\n>>log',
+].flatMap(op => [`git push origin feature ${op} main`, `git send-pack ../r.git feature ${op} main`])
 
 test.each(DENY_REDIRECT_CONT)('denyReason denies %j (claude-factory-abmq, continuation in redirect)', cmd => {
   expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
@@ -2559,9 +2565,12 @@ const ALLOW_REDIRECT_CONT = [
   'git send-pack ../r.git feature >\\\n|log',
 ]
 
-test.each(ALLOW_REDIRECT_CONT)('denyReason allows %j (claude-factory-abmq, continuation in redirect)', cmd => {
-  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
-})
+test.each(ALLOW_REDIRECT_CONT)(
+  'denyReason allows %j (claude-factory-abmq, continuation in redirect)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
+  },
+)
 
 // claude-factory-cu5m.14: oracle = git as a shell function that writes its args to a file; zsh 5.9
 // and bash run each row. A DENY op is one where the shell passes main to git. The test spawns no shell.

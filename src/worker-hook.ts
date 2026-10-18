@@ -395,7 +395,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
-    const afterRedir = redirPrev
+    const afterRedir: boolean = redirPrev
     redirPrev = false
     if (quote === "'") {
       if (c === "'") quote = null
