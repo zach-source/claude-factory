@@ -178,92 +178,43 @@ minor release may change the factory format, the CLI or the run state.
     shape allowed too. (claude-factory-68gn.14)
 
 - Fix: an existing `git` or `gh` alias cannot hide a denied verb.
-  `gitReason` and `ghReason` now resolve a non-builtin verb first. They read the
-  verb through `git config --get-regexp ^alias\.` (per directory) and `gh alias
-  list`. They scan the alias text again as the real command. They deny with the
-  new `ALIAS_USE_REASON` when they cannot do this safely.
+  `gitReason` and `ghReason` resolve a verb word that is not a builtin.
+  For git, they use `git config --get-regexp ^alias\.` and for gh, they use `gh alias list`.
+  They read the alias table at the tool call's own cwd. They apply every `-C` word in order, as one path.
+  Then they check the alias text again as the real command.
 
-  Each of these cases denies with `ALIAS_USE_REASON`:
+  Before this fix, these commands passed unseen:
 
-  - The alias table cannot be read.
-  - The alias is a `!` shell alias.
-  - The alias chain is more than 10 levels deep.
-  - An earlier change by `cd`, `pushd`, `popd`, `chdir`, `env -C`, `--git-dir`,
-    `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` or `HOME` occurs.
+  - A host that had `alias.co=checkout`: `git co main && git push o HEAD` pushed a protected branch.
+  - A host that had `alias.br=branch`: `git br -M main && git push o HEAD` did the same.
+  - A host's default `gh` alias `co` for `pr checkout`: `gh co 5 && git push` did the same.
 
-  Each of those changes hides which directory's alias table applies.
+  This guard denies the command with `ALIAS_USE_REASON`. It does so when it cannot resolve the verb word to a safe answer:
 
-  Before this fix, a host with `alias.co=checkout` set let `git co main && git
-  push o HEAD` push a protected branch unseen. A host with `alias.br=branch` set
-  let `git br -M main && git push o HEAD` do the same. A host's default `gh`
-  alias `co` for `pr checkout` let `gh co 5 && git push` do the same.
-  (claude-factory-bemr)
+  - The guard cannot read the alias table.
+  - The alias is a `!` shell alias, or its text has an unclosed quote or a trailing backslash.
+  - The alias chain runs more than 10 levels deep.
+  - An earlier `cd`, `pushd`, `popd`, `chdir`, `env -C`, `--git-dir`, `--bare`, `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` or `HOME` change makes the right alias table unknown.
+  - An unknown global flag leaves the verb word unsure.
+  - A non-flag word anywhere in the command matches a key in the table.
 
-- Fix: 3 gaps in the alias-use guard above.
+  `gitReason` skips these git global flags without doubt when it looks for the verb word. None of them takes a value word.
 
-  - `gitReason` now skips these flags when it looks for the verb word:
+  - No-value flags: `-p -P --paginate --no-pager --bare --no-replace-objects --literal-pathspecs --glob-pathspecs --noglob-pathspecs --icase-pathspecs --no-optional-locks --no-advice --no-lazy-fetch`
+  - For example, `git --no-pager co main && git push o HEAD` still denies. `--no-pager` does not hide `co` as an alias for `checkout`.
+  - `git --bare status` still allows. `status` is a builtin verb, so the alias check does not run for it.
 
-    ```
-    -p -P --paginate --no-pager --bare --no-replace-objects --literal-pathspecs
-    --glob-pathspecs --noglob-pathspecs --icase-pathspecs --no-optional-locks
-    --no-advice --no-lazy-fetch
-    ```
+  `gitReason` steps past the one value word of `-C`, `-c`, `--git-dir`, `--work-tree`, `--namespace`, `--attr-source`, `--config-env`. It does so even when that value word is a literal `--`. Real git has no end-of-options marker before the verb. So this guard's scans do not stop at one either. For example, `git --attr-source -- p origin main` pushes a protected branch when `alias.p=push` is set.
 
-    Before this fix, one flag from this list can come before the verb. The search then did not decide. The alias check did not run. This command pushed a protected branch: `git --no-pager co main && git push o HEAD`.
+  `gitReason` folds every `-C` word into one path, in the order that real git applies them. For example, `git -C a -C b <verb>` reads the alias table at `a/b`, not at `b` alone. With `alias.p=push` set only at `a/b`, `git p origin main` run through `-C a -C b` now denies. Before this fix, this guard read the wrong table and missed that alias. `gitDashCPushDenied` reads a `-c name=value` or `--config-env name=value` pair the same way. It does so whether git reads the pair attached or as 2 words.
 
-    `gitReason` now stops the command with `ALIAS_USE_REASON` when the search cannot decide for another reason. This happens in 2 cases.
+  `anyGitReason` and `anyGhReason` check every word of a command, not only the command word. So a `git` or `gh` word inside another command's own argument still opens this alias scan, for example `grep git README.md`. On a host with a readable, empty alias table, the guard allows this command. `README.md` is not a key in the table. `cd docs && grep git README.md` denies `ALIAS_USE_REASON` instead, because the `cd` makes the alias table unknown.
 
-    In the first case, a word before `--` is not a builtin verb. That word matches a key in the alias table. In the second case, `gitReason` cannot read the alias table.
+  The code now exports `GIT_BUILTIN_VERBS` and `GH_BUILTIN_VERBS`. Their tests check the shipped sets, not a separate copy. A `gh` alias chain also has its own depth-cap test. It sits next to the git test. Bead IDs:
 
-  - `gitReason` reads the alias table at the `-C` value of the git command. Without a `-C` value, it reads the table at the cwd of the tool call. Before this fix, it always read the table at the repository root.
-
-    An earlier `cd` into a second repository hid the alias table of that repository. The table defines `alias.p=push`. The alias check did not run for this command: `git p origin main`.
-
-  - `GIT_BUILTIN_VERBS` and `GH_BUILTIN_VERBS` are now exported names. The tests for these 2 sets now check the shipped sets, not a separate copy.
-
-  (claude-factory-bemr.5, claude-factory-bemr.6, claude-factory-bemr.7)
-
-- Fix: 4 more problems in the alias-use guard above, found by a second check.
-
-  - `git -C a -C b <verb>` reads the alias table at `b`, relative to the hook's cwd.
-
-    Git reads each `-C` word in turn. Each word is relative to the directory that the word before it sets.
-
-    So `-C a -C b` means `a/b`, not `b` alone. Before the fix, an alias set only in `a/b`'s own config did not hide a push.
-
-  - In the 2-word version, `--attr-source` and `--config-env` each use one value word.
-
-    Git reads that value word as it is, also when it is a literal `--`. Before the fix, the verb lookup read that value word as an unknown flag.
-
-    The fallback scan then stopped at a `--`. The value word itself can be that `--`.
-
-    Example: `git --attr-source -- p origin main` pushed a protected branch, with `alias.p=push` set.
-
-    The fallback scan no longer stops at a `--`. Git has no end-of-options marker before the verb.
-
-  - `--bare` sets `GIT_DIR` to the current directory itself.
-
-    A plain alias lookup at that path reads a different config than git reads.
-
-    This guard makes `--bare` a move, the same as `--git-dir`. It denies `ALIAS_USE_REASON` for a non-builtin verb. It does not trust a lookup at an incorrect location.
-
-    The guard does not deny `git --bare status`, because `status` is a builtin verb.
-
-  - A cyclic `gh` alias table denies `ALIAS_USE_REASON`.
-
-    A test proves it. The check for `git` in the same condition had one test before the fix.
-
-  (claude-factory-bemr.8, claude-factory-bemr.9, claude-factory-bemr.10, claude-factory-axok)
-
-- `anyGitReason` and `anyGhReason` check each word of a command. They do not check only the
-  command word.
-
-  This finds a `git` or `gh` word that is inside another command. It also finds such a word in
-  an argument, for example a grep pattern. So the command `grep git README.md` now also denies
-  `ALIAS_USE_REASON`.
-
-  This guard keeps the wider scan. It denies a command when it is not sure. This is the same rule
-  that it uses in all other checks. (claude-factory-bemr.11)
+  - claude-factory-bemr, claude-factory-bemr.5, claude-factory-bemr.6, claude-factory-bemr.7
+  - claude-factory-bemr.8, claude-factory-bemr.9, claude-factory-bemr.10, claude-factory-bemr.11
+  - claude-factory-bemr.13, claude-factory-bemr.14, claude-factory-axok
 
 ## 0.13.0 (2026-10-18)
 
