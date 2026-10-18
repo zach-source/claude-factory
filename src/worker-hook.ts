@@ -4105,6 +4105,9 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
   'api',
 ])
 
+// claude-factory-38jm: a brace word with a comma or a `..` range.
+const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
+
 /**
  * The function returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real
  * command (claude-factory-p43v.5). No wrapper that this hook knows by name names the command.
@@ -4157,6 +4160,10 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
   for (const a of commandAnchors(words)) {
+    // claude-factory-38jm: bash expands `{sh,-c}` into two words before it runs the command. A
+    // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
+    // no comma and no `..`, so it stays allowed.
+    if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
