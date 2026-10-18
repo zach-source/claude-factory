@@ -4357,10 +4357,11 @@ test('scanReason denies with SCAN_BUDGET_REASON, not BEADS_ACTOR_REASON, when to
 })
 
 test('scanReason denies with SCAN_BUDGET_REASON when stringNamesBdCommand spends the budget (claude-factory-cbai)', () => {
-  // denyAt spends 25 and touchesBeadsActor 24. The sh -c script needs 10 more.
-  const command = "env -i sh -c 'echo hello'"
-  expect(scanReason(command, undefined, undefined, CBAI_GATE, 55)).toBe(SCAN_BUDGET_REASON)
-  expect(scanReason(command, undefined, undefined, CBAI_GATE, 1000)).toBeUndefined()
+  // denyAt spends 22 and touchesBeadsActor 21. The sh -c script needs 7 more. With the script
+  // read for free, the bd word in it would give BEADS_ACTOR_REASON.
+  const command = "env -i sh -c 'bd list'"
+  expect(scanReason(command, undefined, undefined, CBAI_GATE, 45)).toBe(SCAN_BUDGET_REASON)
+  expect(scanReason(command, undefined, undefined, CBAI_GATE, 1000)).toBe(BEADS_ACTOR_REASON)
 })
 
 test('denyReason spends the default work budget on an 8192-character stacked env -i eval command and denies, fast (claude-factory-cbai)', () => {

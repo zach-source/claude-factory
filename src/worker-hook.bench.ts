@@ -73,6 +73,16 @@ function findRun(n: number): string {
   return 'find . ' + '-exec '.repeat(n)
 }
 
+// claude-factory-cbai: n nested env -S words and n stacked env -i eval words. Both took about
+// 2^n work before the fix. Use small n (20, 30, 40) for these shapes.
+function envSRun(n: number): string {
+  return "env -S '" + 'env -S '.repeat(n - 1) + "git push origin main'"
+}
+
+function evalIRun(n: number): string {
+  return 'env -i ' + 'eval '.repeat(n) + 'git push origin main'
+}
+
 function timeOnce(command: string): number {
   const t0 = performance.now()
   scanReason(command)
@@ -85,10 +95,15 @@ function fmtBytes(n: number): string {
 
 async function main() {
   const args = process.argv.slice(2)
-  const shape = args[0] === 'find' || args[0] === 'shell' ? args[0] : 'shell'
-  const sizeArg = args[0] === 'find' || args[0] === 'shell' ? args[1] : args[0]
-  const buildRun = shape === 'find' ? findRun : shellRun
-  const sizes = Number(sizeArg ?? 0) > 0 ? [Number(sizeArg)] : [2500, 5000, 10000, 20000, 40000]
+  const shapes = ['find', 'shell', 'envs', 'evali']
+  const named = shapes.includes(args[0] ?? '')
+  const shape = named ? args[0]! : 'shell'
+  const sizeArg = named ? args[1] : args[0]
+  const buildRun =
+    shape === 'find' ? findRun : shape === 'envs' ? envSRun : shape === 'evali' ? evalIRun : shellRun
+  const defaults =
+    shape === 'envs' || shape === 'evali' ? [10, 20, 30, 40] : [2500, 5000, 10000, 20000, 40000]
+  const sizes = Number(sizeArg ?? 0) > 0 ? [Number(sizeArg)] : defaults
   console.log(
     `node ${process.version ?? ''} bun ${process.versions?.bun ?? ''} pid ${process.pid} shape ${shape}`,
   )

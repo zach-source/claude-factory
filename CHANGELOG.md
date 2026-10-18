@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: a nested `env -S` or `env -i eval` command made the worker hook scan take about 2x longer for each level. A 219-character command took 82 s, past the 10 s hook timeout, so the hook failed open and the command ran unchecked. The scan now reads each `env -S` span and each `eval` word once. A work budget (`MAX_SCAN_WORK`) also stops any scan that grows too large and denies with `SCAN_BUDGET_REASON`. No other verdict changes (claude-factory-cbai).
+
 - The worker hook now reads every word after `--` in `git push` and `git send-pack` as an operand, as git does. Before, `git push -- origin main -n` was allowed as a dry run, and `git push -- origin -o main` hid the `main` refspec as a value (claude-factory-zs39). A flag-like ref name after `--`, such as `-n`, is no longer read as a flag.
 
 - Workers and the manager now run the `haiku` alias on Haiku 5.5 (`claude-haiku-5-5`): `ANTHROPIC_DEFAULT_HAIKU_MODEL` is set in their settings env, since Claude Code 2.1.291 still maps `haiku` to Haiku 4.5. Workers also get `SHUNT_MODEL=haiku`, so a shunt-guard denial names the model to hand a large read to (`Agent` with `model: haiku`). In 7 days of transcripts, workers hit the guard 91 times and never delegated the read, because the denial named no model and workers do not load the `shunt` skill. A user's own value for either variable wins. The manager's `briefer` subagent (no tools, at most 3 turns) moves from Sonnet to Haiku.
