@@ -145,6 +145,12 @@ export interface HookGate {
   station?: string
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
+  /** the tool call's own cwd (`i.cwd`), not the worktree root. Claude Code keeps one Bash cwd
+   * across calls and reports that cwd here. The cwd can differ from `root` after an earlier `cd`
+   * (claude-factory-3f2z). `gitReason` resolves a `git push` dir against this field. `readFile`
+   * already resolves a `gh api` file argument the same way. A caller that skips this field (a
+   * library call or a test) leaves it undefined; `gitReason` then falls back to `root`. */
+  cwd?: string
   /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
    * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
   headOf?: (dir?: string, timeoutMs?: number) => string | undefined
@@ -1650,14 +1656,39 @@ function sendPackDenied(tail: string[], currentBranch: string | undefined, gate:
 }
 
 /**
+ * Folds every `-C` value in `words` into `base`, in order. Real git folds a repeated `-C`
+ * global flag in the same way. An absolute value replaces the dir. A relative value attaches to
+ * the dir so far, through `resolvePath`. An empty value (`-C ""`) changes nothing.
+ *
+ * `words` must hold only the words before the git verb (`vi`, see claude-factory-zl5.3).
+ * A `-C` after the verb is a refspec word or a similar word. It is not a git global flag.
+ * Real git also rejects it as a global flag in that position.
+ *
+ * claude-factory-3f2z: This change closes the gap. Before this change, a relative `-C <dir>`
+ * resolved against the cwd of the hook process. It now resolves against the cwd of the tool
+ * call (`base`, from `gate.cwd`).
+ */
+function gitChdir(words: string[], base: string | undefined): string | undefined {
+  let dir = base
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] !== '-C') continue
+    const v = words[i + 1]
+    i++
+    if (!v) continue
+    dir = v.startsWith('/') ? v : resolvePath(dir ?? '', v)
+  }
+  return dir
+}
+
+/**
  * Returns the reason to deny `cmd`, a command that starts with a `git` word.
  * Returns undefined to allow `cmd`.
  *
- * claude-factory-zl5.3: this finds the `push` verb past git's own global flags.
- * Those flags are `-C`, `-c`, `--git-dir`, `--work-tree` and `--namespace`.
+ * claude-factory-zl5.3: This finds the `push` verb after the git global flags.
+ * These flags are `-C`, `-c`, `--git-dir`, `--work-tree` and `--namespace`.
  * It uses the same method that `ghReason` uses to find the verb of `gh`.
- * `dir` is the value of `-C` when given. Otherwise, `dir` is `root`.
- * `gate.headOf(dir)` reads the current branch there.
+ * `dir` folds every `-C` before the verb onto `gate.cwd`. If `gate.cwd` is unset, `dir` uses
+ * `root` instead (claude-factory-3f2z; see `gitChdir`). `gate.headOf(dir)` reads the current branch there.
  *
  * claude-factory-zl5.35: This guard checks `send-pack` in the same way as `push`, through `sendPackDenied`.
  */
@@ -1671,6 +1702,7 @@ function gitReason(cmd: string[], root: string | undefined, gate: HookGate): str
   }
   let pushTail: string[] | undefined
   let isSendPack = false
+  let verbIndex = vi
   if (vi >= 0 && tail[vi] === 'push') {
     pushTail = tail.slice(vi + 1)
   } else if (vi >= 0 && tail[vi] === 'send-pack') {
@@ -1681,13 +1713,15 @@ function gitReason(cmd: string[], root: string | undefined, gate: HookGate): str
     const si = tail.indexOf('send-pack')
     if (pi >= 0 && (si < 0 || pi < si)) {
       pushTail = tail.slice(pi + 1)
+      verbIndex = pi
     } else if (si >= 0) {
       pushTail = tail.slice(si + 1)
       isSendPack = true
+      verbIndex = si
     }
   }
   if (!pushTail) return undefined
-  const dir = flagValue(tail, new Set(['-C'])) ?? root
+  const dir = gitChdir(tail.slice(0, verbIndex), gate.cwd ?? root)
   const currentBranch = gate.headOf?.(dir)
   if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? PUSH_REASON : undefined
   return gitPushDenied(pushTail, currentBranch, gate) ? PUSH_REASON : undefined

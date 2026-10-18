@@ -984,6 +984,71 @@ test('denyReason allows git -C .scratch/x status (not a push)', () => {
   expect(denyReason('git -C .scratch/x status')).toBeUndefined()
 })
 
+// claude-factory-3f2z.1: gitReason resolves the push dir against gate.cwd, the tool call's own
+// cwd. It folds every -C in the command, in order. Real git folds a repeated -C global flag
+// the same way: an absolute value replaces the dir, a relative value joins onto it, and an
+// empty value changes nothing.
+//
+// root=/acme/root is the worktree root. gate.cwd=/acme/cwd stands in for a prior Bash call's
+// cd into a second repo. Each row's headOf fake denies only at its own expected dir, so a wrong
+// dir allows the push instead of denying it. The fake also records every dir that headOf saw.
+const GIT_CHDIR_ROWS: [string, string][] = [
+  ['git push origin HEAD', '/acme/cwd'],
+  ['git -C sub push origin HEAD', '/acme/cwd/sub'],
+  ['git -C /a -C b push origin HEAD', '/a/b'],
+  ['git -C /a -C /c push origin HEAD', '/c'],
+  ['git -C "" push origin HEAD', '/acme/cwd'],
+]
+
+test.each(GIT_CHDIR_ROWS)(
+  'denyReason folds -C onto gate.cwd for %j, denies only at dir %j (claude-factory-3f2z.1)',
+  (cmd, expectedDir) => {
+    const dirs: (string | undefined)[] = []
+    const gate: HookGate = {
+      cwd: '/acme/cwd',
+      headOf: dir => {
+        dirs.push(dir)
+        return dir === expectedDir ? 'main' : 'factory/x'
+      },
+    }
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_REASON)
+    expect(dirs).toEqual([expectedDir])
+  },
+)
+
+// claude-factory-3f2z.1 (AC2): the same -C fold must not over-deny. When the real dir's branch
+// is not protected, the push still allows.
+test('denyReason allows git -C sub push origin HEAD when the resolved dir is on an unprotected branch (claude-factory-3f2z.1)', () => {
+  const gate: HookGate = { cwd: '/acme/cwd', headOf: dir => (dir === '/acme/cwd/sub' ? 'feature' : 'main') }
+  expect(denyReason('git -C sub push origin HEAD', '/acme/root', undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-3f2z.1 (AC5): with no gate.cwd, headOf keeps reading root, unchanged from
+// before this fix.
+test('denyReason reads root for a push dir when gate.cwd is unset (claude-factory-3f2z.1, AC5)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    headOf: dir => {
+      dirs.push(dir)
+      return 'main'
+    },
+  }
+  expect(denyReason('git push origin HEAD', '/acme/root', undefined, gate)).toBe(PUSH_REASON)
+  expect(dirs).toEqual(['/acme/root'])
+})
+
+test('denyReason reads an undefined push dir when neither gate.cwd nor root is set (claude-factory-3f2z.1, AC5)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    headOf: dir => {
+      dirs.push(dir)
+      return 'main'
+    },
+  }
+  expect(denyReason('git push origin HEAD', undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(dirs).toEqual([undefined])
+})
+
 // claude-factory-zl5.3: main() reads the rig's protected branch names from --protected-branches on
 // its own argv, split on comma, and carries origin/HEAD and the current branch through real git
 // calls. claude-factory-zl5.13: a fake root with no real git repo cannot resolve origin/HEAD at
