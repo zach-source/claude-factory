@@ -4089,7 +4089,10 @@ test('denyReason denies the AC19 wrapper-lead bench shape (claude-factory-p43v.2
 
 // claude-factory-p43v.28: a bare `{}` word, as `xargs -I {}` uses it, is not dynamic. No shell
 // expands it. Before this fix, `cp` or `delete` after a `{}` word matched a kubectl mutating verb,
-// so denyReason denied an ordinary xargs command with no real git, gh, kubectl, ko or helm call.
+// and denyReason denied an ordinary xargs command with no real git, gh, kubectl, ko or helm call.
+//
+// `anyDynamicLiveApplyReason` runs only with a non-empty `personOnly` (src/worker-hook.ts:3959).
+// These rows need `ACME`, not `undefined`, to reach the buggy path at all.
 const ALLOW_XARGS_BARE_BRACES = [
   'xargs -I {} cp {} dest',
   'git ls-files | xargs -I {} cp {} out/',
@@ -4099,9 +4102,9 @@ const ALLOW_XARGS_BARE_BRACES = [
 ]
 
 test.each(ALLOW_XARGS_BARE_BRACES)(
-  'denyReason allows %j (claude-factory-p43v.28: a bare {} word is not dynamic)',
+  'denyReason allows %j with personOnly acme (claude-factory-p43v.28: a bare {} word is not dynamic)',
   cmd => {
-    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
   },
 )
 
