@@ -961,6 +961,84 @@ test.each(ALLOW_PUSH)('denyReason allows %j (current branch unknown here)', cmd 
   expect(denyReason(cmd)).toBeUndefined()
 })
 
+// claude-factory-ctae.1: git parse-options accepts a unique prefix of a long flag name. Each
+// row below is an abbreviation of a `PUSH_BROAD_FLAGS` member. Real git 2.54 confirmed that
+// `git push --mirr <bare>` pushes every ref, `main` included, the same reach as `--mirror`.
+const DENY_PUSH_BROAD_FLAG_ABBREVIATION = [
+  'git push --mirr o',
+  'git push --mi o',
+  'git push --al o',
+  'git push --branc o',
+  'git push --prun o',
+]
+
+test.each(DENY_PUSH_BROAD_FLAG_ABBREVIATION)(
+  'denyReason denies %j (claude-factory-ctae.1, an abbreviated broad push flag)',
+  cmd => {
+    const gate = { headOf: () => 'factory/x', originHead: () => 'main' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-ctae.2: an abbreviation of `--repo`, `--push-option`, `--receive-pack` or
+// `--exec` still takes the next word as its value, the same as the exact flag. This guard cannot
+// tell which word git reads as the value and which as a refspec, so it denies the whole push.
+// Real git 2.54 confirmed that `git push --rece git-receive-pack o` on `main` pushes `main`.
+const DENY_PUSH_VALUE_FLAG_ABBREVIATION = [
+  'git push --rece x o',
+  'git push --rep x o',
+  'git push --exe x o',
+  'git push --push-o x o',
+]
+
+test.each(DENY_PUSH_VALUE_FLAG_ABBREVIATION)(
+  'denyReason denies %j (claude-factory-ctae.2, an abbreviated push value flag)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the exact push value flag, which skips its own value word (claude-factory-ctae.2)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(denyReason('git push --receive-pack x o factory/x', undefined, undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-ctae.3: a `--no-dry-run` word, or a unique abbreviation of it, clears `dryRun`
+// again, in any order with `-n`/`--dry-run` on the same command line. Real git 2.54 confirmed
+// that each row below moves `main`, even though a bare `-n` or `--dry-run` alone never pushes.
+const DENY_PUSH_NO_DRY_RUN = ['git push -n --no-dry-run o main', 'git push --dry-run --no-dr o main']
+
+test.each(DENY_PUSH_NO_DRY_RUN)(
+  'denyReason denies %j (claude-factory-ctae.3, --no-dry-run clears dry-run)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason denies git send-pack --dry-run --no-dry-run o main (claude-factory-ctae.3)', () => {
+  expect(denyReason('git send-pack --dry-run --no-dry-run o main')).toBe(PUSH_REASON)
+})
+
+// claude-factory-ctae.5: these flags already deny through the existing refspec check. Each row
+// pins that result so a future change to the flag scan cannot silently stop denying it.
+const DENY_PUSH_DELETE_OR_FORCE_WITH_LEASE = [
+  'git push --del o main',
+  'git push --force-with o main',
+  'git push --force-with-lease=main o main',
+  'git push -d o main',
+]
+
+test.each(DENY_PUSH_DELETE_OR_FORCE_WITH_LEASE)(
+  'denyReason denies %j (claude-factory-ctae.5, --delete and --force-with-lease abbreviations)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows git push --del o factory/x (claude-factory-ctae.5)', () => {
+  expect(denyReason('git push --del o factory/x')).toBeUndefined()
+})
+
 test('denyReason allows a bare git push, git push origin HEAD and git push -u origin HEAD on a run branch', () => {
   const gate = { headOf: () => 'factory/x' }
   expect(denyReason('git push', undefined, undefined, gate)).toBeUndefined()
@@ -1707,6 +1785,52 @@ test.each(DENY_SEND_PACK_BROAD)(
 
 test('denyReason allows git send-pack with an explicit run-branch ref and no --stdin or --mirror (claude-factory-zl5.40)', () => {
   expect(denyReason('git send-pack ../remote.git refs/heads/feature')).toBeUndefined()
+})
+
+// claude-factory-ctae.4: a unique abbreviation of `--all`, `--mirror` or `--stdin` denies the
+// same way the exact flag does. Real git 2.54 confirmed each row below moves `main`.
+const DENY_SEND_PACK_BROAD_FLAG_ABBREVIATION = [
+  'git send-pack --mirr ../remote.git refs/heads/factory/x',
+  'git send-pack --al ../remote.git refs/heads/factory/x',
+  'git send-pack --stdi ../remote.git refs/heads/factory/x',
+]
+
+test.each(DENY_SEND_PACK_BROAD_FLAG_ABBREVIATION)(
+  'denyReason denies %j (claude-factory-ctae.4, an abbreviated send-pack broad flag)',
+  cmd => {
+    const gate = { headOf: () => 'factory/x' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-ctae.4: an abbreviation of `--receive-pack` or `--exec` still takes the next
+// word as its value, the same as the exact flag. This guard cannot tell which word git reads as
+// the value, so it denies the whole call. Real git 2.54 confirmed that `git send-pack
+// --receive-pack git-receive-pack <remote>` with no ref moves every branch, `main` included.
+const DENY_SEND_PACK_VALUE_FLAG = [
+  'git send-pack --receive-pack x ../remote.git',
+  'git send-pack --exec x ../remote.git',
+  'git send-pack --rece x ../remote.git refs/heads/factory/x',
+]
+
+test.each(DENY_SEND_PACK_VALUE_FLAG)(
+  'denyReason denies %j (claude-factory-ctae.4, a send-pack value flag with no ref or an abbreviated form)',
+  cmd => {
+    const gate = { headOf: () => 'factory/x' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the exact send-pack value flag, which skips its own value word (claude-factory-ctae.4)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(
+    denyReason(
+      'git send-pack --receive-pack x ../remote.git refs/heads/factory/x',
+      undefined,
+      undefined,
+      gate,
+    ),
+  ).toBeUndefined()
 })
 
 // claude-factory-zl5.41: review-r2 found 3 siblings of the zl5.21/zl5.28/zl5.34 config-write

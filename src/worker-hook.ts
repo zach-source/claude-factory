@@ -1518,9 +1518,20 @@ function anyGhReason(words: string[], gate: HookGate, state: ScanState): string 
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
 // `git push`'s own flags that take a value word. The operand search steps past them.
 const GIT_PUSH_VALUE_FLAGS = new Set(['--repo', '-o', '--push-option', '--receive-pack', '--exec'])
+
+// claude-factory-ctae.2: the long-flag members of `GIT_PUSH_VALUE_FLAGS`, for abbreviation checks.
+// Git parse-options accepts a unique prefix of each long flag name.
+// An exact word matches `GIT_PUSH_VALUE_FLAGS` above and skips its value word.
+// An abbreviation reaches the same flag. This guard cannot tell which word git reads as the value
+// and which as a refspec. It denies the whole push instead of a guess (fail closed).
+const GIT_PUSH_LONG_VALUE_FLAGS = ['--repo', '--push-option', '--receive-pack', '--exec']
+
 // A `git push` flag that pushes every branch, or deletes a remote branch with no local match.
-// Each flag can reach a protected branch with no refspec that names it. This guard denies these flags outright.
-const PUSH_BROAD_FLAGS = new Set(['--all', '--branches', '--mirror', '--prune'])
+// Each flag can reach a protected branch with no refspec that names it.
+// This guard denies these flags outright.
+// claude-factory-ctae.1: it also denies a unique abbreviation of one flag.
+// Git parse-options accepts a unique long-flag prefix the same as the full flag name.
+const PUSH_BROAD_FLAGS = ['--all', '--branches', '--mirror', '--prune']
 // A refspec that has a `$variable`, a backtick, a glob (`*`, `?`, `[`, `]`) or a brace (`{`, `}`).
 // This guard cannot resolve any of these before git does. It treats the refspec as unknown and
 // fails closed. It denies the push.
@@ -1606,16 +1617,23 @@ function refspecTarget(
 }
 
 /**
- * Parses `tail`, which holds the arguments of a `git push` call after the `push` word.
+ * `tail` holds the arguments of a `git push` call after the `push` word.
  * `operands` holds every non-flag word, in order.
- * `operands[0]` is the remote, when named. The rest are refspecs.
+ * `operands[0]` is the remote, if the call names one. The other operands are refspecs.
  *
- * `broad` is true for these flags: `--all`, `--branches`, `--mirror` and `--prune`.
- * Each one can push or prune every branch with no refspec that names one.
+ * `broad` is true for `--all`, `--branches`, `--mirror` and `--prune`.
+ * Each of these flags can push or prune every branch. No refspec names a branch.
+ * claude-factory-ctae.1: `broad` is also true for a unique abbreviation of one of those flags.
+ *
+ * claude-factory-ctae.2: `broad` is also true for a unique abbreviation of a value flag in
+ * `GIT_PUSH_LONG_VALUE_FLAGS`. Each such flag hides a refspec.
+ * This guard cannot read that refspec.
  * `tags` is true for `--tags`.
  *
- * `dryRun` is true for `-n` or `--dry-run`.
- * This never pushes, so the caller allows it outright.
+ * `dryRun` is true for `-n` or `--dry-run`. A dry run never pushes.
+ * The caller allows it without more checks.
+ * claude-factory-ctae.3: A later word that is a unique abbreviation of `--no-dry-run` clears
+ * `dryRun` again. Git itself reads the 2 flags together, and this guard does the same.
  */
 function pushOperands(tail: string[]): {
   operands: string[]
@@ -1627,6 +1645,7 @@ function pushOperands(tail: string[]): {
   let broad = false
   let tags = false
   let dryRun = false
+  let noDryRun = false
   for (let i = 0; i < tail.length; i++) {
     const w = tail[i]!
     if (w === '--') continue
@@ -1636,14 +1655,16 @@ function pushOperands(tail: string[]): {
         i++
         continue
       }
-      if (PUSH_BROAD_FLAGS.has(w)) broad = true
+      if (PUSH_BROAD_FLAGS.some(f => matchesLongFlagPrefix(w, f))) broad = true
+      else if (GIT_PUSH_LONG_VALUE_FLAGS.some(f => matchesLongFlagPrefix(w, f))) broad = true
       else if (w === '--tags') tags = true
       else if (w === '-n' || w === '--dry-run') dryRun = true
+      else if (matchesLongFlagPrefix(w, '--no-dry-run')) noDryRun = true
       continue
     }
     operands.push(w)
   }
-  return { operands, broad, tags, dryRun }
+  return { operands, broad, tags, dryRun: dryRun && !noDryRun }
 }
 
 /**
@@ -1871,39 +1892,57 @@ function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
 
 // claude-factory-zl5.35: `git send-pack` is the plumbing command that `git push` itself calls.
 // It moves refs to a remote over the same transports that `push` uses, such as ssh.
-//
+
 // It has no `push` word of its own, and its synopsis is `git send-pack [--all] [--dry-run]
 // [--mirror] [--stdin] [<host>:]<directory> [<ref>...]`. The first word that is not a flag is
 // the destination, not a refspec. The other words use the same refspec syntax that
 // `gitPushDenied` already reads. So this guard reuses `refspecTarget` on each one.
-//
+
 // claude-factory-zl5.40: an earlier version of this guard read no ref as a push of `HEAD` alone.
 // Real git confirmed the real rule: with no ref and no `--all`, send-pack pushes every local
 // branch to a same-named remote branch, the same broad reach as `push.default=matching`.
-//
+
 // This guard also ignored 2 flags. `--stdin` reads refs from its own stdin, text this guard
 // cannot read. `--mirror` has the same broad reach as `--all`, and also deletes refs.
-//
+
 // This guard now denies outright on `--mirror`, `--stdin`, or no ref at all. It still checks a
 // named ref against the protected branch set, the same as before.
+
+// claude-factory-ctae.4: `send-pack`'s own flags that take a value word. An exact word here
+// skips the value word. A unique abbreviation of one of these flags still takes a value word,
+// but this guard cannot read it, so `sendPackDenied` denies the whole call instead of a guess.
+const SEND_PACK_VALUE_FLAGS = new Set(['--receive-pack', '--exec', '--push-option'])
+
+// claude-factory-ctae.4: git parse-options accepts a unique prefix of a long flag name here too.
+// This guard now checks `--all`, `--mirror` and `--stdin` the same way `pushOperands` does for
+// `git push`. `--no-stdin` stays an exact match, since it relaxes the guard.
 function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
   const operands: string[] = []
   let broad = false
   let dryRun = false
+  let noDryRun = false
   let stdin = false
-  for (const w of tail) {
+  let unsafeValueFlag = false
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
     if (w === '--') continue
     if (w.startsWith('-') && w !== '-') {
-      if (w === '--all' || w === '--mirror') broad = true
+      if (SEND_PACK_VALUE_FLAGS.has(w)) {
+        i++
+        continue
+      }
+      if (matchesLongFlagPrefix(w, '--all') || matchesLongFlagPrefix(w, '--mirror')) broad = true
       else if (w === '--dry-run' || w === '-n') dryRun = true
-      else if (w === '--stdin') stdin = true
+      else if (matchesLongFlagPrefix(w, '--no-dry-run')) noDryRun = true
+      else if (matchesLongFlagPrefix(w, '--stdin')) stdin = true
       else if (w === '--no-stdin') stdin = false
+      else if ([...SEND_PACK_VALUE_FLAGS].some(f => matchesLongFlagPrefix(w, f))) unsafeValueFlag = true
       continue
     }
     operands.push(w)
   }
-  if (dryRun) return false
-  if (broad || stdin) return true
+  if (dryRun && !noDryRun) return false
+  if (broad || stdin || unsafeValueFlag) return true
   const refspecs = operands.slice(1)
   // claude-factory-zl5.40: no ref means a broad, matching-style push. This guard cannot name
   // every branch that reaches, so it denies the whole call (fail closed) instead of defaulting
