@@ -5947,6 +5947,11 @@ const SNAP_DENY_ALIAS = [
   'sudo gp origin main',
   'FOO=1 gp origin main',
   'bad x',
+  'A+=/x gp origin main',
+  'B[1]=/x gp origin main',
+  'A+=/x gco main',
+  'C[k]+=/x gp origin main',
+  'a=/x gp origin main',
 ]
 test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (claude-factory-1zr5)', cmd => {
   expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
