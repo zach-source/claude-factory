@@ -64,14 +64,20 @@ export const LIVE_REASON =
   'current context is unknown here). This guard matches context and cluster names only. ' +
   'Do not retry this command. Report blocked: "parked, waiting on: <the exact command>".'
 
-// claude-factory-25z.20: a command this long can make the guard's own scan slow enough to miss
-// the 10 s PreToolUse hook timeout, which lets the command run unchecked.
+// claude-factory-25z.20, extended on every rig by claude-factory-dts: a command this long can
+// make the guard's own scan slow enough to miss the 10 s PreToolUse hook timeout, which lets the
+// command run unchecked.
 const MAX_COMMAND_LENGTH = 8192
 
+// claude-factory-dts: this cap now applies on every rig, not only one with a person-only kube
+// context. A worker that hits this on a long report summary, bd description or PR body can put
+// that text in a file under .scratch/ and pass it with --body-file, or as "$(cat .scratch/<name>)".
 export const LONG_COMMAND_REASON =
-  'The factory denies this command: it is longer than 8192 characters, and this rig checks commands ' +
-  'against a person-only kube context. A command this long can make that check too slow. ' +
-  'Split this command into shorter commands and run them one at a time. Do not retry this exact command.'
+  'The factory denies this command: it is longer than 8192 characters. A command this long can ' +
+  "make the factory's own check too slow, on every rig. Split this command into shorter " +
+  'commands and run them one at a time. For a long report summary, bd description or pull ' +
+  'request body, put the text in a file under .scratch/ and pass it with --body-file, or as ' +
+  '"$(cat .scratch/<name>)". Do not retry this exact command.'
 
 // claude-factory-zl5
 export const MERGE_REASON =
@@ -139,10 +145,12 @@ export interface HookGate {
   station?: string
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
-  /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any error */
-  headOf?: (dir?: string) => string | undefined
-  /** the short branch name the repo's `origin/HEAD` points to, or undefined on any error */
-  originHead?: () => string | undefined
+  /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
+   * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
+  headOf?: (dir?: string, timeoutMs?: number) => string | undefined
+  /** the short branch name the repo's `origin/HEAD` points to, or undefined on any error.
+   * `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
+  originHead?: (timeoutMs?: number) => string | undefined
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
@@ -1724,6 +1732,11 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * attached form (`-S'git push origin main'`, tokenized with the quote stripped as one word
  * `-Sgit push origin main`), a short-flag cluster (`-vS`), and `--split-string=...`.
  *
+ * claude-factory-dgf: `env` has more value flags. These are `-u`/`--unset`, `-C`/`--chdir`, `-P`
+ * and `--argv0`/`-a`. `envSplitStringValue` now reads past each flag's own value word. A value
+ * word does not stop the scan before a later `-S`. The function also reads a prefix of a long
+ * flag name, such as `--spl` for `--split-string`. GNU `getopt_long` reads a prefix this way.
+ *
  * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
  * pointers that only move up.
  *
@@ -1742,24 +1755,69 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * approximation: see src/worker-hook.test.ts for the differential checks and for the two
  * regression shapes that a blind jump past a miss would break.
  */
+// claude-factory-dgf: `env` (GNU and BSD) reads each word after `env` as an option. It stops at
+// the first word that is not an option. That word, and each word after it, is the real command.
+//
+// `-u`/`--unset`, `-C`/`--chdir`, `-P` (BSD) and `--argv0`/`-a` (GNU) each take a value.
+// You can give the value in two ways. Attach it to the flag: `-uFOO`, `--unset=FOO`.
+// Or give it as the next word: `-u FOO`. In the second way, the value word does not start with `-`.
+//
+// The old scan stopped at that word and read it as the real command.
+// It did not get to a later `-S`.
+// The scan below reads each value flag's own value in place of the command.
+// This means it can get to a later `-S`.
+//
+// GNU `getopt_long` also accepts a prefix of a long option name. It does so when the prefix names
+// only one option. `--spl` and `--unset` (the full name) both name their own option this way.
+const ENV_LONG_SPLIT_STRING = 'split-string'
+const ENV_LONG_VALUE_FLAGS = ['unset', 'chdir', 'argv0']
+const ENV_SHORT_VALUE_FLAGS = new Set(['u', 'C', 'P', 'a'])
+
 /**
- * Reads the value an `env -S`/`env --split-string` word at `words[j]` would split and run, or
- * undefined when no such flag is present (claude-factory-zl5.42). Stops and returns undefined at
- * the first word that does not start with `-`: that word is `env`'s own command, and `-S` did not
- * appear before it.
+ * Reads the value that the `env -S`/`env --split-string` word at `words[j]` splits and runs.
+ * Returns undefined when no such flag is present (claude-factory-zl5.42, claude-factory-dgf).
+ * Stops and returns undefined at the first word that is not an option and not an option's own
+ * value word. That word is the command of `env`. `-S` did not appear before it.
  */
 function envSplitStringValue(words: string[], j: number): string | undefined {
   for (let k = j + 1; k < words.length; k++) {
     const w = words[k]!
-    if (w === '-S' || w === '--split-string') return words[k + 1]
-    const longEq = /^--split-string=([\s\S]*)$/.exec(w)
-    if (longEq) return longEq[1]
-    // a short-flag cluster carrying `S`: `-vS` (value is the next word), or the attached form
-    // `-Sgit push origin main` (the tokenizer already dropped the quote around the value, so the
-    // value sits right after the `S` in this one word).
-    const shortCluster = /^-[a-zA-Z]*S([\s\S]*)$/.exec(w)
-    if (shortCluster) return shortCluster[1] || words[k + 1]
-    if (!w.startsWith('-')) return undefined
+    if (w === '-') continue // a bare `-` operand: not an option, keeps the scan going
+    if (w === '--') return undefined // ends option parsing: the real command follows
+    if (w.startsWith('--')) {
+      const body = w.slice(2)
+      const eqAt = body.indexOf('=')
+      const name = eqAt === -1 ? body : body.slice(0, eqAt)
+      const attached = eqAt === -1 ? undefined : body.slice(eqAt + 1)
+      if (name.length > 0 && ENV_LONG_SPLIT_STRING.startsWith(name)) {
+        return attached !== undefined ? attached : words[k + 1]
+      }
+      if (
+        attached === undefined &&
+        name.length > 0 &&
+        ENV_LONG_VALUE_FLAGS.some(full => full.startsWith(name))
+      ) {
+        k++ // skip this flag's separate value word (`--unset FOO`, `--chdir /tmp`, ...)
+      }
+      continue // an unrelated long option (`--debug`, `--ignore-signal`, ...): keep scanning
+    }
+    if (w.startsWith('-')) {
+      const chars = w.slice(1)
+      for (let ci = 0; ci < chars.length; ci++) {
+        const c = chars[ci]!
+        if (c === 'S') {
+          const rest = chars.slice(ci + 1)
+          return rest.length > 0 ? rest : words[k + 1]
+        }
+        if (ENV_SHORT_VALUE_FLAGS.has(c)) {
+          const rest = chars.slice(ci + 1)
+          if (rest.length === 0) k++ // the value is the next whole word: skip it
+          break // the cluster's value, attached or skipped, ends the cluster
+        }
+      }
+      continue // an unrelated short cluster (`-i`, `-v`, `-0`, ...): keep scanning
+    }
+    return undefined
   }
   return undefined
 }
@@ -1832,6 +1890,94 @@ function anyShellReason(
   return undefined
 }
 
+// claude-factory-dts: a long multi-push command denies slowly.
+// Each push segment causes 2 git spawns.
+// gitReason calls gate.headOf(dir).
+// protectedBranchSet calls gate.originHead(), inside gitPushDenied and sendPackDenied.
+// No code cached either call.
+// A command with N push segments spawns about 2N git processes.
+// This scan can run past the hook's own 10 s PreToolUse timeout (see :67-68).
+// Past that timeout, the hook fails open: the command runs unchecked.
+const MAX_HEAD_DIRS = 8
+
+// claude-factory-dts.4: MAX_HEAD_DIRS gives the maximum number of spawns. It does not set a limit on the time of each spawn.
+// Each git spawn can use its full timeout if it is stuck or slow.
+// Up to 8 headOf spawns and 1 originHead spawn can use 9 full timeouts.
+// That is more than the hook's own 10 s PreToolUse timeout.
+// GATE_BUDGET_MS gives the maximum total time that memoGate spends on gate spawns for one denyReason call.
+//
+// When memoGate has used the budget, it skips the spawn and gives undefined. This is a fail-closed result.
+// MAX_HEAD_DIRS uses the same fail-closed rule.
+//
+// 6000 ms is below the 10 s timeout, so the remaining scan has time to finish.
+// The budget also covers one spawn that started before the deadline.
+// That spawn gets its own timeout. memoGate decreases it to the time left (see the
+// Math.min(2000, remaining) lines below).
+const GATE_BUDGET_MS = 6000
+
+/**
+ * This memo for `gate` makes `headOf` and `originHead` each spawn git at most one time for one
+ * `denyReason` call. One memo covers each push segment, each eval level and each sh -c level that
+ * the scan goes through (claude-factory-dts).
+ *
+ * `originHead` calls the original function at most one time.
+ * The memo keeps the result, and it also keeps an undefined result.
+ * An unresolved `origin/HEAD` denies every branch-targeting push (claude-factory-zl5.13).
+ * The memo must give that same unresolved answer again. It must not drop the answer on a
+ * subsequent call.
+ *
+ * `headOf` keeps one cached result for each separate `dir` key, in a `Map`.
+ * The unset `dir` is its own key. `headOf()` and `headOf(undefined)` share one entry.
+ * When there are more than MAX_HEAD_DIRS = 8 separate dirs, `headOf` gives undefined.
+ * It does not spawn a git process. This is a fail-closed result.
+ *
+ * `gitPushDenied` uses the same rule for an unknown current branch (claude-factory-zl5.12).
+ *
+ * A shared deadline also limits the time of each spawn (claude-factory-dts.4).
+ * The deadline is GATE_BUDGET_MS after this memo is built.
+ * Each call gives the original `headOf` or `originHead` a `timeoutMs`. This value is at most
+ * the time left before the deadline.
+ *
+ * After the deadline, a call skips the spawn and gives undefined at once.
+ * A slow or stuck git spawn cannot make the whole scan last longer than the hook's own
+ * 10 s PreToolUse timeout.
+ *
+ * The wrapped gate keeps a field unset when the caller left it unset.
+ * A caller that does not set `gate.headOf` and does not set `gate.originHead` has the same
+ * behavior as before this memo.
+ */
+function memoGate(gate: HookGate): HookGate {
+  const memo: HookGate = { ...gate }
+  const deadline = Date.now() + GATE_BUDGET_MS
+  if (gate.originHead) {
+    const real = gate.originHead
+    let called = false
+    let result: string | undefined
+    memo.originHead = () => {
+      if (!called) {
+        called = true
+        const remaining = deadline - Date.now()
+        if (remaining > 0) result = real(Math.min(2000, remaining))
+      }
+      return result
+    }
+  }
+  if (gate.headOf) {
+    const real = gate.headOf
+    const cache = new Map<string | undefined, string | undefined>()
+    memo.headOf = dir => {
+      if (cache.has(dir)) return cache.get(dir)
+      if (cache.size >= MAX_HEAD_DIRS) return undefined
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return undefined
+      const result = real(dir, Math.min(2000, remaining))
+      cache.set(dir, result)
+      return result
+    }
+  }
+  return memo
+}
+
 /**
  * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
  * `root` is the worktree root. An rm operand outside it is risky too (see riskyTarget).
@@ -1841,6 +1987,10 @@ function anyShellReason(
  * `gate` carries the merge-gate checks' own context (claude-factory-zl5): the running station, the
  * rig's protected branches, and small reads of the live repo a test can fake out. These checks
  * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
+ *
+ * claude-factory-dts: this checks `command.length` once, before any scan, on every rig. Past
+ * MAX_COMMAND_LENGTH it gives `LONG_COMMAND_REASON` outright. At or under that length, it calls
+ * `scanReason`, which runs the real scan with no length cap of its own.
  */
 export function denyReason(
   command: string,
@@ -1848,7 +1998,27 @@ export function denyReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
-  return denyAt(command, root, personOnly, gate ?? {}, 0)
+  if (command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
+  return scanReason(command, root, personOnly, gate)
+}
+
+/**
+ * The scan `denyReason` runs, with no length cap (claude-factory-dts). `denyReason` is the one
+ * public entry point that checks `MAX_COMMAND_LENGTH`; a recursive call (through `anyShellReason`,
+ * for `eval` or `sh -c`) reads a substring of a command `denyReason` already capped, so this inner
+ * scan needs no cap of its own.
+ *
+ * `memoGate` wraps `gate` once here, so every recursion level (`denyAt`, `anyShellReason`)
+ * through this one call shares one memoized `headOf`/`originHead`, in place of one real git spawn
+ * for every push segment (claude-factory-dts).
+ */
+export function scanReason(
+  command: string,
+  root?: string,
+  personOnly?: string[],
+  gate?: HookGate,
+): string | undefined {
+  return denyAt(command, root, personOnly, memoGate(gate ?? {}), 0)
 }
 
 /**
@@ -1864,14 +2034,10 @@ function denyAt(
   depth: number,
 ): string | undefined {
   if (!command) return undefined
-  // claude-factory-epz: this check comes before the 8192-char check, so a deep command denies
-  // even when personOnly is empty or absent (the 8192 cap applies only when personOnly is set).
+  // claude-factory-epz: a deep command denies here, with no personOnly check at all. The
+  // MAX_COMMAND_LENGTH cap (claude-factory-25z.20) now runs once, in denyReason, before this
+  // function ever runs (claude-factory-dts). denyAt itself checks no length at all.
   if (depth > MAX_SHELL_DEPTH) return DEEP_COMMAND_REASON
-  // claude-factory-25z.20: this guard's own scan cost rises with the length of `command` (see
-  // anyLiveApplyWord and anyShellReason). A command built to be long enough can push that scan
-  // past the 10 s PreToolUse hook timeout, which lets the command run unchecked. When a
-  // person-only context list is set, deny a command this long outright instead of scanning it.
-  if (personOnly?.length && command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
   const g = gate
   let hasRm = false
   let hasCd = false
@@ -1925,13 +2091,16 @@ function denyAt(
   return hasRm && hasCd ? REASON : undefined
 }
 
-// claude-factory-zl5.3: runs `git symbolic-ref`, with a 2 s cap.
-// The 2 s cap stops a stuck or missing git from blocking the 10 s PreToolUse hook.
-// It returns undefined on an error, a non-zero exit, or empty output.
+// claude-factory-zl5.3: runs `git symbolic-ref`. `timeoutMs` caps it, at 2000 ms by default.
+// The cap stops a stuck or missing git process from blocking the 10 s PreToolUse hook.
+// This function returns undefined on an error, a non-zero exit, or empty output.
 // `gate.headOf` and `gate.originHead` then treat the branch as unknown.
-function gitSymbolicRef(args: string[]): string | undefined {
+//
+// claude-factory-dts.4: memoGate passes a shorter `timeoutMs` near its own shared deadline.
+// This stops one spawn from running the whole scan past the hook's own 10 s timeout.
+function gitSymbolicRef(args: string[], timeoutMs = 2000): string | undefined {
   try {
-    const p = Bun.spawnSync(['git', ...args], { timeout: 2000 })
+    const p = Bun.spawnSync(['git', ...args], { timeout: timeoutMs })
     if (p.exitCode !== 0) return undefined
     return p.stdout.toString().trim() || undefined
   } catch {
@@ -1982,9 +2151,10 @@ async function main() {
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
     protectedBranches,
-    headOf: dir => gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD']),
-    originHead: () =>
-      gitSymbolicRef(['-C', root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])?.replace(
+    headOf: (dir, timeoutMs) =>
+      gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD'], timeoutMs),
+    originHead: timeoutMs =>
+      gitSymbolicRef(['-C', root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], timeoutMs)?.replace(
         /^origin\//,
         '',
       ),

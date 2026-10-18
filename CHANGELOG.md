@@ -166,6 +166,17 @@ minor release may change the factory format, the CLI or the run state.
       `$XDG_CONFIG_HOME/git/config` as its own global config. `GIT_DIR=<dir>` and
       `GIT_COMMON_DIR=<dir>` deny the same way: each one points git at a different
       repository's config file.
+  - A sibling of the `env -S`/`env --split-string` fix above still let a value flag's own
+    value word hide a later `-S`. The hook now reads past that word too.
+    - `env -u NAME`/`--unset NAME`, `-C DIR`/`--chdir DIR`, `-P PATH` (BSD), and
+      `-a ARG`/`--argv0 ARG` (GNU) each take a value word of their own. The old scan stopped
+      at that word, read as `env`'s own command, and so never reached a later `-S`. It now
+      reads a value flag's own value instead, so `env -u FOO -S 'git push origin main'` and
+      `env -C /tmp -S 'gh pr merge 5'` still deny the command.
+    - A short cluster that ends in a value flag, such as `-iu FOO`, skips one word the same
+      way. GNU `getopt_long` also accepts a prefix of a long option name, so `--spl ...` and
+      `--sp=...` deny the command the same as `--split-string ...` and `--split-string=...`.
+      (claude-factory-dgf)
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook
@@ -762,6 +773,49 @@ minor release may change the factory format, the CLI or the run state.
     `personOnly`. The 8192-character cap stays. The cap's own wording now
     says "characters", not "bytes": `command.length` counts UTF-16 units.
     README.md gained one sentence on the 8192-character deny.
+- Fixed: a long multi-push `git push` command can outrun the worker
+  `PreToolUse` hook's 10-second timeout and run unchecked. The 8192-character
+  length cap guarded only a rig with a `--person-only-context` set.
+  (claude-factory-dts)
+  - Cause: `gitReason` called `gate.headOf(dir)` once for each push segment,
+    and `protectedBranchSet` called `gate.originHead()` once for each push
+    segment (inside `gitPushDenied`/`sendPackDenied`). Neither call was
+    cached. A command of 583 `git push o b;` segments plus a trailing
+    protected push (8182 characters, under the old cap) took 10527 ms at a
+    load average of 52, through `bun src/worker-hook.ts`.
+  - Fix: `memoGate(gate)` (`src/worker-hook.ts`) wraps `gate.headOf` and
+    `gate.originHead` once at the `denyReason` entry. `originHead` now runs
+    at most once per call, caching an unresolved (`undefined`) result too.
+    `headOf` caches one result for each distinct `dir`, up to
+    `MAX_HEAD_DIRS` (8); past that, it returns `undefined` with no git
+    spawn, the same fail-closed rule an unresolvable `headOf` already used
+    (claude-factory-zl5.12). `denyReason` now checks `MAX_COMMAND_LENGTH` on
+    every rig, not only one with `--person-only-context`, before any scan.
+    The real scan moved to a new exported `scanReason`, with no length cap
+    of its own, so a recursive `eval`/`sh -c` call (a substring of a command
+    `denyReason` already capped) needs no cap either.
+    `LONG_COMMAND_REASON`'s own text dropped the person-only-context
+    wording and now tells the worker to put a long report summary, bd
+    description or pull request body in a file under `.scratch/`, and pass
+    it with `--body-file`, or as `"$(cat .scratch/<name>)"`.
+    `src/worker-hook.bench.ts` now times `scanReason`, matching the removed
+    cap. README.md's 8192-character sentence now says "on every rig".
+- Fixed: `memoGate` (claude-factory-dts) bounded the spawn count, not the
+  spawn time. A stuck or slow git process can still spend its own full
+  2-second timeout on each of up to 8 `headOf` spawns plus 1 `originHead`
+  spawn: 9 full timeouts, past the hook's 10-second `PreToolUse` timeout.
+  (claude-factory-dts.4)
+  - Cause: 8 dirs with a `mkfifo .git/HEAD` (`git symbolic-ref` blocks on
+    open) took 16.1 seconds at a load average of 10, through
+    `bun src/worker-hook.ts`.
+  - Fix: `memoGate` now sets a shared deadline, `GATE_BUDGET_MS` (6000 ms)
+    after the memo is built. `gate.headOf` and `gate.originHead` gained an
+    optional `timeoutMs` parameter; `memoGate` passes each real call at most
+    the time left before the deadline, capped at 2000 ms. Past the deadline,
+    a call skips the spawn outright and returns `undefined` (fail closed,
+    the same rule `MAX_HEAD_DIRS` already uses). `gitSymbolicRef` and the
+    `headOf`/`originHead` closures in `main()` now thread `timeoutMs`
+    through to `Bun.spawnSync`'s own `timeout` option.
 - Added: `factory memory add` now takes `--kind fact|rule|recipe` and
   `--until <bead|owner/repo#N|pull-URL|YYYY-MM-DD>`. It refuses the note
   before it checks for a duplicate. (claude-factory-3u1.1.1)

@@ -43,7 +43,10 @@
  *
  * The script prints one line for each input size.
  * Each line shows the input size in words and bytes.
- * Each line also shows the wall-clock time for one `denyReason` call.
+ * Each line also shows the wall-clock time for one `scanReason` call. `scanReason` runs the same
+ * scan `denyReason` does, with no length cap, so a big input here still measures the scan this
+ * script targets, in place of the MAX_COMMAND_LENGTH short-circuit `denyReason` now gives on
+ * every rig for an input this big (claude-factory-dts).
  * Each line also shows the ratio to the time at the previous input size.
  * Read the ratio column, not the raw time.
  *
@@ -60,7 +63,7 @@
  * That bead does not give a load average.
  * Compare your time at the same `n` with those numbers to judge the effect of load noise on your run.
  */
-import { denyReason } from './worker-hook'
+import { scanReason } from './worker-hook'
 
 function shellRun(n: number): string {
   return 'sh '.repeat(n) + '; rm -rf x'
@@ -72,7 +75,7 @@ function findRun(n: number): string {
 
 function timeOnce(command: string): number {
   const t0 = performance.now()
-  denyReason(command)
+  scanReason(command)
   return performance.now() - t0
 }
 
