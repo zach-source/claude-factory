@@ -1520,8 +1520,9 @@ function runTokenSwap(
   return until
 }
 
-/** the model behind the `haiku` alias for workers and the manager. Claude Code 2.1.291 maps it to Haiku 4.5 */
-export const HAIKU = 'claude-haiku-5-5'
+/** the model behind the `haiku` alias for workers and the manager. Claude Code 2.1.291 maps it to Haiku 4.5,
+ * and without [1m] it gives Haiku 5.5 a 200k window instead of its 1M */
+export const HAIKU = 'claude-haiku-5-5[1m]'
 
 /**
  * a worker's own Claude settings, in full: none of the user's plugins, agents, skills, global `CLAUDE.md` or auto memory.

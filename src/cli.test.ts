@@ -388,7 +388,7 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   expect(workerSettings({}, 200, '/h/.claude/CLAUDE.md').claudeMdExcludes).toEqual(['/h/.claude/CLAUDE.md'])
   expect(workerSettings({}, 30).autoCompactWindow).toBe(100_000) // Claude Code's floor
   // the shunt guard's subagent runs on the current Haiku through the `haiku` alias
-  expect(w.env).toMatchObject({ ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-5-5', SHUNT_MODEL: 'haiku' })
+  expect(w.env).toMatchObject({ ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-5-5[1m]', SHUNT_MODEL: 'haiku' })
   // a user's own value wins over the factory's default
   expect(workerSettings({ env: { SHUNT_MODEL: 'sonnet' } }, 200).env.SHUNT_MODEL).toBe('sonnet')
 })
