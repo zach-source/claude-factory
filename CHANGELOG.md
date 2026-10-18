@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+## 0.13.0 (2026-10-18)
+
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
   `factories/sweeps.ts`. `factory tick` starts each due `(rig, sweep)` pass on its own cadence.
   A lifecycle run no longer loops on a sweep station. (claude-factory-8pc)
