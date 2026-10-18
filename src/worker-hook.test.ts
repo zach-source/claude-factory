@@ -3278,3 +3278,56 @@ test.each(DENY_DYNAMIC_UNNAMED_TOOL)(
     expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
   },
 )
+
+// claude-factory-p43v.19: a wrapper flag, or coproc, can sit between the wrapper name and the
+// dynamic command-word pair. The old realCommand stopped at the wrapper's first flag.
+// It then read the flag word as cmd[0]. It missed the pair check from claude-factory-p43v.8.
+const DENY_DYNAMIC_PAIR_AFTER_WRAPPER_FLAGS = [
+  'sudo -u x $G $V o main',
+  'sudo -g x $G $V o main',
+  'env -i $G $V o main',
+  'nice -n 5 $G $V o main',
+  'time -p $G $V o main',
+  'exec -a x $G $V o main',
+  'timeout -s KILL 5 $G $V o main',
+  'command -p $G $V o main',
+  'coproc $G $V o main',
+  'sudo -u x $GH $V merge 5',
+]
+
+test.each(DENY_DYNAMIC_PAIR_AFTER_WRAPPER_FLAGS)(
+  'denyReason denies %j (claude-factory-p43v.19: a wrapper flag or coproc hides the dynamic command-word pair)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason allows cp "$A" "$B" after a wrapper flag fix (claude-factory-p43v.19: no over-deny)', () => {
+  expect(denyReason('sudo -u x cp "$A" "$B"', '/x', undefined, P43V_GATE)).toBeUndefined()
+})
+
+test('denyReason allows "$PY" -c \'print(1)\' (claude-factory-p43v.19: no over-deny)', () => {
+  expect(denyReason('sudo -u x "$PY" -c \'print(1)\'', '/x', undefined, P43V_GATE)).toBeUndefined()
+})
+
+// claude-factory-p43v.20: `--config-env` after a dynamic command word hides a push config write,
+// the same way a dynamic `-c` key does (claude-factory-p43v.14). The attached form
+// (`--config-env=name=envvar`) and the two-word form (`--config-env name=envvar`, real git 2.54
+// accepts both) must both fail closed.
+const DENY_DYNAMIC_CONFIG_ENV_AFTER_COMMAND_WORD = [
+  '$G --config-env=alias.p=E p o main',
+  '$G --config-env=$K=E p o main',
+  '$G --config-env="$KE" p o main',
+  '$G --config-env alias.p=E p o main',
+]
+
+test.each(DENY_DYNAMIC_CONFIG_ENV_AFTER_COMMAND_WORD)(
+  'denyReason denies %j (claude-factory-p43v.20: a dynamic command word before --config-env fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason allows $G --config-env=user.name=MYNAME p o main (claude-factory-p43v.20: a non-push key stays allowed)', () => {
+  expect(denyReason('$G --config-env=user.name=MYNAME p o main', '/x', undefined, P43V_GATE)).toBeUndefined()
+})

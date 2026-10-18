@@ -154,6 +154,8 @@ minor release may change the factory format, the CLI or the run state.
   | Dynamic `-c` key after a dynamic command word | `$G -c $K=push p origin main` | claude-factory-p43v.14 |
   | Shell reserved word (`do, then, if, !`) before the dynamic command word | `for f in a; do $G $V origin main; done` | claude-factory-p43v.15 |
   | Dynamic word before a `kubectl rollout, auth, certificate` sub-verb, or behind an unknown wrapper | `caffeinate $K apply -f x --context acme` | claude-factory-p43v.16 |
+  | Wrapper flag, or `coproc`, before the dynamic command-word pair | `sudo -u x $G $V origin main` | claude-factory-p43v.19 |
+  | Dynamic command word before `--config-env` (attached or two-word form) | `$G --config-env alias.p=E p origin main` | claude-factory-p43v.20 |
 
   The dynamic command-word check for `kubectl, ko, helm` (claude-factory-p43v.10) now returns
   `DYNAMIC_VERB_REASON`, not `LIVE_REASON`. `LIVE_REASON` names `kubectl`, `ko` or `helm` by name.

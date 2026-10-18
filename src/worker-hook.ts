@@ -426,10 +426,100 @@ function riskyTarget(t: string, root?: string): boolean {
   return !resolved.startsWith(base + '/')
 }
 
-// claude-factory-p43v.15: a shell reserved word can open a segment, right before the real
-// command word. realCommand skips each one, so the p43v.8 and p43v.10 checks still find the
-// real command word behind it.
-const RESERVED_LEADING_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!'])
+// claude-factory-p43v.15: a shell reserved word can come right before the real command word.
+// realCommand skips each reserved word.
+// The p43v.8 and p43v.10 checks then find the real command word behind it.
+//
+// claude-factory-p43v.19: bash's `coproc NAME? command` starts a background job in the same way.
+// realCommand treats coproc as a reserved word too.
+// coproc takes no flag of its own. The real command follows it.
+const RESERVED_LEADING_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', 'coproc'])
+
+// claude-factory-p43v.19: this map lists the flags that take a separate value word.
+// It covers each wrapper above and `timeout`.
+// realCommand must skip that value word too.
+//
+// If realCommand does not skip the value word, that word becomes `cmd[0]`.
+// Then `cmd[0]` is the value word, not the real command.
+// A dynamic word after the wrapper's own flags then never reaches the p43v.8 pair check.
+//
+// Source: each wrapper's own man page.
+// sudo takes a value after -u, -g, -C, -D, -h, -p, -U, -r and -t.
+// env takes a value after -u, -C, -P, -L, -U and -a.
+// nice takes a value after -n.
+//
+// time takes a value after -o and -f.
+// exec takes a value after -a.
+// timeout takes a value after -s and -k.
+const WRAPPER_VALUE_FLAGS: Record<string, Set<string>> = {
+  sudo: new Set(['-u', '-g', '-C', '-D', '-h', '-p', '-U', '-r', '-t']),
+  env: new Set(['-u', '-C', '-P', '-L', '-U', '-a']),
+  nice: new Set(['-n']),
+  time: new Set(['-o', '-f']),
+  exec: new Set(['-a']),
+  timeout: new Set(['-s', '-k']),
+}
+
+// claude-factory-p43v.19: this map lists each wrapper's own bare flags.
+// A bare flag takes no value word.
+// `skipWrapperFlags` must know each of these flags by name.
+//
+// It must not skip every unknown flag.
+// `env -S` and `env --split-string` take a value.
+// This hook reads that value in `envSplitStringValue`.
+// A generic skip would also skip that value word, and can empty `cmd`.
+// An empty `cmd` makes `denyAt` skip the whole segment (claude-factory-dts).
+// Then `denyAt` would also skip the `env -S` check.
+//
+// `skipWrapperFlags` skips a flag only when it knows that flag by name for that wrapper.
+// It stops at the first flag that it does not know.
+// It leaves that flag word, and each word after it, in place.
+// This way, a wrapper flag that this hook does not recognize is never silently skipped.
+const WRAPPER_BARE_FLAGS: Record<string, Set<string>> = {
+  sudo: new Set(['-i']),
+  env: new Set(['-i']),
+  time: new Set(['-p']),
+  exec: new Set(['-c', '-l']),
+  command: new Set(['-p']),
+}
+
+/**
+ * The function skips each flag word after a known wrapper's own name.
+ * It handles one word pair at a time.
+ * It skips only a flag that this hook knows by name for that wrapper.
+ * The known flags appear in `WRAPPER_VALUE_FLAGS` or `WRAPPER_BARE_FLAGS`.
+ *
+ * A flag in `WRAPPER_VALUE_FLAGS[wrapperName]` also skips the word after it.
+ * That word is the value word of the flag.
+ * A flag in `WRAPPER_BARE_FLAGS[wrapperName]` skips only itself.
+ *
+ * The scan stops at the first word that is not a known flag of that wrapper.
+ * A bare `-` also stops the scan, because it is not a flag.
+ * A `--` word also stops the scan.
+ * The scan skips that `--` word first, because it ends the wrapper's own option list.
+ */
+function skipWrapperFlags(wrapperName: string, words: string[]): string[] {
+  const valueFlags = WRAPPER_VALUE_FLAGS[wrapperName]
+  const bareFlags = WRAPPER_BARE_FLAGS[wrapperName]
+  let w = words
+  while (w.length && w[0] !== '-' && w[0]!.startsWith('-')) {
+    const flag = w[0]!
+    if (flag === '--') {
+      w = w.slice(1)
+      break
+    }
+    if (valueFlags?.has(flag)) {
+      w = w.slice(2)
+      continue
+    }
+    if (bareFlags?.has(flag)) {
+      w = w.slice(1)
+      continue
+    }
+    break
+  }
+  return w
+}
 
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
@@ -447,11 +537,11 @@ function realCommand(words: string[]): string[] {
     }
     const b = baseWord(head)
     if (WRAPPERS.has(b)) {
-      w = w.slice(1)
+      w = skipWrapperFlags(b, w.slice(1))
       continue
     }
     if (b === 'timeout') {
-      w = w.slice(1)
+      w = skipWrapperFlags('timeout', w.slice(1))
       if (/^[\d.]+[smhd]?$/.test(w[0] ?? '')) w = w.slice(1)
       continue
     }
@@ -1933,34 +2023,48 @@ function isPushConfigWrite(name: string, value: string | undefined): boolean {
  */
 // claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` from the text of the
 // environment variable named `<envvar>`. It sets the same key that `-c <name>=<value>` sets from
-// the command line. Real git accepts only this one attached form, with `=` right after `--config-env`.
+// the command line.
+//
+// claude-factory-p43v.20: git 2.54 accepts two forms of `--config-env`: the attached form
+// `--config-env=<name>=<envvar>` and the two-word form `--config-env <name>=<envvar>`.
+// On git 2.54, `--config-env user.name=MYNAME` and `--config-env=user.name=MYNAME` read the
+// same environment variable. The code below checks only the attached, one-word form. The
+// two-word form of a literal (non-dynamic) `--config-env` flag is a known gap
+// (claude-factory-8yjc).
 const CONFIG_ENV_PREFIX = '--config-env='
+
+/**
+ * True when `--config-env` sets `name` to a key that `gitDashCPushDenied` denies outright.
+ * The check has no value test (claude-factory-zl5.34, claude-factory-p43v.20).
+ *
+ * The guard can read the name of `<envvar>`. It cannot read the text of the environment
+ * variable that it names.
+ * It cannot check that text against the `push.default` value rule in `isPushConfigWrite`.
+ * It denies each key that `--config-env` sets from this list: `alias.*`, `remote.*.push`,
+ * `remote.*.mirror`, `push.default`, `include.path`, `includeIf.*.path`.
+ * claude-factory-zl5.41 adds the mirror and include keys.
+ * It checks no value, so it fails closed.
+ */
+function configEnvPushKeyName(name: string): boolean {
+  return (
+    isRemotePushName(name) ||
+    isRemoteMirrorName(name) ||
+    isAliasName(name) ||
+    isPushDefaultName(name) ||
+    isIncludeName(name)
+  )
+}
 
 function gitDashCPushDenied(tail: string[]): boolean {
   for (let i = 0; i < tail.length; i++) {
     const w = tail[i]!
     if (w === '--') break
     if (w.startsWith(CONFIG_ENV_PREFIX)) {
-      // claude-factory-zl5.34: This guard can read the name of `<envvar>`, but not the text of the
-      // environment variable that it names.
-      //
-      // It cannot check that text against the `push.default` value rule in `isPushConfigWrite`.
-      // So this guard denies any of these keys that this flag sets: `alias.*`, `remote.*.push`,
-      // `remote.*.mirror`, `push.default`, `include.path`, `includeIf.*.path`
-      // (claude-factory-zl5.41 adds the mirror and include keys). It checks no value, so it
-      // fails closed.
       const rest = w.slice(CONFIG_ENV_PREFIX.length)
       const eq = rest.indexOf('=')
       if (eq < 0) continue
       const name = rest.slice(0, eq)
-      if (
-        isRemotePushName(name) ||
-        isRemoteMirrorName(name) ||
-        isAliasName(name) ||
-        isPushDefaultName(name) ||
-        isIncludeName(name)
-      )
-        return true
+      if (configEnvPushKeyName(name)) return true
       continue
     }
     // real git reads `-c name=value` only as 2 separate words: no `=` form, no `--config` form.
@@ -2635,6 +2739,9 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
  * - Second, a `-c name=value` flag follows it directly.
  *   The key is one that `isPushConfigWrite` denies. This is the dynamic-command-word form of
  *   `gitDashCPushDenied`.
+ * - Third, a `--config-env name=envvar` or `--config-env=name=envvar` flag follows it directly.
+ *   The key is one that `configEnvPushKeyName` denies (claude-factory-p43v.20). This is the
+ *   dynamic-command-word form of the `--config-env` check in `gitDashCPushDenied`.
  *
  * A run of flags does not count as "the next word" by itself.
  * The run passes the dynamic word on to the next word.
@@ -2676,17 +2783,28 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
       continue
     }
     if (w.startsWith('-') && w !== '-') {
-      if (w === '-c' && !sawGitWord && pendingDynamic) {
+      if ((w === '-c' || w === '--config-env') && !sawGitWord && pendingDynamic) {
         const pair = words[i + 1]
         // claude-factory-p43v.14: a dynamic key, or a pair with no literal `=` of its own,
         // fails closed the same way `gitDashCKeyDynamic` does for a literal `git` command.
         if (dashCPairKeyDynamic(pair)) return DYNAMIC_VERB_REASON
         const eq = pair?.indexOf('=') ?? -1
-        if (pair !== undefined && eq >= 0 && isPushConfigWrite(pair.slice(0, eq), pair.slice(eq + 1))) {
-          return DYNAMIC_VERB_REASON
+        if (pair !== undefined && eq >= 0) {
+          const name = pair.slice(0, eq)
+          // claude-factory-p43v.20: `--config-env`'s two-word form reads an envvar name, not a
+          // value, so it uses `configEnvPushKeyName`'s key-only check, not `isPushConfigWrite`.
+          const denied = w === '-c' ? isPushConfigWrite(name, pair.slice(eq + 1)) : configEnvPushKeyName(name)
+          if (denied) return DYNAMIC_VERB_REASON
         }
       }
-      i += GIT_VALUE_FLAGS.has(w) || GH_VALUE_FLAGS.has(w) ? 2 : 1
+      // claude-factory-p43v.20: the attached `--config-env=name=envvar` form of the same flag.
+      if (w.startsWith(CONFIG_ENV_PREFIX) && !sawGitWord && pendingDynamic) {
+        const pair = w.slice(CONFIG_ENV_PREFIX.length)
+        if (dashCPairKeyDynamic(pair)) return DYNAMIC_VERB_REASON
+        const eq = pair.indexOf('=')
+        if (eq >= 0 && configEnvPushKeyName(pair.slice(0, eq))) return DYNAMIC_VERB_REASON
+      }
+      i += GIT_VALUE_FLAGS.has(w) || GH_VALUE_FLAGS.has(w) || w === '--config-env' ? 2 : 1
       continue
     }
     if (!sawGitWord && pendingDynamic && DYNAMIC_COMMAND_TRIGGER.has(w)) return DYNAMIC_VERB_REASON
