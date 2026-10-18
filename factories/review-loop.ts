@@ -5,7 +5,7 @@ export default {
   name: 'review-loop',
   start: 'implement',
   // a rig's --param and FACTORY_<NAME> override these
-  params: { claude: 'claude-smart --new --no-channels', exec_model: 'claude-sonnet-5[1m]' },
+  params: { claude: 'claude-smart --new --no-channels', exec_model: 'claude-sonnet-5-5[1m]' },
   nodes: {
     implement: {
       prompt: `Implement the goal. Write a failing test first, make it pass, run the project's

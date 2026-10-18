@@ -6,6 +6,46 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Model defaults move to the current models, at the same per-token prices: `exec_model` is now `claude-sonnet-5-5[1m]` (was `claude-sonnet-5[1m]`) in the lifecycle, sweeps, release, review-loop and rework factories, and `security_model` is now `claude-fable-5-1` (was `claude-fable-5`) in lifecycle and sweeps. `judge_model` stays `claude-opus-5-5[1m]`. A rig's `--param` or `FACTORY_EXEC_MODEL` / `FACTORY_SECURITY_MODEL` still overrides them.
+
+- Fixed: `gitReason` (`src/worker-hook.ts`) read a `git push`'s dir from
+  `flagValue(tail, {-C}) ?? root`, where `root` is the worktree root. A
+  relative `-C <dir>` value stayed unresolved text; the real `headOf`
+  wiring in `main()` then spawned `git -C <that text>`, which resolves
+  against the hook process's own filesystem cwd, not the tool call's own
+  cwd. A prior Bash call's `cd` into a second repo made a later
+  `git push origin HEAD` or bare `git push` there read the wrong repo's
+  branch, or the wrong dir inside it. (claude-factory-3f2z)
+  - Fix: `HookGate` adds `cwd`, the tool call's own cwd (`input.cwd`).
+    `gitReason` now folds every `-C` before the push verb onto
+    `gate.cwd ?? root`, in order, through a new `gitChdir` helper: an
+    absolute value replaces the dir, a relative value joins onto it, and
+    an empty value changes nothing.
+  - Fix: `main()` sets `gate.cwd = i.cwd || root`, the same fallback
+    `readFile` already uses for a `gh api` file argument.
+  - Fix: `gitChdir` now steps over the value word of `-c`, `--git-dir`,
+    `--work-tree` and `--namespace`. Before this fix, `gitChdir` read
+    any `-C` word as the `-C` flag, even a flag's own value word, and a
+    real `-C` after it can get ignored (a fail-open). `gitChdir` now
+    also denies the push when an unknown flag's value word looks like
+    `-C`. (claude-factory-3f2z.7)
+  - Fix: `gitReason`'s two certain-verb branches now also check `!uncertain`.
+    An unknown flag's own value word can read `push` or `send-pack`.
+    `gitReason` trusted that word as the verb, even when `firstVerbIndex`
+    marked the verb search `uncertain`. It then missed a real `-C` word
+    between the fake verb and the true, later verb. `gate.headOf` then
+    read the wrong, unprotected dir (a fail-open). The uncertain-verb
+    fallback now also denies the push when its own guessed `pushTail`
+    holds a literal `-C` word. (claude-factory-3f2z.8)
+
+  - Fix: The denial from the previous fix did not stop `gitReason`, which
+    still called `gitPushDenied` and `sendPackDenied` with the untrusted
+    `pushTail`. In that tail, a bare `push`, a push with only a remote
+    operand, and a push with `--force` and no refspec all read as safe.
+    So the push was still allowed.
+    `gitReason` now returns the deny reason at once when it finds the
+    untrusted `pushTail`, and it does not call `gitPushDenied`,
+    `sendPackDenied`, or `gate.headOf`. (claude-factory-3f2z.9)
 - `worker-hook`: fail closed when one command does one of these, then pushes `HEAD` to a
   protected branch in the same command (claude-factory-9zd5):
   - writes a git administrative path (`.git`, `.git/HEAD`, a linked worktree's
@@ -45,7 +85,6 @@ minor release may change the factory format, the CLI or the run state.
   `rebase --root <branch>`, `stash branch`, `bisect reset <ref>`, `update-ref --stdin`,
   or a git-flag abbreviation of one of these) and then pushes `HEAD` to a protected
   branch in the same command. (claude-factory-c63)
-
 - `touchesBeadsActor` in `src/worker-hook.ts` now reads the options of an `env` word. It reads them
   the same way as the real `env` command. The old scan stopped too soon.
   It stopped at the first word that is not a flag, or at the first `bd` word.

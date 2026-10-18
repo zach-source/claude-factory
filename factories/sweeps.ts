@@ -50,9 +50,9 @@ export default {
   agent: SONNET,
   params: {
     claude: 'claude-smart --new --no-channels', // the Claude Code launcher
-    exec_model: 'claude-sonnet-5[1m]', // execution
+    exec_model: 'claude-sonnet-5-5[1m]', // execution
     judge_model: 'claude-opus-5-5[1m]', // planning, judgment, review
-    security_model: 'claude-fable-5', // security and architecture
+    security_model: 'claude-fable-5-1', // security and architecture
   },
   backoffSec: 60,
   maxSteps: 24,

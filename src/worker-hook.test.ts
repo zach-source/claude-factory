@@ -653,12 +653,24 @@ test('scanReason denies a 200000-word find -execdir scan with a recursive rm at 
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
-async function run(stdin: string, env?: Record<string, string | undefined>, argv: string[] = []) {
+// claude-factory-3f2z.2: `cwd` sets the filesystem cwd of the spawned hook process. It does not
+// set `tool_input.cwd`. That value is inside `stdin`.
+//
+// `cwd` stands in for the cwd of the real Claude Code host process. A prior Bash call runs
+// `cd`. This can leave the host process on a second repo. That repo can be different from the
+// worktree root and from `tool_input.cwd`.
+async function run(
+  stdin: string,
+  env?: Record<string, string | undefined>,
+  argv: string[] = [],
+  cwd?: string,
+) {
   const p = Bun.spawn(['bun', HOOK, ...argv], {
     stdin: new Response(stdin),
     stdout: 'pipe',
     stderr: 'pipe',
     env,
+    cwd,
   })
   const out = await new Response(p.stdout).text()
   const code = await p.exited
@@ -1235,6 +1247,266 @@ test('denyReason allows git -C .scratch/x status (not a push)', () => {
   expect(denyReason('git -C .scratch/x status')).toBeUndefined()
 })
 
+// claude-factory-3f2z.1: gitReason resolves the push dir against gate.cwd, the tool call's own
+// cwd. It folds every -C in the command, in order. Real git folds a repeated -C global flag
+// the same way: an absolute value replaces the dir, a relative value joins onto it, and an
+// empty value changes nothing.
+//
+// root=/acme/root is the worktree root. gate.cwd=/acme/cwd stands in for a prior Bash call's
+// cd into a second repo. Each row's headOf fake denies only at its own expected dir, so a wrong
+// dir allows the push instead of denying it. The fake also records every dir that headOf saw.
+const GIT_CHDIR_ROWS: [string, string][] = [
+  ['git push origin HEAD', '/acme/cwd'],
+  ['git -C sub push origin HEAD', '/acme/cwd/sub'],
+  ['git -C /a -C b push origin HEAD', '/a/b'],
+  ['git -C /a -C /c push origin HEAD', '/c'],
+  ['git -C "" push origin HEAD', '/acme/cwd'],
+]
+
+test.each(GIT_CHDIR_ROWS)(
+  'denyReason folds -C onto gate.cwd for %j, denies only at dir %j (claude-factory-3f2z.1)',
+  (cmd, expectedDir) => {
+    const dirs: (string | undefined)[] = []
+    const gate: HookGate = {
+      cwd: '/acme/cwd',
+      headOf: dir => {
+        dirs.push(dir)
+        return dir === expectedDir ? 'main' : 'factory/x'
+      },
+    }
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_REASON)
+    expect(dirs).toEqual([expectedDir])
+  },
+)
+
+// claude-factory-3f2z.4: an unknown flag before the verb makes the verb search uncertain.
+// One example is `--attr-source HEAD`. The fallback then finds the verb by `indexOf`.
+// It must set `verbIndex` to that found position.
+//
+// Without that set, `dir` folds only the words before the wrong, early guess. It then
+// misses the `-C sub` word that comes after the guess. The push then reads the wrong branch.
+test('denyReason folds -C before push, through the uncertain-verb fallback (claude-factory-3f2z.4)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/cwd/sub' ? 'main' : 'factory/x'
+    },
+  }
+  expect(denyReason('git --attr-source HEAD -C sub push origin HEAD', '/acme/root', undefined, gate)).toBe(
+    PUSH_REASON,
+  )
+  expect(dirs).toEqual(['/acme/cwd/sub'])
+})
+
+test('denyReason folds -C before send-pack, through the uncertain-verb fallback (claude-factory-3f2z.4)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/cwd/sub' ? 'main' : 'factory/x'
+    },
+  }
+  expect(
+    denyReason('git --attr-source HEAD -C sub send-pack origin HEAD', '/acme/root', undefined, gate),
+  ).toBe(PUSH_REASON)
+  expect(dirs).toEqual(['/acme/cwd/sub'])
+})
+
+// claude-factory-3f2z.1 (AC2): the same -C fold must not over-deny. When the real dir's branch
+// is not protected, the push still allows.
+test('denyReason allows git -C sub push origin HEAD when the resolved dir is on an unprotected branch (claude-factory-3f2z.1)', () => {
+  const gate: HookGate = { cwd: '/acme/cwd', headOf: dir => (dir === '/acme/cwd/sub' ? 'feature' : 'main') }
+  expect(denyReason('git -C sub push origin HEAD', '/acme/root', undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-3f2z.1 (AC5): with no gate.cwd, headOf keeps reading root, unchanged from
+// before this fix.
+test('denyReason reads root for a push dir when gate.cwd is unset (claude-factory-3f2z.1, AC5)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    headOf: dir => {
+      dirs.push(dir)
+      return 'main'
+    },
+  }
+  expect(denyReason('git push origin HEAD', '/acme/root', undefined, gate)).toBe(PUSH_REASON)
+  expect(dirs).toEqual(['/acme/root'])
+})
+
+// claude-factory-3f2z.7: `-c`, `--git-dir`, `--work-tree` and `--namespace` each take one
+// value word, with no `=`. gitChdir must step over that value word.
+// gitChdir must not read that word as a `-C` flag.
+//
+// Each row below puts an extra `-C` word after one of these flags. That extra `-C` word is
+// the flag's own value. It is not a real `-C` flag.
+//
+// The real `-C` word follows the extra word. The real `-C` word must set the dir.
+// headOf here denies only at /acme/prot. A wrong fold reads the extra `-C` word as the real
+// flag. A wrong fold then allows the push.
+const GIT_CHDIR_VALUE_FLAG_ROWS: [string, boolean][] = [
+  ['git --namespace -C -C /acme/prot push origin HEAD', false],
+  ['git --work-tree -C -C /acme/prot push origin HEAD', false],
+  ['git --namespace -C -C /acme/prot send-pack origin HEAD', true],
+]
+
+test.each(GIT_CHDIR_VALUE_FLAG_ROWS)(
+  'denyReason steps over a value-flag word before folding -C, for %j (claude-factory-3f2z.7)',
+  (cmd, isSendPack) => {
+    const dirs: (string | undefined)[] = []
+    const gate: HookGate = {
+      cwd: '/acme/cwd',
+      headOf: dir => {
+        dirs.push(dir)
+        return dir === '/acme/prot' ? 'main' : 'factory/x'
+      },
+    }
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_REASON)
+    expect(dirs).toEqual(['/acme/prot'])
+    void isSendPack
+  },
+)
+
+// claude-factory-3f2z.7: regression guard. Here the real `-C` word comes first, so it
+// already sets the dir to the protected dir.
+//
+// The extra `-C` word is the value of `--namespace`. It is the last word, so it sets
+// nothing. This command must stay denied after the fix, the same as before the fix.
+test('denyReason keeps denying when the real -C comes before a value-flag word (claude-factory-3f2z.7)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/prot' ? 'main' : 'factory/x'
+    },
+  }
+  expect(denyReason('git -C /acme/prot --namespace -C push origin HEAD', '/acme/root', undefined, gate)).toBe(
+    PUSH_REASON,
+  )
+  expect(dirs).toEqual(['/acme/prot'])
+})
+
+// claude-factory-3f2z.7: an unknown flag before the verb can also take a value word.
+// This hook does not know that flag, through the uncertain-verb fallback.
+//
+// A value word that starts with `-` can look like a `-C` flag. gitChdir then cannot tell a
+// real `-C <dir>` word apart from this value word.
+// gitChdir must fail closed in this case. It must deny with PUSH_DIR_REASON, and must not
+// call gate.headOf.
+// claude-factory-bemr.12: `--super-prefix` stands in for `--attr-source` here. `--attr-source`
+// moved into `GIT_VALUE_FLAGS` under claude-factory-bemr.9, so it no longer tests this row's
+// point (a flag this hook does not know). `--super-prefix` is a real git global flag, and this
+// hook still does not know it.
+const GIT_CHDIR_UNSAFE_ROWS: [string][] = [
+  ['git --super-prefix -C -C /acme/prot push origin HEAD'],
+  ['git --super-prefix -C -C /acme/prot send-pack origin HEAD'],
+]
+
+test.each(GIT_CHDIR_UNSAFE_ROWS)(
+  'denyReason fails closed on an unresolved -C value, for %j (claude-factory-3f2z.7)',
+  cmd => {
+    const dirs: (string | undefined)[] = []
+    const gate: HookGate = {
+      cwd: '/acme/cwd',
+      headOf: dir => {
+        dirs.push(dir)
+        return dir === '/acme/prot' ? 'main' : 'factory/x'
+      },
+      // claude-factory-bemr.12: an empty, readable alias table. `--super-prefix` leaves the verb
+      // search unsure, so the row must clear the bemr.9 uncertain-path alias check before it
+      // reaches the `-C`-unsafe fallback this row tests.
+      gitAliases: () => new Map(),
+    }
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_DIR_REASON)
+    expect(dirs).toEqual([])
+  },
+)
+
+// claude-factory-3f2z.8 (P1 fail-open regression): an unknown flag's own value word can fake the
+// push or send-pack verb. Before the fix, the old code trusted that fake word outright and
+// missed a real -C word that came after it. gate.headOf then read gate.cwd, an unprotected dir,
+// and the push allowed.
+// claude-factory-3f2z.9 (P1 fail-open regression): the fallback found the fake verb's own
+// `pushTail`, with no refspec, a remote-only operand, or `--force`. The old code still asked
+// gitPushDenied/sendPackDenied with that wrong pushTail. A bare push, or a push with no
+// branch-naming refspec, read as safe there, so the push allowed.
+// claude-factory-bemr.12: `--super-prefix` stands in for `--attr-source` here, for the same
+// reason as `GIT_CHDIR_UNSAFE_ROWS` above: `--attr-source` is now a known value flag
+// (claude-factory-bemr.9), so it no longer fakes an unknown flag's value word.
+const GIT_CHDIR_FAKE_VERB_ROWS: [string][] = [
+  ['git --super-prefix push -C /acme/prot push origin HEAD'],
+  ['git --super-prefix send-pack -C /acme/prot send-pack origin HEAD'],
+  ['git --super-prefix push -C /acme/prot push'],
+  ['git --super-prefix push -C /acme/prot push origin'],
+  ['git --super-prefix push -C /acme/prot push --force'],
+  ['git --super-prefix send-pack -C /acme/prot send-pack origin'],
+]
+
+test.each(GIT_CHDIR_FAKE_VERB_ROWS)(
+  'denyReason does not trust a fake push/send-pack word as the verb, for %j (claude-factory-3f2z.8)',
+  cmd => {
+    const dirs: (string | undefined)[] = []
+    const gate: HookGate = {
+      cwd: '/acme/cwd',
+      headOf: dir => {
+        dirs.push(dir)
+        return dir === '/acme/prot' ? 'main' : 'factory/x'
+      },
+      // claude-factory-bemr.12: see GIT_CHDIR_UNSAFE_ROWS above.
+      gitAliases: () => new Map(),
+    }
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_DIR_REASON)
+    expect(dirs).toEqual([])
+  },
+)
+
+// claude-factory-3f2z.8: regression guard. --attr-source takes the -C word as its own value
+// here, so no -C flag applies, and the push must still read gate.cwd.
+test('denyReason still reads gate.cwd for git --attr-source -C push, with no real -C flag (claude-factory-3f2z.8)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/prot' ? 'main' : 'factory/x'
+    },
+  }
+  expect(denyReason('git --attr-source -C push', '/acme/root', undefined, gate)).toBeUndefined()
+  expect(dirs).toEqual(['/acme/cwd'])
+})
+
+// claude-factory-3f2z.8: regression guard. The real -C word before push must still fold onto
+// gate.cwd and deny at the protected dir, the same as before the fix (claude-factory-3f2z.4).
+test('denyReason still folds the real -C before push, through the uncertain-verb fallback (claude-factory-3f2z.8)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/prot' ? 'main' : 'factory/x'
+    },
+  }
+  expect(
+    denyReason('git --attr-source HEAD -C /acme/prot push origin HEAD', '/acme/root', undefined, gate),
+  ).toBe(PUSH_REASON)
+  expect(dirs).toEqual(['/acme/prot'])
+})
+
+test('denyReason reads an undefined push dir when neither gate.cwd nor root is set (claude-factory-3f2z.1, AC5)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    headOf: dir => {
+      dirs.push(dir)
+      return 'main'
+    },
+  }
+  expect(denyReason('git push origin HEAD', undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(dirs).toEqual([undefined])
+})
+
 // claude-factory-zl5.3: main() reads the rig's protected branch names from --protected-branches on
 // its own argv, split on comma, and carries origin/HEAD and the current branch through real git
 // calls. claude-factory-zl5.13: a fake root with no real git repo cannot resolve origin/HEAD at
@@ -1653,6 +1925,109 @@ test('run as `bun src/worker-hook.ts`, with origin/HEAD set to develop a push to
   })
   const allowed = await run(allowInput, env)
   expect(allowed).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+// claude-factory-3f2z.2: main() must set gate.cwd from tool_input.cwd. It must not use the
+// worktree root (CLAUDE_PROJECT_DIR).
+//
+// This test keeps CLAUDE_PROJECT_DIR set. The zl5.9 and zl5.12 tests above do not. This test
+// proves the real cross-repo case.
+//
+// A prior Bash call runs `cd`. This leaves tool_input.cwd on a second repo. A later
+// `git push origin HEAD` or bare `git push` must read the branch of that second repo. It must
+// not read the branch of the worktree root (claude-factory-3f2z, AC1).
+test('run as `bun src/worker-hook.ts` with CLAUDE_PROJECT_DIR set, a HEAD push denies on the tool call cwd repo, not on root (claude-factory-3f2z.2, AC1)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wh-3f2z-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', root])
+  Bun.spawnSync(['git', '-C', root, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', root, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const other = mkdtempSync(join(tmpdir(), 'wh-3f2z-other-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', other])
+  Bun.spawnSync(['git', '-C', other, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: root }
+  for (const command of ['git push origin HEAD', 'git push']) {
+    const input = JSON.stringify({ tool_name: 'Bash', cwd: other, tool_input: { command } })
+    const denied = await run(input, env)
+    expect(denied.code).toBe(0)
+    expect(JSON.parse(denied.out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: PUSH_REASON,
+      },
+    })
+  }
+}, 10_000)
+
+// claude-factory-3f2z.2 (AC2): the same wiring must not wrongly deny a push.
+//
+// The tool call cwd repo is on an unprotected branch. The hook must still allow the push. This
+// is true even though the worktree root is on another branch.
+test('run as `bun src/worker-hook.ts` with CLAUDE_PROJECT_DIR set, a HEAD push allows on the tool call cwd repo when its branch is unprotected (claude-factory-3f2z.2, AC2)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wh-3f2z-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', root])
+  Bun.spawnSync(['git', '-C', root, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', root, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const other = mkdtempSync(join(tmpdir(), 'wh-3f2z-other-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'feature', other])
+  Bun.spawnSync(['git', '-C', other, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: root }
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: other,
+    tool_input: { command: 'git push origin HEAD' },
+  })
+  expect(await run(input, env)).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+// claude-factory-3f2z.2 (AC3): a relative `git -C sub push origin HEAD` must resolve `sub`
+// against tool_input.cwd. It must not use the hook process's own filesystem cwd. It must not
+// use the worktree root.
+//
+// `rootDir/sub` and `processCwdDir/sub` are both on an unprotected branch (`feature`). A hook
+// that reads either one by mistake allows the push. `toolCwdDir/sub` is the real target, and it
+// is on `main`. Only a fix that resolves against `tool_input.cwd` denies here.
+test('run as `bun src/worker-hook.ts`, a relative git -C sub push resolves against tool_input.cwd, not the hook process cwd or root (claude-factory-3f2z.2, AC3)', async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'wh-3f2z-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', rootDir])
+  Bun.spawnSync(['git', '-C', rootDir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    rootDir,
+    'symbolic-ref',
+    'refs/remotes/origin/HEAD',
+    'refs/remotes/origin/main',
+  ])
+  const rootSub = join(rootDir, 'sub')
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'feature', rootSub])
+  Bun.spawnSync(['git', '-C', rootSub, 'commit', '-q', '-m', 'init', '--allow-empty'])
+
+  const processCwdDir = mkdtempSync(join(tmpdir(), 'wh-3f2z-hookcwd-'))
+  const processCwdSub = join(processCwdDir, 'sub')
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'feature', processCwdSub])
+  Bun.spawnSync(['git', '-C', processCwdSub, 'commit', '-q', '-m', 'init', '--allow-empty'])
+
+  const toolCwdDir = mkdtempSync(join(tmpdir(), 'wh-3f2z-toolcwd-'))
+  const toolCwdSub = join(toolCwdDir, 'sub')
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', toolCwdSub])
+  Bun.spawnSync(['git', '-C', toolCwdSub, 'commit', '-q', '-m', 'init', '--allow-empty'])
+
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: rootDir }
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: toolCwdDir,
+    tool_input: { command: 'git -C sub push origin HEAD' },
+  })
+  const denied = await run(input, env, [], processCwdDir)
+  expect(denied.code).toBe(0)
+  expect(JSON.parse(denied.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
 }, 10_000)
 
 // claude-factory-zl5.8: main() wires gate.readFile to a real, capped file read, resolved against
@@ -3237,6 +3612,24 @@ test('denyReason denies "git --bare co main && git push o HEAD" with ALIAS_USE_R
 test('denyReason allows "git --bare status" (claude-factory-bemr.10, AC12)', () => {
   const gate: HookGate = { gitAliases: () => new Map([['co', 'checkout']]) }
   expect(denyReason('git --bare status', undefined, undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-bemr.12: this guard folds `--bare` into one shared `effectiveMoved` value.
+// `push` is a builtin word. `gate.headOf` names a branch that is not protected. A plain
+// `git push origin HEAD` allows. `--bare` makes the branch read untrusted, so this guard denies
+// `PUSH_DIR_REASON` instead.
+test('denyReason denies "git --bare push origin HEAD" with PUSH_DIR_REASON (claude-factory-bemr.12)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    headOf: dir => {
+      dirs.push(dir)
+      return 'feature'
+    },
+    originHead: () => 'main',
+  }
+  expect(denyReason('git push origin HEAD', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git --bare push origin HEAD', undefined, undefined, gate)).toBe(PUSH_DIR_REASON)
+  expect(dirs).toEqual([undefined])
 })
 
 // claude-factory-bemr.5 (AC12): an unknown flag still leaves the verb search unsure.
