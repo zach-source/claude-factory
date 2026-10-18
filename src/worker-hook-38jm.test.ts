@@ -25,7 +25,7 @@ const BT = '`'
 // AC1: a literal shell word with a dynamic word in the -c slot.
 const AC1 = [
   "C=-c; sh $C 'git push origin main'",
-  "C=-c; sh \"$C\" 'git push origin main'",
+  'C=-c; sh "$C" \'git push origin main\'',
   "C=-c; sh ${C} 'git push origin main'",
   "C=-c; bash -x $C 'git push origin main'",
   `sh ${BT}echo -c${BT} 'git push origin main'`,
@@ -40,7 +40,7 @@ const AC1 = [
   "C=-c; zsh $C 'git push origin main'",
   "C=-c; dash $C 'git push origin main'",
   // push shapes: bare, remote-only, --force, current branch. The deny is outright.
-  'C=-c; sh $C \'git push\'',
+  "C=-c; sh $C 'git push'",
   "C=-c; sh $C 'git push origin'",
   "C=-c; sh $C 'git push --force origin factory/x'",
   "C=-c; sh $C 'git push origin factory/x'",
@@ -53,7 +53,7 @@ test.each(AC1)('38JM AC1 denies %s', cmd => {
 const AC2 = [
   "C=c; sh -$C 'git push origin main'",
   "C=c; sh -${C} 'git push origin main'",
-  "C=c; sh -\"$C\" 'git push origin main'",
+  'C=c; sh -"$C" \'git push origin main\'',
   "C=c; sh -$C -- 'git push origin main'",
 ]
 test.each(AC2)('38JM AC2 denies %s', cmd => {
@@ -111,6 +111,16 @@ test.each(["sh -{c,c} 'git push origin main'", "bash -lc 'git push origin main'"
     expect(run(cmd)).toBe(PUSH_REASON)
   },
 )
+
+// AC7 (the part that works on main): a dynamic word after a literal operand may be a -c flag.
+test("38JM AC7 denies sh script.sh $X 'git push origin main' like sh script.sh -c", () => {
+  expect(run("sh script.sh $X 'git push origin main'")).toBe(PUSH_REASON)
+  expect(run("sh script.sh -c 'git push origin main'")).toBe(PUSH_REASON)
+})
+
+test("38JM AC7 denies env -i sh script.sh $X 'bd create x' (bd scan)", () => {
+  expect(run("env -i sh script.sh $X 'bd create x'")).toBe(BEADS_ACTOR_REASON)
+})
 
 // AC8: cost. The 500 ms limit is far under the hook's 10 s fail-open timeout.
 const N = 40000
