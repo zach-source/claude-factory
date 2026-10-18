@@ -706,7 +706,7 @@ function segments(
     const wasExempt: boolean = exemptPrev
     exemptPrev = false
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
-    const afterRedir = redirPrev
+    const afterRedir: boolean = redirPrev
     redirPrev = false
     if (quote === "'") {
       if (c === "'") quote = null
@@ -752,6 +752,8 @@ function segments(
       // characters and joins the text around them into one word. It does not end the word and it
       // does not keep a literal newline.
       if (cmd[i + 1] === '\n') {
+        // claude-factory-abmq: a continuation is not a char, so `>BSNL&1` stays one redirect.
+        redirPrev = afterRedir
         i++
         exemptPrev = wasExempt
         continue
@@ -1909,8 +1911,10 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
 // claude-factory-cu5m.13: the same scan covers `&>` (also `&>>`, `&>|`, `&>!`). zsh and bash read it
 // as a redirect, but `segments()` splits at its `&` (dash reads `&` then `>`), so the words after it
 // leave the push tail. It over-denies `git push origin feature &>/dev/null`.
+// claude-factory-abmq: bash joins `&BSNL>` into `&>`, so the scan allows backslash-newline pairs
+// between the `&` and the `>`. It also denies `git push origin feature &BSNL>/dev/null`.
 function backtickBesidePush(command: string): boolean {
-  if (!/`|&>/.test(command)) return false
+  if (!/`|&(?:\\\n)*>/.test(command)) return false
   const words = segments(command).flat().map(baseWord)
   return (
     words.some(b => b === 'git' || /^git-/.test(b)) &&
