@@ -1347,53 +1347,62 @@ function leadingRedirects(words: string[]): number {
 
 const SHELL_VALUE_LONG_FLAGS = new Set(['--rcfile', '--init-file'])
 
+const SHELL_SAFE_LONG_FLAGS = new Set([
+  '--norc',
+  '--noprofile',
+  '--posix',
+  '--login',
+  '--verbose',
+  '--restricted',
+  '--noediting',
+  '--debugger',
+])
+
 /**
- * claude-factory-l43b.10/.11: true when a shell operand names stdin. It drops a glued redirect,
- * then folds //, ./ and .. so `//dev/stdin` and `/dev/../dev/stdin` match. A relative path with
- * leading ../ and a dev/stdin tail also matches, because the working directory is unknown.
+ * claude-factory-l43b.10/.14: true when a shell operand names stdin. It folds //, ./ and .. so
+ * `//dev/stdin` matches. It matches by tail, because the working directory is unknown.
  */
 function stdinPathOperand(word: string): boolean {
-  const w = word.replace(/[<>][\s\S]*$/, '')
-  const n = posix.normalize(w)
+  const n = posix.normalize(word)
   return /(^|\/)stdin$/.test(n) || /(^|\/)fd\/\d+$/.test(n) || /^\d+$/.test(n)
 }
 
 /**
+ * claude-factory-l43b.16: true only for a plain script path. Any quote, $, glob, redirect,
+ * comment, space or other shell syntax in the word fails the charset, so the guard denies it.
+ */
+function plainScriptOperand(w: string): boolean {
+  return /^[A-Za-z0-9_.\/@+,-]+$/.test(w) && !w.startsWith('-') && !stdinPathOperand(w)
+}
+
+/**
  * claude-factory-l43b: true when the shell word at `words[k]` can read its script from stdin.
- * That is true when it has no -c script and no literal script file operand: a bare shell, `-s`,
- * a lone `-`, a process substitution, a dynamic operand, or /dev/stdin and /dev/fd/N.
+ * This is a strict parse. It gives false only for a -c script before the operand, or for a plain
+ * script path as the first operand. Every other word shape gives true.
  */
 function shellReadsStdin(words: string[], k: number): boolean {
-  let afterDashDash = false
   for (let i = k + 1; i < words.length; i++) {
     const w = words[i]!
-    if (w === '-') return true
-    if (!afterDashDash && isShCCluster(w)) return false
-    if (REDIRECT_WORD.test(w)) {
-      if (REDIRECT_OPERATOR.test(w)) i++
+    if (w === '--') {
+      const next = words[i + 1]
+      return next === undefined || !plainScriptOperand(next)
+    }
+    if (isShCCluster(w)) return false
+    if (SHELL_VALUE_LONG_FLAGS.has(w)) {
+      i++
       continue
     }
-    if (w === '(' || w === ')') return true
-    if (w === '=' && words[i + 1] === '(') return true
-    if (!afterDashDash) {
-      if (w === '--') {
-        afterDashDash = true
-        continue
-      }
-      if (SHELL_VALUE_LONG_FLAGS.has(w)) {
+    if (SHELL_SAFE_LONG_FLAGS.has(w)) continue
+    if (/^[-+][A-Za-z]+$/.test(w)) {
+      const flags = w.slice(1)
+      if (flags.includes('s')) return true
+      for (const _ of flags.match(/[oO]/g) ?? []) {
         i++
-        continue
+        if (!/^[A-Za-z_]+$/.test(words[i] ?? '')) return true
       }
-      if (w.startsWith('--')) continue
-      if (w.startsWith('-') || w.startsWith('+')) {
-        const flags = w.slice(1)
-        if (flags.includes('s')) return true
-        i += (flags.match(/[oO]/g) ?? []).length
-        continue
-      }
+      continue
     }
-    if (dynamicWord(w)) return true
-    return stdinPathOperand(w)
+    return !plainScriptOperand(w)
   }
   return true
 }
@@ -1464,11 +1473,8 @@ function xargsRunsShell(words: string[]): boolean {
     if (baseWord(words[i]!) !== 'xargs') continue
     const cands: number[] = []
     for (let j = i + 1; j < words.length; j++) {
-      if (isShellWord(words[j]!)) cands.push(j)
+      if (isShellWord(words[j]!)) return true
     }
-    // claude-factory-l43b.8: with a replace flag, xargs swaps the replace string in a literal
-    // script word for its stdin text. The script word then is not the text this guard can read.
-    if (cands.length && words.slice(i + 1).some(w => XARGS_REPLACE_FLAG.test(w))) return true
     let j = i + 1
     while (j < words.length) {
       const w = words[j]!
@@ -1485,21 +1491,24 @@ function xargsRunsShell(words: string[]): boolean {
       j++
     }
     if (j < words.length && dynamicCommandWord(words[j]!)) cands.push(j)
-    // A literal -c script word after the shell word is in the command text. anyShellReason
-    // scans it. Only a shell with no such word hides its script from this guard.
-    for (const c of cands) if (!hasLiteralCScript(words, c)) return true
+    // claude-factory-l43b.16: xargs adds words from its stdin to the shell argv, so any shell
+    // word after xargs denies.
+    // A dynamic command word with a literal -c script is scanned by anyShellReason. A replace flag
+    // or a # word makes that script word unreadable, so those deny.
+    const replaced = words.slice(i + 1).some(w => XARGS_REPLACE_FLAG.test(w))
+    for (const c of cands) if (replaced || !hasLiteralCScript(words, c)) return true
   }
   return false
 }
 
-/** True when a -c cluster after `words[k]` has a non-flag script word after it. */
+/** True when a -c cluster after `words[k]` has a plain, non-flag script word after it. */
 function hasLiteralCScript(words: string[], k: number): boolean {
   for (let i = k + 1; i < words.length; i++) {
     if (!isShCCluster(words[i]!)) continue
     for (let m = i + 1; m < words.length; m++) {
       if (words[m] === '--') continue
       if (words[m]!.startsWith('-')) continue
-      return !dynamicWord(words[m]!)
+      return !dynamicWord(words[m]!) && !words[m]!.startsWith('#')
     }
     return false
   }
