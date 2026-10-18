@@ -2637,6 +2637,12 @@ const DENY_DOLLAR_QUOTE = [
   'bash -c $"git push origin main"',
   "echo $'it\\'s' ; git push origin main",
   'bash -c "bash -c \\$\'git push origin main\'"',
+  // a line continuation between the $ and the quote does not hide it (hewq.4)
+  "bash -c $\\\n'git push origin main'",
+  "sh -c $\\\n'git\\x20push origin main'",
+  "bash -c $\\\n\\\n'git push origin main'",
+  "env -S 'sh' -c $\\\n'git\\x20push origin main'",
+  'bash -c $\\\n"git push origin main"',
   // accepted over-deny: a harmless escape also denies
   "echo $'a\\tb'",
   "IFS=$'\\n' read -r x",
@@ -2650,7 +2656,7 @@ test.each(DENY_DOLLAR_QUOTE)('denyReason denies %j (claude-factory-hewq, $-quote
 
 test('denyReason allows a $ that does not start a $-quote (claude-factory-hewq)', () => {
   const gate = { headOf: () => 'factory/x', originHead: () => 'main' }
-  for (const cmd of ["echo \\$'x'", 'echo \'$\'"x"', 'echo "$\'x\'"', 'git push origin factory/x']) {
+  for (const cmd of ["echo \\$'x'", 'echo \'$\'"x"', 'echo "$\'x\'"', 'git push origin factory/x', "echo $\\\n\\'x\\'"]) {
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
   }
 })

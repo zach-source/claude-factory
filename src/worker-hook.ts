@@ -422,7 +422,12 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
     }
     // claude-factory-hewq: an unquoted $' or $" starts a quote the shell decodes. Flag it. The word
     // output stays the same, and denyAt denies the whole command.
-    if (info && c === '$' && (cmd[i + 1] === "'" || cmd[i + 1] === '"')) info.dollarQuote = true
+    // A backslash-newline pair between the $ and the quote drops at lexing, so skip it (hewq.4).
+    if (info && c === '$') {
+      let j = i + 1
+      while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+      if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
+    }
     word += c
     hasWord = true
   }
