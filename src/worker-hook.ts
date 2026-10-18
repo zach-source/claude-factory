@@ -1885,6 +1885,37 @@ function gitDashCPushDenied(tail: string[]): boolean {
   return false
 }
 
+/**
+ * True when a `-c name=value` or `--config-env=name=envvar` flag's key part is dynamic
+ * (claude-factory-p43v.9). This is the sibling of `gitConfigKeyDynamic`, for the global `-c` or
+ * `--config-env` flag that `gitDashCPushDenied` reads right above.
+ *
+ * `isPushConfigWrite` compares the key against a fixed list of names. The shell has not
+ * resolved a dynamic key yet. So that compare cannot match it, and the write passes through
+ * unchecked. For example, `git -c $K=push p origin main` can set `alias.p` to `push`, with no
+ * check at all.
+ *
+ * This function denies the dynamic key itself, with `DYNAMIC_VERB_REASON`, before
+ * `isPushConfigWrite` ever reads it.
+ */
+function gitDashCKeyDynamic(tail: string[]): boolean {
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
+    if (w === '--') break
+    if (w.startsWith(CONFIG_ENV_PREFIX)) {
+      const rest = w.slice(CONFIG_ENV_PREFIX.length)
+      const eq = rest.indexOf('=')
+      if (eq >= 0 && dynamicWord(rest.slice(0, eq))) return true
+      continue
+    }
+    if (w !== '-c') continue
+    const pair = tail[i + 1]
+    const eq = pair?.indexOf('=') ?? -1
+    if (pair !== undefined && eq >= 0 && dynamicWord(pair.slice(0, eq))) return true
+  }
+  return false
+}
+
 // claude-factory-zl5.21: `git config` flags that take a value word of their own. The operand
 // search below steps past them, the same way `GIT_PUSH_VALUE_FLAGS` does for `git push`.
 const GIT_CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '-t', '--type', '--default'])
@@ -2275,6 +2306,9 @@ function gitReason(
   moved: boolean,
 ): string | undefined {
   const tail = cmd.slice(1)
+  // claude-factory-p43v.9: a dynamic -c or --config-env key fails closed before
+  // gitDashCPushDenied reads it against a fixed list of names.
+  if (gitDashCKeyDynamic(tail)) return DYNAMIC_VERB_REASON
   if (gitDashCPushDenied(tail)) return PUSH_REASON
   const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS)
   // claude-factory-p43v: the shell can turn a dynamic word at the verb slot into any git

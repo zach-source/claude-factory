@@ -2856,6 +2856,24 @@ test.each(ALLOW_TWO_DYNAMIC_COMMAND_WORDS)(
   },
 )
 
+// claude-factory-p43v.9: a dynamic git -c or --config-env key hides a push config write.
+const DENY_DYNAMIC_DASH_C_KEY = [
+  'git -c $K=push p origin main',
+  'git -c "$K"=push p origin main',
+  'git --config-env=$K=E p origin main',
+]
+
+test.each(DENY_DYNAMIC_DASH_C_KEY)(
+  'denyReason denies %j (claude-factory-p43v.9: a dynamic -c/--config-env key fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason allows git -c user.name="$N" push origin main (claude-factory-p43v.9: a literal key with a dynamic value stays allowed)', () => {
+  expect(denyReason('git -c user.name="$N" push origin main', '/x', undefined, P43V_GATE)).toBe(PUSH_REASON)
+})
+
 // claude-factory-p43v.10: a dynamic command word before a mutating kubectl, ko or helm verb hides it.
 const DENY_DYNAMIC_LIVE_APPLY_COMMAND_WORD = [
   'K=kubectl; $K apply -f x --context acme',
