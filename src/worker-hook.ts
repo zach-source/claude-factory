@@ -269,6 +269,9 @@ function baseWord(w: string): string {
  * A backslash right before a real newline is a POSIX line continuation, inside double quotes or
  * outside them. Both characters drop and the text around them joins into one word, the same as a
  * real shell. This never ends a word. It never keeps a literal newline.
+ *
+ * claude-factory-p43v: an opening backtick keeps a backtick mark in the word it ends. A closing
+ * backtick keeps no mark of its own.
  */
 function segments(cmd: string): string[][] {
   const segs: string[][] = []
@@ -276,6 +279,8 @@ function segments(cmd: string): string[][] {
   let word = ''
   let hasWord = false
   let quote: '"' | "'" | null = null
+  // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
+  let inBacktick = false
   const endWord = () => {
     if (hasWord) cur.push(word)
     word = ''
@@ -326,7 +331,19 @@ function segments(cmd: string): string[][] {
       i++
       continue
     }
-    if (';|&\n()`'.includes(c)) {
+    // claude-factory-p43v: an opening backtick starts a command substitution. This guard cannot
+    // read it, so it ends the segment here. It keeps a backtick mark in the word it ends, so a
+    // later scan can see that this word is unsafe. A closing backtick only ends the segment.
+    if (c === '`') {
+      if (!inBacktick) {
+        word += c
+        hasWord = true
+      }
+      inBacktick = !inBacktick
+      endSeg()
+      continue
+    }
+    if (';|&\n()'.includes(c)) {
       endSeg()
       continue
     }

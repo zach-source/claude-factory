@@ -2657,3 +2657,9 @@ test.each(ALLOW_DYNAMIC_WORD_NOT_AT_VERB_SLOT)(
     expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
   },
 )
+
+// AC3: segments() keeps an unquoted opening backtick as a marker in the word it ends. The
+// backtick then reaches the git verb slot through the usual dynamic-word check.
+test('denyReason denies a backtick command substitution at the git verb slot (claude-factory-p43v.2 AC3)', () => {
+  expect(denyReason('git `echo push` o main', '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
