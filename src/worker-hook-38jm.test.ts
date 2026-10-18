@@ -33,6 +33,8 @@ const AC1 = [
   "C='-c {git,push,origin,main}'; bash $C",
   "C='-c {git,push,origin,main}'; bash $C x",
   "C=-c; bash -o pipefail $C 'git push origin main'",
+  "C=-c; bash --rcfile rc $C 'git push origin main'",
+  "C=-c; bash --init-file rc $C 'git push origin main'",
   "sh {-c,'git push origin main'}",
   "sh -[b-d] 'git push origin main'",
   "sh -? 'git push origin main'",
