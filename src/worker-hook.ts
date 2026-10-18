@@ -324,7 +324,7 @@ export interface HookGate {
  * when `globalGitConfig` is true and `gitWord` is true. `gitWord` comes from the dequoted segment
  * words, so `"gi"t` counts. `hasDangerousConfigEnv` reads it too.
  * Residual, not fixed: a path built from a shell variable (`F=~/.gitconfig; echo x >> $F`), a
- * Write or Edit tool write (claude-factory-ak7), and a `.git/config` write alone (claude-factory-cpn).
+ * Write or Edit tool write (claude-factory-ak7), a `.git/config` write alone (claude-factory-cpn), and a directory copy with no path operand (`cp -R /r/acme/dot/. ~/`, `tar -xf x.tar -C ~`).
  */
 interface ScanState {
   branchChange: boolean
@@ -891,7 +891,8 @@ const GLOBAL_GIT_CONFIG_RE =
 
 // claude-factory-ty8y: the alternatives of GLOBAL_GIT_CONFIG_RE that name the file itself, not a
 // directory on the way to it. A non-reader command that holds such a word writes, or can write.
-const GLOBAL_GIT_CONFIG_FILE_RE = /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|XDG_CONFIG_HOME/i
+const GLOBAL_GIT_CONFIG_FILE_RE =
+  /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|(^|[^A-Za-z0-9_.-])\.config\/git\/?["']?$|XDG_CONFIG_HOME/i
 
 // claude-factory-ty8y: paths a glob word is tested against, to find a glob that can name the file.
 const GLOBAL_GIT_CONFIG_SAMPLES = [
@@ -903,6 +904,8 @@ const GLOBAL_GIT_CONFIG_SAMPLES = [
   '/Users/acme/.gitconfig',
   '/etc/gitconfig',
   '~/.config/git/config',
+  '~/.config/git',
+  '~/.config/git/',
   '$XDG_CONFIG_HOME/git/config',
   '${XDG_CONFIG_HOME}/git/config',
 ]
@@ -934,6 +937,9 @@ const READER_COMMANDS = new Set([
   'dirname',
 ])
 
+// claude-factory-ty8y.12: commands whose operands are text (a search word, a title, a comment body).
+const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
+
 function globNamesGlobalGitConfig(word: string): boolean {
   const w = word.replace(/^["']+|["']+$/g, '')
   if (!/[*?[]/.test(w)) return false
@@ -955,14 +961,26 @@ function globNamesGlobalGitConfig(word: string): boolean {
  * A git segment and a reader segment skip their non-redirect operands. They only name a path.
  * A git `--output` or `-o` flag stays checked, because it writes its value.
  */
+type OperandSkip = 'none' | 'reader' | 'operands'
+
+// claude-factory-ty8y.9: a git segment with one of these words can write a path operand: the work
+// tree moves, or a clone or worktree creates the path. Such a segment keeps its operands checked.
+const GIT_OPERAND_WRITER_RE = /^(--work-tree|-C|GIT_WORK_TREE=|clone$|worktree$)/
+
+// claude-factory-ty8y.12: a flag that makes a skipped command write its value.
+const OUTPUT_FLAG_RE = /^(--output|-o|-O|-D|--dir)/
+
 function globalGitConfigUse(
   words: string[],
-  isGit: boolean,
-  isReader: boolean,
+  skip: OperandSkip,
+  isCd = false,
 ): 'write' | 'mention' | undefined {
   let use: 'mention' | undefined
   let pending = false
+  let prevWriterFlag = false
   for (const word of words) {
+    const afterWriterFlag = prevWriterFlag
+    prevWriterFlag = skip === 'operands' && /^(--output|-o|-O|-D|--dir)$/.test(word)
     const wasPending = pending
     pending = false
     let candidate = word
@@ -980,8 +998,12 @@ function globalGitConfigUse(
       redirect = true
     }
     if (!redirect) {
-      if (isReader) continue
-      if (isGit && !/^(--output|-o)/.test(word)) continue
+      if (skip === 'reader') continue
+      if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
+    }
+    if (isCd && !redirect) {
+      if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
+      continue
     }
     if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate)) return 'write'
     if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
@@ -1002,7 +1024,7 @@ function hasGitWordIn(words: string[]): boolean {
 // Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
 // A word that holds only the operator matches in full, such as a bare `>` or `>>`.
 // The caller then reads the next word as the target.
-const REDIRECT_PREFIX_RE = /^(?:\d+|&)?>>?/
+const REDIRECT_PREFIX_RE = /^(?:\d+|&)?(?:<>|>>?\|?)/
 
 // claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
 // `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
@@ -4073,7 +4095,19 @@ function denyAt(
     const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
     if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
     if (hasGitWordIn(words)) state.gitWord = true
-    const configUse = globalGitConfigUse(words, isGitOrGhSegment && b !== 'gh', READER_COMMANDS.has(b))
+    const isGitSegment = b === 'git' || /^git-/.test(b)
+    const operandSkip: OperandSkip = READER_COMMANDS.has(b)
+      ? 'reader'
+      : (isGitSegment && !words.some(w => GIT_OPERAND_WRITER_RE.test(w))) ||
+          TEXT_OPERAND_COMMANDS.has(b) ||
+          (b === 'bun' && cmd[1] === 'test')
+        ? 'operands'
+        : 'none'
+    const configUse = globalGitConfigUse(
+      words,
+      operandSkip,
+      b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+    )
     if (configUse === 'mention') state.globalGitConfig = true
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.

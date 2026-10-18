@@ -3083,6 +3083,54 @@ test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE)('denyReason denies %j alone (claud
   expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
 })
 
+// ty8y.9-11: a git segment that writes through its operands, a directory operand, the <> redirect.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2 = [
+  'git --work-tree=$HOME checkout HEAD -- .gitconfig',
+  'git --work-tree ~ restore --source=HEAD .gitconfig',
+  'GIT_WORK_TREE=~ git checkout HEAD -- .gitconfig',
+  'git -C ~ checkout HEAD -- .gitconfig',
+  'git clone /r/acme/evil ~/.config/git',
+  'git clone /r/acme/evil ~/.config/git/',
+  'git diff --output ~/.gitconfig',
+  'cp config ~/.config/git/',
+  'cp config ~/.config/git',
+  'ln -s f ~/.config/git/',
+  'mv f $XDG_CONFIG_HOME/git/',
+  'printf x 1<>~/.gitconfig',
+  'printf x 1<> ~/.gitconfig',
+  'printf x <>~/.gitconfig',
+  'printf x >| ~/.gitconfig',
+  'printf x >|~/.gitconfig',
+  'gh release download v1 -O ~/.gitconfig',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2)(
+  'denyReason denies %j alone (claude-factory-ty8y r2)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'bd search gitconfig',
+  'bd create "fix ~/.gitconfig guard" -t bug',
+  'bun test src/worker-hook.test.ts -t gitconfig',
+  'gh pr comment 1 --body "checked ~/.gitconfig"',
+  'factory memory add "~/.gitconfig note" "x"',
+  'ls ~/.config/git',
+])('denyReason allows %j (claude-factory-ty8y r2: text operands)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
+// Accepted false positive: the word ~/.config/git has the base name git, and cd names the directory.
+test('denyReason denies cd into the global git config directory (claude-factory-ty8y r2)', () => {
+  expect(denyReason('cd ~/.config/git', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+})
+
 // ty8y.5: a quoted or escaped git word still counts as a git word.
 const DENY_QUOTED_GIT_WORD = [
   'printf x >> ~/.gitconfig; "gi"t push',
