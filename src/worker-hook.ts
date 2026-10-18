@@ -1348,11 +1348,6 @@ function leadingRedirects(words: string[]): number {
 const SHELL_VALUE_LONG_FLAGS = new Set(['--rcfile', '--init-file'])
 
 /**
- * claude-factory-l43b: true when the shell word at `words[k]` can read its script from stdin.
- * That is true when it has no -c script and no literal script file operand: a bare shell, `-s`,
- * a lone `-`, a process substitution, a dynamic operand, or /dev/stdin and /dev/fd/N.
- */
-/**
  * claude-factory-l43b.10/.11: true when a shell operand names stdin. It drops a glued redirect,
  * then folds //, ./ and .. so `//dev/stdin` and `/dev/../dev/stdin` match. A relative path with
  * leading ../ and a dev/stdin tail also matches, because the working directory is unknown.
@@ -1360,28 +1355,31 @@ const SHELL_VALUE_LONG_FLAGS = new Set(['--rcfile', '--init-file'])
 function stdinPathOperand(word: string): boolean {
   const w = word.replace(/[<>][\s\S]*$/, '')
   const n = posix.normalize(w)
-  return (
-    /^\/dev\/(stdin|fd\/\d+)$|^\/proc\/[^/]+\/fd\/\d+$/.test(n) || /^(\.\.\/)+dev\/(stdin|fd\/\d+)$/.test(n)
-  )
+  return /(^|\/)stdin$/.test(n) || /(^|\/)fd\/\d+$/.test(n) || /^\d+$/.test(n)
 }
 
+/**
+ * claude-factory-l43b: true when the shell word at `words[k]` can read its script from stdin.
+ * That is true when it has no -c script and no literal script file operand: a bare shell, `-s`,
+ * a lone `-`, a process substitution, a dynamic operand, or /dev/stdin and /dev/fd/N.
+ */
 function shellReadsStdin(words: string[], k: number): boolean {
   let afterDashDash = false
   for (let i = k + 1; i < words.length; i++) {
     const w = words[i]!
     if (w === '-') return true
+    if (!afterDashDash && isShCCluster(w)) return false
+    if (REDIRECT_WORD.test(w)) {
+      if (REDIRECT_OPERATOR.test(w)) i++
+      continue
+    }
+    if (w === '(' || w === ')') return true
+    if (w === '=' && words[i + 1] === '(') return true
     if (!afterDashDash) {
-      if (isShCCluster(w)) return false
-      if (REDIRECT_WORD.test(w)) {
-        if (REDIRECT_OPERATOR.test(w)) i++
-        continue
-      }
       if (w === '--') {
         afterDashDash = true
         continue
       }
-      if (w === '(' || w === ')') return true
-      if (w === '=' && words[i + 1] === '(') return true
       if (SHELL_VALUE_LONG_FLAGS.has(w)) {
         i++
         continue

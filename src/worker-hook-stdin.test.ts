@@ -10,6 +10,20 @@ const GATE = {
 }
 
 const DENY = [
+  'sh -- <<<P',
+  'bash -- <<<P',
+  'echo P | sh -- 2>/dev/null',
+  'echo P | sh -- 2>&1',
+  'echo P | bash -- >out',
+  'sh -- <(echo P)',
+  'sh -- < f',
+  'source -- <(echo P)',
+  'cd /dev && echo P | sh stdin',
+  'cd /dev/fd && echo P | sh 0',
+  'cd / && echo P | sh dev/stdin',
+  'echo P | env -C /dev sh stdin',
+  'echo P | sh /proc/self/root/dev/stdin',
+  'echo P | sh /proc/self/cwd/../../dev/stdin',
   'echo P | sh //dev/stdin',
   'echo P | sh /dev//stdin',
   'echo P | sh /dev/./stdin',
@@ -105,6 +119,8 @@ test('denyReason denies a dynamic shell word behind xargs -I (claude-factory-l43
 })
 
 const ALLOW = [
+  'sh -- script.sh',
+  'echo x | sh -- run.sh 2>&1',
   'echo x | bash -o pipefail run.sh',
   'echo x | sh ./script.sh',
   'echo x | bash -oO errexit extglob run.sh',
