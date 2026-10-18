@@ -2968,6 +2968,17 @@ const DENY_FUNCTION_DEF = [
   `\\function f { :; }`,
   `while true; do function f { :; }; done`,
   `true || function f { :; }`,
+  // function tables and imports (4i60.3)
+  `functions[f]='sh "$@"'; f -c 'git push origin main'`,
+  `functions+=(f 'sh "$@"'); f -c 'git push origin main'`,
+  `set -A functions f 'sh "$@"'; f -c 'git push origin main'`,
+  `typeset "functions[f]=sh"`,
+  'dis_functions[f]=x',
+  `env 'BASH_FUNC_f%%=() { sh "$@"; }' bash -c 'f -c "git push origin main"'`,
+  `v='() { sh "$@"; }'; env "BASH_FUNC_f%%=$v" bash -c f`,
+  `v='() { sh "$@"; }'; env "$n=$v" bash -c f`,
+  // accepted over-deny: a bare functions word
+  'grep -n functions src/x.ts',
   // moved from ALLOW_DYNAMIC_PUSH_WORD: the guard now denies every definition
   'f() { git push origin feature; }',
   // accepted over-denies: an empty pair is a definition shape

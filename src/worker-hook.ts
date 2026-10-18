@@ -560,6 +560,9 @@ const FUNCTION_PREFIX_WORDS = new Set([
   'until',
 ])
 
+const FUNCTION_TABLE_WORD = /^(dis_)?functions(\[|\+?=|$)/
+const FUNCTION_IMPORT_VALUE = /^[^=]*=\(\) \{/
+
 /**
  * claude-factory-4i60: true when this segment defines a shell function with the `function`
  * keyword. The lexer already drops quotes and escapes, so `\function` matches too.
@@ -567,7 +570,11 @@ const FUNCTION_PREFIX_WORDS = new Set([
 function namesFunctionDefinition(words: string[]): boolean {
   let k = 0
   while (k < words.length && FUNCTION_PREFIX_WORDS.has(words[k]!)) k++
-  return words[k] === 'function'
+  if (words[k] === 'function') return true
+  // the zsh functions table, a bash BASH_FUNC_ import, and a bash function-import value
+  return words.some(
+    w => FUNCTION_TABLE_WORD.test(w) || w.includes('BASH_FUNC_') || FUNCTION_IMPORT_VALUE.test(w),
+  )
 }
 
 /** true when `w` is a short-flag cluster (e.g. `-rf`) or a long flag (`--recursive`) that means recursive */
