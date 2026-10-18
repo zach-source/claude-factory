@@ -1847,7 +1847,12 @@ test('denyReason allows the exact send-pack value flag, which skips its own valu
 test('denyReason allows the exact send-pack --push-option, which skips its own value word (claude-factory-ctae.6)', () => {
   const gate = { headOf: () => 'factory/x' }
   expect(
-    denyReason('git send-pack --push-option x ../remote.git refs/heads/factory/x', undefined, undefined, gate),
+    denyReason(
+      'git send-pack --push-option x ../remote.git refs/heads/factory/x',
+      undefined,
+      undefined,
+      gate,
+    ),
   ).toBeUndefined()
 })
 
