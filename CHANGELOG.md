@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- The worker hook now denies a shell function definition: a `name()` pair, the `function` keyword, a zsh `functions[...]` write, and a bash `BASH_FUNC_` import. A function name could hide a `git push`, `sh -c` or `rm` word from every guard. The deny reason is `FUNCTION_DEF_REASON`. A more specific reason still wins. Put a helper function in a `.scratch` script file instead (claude-factory-4i60).
+
 - Added regression tests for a bug. A shell variable word before the `git` verb hides a protected push. Three example commands: `git $X push origin main`, `git "$X" push origin HEAD`, and `git -C sub $X push origin main`. The `DYNAMIC_VERB_REASON` fix from claude-factory-p43v already denies them on `main`. The new rows set `gate.gitAliases` and `gate.ghAliases`, the gate shape `main()` uses in production. The existing `P43V_GATE` rows leave both unset (claude-factory-bjp0).
 
 - Fixed: a nested `env -S` or `env -i eval` command made the worker hook scan take about 2x longer for each level. A 219-character command took 82 s, past the 10 s hook timeout, so the hook failed open and the command ran unchecked. The scan now reads each `env -S` span and each `eval` word once. A work budget (`MAX_SCAN_WORK`) also stops any scan that grows too large and denies with `SCAN_BUDGET_REASON`. No other verdict changes (claude-factory-cbai).

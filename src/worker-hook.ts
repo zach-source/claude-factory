@@ -424,10 +424,10 @@ function segments(cmd: string, info?: { dollarQuote: boolean; funcDef?: boolean 
   let redirPrev = false
   // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
   // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
-  let exemptPrev = false
+  let exemptPrev: boolean = false
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
-    const wasExempt = exemptPrev
+    const wasExempt: boolean = exemptPrev
     exemptPrev = false
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir = redirPrev
@@ -4229,7 +4229,7 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length; ) {
+  for (let i = 0; i < words.length;) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
