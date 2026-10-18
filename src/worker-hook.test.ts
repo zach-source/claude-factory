@@ -1079,6 +1079,36 @@ test.each(DENY_PUSH_SHORT_FLAG_CLUSTER_WITH_O)(
   },
 )
 
+// claude-factory-ctae.12: an abbreviated value flag, or an `-o` short-flag cluster, hides the
+// next word as that flag's own value.
+//
+// Before this fix, `gitPushDenied` read `dryRun` before it read this `unreadableValueFlag` risk.
+// A hidden `-n` or `--dry-run` word is really that flag's own value, not a dry-run flag.
+// The old check order made the guard allow the whole call as a false dry run.
+//
+// Real git 2.54 confirmed the real risk. Each row below moves `main`, even with the apparent
+// dry-run flag present.
+const DENY_PUSH_UNREADABLE_VALUE_FLAG_THEN_DRY_RUN_WORD = [
+  'git push --rep -n origin main',
+  'git push --rep --dry-run origin main',
+  'git push -uo -n origin',
+  'git push --push-o -n origin main',
+]
+
+test.each(DENY_PUSH_UNREADABLE_VALUE_FLAG_THEN_DRY_RUN_WORD)(
+  'denyReason denies %j (claude-factory-ctae.12, an unreadable value flag denies before the dry-run allow)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-ctae.12: `--mirror` does not hide a later word as its own value, so a real
+// `-n` right before it still means a dry run. This row pins that this fix did not turn the
+// `broad` flags into another `unreadableValueFlag` case.
+test('denyReason allows git push -n --mirror o (claude-factory-ctae.12, a true broad flag stays a real dry run)', () => {
+  expect(denyReason('git push -n --mirror o')).toBeUndefined()
+})
+
 test('denyReason allows a bare git push, git push origin HEAD and git push -u origin HEAD on a run branch', () => {
   const gate = { headOf: () => 'factory/x' }
   expect(denyReason('git push', undefined, undefined, gate)).toBeUndefined()
@@ -1914,6 +1944,26 @@ test('denyReason allows the exact send-pack --remote, which skips its own value 
   ).toBeUndefined()
 })
 
+// claude-factory-ctae.12: the send-pack side of the same check-order bug.
+//
+// Before this fix, `sendPackDenied` read `dryRun` before it read `unsafeValueFlag`.
+// A `--dry-run` word right after an abbreviated `send-pack` value flag is really that flag's
+// own value word. It is not a dry-run flag.
+// The old check order made the guard allow the whole call.
+//
+// Real git 2.54 confirmed each row below moves `main`.
+const DENY_SEND_PACK_UNSAFE_VALUE_FLAG_THEN_DRY_RUN_WORD = [
+  'git send-pack --push-o --dry-run ../r.git main',
+  'git send-pack --rece --dry-run ../r.git main',
+]
+
+test.each(DENY_SEND_PACK_UNSAFE_VALUE_FLAG_THEN_DRY_RUN_WORD)(
+  'denyReason denies %j (claude-factory-ctae.12, an unsafe send-pack value flag denies before the dry-run allow)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
 // claude-factory-zl5.41: review-r2 found 3 siblings of the zl5.21/zl5.28/zl5.34 config-write
 // guard: `remote.*.mirror` (acts like `--mirror` on every later push to that remote),
 // `include.path`/`includeIf.*.path` (loads another config file this guard cannot read), and the
@@ -2258,6 +2308,14 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   "printf 'symref-update HEAD refs/heads/main\\n' | git update-ref --st && git push o HEAD",
   'git rebase --roo main && git push o HEAD',
   'git rebase --ro main && git push o HEAD',
+  // claude-factory-ctae.13: `pushReadsCurrentBranch` now parses `send-pack` with
+  // `sendPackOperands`, the same parser `sendPackDenied` uses. The old, separate scan did not
+  // clear `dryRun` on `--no-dry-run`, and did not skip a `SEND_PACK_VALUE_FLAGS` value word.
+  // Real git 2.54 confirmed each row below moves `main`, on branch `factory/x` after the
+  // earlier `git checkout main` moves it.
+  'git checkout main; git send-pack -n --no-dry-run o HEAD',
+  'git checkout main; git send-pack --dry-run --no-dr o HEAD',
+  'git checkout main; git send-pack --remote -n o HEAD',
 ]
 
 test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(

@@ -402,6 +402,24 @@ these forms:
   for example `-uo` or `-fo`, takes the next word as that same value. The hook denies the whole
   call, the same as it denies an abbreviated long value flag.
 
+  The hook checks this value-flag risk before it checks for a dry run.
+
+  A word right after one of these flags can look like `-n` or `--dry-run`.
+  That word is really the flag's own value. It is not a dry-run flag.
+
+  Real git 2.54 confirms the risk. `git push --rep -n origin main` moves `main`.
+  `git push -uo -n origin` also moves `main`. The hook now denies both.
+
+  A true dry-run flag, with no value flag in front of it, still allows the push.
+  One example is `git push -n --mirror o`.
+
+  `sendPackDenied` and the HEAD-push risk check share one parser for the arguments of a
+  `git send-pack` call.
+  Before this fix, each one had its own, separate scan.
+  One scan can miss a `--no-dry-run` word.
+  One scan can also miss a value-flag value word that the other scan reads correctly.
+  The 2 scans now agree.
+
 - `git -c remote.<name>.mirror=<value>` or `git config remote.<name>.mirror <value>`. Each one
   makes a later, plain push to that remote act like `--mirror`.
 
