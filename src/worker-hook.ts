@@ -182,6 +182,10 @@ export interface HookGate {
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
+  /** claude-factory-9zd5: the tool call's own cwd, from `input.cwd`. `main()` sets this field from
+   * `i.cwd`, with no fallback to `root`. The field stays undefined when the hook input carries no
+   * cwd. `cwdInsideGitDir` then reports false: it does not know where the command runs. */
+  cwd?: string
 }
 
 /**
@@ -214,10 +218,21 @@ export interface HookGate {
  * `denyReason` denies with `PUSH_REASON` when both `branchChange` and `headPush` are true.
  * It does not need the new branch name. The check denies such a command.
  * A branch name read before the move does not prove that the push is safe.
+ *
+ * claude-factory-9zd5: `gitAdminPath` adds a third fact `ScanState` monitors.
+ * A shell redirect, or another file tool, can write `.git/HEAD` with no `git` word at all.
+ * It can also write a linked worktree's `.git/worktrees/<name>/HEAD`, the linked worktree's own
+ * `.git` file, or `.git/config`.
+ *
+ * `denyAt` calls `namesGitAdminPath` on each segment's raw words. It sets `gitAdminPath` true on
+ * a match. `denyReason` denies with `PUSH_REASON` when `headPush` is true and either
+ * `branchChange` or `gitAdminPath` is true. This is the same rule as above. It now covers this
+ * new, verb-free write path too.
  */
 interface ScanState {
   branchChange: boolean
   headPush: boolean
+  gitAdminPath: boolean
 }
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
@@ -533,6 +548,195 @@ function setsDangerousGitConfigEnv(words: string[]): boolean {
     if (DANGEROUS_GIT_CONFIG_ENV.test(w.slice(0, eq))) return true
   }
   return false
+}
+
+// claude-factory-9zd5: R1. A word names a `.git` path when it holds a `.git` name as a path
+// component, for example `.git`, `.git/HEAD`, `cd .git`, or `/abs/.git/config`.
+//
+// APFS, the macOS default filesystem, ignores case.
+// So `.GIT/head` names the same file as `.git/HEAD`.
+//
+// The alternation `(^|[^A-Za-z0-9_.-])` matches in 2 cases:
+//   - The start of the word.
+//   - A character before `.git`, if that character is not a letter, digit, underscore, dot or dash.
+// This rule rejects a `.git` suffix after a word character.
+// For example, the `widget.git` in a clone URL does not match.
+//
+// The negative lookahead `(?![A-Za-z0-9_-])` checks the character after `.git`.
+// It matches the end of the word.
+// It also matches a character that is not a letter, digit, underscore or dash.
+// This rule rejects `.gitignore` and `.github`.
+// Both continue past `.git` with a letter.
+const GIT_NAME_RE = /(^|[^A-Za-z0-9_.-])\.git(?![A-Za-z0-9_-])/i
+
+// claude-factory-9zd5: R3. A word names a git-dir lookup when it holds a name from this list:
+//   - `--git-dir`, `--absolute-git-dir`, `--git-path`, `--git-common-dir`
+//   - `GIT_DIR`, `GIT_COMMON_DIR`
+// The match checks the whole word, not only the start.
+// This also catches a name inside a quoted command substitution.
+// For example, `"$(git rev-parse --git-path HEAD)"` stays one word in `segments()`.
+//
+// `GIT_DIR` and `GIT_COMMON_DIR` point git at another repository's directory or files.
+// A command can set one of them, then push.
+// The push then goes there, with no `--git-dir` flag at all.
+//
+// This check applies no segment-skip rule.
+// A command that only reads a git-dir path triggers a known, accepted false positive.
+// For example, `cat "$(git rev-parse --git-dir)/HEAD"; git push` triggers it.
+// See the bead's RISK section.
+// The worker must make one more Bash call with an explicit refspec.
+const GIT_DIR_FLAG_RE = /--git-dir|--absolute-git-dir|--git-path|--git-common-dir|GIT_DIR|GIT_COMMON_DIR/i
+
+// claude-factory-9zd5: removes a leading redirect operator from a word.
+// This applies to one word that holds the operator and the target, with no space.
+// Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
+// A word that holds only the operator matches in full, such as a bare `>` or `>>`.
+// The caller then reads the next word as the target.
+const REDIRECT_PREFIX_RE = /^(?:\d+|&)?>>?/
+
+// claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
+// `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
+// name a file that a worker writes. R2 skips a non-redirect word that matches this form.
+const REMOTE_TRACKING_HEAD_RE = /^(refs\/remotes\/)?[A-Za-z0-9._-]+\/HEAD$/i
+
+/**
+ * claude-factory-9zd5: converts a shell glob to a case-insensitive `RegExp`.
+ * The glob supports `*`, `?` and a `[...]` character class.
+ * The function anchors the regex at both ends.
+ *
+ * Any other character matches itself.
+ * The function escapes that character for regex.
+ *
+ * `namesGitAdminPath` uses this to test a glob word, such as `H?AD` or a glob ending in `H*`.
+ * It checks whether the glob can match the literal name `HEAD`.
+ */
+function globToRegExp(glob: string): RegExp {
+  let out = ''
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]!
+    if (c === '*') {
+      out += '.*'
+    } else if (c === '?') {
+      out += '.'
+    } else if (c === '[') {
+      let j = i + 1
+      let cls = '['
+      if (glob[j] === '!' || glob[j] === '^') {
+        cls += '^'
+        j++
+      }
+      while (j < glob.length && glob[j] !== ']') {
+        cls += glob[j] === '\\' ? '\\\\' : glob[j]
+        j++
+      }
+      cls += ']'
+      out += cls
+      i = j
+    } else {
+      out += c.replace(/[.*+?^${}()|[\]\\]/, '\\$&')
+    }
+  }
+  return new RegExp(`^${out}$`, 'i')
+}
+
+/**
+ * claude-factory-9zd5: returns `true` if the last path component of `candidate` names `HEAD`.
+ * The last component is the text after the final `/`.
+ * With no `/`, the last component is the whole string.
+ *
+ * The check uses an exact, case-insensitive match. It does not test for a substring.
+ * For example, `pushing HEAD` and `.gitignore` do not match.
+ *
+ * If the last component has a glob character (`*`, `?` or `[`), the function tests the glob instead.
+ * It checks whether the glob, read as a shell pattern, can match the literal name `HEAD`.
+ */
+function wordNamesHead(candidate: string): boolean {
+  const last = candidate.split('/').pop() ?? candidate
+  if (/[*?[]/.test(last)) {
+    try {
+      return globToRegExp(last).test('HEAD')
+    } catch {
+      return false
+    }
+  }
+  return last.toLowerCase() === 'head'
+}
+
+/**
+ * claude-factory-9zd5: returns `true` when `words` holds a sign of a direct write to a git
+ * administrative path, or a git-dir lookup.
+ * The words are one segment's raw words, before `realCommand` strips a leading `VAR=val` or wrapper word.
+ *
+ * `denyAt` calls this beside `setsDangerousGitConfigEnv`.
+ * On a match, `denyAt` sets `state.gitAdminPath`.
+ * See the `ScanState` comment above for the full rule.
+ *
+ * `isGitOrGhSegment` holds `true` when the segment's own command is `git`, a dashed `git-<verb>` binary, or `gh`.
+ * R2 (the `HEAD`-named word check) skips a non-redirect word in such a segment.
+ * Both `git push o HEAD` and `git log origin/HEAD..HEAD` name `HEAD` as a normal argument, not a write target.
+ *
+ * The function checks each word in 3 steps, in this order:
+ *   - R1: tests `GIT_NAME_RE` against the raw word, with no skip rule.
+ *     A `.git` name is a write target, or a `cd` target, wherever it appears.
+ *   - R3: tests `GIT_DIR_FLAG_RE` against the raw word, also with no skip rule (see that constant's comment).
+ *   - R2: tests the redirect target or write-operand form (see below) with `wordNamesHead`, the only step with a skip rule.
+ *
+ * A word counts as a redirect-form candidate in 3 ways:
+ *   - It holds a `REDIRECT_PREFIX_RE` match with more text after it (`>.git/HEAD`).
+ *   - It directly follows a bare redirect-operator word (`> .git/HEAD`, 2 words).
+ *   - It holds a `dd`-style `of=` prefix (`of=HEAD`).
+ * Any other word is plain and non-redirect. Examples: an `mv` or `ln` operand, a quoted message, a git argument.
+ *
+ * R2 skips a non-redirect word when `isGitOrGhSegment` holds `true`.
+ * R2 also skips a non-redirect word that matches `REMOTE_TRACKING_HEAD_RE`.
+ * R2 never skips a redirect-form word.
+ * A write is a write, even inside a `git` segment's own redirect, such as `git log > HEAD`.
+ */
+function namesGitAdminPath(words: string[], isGitOrGhSegment: boolean): boolean {
+  let pendingRedirectTarget = false
+  for (const word of words) {
+    if (GIT_NAME_RE.test(word)) return true
+    if (GIT_DIR_FLAG_RE.test(word)) return true
+
+    const wasPending = pendingRedirectTarget
+    pendingRedirectTarget = false
+
+    let candidate = word
+    let isRedirectForm = wasPending
+
+    const m = word.match(REDIRECT_PREFIX_RE)
+    if (m && m[0].length === word.length) {
+      // the whole word is a bare redirect operator (`>`, `2>>`, ...); the next word is the target
+      pendingRedirectTarget = true
+      continue
+    }
+    if (m) {
+      candidate = word.slice(m[0].length)
+      isRedirectForm = true
+    } else if (!wasPending && /^of=/i.test(word)) {
+      candidate = word.slice(3)
+      isRedirectForm = true
+    }
+
+    if (!isRedirectForm) {
+      if (isGitOrGhSegment) continue
+      if (REMOTE_TRACKING_HEAD_RE.test(candidate)) continue
+    }
+    if (wordNamesHead(candidate)) return true
+  }
+  return false
+}
+
+// claude-factory-9zd5: R4. Returns `true` when `cwd` holds a path component that ends in `.git`.
+// The match ignores case. It covers a bare `.git` directory and a `<name>.git` bare-repo directory.
+// A headPush from inside such a directory denies outright (`scanReason`).
+// The denial applies whatever the command text says.
+//
+// A worker can build a write target from a shell variable, such as `${x}AD`.
+// The command can contain no `.git` or `HEAD` text at all, so R1-R3 have nothing to read.
+function cwdInsideGitDir(cwd: string | undefined): boolean {
+  if (!cwd) return false
+  return cwd.split('/').some(part => part.toLowerCase().endsWith('.git'))
 }
 
 /**
@@ -2568,10 +2772,16 @@ export function scanReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
-  const state: ScanState = { branchChange: false, headPush: false }
-  const reason = denyAt(command, root, personOnly, memoGate(gate ?? {}), 0, state, false)
+  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false }
+  const g = memoGate(gate ?? {})
+  const reason = denyAt(command, root, personOnly, g, 0, state, false)
   if (reason) return reason
-  return state.branchChange && state.headPush ? PUSH_REASON : undefined
+  if (!state.headPush) return undefined
+  // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
+  // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
+  // inside a .git-named path. cwdInsideGitDir reads gate.cwd, not the command text, so it also
+  // denies a write this guard's own word scan cannot read, such as a shell-variable target.
+  return state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd) ? PUSH_REASON : undefined
 }
 
 /**
@@ -2628,6 +2838,11 @@ function denyAt(
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
+    // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
+    // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2
+    // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
+    const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
+    if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
@@ -2743,6 +2958,9 @@ async function main() {
     // claude-factory-zl5.8: this resolves against the tool call's own cwd, not `root`.
     // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`.
     readFile: path => readSmallFile(path, i.cwd || root),
+    // claude-factory-9zd5: the tool call's own cwd, with no fallback to `root`. `cwdInsideGitDir`
+    // reads this field directly, through `scanReason`'s R4 check.
+    cwd: i.cwd,
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
   if (!reason) return
