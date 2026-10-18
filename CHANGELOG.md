@@ -6,16 +6,36 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
-- `touchesBeadsActor` in `src/worker-hook.ts` now scans every word of an `env` segment up to
-  the first `bd` word. The old scan stopped too soon. It missed these bypass forms:
+- `touchesBeadsActor` in `src/worker-hook.ts` now reads the options of an `env` word. It reads them
+  the same way as the real `env` command. The old scan stopped too soon.
+  It stopped at the first word that is not a flag, or at the first `bd` word.
 
-  - `env -uBEADS_ACTOR` (a glued short option)
-  - a lone `env -` (same as `--ignore-environment`)
-  - `env -iu FOO` (a clustered short option)
-  - `env -C /tmp -u BEADS_ACTOR` (a value flag, `-C /tmp`, that ended the old scan early)
-  - `env -S'-i ...'` (an `env -S` value that itself clears or unsets `BEADS_ACTOR`)
+  The old scan did not catch these bypass forms:
 
-  The guard now denies all of them (claude-factory-igj, follow-up to claude-factory-8pc.24, .27).
+  - `env -uBEADS_ACTOR`: a short option joined to its value
+  - a lone `env -`: the same effect as `--ignore-environment`
+  - `env -iu FOO`: a cluster of short options
+  - `env -C /tmp -u BEADS_ACTOR`: the value flag `-C /tmp` ended the old scan too soon
+
+  The old scan also did not catch these forms:
+
+  - `env -S'-i ...'`: the `env -S` value can clear or unset `BEADS_ACTOR`
+  - `env -u bd -u BEADS_ACTOR`: the first `-u` value is `bd`, which ended the old scan before the later `-u BEADS_ACTOR`
+  - `env -i sh -c 'bd create x'` and `env -i bash -c "..."`: a `bd` word hides in a shell `-c`
+    script, under a clear-all `env -i`
+  - `env -i eval "bd create x"`: a `bd` word hides in an `eval` word, under a clear-all `env -i`
+
+  The fix also corrects an error in the first version of the wider scan. That version read past
+  the `env` command itself. It also read into the flags and arguments of the command that `env`
+  runs. The guard now allows these two lines again:
+
+  ```
+  env LC_ALL=C grep -rn BEADS_ACTOR src
+  env FOO=1 grep -i x bd
+  ```
+
+  The guard now denies every bypass form above. This change is bead claude-factory-igj.
+  It follows claude-factory-8pc.24 and claude-factory-8pc.27.
 
 ## 0.13.0 (2026-10-18)
 
