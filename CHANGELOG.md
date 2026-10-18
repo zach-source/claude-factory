@@ -6,6 +6,12 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `worker-hook`: fail closed when one command changes the branch (`checkout`,
+  `switch`, `branch -m`/`-M`, `symbolic-ref HEAD`, `rebase <upstream> <branch>`,
+  `rebase --root <branch>`, `stash branch`, `bisect reset <ref>`, `update-ref --stdin`,
+  or a git-flag abbreviation of one of these) and then pushes `HEAD` to a protected
+  branch in the same command. (claude-factory-c63)
+
 - `touchesBeadsActor` in `src/worker-hook.ts` now reads the options of an `env` word. It reads them
   the same way as the real `env` command. The old scan stopped too soon.
   It stopped at the first word that is not a flag, or at the first `bd` word.
