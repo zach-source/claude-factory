@@ -8,6 +8,8 @@ minor release may change the factory format, the CLI or the run state.
 
 - The worker hook now denies a `git push` or `git send-pack` that has a shell-dynamic word: a `$`, a backtick, a glob or a brace. The shell can expand such a word to `--all`, `--mirror` or `--` before git runs, and the parsers read it as a literal remote or flag. A backtick next to a push in one command also denies (claude-factory-cu5m). The guard also denies a zsh glob group such as `(-)-all` and a `~name` word in the push tail, and it reads a quoted `git` or `push` word next to a backtick. It also keeps a redirect such as `2>&1`, `>&2` or `>|log` inside the push tail, and it denies `&>` beside a push.
 
+- The worker hook now scans the command that `env -S` really runs. `env` puts the split words into argv and keeps reading the words after the value. Before, `env -S 'sh' -c 'git push origin main'` was allowed, because the scan stopped after the `-S` value. The hook now denies it, and the `bash`, `zsh`, `sh -x`, `--split-string=`, `eval` and `git -C` forms too (claude-factory-s1fj).
+
 - The worker hook now reads every word after `--` in `git push` and `git send-pack` as an operand, as git does. Before, `git push -- origin main -n` was allowed as a dry run, and `git push -- origin -o main` hid the `main` refspec as a value (claude-factory-zs39). A flag-like ref name after `--`, such as `-n`, is no longer read as a flag.
 
 - Workers and the manager now run the `haiku` alias on Haiku 5.5 (`claude-haiku-5-5`): `ANTHROPIC_DEFAULT_HAIKU_MODEL` is set in their settings env, since Claude Code 2.1.291 still maps `haiku` to Haiku 4.5. Workers also get `SHUNT_MODEL=haiku`, so a shunt-guard denial names the model to hand a large read to (`Agent` with `model: haiku`). In 7 days of transcripts, workers hit the guard 91 times and never delegated the read, because the denial named no model and workers do not load the `shunt` skill. A user's own value for either variable wins. The manager's `briefer` subagent (no tools, at most 3 turns) moves from Sonnet to Haiku.
@@ -182,6 +184,86 @@ minor release may change the factory format, the CLI or the run state.
     `env -S '-u' X -C /other pwd` prints `/other`, since `X` becomes
     `-u`'s value and `-C` moves the command. Before this fix, this
     shape allowed too. (claude-factory-68gn.14)
+
+- `worker-hook` checks the verb slot of a command.
+  A dynamic word there now fails the check.
+  A dynamic word can be a shell variable.
+  It can also be a command substitution.
+  It can also be a glob word.
+
+  The old hook read that word as the literal verb. It let two commands through. Both allowed. One example is `V=push; git $V origin main`. A second example is `V=checkout; git $V main; git push origin HEAD`.
+
+  The new reason code is `DYNAMIC_VERB_REASON`. It denies each case in the table below.
+
+  | Case | Example | Bead |
+  |---|---|---|
+  | Dynamic word at the `git` verb slot | `git-$V, eval, sh -c` | claude-factory-p43v.1, claude-factory-p43v.2 |
+  | Dynamic word at the `gh` verb slot, or at the `pr, repo, alias` subcommand slot | - | claude-factory-p43v.3 |
+  | Dynamic `git config` key | - | claude-factory-p43v.4 |
+  | Dynamic word before a guarded verb | `$G push origin main` | claude-factory-p43v.5 |
+  | Substitution opener | `$(which git) push origin main` | claude-factory-p43v.5 |
+  | Dynamic word at the `kubectl, ko, helm` verb slot, or at the `kubectl rollout, auth, certificate` subcommand slot | - | claude-factory-p43v.6 |
+  | Two dynamic command words in a row | `$G $V origin main` | claude-factory-p43v.8 |
+  | Dynamic `git -c`/`--config-env` key | `git -c $K=push p origin main` | claude-factory-p43v.9 |
+  | Dynamic command word before a mutating `kubectl, ko, helm` verb | `$K apply -f x --context acme` | claude-factory-p43v.10 |
+  | Dynamic `gh api` endpoint or `-X`/`--method` value | `gh api $E -X PUT` | claude-factory-p43v.11 |
+  | Dynamic `-c`/`--config-env` pair with no literal `=` | `git -c "$KV" p origin main` | claude-factory-p43v.13 |
+  | Dynamic `-c` key after a dynamic command word | `$G -c $K=push p origin main` | claude-factory-p43v.14 |
+  | Shell reserved word (`do, then, if, !`) before the dynamic command word | `for f in a; do $G $V origin main; done` | claude-factory-p43v.15 |
+  | Dynamic word before a `kubectl rollout, auth, certificate` sub-verb, or behind an unknown wrapper | `caffeinate $K apply -f x --context acme` | claude-factory-p43v.16 |
+  | Wrapper flag, or `coproc`, before the dynamic command-word pair | `sudo -u x $G $V origin main` | claude-factory-p43v.19 |
+  | Dynamic command word before `--config-env` (attached or two-word form) | `$G --config-env alias.p=E p origin main` | claude-factory-p43v.20 |
+  | Unlisted wrapper flag before the dynamic command-word pair, known or unknown, attached or separate, with or without a value | `sudo -E $G $V origin main` | claude-factory-p43v.21 |
+  | `coproc NAME` before a brace group or subshell, before the dynamic command-word pair | `coproc NAME { $G $V origin main; }` | claude-factory-p43v.22 |
+  | `NAME=value` operand after a wrapper's own name or flags | `env A=1 $G $V origin main` | claude-factory-p43v.25 |
+  | `timeout`'s duration word after its own `--` | `timeout -- 5 $G $V origin main` | claude-factory-p43v.26 |
+  | The `MAX_COMMAND_ANCHORS` cap on many unknown flag/value pairs in a row | `sudo` plus 16 `-R /` pairs plus `$G $V origin main` | claude-factory-p43v.27 |
+  | A `{}` word (`find -exec`, `xargs -I {}`) at the git or gh verb slot | `find push -maxdepth 0 -exec git {} origin main ;` | claude-factory-p43v.29 |
+  | `NAME=value` operand with a dot, a dash or a leading digit in the name, or after a wrapper's own `--` | `env a.b=1 $G $V origin main`, `env -- A=1 $G $V origin main` | claude-factory-p43v.30 |
+  | `timeout`'s duration operand in the GNU `1e1` or `inf` form | `timeout 1e1 $G $V origin main` | claude-factory-p43v.31 |
+  | A nested wrapper's own name, or an unpaired dynamic flag value, stopping the chase early | `sudo -Z "$P" env $G $V origin main` | claude-factory-p43v.32 |
+  | A single dynamic word past the `MAX_COMMAND_ANCHORS` cap, with a literal tail and no dynamic partner | `sudo` plus 16 `-R /` pairs plus `$K apply -f x` | claude-factory-p43v.33 |
+  | A dynamic flag value before another flag pair stops the chase too soon | `sudo --user $U --close-from 3 $G $V origin main` | claude-factory-p43v.35 |
+
+  `commandAnchors` (`src/worker-hook.ts`) gives a short list of start indices. It replaces the
+  old single verb-slot index. It goes around a wrapper's flags, known or unknown. An unknown
+  flag does not move the real command off that index.
+
+  An unknown flag can read the next word as its own value. This is why the hook denies
+  `sudo -Z v cp "$A" "$B"`. The hook cannot tell `v` apart from the value of `-Z`, with `cp` as
+  the real command. This is an accepted deny, not an over-deny.
+
+  The hook had a bug. A bare `{}` word matched a kubectl mutating verb by mistake. The match
+  happened at the command slot. This fix removes that match. `{}` stays dynamic in all other
+  positions (claude-factory-p43v.28).
+
+  Before this fix, the hook read `{}` after `cp` or `delete`. The hook read it as a kubectl
+  mutating verb. The hook then denied an ordinary command. The command was
+  `xargs -I {} cp {} dest`. That command has no git, gh, kubectl, ko or helm call.
+
+  A later fix (claude-factory-p43v.29) kept the command-slot exemption, but made `{}` dynamic
+  again in every other position. Now `find -exec` cannot hide a real git call behind `{}`, and
+  `xargs -I {}` cannot hide a real gh call behind `{}` either.
+
+  Only 3 call sites in `src/worker-hook.ts` still skip `{}` at the command slot. One site is
+  `commandAnchors`. The other 2 sites are the `cmd[0]` check in `anyDynamicCommandReason`, and
+  the `cmd[0]` check in `anyDynamicLiveApplyReason`.
+
+  The dynamic command-word check for `kubectl, ko, helm` (claude-factory-p43v.10) now returns
+  `DYNAMIC_VERB_REASON`, not `LIVE_REASON`. `LIVE_REASON` names `kubectl`, `ko` or `helm` by name.
+  This check can deny a command that names none of those 3 tools, such as `$PIP install
+  requests` (claude-factory-p43v.17).
+
+  A dynamic `git` branch-change argument also marks the branch as changed.
+  The table below lists each verb, the push rule, and the loop rule.
+
+  | Case | Example | Note |
+  |---|---|---|
+  | Branch-change verb `stash` | `git stash $V main` | marks the branch changed |
+  | Branch-change verb `branch` | `git branch $F main` | marks the branch changed |
+  | Branch-change verbs `bisect, rebase, symbolic-ref, update-ref` | same rule | marks the branch changed |
+  | Push after a branch change | `git push origin HEAD` in the same command | denies with `PUSH_REASON` |
+  | Loop, not a verb slot | `for f in a b; do git add $f; done` | still allows (claude-factory-p43v) |
 
 - Fix: an existing `git` or `gh` alias cannot hide a denied verb.
   `gitReason` and `ghReason` resolve a verb word that is not a builtin.
