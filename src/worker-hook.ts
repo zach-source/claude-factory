@@ -1506,6 +1506,7 @@ function pathOutsideRoot(raw: string | undefined, root: string | undefined): boo
 
 // `moved` is true when a cd, pushd or popd word ran before this segment (claude-factory-ty8y.20).
 function gitWorkTreeOutside(words: string[], root: string | undefined, moved = false): boolean {
+  if (!/--work-tree|GIT_WORK_TREE=|--git-dir|GIT_DIR=|(^|\n)-C(\n|$)/.test(words.join('\n'))) return false
   const bad = (raw: string | undefined): boolean => pathOutsideRoot(raw, root)
   let hasWorkTree = false
   let hasGitDir = false
@@ -1536,6 +1537,7 @@ function gitWorkTreeOutside(words: string[], root: string | undefined, moved = f
 // claude-factory-ty8y.21: a git config write of core.worktree, or any `-c core.worktree=`, moves the
 // work tree. A value outside `root` denies. A read form has no value word, so it allows.
 function gitCoreWorktreeOutside(words: string[], root: string | undefined): boolean {
+  if (!/core\.worktree|(^|\n)config(\n|$)/i.test(words.join('\n'))) return false
   if (words.some(w => w.length > 13 && /^(-c|--config-env)?core\.worktree=/i.test(w))) return true
   const at = words.indexOf('config')
   if (at < 0) return false
@@ -1630,6 +1632,7 @@ function globalGitConfigUse(
 
 /** claude-factory-ty8y: true when a dequoted word of a segment is a git or git-<verb> word. */
 function hasGitWordIn(words: string[]): boolean {
+  if (!/git/i.test(words.join('\n'))) return false
   return words.some(w => {
     if (!/git/i.test(w)) return false
     const b = baseWord(w)
