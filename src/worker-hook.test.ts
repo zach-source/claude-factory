@@ -4723,6 +4723,45 @@ test.each(ALLOW_WMSR_COMMENT)('denyReason allows %j (comment text, wmsr)', cmd =
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
 })
 
+const WB = '`'
+const DENY_WMSR_HEREDOC: [string, string][] = [
+  [`cat <<EOF\ndon't\nEOF\n${WM}`, PUSH_REASON],
+  [`echo $(cat <<EOF\ndon't\nEOF\n${WM}\n)`, PUSH_REASON],
+  [`cat <<'EOF'\ndon't\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<"EOF"\ndon't\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<\\EOF\ndon't\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<-EOF\n\tdon't\n\tEOF\n${WM}`, PUSH_REASON],
+  [`cat <<A <<B\ndon't\nA\nit's\nB\n${WM}`, PUSH_REASON],
+  [`cat <<EOF # it's\nx\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<EOF\n$(${WM})\nEOF`, PUSH_REASON],
+  [`cat <<EOF\n${WB}${WM}${WB}\nEOF`, PUSH_REASON],
+  [`cat <<EOF\ndon't $(${WM})\nEOF`, HEREDOC_REASON],
+  [`cat <<EOF\nx`, HEREDOC_REASON],
+  [`cat <<EOF\nx\nEOF \n${WM}`, HEREDOC_REASON],
+  [`cat <<EOF\nx\nEOF)\n${WM}`, HEREDOC_REASON],
+  [`cat <<EOF\nx\nEOF\r\n${WM}`, HEREDOC_REASON],
+  [`cat <<$X\nx\n$X\n${WM}`, HEREDOC_REASON],
+  [`cat <<\nx\n\n${WM}`, HEREDOC_REASON],
+]
+test.each(DENY_WMSR_HEREDOC)('denyReason denies %j (here-document, wmsr)', (cmd, reason) => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBe(reason)
+})
+
+test('denyReason denies a shift row with a later push (wmsr)', () => {
+  expect(denyReason(`echo $((1<<2))\n${WM}\n2`, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_HEREDOC = [
+  "cat <<'EOF'\ndon't\nEOF",
+  "cat <<EOF\nit's $HOME\nEOF",
+  `git commit -F - <<'EOF'\nFix: don't git push origin main\nEOF`,
+  `cat <<<"it's"`,
+  'cat <<EOF\n$(date)\nEOF',
+]
+test.each(ALLOW_WMSR_HEREDOC)('denyReason allows %j (here-document, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
 test('denyReason denies a deep double-quoted substitution nest', () => {
   expect(denyReason('echo "$('.repeat(40) + 'true' + ')"'.repeat(40), '/root/repo', ['acme'], DQ_GATE)).toBe(
     DEEP_COMMAND_REASON,

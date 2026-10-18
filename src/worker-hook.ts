@@ -659,6 +659,148 @@ function isCatHeredoc(body: string): boolean {
   return false
 }
 
+// claude-factory-wmsr: commands that read a here-document as text. They do not run it as shell
+// commands. If every command on the header line is in this set, segments() does not read the body
+// as commands.
+const HEREDOC_TEXT_COMMANDS = new Set([
+  'cat',
+  'tee',
+  'git',
+  'gh',
+  'bd',
+  'factory',
+  'grep',
+  'head',
+  'tail',
+  'wc',
+  'sort',
+  'uniq',
+  'diff',
+  'cmp',
+  'jq',
+  'echo',
+  'printf',
+  'true',
+  'python',
+  'python3',
+  'node',
+  'bun',
+  'ruby',
+  'perl',
+  'psql',
+  'sqlite3',
+])
+
+interface HeredocEntry {
+  delim: string
+  dash: boolean
+  quoted: boolean
+}
+
+/**
+ * claude-factory-wmsr: reads the header of a here-document. `from` is the index after `<<`.
+ * It returns undefined when the delimiter is unclear: it is empty, it holds `$` or a backtick or a
+ * backslash-newline, or a quote stays open.
+ */
+function readHeredocHeader(cmd: string, from: number): HeredocEntry | undefined {
+  let j = from
+  const dash = cmd[j] === '-'
+  if (dash) j++
+  while (cmd[j] === ' ' || cmd[j] === '\t') j++
+  let delim = ''
+  let quoted = false
+  for (; j < cmd.length; j++) {
+    const c = cmd[j]!
+    if (c === "'") {
+      const e = cmd.indexOf("'", j + 1)
+      if (e < 0) return undefined
+      delim += cmd.slice(j + 1, e)
+      quoted = true
+      j = e
+    } else if (c === '"') {
+      quoted = true
+      for (j++; j < cmd.length && cmd[j] !== '"'; j++) {
+        if (cmd[j] === '$' || cmd[j] === '`') return undefined
+        if (cmd[j] === '\\') {
+          if (cmd[j + 1] === '\n') return undefined
+          if ('"\\$`'.includes(cmd[j + 1] ?? '')) j++
+        }
+        delim += cmd[j]
+      }
+      if (j >= cmd.length) return undefined
+    } else if (c === '\\') {
+      if (j + 1 >= cmd.length || cmd[j + 1] === '\n') return undefined
+      quoted = true
+      delim += cmd[++j]
+    } else if (c === '$' || c === '`') {
+      return undefined
+    } else if (' \t\n;&|<>()'.includes(c)) {
+      break
+    } else {
+      delim += c
+    }
+  }
+  if (delim === '') return undefined
+  return { delim, dash, quoted }
+}
+
+/**
+ * claude-factory-wmsr: reads the lines of one here-document body, from index `pos`.
+ * It returns the body, the index after the terminator line, and `unclear`. `unclear` is true when
+ * a line looks like a near match for the terminator, or when the command ends before the
+ * terminator.
+ */
+function readHeredocBody(
+  cmd: string,
+  pos: number,
+  entry: HeredocEntry,
+): { body: string; next: number; unclear: boolean } {
+  const lines: string[] = []
+  let unclear = false
+  while (pos <= cmd.length) {
+    if (pos === cmd.length) return { body: lines.join('\n'), next: pos, unclear: true }
+    let e = cmd.indexOf('\n', pos)
+    if (e < 0) e = cmd.length
+    const line = cmd.slice(pos, e)
+    const test = entry.dash ? line.replace(/^\t+/, '') : line
+    if (test === entry.delim) return { body: lines.join('\n'), next: Math.min(e + 1, cmd.length), unclear }
+    if (test.startsWith(entry.delim) || test.trim() === entry.delim) unclear = true
+    lines.push(line)
+    pos = e + 1
+  }
+  return { body: lines.join('\n'), next: cmd.length, unclear: true }
+}
+
+/**
+ * claude-factory-wmsr: the text of each `$( )` and backtick substitution in an unquoted
+ * here-document body, one per line. The shell runs these. It prints the rest of the body.
+ */
+function heredocSubstitutions(body: string): string {
+  let out = ''
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]!
+    if (c === '\\') {
+      i++
+    } else if (c === '$' && body[i + 1] === '(') {
+      let depth = 1
+      let j = i + 2
+      for (; j < body.length && depth > 0; j++) {
+        if (body[j] === '\\') j++
+        else if (body[j] === '(') depth++
+        else if (body[j] === ')') depth--
+      }
+      out += body.slice(i + 2, depth === 0 ? j - 1 : j) + '\n'
+      i = j - 1
+    } else if (c === '`') {
+      let j = i + 1
+      for (; j < body.length && body[j] !== '`'; j++) if (body[j] === '\\') j++
+      out += body.slice(i + 1, j) + '\n'
+      i = j
+    }
+  }
+  return out
+}
+
 /** What segments() reports to its caller. A set flag makes denyAt deny the command. */
 type SegInfo = {
   dollarQuote: boolean
@@ -720,6 +862,16 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
   let braceDepth = 0
   let arith = 0
   const arithStack: boolean[] = []
+  // claude-factory-wmsr: here-documents read on this line, whose bodies start after its newline.
+  // When this guard cannot read one with certainty, it sets info.heredoc and stops reading them.
+  const pending: HeredocEntry[] = []
+  let heredocOff = false
+  let lineStart = 0
+  const heredocUnclear = () => {
+    if (info) info.heredoc = true
+    heredocOff = true
+    pending.length = 0
+  }
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
@@ -729,6 +881,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     const prevSep: boolean = lastSep
     lastSig = c
     lastSep = false
+    if (c === '\n' && quote && pending.length > 0) heredocUnclear()
     if (quote === "'") {
       if (c === "'") quote = null
       else word += c
@@ -863,6 +1016,44 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     if (';|&\n'.includes(c)) {
       endSeg()
       lastSep = c === '&' || c === '|'
+      if (c === '\n' && pending.length > 0) {
+        // claude-factory-wmsr: the bodies of the here-documents on the line that just ended
+        const textOnly = segs
+          .slice(lineStart)
+          .every(
+            s => s.length === 0 || HEREDOC_TEXT_COMMANDS.has(baseWord(s.find(w => !/^\w+=/.test(w)) ?? '')),
+          )
+        let pos = i + 1
+        const bodies: { body: string; entry: HeredocEntry }[] = []
+        let unclear = false
+        for (const entry of pending) {
+          const r = readHeredocBody(cmd, pos, entry)
+          bodies.push({ body: r.body, entry })
+          unclear ||= r.unclear
+          pos = r.next
+        }
+        pending.length = 0
+        if (unclear) {
+          heredocUnclear()
+        } else {
+          const read: string[] = []
+          for (const { body, entry } of bodies) {
+            const hasSub = body.includes('$(') || body.includes('`')
+            const risky = /['"#]|<</.test(body)
+            if (textOnly && risky && entry.quoted) continue
+            if (textOnly && risky && !hasSub) continue
+            if (risky) heredocUnclear()
+            else if (textOnly && hasSub && !entry.quoted) read.push(heredocSubstitutions(body))
+            else read.push(body)
+          }
+          for (const text of read) segs.push(...segments(text, info))
+          i = Math.max(pos - 1, i)
+          lastSig = '\n'
+          lineStart = segs.length
+          continue
+        }
+      }
+      if (c === '\n') lineStart = segs.length
       continue
     }
     if (/\s/.test(c)) {
@@ -876,6 +1067,13 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       let j = i + 1
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
+    }
+    if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<' && prevSig !== '<' && !heredocOff) {
+      // claude-factory-wmsr: an unquoted `<<` starts a here-document. Inside `(( ))` or `${ }` it can
+      // be a shift, so this guard cannot tell.
+      const entry = arith > 0 || braceDepth > 0 ? undefined : readHeredocHeader(cmd, i + 2)
+      if (entry) pending.push(entry)
+      else heredocUnclear()
     }
     if (c === '{' && prevSig === '$') braceDepth++
     else if (c === '}' && braceDepth > 0) braceDepth--
@@ -5251,6 +5449,26 @@ function denyAt(
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
 ): string | undefined {
+  // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
+  // a real command wins over them.
+  const late: { reason?: string } = {}
+  return (
+    denyAtScan(command, root, personOnly, gate, depth, state, movedBefore, ghConfigMovedBefore, late) ??
+    late.reason
+  )
+}
+
+function denyAtScan(
+  command: string,
+  root: string | undefined,
+  personOnly: string[] | undefined,
+  gate: HookGate,
+  depth: number,
+  state: ScanState,
+  movedBefore: boolean,
+  ghConfigMovedBefore: boolean,
+  late: { reason?: string },
+): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
   // claude-factory-epz: a deep command denies here, with no personOnly check at all. The
@@ -5299,7 +5517,9 @@ function denyAt(
         movedSoFar,
         ghConfigMovedSoFar,
       )
-      if (r) return r
+      // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
+      if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
+      else if (r) return r
     }
     return undefined
   }
