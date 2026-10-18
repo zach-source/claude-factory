@@ -40,11 +40,16 @@
  * `git push -n` is a dry run: it does not push anything.
  * The hook allows a dry run at all times.
  *
- * It also denies one command that changes to a new branch and also pushes HEAD to that branch
- * (claude-factory-c63). This hook reads the branch one time, before the change. A later comparison
- * with that name can miss the real, new target. These commands can each change the branch:
- * `git checkout`, `git switch`, `git branch` with a rename flag, a `git symbolic-ref` write, and
- * `gh pr checkout`. This hook denies the combination. It does not need the new branch name.
+ * It also denies one command that changes to a new branch and pushes HEAD to that branch (claude-factory-c63).
+ * This hook reads the branch one time, before the change.
+ * A later comparison with that name can miss the real, new target.
+ * These commands can each change the branch:
+ *   - `git checkout`
+ *   - `git switch`
+ *   - `git branch` with a rename flag
+ *   - a `git symbolic-ref` write
+ *   - `gh pr checkout`
+ * This hook denies the combination without the new branch name.
  *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
@@ -145,7 +150,7 @@ export interface HookGate {
  * `ScanState` monitors two facts, `branchChange` and `headPush`, across one whole top-level call to `denyAt`.
  * It monitors them across every segment and every recursion into a nested shell, `eval`, or `env -S` script
  * (claude-factory-c63.4). `denyReason` makes the object one time.
- * Each function that can see a word that changes the branch, or that pushes `HEAD`, gives that object to the next call.
+ * Each function that sees a word that changes the branch, or that pushes `HEAD`, passes that object on.
  *
  * `branchChange` becomes true when a segment holds a word that changes the branch that `gate.headOf` reports next.
  * These words are:
@@ -1679,11 +1684,12 @@ function isHeadAliasRefspec(spec: string): boolean {
  * True when `tail` would read `currentBranch` to resolve a refspec (claude-factory-c63).
  * `tail` holds the arguments of a `git push` (`isSendPack` false) or `git send-pack`
  * (`isSendPack` true) call, after its own verb.
- * The call is not a dry run, and some refspec is a no-colon `HEAD` alias after the code removes a
- * leading `+`. The default of `push` is `['HEAD']`, with no refspec and no `--tags`.
+ * The call is not a dry run.
+ * Some refspec is a no-colon `HEAD` alias after the code removes a leading `+`.
+ * The default of `push` is `['HEAD']`, with no refspec and no `--tags`.
  *
- * A later branch change in the same command can move that branch past the name that
- * `currentBranch` already holds. This function shows the risk. It does not resolve the real target.
+ * A later branch change in the same command can move the branch past the name that `currentBranch` holds.
+ * This function shows the risk. It does not resolve the real target.
  */
 function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
   if (isSendPack) {
@@ -1719,12 +1725,11 @@ function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
  *
  * claude-factory-zl5.35: This guard checks `send-pack` in the same way as `push`, through `sendPackDenied`.
  *
- * claude-factory-c63: this also updates `state`, the scan state shared for the whole top-level
- * call. It sets `state.branchChange` when `gitChangesBranch` names a verb at `vi`. When the verb
- * search is uncertain, it searches for such a verb anywhere in `tail` before a literal `--`.
- * It sets `state.headPush` when `pushReadsCurrentBranch` returns true for the push or send-pack
- * tail that this function finds. `denyReason` denies the whole command when both end up true,
- * even when neither flag alone denies here.
+ * claude-factory-c63: this also updates `state`, the scan state shared for the whole top-level call.
+ * It sets `state.branchChange` when `gitChangesBranch` names a verb at `vi`.
+ * When the verb search is uncertain, it searches for such a verb anywhere in `tail` before a literal `--`.
+ * It sets `state.headPush` when `pushReadsCurrentBranch` returns true for the push or send-pack tail that this function finds.
+ * `denyReason` denies the whole command when both flags are true at the end, even when neither alone denies here.
  */
 function gitReason(
   cmd: string[],
@@ -1970,10 +1975,11 @@ function anyShellReason(
  * rig's protected branches, and small reads of the live repo a test can fake out. These checks
  * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
  *
- * claude-factory-c63: after `denyAt` allows every segment on its own, this function still denies
- * with `PUSH_REASON`. It does so when the whole command holds both a branch-change word and a
- * HEAD-reading push. See `ScanState` above `denyAt`. `denyAt` would compare the push with a branch
- * name read before the change, so an allow there does not prove that the real, later target is safe.
+ * claude-factory-c63: after `denyAt` allows every segment on its own, this function still denies with `PUSH_REASON`.
+ * It does so when the whole command holds both a branch-change word and a HEAD-reading push.
+ * See `ScanState` above `denyAt`.
+ * `denyAt` would compare the push with a branch name read before the change.
+ * An allow there does not prove that the real, later target is safe.
  */
 export function denyReason(
   command: string,
