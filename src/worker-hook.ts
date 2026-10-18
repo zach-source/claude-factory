@@ -211,6 +211,15 @@ export const XARGS_REASON =
   'Run the git or gh command directly, with every argument in the command line itself. ' +
   'Do not retry this exact command.'
 
+// claude-factory-l43b: a shell word with no -c script reads its script from stdin, a here-string
+// or a here-document. The text that feeds it is not in this word list, so this guard cannot read
+// the script. xargs before a shell word hides its script in the same way.
+export const SHELL_STDIN_REASON =
+  'The factory denies this command: a shell word (sh, bash, zsh, dash or a dynamic word) can read ' +
+  'its script from a pipe, a redirect or a here-string, or xargs runs a shell. This guard cannot ' +
+  'read that script. Run the commands directly, or run a script file with a literal name. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-p43v: a command or subcommand word can hold a dollar sign, a backtick, a glob
 // character, a brace, or a leading tilde. The shell has not expanded that word yet. This guard
 // reads the typed text. It does not read the shell's own expansion of that text.
@@ -328,6 +337,9 @@ interface ScanState {
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
+  // claude-factory-l43b: true when the raw command holds a pipe, a < character or a coproc word.
+  // Then a shell word can read its script from stdin. Set once in scanReason, never reset.
+  stdinFed: boolean
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
   // reads. Below zero, the scan stops and denies (fail closed).
   work: number
@@ -1314,6 +1326,136 @@ function xargsHidesOperand(words: string[]): boolean {
       const b = baseWord(words[j]!)
       if (b === 'git' || b === 'gh') return true
     }
+  }
+  return false
+}
+
+const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash'])
+
+// claude-factory-l43b: a redirect word starts with an optional fd number, then < or >.
+const REDIRECT_WORD = /^\d*[<>]/
+const REDIRECT_OPERATOR = /^\d*(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
+
+/** Returns how many leading redirect words (and their targets) `words` has. */
+function leadingRedirects(words: string[]): number {
+  let i = 0
+  while (i < words.length && REDIRECT_WORD.test(words[i]!)) {
+    i += REDIRECT_OPERATOR.test(words[i]!) ? 2 : 1
+  }
+  return Math.min(i, words.length)
+}
+
+const SHELL_VALUE_LONG_FLAGS = new Set(['--rcfile', '--init-file'])
+
+/**
+ * claude-factory-l43b: true when the shell word at `words[k]` can read its script from stdin.
+ * That is true when it has no -c script and no literal script file operand: a bare shell, `-s`,
+ * a lone `-`, a process substitution, a dynamic operand, or /dev/stdin and /dev/fd/N.
+ */
+function shellReadsStdin(words: string[], k: number): boolean {
+  let afterDashDash = false
+  for (let i = k + 1; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '-') return true
+    if (!afterDashDash) {
+      if (isShCCluster(w)) return false
+      if (REDIRECT_WORD.test(w)) {
+        if (REDIRECT_OPERATOR.test(w)) i++
+        continue
+      }
+      if (w === '--') {
+        afterDashDash = true
+        continue
+      }
+      if (w === '(') return true
+      if (SHELL_VALUE_LONG_FLAGS.has(w)) {
+        i++
+        continue
+      }
+      if (w.startsWith('--')) continue
+      if (w.startsWith('-') || w.startsWith('+')) {
+        const flags = w.slice(1)
+        if (flags.includes('s')) return true
+        if (/[oO]/.test(flags)) i++
+        continue
+      }
+    }
+    if (dynamicWord(w)) return true
+    return /^\/dev\/(stdin|fd\/\d+)$|^\/proc\/[^/]+\/fd\/\d+$/.test(w)
+  }
+  return true
+}
+
+/**
+ * claude-factory-l43b: a shell word with no -c script, in a command that a pipe, a redirect or a
+ * coproc can feed. Covers a literal shell word and a dynamic command word. Returns the reason.
+ */
+function shellStdinReason(words: string[], state: ScanState): string | undefined {
+  if (!state.stdinFed) return undefined
+  for (let j = 0; j < words.length; j++) {
+    if (SHELL_NAMES.has(baseWord(words[j]!).toLowerCase()) && shellReadsStdin(words, j)) {
+      return SHELL_STDIN_REASON
+    }
+  }
+  const lead = leadingRedirects(words)
+  const rest = lead ? words.slice(lead) : words
+  for (const a of commandAnchors(rest)) {
+    if (dynamicCommandWord(rest[a]!) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
+  }
+  return undefined
+}
+
+const XARGS_VALUE_FLAGS = new Set([
+  '-I', '-i', '-n', '-L', '-l', '-P', '-s', '-E', '-e', '-d', '-a',
+  '--max-args', '--max-procs', '--max-lines', '--max-chars', '--delimiter', '--arg-file', '--eof',
+  '--replace',
+])
+
+/**
+ * claude-factory-l43b: true when `words` has an `xargs` word with a shell word after it, or a
+ * dynamic word in the command slot. `xargs sh -c` takes its script from words that xargs can
+ * add from its own stdin, so this guard cannot read the script.
+ */
+function xargsRunsShell(words: string[]): boolean {
+  for (let i = 0; i < words.length; i++) {
+    if (baseWord(words[i]!) !== 'xargs') continue
+    const cands: number[] = []
+    for (let j = i + 1; j < words.length; j++) {
+      if (SHELL_NAMES.has(baseWord(words[j]!).toLowerCase())) cands.push(j)
+    }
+    let j = i + 1
+    while (j < words.length) {
+      const w = words[j]!
+      if (w === '--') {
+        j++
+        continue
+      }
+      if (!w.startsWith('-') || w === '-') break
+      if (XARGS_VALUE_FLAGS.has(w)) {
+        j += 2
+        continue
+      }
+      if (j + 1 < words.length && dynamicCommandWord(words[j + 1]!)) cands.push(j + 1)
+      j++
+    }
+    if (j < words.length && dynamicCommandWord(words[j]!)) cands.push(j)
+    // A literal -c script word after the shell word is in the command text. anyShellReason
+    // scans it. Only a shell with no such word hides its script from this guard.
+    for (const c of cands) if (!hasLiteralCScript(words, c)) return true
+  }
+  return false
+}
+
+/** True when a -c cluster after `words[k]` has a non-flag script word after it. */
+function hasLiteralCScript(words: string[], k: number): boolean {
+  for (let i = k + 1; i < words.length; i++) {
+    if (!isShCCluster(words[i]!)) continue
+    for (let m = i + 1; m < words.length; m++) {
+      if (words[m] === '--') continue
+      if (words[m]!.startsWith('-')) continue
+      return !dynamicWord(words[m]!)
+    }
+    return false
   }
   return false
 }
@@ -4835,7 +4977,13 @@ export function scanReason(
   gate?: HookGate,
   budget: number = MAX_SCAN_WORK,
 ): string | undefined {
-  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false, work: budget }
+  const state: ScanState = {
+    branchChange: false,
+    headPush: false,
+    gitAdminPath: false,
+    stdinFed: /[|<]|\bcoproc\b/.test(command),
+    work: budget,
+  }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
@@ -4959,6 +5107,10 @@ function denyAt(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
+    // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
+    const stdinShell = shellStdinReason(words, state)
+    if (stdinShell) return stdinShell
+    if (xargsRunsShell(words)) return SHELL_STDIN_REASON
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
