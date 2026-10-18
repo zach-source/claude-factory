@@ -207,6 +207,9 @@ minor release may change the factory format, the CLI or the run state.
   | Dynamic command word before `--config-env` (attached or two-word form) | `$G --config-env alias.p=E p origin main` | claude-factory-p43v.20 |
   | Unlisted wrapper flag before the dynamic command-word pair, known or unknown, attached or separate, with or without a value | `sudo -E $G $V origin main` | claude-factory-p43v.21 |
   | `coproc NAME` before a brace group or subshell, before the dynamic command-word pair | `coproc NAME { $G $V origin main; }` | claude-factory-p43v.22 |
+  | `NAME=value` operand after a wrapper's own name or flags | `env A=1 $G $V origin main` | claude-factory-p43v.25 |
+  | `timeout`'s duration word after its own `--` | `timeout -- 5 $G $V origin main` | claude-factory-p43v.26 |
+  | The `MAX_COMMAND_ANCHORS` cap on many unknown flag/value pairs in a row | `sudo` plus 16 `-R /` pairs plus `$G $V origin main` | claude-factory-p43v.27 |
 
   `commandAnchors` (`src/worker-hook.ts`) gives a short list of start indices. It replaces the
   old single verb-slot index. It goes around a wrapper's flags, known or unknown. An unknown
@@ -215,6 +218,13 @@ minor release may change the factory format, the CLI or the run state.
   An unknown flag can read the next word as its own value. This is why the hook denies
   `sudo -Z v cp "$A" "$B"`. The hook cannot tell `v` apart from the value of `-Z`, with `cp` as
   the real command. This is an accepted deny, not an over-deny.
+
+  Fixed an over-deny: a bare `{}` word, as `xargs -I {}` uses it, is not dynamic. No shell
+  expands it.
+
+  Before this fix, `cp` or `delete` after a `{}` word matched a kubectl mutating verb. The hook
+  denied an ordinary command such as `xargs -I {} cp {} dest`, with no git, gh, kubectl, ko or
+  helm call in it. (claude-factory-p43v.28)
 
   The dynamic command-word check for `kubectl, ko, helm` (claude-factory-p43v.10) now returns
   `DYNAMIC_VERB_REASON`, not `LIVE_REASON`. `LIVE_REASON` names `kubectl`, `ko` or `helm` by name.
