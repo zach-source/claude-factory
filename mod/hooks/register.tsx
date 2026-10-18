@@ -1203,7 +1203,7 @@ export const register: Register = (on, options) => {
         // pull request's title or a run's journal text. With Bash, that text can make the briefer
         // run `gh` or a `factory` verb of its own, instead of only reading the facts it got.
         tools: [],
-        model: 'sonnet',
+        model: 'haiku', // Haiku 5.5 through the manager's ANTHROPIC_DEFAULT_HAIKU_MODEL: no tools, one short summary
         maxTurns: 3,
         omitClaudeMd: true,
       })
