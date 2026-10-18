@@ -1494,6 +1494,8 @@ function normalizeConfigPath(word: string): string {
     .replace(/\/\.(["']?)$/, '$1')
 }
 
+const PLAIN_WORD_RE = /^[^\/.*?[{~$\\'"<>&|]*$/
+
 /**
  * claude-factory-ty8y: classifies one segment's raw words.
  * `write`: a redirect target, a `dd` `of=` target, or an operand of a command that is not a reader
@@ -1517,6 +1519,9 @@ function globalGitConfigUse(
     prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
     const wasPending = pending
     pending = false
+    // Fast path (claude-factory-lbn scan cost): a plain word holds no path or glob character, so no
+    // regex below can match it, unless it is a redirect, an of= word, or names gitconfig or XDG.
+    if (!wasPending && PLAIN_WORD_RE.test(word) && !/^of=|gitconfig|XDG_CONFIG_HOME/i.test(word)) continue
     let candidate = normalizeConfigPath(word)
     let redirect = wasPending
     const m = word.match(REDIRECT_PREFIX_RE)
@@ -1548,6 +1553,7 @@ function globalGitConfigUse(
 /** claude-factory-ty8y: true when a dequoted word of a segment is a git or git-<verb> word. */
 function hasGitWordIn(words: string[]): boolean {
   return words.some(w => {
+    if (!/git/i.test(w)) return false
     const b = baseWord(w)
     return b === 'git' || /^git-/.test(b)
   })
