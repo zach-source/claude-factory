@@ -1293,7 +1293,7 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
   if (process.env.FACTORY_LEAN === '0') return []
   const settings = {
     autoMemoryEnabled: false,
-    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
+    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_ENV_FILE: `${ax.FACTORY_DIR}/src/worker-shell-env.sh` },
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
     disableBundledSkills: true,
@@ -1562,6 +1562,12 @@ export const workerSettings = (
       ...user.env,
       ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+      // claude-factory-1zr5: the script clears the shell-snapshot aliases (gp, gco) that hide git from the deny hook;
+      // a user's own env file still runs, first, through FACTORY_USER_ENV_FILE
+      ...((user.env?.CLAUDE_ENV_FILE ?? process.env.CLAUDE_ENV_FILE)
+        ? { FACTORY_USER_ENV_FILE: (user.env?.CLAUDE_ENV_FILE ?? process.env.CLAUDE_ENV_FILE)! }
+        : {}),
+      CLAUDE_ENV_FILE: join(ROOT, 'src', 'worker-shell-env.sh'),
     },
     hooks,
     ...(ste.length ? { enabledPlugins: Object.fromEntries(ste) } : {}),
