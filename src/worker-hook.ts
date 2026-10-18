@@ -48,6 +48,8 @@
  *   - `git switch`
  *   - `git branch` with a rename flag
  *   - a `git symbolic-ref` write
+ *   - `git rebase` with an explicit `<branch>` operand
+ *   - `git stash branch <name>`
  *   - `gh pr checkout`
  * This hook denies the combination without the new branch name.
  *
@@ -161,7 +163,7 @@ export interface HookGate {
  *
  * `ScanState` monitors two facts, `branchChange` and `headPush`, across one whole top-level call to `denyAt`.
  * It monitors them across every segment and every recursion into a nested shell, `eval`, or `env -S` script
- * (claude-factory-c63.4). `denyReason` makes the object one time.
+ * (claude-factory-c63). `denyReason` makes the object one time.
  * Each function that sees a word that changes the branch, or that pushes `HEAD`, passes that object on.
  *
  * `branchChange` becomes true when a segment holds a word that changes the branch that `gate.headOf` reports next.
@@ -170,6 +172,8 @@ export interface HookGate {
  *   - `git switch`
  *   - `git branch` with a rename flag
  *   - a `git symbolic-ref` write
+ *   - `git rebase` with an explicit `<branch>` operand
+ *   - `git stash branch <name>`
  *   - `gh pr checkout`
  *
  * `headPush` becomes true when a segment holds a `git push` or `git send-pack` call.
@@ -1634,9 +1638,13 @@ function sendPackDenied(tail: string[], currentBranch: string | undefined, gate:
 }
 
 // claude-factory-c63: in the uncertain-verb path, an unknown global flag can push the real verb
-// past `vi`. These 3 words can each change the branch that `gate.headOf` names next. The code uses
+// past `vi`. These words can each change the branch that `gate.headOf` names next. The code uses
 // the same fail-closed scan that `hasMutatingWordBeforeDashDash` already uses for `push` and `send-pack` below.
-const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set(['checkout', 'switch', 'symbolic-ref'])
+//
+// claude-factory-c63 added `rebase` and `stash` to this set. A rebase with an explicit `<branch>`
+// word can change the branch first. The subcommand `git stash branch <name>` makes a new branch
+// and checks it out.
+const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set(['checkout', 'switch', 'symbolic-ref', 'rebase', 'stash'])
 
 /**
  * True when `args`, the arguments of a `git branch` call, holds a rename flag (claude-factory-c63):
@@ -1669,14 +1677,47 @@ function symbolicRefWrites(args: string[]): boolean {
 }
 
 /**
+ * True when `args`, the arguments of a `git rebase` call, name 2 or more non-flag words
+ * (claude-factory-c63.4). `git rebase [<upstream> [<branch>]]` checks out `<branch>` first,
+ * when the call gives it. With 0 or 1 non-flag words, the call gives no `<branch>`. `rebase`
+ * then keeps the current branch checked out. A value flag such as `--onto <newbase>` can make
+ * this function over-count and deny a safe command. It never under-counts an unsafe one.
+ */
+function rebaseChangesBranch(args: string[]): boolean {
+  let operands = 0
+  for (const w of args) {
+    if (w === '--') break
+    if (w.startsWith('-')) continue
+    operands++
+  }
+  return operands >= 2
+}
+
+/**
+ * True when the first non-flag word of a `git stash` call's arguments (`args`) is `branch`
+ * (claude-factory-c63.5). `git stash branch <name>` makes a new branch and checks it out.
+ */
+function stashChangesBranch(args: string[]): boolean {
+  for (const w of args) {
+    if (w === '--') return false
+    if (w.startsWith('-')) continue
+    return w === 'branch'
+  }
+  return false
+}
+
+/**
  * True when `verb`, a git subcommand word, can change the branch `gate.headOf` names next
- * (claude-factory-c63). `checkout` and `switch` always can, with any `args`. `branch` and
- * `symbolic-ref` can only with the `args` that `branchRenameDenied` and `symbolicRefWrites` examine.
+ * (claude-factory-c63). `checkout` and `switch` always can, with any `args`. `branch`,
+ * `symbolic-ref`, `rebase` and `stash` can only with the `args` that `branchRenameDenied`,
+ * `symbolicRefWrites`, `rebaseChangesBranch` and `stashChangesBranch` examine.
  */
 function gitChangesBranch(verb: string, args: string[]): boolean {
   if (verb === 'checkout' || verb === 'switch') return true
   if (verb === 'branch') return branchRenameDenied(args)
   if (verb === 'symbolic-ref') return symbolicRefWrites(args)
+  if (verb === 'rebase') return rebaseChangesBranch(args)
+  if (verb === 'stash') return stashChangesBranch(args)
   return false
 }
 

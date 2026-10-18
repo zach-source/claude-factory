@@ -1659,6 +1659,18 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   'git checkout main; bash -c "git push o HEAD"',
   'gh pr checkout 5 && git push',
   'git checkout main; git send-pack o HEAD',
+  // claude-factory-c63.4: a rebase that names an explicit `<branch>` operand checks it out first.
+  'git rebase origin/main main && git push o HEAD',
+  'git rebase --onto origin/main x main; git push',
+  // claude-factory-c63.5: `git stash branch <name>` makes and checks out a new branch.
+  'git stash branch release && git push o HEAD',
+  // claude-factory-c63.6: the uncertain-verb path, with an unknown global flag or a nested shell.
+  'git --bogus checkout main && git push o HEAD',
+  "eval 'git checkout main' && git push o HEAD",
+  "env -S 'git checkout main' && git push o HEAD",
+  'git symbolic-ref -d HEAD; git push',
+  'git branch --mo main; git push',
+  'git branch -fM main; git push',
 ]
 
 test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(
@@ -1676,6 +1688,12 @@ const ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH = [
   'git checkout main; git push o HEAD:factory/x',
   'git checkout main; git push -n o HEAD',
   'git push o HEAD',
+  // claude-factory-c63.4: no explicit `<branch>` operand, so rebase keeps the current branch.
+  'git rebase origin/main && git push',
+  // claude-factory-c63.5: a stash subcommand other than `branch` does not change the branch.
+  'git stash pop && git push o HEAD',
+  // claude-factory-c63.6: `--merged` is a list flag, not the rename flag `-m`/`-M`/`--move`.
+  'git branch --merged && git push o HEAD',
 ]
 
 test.each(ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH)(
