@@ -854,11 +854,10 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     cur = []
   }
   let redirPrev = false
-  // claude-factory-wmsr: the last char read (a backslash-newline pair does not count), and whether
-  // that char was a `&` or `|` read as a separator. `braceDepth` counts open unquoted `${`.
-  // `arith` counts open parens that belong to a `((` or `$((` pair.
+  // claude-factory-wmsr: `lastSig` is the last char read. A backslash-newline pair does not count.
+  // `braceDepth` counts open unquoted `${`. `arith` counts open parens of a `((` or `$((` pair.
+  // A `&` or `|` in a redirect (`>&`) opens a word, so a # after it is never at a word start.
   let lastSig: string = '\n'
-  let lastSep: boolean = false
   let braceDepth = 0
   let arith = 0
   const arithStack: boolean[] = []
@@ -878,9 +877,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     const afterRedir = redirPrev
     redirPrev = false
     const prevSig: string = lastSig
-    const prevSep: boolean = lastSep
     lastSig = c
-    lastSep = false
     if (c === '\n' && quote && pending.length > 0) heredocUnclear()
     if (quote === "'") {
       if (c === "'") quote = null
@@ -928,7 +925,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       if (cmd[i + 1] === '\n') {
         i++
         lastSig = prevSig
-        lastSep = prevSep
         continue
       }
       word += cmd[++i]
@@ -948,7 +944,8 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
           prevSig === ' ' ||
           prevSig === '\t' ||
           prevSig === ';' ||
-          ((prevSig === '&' || prevSig === '|') && prevSep))
+          prevSig === '&' ||
+          prevSig === '|')
       if (clear) {
         while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
         continue
@@ -962,7 +959,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) {
       endSeg()
       i++
-      lastSep = true
       continue
     }
     if (c === '(' || c === ')') {
@@ -1015,7 +1011,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     }
     if (';|&\n'.includes(c)) {
       endSeg()
-      lastSep = c === '&' || c === '|'
       if (c === '\n' && pending.length > 0) {
         // claude-factory-wmsr: the bodies of the here-documents on the line that just ended
         const textOnly = segs

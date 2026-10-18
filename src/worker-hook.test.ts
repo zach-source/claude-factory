@@ -4742,6 +4742,13 @@ const DENY_WMSR_HEREDOC: [string, string][] = [
   [`cat <<EOF\nx\nEOF\r\n${WM}`, HEREDOC_REASON],
   [`cat <<$X\nx\n$X\n${WM}`, HEREDOC_REASON],
   [`cat <<\nx\n\n${WM}`, HEREDOC_REASON],
+  [`cat <<\n\n${WM}`, HEREDOC_REASON],
+  [`cat <<EOF\nx\n`, HEREDOC_REASON],
+  [`cat <<EOF\nEOFx\nEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<EOF\nx\n EOF\nEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<EOF "a\nb"\nx\nEOF\n${WM}`, HEREDOC_REASON],
+  [`echo $((1<<2))\n${WM}\n2`, HEREDOC_REASON],
+  [`echo \${x:-<<2}\n${WM}\n2`, HEREDOC_REASON],
 ]
 test.each(DENY_WMSR_HEREDOC)('denyReason denies %j (here-document, wmsr)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBe(reason)
@@ -4754,6 +4761,7 @@ test('denyReason denies a shift row with a later push (wmsr)', () => {
 const ALLOW_WMSR_HEREDOC = [
   "cat <<'EOF'\ndon't\nEOF",
   "cat <<EOF\nit's $HOME\nEOF",
+  "cat <<'EOF'\ndon't $(date)\nEOF",
   `git commit -F - <<'EOF'\nFix: don't git push origin main\nEOF`,
   `cat <<<"it's"`,
   'cat <<EOF\n$(date)\nEOF',
