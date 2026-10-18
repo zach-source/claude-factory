@@ -7,6 +7,7 @@ import {
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  DYNAMIC_VERB_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   type HookGate,
@@ -2598,3 +2599,61 @@ test('a single slow headOf call that spends the whole gate budget also skips the
     dateSpy.mockRestore()
   }
 })
+
+// claude-factory-p43v: a dynamic word at the git verb slot hides the real command. gitReason now
+// denies that word first, with DYNAMIC_VERB_REASON.
+const P43V_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+
+// AC1: a dynamic word at the git verb slot.
+const DENY_DYNAMIC_GIT_VERB = [
+  'V=push; git $V o main',
+  'git "$V" o main',
+  'git ${V} o main',
+  'git $(echo push) o main',
+  'git "$(echo push)" o main',
+  'git {push,} o main',
+  'git pu?h o main',
+  'git pu*h o main',
+  'git pu[s]h o main',
+  'git ~ o main',
+  'git $FLAGS push o main',
+  'git-$V o main',
+  'eval "git $V o main"',
+  "sh -c 'git $V o main'",
+]
+
+test.each(DENY_DYNAMIC_GIT_VERB)(
+  'denyReason denies %j (claude-factory-p43v.1 AC1: a dynamic word at the git verb slot fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// AC2: the c63 class. The dynamic-verb check in the first git segment denies before the
+// branch-change/head-push scan reaches the later, literal `git push` segment.
+test('denyReason denies the c63-class command with a dynamic verb (claude-factory-p43v.1 AC2)', () => {
+  expect(denyReason('V=checkout; git $V main; git push o HEAD', '/x', undefined, P43V_GATE)).toBe(
+    DYNAMIC_VERB_REASON,
+  )
+})
+
+// AC9: no over-deny. A dynamic word in an argument slot, not the verb slot, stays allowed.
+const ALLOW_DYNAMIC_WORD_NOT_AT_VERB_SLOT = [
+  'for f in a b; do git add $f; done',
+  'git log $REF',
+  'git diff "$BASE"...HEAD',
+  'git commit -m "$MSG"',
+  'git commit -m "$(cat m)"',
+  'git commit -m $(cat m)',
+  'git -C "$WT" status',
+  'git -C "$WT" checkout -b x',
+  'X=$(git rev-parse HEAD)',
+  'git checkout "$B"',
+]
+
+test.each(ALLOW_DYNAMIC_WORD_NOT_AT_VERB_SLOT)(
+  'denyReason allows %j (claude-factory-p43v.1 AC9: a dynamic word off the verb slot is not the verb)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)

@@ -163,6 +163,18 @@ export const XARGS_REASON =
   'Run the git or gh command directly, with every argument in the command line itself. ' +
   'Do not retry this exact command.'
 
+// claude-factory-p43v: a command or subcommand word can hold a dollar sign, a backtick, a glob
+// character, a brace, or a leading tilde. The shell has not expanded that word yet. This guard
+// reads the typed text. It does not read the shell's own expansion of that text.
+//
+// A check for one literal verb, such as push, cannot match an unexpanded word. Every check after
+// it then reads the wrong verb, or no verb at all.
+export const DYNAMIC_VERB_REASON =
+  'The factory denies this command: a word at the command or subcommand slot holds a shell ' +
+  'expansion ($, a backtick, a glob, a brace, or a leading ~). The shell expands this word at ' +
+  'run time, so the guard cannot read the real command. Write the git, gh, kubectl, ko or helm ' +
+  'command and subcommand words plainly. Do not retry this exact command.'
+
 /**
  * `gate` carries the context this guard needs for the merge-gate checks (claude-factory-zl5): the
  * running station's name, the rig's protected branch names, and small reads of the live repo and
@@ -1526,6 +1538,16 @@ const PUSH_BROAD_FLAGS = new Set(['--all', '--branches', '--mirror', '--prune'])
 // fails closed. It denies the push.
 const REFSPEC_UNSAFE = /[$`*?[\]{}]/
 
+// claude-factory-p43v: dynamicWord checks a command or subcommand word, in place of a push
+// refspec. It uses the same character set as REFSPEC_UNSAFE.
+//
+// dynamicWord also treats a leading tilde as dynamic. The shell reads a leading tilde as a home
+// directory, before it runs the word as a command. A matched word hides the real verb this
+// guard must read.
+function dynamicWord(w: string): boolean {
+  return REFSPEC_UNSAFE.test(w) || w.startsWith('~')
+}
+
 /**
  * Removes a leading `refs/heads/` or `heads/` from `ref`.
  * After this, `refs/heads/main`, `heads/main` and `main` compare equal.
@@ -2189,6 +2211,10 @@ function gitReason(
   const tail = cmd.slice(1)
   if (gitDashCPushDenied(tail)) return PUSH_REASON
   const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS)
+  // claude-factory-p43v: the shell can turn a dynamic word at the verb slot into any git
+  // subcommand. The checks below test the word against a fixed list of names, so they miss it.
+  // This check denies the word first.
+  if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
   if (vi >= 0 && gitChangesBranch(tail[vi]!, tail.slice(vi + 1))) {
     state.branchChange = true
   } else if (uncertain && hasMutatingWordBeforeDashDash(tail, BRANCH_CHANGE_UNCERTAIN_VERBS)) {
