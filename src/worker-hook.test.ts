@@ -2810,3 +2810,24 @@ test.each(ALLOW_OR_UNCHANGED_DYNAMIC_COMMAND_WORD)(
     expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(reason)
   },
 )
+
+// AC11 (claude-factory-p43v.6): a dynamic word at the kubectl, ko or helm verb slot fails
+// closed. The same holds for a dynamic word at the kubectl rollout, auth or certificate sub
+// slot. The context check then decides, the same way it decides for a listed mutating verb.
+const DENY_DYNAMIC_LIVE_APPLY_VERB = [
+  'kubectl $V -f x --context acme',
+  'kubectl rollout $S deploy/x --context acme',
+  'ko $V -f x --context acme',
+  'helm $V r c --kube-context acme',
+]
+
+test.each(DENY_DYNAMIC_LIVE_APPLY_VERB)(
+  'denyReason denies %j with personOnly acme (claude-factory-p43v.6 AC11: a dynamic kubectl/ko/helm verb or sub fails closed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+  },
+)
+
+test('denyReason allows kubectl $V -f x --context kind-x with personOnly acme (claude-factory-p43v.6 AC11: an unlisted context stays allowed)', () => {
+  expect(denyReason('kubectl $V -f x --context kind-x', undefined, ACME)).toBeUndefined()
+})

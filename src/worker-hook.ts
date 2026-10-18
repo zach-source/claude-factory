@@ -991,16 +991,21 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
     const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS)
     const verb = vi >= 0 ? tail[vi]! : undefined
     const sub = vi >= 0 ? tail[vi + 1] : undefined
+    // claude-factory-p43v.6: a dynamic verb hides the real kubectl command. A dynamic sub word
+    // hides the real rollout, auth or certificate action. This guard fails closed on either one,
+    // the same way it fails closed on a listed verb or sub name.
     let mutating =
-      verb === undefined
-        ? false
-        : verb === 'rollout'
-          ? !!sub && KUBECTL_ROLLOUT_MUTATING.has(sub)
-          : verb === 'auth'
-            ? !!sub && KUBECTL_AUTH_MUTATING.has(sub)
-            : verb === 'certificate'
-              ? !!sub && KUBECTL_CERTIFICATE_MUTATING.has(sub)
-              : KUBECTL_MUTATING_VERBS.has(verb)
+      verb !== undefined && dynamicWord(verb)
+        ? true
+        : verb === undefined
+          ? false
+          : verb === 'rollout'
+            ? !!sub && (dynamicWord(sub) || KUBECTL_ROLLOUT_MUTATING.has(sub))
+            : verb === 'auth'
+              ? !!sub && (dynamicWord(sub) || KUBECTL_AUTH_MUTATING.has(sub))
+              : verb === 'certificate'
+                ? !!sub && (dynamicWord(sub) || KUBECTL_CERTIFICATE_MUTATING.has(sub))
+                : KUBECTL_MUTATING_VERBS.has(verb)
     if (!mutating && uncertain) {
       mutating =
         hasMutatingWordBeforeDashDash(tail, KUBECTL_MUTATING_VERBS) ||
@@ -1021,7 +1026,8 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
   }
   if (b === 'ko') {
     const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS)
-    let mutating = vi >= 0 && KO_MUTATING_VERBS.has(tail[vi]!)
+    // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
+    let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || KO_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, KO_MUTATING_VERBS)
     if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--context']))
@@ -1029,7 +1035,8 @@ function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
   }
   if (b === 'helm') {
     const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS)
-    let mutating = vi >= 0 && HELM_MUTATING_VERBS.has(tail[vi]!)
+    // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
+    let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || HELM_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, HELM_MUTATING_VERBS)
     if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--kube-context']))
