@@ -151,6 +151,14 @@ export const ENV_SPLIT_COMMENT_REASON =
   'so this guard cannot read the real command. Write the command words plainly, without ' +
   'env -S. Do not retry this exact command.'
 
+// claude-factory-s1fj: GNU env 9.11 and macOS env keep ; & | ( ) ` < > as plain word characters
+// in the value. denyAt splits the text at them, so it would read a different command.
+export const ENV_SPLIT_CONTROL_REASON =
+  'The factory denies this command: an env -S or env --split-string value holds a shell control ' +
+  'character (; & | ( ) < > or a backtick). env keeps it in a word, but this guard would split ' +
+  'the command there and cannot read the real command. Write the command words plainly, ' +
+  'without env -S. Do not retry this exact command.'
+
 // claude-factory-z1p: the env -S and --split-string flags change a ${NAME} word in the value
 // into one command word when env runs. denyAt reads only the typed text, so it cannot see the
 // changed command (GNU env 9.11 and macOS /usr/bin/env both do this).
@@ -3030,6 +3038,8 @@ function anyShellReason(
       // claude-factory-s1fj: env reads a word that starts with # as a comment to the end of the
       // value, but runs the tail. denyAt reads # as a comment to the end of the whole text.
       if (/(^|\s)#/.test(val)) return ENV_SPLIT_COMMENT_REASON
+      // claude-factory-s1fj: fail closed on a shell control character; env keeps it in a word.
+      if (/[;&|()<>`]/.test(val)) return ENV_SPLIT_CONTROL_REASON
       // claude-factory-s1fj: env runs the split words PLUS every later argv word as one command.
       // Scan them together. Single quotes keep each later word one literal word in denyAt, and
       // each quote inside a word becomes '\'' so segments() reads it back as a literal quote.

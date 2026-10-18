@@ -6,7 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
-- The worker hook now scans the words after an `env -S` value together with the value, as `env` runs them as one command. Before, `env -S 'sh' -c 'git push origin main'` and `env -S 'gh pr' merge 5` passed unchecked, because the guard read only the `-S` value (claude-factory-s1fj).
+- The worker hook now scans the words after an `env -S` value together with the value, as `env` runs them as one command. Before, `env -S 'sh' -c 'git push origin main'` and `env -S 'gh pr' merge 5` passed unchecked, because the guard read only the `-S` value (claude-factory-s1fj). The guard now also denies an `env -S` value that holds a word that starts with `#`, or one of the characters `; & | ( ) < >` and the backtick, as `env` keeps them in a word and the guard would read a different command.
 
 - The worker hook now reads every word after `--` in `git push` and `git send-pack` as an operand, as git does. Before, `git push -- origin main -n` was allowed as a dry run, and `git push -- origin -o main` hid the `main` refspec as a value (claude-factory-zs39). A flag-like ref name after `--`, such as `-n`, is no longer read as a flag.
 

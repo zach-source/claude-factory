@@ -7,8 +7,9 @@ import {
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
-  ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_COMMENT_REASON,
+  ENV_SPLIT_CONTROL_REASON,
+  ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   type HookGate,
   LIVE_REASON,
@@ -2519,6 +2520,23 @@ test.each([
   expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(ENV_SPLIT_COMMENT_REASON)
 })
 
+// env keeps ; & | ( ) backtick < > as literal word characters. denyAt would split there.
+test.each([
+  "env -S 'git -c a.b=c;' push origin main",
+  "env -S 'git -c a.b=c&' push origin main",
+  "env -S 'git -c a.b=c|' push origin main",
+  "env -S 'git -c a.b=c&&' push origin main",
+  "env -S 'git -c a.b=c)' push origin main",
+  "env -S 'git -c a.b=c`' push origin main",
+  "env -S 'git -c a.b=c; push origin main'",
+  "env -S 'gh -R acme/widget;' pr merge 5",
+  // moved from the 9zd5 .git-path rows: the > in the value now hits the control check first
+  'env -S "printf \'ref: refs/heads/main\' > .git/HEAD" && git push o HEAD',
+])('denyReason denies %j (claude-factory-s1fj, control character in env -S value)', cmd => {
+  const gate = { headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(ENV_SPLIT_CONTROL_REASON)
+})
+
 test('denyReason allows harmless argv after an env -S value (claude-factory-s1fj)', () => {
   const gate = { headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
   for (const cmd of [
@@ -2865,7 +2883,6 @@ const DENY_GIT_ADMIN_PATH_THEN_HEAD_PUSH = [
   // `ScanState` object carries `gitAdminPath` and `headPush` across the `anyShellReason` recursion.
   'bash -c "printf \'ref: refs/heads/main\' > .git/HEAD"; git push o HEAD',
   'eval "printf \'ref: refs/heads/main\' > .git/HEAD" && git push o HEAD',
-  'env -S "printf \'ref: refs/heads/main\' > .git/HEAD" && git push o HEAD',
   "printf 'ref: refs/heads/main' > .git/HEAD; bash -c 'git push o HEAD'",
   // D10: quotes or a backslash split the path; `segments()` already removes them before this scan
   // runs, so the word reads as the plain `.git/HEAD` path.
