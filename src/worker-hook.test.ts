@@ -23,6 +23,7 @@ import {
   GLOBAL_GIT_CONFIG_REASON,
   READY_REASON,
   REASON,
+  SCAN_BUDGET_REASON,
   scanReason,
   XARGS_REASON,
 } from './worker-hook'
@@ -4867,6 +4868,141 @@ test('a single slow headOf call that spends the whole gate budget also skips the
     expect(originHeadCalls).toBe(0)
   } finally {
     dateSpy.mockRestore()
+  }
+})
+
+// claude-factory-cbai: a nested `env -S` or `env -i eval` command made the beads-actor scan cost
+// about 2x for each level. A 219-char command took 82 s, past the 10 s hook timeout, so the hook
+// failed open. These rows check the time of one denyReason call and pin the verdicts.
+const CBAI_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const CBAI_N = 30
+
+function cbaiEnvS(n: number, inner: string): string {
+  return "env -S '" + 'env -S '.repeat(n - 1) + inner + "'"
+}
+function cbaiEvalI(n: number, inner: string): string {
+  return 'env -i ' + 'eval '.repeat(n) + inner
+}
+function cbaiEnvSSh(n: number, inner: string): string {
+  return "env -S '" + 'env -S '.repeat(n - 1) + "sh' -c '" + inner + "'"
+}
+function cbaiTimed(command: string): { reason: string | undefined; ms: number } {
+  const t0 = performance.now()
+  const reason = denyReason(command, undefined, undefined, CBAI_GATE)
+  return { reason, ms: performance.now() - t0 }
+}
+
+for (const inner of [
+  'git push origin main',
+  'git push',
+  'git push origin',
+  'git push --force origin HEAD:main',
+]) {
+  test(`denyReason scans ${CBAI_N} nested env -S levels around \`${inner}\` in under 1 s, with the n=2 verdict (claude-factory-cbai)`, () => {
+    const { reason, ms } = cbaiTimed(cbaiEnvS(CBAI_N, inner))
+    expect(ms).toBeLessThan(1000)
+    expect(reason).toBe(denyReason(cbaiEnvS(2, inner), undefined, undefined, CBAI_GATE)!)
+    expect(reason).toBeDefined()
+  }, 30000)
+}
+
+test('denyReason denies env -i with 30 stacked eval words and a push in under 1 s (claude-factory-cbai)', () => {
+  const { reason, ms } = cbaiTimed(cbaiEvalI(CBAI_N, 'git push origin main'))
+  expect(ms).toBeLessThan(1000)
+  expect(reason).toBe(PUSH_REASON)
+}, 30000)
+
+test('denyReason gives env -i with 30 stacked eval words and echo the n=2 verdict in under 1 s (claude-factory-cbai)', () => {
+  const { reason, ms } = cbaiTimed(cbaiEvalI(CBAI_N, 'echo hi'))
+  expect(ms).toBeLessThan(1000)
+  expect(reason).toBe(denyReason(cbaiEvalI(2, 'echo hi'), undefined, undefined, CBAI_GATE))
+}, 30000)
+
+test('denyReason returns for 30 nested env -S levels around sh -c in under 1 s (claude-factory-cbai)', () => {
+  const { ms } = cbaiTimed(cbaiEnvSSh(CBAI_N, 'git push origin main'))
+  expect(ms).toBeLessThan(1000)
+}, 30000)
+
+test('scanReason takes a small work budget and denies with SCAN_BUDGET_REASON when it is spent (claude-factory-cbai)', () => {
+  const command = 'ls -la; echo hello world; pwd; echo done; ls /tmp'
+  expect(typeof SCAN_BUDGET_REASON).toBe('string')
+  expect(scanReason(command, undefined, undefined, CBAI_GATE, 50)).toBe(SCAN_BUDGET_REASON)
+  expect(scanReason(command, undefined, undefined, CBAI_GATE)).toBeUndefined()
+})
+
+test('scanReason denies with SCAN_BUDGET_REASON, not BEADS_ACTOR_REASON, when touchesBeadsActor spends the budget (claude-factory-cbai)', () => {
+  // denyAt spends 10 characters on the command. touchesBeadsActor needs 11 more.
+  expect(scanReason('echo a b c', undefined, undefined, CBAI_GATE, 15)).toBe(SCAN_BUDGET_REASON)
+  expect(scanReason('echo a b c', undefined, undefined, CBAI_GATE, 100)).toBeUndefined()
+})
+
+test('scanReason denies with SCAN_BUDGET_REASON when stringNamesBdCommand spends the budget (claude-factory-cbai)', () => {
+  // denyAt spends 22 and touchesBeadsActor 21. The sh -c script needs 7 more. With the script
+  // read for free, the bd word in it would give BEADS_ACTOR_REASON.
+  const command = "env -i sh -c 'bd list'"
+  expect(scanReason(command, undefined, undefined, CBAI_GATE, 45)).toBe(SCAN_BUDGET_REASON)
+  expect(scanReason(command, undefined, undefined, CBAI_GATE, 1000)).toBe(BEADS_ACTOR_REASON)
+})
+
+test('denyReason spends the default work budget on an 8192-character stacked env -i eval command and denies, fast (claude-factory-cbai)', () => {
+  const command = 'env -i eval '.repeat(700).slice(0, 8192)
+  const { reason, ms } = cbaiTimed(command)
+  expect(reason).toBe(SCAN_BUDGET_REASON)
+  expect(ms).toBeLessThan(2000)
+}, 30000)
+
+// The verdicts of main (ee6b84d plus s1fj, where env -S sh -c is scanned) for each form, inner command and nest level n=1..8.
+// a = allow, B = BEADS_ACTOR_REASON, D = PUSH_DIR_REASON, P = PUSH_REASON.
+const CBAI_VERDICTS: [string, string][] = [
+  ['envS|git push origin main', 'DDDDDDDD'],
+  ['envS|git push', 'DDDDDDDD'],
+  ['envS|git push origin', 'DDDDDDDD'],
+  ['envS|git push --force origin HEAD:main', 'DDDDDDDD'],
+  ['envS|bd list', 'aaaaaaaa'],
+  ['envS|BEADS_ACTOR=x bd list', 'BBBBBBBB'],
+  ['envS|env -u BEADS_ACTOR bd list', 'BBBBBBBB'],
+  ['envS|echo hi', 'aaaaaaaa'],
+  ['evalI|git push origin main', 'PPPPPPPP'],
+  ['evalI|git push', 'aaaaaaaa'],
+  ['evalI|git push origin', 'aaaaaaaa'],
+  ['evalI|git push --force origin HEAD:main', 'PPPPPPPP'],
+  ['evalI|bd list', 'BBBBBBBB'],
+  ['evalI|BEADS_ACTOR=x bd list', 'BBBBBBBB'],
+  ['evalI|env -u BEADS_ACTOR bd list', 'BBBBBBBB'],
+  ['evalI|echo hi', 'aaaaaaaa'],
+  ['envSsh|git push origin main', 'DDDDDDDD'],
+  ['envSsh|git push', 'DDDDDDDD'],
+  ['envSsh|git push origin', 'DDDDDDDD'],
+  ['envSsh|git push --force origin HEAD:main', 'DDDDDDDD'],
+  ['envSsh|bd list', 'aaaaaaaa'],
+  ['envSsh|BEADS_ACTOR=x bd list', 'BBBBBBBB'],
+  ['envSsh|env -u BEADS_ACTOR bd list', 'BBBBBBBB'],
+  ['envSsh|echo hi', 'aaaaaaaa'],
+]
+
+test('denyReason keeps its pinned verdict for nested env -S, env -i eval and env -S sh -c forms (claude-factory-cbai)', () => {
+  const forms: Record<string, (n: number, inner: string) => string> = {
+    envS: cbaiEnvS,
+    evalI: cbaiEvalI,
+    envSsh: cbaiEnvSSh,
+  }
+  const label = (r: string | undefined) =>
+    r === undefined
+      ? 'a'
+      : r === BEADS_ACTOR_REASON
+        ? 'B'
+        : r === PUSH_DIR_REASON
+          ? 'D'
+          : r === PUSH_REASON
+            ? 'P'
+            : '?'
+  for (const [key, want] of CBAI_VERDICTS) {
+    const [form, inner] = key.split('|') as [string, string]
+    let got = ''
+    for (let n = 1; n <= 8; n++) {
+      got += label(denyReason(forms[form]!(n, inner), undefined, undefined, CBAI_GATE))
+    }
+    expect([key, got]).toEqual([key, want])
   }
 })
 
