@@ -1666,6 +1666,10 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   'git stash branch release && git push o HEAD',
   // claude-factory-c63.6: the uncertain-verb path, with an unknown global flag or a nested shell.
   'git --bogus checkout main && git push o HEAD',
+  // 2 unknown words push `rebase`/`stash` out of `firstVerbIndex`'s reach, so only the
+  // uncertain-verb word scan (not the certain-verb path) can find them.
+  'git --bogus value rebase main main && git push o HEAD',
+  'git --bogus value stash branch x && git push o HEAD',
   "eval 'git checkout main' && git push o HEAD",
   "env -S 'git checkout main' && git push o HEAD",
   'git symbolic-ref -d HEAD; git push',
