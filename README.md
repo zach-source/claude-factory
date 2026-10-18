@@ -511,9 +511,9 @@ literal `-C` word, the hook cannot tell which one applies. The `-C` word can be 
 or a plain `-C` word in a refspec. The hook then denies the push too, with the same
 `PUSH_DIR_REASON`.
 
-If either read fails, the hook denies the push outright. A read can fail with a timeout, a
-detached `HEAD`, or no `origin` remote. The hook then has no branch name, or no `origin/HEAD`
-name, to check.
+If either read is not successful, the hook denies the push outright. A read is not successful
+when it has a timeout, a detached `HEAD`, or no `origin` remote. The hook then has no branch
+name, or no `origin/HEAD` name, to check.
 
 This rule applies whatever the list holds. Only a person can merge a pull request or push the default branch. A worker pushes its own run branch and opens a pull request.
 
