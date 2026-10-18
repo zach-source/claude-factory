@@ -378,7 +378,9 @@ const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', '
 function baseWord(w: string): string {
   const s = w.replace(/^\\/, '')
   const i = s.lastIndexOf('/')
-  return (i >= 0 ? s.slice(i + 1) : s).toUpperCase().toLowerCase()
+  const b = i >= 0 ? s.slice(i + 1) : s
+  // ASCII fast path: the upper-then-lower fold is slow on huge scans
+  return /[^\x00-\x7f]/.test(b) ? b.toUpperCase().toLowerCase() : b.toLowerCase()
 }
 
 /**
