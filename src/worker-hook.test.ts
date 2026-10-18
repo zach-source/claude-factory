@@ -5362,8 +5362,8 @@ test.each(AC21_ALLOW_NO_DYNAMIC_PAIR)(
 )
 
 // claude-factory-bjp0: a shell variable word before the git verb hides a protected push. The
-// p43v fix at src/worker-hook.ts:3714 (DYNAMIC_VERB_REASON) already closes this gap.
-// These rows prove the fix on the production gate shape.
+// p43v fix in gitReason's `dynamicWord(tail[vi]!)` check (DYNAMIC_VERB_REASON) already closes
+// this gap. These rows prove the fix on the production gate shape.
 
 // main() always sets gate.gitAliases and gate.ghAliases, from gitConfigAliases and
 // ghAliasList. P43V_GATE above leaves both unset. An unset gitAliases or ghAliases can
