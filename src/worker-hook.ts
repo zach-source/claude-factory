@@ -646,7 +646,21 @@ function commandAnchors(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
     const w = words[i]!
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || RESERVED_LEADING_WORDS.has(w)) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+      i++
+      continue
+    }
+    if (w === 'coproc') {
+      i++
+      // claude-factory-p43v.22: `coproc NAME { cmd; }` names the coprocess before the brace
+      // group. `NAME` is a plain word, not the real command. Skip it too, when the word after it
+      // opens a brace group or a subshell (`{` or `(`). `coproc { cmd; }` has no such name.
+      const name = words[i]
+      const after = words[i + 1]
+      if (name !== undefined && name !== '{' && name !== '(' && (after === '{' || after === '(')) i++
+      continue
+    }
+    if (RESERVED_LEADING_WORDS.has(w)) {
       i++
       continue
     }

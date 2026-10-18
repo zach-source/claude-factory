@@ -3497,3 +3497,170 @@ test.each(DENY_DYNAMIC_CONFIG_ENV_AFTER_COMMAND_WORD)(
 test('denyReason allows $G --config-env=user.name=MYNAME p o main (claude-factory-p43v.20: a non-push key stays allowed)', () => {
   expect(denyReason('$G --config-env=user.name=MYNAME p o main', '/x', undefined, P43V_GATE)).toBeUndefined()
 })
+
+// claude-factory-p43v.21 AC13: an unknown flag of a known wrapper also hides the dynamic
+// command-word pair. commandAnchors walks past every flag shape, known or not.
+const DENY_UNKNOWN_WRAPPER_FLAG_PAIR = [
+  'sudo -E $G $V o main',
+  'sudo -n $G $V o main',
+  'sudo -H $G $V o main',
+  'sudo -ux $G $V o main',
+  'sudo --user=x $G $V o main',
+  'sudo --user x $G $V o main',
+  'sudo -nE $G $V o main',
+  'sudo --preserve-env $G $V o main',
+  'sudo -u x -E $G $V o main',
+  'sudo -E $GH $V merge 5',
+  'env -v $G $V o main',
+  'env --ignore-environment $G $V o main',
+  'nice -5 $G $V o main',
+  'nice -n5 $G $V o main',
+  'nice --adjustment=5 $G $V o main',
+  'timeout --signal=KILL 5 $G $V o main',
+  'timeout -sKILL 5 $G $V o main',
+  'timeout -v 5 $G $V o main',
+  'timeout --preserve-status 5 $G $V o main',
+  'exec -cl $G $V o main',
+  '/usr/bin/time -l $G $V o main',
+]
+
+test.each(DENY_UNKNOWN_WRAPPER_FLAG_PAIR)(
+  'denyReason denies %j (claude-factory-p43v.21 AC13: an unlisted wrapper flag still hides the dynamic command-word pair)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// claude-factory-p43v.21 AC14: a $(...) or backtick substitution can stand for `git` behind an
+// unknown wrapper flag. A dynamic word before a live-apply verb, behind an unknown wrapper flag,
+// also fails closed. `$K apply -f x` with no `--context` already denies on its own. A wrapper
+// flag must not undo that deny.
+const DENY_UNKNOWN_WRAPPER_FLAG_PLAN_PROBE = [
+  'sudo -E $(which git) push o main',
+  'sudo -E `which git` push o main',
+  'sudo -E $K apply -f x',
+]
+
+test.each(DENY_UNKNOWN_WRAPPER_FLAG_PLAN_PROBE)(
+  'denyReason denies %j with personOnly acme (claude-factory-p43v.21 AC14: a substitution or live-apply word behind an unknown wrapper flag still fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// claude-factory-p43v.21 AC15: a generated matrix. Every WRAPPER x FLAGSHAPE x PAYLOAD cell must
+// deny. Z, Y and zz name flags no wrapper has.
+const AC15_WRAPPERS = [
+  'sudo',
+  '/usr/bin/sudo',
+  'env',
+  'nice',
+  'time',
+  '/usr/bin/time',
+  'exec',
+  'command',
+  'nohup',
+  'timeout 5',
+  'xargs',
+]
+const AC15_FLAG_SHAPES = ['', '-Z', '-Z v', '-ZY', '--zz', '--zz=v', '--zz v', '-Z --']
+const AC15_DYNAMIC_PAYLOADS = [
+  '$G $V o main',
+  '"$G" "${V}" o main',
+  '$GH $V merge 5',
+  '$(which git) push o main',
+  '`which git` push o main',
+  '$K apply -f x',
+  '$K rollout restart deploy/x --context acme',
+]
+const AC15_MATRIX: string[] = []
+for (const wrapper of AC15_WRAPPERS) {
+  for (const flags of AC15_FLAG_SHAPES) {
+    for (const payload of AC15_DYNAMIC_PAYLOADS) {
+      AC15_MATRIX.push([wrapper, flags, payload].filter(p => p.length > 0).join(' '))
+    }
+  }
+}
+
+test.each(AC15_MATRIX)(
+  'denyReason denies %j with personOnly acme (claude-factory-p43v.21 AC15: every wrapper x flag-shape x dynamic-payload cell fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// claude-factory-p43v.21 AC16: the same matrix, with a safe payload, must stay allowed.
+const AC16_SAFE_PAYLOADS = ['ls', 'cp a b', '"$PY" -c x']
+const AC16_MATRIX: string[] = []
+for (const wrapper of AC15_WRAPPERS) {
+  for (const flags of AC15_FLAG_SHAPES) {
+    for (const payload of AC16_SAFE_PAYLOADS) {
+      AC16_MATRIX.push([wrapper, flags, payload].filter(p => p.length > 0).join(' '))
+    }
+  }
+}
+
+test.each(AC16_MATRIX)(
+  'denyReason allows %j with personOnly acme (claude-factory-p43v.21 AC16: a safe payload behind any wrapper flag shape stays allowed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.21 AC16: named no-over-deny rows. Each dynamic word here is not a second
+// command word in a pair.
+const ALLOW_WRAPPER_NO_OVER_DENY = [
+  'sudo -u x cp "$A" "$B"',
+  'env -i "$PY" -c x',
+  'sudo -u x ls',
+  'cp "$A" "$B"',
+  '"$PY" -c x',
+  'for f in *.ts; do git add $f; done',
+  'sudo -E ls -la',
+  'nice -n 5 make test',
+  'timeout 30 bun test',
+]
+
+test.each(ALLOW_WRAPPER_NO_OVER_DENY)(
+  'denyReason allows %j (claude-factory-p43v.21 AC16: no over-deny from the wrapper-flag chase)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.21: this is an accepted fail-closed deny, not an over-deny. An unknown
+// flag can take the next word as its own value. Maybe `v` is the value of `-Z`, and `cp` is the
+// real command. The hook cannot tell `sudo -Z v cp "$A" "$B"` apart from that case.
+const ACCEPTED_FAIL_CLOSED_DENY = [
+  'sudo -E cp "$A" "$B"',
+  'sudo -Z v cp "$A" "$B"',
+  'sudo --zz v cp "$A" "$B"',
+]
+
+test.each(ACCEPTED_FAIL_CLOSED_DENY)(
+  'denyReason denies %j (claude-factory-p43v.21: an unknown flag that could take a value, before a dynamic pair, fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// claude-factory-p43v.21: the chase stops at a plain word with no dynamic word after it. A `--`
+// word also stops the chase at once.
+const ALLOW_WRAPPER_CHASE_STOPS = ['sudo -Z v ls', 'sudo -Z v cp a b', 'sudo -Z -- cp "$A" "$B"']
+
+test.each(ALLOW_WRAPPER_CHASE_STOPS)(
+  'denyReason allows %j (claude-factory-p43v.21: the wrapper-flag chase stops at a plain word with no dynamic word after it)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.22: `coproc NAME { cmd; }` names the coprocess. `NAME` is a plain word,
+// not the real command. commandAnchors skips it too.
+test('denyReason denies coproc NAME { $G $V o main; } (claude-factory-p43v.22: a coproc name before a brace group still hides the dynamic command-word pair)', () => {
+  expect(denyReason('coproc NAME { $G $V o main; }', '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason denies coproc NAME { git push o main; } with PUSH_REASON (claude-factory-p43v.22: a literal push behind a coproc name keeps its own reason)', () => {
+  expect(denyReason('coproc NAME { git push o main; }', '/x', undefined, P43V_GATE)).toBe(PUSH_REASON)
+})
