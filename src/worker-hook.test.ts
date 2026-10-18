@@ -2488,7 +2488,21 @@ test.each(DENY_DYNAMIC_GLOBAL_WORD)(
   },
 )
 
+const DENY_PROCESS_SUBST = [
+  'git push origin feature --repo <(:) main',
+  'git push origin feature --repo >(:) main',
+  'git push origin feature -o <(:) main',
+  'git send-pack ../r.git feature --receive-pack <(:) main',
+]
+
+test.each(DENY_PROCESS_SUBST)('denyReason denies %j (claude-factory-cu5m.10, process substitution)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
 const ALLOW_DYNAMIC_PUSH_WORD = [
+  'cat <(git log) && git status',
+  'diff <(sort a) <(sort b)',
+  'git push origin feature 2>&1 | tee >(cat)',
   'git -c core.pager=$P log',
   'git -c $Y status',
   'git push origin feature',

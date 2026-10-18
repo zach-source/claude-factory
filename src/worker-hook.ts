@@ -338,6 +338,7 @@ function baseWord(w: string): string {
 /**
  * Splits a command string into segments (shell words).
  * It splits on &&, ||, ;, |, &, a newline, ( ), $( and a backtick.
+ * It keeps a ( and ) marker word for a paren in argument position, such as a zsh glob group or <( and >(.
  * It keeps a single-quoted span literal.
  * It reads a backslash escape (\\ \" \$ \`) inside a double-quoted span.
  * It reads a backslash escape outside quotes too.
@@ -408,11 +409,11 @@ function segments(cmd: string): string[][] {
     }
     if (c === '(' || c === ')') {
       // claude-factory-cu5m: in zsh a `(` in argument position starts a glob group, such as
-      // `(-)-all`. Keep a marker word, so the push parsers see it. A subshell, `$(`, `<(` and `>(`
-      // add no marker, and neither does the `)` that closes them.
+      // `(-)-all`. Keep a marker word, so the push parsers see it. A subshell and `$(`
+      // add no marker, and neither does the `)` that closes them. `<(` and `>(` keep one, because a word after them must stay in the push tail.
       const prev = cmd[i - 1] ?? ''
       if (c === '(') {
-        const arg = (hasWord || cur.length > 0) && !'$<>'.includes(prev)
+        const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
         if (arg) {
           endWord()
