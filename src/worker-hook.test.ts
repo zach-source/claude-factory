@@ -4289,3 +4289,76 @@ test('a single slow headOf call that spends the whole gate budget also skips the
     dateSpy.mockRestore()
   }
 })
+
+// claude-factory-2pdm: a command substitution inside double quotes runs in the shell. Every guard
+// must see its body, as it sees the same text outside quotes.
+const DQ_GATE: HookGate = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map(),
+  ghAliases: () => new Map(),
+}
+const BT = '`'
+const DENY_DQ_SUBST: [string, string][] = [
+  ['echo "$(git push origin main)"', PUSH_REASON],
+  ['x="$(git push origin main)"', PUSH_REASON],
+  ['v="$(gh pr merge 5)"', MERGE_REASON],
+  ['echo "${X:-$(git push origin main)}"', PUSH_REASON],
+  ['echo "$(git push "origin" main)"', PUSH_REASON],
+  ['echo "a $(git send-pack ../r.git main) b"', PUSH_REASON],
+  ['echo "$(gh pr merge 5)"', MERGE_REASON],
+  ['echo "$(rm -rf x)"', REASON],
+  ['echo "$(kubectl --context acme apply -f x)"', LIVE_REASON],
+  ['echo "$(git checkout main)"; git push', PUSH_REASON],
+  [`echo "${BT}git push origin main${BT}"`, PUSH_REASON],
+  // parse traps
+  ['echo "$(echo x # )\ngit push origin main)"', PUSH_REASON],
+  ['echo "$(case a in a) git push origin main;; esac)"', PUSH_REASON],
+  ['echo "$(git\\\n push origin main)"', PUSH_REASON],
+  ['echo "$(echo \\")\\"; git push origin main)"', PUSH_REASON],
+  ['echo "$(bash <<\'EOF\'\ngit push origin main\nEOF\n)"', PUSH_REASON],
+  ['echo "$(echo "$(git push origin main)")"', PUSH_REASON],
+  ['echo "$(echo \')\'; git push origin main)"', PUSH_REASON],
+  ['echo "$(echo "x"; git push origin main)"', PUSH_REASON],
+  ['echo "$(git push origin main', PUSH_REASON],
+  ['echo "$(cat <<\'EOF\'\nx\nEOF\n; git push origin main)"', PUSH_REASON],
+  ['echo "$(cat <<EOF\ngit push origin main\nEOF\n)"', PUSH_REASON],
+  ['echo "$(cat <<\'EOF\' ; git push origin main\nx\nEOF\n)"', PUSH_REASON],
+]
+
+test.each(DENY_DQ_SUBST)('denyReason denies %j (double-quoted substitution)', (cmd, reason) => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
+})
+
+const ALLOW_DQ_SUBST = [
+  'echo "git push origin main"',
+  "echo 'git push origin main'",
+  "echo '$(git push origin main)'",
+  'echo "\\$(git push origin main)"',
+  "git commit -m \"$(cat <<'EOF'\nworker-hook: deny git push origin main in quotes\n\nIt don't scan rm -rf x.\nEOF\n)\"",
+  "git commit -m \"$(cat <<-'EOF'\n\tgit push origin main\n\tEOF\n)\"",
+  'git commit -m "$(date) fix"',
+  'echo "$((1+2))"',
+  'gh pr create --title t --body "$(cat .scratch/body.md)"',
+]
+
+test.each(ALLOW_DQ_SUBST)('denyReason allows %j (double-quoted text)', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeUndefined()
+})
+
+test('denyReason keeps a gh api graphql file query in double quotes denied', () => {
+  expect(denyReason('gh api graphql -f query="$(cat f)"', '/root/repo', ['acme'], DQ_GATE)).toBe(MERGE_REASON)
+})
+
+test('denyReason denies a deep double-quoted substitution nest', () => {
+  expect(denyReason('echo "$('.repeat(40) + 'true' + ')"'.repeat(40), '/root/repo', ['acme'], DQ_GATE)).toBe(
+    DEEP_COMMAND_REASON,
+  )
+})
+
+test('denyReason scans many double-quoted substitutions and an unmatched chain fast', () => {
+  const t0 = performance.now()
+  denyReason(Array.from({ length: 1000 }, () => '"$(true)"').join(' '), '/root/repo', ['acme'], DQ_GATE)
+  denyReason('echo "$(' + 'a "$('.repeat(1000), '/root/repo', ['acme'], DQ_GATE)
+  expect(performance.now() - t0).toBeLessThan(1000)
+})
