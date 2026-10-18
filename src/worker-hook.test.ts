@@ -2483,6 +2483,41 @@ test.each(DENY_ENV_SPLIT_STRING)(
   },
 )
 
+// claude-factory-s1fj: env runs the -S words PLUS every later argv word as one command. The guard
+// used to scan the -S value only, so a shell or verb split across value and tail passed unchecked.
+const DENY_ENV_SPLIT_TAIL: Array<[string, string]> = [
+  ["env -S 'sh' -c 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -S 'bash' -c 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -S 'sh' -c 'cd /other/repo && git push origin HEAD'", 'PUSH_DIR_REASON'],
+  ["env -S 'sh -c' 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -S 'bash -e' -c 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -S 'gh pr' merge 5", 'MERGE_REASON'],
+  ["env -S 'eval' 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -S 'env' sh -c 'git push origin main'", 'PUSH_DIR_REASON'],
+]
+
+test.each(DENY_ENV_SPLIT_TAIL)(
+  'denyReason denies %j (claude-factory-s1fj, argv after an env -S value is part of the command)',
+  (cmd, reasonName) => {
+    const gate = { headOf: (d: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(ENV_SPLIT_STRING_REASON[reasonName])
+  },
+)
+
+test('denyReason allows harmless argv after an env -S value (claude-factory-s1fj)', () => {
+  const gate = { headOf: (d: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
+  for (const cmd of [
+    "env -S 'sh' -c 'echo x'",
+    "env -S 'sh -c' 'echo x'",
+    "env -S 'echo hi' there",
+    "env -S 'sh' -c 'git status'",
+    "env -S 'sh' -c 'echo it'\\''s'",
+    "env -S 'sh' -c 'echo $HOME'",
+  ]) {
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+  }
+})
+
 test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.42)', () => {
   expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
   expect(denyReason('env -i git status')).toBeUndefined()
