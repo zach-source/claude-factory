@@ -2468,9 +2468,12 @@ const DENY_DYNAMIC_GLOBAL_WORD = [
   'git -c user.name=$N push origin feature',
 ]
 
-test.each(DENY_DYNAMIC_GLOBAL_WORD)('denyReason denies %j (claude-factory-cu5m.6, dynamic global word)', cmd => {
-  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
-})
+test.each(DENY_DYNAMIC_GLOBAL_WORD)(
+  'denyReason denies %j (claude-factory-cu5m.6, dynamic global word)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+  },
+)
 
 const ALLOW_DYNAMIC_PUSH_WORD = [
   'git -c core.pager=$P log',
