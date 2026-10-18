@@ -1011,22 +1011,6 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
   return cwd.split('/').some(part => part.toLowerCase().endsWith('.git'))
 }
 
-/**
- * True when any word in the raw `command` text has baseWord `git` or `git-<verb>`
- * (claude-factory-zl5.44).
- *
- * This reads the unparsed text, not one segment's `words` array. A quoted argument to `eval` or
- * `bash -c` stays one `segments()` word with its own spaces inside (for example `'git push
- * origin'`), so a `baseWord` check on that one word never matches `git`. A wrapper flag
- * `realCommand` does not know by name (`nice -n 5`, `command -p`, `stdbuf -o0`) can also push a
- * `git` word past a cheap `cmd[0]` check. This scan instead splits the whole raw text on
- * whitespace and quote characters, so it reads a `git` word at any depth: inside a quoted
- * recursion argument, behind an unknown wrapper, or set by a separate `export` statement earlier
- * in the same command.
- *
- * `denyAt` calls this only when `hasDangerousConfigEnv` is already true, so a stray `git`-shaped
- * word in an unrelated value only matters alongside one of the `DANGEROUS_GIT_CONFIG_ENV` names.
- */
 // claude-factory-cu5m: `segments()` ends a segment at a backtick and drops it. So the output of a
 // backtick command is not a word of the `git push` segment, and the push parsers cannot see it.
 // That output can be `--all`. This scan reads the raw text: a backtick, a git word and a push or
@@ -1044,6 +1028,22 @@ function backtickBesidePush(command: string): boolean {
   )
 }
 
+/**
+ * True when any word in the raw `command` text has baseWord `git` or `git-<verb>`
+ * (claude-factory-zl5.44).
+ *
+ * This reads the unparsed text, not one segment's `words` array. A quoted argument to `eval` or
+ * `bash -c` stays one `segments()` word with its own spaces inside (for example `'git push
+ * origin'`), so a `baseWord` check on that one word never matches `git`. A wrapper flag
+ * `realCommand` does not know by name (`nice -n 5`, `command -p`, `stdbuf -o0`) can also push a
+ * `git` word past a cheap `cmd[0]` check. This scan instead splits the whole raw text on
+ * whitespace and quote characters, so it reads a `git` word at any depth: inside a quoted
+ * recursion argument, behind an unknown wrapper, or set by a separate `export` statement earlier
+ * in the same command.
+ *
+ * `denyAt` calls this only when `hasDangerousConfigEnv` is already true, so a stray `git`-shaped
+ * word in an unrelated value only matters alongside one of the `DANGEROUS_GIT_CONFIG_ENV` names.
+ */
 function commandHasGitWord(command: string): boolean {
   for (const w of command.split(/['"`\s;&|()<>]+/)) {
     if (!w) continue

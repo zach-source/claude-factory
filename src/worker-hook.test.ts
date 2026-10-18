@@ -2447,6 +2447,10 @@ const DENY_DYNAMIC_PUSH_WORD = [
   'git-send-pack $R ../r.git feature',
   'git -C . push $R origin',
   'git push origin feature --repo=$R',
+  'git send-pack `echo --all` ../r.git',
+  'git-send-pack `echo --all` ../r.git',
+  'git-push `echo --all` origin',
+  'git push "`echo --all`" origin',
 ]
 
 test.each(DENY_DYNAMIC_PUSH_WORD)('denyReason denies %j (claude-factory-cu5m, dynamic word)', cmd => {
@@ -2465,6 +2469,8 @@ const ALLOW_DYNAMIC_PUSH_WORD = [
   'git push',
   'git push origin feature 2>&1',
   'git push origin feature --force-with-lease',
+  'echo `date` && git status',
+  'docker push acme/widget:`date +%s`',
 ]
 
 test.each(ALLOW_DYNAMIC_PUSH_WORD)('denyReason allows %j (claude-factory-cu5m, no dynamic word)', cmd => {
