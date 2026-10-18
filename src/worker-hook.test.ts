@@ -5830,3 +5830,40 @@ test.each(AC21_ALLOW_NO_DYNAMIC_PAIR)(
     expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
   },
 )
+
+// claude-factory-bjp0: a shell variable word before the git verb hides a protected push. The
+// p43v fix in gitReason's `dynamicWord(tail[vi]!)` check (DYNAMIC_VERB_REASON) already closes
+// this gap. These rows prove the fix on the production gate shape.
+
+// main() always sets gate.gitAliases and gate.ghAliases, from gitConfigAliases and
+// ghAliasList. P43V_GATE above leaves both unset. An unset gitAliases or ghAliases can
+// hide a bug that shows only when the gate reads the alias table. A row with no alias
+// functions does not test the real path.
+const BJP0_GATE = {
+  headOf: () => 'main',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+}
+const BJP0_GATE_FACTORYX = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+}
+
+test('denyReason denies git $X push origin main (claude-factory-bjp0 AC1: a dynamic word at the verb slot hides a protected push)', () => {
+  expect(denyReason('git $X push origin main', '/w', undefined, BJP0_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason denies git "$X" push origin HEAD (claude-factory-bjp0 AC2: a quoted dynamic verb word hides a HEAD push)', () => {
+  expect(denyReason('git "$X" push origin HEAD', '/w', undefined, BJP0_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason denies git -C sub $X push origin main (claude-factory-bjp0 AC3: a -C directory before the dynamic verb word still hides the push)', () => {
+  expect(denyReason('git -C sub $X push origin main', '/w', undefined, BJP0_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason allows git push origin factory/x (claude-factory-bjp0 AC4: control, a literal push to the current branch stays allowed)', () => {
+  expect(denyReason('git push origin factory/x', '/w', undefined, BJP0_GATE_FACTORYX)).toBeUndefined()
+})
