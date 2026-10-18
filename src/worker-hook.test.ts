@@ -1266,6 +1266,63 @@ test.each(GIT_CHDIR_UNSAFE_ROWS)(
   },
 )
 
+// claude-factory-3f2z.8 (P1 fail-open regression): an unknown flag's own value word can fake the
+// push or send-pack verb. Before the fix, the old code trusted that fake word outright and
+// missed a real -C word that came after it. gate.headOf then read gate.cwd, an unprotected dir,
+// and the push allowed.
+const GIT_CHDIR_FAKE_VERB_ROWS: [string][] = [
+  ['git --attr-source push -C /acme/prot push origin HEAD'],
+  ['git --attr-source send-pack -C /acme/prot send-pack origin HEAD'],
+]
+
+test.each(GIT_CHDIR_FAKE_VERB_ROWS)(
+  'denyReason does not trust a fake push/send-pack word as the verb, for %j (claude-factory-3f2z.8)',
+  cmd => {
+    const dirs: (string | undefined)[] = []
+    const gate: HookGate = {
+      cwd: '/acme/cwd',
+      headOf: dir => {
+        dirs.push(dir)
+        return dir === '/acme/prot' ? 'main' : 'factory/x'
+      },
+    }
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_DIR_REASON)
+    expect(dirs).toEqual([])
+  },
+)
+
+// claude-factory-3f2z.8: regression guard. --attr-source takes the -C word as its own value
+// here, so no -C flag applies, and the push must still read gate.cwd.
+test('denyReason still reads gate.cwd for git --attr-source -C push, with no real -C flag (claude-factory-3f2z.8)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/prot' ? 'main' : 'factory/x'
+    },
+  }
+  expect(denyReason('git --attr-source -C push', '/acme/root', undefined, gate)).toBeUndefined()
+  expect(dirs).toEqual(['/acme/cwd'])
+})
+
+// claude-factory-3f2z.8: regression guard. The real -C word before push must still fold onto
+// gate.cwd and deny at the protected dir, the same as before the fix (claude-factory-3f2z.4).
+test('denyReason still folds the real -C before push, through the uncertain-verb fallback (claude-factory-3f2z.8)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/prot' ? 'main' : 'factory/x'
+    },
+  }
+  expect(
+    denyReason('git --attr-source HEAD -C /acme/prot push origin HEAD', '/acme/root', undefined, gate),
+  ).toBe(PUSH_REASON)
+  expect(dirs).toEqual(['/acme/prot'])
+})
+
 test('denyReason reads an undefined push dir when neither gate.cwd nor root is set (claude-factory-3f2z.1, AC5)', () => {
   const dirs: (string | undefined)[] = []
   const gate: HookGate = {

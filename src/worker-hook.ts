@@ -2264,9 +2264,17 @@ function gitReason(
   let pushTail: string[] | undefined
   let isSendPack = false
   let verbIndex = vi
-  if (vi >= 0 && tail[vi] === 'push') {
+  // claude-factory-3f2z.8: `vi` can be an unknown flag's value word that reads `push` or
+  // `send-pack`. The two branches above now check `!uncertain`, so they no longer trust that word
+  // as the verb. The branch below then scans all of `tail` for the first `push` or `send-pack`
+  // word instead. That scan can still find the same wrong word, with the real verb later. A `-C`
+  // word this guard must read can then sit between the wrong word and the real verb. A literal
+  // `-C` word inside `pushTail` is a warning sign of that case: this guard denies the push and
+  // does not call `gate.headOf`.
+  let uncertainChdirUnsafe = false
+  if (vi >= 0 && !uncertain && tail[vi] === 'push') {
     pushTail = tail.slice(vi + 1)
-  } else if (vi >= 0 && tail[vi] === 'send-pack') {
+  } else if (vi >= 0 && !uncertain && tail[vi] === 'send-pack') {
     pushTail = tail.slice(vi + 1)
     isSendPack = true
   } else if (uncertain && hasMutatingWordBeforeDashDash(tail, new Set(['push', 'send-pack']))) {
@@ -2280,6 +2288,8 @@ function gitReason(
       isSendPack = true
       verbIndex = si
     }
+    // claude-factory-3f2z.8: see the comment above `uncertainChdirUnsafe`.
+    if (pushTail?.includes('-C')) uncertainChdirUnsafe = true
   }
   if (!pushTail) return undefined
   if (pushReadsCurrentBranch(pushTail, isSendPack)) state.headPush = true
@@ -2296,7 +2306,7 @@ function gitReason(
   // (an unknown flag's value word can be misread as `-C`, and the word after that as the `-C`
   // value). This guard then must not call `gate.headOf` with that symbol: it treats the branch
   // as unknown, the same way it treats `effectiveMoved`, and reports `PUSH_DIR_REASON`.
-  const dirUnsafe = dir === GIT_CHDIR_UNSAFE
+  const dirUnsafe = dir === GIT_CHDIR_UNSAFE || uncertainChdirUnsafe
   const currentBranch = effectiveMoved || dirUnsafe ? undefined : gate.headOf?.(dir)
   const reason = effectiveMoved || dirUnsafe ? PUSH_DIR_REASON : PUSH_REASON
   if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? reason : undefined
