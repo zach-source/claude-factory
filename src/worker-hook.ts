@@ -1321,7 +1321,7 @@ function touchesBeadsActor(words: string[], state: ScanState, depth = 0): boolea
  */
 function xargsHidesOperand(words: string[]): boolean {
   for (let i = 0; i < words.length; i++) {
-    if (baseWord(words[i]!).toLowerCase() !== 'xargs') continue
+    if (baseWord(words[i]!.replace(/[<>][\s\S]*$/, '')).toLowerCase() !== 'xargs') continue
     for (let j = i + 1; j < words.length; j++) {
       const b = baseWord(words[j]!)
       if (b === 'git' || b === 'gh') return true
@@ -1474,7 +1474,7 @@ const XARGS_VALUE_FLAGS = new Set([
  */
 function xargsRunsShell(words: string[]): boolean {
   for (let i = 0; i < words.length; i++) {
-    if (baseWord(words[i]!).toLowerCase() !== 'xargs') continue
+    if (baseWord(words[i]!.replace(/[<>][\s\S]*$/, '')).toLowerCase() !== 'xargs') continue
     const cands: number[] = []
     for (let j = i + 1; j < words.length; j++) {
       if (isShellWord(words[j]!)) return true

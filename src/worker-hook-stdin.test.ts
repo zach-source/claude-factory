@@ -10,6 +10,14 @@ const GATE = {
 }
 
 const DENY = [
+  `xargs<<<"'P'" sh -c`,
+  `echo "'P'" | xargs</dev/stdin sh -c`,
+  `echo P | xargs>/dev/null sh -c`,
+  `echo P | XARGS<&0 bash -c`,
+  `echo P | /usr/bin/xargs<f sh -c`,
+  `echo P | "xargs"<f sh -c`,
+  `echo P | x\\args<f sh -c`,
+  `echo P | xargs<f -n1 sh -c`,
   `echo P | XARGS sh -c`,
   `echo P | xArgs sh -c`,
   `echo P | /usr/bin/XARGS sh -c`,
@@ -151,6 +159,7 @@ test('denyReason denies a dynamic shell word behind xargs -I (claude-factory-l43
 })
 
 const ALLOW = [
+  `xargs<f echo hi`,
   `echo x | xargs -n1 echo`,
   `echo x | bash --rcfile ./rc.sh run.sh`,
   'sh -- script.sh',
@@ -197,4 +206,9 @@ test.each(ALLOW)('denyReason allows %j (claude-factory-l43b, no stdin script)', 
 
 test('denyReason denies xargs in upper case before git (claude-factory-l43b.20)', () => {
   expect(denyReason('echo origin main | XARGS git push', '/root/repo', undefined, GATE)).toBeDefined()
+})
+
+test('denyReason denies git behind xargs with a glued redirect (claude-factory-l43b.22)', () => {
+  for (const c of ['echo origin main | xargs<&0 git push', 'echo origin main | xargs>/dev/null git push'])
+    expect(denyReason(c, '/root/repo', undefined, GATE)).toBeDefined()
 })
