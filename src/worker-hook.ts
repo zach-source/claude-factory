@@ -1472,6 +1472,8 @@ function gitWorkTreeOutside(words: string[], root: string | undefined, moved = f
   let badC = false
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
+    const c = w.charCodeAt(0)
+    if (c !== 45 && c !== 71) continue
     if (w === '--work-tree') {
       hasWorkTree = true
       if (bad(words[i + 1])) return true
@@ -1494,10 +1496,10 @@ function gitWorkTreeOutside(words: string[], root: string | undefined, moved = f
 // claude-factory-ty8y.21: a git config write of core.worktree, or any `-c core.worktree=`, moves the
 // work tree. A value outside `root` denies. A read form has no value word, so it allows.
 function gitCoreWorktreeOutside(words: string[], root: string | undefined): boolean {
-  if (words.some(w => /^(-c|--config-env)?core\.worktree=/i.test(w))) return true
-  if (!words.some(w => baseWord(w) === 'git')) return false
+  if (words.some(w => w.length > 13 && /^(-c|--config-env)?core\.worktree=/i.test(w))) return true
   const at = words.indexOf('config')
   if (at < 0) return false
+  if (!words.some(w => baseWord(w) === 'git')) return false
   const operands: string[] = []
   const args = words.slice(at + 1)
   for (let i = 0; i < args.length; i++) {
