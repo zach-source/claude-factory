@@ -3068,7 +3068,9 @@ test.each(ALLOW_GLOBAL_GIT_CONFIG)(
 // AC5: accepted false positive. A read of the global config next to a git call denies, because
 // the guard cannot tell a read from a write. The worker runs the read and the git call as 2 Bash calls.
 test('denyReason denies a read of the global git config next to a git word (claude-factory-ty8y, accepted false positive)', () => {
-  expect(denyReason('cat ~/.gitconfig; git status', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(PUSH_REASON)
+  expect(
+    denyReason('cat ~/.gitconfig; git status', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE),
+  ).toBe(PUSH_REASON)
 })
 
 // claude-factory-68gn: `gitReason` read the current branch with `gate.headOf(root)`.

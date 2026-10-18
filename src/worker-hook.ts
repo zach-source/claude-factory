@@ -3871,7 +3871,12 @@ export function scanReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
-  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false, globalGitConfig: false }
+  const state: ScanState = {
+    branchChange: false,
+    headPush: false,
+    gitAdminPath: false,
+    globalGitConfig: false,
+  }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
