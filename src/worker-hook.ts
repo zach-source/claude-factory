@@ -62,8 +62,9 @@
  * Claude Code's own prompt stays the backstop.
  */
 
-import { readFileSync, statSync } from 'node:fs'
-import { resolve as resolvePath } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join as joinPath, resolve as resolvePath } from 'node:path'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -93,6 +94,17 @@ export const LONG_COMMAND_REASON =
   'commands and run them one at a time. For a long report summary, bd description or pull ' +
   'request body, put the text in a file under .scratch/ and pass it with --body-file, or as ' +
   '"$(cat .scratch/<name>)". Do not retry this exact command.'
+
+// claude-factory-1zr5
+export const SHELL_ALIAS_REASON =
+  'The factory denies this command: a word in it is a shell alias from the Claude Code shell snapshot ' +
+  'that runs git or gh, or that this hook cannot read. The hook cannot check what the alias does. ' +
+  'Type the full git or gh command, with no alias. Do not retry this exact command.'
+
+// claude-factory-1zr5
+export const SHELL_ALIAS_READ_REASON =
+  'The factory denies this command: the hook cannot read the Claude Code shell-snapshot folder, so it ' +
+  'cannot tell which words are shell aliases. Report blocked with that fact. Do not retry this exact command.'
 
 // claude-factory-zl5
 export const MERGE_REASON =
@@ -281,6 +293,11 @@ export interface HookGate {
    * user config; undefined only on a read error. `timeoutMs` bounds the gh spawn
    * (claude-factory-dts.4). */
   ghAliases?: (timeoutMs?: number) => Map<string, string> | undefined
+  /** claude-factory-1zr5: the shell aliases in the newest Claude Code shell snapshots (see
+   * `shellSnapshotAliases`): name to unquoted value, or null for a value the reader cannot unquote.
+   * The Bash tool shell expands them, but the hook sees only the alias word. Unset means no alias
+   * check. Undefined from the function means a read error: the hook denies every command. */
+  shellAliases?: () => Map<string, string | null> | undefined
 }
 
 /**
@@ -4780,6 +4797,19 @@ function memoGate(gate: HookGate): HookGate {
       return result
     }
   }
+  // claude-factory-1zr5: shellAliases reads the snapshot folder at most one time for one denyReason call.
+  if (gate.shellAliases) {
+    const real = gate.shellAliases
+    let called = false
+    let result: Map<string, string | null> | undefined
+    memo.shellAliases = () => {
+      if (!called) {
+        called = true
+        result = real()
+      }
+      return result
+    }
+  }
   return memo
 }
 
@@ -4847,6 +4877,75 @@ export function scanReason(
   return state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd) ? PUSH_REASON : undefined
 }
 
+// claude-factory-1zr5: the most alias expansions one word can chain through. A longer chain denies.
+const MAX_SHELL_ALIAS_DEPTH = 10
+
+// claude-factory-1zr5: writes one segment word back as shell text, so a rescan reads the same word.
+// A word with a $, backtick, glob or similar char stays bare, so the dynamic-word checks still see it.
+// A bare word that also holds a space or an operator char cannot be written safely: null.
+function aliasWordText(w: string): string | null {
+  if (/[$`*?[{~\\!]/.test(w)) return /[\s;&|<>()#'"]/.test(w) ? null : w
+  return `'${w.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * claude-factory-1zr5: the Bash tool shell expands a snapshot alias that is a word of this segment,
+ * but the other checks see only the alias word. This function reads every word of the segment (any
+ * position, like `anyGitReason`). For a word in `table`:
+ *   - a value that is null (the reader could not unquote it) denies.
+ *   - a name other than git or gh, whose expansion holds a git, gh or git-<verb> word, denies.
+ *   - any other alias: the expansion replaces the word, and `denyAt` scans the result again.
+ *     It skips the names already expanded, as zsh does, and denies past MAX_SHELL_ALIAS_DEPTH.
+ */
+function shellAliasReason(
+  words: string[],
+  table: Map<string, string | null>,
+  stack: readonly string[],
+  root: string | undefined,
+  personOnly: string[] | undefined,
+  gate: HookGate,
+  depth: number,
+  state: ScanState,
+  moved: boolean,
+  ghMoved: boolean,
+): string | undefined {
+  for (let i = 0; i < words.length; i++) {
+    const name = words[i]!
+    if (!table.has(name) || stack.includes(name)) continue
+    const value = table.get(name)
+    if (value === null || value === undefined) return SHELL_ALIAS_REASON
+    if (stack.length >= MAX_SHELL_ALIAS_DEPTH) return SHELL_ALIAS_REASON
+    if (spendWork(state, value.length + words.length)) return SCAN_BUDGET_REASON
+    const info = { dollarQuote: false }
+    const expansion = segments(value, info)
+    if (info.dollarQuote) return SHELL_ALIAS_REASON
+    if (name !== 'git' && name !== 'gh') {
+      const runsGit = expansion.some(seg =>
+        seg.some(x => {
+          const b = baseWord(x)
+          return b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)
+        }),
+      )
+      if (runsGit) return SHELL_ALIAS_REASON
+    }
+    const parts = expansion.length ? expansion.map(seg => [...seg]) : [[]]
+    parts[0] = [...words.slice(0, i), ...parts[0]!]
+    parts[parts.length - 1] = [...parts[parts.length - 1]!, ...words.slice(i + 1)]
+    const texts: string[] = []
+    for (const part of parts) {
+      const quoted = part.map(aliasWordText)
+      if (quoted.includes(null)) return SHELL_ALIAS_REASON
+      texts.push(quoted.join(' '))
+    }
+    const reason = denyAt(texts.join(' ; '), root, personOnly, gate, depth, state, moved, ghMoved, [
+      ...stack,
+      name,
+    ])
+    if (reason) return reason
+  }
+  return undefined
+}
+
 /**
  * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
  * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
@@ -4876,9 +4975,13 @@ function denyAt(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
+  aliasStack: readonly string[] = [],
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
+  // claude-factory-1zr5: a table the hook cannot read denies every command (fail closed).
+  const aliasTable = gate.shellAliases?.()
+  if (gate.shellAliases && !aliasTable) return SHELL_ALIAS_READ_REASON
   // claude-factory-epz: a deep command denies here, with no personOnly check at all. The
   // MAX_COMMAND_LENGTH cap (claude-factory-25z.20) now runs once, in denyReason, before this
   // function ever runs (claude-factory-dts). denyAt itself checks no length at all.
@@ -4902,6 +5005,21 @@ function denyAt(
   const commandSegments = segments(command, quoteInfo)
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   for (const words of commandSegments) {
+    if (aliasTable) {
+      const aliased = shellAliasReason(
+        words,
+        aliasTable,
+        aliasStack,
+        root,
+        personOnly,
+        g,
+        depth,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
+      if (aliased) return aliased
+    }
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
@@ -5081,6 +5199,96 @@ function ghAliasList(timeoutMs = 2000): Map<string, string> | undefined {
   }
 }
 
+// claude-factory-1zr5: unquotes the text after `name=` in one `alias -- name=value` snapshot line.
+// zsh prints a value bare, or as single-quoted spans joined with `\'`. A quoted span can cross lines.
+// It returns the value and the index of the line that ends it, or null for any other quoting.
+function unquoteAliasValue(
+  lines: string[],
+  first: number,
+  start: number,
+): { value: string; end: number } | null {
+  let value = ''
+  let li = first
+  let line = lines[li]!
+  let i = start
+  let quoted = false
+  for (;;) {
+    if (i >= line.length) {
+      if (!quoted) return { value, end: li }
+      li++
+      if (li >= lines.length) return null
+      value += '\n'
+      line = lines[li]!
+      i = 0
+      continue
+    }
+    const c = line[i]!
+    if (quoted) {
+      if (c === "'") quoted = false
+      else value += c
+      i++
+    } else if (c === "'") {
+      quoted = true
+      i++
+    } else if (c === '\\' && i + 1 < line.length) {
+      value += line[i + 1]
+      i += 2
+    } else if (/[A-Za-z0-9_@%+=:,./~^-]/.test(c)) {
+      value += c
+      i++
+    } else {
+      return null
+    }
+  }
+}
+
+const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
+const SNAPSHOT_FILES = 3
+
+/**
+ * claude-factory-1zr5: reads the shell aliases from the newest three `snapshot-*.sh` files in `dir`
+ * (Claude Code's shell-snapshots folder), a newer file over an older one. The Bash tool shell
+ * sources a snapshot before each command, so its aliases expand there. The hook never learns which
+ * snapshot a session uses, so it reads the union.
+ *
+ * A value maps to null when this reader cannot unquote it. A missing folder gives an empty Map.
+ * A folder or file that cannot be read, or a file over 4 MiB, gives undefined (fail closed).
+ */
+export function shellSnapshotAliases(dir: string): Map<string, string | null> | undefined {
+  let names: string[]
+  try {
+    names = readdirSync(dir).filter(n => /^snapshot-.*\.sh$/.test(n))
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? new Map() : undefined
+  }
+  const table = new Map<string, string | null>()
+  try {
+    const files = names
+      .map(n => ({ path: joinPath(dir, n), st: statSync(joinPath(dir, n)) }))
+      .sort((a, b) => b.st.mtimeMs - a.st.mtimeMs)
+      .slice(0, SNAPSHOT_FILES)
+      .reverse()
+    for (const f of files) {
+      if (f.st.size > SNAPSHOT_MAX_BYTES) return undefined
+      const lines = readFileSync(f.path, 'utf8').split('\n')
+      for (let n = 0; n < lines.length; n++) {
+        const m = /^alias -- ([^=\s]+)=/.exec(lines[n]!)
+        if (!m) continue
+        const parsed = unquoteAliasValue(lines, n, m[0].length)
+        if (parsed) {
+          table.set(m[1]!, parsed.value)
+          n = parsed.end
+        } else {
+          table.set(m[1]!, null)
+        }
+      }
+    }
+  } catch {
+    return undefined
+  }
+  return table
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -5123,6 +5331,11 @@ async function main() {
     // same i.cwd-then-root fallback rule.
     gitAliases: timeoutMs => gitConfigAliases(i.cwd || root, timeoutMs),
     ghAliases: timeoutMs => ghAliasList(timeoutMs),
+    // claude-factory-1zr5: the Bash tool shell sources a Claude Code snapshot of the user's aliases
+    shellAliases: () =>
+      shellSnapshotAliases(
+        joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots'),
+      ),
     // claude-factory-3f2z.2 / claude-factory-9zd5: the tool call's own cwd, with no fallback to
     // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
     // read this field; `gitReason` falls back to `root` itself at its own call site.
