@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
@@ -2688,6 +2689,516 @@ test('denyReason never calls gate.headOf for a push after an env -S of any form 
     PUSH_DIR_REASON,
   )
   expect(calls).toBe(0)
+})
+
+// claude-factory-bemr: a pre-existing alias must not hide a guarded verb.
+// BEMR_GIT_ALIASES and BEMR_GH_ALIASES copy the real aliases from this bead's triage host.
+// That host ran git 2.54.0 and gh 2.98.0.
+const BEMR_GIT_ALIASES = new Map([
+  ['co', 'checkout'],
+  ['br', 'branch'],
+  ['st', 'status'],
+  ['lg', 'log --oneline --graph'],
+  ['wip', '!git stash'],
+  ['unwip', '!git stash pop'],
+])
+const BEMR_GH_ALIASES = new Map([
+  ['co', 'pr checkout'],
+  ['pv', 'pr view'],
+])
+//
+// claude-factory-bemr: headOf gives a branch name that is not a protected branch.
+// This proves each denied case below denies for the right reason.
+// The fix must set state.branchChange from the resolved alias.
+//
+// The test must not pass only because main or master is a protected name on its own.
+// originHead gives main, the value the real triage session read.
+const BEMR_GATE: HookGate = {
+  gitAliases: () => BEMR_GIT_ALIASES,
+  ghAliases: () => BEMR_GH_ALIASES,
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+}
+
+const BEMR_AC1_COMMANDS = [
+  'git co main && git push o HEAD',
+  'git br -M main && git push o HEAD',
+  'gh co 5 && git push',
+]
+
+test.each(BEMR_AC1_COMMANDS)(
+  'denyReason denies %j: a pre-existing alias that resolves to checkout/branch/pr-checkout must not hide the push (claude-factory-bemr, AC1)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, BEMR_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason denies "git p origin main": an alias to push denies the same as the literal verb (claude-factory-bemr, AC2)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['p', 'push']]) }
+  expect(denyReason('git p origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git -C /w p origin main", and reads gate.gitAliases for dir /w (claude-factory-bemr, AC2)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    gitAliases: dir => {
+      dirs.push(dir)
+      return new Map([['p', 'push']])
+    },
+  }
+  expect(denyReason('git -C /w p origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(dirs).toContain('/w')
+})
+
+test('denyReason denies "git CO main && git push o HEAD": the alias lookup folds the verb to lower case (claude-factory-bemr, AC3)', () => {
+  expect(denyReason('git CO main && git push o HEAD', undefined, undefined, BEMR_GATE)).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git x main && git push o HEAD": a chain of two aliases still resolves to checkout (claude-factory-bemr, AC3)', () => {
+  const gate: HookGate = {
+    gitAliases: () =>
+      new Map([
+        ['x', 'co'],
+        ['co', 'checkout'],
+      ]),
+    headOf: () => 'factory/x',
+  }
+  expect(denyReason('git x main && git push o HEAD', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git q origin main": a quoted alias expansion still denies the push to main (claude-factory-bemr, AC4)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['q', 'pu"sh"']]) }
+  expect(denyReason('git q origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git q2 origin main" with ALIAS_USE_REASON: an unclosed quote in the alias text fails closed (claude-factory-bemr, AC4)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['q2', 'pu"sh']]) }
+  expect(denyReason('git q2 origin main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "git wip" with ALIAS_USE_REASON: a leading ! shell alias cannot be re-scanned (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('git wip', undefined, undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies a git alias chain deeper than MAX_ALIAS_DEPTH with ALIAS_USE_REASON (claude-factory-bemr, AC5)', () => {
+  const entries: [string, string][] = Array.from({ length: 20 }, (_, i) => [`b${i}`, `b${i + 1}`])
+  const gate: HookGate = { gitAliases: () => new Map(entries) }
+  expect(denyReason('git b0 main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "git zz main" with ALIAS_USE_REASON when gate.gitAliases is unset (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('git zz main', undefined, undefined, {})).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "git zz main" with ALIAS_USE_REASON when gate.gitAliases gives undefined (claude-factory-bemr, AC5)', () => {
+  const gate: HookGate = { gitAliases: () => undefined }
+  expect(denyReason('git zz main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "cd /other && git co main" with ALIAS_USE_REASON: an earlier cd hides the alias table for that directory (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('cd /other && git co main', undefined, undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "git --git-dir=/other co main" with ALIAS_USE_REASON: --git-dir hides the alias table the same way (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('git --git-dir=/other co main', undefined, undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "gh zz 5" with ALIAS_USE_REASON when gate.ghAliases is unset (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('gh zz 5', undefined, undefined, {})).toBe(ALIAS_USE_REASON)
+})
+
+const BEMR_GH_CONFIG_ENV_COMMANDS = [
+  'GH_CONFIG_DIR=/x gh co 5',
+  'XDG_CONFIG_HOME=/x gh co 5',
+  'HOME=/x gh co 5',
+]
+
+test.each(BEMR_GH_CONFIG_ENV_COMMANDS)(
+  'denyReason denies %j with ALIAS_USE_REASON: a config-dir assignment before a non-builtin gh verb hides the alias table (claude-factory-bemr, AC5)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+  },
+)
+
+test('denyReason denies "gh bang" with ALIAS_USE_REASON: a leading ! gh alias cannot be re-scanned (claude-factory-bemr, AC6)', () => {
+  const gate: HookGate = { ghAliases: () => new Map([['bang', '!echo hi']]) }
+  expect(denyReason('gh bang', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "gh dollar" with ALIAS_USE_REASON: a $ in the gh alias text cannot be re-scanned (claude-factory-bemr, AC6)', () => {
+  const gate: HookGate = { ghAliases: () => new Map([['dollar', 'pr list $X']]) }
+  expect(denyReason('gh dollar', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "gh zz 5" with ALIAS_USE_REASON when gate.ghAliases gives undefined (claude-factory-bemr, AC6)', () => {
+  const gate: HookGate = { ghAliases: () => undefined }
+  expect(denyReason('gh zz 5', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "gh m 5" with MERGE_REASON: the re-scan of a gh alias to pr merge reaches the real merge guard (claude-factory-bemr, AC6)', () => {
+  const gate: HookGate = { ghAliases: () => new Map([['m', 'pr merge']]) }
+  expect(denyReason('gh m 5', undefined, undefined, gate)).toBe(MERGE_REASON)
+})
+
+const BEMR_AC7_ALLOW_COMMANDS = [
+  'git co feature',
+  'git co feature && git status',
+  'git checkout other && git status',
+  'git st',
+  'git lg',
+  'gh pv 5',
+]
+
+test.each(BEMR_AC7_ALLOW_COMMANDS)(
+  'denyReason allows %j: an alias to a read-only verb still allows (claude-factory-bemr, AC7)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, BEMR_GATE)).toBeUndefined()
+  },
+)
+
+test('denyReason allows "git status" when gate.gitAliases maps status to push: a builtin verb wins over an alias (claude-factory-bemr, AC7)', () => {
+  let calls = 0
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls++
+      return new Map([['status', 'push']])
+    },
+  }
+  expect(denyReason('git status', undefined, undefined, gate)).toBeUndefined()
+  expect(calls).toBe(0)
+})
+
+test('denyReason allows "git foo main" when gate.gitAliases resolves but has no foo entry (claude-factory-bemr, AC7)', () => {
+  const gate: HookGate = { gitAliases: () => new Map() }
+  expect(denyReason('git foo main', undefined, undefined, gate)).toBeUndefined()
+})
+
+//
+// claude-factory-bemr (AC8): a builtin verb must spawn neither gate.gitAliases nor
+// gate.ghAliases. countingGate above wraps only headOf and originHead, so this test uses its
+// own small counting gate for the two new fields.
+function countingAliasGate() {
+  const calls = { gitAliases: 0, ghAliases: 0 }
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls.gitAliases++
+      return new Map()
+    },
+    ghAliases: () => {
+      calls.ghAliases++
+      return new Map()
+    },
+  }
+  return { gate, calls }
+}
+
+test('denyReason calls neither gate.gitAliases nor gate.ghAliases for a builtin verb (claude-factory-bemr, AC8)', () => {
+  const { gate, calls } = countingAliasGate()
+  expect(denyReason('git push origin x', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git status', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('gh pr view', undefined, undefined, gate)).toBeUndefined()
+  expect(calls.gitAliases).toBe(0)
+  expect(calls.ghAliases).toBe(0)
+})
+
+test('denyReason calls gate.gitAliases at most once per distinct dir, within MAX_HEAD_DIRS=8 (claude-factory-bemr, AC8)', () => {
+  const calls: (string | undefined)[] = []
+  const gate: HookGate = {
+    gitAliases: dir => {
+      calls.push(dir)
+      return new Map()
+    },
+  }
+  const command = Array.from({ length: 8 }, (_, i) => `git -C d${i} x main`).join('; ')
+  expect(denyReason(command, undefined, undefined, gate)).toBeUndefined()
+  expect(calls.length).toBe(8)
+  expect(new Set(calls).size).toBe(8)
+})
+
+// claude-factory-bemr (AC8): a 9th distinct dir past MAX_HEAD_DIRS=8 gets an unresolved table
+// with no real call, the same fail-closed answer gate.headOf already gives past that cap. The
+// command then denies with ALIAS_USE_REASON instead of guessing that dir's alias table.
+test('denyReason denies with ALIAS_USE_REASON past MAX_HEAD_DIRS=8 distinct dirs (claude-factory-bemr, AC8)', () => {
+  let calls = 0
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls++
+      return new Map()
+    },
+  }
+  const command = Array.from({ length: 9 }, (_, i) => `git -C d${i} x main`).join('; ')
+  expect(denyReason(command, undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+  expect(calls).toBeLessThanOrEqual(8)
+})
+
+// claude-factory-bemr (AC9): this spawns the real `bun src/worker-hook.ts` binary.
+// GIT_CONFIG_GLOBAL points git at one alias file, with co=checkout and st=status.
+// GIT_CONFIG_NOSYSTEM=1 blocks any system-wide alias. GH_CONFIG_DIR is an empty directory, so
+// gh alias list reads no alias of its own.
+test('run as `bun src/worker-hook.ts`, a real git alias co=checkout cannot hide the push guard (claude-factory-bemr, AC9)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-bemr-alias-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const configFile = join(dir, 'gitconfig-bemr')
+  writeFileSync(configFile, '[alias]\n\tco = checkout\n\tbr = branch\n\tst = status\n')
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr-gh-config-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  env.GIT_CONFIG_GLOBAL = configFile
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  env.GH_CONFIG_DIR = ghConfigDir
+  for (const cmd of [
+    'git co main && git push o HEAD',
+    'git br -M main && git push o HEAD',
+    'gh co 5 && git push',
+  ]) {
+    const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: cmd } })
+    const { out, code } = await run(input, env)
+    expect(code).toBe(0)
+    expect(JSON.parse(out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: PUSH_REASON,
+      },
+    })
+  }
+  const stInput = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: 'git st' } })
+  expect(await run(stInput, env)).toEqual({ out: '', code: 0 })
+}, 20_000)
+
+//
+// claude-factory-bemr (AC10): these two arrays copy worker-hook.ts's own GIT_BUILTIN_VERBS and
+// GH_BUILTIN_VERBS sets.
+//
+// The test checks each name against the host's real git and gh.
+// git is absent on some hosts. The test then skips.
+const TEST_GIT_BUILTIN_VERBS = [
+  'add',
+  'am',
+  'annotate',
+  'apply',
+  'archive',
+  'backfill',
+  'bisect',
+  'blame',
+  'branch',
+  'bugreport',
+  'bundle',
+  'cat-file',
+  'check-attr',
+  'check-ignore',
+  'check-mailmap',
+  'check-ref-format',
+  'checkout',
+  'checkout--worker',
+  'checkout-index',
+  'cherry',
+  'cherry-pick',
+  'clean',
+  'clone',
+  'column',
+  'commit',
+  'commit-graph',
+  'commit-tree',
+  'config',
+  'count-objects',
+  'credential',
+  'credential-cache',
+  'credential-cache--daemon',
+  'credential-store',
+  'describe',
+  'diagnose',
+  'diff',
+  'diff-files',
+  'diff-index',
+  'diff-pairs',
+  'diff-tree',
+  'difftool',
+  'fast-export',
+  'fast-import',
+  'fetch',
+  'fetch-pack',
+  'fmt-merge-msg',
+  'for-each-ref',
+  'for-each-repo',
+  'format-patch',
+  'fsck',
+  'fsck-objects',
+  'fsmonitor--daemon',
+  'gc',
+  'get-tar-commit-id',
+  'grep',
+  'hash-object',
+  'help',
+  'history',
+  'hook',
+  'index-pack',
+  'init',
+  'init-db',
+  'interpret-trailers',
+  'last-modified',
+  'log',
+  'ls-files',
+  'ls-remote',
+  'ls-tree',
+  'mailinfo',
+  'mailsplit',
+  'maintenance',
+  'merge',
+  'merge-base',
+  'merge-file',
+  'merge-index',
+  'merge-ours',
+  'merge-recursive',
+  'merge-recursive-ours',
+  'merge-recursive-theirs',
+  'merge-subtree',
+  'merge-tree',
+  'mktag',
+  'mktree',
+  'multi-pack-index',
+  'mv',
+  'name-rev',
+  'notes',
+  'pack-objects',
+  'pack-redundant',
+  'pack-refs',
+  'patch-id',
+  'pickaxe',
+  'prune',
+  'prune-packed',
+  'pull',
+  'push',
+  'range-diff',
+  'read-tree',
+  'rebase',
+  'receive-pack',
+  'reflog',
+  'refs',
+  'remote',
+  'remote-ext',
+  'remote-fd',
+  'repack',
+  'replace',
+  'replay',
+  'repo',
+  'rerere',
+  'reset',
+  'restore',
+  'rev-list',
+  'rev-parse',
+  'revert',
+  'rm',
+  'send-pack',
+  'shortlog',
+  'show',
+  'show-branch',
+  'show-index',
+  'show-ref',
+  'sparse-checkout',
+  'stage',
+  'stash',
+  'status',
+  'stripspace',
+  'submodule--helper',
+  'switch',
+  'symbolic-ref',
+  'tag',
+  'unpack-file',
+  'unpack-objects',
+  'update-index',
+  'update-ref',
+  'update-server-info',
+  'upload-archive',
+  'upload-archive--writer',
+  'upload-pack',
+  'var',
+  'verify-commit',
+  'verify-pack',
+  'verify-tag',
+  'version',
+  'whatchanged',
+  'worktree',
+  'write-tree',
+]
+const TEST_GH_BUILTIN_VERBS = [
+  'auth',
+  'browse',
+  'codespace',
+  'discussion',
+  'gist',
+  'issue',
+  'org',
+  'pr',
+  'project',
+  'release',
+  'repo',
+  'skill',
+  'cache',
+  'run',
+  'workflow',
+  'agent-task',
+  'alias',
+  'api',
+  'attestation',
+  'completion',
+  'config',
+  'copilot',
+  'extension',
+  'gpg-key',
+  'label',
+  'licenses',
+  'preview',
+  'ruleset',
+  'search',
+  'secret',
+  'ssh-key',
+  'status',
+  'variable',
+  'accessibility',
+  'help',
+  'version',
+]
+
+test('every TEST_GIT_BUILTIN_VERBS name is a real git builtin (claude-factory-bemr, AC10)', () => {
+  let real: Set<string>
+  try {
+    const p = Bun.spawnSync(['git', '--list-cmds=builtins'])
+    if (p.exitCode !== 0) return
+    real = new Set(p.stdout.toString().split(/\s+/).filter(Boolean))
+  } catch {
+    return
+  }
+  for (const name of TEST_GIT_BUILTIN_VERBS) {
+    expect(real.has(name)).toBe(true)
+  }
+})
+
+test("every TEST_GH_BUILTIN_VERBS name is a real gh command, and not one of this host's own gh aliases (claude-factory-bemr, AC10)", () => {
+  let helpText: string
+  try {
+    const p = Bun.spawnSync(['gh', 'help'])
+    if (p.exitCode !== 0) return
+    helpText = p.stdout.toString()
+  } catch {
+    return
+  }
+  const aliasSection = helpText
+    .split(/\n(?=[A-Z][A-Z ]+\n)/)
+    .find(block => block.startsWith('ALIAS COMMANDS'))
+  const aliasNames = new Set(
+    (aliasSection ?? '')
+      .split('\n')
+      .slice(1)
+      .map(line => line.trim().split(/\s+/)[0])
+      .filter(Boolean),
+  )
+  for (const name of TEST_GH_BUILTIN_VERBS) {
+    expect(aliasNames.has(name)).toBe(false)
+    expect(helpText.includes(name)).toBe(true)
+  }
 })
 
 // claude-factory-dts: a counting fake gate. It wraps each real git-reading function the test
