@@ -1044,8 +1044,11 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
 // That output can be `--all`. This scan reads the raw text: a backtick, a git word and a push or
 // send-pack word together. It over-denies a backtick that sits in an unrelated quoted argument.
 // This is fail closed.
+// claude-factory-cu5m.13: the same scan covers `&>` (also `&>>`, `&>|`, `&>!`). zsh and bash read it
+// as a redirect, but `segments()` splits at its `&` (dash reads `&` then `>`), so the words after it
+// leave the push tail. It over-denies `git push origin feature &>/dev/null`.
 function backtickBesidePush(command: string): boolean {
-  if (!command.includes('`')) return false
+  if (!/`|&>/.test(command)) return false
   const words = segments(command).flat().map(baseWord)
   return (
     words.some(b => b === 'git' || /^git-/.test(b)) &&

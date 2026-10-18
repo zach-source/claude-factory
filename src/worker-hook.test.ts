@@ -2521,7 +2521,17 @@ test.each(ALLOW_REDIRECT_AMP)('denyReason allows %j (claude-factory-cu5m.12, & o
   expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
 })
 
+const DENY_REDIRECT_AMP_GT = ['&>/dev/null', '&>>log', '&>|log', '&>!log'].flatMap(op => [
+  `git push origin feature ${op} main`,
+  `git send-pack ../r.git feature ${op} main`,
+])
+
+test.each(DENY_REDIRECT_AMP_GT)('denyReason denies %j (claude-factory-cu5m.13, &> redirect)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
 const ALLOW_DYNAMIC_PUSH_WORD = [
+  'git status &>/dev/null',
   'cat <(git log) && git status',
   'diff <(sort a) <(sort b)',
   'git push origin feature 2>&1 | tee >(cat)',
