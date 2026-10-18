@@ -4321,6 +4321,10 @@ const SFT4_DENY = [
   `SH=sh; timeout 5 $SH -c ${SFT4_PUSH}`,
   'SH=sh; $SH -c "git push origin main"',
   "SH=sh; $SH -c 'rm -rf /'",
+  `$E eval "git push origin main; echo" -c x`,
+  `$E eval 'git push origin main;' -c x`,
+  `$E env -S 'git push origin main' -c x`,
+  `nice $N eval 'git push origin main' -c x`,
 ]
 
 test.each(SFT4_DENY)('denyReason denies a dynamic shell word: %s (claude-factory-sft4)', cmd => {

@@ -545,11 +545,9 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
 // claude-factory-sft4: true for a word that is, or can expand at run time to, sh, bash, zsh or
 // dash. A variable, a glob, a brace group or a tilde in this slot hides the shell name, so the
 // guard reads the -c script after it. The script is denied only when the script itself is denied.
+const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash'])
 function shellSlotWord(w: string): boolean {
-  const bw = baseWord(w)
-  return (
-    bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash' || /[$*?[\]{}]/.test(w) || w.startsWith('~')
-  )
+  return SHELL_NAMES.has(baseWord(w)) || /[$*?[\]{}]/.test(w) || w.startsWith('~')
 }
 
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
@@ -3619,6 +3617,8 @@ function anyShellReason(
 ): string | undefined {
   let nc = -1
   let nd = -1
+  let scriptNc = -1
+  let scriptK = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -3655,6 +3655,11 @@ function anyShellReason(
         while (nd < words.length && words[nd] !== '--') nd++
       }
       if (nc >= nd) continue
+      const literal = SHELL_NAMES.has(baseWord(words[j]!))
+      if (scriptNc === nc) {
+        if (literal) j = scriptK
+        continue
+      }
       let k = nc + 1
       let found: string | undefined
       for (; k < words.length; k++) {
@@ -3670,7 +3675,9 @@ function anyShellReason(
         if (found) break
       }
       if (found) return found
-      j = k
+      scriptNc = nc
+      scriptK = k
+      if (literal) j = k
       continue
     }
     if (bw === 'eval') {
