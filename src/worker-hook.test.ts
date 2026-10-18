@@ -18,6 +18,7 @@ import {
   MERGE_REASON,
   PUSH_DIR_REASON,
   PUSH_REASON,
+  GLOBAL_GIT_CONFIG_REASON,
   READY_REASON,
   REASON,
   scanReason,
@@ -3042,13 +3043,68 @@ const DENY_GLOBAL_GIT_CONFIG_WRITE = [
 test.each(DENY_GLOBAL_GIT_CONFIG_WRITE)(
   'denyReason denies %j (claude-factory-ty8y: a global git config path then a git word fails closed)',
   cmd => {
-    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(PUSH_REASON)
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
   },
 )
 
+// ty8y.4: the write alone denies. A worker cannot split the write and the push into 2 Bash calls.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE = [
+  `printf '[remote "origin"] push = HEAD:refs/heads/main' >> ~/.gitconfig`,
+  'printf x > ~/.gitconfig',
+  'printf x >~/.gitconfig',
+  'printf x 2>> ~/.gitconfig',
+  'printf x >> "$XDG_CONFIG_HOME/git/config"',
+  'printf x >> /etc/gitconfig',
+  'cat f > ~/.config/git/config',
+  'echo x | tee -a ~/.gitconfig',
+  "sed -i '' 's/a/b/' ~/.gitconfig",
+  'cp f ~/.gitconfig',
+  'mv f ~/.config/git/config',
+  'ln -sf f ~/.gitconfig',
+  'install f ~/.gitconfig',
+  'dd of=$HOME/.gitconfig if=f',
+  `python3 -c "open('/Users/acme/.gitconfig','a').write('x')"`,
+  'bash -c "printf x >> ~/.gitconfig"',
+  'printf x >> .gitconfig',
+  'git config --list > ~/.gitconfig',
+  'git diff --output=~/.gitconfig',
+  // ty8y.7: a glob target.
+  'printf x >> ~/.gitc*',
+  'printf x >> $HOME/.git?onfig',
+  'printf x >> "${HOME}/.gitconf[i]g"',
+  'cp f ~/.gitc*',
+  'tee -a ~/.config/g*/config',
+  'printf x >> /etc/gitc*',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE)('denyReason denies %j alone (claude-factory-ty8y.4)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+// ty8y.5: a quoted or escaped git word still counts as a git word.
+const DENY_QUOTED_GIT_WORD = [
+  'printf x >> ~/.gitconfig; "gi"t push',
+  'printf x >> ~/.gitconfig; g\\it push',
+  `printf x >> ~/.gitconfig; sh -c '"gi"t push'`,
+  `cd ~/.config/git && "gi"t status`,
+]
+
+test.each(DENY_QUOTED_GIT_WORD)('denyReason denies %j (claude-factory-ty8y.5)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test.each([
+  'export GIT_CONFIG_GLOBAL=/r/acme/x; "gi"t push',
+  'export GIT_CONFIG_GLOBAL=/r/acme/x; g\\it push',
+])('denyReason denies %j (claude-factory-ty8y.5, GIT_CONFIG_GLOBAL rule)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(PUSH_REASON)
+})
+
 const ALLOW_GLOBAL_GIT_CONFIG = [
   'cat ~/.gitconfig',
-  'printf x >> ~/.gitconfig',
+  'cat ~/.gitconfig; git status',
   'git push',
   'git push origin factory/x',
   'git config --global user.name',
@@ -3056,21 +3112,29 @@ const ALLOW_GLOBAL_GIT_CONFIG = [
   'cat .gitignore && git push',
   'git push https://github.com/acme/widget.git HEAD',
   'ls ~/.config/gh',
+  // ty8y.6: a git or reader segment that only names the path is not a write.
+  'git add .config/settings.json',
+  'git log -- .config/x',
+  'git diff --stat -- docs/gitconfig.md',
+  'rg gitconfig src; git status',
+  'ls ~/.config/nvim; git status',
+  'grep -r gitconfig docs; git status',
+  'cp ~/a/*.txt .',
+  'printf x >> out.txt',
 ]
 
 test.each(ALLOW_GLOBAL_GIT_CONFIG)(
-  'denyReason allows %j (claude-factory-ty8y: no global git config path with a git word)',
+  'denyReason allows %j (claude-factory-ty8y: no global git config write)',
   cmd => {
     expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
   },
 )
 
-// AC5: accepted false positive. A read of the global config next to a git call denies, because
-// the guard cannot tell a read from a write. The worker runs the read and the git call as 2 Bash calls.
-test('denyReason denies a read of the global git config next to a git word (claude-factory-ty8y, accepted false positive)', () => {
-  expect(
-    denyReason('cat ~/.gitconfig; git status', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE),
-  ).toBe(PUSH_REASON)
+// A command that is not a reader names the path: it fails closed, also when it reads.
+test('denyReason denies a non-reader that names the global git config (claude-factory-ty8y, accepted false positive)', () => {
+  expect(denyReason('awk 1 ~/.gitconfig', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
 })
 
 // claude-factory-68gn: `gitReason` read the current branch with `gate.headOf(root)`.

@@ -177,6 +177,15 @@ export const PUSH_DIR_REASON =
   'remote branch directly instead, for example git push origin <run branch>, and never name a ' +
   'protected branch. Do not retry this exact command.'
 
+// claude-factory-ty8y: the global git config (~/.gitconfig, $XDG_CONFIG_HOME/git/config,
+// /etc/gitconfig) can set remote.<n>.push, push.default or an alias that pushes.
+export const GLOBAL_GIT_CONFIG_REASON =
+  'The factory denies this command: it writes the global git config (~/.gitconfig, ' +
+  '$XDG_CONFIG_HOME/git/config or /etc/gitconfig), or it names that path next to a git command. ' +
+  'The file can set a push target or an alias that pushes to a protected branch. Do not write ' +
+  'the global git config. To read it, use cat, or run the read as its own command. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-vco
 export const ENV_SPLIT_ESCAPE_REASON =
   'The factory denies this command: an env -S or env --split-string value holds a backslash or ' +
@@ -319,6 +328,7 @@ interface ScanState {
   headPush: boolean
   gitAdminPath: boolean
   globalGitConfig: boolean
+  gitWord: boolean
 }
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
@@ -876,12 +886,112 @@ const GIT_DIR_FLAG_RE = /--git-dir|--absolute-git-dir|--git-path|--git-common-di
 const GLOBAL_GIT_CONFIG_RE =
   /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|(^|[^A-Za-z0-9_.-])\.config(?=\/|$)|XDG_CONFIG_HOME/i
 
+// claude-factory-ty8y: the alternatives of GLOBAL_GIT_CONFIG_RE that name the file itself, not a
+// directory on the way to it. A non-reader command that holds such a word writes, or can write.
+const GLOBAL_GIT_CONFIG_FILE_RE = /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|XDG_CONFIG_HOME/i
+
+// claude-factory-ty8y: paths a glob word is tested against, to find a glob that can name the file.
+const GLOBAL_GIT_CONFIG_SAMPLES = [
+  '~/.gitconfig',
+  '~acme/.gitconfig',
+  '$HOME/.gitconfig',
+  '${HOME}/.gitconfig',
+  '/home/acme/.gitconfig',
+  '/Users/acme/.gitconfig',
+  '/etc/gitconfig',
+  '~/.config/git/config',
+  '$XDG_CONFIG_HOME/git/config',
+  '${XDG_CONFIG_HOME}/git/config',
+]
+
+// claude-factory-ty8y: commands that read their operands. A reader writes only through a redirect.
+const READER_COMMANDS = new Set([
+  'cat',
+  'less',
+  'more',
+  'head',
+  'tail',
+  'ls',
+  'stat',
+  'file',
+  'wc',
+  'grep',
+  'egrep',
+  'fgrep',
+  'rg',
+  'diff',
+  'cmp',
+  'test',
+  '[',
+  'echo',
+  'printf',
+  'readlink',
+  'realpath',
+  'basename',
+  'dirname',
+])
+
+function globNamesGlobalGitConfig(word: string): boolean {
+  const w = word.replace(/^["']+|["']+$/g, '')
+  if (!/[*?[]/.test(w)) return false
+  try {
+    const re = globToRegExp(w)
+    return GLOBAL_GIT_CONFIG_SAMPLES.some(s => re.test(s))
+  } catch {
+    return false
+  }
+}
+
 /**
- * claude-factory-ty8y: true when any raw word of a segment names the global git config.
- * It has no skip rule and no redirect parse, so it fails closed on a read as well as a write.
+ * claude-factory-ty8y: classifies one segment's raw words.
+ * `write`: a redirect target, a `dd` `of=` target, or an operand of a command that is not a reader
+ * names the global git config file, or a glob that can name it.
+ * `mention`: a word names a directory on the way to it (`.config`), or the file where the
+ * segment skips operands.
+ *
+ * A git segment and a reader segment skip their non-redirect operands. They only name a path.
+ * A git `--output` or `-o` flag stays checked, because it writes its value.
  */
-function namesGlobalGitConfig(words: string[]): boolean {
-  return words.some(word => GLOBAL_GIT_CONFIG_RE.test(word))
+function globalGitConfigUse(
+  words: string[],
+  isGit: boolean,
+  isReader: boolean,
+): 'write' | 'mention' | undefined {
+  let use: 'mention' | undefined
+  let pending = false
+  for (const word of words) {
+    const wasPending = pending
+    pending = false
+    let candidate = word
+    let redirect = wasPending
+    const m = word.match(REDIRECT_PREFIX_RE)
+    if (m && m[0].length === word.length) {
+      pending = true
+      continue
+    }
+    if (m) {
+      candidate = word.slice(m[0].length)
+      redirect = true
+    } else if (!wasPending && /^of=/i.test(word)) {
+      candidate = word.slice(3)
+      redirect = true
+    }
+    if (!redirect) {
+      if (isReader) continue
+      if (isGit && !/^(--output|-o)/.test(word)) continue
+    }
+    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate)) return 'write'
+    if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
+  }
+  return use
+}
+
+/** claude-factory-ty8y: true when a dequoted word of a segment is a git or git-<verb> word. */
+function hasGitWordIn(words: string[]): boolean {
+  return words.some(w => {
+    const b = baseWord(w)
+    return b === 'git' || /^git-/.test(b)
+  })
 }
 
 // claude-factory-9zd5: removes a leading redirect operator from a word.
@@ -3876,13 +3986,14 @@ export function scanReason(
     headPush: false,
     gitAdminPath: false,
     globalGitConfig: false,
+    gitWord: false,
   }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
-  if (state.globalGitConfig && commandHasGitWord(command)) return PUSH_REASON
+  if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
   if (!state.headPush) return undefined
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
@@ -3958,7 +4069,9 @@ function denyAt(
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
     const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
     if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
-    if (namesGlobalGitConfig(words)) state.globalGitConfig = true
+    if (hasGitWordIn(words)) state.gitWord = true
+    const configUse = globalGitConfigUse(words, isGitOrGhSegment && b !== 'gh', READER_COMMANDS.has(b))
+    if (configUse === 'mention') state.globalGitConfig = true
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
@@ -3985,6 +4098,7 @@ function denyAt(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
+    if (configUse === 'write') return GLOBAL_GIT_CONFIG_REASON
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
@@ -4013,7 +4127,7 @@ function denyAt(
     // lookup, the same way movedSoFar does above for a git alias lookup.
     if (hasGhConfigEnvWord(words)) ghConfigMovedSoFar = true
   }
-  if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
+  if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
