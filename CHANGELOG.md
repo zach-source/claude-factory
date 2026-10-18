@@ -166,6 +166,17 @@ minor release may change the factory format, the CLI or the run state.
       `$XDG_CONFIG_HOME/git/config` as its own global config. `GIT_DIR=<dir>` and
       `GIT_COMMON_DIR=<dir>` deny the same way: each one points git at a different
       repository's config file.
+  - A sibling of the `env -S`/`env --split-string` fix above still let a value flag's own
+    value word hide a later `-S`. The hook now reads past that word too.
+    - `env -u NAME`/`--unset NAME`, `-C DIR`/`--chdir DIR`, `-P PATH` (BSD), and
+      `-a ARG`/`--argv0 ARG` (GNU) each take a value word of their own. The old scan stopped
+      at that word, read as `env`'s own command, and so never reached a later `-S`. It now
+      reads a value flag's own value instead, so `env -u FOO -S 'git push origin main'` and
+      `env -C /tmp -S 'gh pr merge 5'` still deny the command.
+    - A short cluster that ends in a value flag, such as `-iu FOO`, skips one word the same
+      way. GNU `getopt_long` also accepts a prefix of a long option name, so `--spl ...` and
+      `--sp=...` deny the command the same as `--split-string ...` and `--split-string=...`.
+      (claude-factory-dgf)
   - Owner step still open: the `ax` rig has no `protectedBranches` set yet. Its own
     non-`main` default branch stays unprotected until a person adds it with
     `factory rig add ax ... --protected-branch <name>`. A VM-runner rig gets the new hook

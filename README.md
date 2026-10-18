@@ -396,6 +396,20 @@ A later review found 4 more disguised forms. The hook now denies these too:
   `GIT_COMMON_DIR=<dir>` point git at a different repository. That repository's config file
   denies the same way.
 
+The `env -S` fix above has a related gap. The hook still did not see `-S`. A value word of an
+`env` flag stood in front of it. The hook now denies these forms too:
+
+- `env -u NAME`/`--unset NAME`, `-C DIR`/`--chdir DIR`, `-P PATH` (BSD), or `-a ARG`/
+  `--argv0 ARG` (GNU), each followed by `-S '<command>'`. The old scan stopped at the value
+  word of the flag (`NAME`, `DIR`, `PATH`, `ARG`). It read that word as the command of `env`.
+  It never reached a later `-S`. The hook now reads past that value word. The word can be
+  attached to the flag or be the next word. So the hook still finds `-S`.
+- a short cluster that ends in one of these flags, for example `-iu FOO`. The hook skips one
+  value word in the same way.
+- an abbreviated long option name, for example `--spl '<command>'` or `--sp='<command>'`. GNU
+  `getopt_long` accepts any prefix of a long option name that names only one option. The
+  prefix works the same as `--unset` or `--split-string` in full.
+
 The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
 read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook
 denies the push outright: it has no branch name, or no `origin/HEAD` name, to check.
