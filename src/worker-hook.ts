@@ -40,6 +40,21 @@
  * `git push -n` is a dry run: it does not push anything.
  * The hook allows a dry run at all times.
  *
+ * It also denies one command that changes to a new branch and pushes HEAD to that branch (claude-factory-c63).
+ * This hook reads the branch one time, before the change.
+ * A later comparison with that name can miss the real, new target.
+ * These commands can each change the branch:
+ *   - `git checkout`
+ *   - `git switch`
+ *   - `git branch` with a rename flag
+ *   - a `git symbolic-ref` write
+ *   - `git rebase` with an explicit `<branch>` operand, or `git rebase --root <branch>`
+ *   - `git stash branch <name>`
+ *   - `git bisect reset <commit>`
+ *   - `git update-ref --stdin`, which can run a hidden `symref-update HEAD <ref>` line
+ *   - `gh pr checkout`
+ * This hook denies the combination without the new branch name.
+ *
  * This hook only denies.
  * It never approves a command that Claude Code's own prompt would refuse.
  * claude-factory-9wu rejected another design: a hook that approves `rm -rf`, which is a safety regression.
@@ -167,6 +182,42 @@ export interface HookGate {
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
+}
+
+/**
+ * claude-factory-c63: `gitReason` reads the current branch one time. It uses `gate.headOf` to read
+ * the branch when it examines a `git push` or `git send-pack` word.
+ * One command can run a word that changes the branch, for example `git checkout main`.
+ * The same command can later push `HEAD` to that branch.
+ * `gate.headOf` reads the branch before that change, so a comparison with its answer misses the real target.
+ *
+ * `ScanState` monitors two facts, `branchChange` and `headPush`, across one whole top-level call to `denyAt`.
+ * It monitors them across every segment and every recursion into a nested shell, `eval`, or `env -S` script
+ * (claude-factory-c63). `denyReason` makes the object one time.
+ * Each function that sees a word that changes the branch, or that pushes `HEAD`, passes that object on.
+ *
+ * `branchChange` becomes true when a segment holds a word that changes the branch that `gate.headOf` reports next.
+ * These words are:
+ *   - `git checkout`
+ *   - `git switch`
+ *   - `git branch` with a rename flag
+ *   - a `git symbolic-ref` write
+ *   - `git rebase` with an explicit `<branch>` operand, or `git rebase --root <branch>`
+ *   - `git stash branch <name>`
+ *   - `git bisect reset <commit>`
+ *   - `git update-ref --stdin`, which can run a hidden `symref-update HEAD <ref>` line
+ *   - `gh pr checkout`
+ *
+ * `headPush` becomes true when a segment holds a `git push` or `git send-pack` call.
+ * Its refspec reads `currentBranch`. A call counts when it is bare, or when its refspec is a no-colon `HEAD` alias.
+ *
+ * `denyReason` denies with `PUSH_REASON` when both `branchChange` and `headPush` are true.
+ * It does not need the new branch name. The check denies such a command.
+ * A branch name read before the move does not prove that the push is safe.
+ */
+interface ScanState {
+  branchChange: boolean
+  headPush: boolean
 }
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
@@ -1183,12 +1234,17 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
  * claude-factory-25z.6: an unknown global flag before the verb makes the verb search uncertain.
  * This then falls back to a plain word scan for `merge`, `sync` or `ready` before a literal `--`,
  * the same fail-closed rule the live-apply guard uses for an unknown kubectl/ko/helm flag.
+ *
+ * claude-factory-c63: `gh pr checkout` changes the branch `gate.headOf` names next, the same as
+ * `git checkout`. This sets `state.branchChange`, the scan state shared for the whole top-level
+ * call; it does not deny on its own.
  */
-function ghReason(cmd: string[], gate: HookGate): string | undefined {
+function ghReason(cmd: string[], gate: HookGate, state: ScanState): string | undefined {
   const tail = cmd.slice(1)
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
   const verb = vi >= 0 ? tail[vi] : undefined
   const sub = vi >= 0 ? tail[vi + 1] : undefined
+  if (verb === 'pr' && sub === 'checkout') state.branchChange = true
   if (verb === 'pr' && sub === 'merge') return MERGE_REASON
   if (verb === 'repo' && sub === 'sync') return MERGE_REASON
   if (verb === 'pr' && sub === 'ready') {
@@ -1209,6 +1265,11 @@ function ghReason(cmd: string[], gate: HookGate): string | undefined {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
     if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
       return gate.station === 'release' ? undefined : READY_REASON
+    // claude-factory-c63.10: an unknown global flag can hide the `pr` word the same way it
+    // hides `verb` above, so a plain word scan for `checkout` is the only check left. No
+    // probe today reaches a real `gh pr checkout` call this way: real gh exits with code 1
+    // on the unknown flag first. This word scan still sets `branchChange`, fail closed.
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['checkout']))) state.branchChange = true
   }
   return undefined
 }
@@ -1246,10 +1307,10 @@ function ghAliasDenied(subArgs: string[]): string | undefined {
  * `anyLiveApplyWord` uses for kubectl, ko and helm, so a wrapper this hook does not strip by name
  * cannot hide a `gh` word that follows it.
  */
-function anyGhReason(words: string[], gate: HookGate): string | undefined {
+function anyGhReason(words: string[], gate: HookGate, state: ScanState): string | undefined {
   for (let j = 0; j < words.length; j++) {
     if (baseWord(words[j]!) === 'gh') {
-      const r = ghReason(words.slice(j), gate)
+      const r = ghReason(words.slice(j), gate, state)
       if (r) return r
     }
   }
@@ -1662,6 +1723,239 @@ function sendPackDenied(tail: string[], currentBranch: string | undefined, gate:
   return false
 }
 
+// claude-factory-c63: in the uncertain-verb path, an unknown global flag can push the real verb
+// past `vi`. These words can each change the branch that `gate.headOf` names next. The code uses
+// the same fail-closed scan that `hasMutatingWordBeforeDashDash` already uses for `push` and `send-pack` below.
+//
+// claude-factory-c63 added `rebase` and `stash` to this set. A rebase with an explicit `<branch>`
+// word can change the branch first. The subcommand `git stash branch <name>` makes a new branch
+// and checks it out.
+//
+// claude-factory-c63.8 added `bisect`. The command `git bisect reset <commit>` checks out
+// `<commit>`. It also ends the bisect.
+//
+// claude-factory-c63.9 added `update-ref`. The command `git update-ref --stdin` can read a
+// line from stdin that this hook cannot see: `symref-update HEAD <ref>`. So this word scan
+// denies the whole call. It does not check the rest of the call.
+//
+// claude-factory-c63.10 added `branch`. A plain word scan cannot tell a rename flag (`-m` or
+// `-M`) from a read-only `git branch` call. So the scan denies both. This path is rare, because
+// it needs an unknown global flag first. Real git exits with code 129 on that flag.
+const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set([
+  'checkout',
+  'switch',
+  'branch',
+  'symbolic-ref',
+  'rebase',
+  'stash',
+  'bisect',
+  'update-ref',
+])
+
+/**
+ * True when `word` equals `longFlag`, a long flag such as `--stdin`.
+ * It is also true when `word` is an abbreviation of `longFlag` with 3 or more characters
+ * (claude-factory-c63.11).
+ *
+ * Git's option parser accepts a short, unique abbreviation of a long flag.
+ * It also accepts some abbreviations that can match another flag's name.
+ * This function does not tell these two kinds apart.
+ * It treats every abbreviation of `longFlag` as a match. This fails closed.
+ *
+ * A real abbreviation that matches two flags makes git refuse the whole call.
+ * In that case, git exits with code 129.
+ *
+ * Real git 2.54 confirms this risk.
+ * `git update-ref --stdi` (or `--st`) reads stdin, the same as `--stdin`.
+ * `git rebase --roo <branch>` (or `--ro <branch>`) reads `--root` the same way.
+ * Both commands exit with code 0.
+ */
+function matchesLongFlagPrefix(word: string, longFlag: string): boolean {
+  if (word === longFlag) return true
+  return word.length >= 3 && word.startsWith('--') && longFlag.startsWith(word)
+}
+
+/**
+ * True when `args`, the arguments of a `git branch` call, holds a rename flag (claude-factory-c63).
+ * The rename flags are `-m`, `-M`, `--move`, and an abbreviation of `--move` (claude-factory-c63.11).
+ * A short-flag cluster that holds `m` or `M` is also a rename flag.
+ * A rename can change the branch that `gate.headOf` names next.
+ */
+function branchRenameDenied(args: string[]): boolean {
+  for (const w of args) {
+    if (w === '--') break
+    if (matchesLongFlagPrefix(w, '--move')) return true
+    if (w.startsWith('-') && !w.startsWith('--') && /[mM]/.test(w.slice(1))) return true
+  }
+  return false
+}
+
+/**
+ * True when the arguments of a `git symbolic-ref` call (`args`) write or delete a ref, not read one
+ * (claude-factory-c63): a `-d`/`--delete` flag, or 2 or more non-flag words (the ref name and its
+ * new target).
+ */
+function symbolicRefWrites(args: string[]): boolean {
+  let operands = 0
+  for (const w of args) {
+    if (w === '--') continue
+    if (w === '-d' || w === '--delete') return true
+    if (w.startsWith('-')) continue
+    operands++
+  }
+  return operands >= 2
+}
+
+/**
+ * True when `args`, the arguments of a `git rebase` call, contain an explicit `<branch>`
+ * (claude-factory-c63.4, claude-factory-c63.7).
+ *
+ * If `args` has 2 or more words that are not flags, `git rebase [<upstream> [<branch>]]`
+ * checks out `<branch>` first. With `--root` (or an abbreviation of it, claude-factory-c63.11),
+ * the call skips `<upstream>`. Then, if `args` has 1 word that is not a flag, that word is
+ * `<branch>`. `git rebase --root <branch>` then checks out `<branch>`.
+ *
+ * If `args` has fewer words that are not flags, the call contains no `<branch>`.
+ * `rebase` then keeps the current branch checked out. A value flag such as `--onto <newbase>`
+ * can make this function wrongly deny a safe command. It never allows an unsafe command.
+ */
+function rebaseChangesBranch(args: string[]): boolean {
+  let operands = 0
+  let root = false
+  for (const w of args) {
+    if (w === '--') break
+    if (matchesLongFlagPrefix(w, '--root')) root = true
+    if (w.startsWith('-')) continue
+    operands++
+  }
+  return operands >= (root ? 1 : 2)
+}
+
+/**
+ * True when `args`, the arguments of a `git bisect` call, contain `reset` followed by an
+ * explicit ref (claude-factory-c63.8). `git bisect reset <commit>` checks out `<commit>` and
+ * stops the bisect.
+ *
+ * Plain `git bisect reset`, with no ref after `reset`, returns to the branch that the bisect
+ * started from. That branch is not new. This scan has already listed it.
+ */
+function bisectChangesBranch(args: string[]): boolean {
+  let sawReset = false
+  for (const w of args) {
+    if (w === '--') break
+    if (w.startsWith('-')) continue
+    if (!sawReset) {
+      if (w !== 'reset') return false
+      sawReset = true
+      continue
+    }
+    return true
+  }
+  return false
+}
+
+/**
+ * True when the first non-flag word of a `git stash` call's arguments (`args`) is `branch`
+ * (claude-factory-c63.5). `git stash branch <name>` makes a new branch and checks it out.
+ */
+function stashChangesBranch(args: string[]): boolean {
+  for (const w of args) {
+    if (w === '--') return false
+    if (w.startsWith('-')) continue
+    return w === 'branch'
+  }
+  return false
+}
+
+/**
+ * True when `args`, the arguments of a `git update-ref` call, hold `--stdin` or an abbreviation
+ * of it (claude-factory-c63.9, claude-factory-c63.11).
+ *
+ * `git update-ref --stdin` reads its own ref commands from standard input. This hook cannot read
+ * that input. One stdin command, `symref-update HEAD <ref>`, can point `HEAD` at a new branch.
+ * So this function denies the whole call on the `--stdin` flag alone. It does not check the rest
+ * of the call's command-line words.
+ *
+ * Real git 2.54 confirms this risk. When a piped `symref-update HEAD refs/heads/<branch>` line
+ * reaches `git update-ref --stdin`, it moves the branch. `git symbolic-ref --short HEAD` then
+ * reports the new branch.
+ *
+ * A plain `git update-ref HEAD <sha>`, with no `--stdin`, only updates a ref's target commit.
+ * The same is true for `git update-ref refs/heads/<name> <sha>`. Neither command moves the
+ * `HEAD` symref itself. So neither command changes the current branch.
+ */
+function updateRefChangesBranch(args: string[]): boolean {
+  for (const w of args) {
+    if (w === '--') break
+    if (matchesLongFlagPrefix(w, '--stdin')) return true
+  }
+  return false
+}
+
+/**
+ * Returns `true` when `verb` can change the next branch that `gate.headOf` names (claude-factory-c63).
+ * `verb` is a git subcommand.
+ *
+ * `checkout` and `switch` can change the branch with all `args`.
+ * `branch`, `symbolic-ref`, `rebase`, `stash`, `bisect` and `update-ref` can change the branch only with some `args`.
+ * The functions `branchRenameDenied`, `symbolicRefWrites`, `rebaseChangesBranch`, `stashChangesBranch`, `bisectChangesBranch` and `updateRefChangesBranch` examine those `args`.
+ */
+function gitChangesBranch(verb: string, args: string[]): boolean {
+  if (verb === 'checkout' || verb === 'switch') return true
+  if (verb === 'branch') return branchRenameDenied(args)
+  if (verb === 'symbolic-ref') return symbolicRefWrites(args)
+  if (verb === 'rebase') return rebaseChangesBranch(args)
+  if (verb === 'stash') return stashChangesBranch(args)
+  if (verb === 'bisect') return bisectChangesBranch(args)
+  if (verb === 'update-ref') return updateRefChangesBranch(args)
+  return false
+}
+
+/**
+ * True when `spec`, one refspec word, is a no-colon alias for `HEAD` (claude-factory-c63): the
+ * same test that `refspecTarget` makes right before it reads `currentBranch`. This reads no
+ * `currentBranch` value of its own. It only states whether a push with this refspec would.
+ */
+function isHeadAliasRefspec(spec: string): boolean {
+  const s = spec.startsWith('+') ? spec.slice(1) : spec
+  if (REFSPEC_UNSAFE.test(s)) return false
+  if (s === ':') return false
+  return !s.includes(':') && isHeadAlias(s)
+}
+
+/**
+ * True when `tail` would read `currentBranch` to resolve a refspec (claude-factory-c63).
+ * `tail` holds the arguments of a `git push` (`isSendPack` false) or `git send-pack`
+ * (`isSendPack` true) call, after its own verb.
+ * The call is not a dry run.
+ * Some refspec is a no-colon `HEAD` alias after the code removes a leading `+`.
+ * The default of `push` is `['HEAD']`, with no refspec and no `--tags`.
+ *
+ * A later branch change in the same command can move the branch past the name that `currentBranch` holds.
+ * This function shows the risk. It does not resolve the real target.
+ */
+function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
+  if (isSendPack) {
+    const operands: string[] = []
+    let dryRun = false
+    for (const w of tail) {
+      if (w === '--') continue
+      if (w.startsWith('-') && w !== '-') {
+        if (w === '-n' || w === '--dry-run') dryRun = true
+        continue
+      }
+      operands.push(w)
+    }
+    if (dryRun) return false
+    return operands.slice(1).some(isHeadAliasRefspec)
+  }
+  const { operands, tags, dryRun } = pushOperands(tail)
+  if (dryRun) return false
+  const refspecs = operands.slice(1)
+  const specs = refspecs.length ? refspecs : tags ? [] : ['HEAD']
+  return specs.some(isHeadAliasRefspec)
+}
+
 /**
  * Returns the reason to deny `cmd`, a command that starts with a `git` word.
  * Returns undefined to allow `cmd`.
@@ -1673,6 +1967,12 @@ function sendPackDenied(tail: string[], currentBranch: string | undefined, gate:
  * `gate.headOf(dir)` reads the current branch there.
  *
  * claude-factory-zl5.35: This guard checks `send-pack` in the same way as `push`, through `sendPackDenied`.
+ *
+ * claude-factory-c63: this also updates `state`, the scan state shared for the whole top-level call.
+ * It sets `state.branchChange` when `gitChangesBranch` names a verb at `vi`.
+ * When the verb search is uncertain, it searches for such a verb anywhere in `tail` before a literal `--`.
+ * It sets `state.headPush` when `pushReadsCurrentBranch` returns true for the push or send-pack tail that this function finds.
+ * `denyReason` denies the whole command when both flags are true at the end, even when neither alone denies here.
  *
  * claude-factory-68gn: `moved` is true when an earlier `cd`, `pushd` or `popd` word, in this
  * segment or an earlier one, already made the current directory unknown (see `anyGitReason` and
@@ -1687,11 +1987,17 @@ function gitReason(
   cmd: string[],
   root: string | undefined,
   gate: HookGate,
+  state: ScanState,
   moved: boolean,
 ): string | undefined {
   const tail = cmd.slice(1)
   if (gitDashCPushDenied(tail)) return PUSH_REASON
   const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS)
+  if (vi >= 0 && gitChangesBranch(tail[vi]!, tail.slice(vi + 1))) {
+    state.branchChange = true
+  } else if (uncertain && hasMutatingWordBeforeDashDash(tail, BRANCH_CHANGE_UNCERTAIN_VERBS)) {
+    state.branchChange = true
+  }
   // claude-factory-zl5.21: the `git config` subcommand's own form of the same two writes.
   if (vi >= 0 && tail[vi] === 'config' && gitConfigSubcommandPushDenied(tail.slice(vi + 1))) {
     return PUSH_REASON
@@ -1714,6 +2020,7 @@ function gitReason(
     }
   }
   if (!pushTail) return undefined
+  if (pushReadsCurrentBranch(pushTail, isSendPack)) state.headPush = true
   // claude-factory-68gn: a --git-dir flag moves the push the same way a cd does, so it folds into
   // `moved` here instead of into `dir`. Once `moved`, a -C value is not trusted either: a relative
   // -C resolves against the directory this hook started in, not the one a cd already moved to.
@@ -1763,6 +2070,7 @@ function anyGitReason(
   words: string[],
   root: string | undefined,
   gate: HookGate,
+  state: ScanState,
   movedBefore: boolean,
 ): string | undefined {
   let moved = movedBefore
@@ -1777,13 +2085,13 @@ function anyGitReason(
       continue
     }
     if (b === 'git') {
-      const r = gitReason(words.slice(j), root, gate, moved)
+      const r = gitReason(words.slice(j), root, gate, state, moved)
       if (r) return r
       continue
     }
     const dashed = GIT_DASHED_BINARY.exec(b)
     if (dashed) {
-      const r = gitReason(['git', dashed[1]!, ...words.slice(j + 1)], root, gate, moved)
+      const r = gitReason(['git', dashed[1]!, ...words.slice(j + 1)], root, gate, state, moved)
       if (r) return r
     }
   }
@@ -2053,6 +2361,7 @@ function anyShellReason(
   personOnly: string[] | undefined,
   gate: HookGate,
   depth: number,
+  state: ScanState,
   movedBefore: boolean,
 ): string | undefined {
   let nc = -1
@@ -2079,7 +2388,7 @@ function anyShellReason(
       // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
       // or gh verb; env expands it to one command word at run time, past this guard's sight.
       if (val.includes('$')) return ENV_SPLIT_VAR_REASON
-      const r = denyAt(val, root, personOnly, gate, depth + 1, moved)
+      const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved)
       if (r) return r
       break
     }
@@ -2099,11 +2408,11 @@ function anyShellReason(
         const w = words[k]!
         if (w === '--') {
           k++
-          if (k < words.length) found = denyAt(words[k]!, root, personOnly, gate, depth + 1, moved)
+          if (k < words.length) found = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved)
           break
         }
         if (w.startsWith('-')) continue
-        found = denyAt(w, root, personOnly, gate, depth + 1, moved)
+        found = denyAt(w, root, personOnly, gate, depth + 1, state, moved)
         if (found) break
       }
       if (found) return found
@@ -2113,7 +2422,7 @@ function anyShellReason(
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {
-        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1, moved)
+        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1, state, moved)
         if (r) return r
       }
       break
@@ -2240,9 +2549,15 @@ export function denyReason(
  * for `eval` or `sh -c`) reads a substring of a command that `denyReason` already capped. So this
  * inner scan does not need a cap of its own.
  *
- * `memoGate` wraps `gate` once here. So every recursion level (`denyAt`, `anyShellReason`) that
- * goes through this one call shares one memoized `headOf`/`originHead`. This replaces one real git
- * spawn for every push segment (claude-factory-dts).
+ * `memoGate` wraps `gate` once here, so every recursion level (`denyAt`, `anyShellReason`)
+ * through this one call shares one memoized `headOf`/`originHead`, in place of one real git spawn
+ * for every push segment (claude-factory-dts).
+ *
+ * claude-factory-c63: after `denyAt` allows every segment on its own, this function still denies
+ * with `PUSH_REASON`. It does so when the whole command holds both a branch-change word and a
+ * HEAD-reading push. See `ScanState` above `denyAt`. `denyAt` would compare the push with a
+ * branch name read before the change. An allow there does not prove that the real, later target
+ * is safe.
  *
  * claude-factory-68gn: `false` is the `movedBefore` seed for this command (see `denyAt` below). No
  * `cd`, `pushd` or `popd` word has run yet at the top of a fresh `scanReason` call.
@@ -2253,7 +2568,10 @@ export function scanReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
-  return denyAt(command, root, personOnly, memoGate(gate ?? {}), 0, false)
+  const state: ScanState = { branchChange: false, headPush: false }
+  const reason = denyAt(command, root, personOnly, memoGate(gate ?? {}), 0, state, false)
+  if (reason) return reason
+  return state.branchChange && state.headPush ? PUSH_REASON : undefined
 }
 
 /**
@@ -2261,6 +2579,10 @@ export function scanReason(
  * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
  * `depth + 1` at each of its 4 recursion sites: one for `env -S`, two for `sh`/`bash`/`zsh`/
  * `dash -c` (one for the `--` form, one for the plain form), and one for `eval`.
+ *
+ * `state` is the claude-factory-c63 scan state. It is one object that `denyReason` makes one time.
+ * This function passes `state` down unchanged to every recursive call that it makes.
+ * That includes each call that `anyShellReason` makes into a nested shell, `eval`, or `env -S` script.
  *
  * claude-factory-68gn: `movedBefore` is true when a `cd`, `pushd` or `popd` word already ran
  * before `command`, either in an outer command's earlier segment or in the script `command`
@@ -2274,6 +2596,7 @@ function denyAt(
   personOnly: string[] | undefined,
   gate: HookGate,
   depth: number,
+  state: ScanState,
   movedBefore: boolean,
 ): string | undefined {
   if (!command) return undefined
@@ -2310,17 +2633,17 @@ function denyAt(
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
     // timeout) can push past position 0.
-    const ghFound = anyGhReason(words, g)
+    const ghFound = anyGhReason(words, g, state)
     if (ghFound) return ghFound
     // claude-factory-zl5.3: the same any-position scan, for a git word a wrapper can push past
     // position 0. claude-factory-68gn: movedSoFar carries an earlier segment's cd/pushd/popd word
     // into this one.
-    const gitFound = anyGitReason(words, root, g, movedSoFar)
+    const gitFound = anyGitReason(words, root, g, state, movedSoFar)
     if (gitFound) return gitFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
-    const shellReason = anyShellReason(words, root, personOnly, g, depth, movedSoFar)
+    const shellReason = anyShellReason(words, root, personOnly, g, depth, state, movedSoFar)
     if (shellReason) return shellReason
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
