@@ -2968,6 +2968,15 @@ const DENY_FUNCTION_DEF = [
   `\\function f { :; }`,
   `while true; do function f { :; }; done`,
   `true || function f { :; }`,
+  // each prefix word alone, and a newline inside the pair
+  `if false; then :; else function f { :; }; fi`,
+  `if false; then :; elif true; then function f { :; }; fi`,
+  `while function f { :; }; do :; done`,
+  `until function f { :; }; do :; done`,
+  `for x in a; do function f { :; }; done`,
+  `time -p function f { :; }`,
+  `f(\n) { :; }`,
+  `env BASH_FUNC_f%%=$v bash -c f`,
   // function tables and imports (4i60.3)
   `functions[f]='sh "$@"'; f -c 'git push origin main'`,
   `functions+=(f 'sh "$@"'); f -c 'git push origin main'`,
