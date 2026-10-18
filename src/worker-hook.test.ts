@@ -4478,3 +4478,20 @@ test('a single slow headOf call that spends the whole gate budget also skips the
     dateSpy.mockRestore()
   }
 })
+
+const ESCAPED_REDIR_PREFIXES = ['\\>&', '\\>|', '\\<&', "'>'&", '">"&', "$'>'&"]
+
+const DENY_ESCAPED_REDIR = [
+  ...ESCAPED_REDIR_PREFIXES.flatMap(op => [
+    `echo ${op}git push origin main`,
+    `true ${op}git send-pack ../r.git main`,
+  ]),
+]
+
+test.each(DENY_ESCAPED_REDIR)('denyReason denies %j (claude-factory-cu5m.15, escaped redirect char)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
+test('denyReason keeps the gh merge deny after an escaped redirect (claude-factory-cu5m.15)', () => {
+  expect(denyReason('echo \\>&gh pr merge 5')).toBeDefined()
+})

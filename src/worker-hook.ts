@@ -367,8 +367,12 @@ function segments(cmd: string): string[][] {
     segs.push(cur)
     cur = []
   }
+  let redirPrev = false
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
+    // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
+    const afterRedir = redirPrev
+    redirPrev = false
     if (quote === "'") {
       if (c === "'") quote = null
       else word += c
@@ -426,7 +430,7 @@ function segments(cmd: string): string[][] {
       endSeg()
       continue
     }
-    if ((c === '&' || c === '|') && '<>'.includes(cmd[i - 1] ?? '\0')) {
+    if ((c === '&' || c === '|') && afterRedir) {
       // claude-factory-cu5m.12: a `&` or `|` right after `<` or `>` is part of a redirect
       // (`>&`, `<&`, `>|`, `>>|`) in zsh, bash and sh. It is not a separator.
       word += c
@@ -443,6 +447,7 @@ function segments(cmd: string): string[][] {
     }
     word += c
     hasWord = true
+    redirPrev = c === '<' || c === '>'
   }
   endSeg()
   return segs.filter(s => s.length > 0)
