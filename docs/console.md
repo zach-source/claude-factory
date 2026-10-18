@@ -86,6 +86,10 @@ own, and beads that wait for you to queue them (the first 15).
 A parent shows `[done/total]` of its children and starts collapsed; `▸` opens it and `▾`
 closes it, and its children hang from it with `├─` and `└─`.
 
+A bead that a sweep pass filed carries a `sweep:<name>` label (for example `sweep:maintain`).
+Both lists group these apart from the priority tiers, under their own `sweep:<name> (n)`
+heading, so a sweep's findings do not mix into a person's own priority order.
+
 | Key or button | What it does |
 | --- | --- |
 | `2` | Switch to the Backlog tab. |

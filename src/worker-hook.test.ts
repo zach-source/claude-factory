@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   type HookGate,
   LIVE_REASON,
@@ -445,6 +447,56 @@ test('scanReason still allows a 40000-word sh scan whose last word is a `-c` fla
 
 test('denyReason denies the same no-script sh scan with LONG_COMMAND_REASON (claude-factory-dts)', () => {
   expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBe(LONG_COMMAND_REASON)
+})
+
+// claude-factory-8pc.24: bd fills a bead's created_by from BEADS_ACTOR, which the flood guard's
+// sweepFiler trusts. A worker that sets, clears or re-exports BEADS_ACTOR escapes the cap.
+const BEADS_ACTOR_DENY = [
+  'BEADS_ACTOR=person bd create "x" -l factory',
+  'env BEADS_ACTOR=person bd create "x" -l factory',
+  'export BEADS_ACTOR=person',
+  'export BEADS_ACTOR',
+  'unset BEADS_ACTOR',
+  'declare -x BEADS_ACTOR=person',
+  'bd create "x"; BEADS_ACTOR=person bd create "y" -l factory',
+  "bash -c 'BEADS_ACTOR=person bd create x -l factory'",
+]
+
+test.each(BEADS_ACTOR_DENY)('denyReason denies %s (claude-factory-8pc.24)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+test('denyReason allows a plain bd command and an unrelated VAR=val assignment (claude-factory-8pc.24)', () => {
+  expect(denyReason('bd create "x" -l factory')).toBeUndefined()
+  expect(denyReason('FOO=1 bd list --all')).toBeUndefined()
+  // a word that only contains the text BEADS_ACTOR, not an assignment or export of it, is not denied
+  expect(denyReason('echo BEADS_ACTOR_LOG=1')).toBeUndefined()
+})
+
+// claude-factory-8pc.27: each line clears BEADS_ACTOR before bd runs. bd then uses its own
+// default actor. sweepFiler (src/sweeps.ts) never matches the filed bead. The round-7 security
+// review found 3 of these forms let through by the claude-factory-8pc.24 fix.
+const BEADS_ACTOR_CLEAR_DENY = [
+  'env -u BEADS_ACTOR bd create "x" -l factory',
+  'env --unset=BEADS_ACTOR bd create "x" -l factory',
+  'env --unset BEADS_ACTOR bd create "x" -l factory',
+  'env -i PATH=/usr/bin bd create "x" -l factory',
+  'env --ignore-environment PATH=/usr/bin bd create "x" -l factory',
+  'export -n BEADS_ACTOR; bd create "x" -l factory',
+  'declare -n BEADS_ACTOR',
+]
+
+test.each(BEADS_ACTOR_CLEAR_DENY)('denyReason denies %s (claude-factory-8pc.27)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+test('denyReason allows env -i on a command that is not bd (claude-factory-8pc.27)', () => {
+  // env -i clears BEADS_ACTOR too, but it is this gap only when the cleared command is bd itself
+  expect(denyReason('env -i PATH=/usr/bin ls')).toBeUndefined()
+})
+
+test('denyReason allows env -u on a variable other than BEADS_ACTOR (claude-factory-8pc.27)', () => {
+  expect(denyReason('env -u OTHER_VAR bd create "x" -l factory')).toBeUndefined()
 })
 
 // claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it
@@ -1674,6 +1726,47 @@ test.each(DENY_ENV_SPLIT_STRING)(
 )
 
 test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.42)', () => {
+  expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
+  expect(denyReason('env -i git status')).toBeUndefined()
+})
+
+// claude-factory-vco: GNU env and macOS /usr/bin/env split an env -S value at each \_ and at
+// each real newline, quoted or not. denyAt's tokenizer does not split there, so a value such
+// as 'git\_push\_origin\_main' stays one word and never matches the push check. Each row below
+// holds a backslash or a newline and must deny with ENV_SPLIT_ESCAPE_REASON.
+const DENY_ENV_SPLIT_ESCAPE: string[] = [
+  // the 3 bead rows (claude-factory-vco)
+  "env -S 'git\\_push\\_origin\\_main'",
+  "env -S 'git push\\_origin main'",
+  "env -S 'gh\\_pr merge 5'",
+  // the same value in every flag form -S/--split-string accepts
+  "env -S'git\\_push origin main'",
+  "env -vS 'git\\_push origin main'",
+  "env --split-string='git\\_push origin main'",
+  'env -S "git\\_push origin main"',
+  "/usr/bin/env -S 'git\\_push origin main'",
+  // a real newline inside the value
+  "env -S 'git\npush origin main'",
+  // another \_ word break, later in the value
+  "env -S 'rm\\_-rf\\_/'",
+  // a lone trailing backslash, with no character after it before the closing quote
+  "env -S 'git push origin main\\'",
+]
+
+test.each(DENY_ENV_SPLIT_ESCAPE)(
+  'denyReason denies %j (claude-factory-vco, a backslash or newline in an env -S value hides the real command)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(ENV_SPLIT_ESCAPE_REASON)
+  },
+)
+
+test('denyReason allows env -S values with no backslash and no newline (claude-factory-vco)', () => {
+  expect(denyReason("env -S 'echo hi'")).toBeUndefined()
+  expect(denyReason("env -S 'git status'")).toBeUndefined()
+  // the gate must not depend on gate or root
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason("env -S 'git status'", undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason("env -S 'git status'", '/some/root')).toBeUndefined()
   expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
   expect(denyReason('env -i git status')).toBeUndefined()
 })

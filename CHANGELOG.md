@@ -6,6 +6,71 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+## 0.13.0 (2026-10-18)
+
+- Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
+  `factories/sweeps.ts`. `factory tick` starts each due `(rig, sweep)` pass on its own cadence.
+  A lifecycle run no longer loops on a sweep station. (claude-factory-8pc)
+
+  - `factories/sweeps.ts` is a new, self-contained factory. It has 3 start stations.
+
+    `monitor` runs at an interval of 30 min. It is a read-only production check. It must have a rig's `--slo` command.
+
+    `maintain` runs daily. It does dependency, advisory, test and docs maintenance. `improve` runs daily. It turns through a lens for refactor, performance, cost and factory-health.
+
+    Each pass goes straight to `done`. It makes beads from what it finds. It does not stay as a run.
+
+  - `src/sweeps.ts` is a new module. `sweepNames(def)` reads a factory's `everyMin` nodes.
+    `dueSweeps` picks the due `(rig, sweep)` pairs. `sigOf` and `clipUtf8` support `monitor`'s
+    read-only `--slo` hash-and-skip-on-no-change check. `sweepFiler(b)` reads a bead's
+    `created_by` field to tell a sweep-filed bead from a person's bead.
+
+  - `sweepGuard` is a guard against too many sweep-filed beads. It sets a maximum of 5
+    sweep-filed beads for each rig in each 24 hour window.
+
+    `sweepGuard` identifies a sweep-filed bead by its `created_by` field. It uses `sweepFiler`
+    to read that field. It does not use the `sweep:<name>` label. A worker can set that label on
+    a bead itself.
+
+    A bead above the cap loses the `factory` label. It then waits for a person. The bead starts
+    by itself only if it has one of these labels: `sweep-queue:incident`,
+    `sweep-queue:main-ci-red`, or `sweep-queue:critical-advisory`.
+
+  - `guardHandled`, `markGuardHandled` and `pruneGuardState` keep the guard's "already scored"
+    mark in `$FACTORY_HOME/sweep-guard.json`, not on the bead itself. A sweep worker's own
+    `bd create -l factory -l sweep:maintain` command has no access to that file, so it cannot
+    pre-set the mark and skip the guard (claude-factory-8pc.18).
+
+  - `src/cli.ts`'s `sweep()` runs on `factory tick`'s cadence. It calls `hasBeads(rig.repo)`
+    first, so a rig with no bd never runs a sweep pass (claude-factory-8pc.19).
+
+  - The flood guard in `dispatch()` scores each sweep-filed bead. This includes a bead that
+    `b.every()` misses for more than 24 hours (claude-factory-8pc.21). This also includes a closed
+    bead (claude-factory-8pc.22). The guard continues to count a closed bead toward the
+    cap. The guard does not write `bd defer` or a label update on that bead.
+
+  - `factories/lifecycle.ts` no longer has the `monitor`, `maintain` and `improve` nodes. A
+    comment points to `factories/sweeps.ts` as the alternative. A run that keeps the old shape
+    loads and ticks the previous nodes (AC7, tested in `factories/lifecycle.test.ts`). Its
+    `factory.json` continues to hold the previous nodes.
+
+  - The console's Backlog tab now groups a rig's beads by their `sweep:<name>` label. Each
+    label gets its own heading, apart from the priority tiers.
+
+  - `brief()` (`src/cli.ts`) now indents every mail's continuation line. It uses CRLF, LF, CR,
+    NEL, LS and PS as line breaks. This stops a line in raw `--slo` output that reads
+    `- from manager: ...` from being its own top-level inbox bullet. Such a bullet can forge
+    the mail channel (claude-factory-8pc.23, .26).
+
+  - `src/worker-hook.ts` now denies a command that sets, clears, exports, unsets or declares
+    `BEADS_ACTOR`. This includes these forms: `env -u`, `env -i` and `export -n`. `sweepFiler`
+    trusts the bead's `created_by` field. `BEADS_ACTOR` controls that field.
+
+    This denial is defense in depth only. It covers only the forms that the guard knows. A
+    worker can still bypass it in other ways. The gap stays open
+    (claude-factory-8pc.24, .27; the remaining `env -u`/`env -i` sibling forms are follow-up
+    claude-factory-igj).
+
 - An edge into `done` can now carry `requeue: true` or `requeue: { factory?, station? }`. The
   run ends, but the bead stays open, ready and `factory`-labeled instead of closed or deferred,
   so the next dispatch starts a new run on it, in the factory and station its labels name (for
@@ -196,6 +261,7 @@ minor release may change the factory format, the CLI or the run state.
     under the first page's `totalCount` (a lost page). This keeps the `isCrossRepository` guard
     from claude-factory-ulv working: the query, `PrPageNode` and `isPrPageNode` all need it
     as a boolean, and fail closed on a missing or wrong-typed value (claude-factory-ph8.4).
+
 - A hidden `briefer` subagent writes an evidence brief into each gate's decision item. The
   manager no longer needs to read the pull request and the journal itself. (claude-factory-2u2)
   - `src/gatebrief.ts`: `gateKey()` and `clipBrief()`. `src/cli.ts`: `factory gate-brief facts
@@ -942,6 +1008,13 @@ minor release may change the factory format, the CLI or the run state.
   example `git ${FOO} origin main`. `env` changes a `${NAME}` word into one command word when it
   runs, so the old check on the typed text alone can miss a real push or merge hidden this way.
   (claude-factory-z1p)
+
+- The worker-hook deny gate now denies an `env -S`/`--split-string` value with a backslash or a
+  real newline, for example `env -S 'git\_push acme/widget main'`. `env` reads `\_` or a real
+  newline there as a word break, but the old gate read the whole value as one word, so it let
+  the command pass. (claude-factory-vco)
+  - `src/worker-hook.ts` adds the `ENV_SPLIT_ESCAPE_REASON` constant. `anyShellReason` checks
+    for this mark before it calls `denyAt`.
 
 ## 0.12.0 (2026-10-15)
 

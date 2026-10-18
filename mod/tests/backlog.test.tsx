@@ -73,6 +73,34 @@ test('the row limit counts a parent with its children and never splits them', ()
   expect(tiers(BEADS, 'all', 2).drawn).toBe(4)
 })
 
+test('beads labeled sweep:<name> group under their own heading, apart from the priority tiers', () => {
+  const list = [
+    ...BEADS,
+    { id: 's-1', title: 'drift found', type: 'bug', labels: ['sweep:maintain'] },
+    { id: 's-2', title: 'advisory found', type: 'bug', priority: 2, labels: ['sweep:maintain'] },
+    { id: 's-3', title: 'ci red', type: 'bug', labels: ['sweep:improve'] },
+  ]
+  const t = tiers(list)
+  const sweepTiers = t.tiers.filter(g => g.tier.startsWith('sweep:'))
+  // sorted by station name, each heading counting only its own group
+  expect(sweepTiers.map(g => g.tier)).toEqual(['sweep:improve (1)', 'sweep:maintain (2)'])
+  expect(sweepTiers.flatMap(g => g.rows.map(r => r.bead.id))).toEqual(['s-3', 's-1', 's-2'])
+  // the P2 priority tier still holds only its own root (a-4); no sweep-labeled bead joins it
+  expect(t.tiers.filter(g => g.priority === 2).flatMap(g => g.rows.map(r => r.bead.id))).toEqual(['a-4'])
+})
+
+test("a sweep heading counts the group's own beads, not its drawn rows (claude-factory-8pc.15)", () => {
+  const list = [
+    { id: 's-1', title: 'drift found', type: 'bug', labels: ['sweep:maintain'] },
+    { id: 's-1.1', title: 'a child of it', type: 'task', parent: 's-1', labels: ['sweep:maintain'] },
+  ]
+  const t = tiers(list)
+  const sweepTiers = t.tiers.filter(g => g.tier.startsWith('sweep:'))
+  // one root bead in the group: "(1)", even though its family draws 2 rows
+  expect(sweepTiers.map(g => g.tier)).toEqual(['sweep:maintain (1)'])
+  expect(sweepTiers[0]!.rows.map(r => r.bead.id)).toEqual(['s-1', 's-1.1'])
+})
+
 test('the backlog tab draws the picked type with a child nested under its parent', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)

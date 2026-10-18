@@ -81,7 +81,8 @@ The next table shows the options that you need first. `factory --help` lists all
 | --- | --- |
 | `--max n` | The cap of busy runs for this rig. It sits under `FACTORY_MAX_RUNS` (default 16). |
 | `--goal text...` | Your direction for the rig. While the rig has room, the manager gives it the next work for this goal. |
-| `--sweeps a,b\|none` | The sweeps that the factory keeps running. The default is all sweeps of lifecycle: `monitor`, `maintain` and `improve`. |
+| `--sweeps a,b\|none` | The sweeps `factory tick` starts for this rig, each on its own cadence (see [console.md](console.md#rigs-key-4)). The default is all sweeps of `factories/sweeps.ts`: `monitor`, `maintain` and `improve`. `monitor` needs `--slo` too. |
+| `--slo '<command>'` | A read-only command that checks this rig's production health, run by the `monitor` sweep. Needed when `--sweeps` includes `monitor`. |
 | `--runner herdr\|ax` | Where the workers run. The default is `herdr` panes on this machine. |
 
 A rig name stands for its repo in all commands. To remove a rig, run `factory rig rm api`. Nothing new starts, and its runs continue.

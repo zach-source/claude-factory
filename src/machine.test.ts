@@ -342,6 +342,18 @@ test('a station that reports one outcome more than its rounds is held for the ma
   ).toThrow('rounds is at least 1')
 })
 
+test('everyMin marks a sweep station, and must be greater than 0', () => {
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, implement: { ...def.nodes.implement!, everyMin: 30 } } }),
+  ).not.toThrow()
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, implement: { ...def.nodes.implement!, everyMin: 0 } } }),
+  ).toThrow('everyMin is greater than 0')
+  expect(() =>
+    validate({ ...def, nodes: { ...def.nodes, implement: { ...def.nodes.implement!, everyMin: -5 } } }),
+  ).toThrow('everyMin is greater than 0')
+})
+
 // claude-factory-qgz AC1-AC3: a station with onRounds re-plans at its cap instead of holding, carrying
 // every round's findings; a second cap in the same run still holds for the manager.
 test('onRounds re-plans a capped station with its findings, then holds for the manager on a second cap', () => {

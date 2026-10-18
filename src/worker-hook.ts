@@ -121,6 +121,13 @@ export const PUSH_DIR_REASON =
   'remote branch directly instead, for example git push origin <run branch>, and never name a ' +
   'protected branch. Do not retry this exact command.'
 
+// claude-factory-vco
+export const ENV_SPLIT_ESCAPE_REASON =
+  'The factory denies this command: an env -S or env --split-string value holds a backslash or ' +
+  'a newline. env reads an escape such as \\_ as a word break, so this guard cannot read the ' +
+  'real command. Write the command words plainly, without env -S. Do not retry this exact ' +
+  'command.'
+
 // claude-factory-z1p: the env -S and --split-string flags change a ${NAME} word in the value
 // into one command word when env runs. denyAt reads only the typed text, so it cannot see the
 // changed command (GNU env 9.11 and macOS /usr/bin/env both do this).
@@ -366,6 +373,55 @@ function realCommand(words: string[]): string[] {
     }
     return w
   }
+}
+
+// claude-factory-8pc.24: bd fills a bead's created_by field from the BEADS_ACTOR variable.
+// See src/cli.ts lines 1089 and 1198.
+// The flood guard's sweepFiler (src/sweeps.ts) trusts created_by to find a sweep-filed bead.
+// A worker can set, clear or re-export BEADS_ACTOR itself.
+// That files a bead the guard never sees, with no cap and no sweep-queue allowlist.
+//
+// This check is defense in depth, not a full fix.
+// A worker can still write around a denied command in other ways.
+// The real boundary stays server-side: the flood guard must never trust a label or field the
+// filer itself controls.
+// claude-factory-8pc.18 fixed the same gap for the sweep:<station> label.
+export const BEADS_ACTOR_REASON =
+  'The factory denies this command: do not set, clear, export, or re-export BEADS_ACTOR. ' +
+  "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
+  'sweep-filed bead. Do not retry this command.'
+
+/** This function returns true when a word in `words` sets, clears or (re-)exports BEADS_ACTOR. */
+function touchesBeadsActor(words: string[]): boolean {
+  let envClearsAll = false
+  let runsBd = false
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (/^BEADS_ACTOR=/.test(w)) return true
+    const b = baseWord(w)
+    if (b === 'bd') runsBd = true
+    // claude-factory-8pc.27: an option word (-n, -x, and so on) can come between the verb and
+    // the name, as in `export -n BEADS_ACTOR`. Step past each option word first.
+    if (b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') {
+      let j = i + 1
+      while (words[j]?.startsWith('-') && words[j] !== '--') j++
+      if (words[j] !== undefined && /^BEADS_ACTOR(=|$)/.test(words[j]!)) return true
+    }
+    if (b === 'unset' && words.slice(i + 1).includes('BEADS_ACTOR')) return true
+    // claude-factory-8pc.27: `env -u BEADS_ACTOR` and `env --unset=BEADS_ACTOR` clear the name
+    // for the command that env runs. `env -i` (or `--ignore-environment`) clears every name in
+    // the environment. Deny `env -i` only when the segment also runs `bd`.
+    if (b === 'env') {
+      for (let j = i + 1; j < words.length; j++) {
+        const ew = words[j]!
+        if (ew === '--unset=BEADS_ACTOR') return true
+        if ((ew === '-u' || ew === '--unset') && words[j + 1] === 'BEADS_ACTOR') return true
+        if (ew === '-i' || ew === '--ignore-environment') envClearsAll = true
+        if (!ew.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(ew)) break
+      }
+    }
+  }
+  return envClearsAll && runsBd
 }
 
 /**
@@ -2012,6 +2068,13 @@ function anyShellReason(
       if (envChdirPresent(words, j)) moved = true
       const val = envSplitStringValue(words, j)
       if (val === undefined) continue
+      // claude-factory-vco: GNU env and macOS /usr/bin/env read \_ or a real newline in this
+      // value as a word break, quoted or not. They read \t as a tab in the same word. Any other
+      // backslash use, including a lone trailing backslash, exits env with status 1. denyAt's
+      // own tokenizer does none of this, so a hidden command such as 'git\_push\_origin\_main'
+      // stays one harmless word there. Fail closed on any backslash or newline instead of
+      // chasing every parser gap this escape can open.
+      if (/[\\\n]/.test(val)) return ENV_SPLIT_ESCAPE_REASON
       // claude-factory-z1p: fail closed on a dollar sign before denyAt tokenizes the literal
       // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
       // or gh verb; env expands it to one command word at run time, past this guard's sight.
@@ -2231,6 +2294,10 @@ function denyAt(
   // every recursion into anyShellReason. It never resets back to false once set.
   let movedSoFar = movedBefore
   for (const words of segments(command)) {
+    // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
+    // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
+    // ...` both still show the assignment here.
+    if (touchesBeadsActor(words)) return BEADS_ACTOR_REASON
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
