@@ -20,10 +20,10 @@ import {
   PUSH_REASON,
   READY_REASON,
   REASON,
+  SCAN_BUDGET_REASON,
   scanReason,
   XARGS_REASON,
 } from './worker-hook'
-import * as hook from './worker-hook'
 
 const DENY = [
   'rm -rf foo',
@@ -4345,10 +4345,30 @@ test('denyReason returns for 30 nested env -S levels around sh -c in under 1 s (
 
 test('scanReason takes a small work budget and denies with SCAN_BUDGET_REASON when it is spent (claude-factory-cbai)', () => {
   const command = 'ls -la; echo hello world; pwd; echo done; ls /tmp'
-  expect(typeof hook.SCAN_BUDGET_REASON).toBe('string')
-  expect(scanReason(command, undefined, undefined, CBAI_GATE, 50)).toBe(hook.SCAN_BUDGET_REASON)
+  expect(typeof SCAN_BUDGET_REASON).toBe('string')
+  expect(scanReason(command, undefined, undefined, CBAI_GATE, 50)).toBe(SCAN_BUDGET_REASON)
   expect(scanReason(command, undefined, undefined, CBAI_GATE)).toBeUndefined()
 })
+
+test('scanReason denies with SCAN_BUDGET_REASON, not BEADS_ACTOR_REASON, when touchesBeadsActor spends the budget (claude-factory-cbai)', () => {
+  // denyAt spends 10 characters on the command. touchesBeadsActor needs 11 more.
+  expect(scanReason('echo a b c', undefined, undefined, CBAI_GATE, 15)).toBe(SCAN_BUDGET_REASON)
+  expect(scanReason('echo a b c', undefined, undefined, CBAI_GATE, 100)).toBeUndefined()
+})
+
+test('scanReason denies with SCAN_BUDGET_REASON when stringNamesBdCommand spends the budget (claude-factory-cbai)', () => {
+  // denyAt spends 25 and touchesBeadsActor 24. The sh -c script needs 10 more.
+  const command = "env -i sh -c 'echo hello'"
+  expect(scanReason(command, undefined, undefined, CBAI_GATE, 55)).toBe(SCAN_BUDGET_REASON)
+  expect(scanReason(command, undefined, undefined, CBAI_GATE, 1000)).toBeUndefined()
+})
+
+test('denyReason spends the default work budget on an 8192-character stacked env -i eval command and denies, fast (claude-factory-cbai)', () => {
+  const command = 'env -i eval '.repeat(700).slice(0, 8192)
+  const { reason, ms } = cbaiTimed(command)
+  expect(reason).toBe(SCAN_BUDGET_REASON)
+  expect(ms).toBeLessThan(2000)
+}, 30000)
 
 // The verdicts of commit ee6b84d for each form, inner command and nest level n=1..8.
 // a = allow, B = BEADS_ACTOR_REASON, D = PUSH_DIR_REASON, P = PUSH_REASON.
