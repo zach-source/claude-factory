@@ -4999,11 +4999,10 @@ test('denyReason denies the AC19 wrapper-lead bench shape (claude-factory-p43v.2
 // rule is in `dynamicCommandWord`, in `src/worker-hook.ts`. The rows below must still
 // pass after this fix. This rule has the id claude-factory-p43v.29.
 //
-// The function `anyDynamicLiveApplyReason` runs only when `personOnly` is not empty. This
-// rule is at `src/worker-hook.ts:3959`. The rows below must set `personOnly` to `ACME`.
-// They must not set `personOnly` to `undefined`. The value `ACME` makes the test run the
-// part of the code that had the bug. The value `undefined` does not make the test run
-// this part of the code.
+// `denyAt` calls `anyDynamicLiveApplyReason` only when `personOnly?.length` is true. The rows
+// below must set `personOnly` to `ACME`. They must not set `personOnly` to `undefined`. The
+// value `ACME` makes the test run the part of the code that had the bug. The value
+// `undefined` does not make the test run this part of the code.
 const ALLOW_XARGS_BARE_BRACES = [
   'xargs -I {} cp {} dest',
   'git ls-files | xargs -I {} cp {} out/',
