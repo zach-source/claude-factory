@@ -4631,6 +4631,15 @@ const SFT4_DENY = [
   `"\`echo /bin/sh\`" -c ${SFT4_PUSH}`,
   `"\`echo sh\`" -c 'rm -rf x'`,
   `"\`echo sh\`" -c 'gh pr merge 1'`,
+  `$X env -C /tmp/other sh -c 'git push'`,
+  `$X env -C /tmp/other sh -c 'git push origin'`,
+  `$X env -C /tmp/other sh -c 'git push origin HEAD'`,
+  `$X env -C /tmp/other sh -c 'git send-pack origin HEAD'`,
+  `$X env --chdir /tmp/other bash -c 'git push'`,
+  `$X env -C /tmp/other zsh -lc 'git push'`,
+  `$X env -C /tmp/other sh -c -- 'git push'`,
+  `"$X" env -C /tmp/other sh -c 'git push'`,
+  `\${X} env -C /tmp/other dash -c 'git push'`,
 ]
 
 test.each(SFT4_DENY)('denyReason denies a dynamic shell word: %s (claude-factory-sft4)', cmd => {
@@ -4653,6 +4662,8 @@ const SFT4_ALLOW = [
   'cc -c *.c',
   `"$PYTHON" -c 'print(1)'`,
   'ls *.ts -c',
+  "$X sh -c 'git push'",
+  "env -C /tmp/other sh -c 'git push origin feature'",
 ]
 
 test.each(SFT4_ALLOW)('denyReason allows a harmless dynamic word: %s (claude-factory-sft4)', cmd => {

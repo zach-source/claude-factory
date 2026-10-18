@@ -4552,6 +4552,7 @@ function anyShellReason(
   let nd = -1
   let scriptNc = -1
   let scriptK = 0
+  let scriptMoved = false
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -4604,7 +4605,7 @@ function anyShellReason(
       }
       if (nc >= nd) continue
       const literal = SHELL_NAMES.has(baseWord(words[j]!))
-      if (scriptNc === nc) {
+      if (scriptNc === nc && scriptMoved === moved) {
         if (literal) j = scriptK
         continue
       }
@@ -4625,6 +4626,7 @@ function anyShellReason(
       if (found) return found
       scriptNc = nc
       scriptK = k
+      scriptMoved = moved
       if (literal) j = k
       continue
     }
