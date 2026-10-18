@@ -542,6 +542,16 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
   return v !== undefined && v.includes('BEADS_ACTOR')
 }
 
+// claude-factory-sft4: true for a word that is, or can expand at run time to, sh, bash, zsh or
+// dash. A variable, a glob, a brace group or a tilde in this slot hides the shell name, so the
+// guard reads the -c script after it. The script is denied only when the script itself is denied.
+function shellSlotWord(w: string): boolean {
+  const bw = baseWord(w)
+  return (
+    bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash' || /[$`*?[\]{}]/.test(w) || w.startsWith('~')
+  )
+}
+
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
 // way anyShellReason finds it: the first flag cluster that holds c, then the first word after it
 // that is not itself a flag, or the word right after a literal --.
@@ -570,7 +580,7 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number): bo
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
-    if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+    if (shellSlotWord(words[k]!)) {
       const script = shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, depth + 1)) return true
     } else if (bw === 'eval') {
@@ -3635,7 +3645,7 @@ function anyShellReason(
       if (r) return r
       break
     }
-    if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+    if (shellSlotWord(words[j]!)) {
       if (nc < j) {
         nc = j
         while (nc < words.length && !isShCCluster(words[nc]!)) nc++
