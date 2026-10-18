@@ -889,13 +889,13 @@ const KO_MUTATING_VERBS = new Set(['apply', 'create', 'delete', 'run'])
 const HELM_MUTATING_VERBS = new Set(['install', 'upgrade', 'uninstall', 'delete', 'del', 'un', 'rollback'])
 
 /**
- * Finds each value of a flag in `names`, in word order. A flag can use the `--flag value` form
- * or the `--flag=value` form.
+ * This function finds each value of a flag in `names`, in word order. A flag can use the
+ * `--flag value` form. It can also use the `--flag=value` form.
  *
  * This function stops at a literal `--`. A word after `--` is an operand, not a flag.
  *
- * claude-factory-bemr.8: `flagValue` below keeps only the last value. Call this function for a
- * flag that git applies anew each time it appears, such as `-C`.
+ * claude-factory-bemr.8: `flagValue` below keeps only the last value.
+ * Call this function for a flag that git applies again each time it appears, such as `-C`.
  */
 function flagValuesInOrder(words: string[], names: Set<string>): string[] {
   const result: string[] = []
@@ -928,10 +928,10 @@ function flagValuesInOrder(words: string[], names: Set<string>): string[] {
 }
 
 /**
- * Finds the value of the LAST flag in `names` in `words`. See `flagValuesInOrder` for the word
- * forms this reads.
- * claude-factory-25z.8: kubectl, ko and helm all use the last copy of a repeated flag, not the
- * first.
+ * This function finds the value of the LAST flag in `names` in `words`. See `flagValuesInOrder`
+ * for the word forms that this function reads.
+ * claude-factory-25z.8: kubectl, ko and helm all use the last copy of a repeated flag.
+ * They do not use the first copy.
  */
 function flagValue(words: string[], names: Set<string>): string | undefined {
   const values = flagValuesInOrder(words, names)
@@ -1720,9 +1720,11 @@ function anyGhReason(
 // claude-factory-zl5.3: git's own global flags that take a value word (`git -C dir push ...`).
 // The verb search steps past them. GH_VALUE_FLAGS does the same for `gh`.
 //
-// claude-factory-bemr.9: `--attr-source` and `--config-env` also take one value word each.
-// Real git reads that word as-is, even a literal `--` (`git --attr-source -- zz` runs the `zz`
-// alias). The verb search must step past that value word, not mark it `uncertain`.
+// claude-factory-bemr.9: `--attr-source` and `--config-env` also each take one value word.
+// Real git reads that word as-is, even a literal `--`.
+//
+// For example, `git --attr-source -- zz` runs the `zz` alias. The verb search must step past
+// that value word. It must not mark the word `uncertain`.
 const GIT_VALUE_FLAGS = new Set([
   '-C',
   '-c',
@@ -2703,13 +2705,14 @@ function splitCmdline(text: string): string[] | undefined {
 }
 
 /**
- * Folds every -C word in `tail`, in order, into one path for gate.gitAliases.
+ * This function combines every -C word in `tail` into one path for gate.gitAliases.
+ * The words are read in order.
  *
- * claude-factory-bemr.8: real git applies each -C word as its own `cd`, one after the other.
- * `git -C a -C b` lands in `a/b`, not in `b` alone. An absolute -C word resets the path, the
- * same way a `cd /abs/path` does: it clears any -C word that came before it.
+ * claude-factory-bemr.8: real git does a separate `cd` for each -C word.
+ * For example, `git -C a -C b` lands in `a/b`, not in `b` alone.
+ * An absolute -C word resets the path. It clears any -C word that comes before it.
  *
- * Returns undefined when `tail` holds no -C word.
+ * If `tail` has no -C word, the result is undefined.
  */
 function gitCDir(tail: string[]): string | undefined {
   const values = flagValuesInOrder(tail, new Set(['-C']))
@@ -2766,9 +2769,10 @@ function gitReason(
   // A relative -C path resolves against the directory where this hook started.
   // It must not resolve against a directory that an earlier cd moved the command to.
   //
-  // claude-factory-bemr.10: --bare moves the command the same way --git-dir does. Real git
-  // reads a different config file there. `git --bare status` still passes below, since status
-  // is a builtin word and never reaches the alias-resolution block.
+  // claude-factory-bemr.10: --bare moves the command, as --git-dir does. Real git reads a
+  // different config file there.
+  // `git --bare status` still passes below. The word status is a builtin word, so it never
+  // reaches the alias-resolution block.
   const effectiveMoved =
     moved || flagValue(tail, new Set(['--git-dir'])) !== undefined || tail.includes('--bare')
   const cValue = flagValue(tail, new Set(['-C']))
@@ -2779,9 +2783,11 @@ function gitReason(
   // claude-factory-ox33 tracks that same root fallback for gate.headOf. It is out of scope here.
   // gate.gitAliases picks its own default: the tool call's own cwd, not CLAUDE_PROJECT_DIR.
   //
-  // claude-factory-bemr.8: real git applies each -C word in turn, each one relative to where the
-  // word before it left (`git -C a -C b` lands in a/b). gitCDir folds them this way. The cValue
-  // field above reads only the last -C word, and so can miss a table in an earlier -C alone.
+  // claude-factory-bemr.8: real git applies each -C word in turn. Each word is relative to the
+  // directory that the previous -C word sets. For example, `git -C a -C b` lands in a/b.
+  //
+  // gitCDir combines the words in this way. The cValue field above reads only the last -C word.
+  // So it can miss an alias table that an earlier -C word sets.
   const aliasDir = gitCDir(tail)
   //
   // See claude-factory-bemr. This part of the function finds a git alias for the verb.
@@ -2838,8 +2844,8 @@ function gitReason(
     //      alias table. That word is a likely alias use. This guard cannot place it for sure.
     //
     // claude-factory-bemr.9: this scan does not stop at a literal --. An unrecognized flag can
-    // take -- as its own value (`git --attr-source -- zz` runs the `zz` alias), so this guard
-    // scans every word in tail for the real verb.
+    // use -- as its value. For example, `git --attr-source -- zz` runs the `zz` alias.
+    // This guard scans every word in tail for the real verb.
     if (effectiveMoved) return ALIAS_USE_REASON
     const table = gate.gitAliases?.(aliasDir)
     if (!table) return ALIAS_USE_REASON

@@ -174,6 +174,48 @@ minor release may change the factory format, the CLI or the run state.
 
   (claude-factory-bemr.5, claude-factory-bemr.6, claude-factory-bemr.7)
 
+- Fix: 4 more problems in the alias-use guard above, found by a second check.
+
+  - `git -C a -C b <verb>` reads the alias table at `b`, relative to the hook's cwd.
+
+    Git reads each `-C` word in turn. Each word is relative to the directory that the word before it sets.
+
+    So `-C a -C b` means `a/b`, not `b` alone. Before the fix, an alias set only in `a/b`'s own config did not hide a push.
+
+  - In the 2-word version, `--attr-source` and `--config-env` each use one value word.
+
+    Git reads that value word as it is, also when it is a literal `--`. Before the fix, the verb lookup read that value word as an unknown flag.
+
+    The fallback scan then stopped at a `--`. The value word itself can be that `--`.
+
+    Example: `git --attr-source -- p origin main` pushed a protected branch, with `alias.p=push` set.
+
+    The fallback scan no longer stops at a `--`. Git has no end-of-options marker before the verb.
+
+  - `--bare` sets `GIT_DIR` to the current directory itself.
+
+    A plain alias lookup at that path reads a different config than git reads.
+
+    This guard makes `--bare` a move, the same as `--git-dir`. It denies `ALIAS_USE_REASON` for a non-builtin verb. It does not trust a lookup at an incorrect location.
+
+    The guard does not deny `git --bare status`, because `status` is a builtin verb.
+
+  - A cyclic `gh` alias table denies `ALIAS_USE_REASON`.
+
+    A test proves it. The check for `git` in the same condition had one test before the fix.
+
+  (claude-factory-bemr.8, claude-factory-bemr.9, claude-factory-bemr.10, claude-factory-axok)
+
+- `anyGitReason` and `anyGhReason` check each word of a command. They do not check only the
+  command word.
+
+  This finds a `git` or `gh` word that is inside another command. It also finds such a word in
+  an argument, for example a grep pattern. So the command `grep git README.md` now also denies
+  `ALIAS_USE_REASON`.
+
+  This guard keeps the wider scan. It denies a command when it is not sure. This is the same rule
+  that it uses in all other checks. (claude-factory-bemr.11)
+
 ## 0.13.0 (2026-10-18)
 
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
