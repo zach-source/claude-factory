@@ -6,7 +6,7 @@
 // This drives the real CLI against on-disk run fixtures (run.json + state.json) built from the real
 // machine, with a fake `gh` in PATH that logs every invocation so a test can count them.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -21,10 +21,10 @@ const prState = join(dir, 'pr-state.json')
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-const factory = (args: string[]) => {
+const factory = (args: string[], path?: string) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
-    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0' },
+    env: { ...laptop, FACTORY_HOME: home, PATH: path ?? `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0' },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
@@ -555,7 +555,8 @@ test('a merge request: a failed member check wakes nothing and counts an error (
 test('a head push wakes even when the first view failed (5wav.8)', () => {
   reset()
   routeRun('r1', { url: MR_URL })
-  rmSync(join(bin, 'glab'), { force: true })
+  writeFileSync(join(bin, 'glab'), '#!/bin/sh\nexit 1\n')
+  chmodSync(join(bin, 'glab'), 0o755)
   factory(['watch'])
   expect(watchJson().errors).toBe(1)
   fakeGlab(mrBody({ sha: 'aaa1111' }), [])
@@ -576,4 +577,25 @@ test('an unreadable watch-seen.json does not stop the watch or leave its lock he
   fakeGlab(mrBody({ sha: 'bbb2222' }), [])
   factory(['watch'])
   expect(inboxOf('r1').map(e => e.type)).toEqual(['MAIL'])
+})
+
+/** a PATH with the tools the CLI needs but no gh and no glab, so spawning either throws ENOENT */
+function pathWithoutForges() {
+  const tools = join(dir, 'tools')
+  mkdirSync(tools, { recursive: true })
+  for (const t of ['bun', 'git', 'bd', 'sh', 'env', 'node', 'realpath', 'dirname']) {
+    const w = Bun.which(t)
+    if (w && !existsSync(join(tools, t))) symlinkSync(w, join(tools, t))
+  }
+  return tools
+}
+
+test('a missing gh or glab binary counts an error, routes nothing and re-parks nothing (5wav.13)', () => {
+  reset()
+  routeRun('r1', { at: Date.now() - 475 * 60_000 })
+  routeRun('r2', { url: MR_URL, at: Date.now() - 475 * 60_000 })
+  factory(['watch'], pathWithoutForges())
+  expect(inboxOf('r1')).toEqual([])
+  expect(inboxOf('r2')).toEqual([])
+  expect(watchJson().errors).toBe(2)
 })

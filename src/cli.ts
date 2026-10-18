@@ -5515,12 +5515,12 @@ async function watchPass() {
     // and every later run that names the same URL reuses the one answer, with no second call
     const viewGh = async (url: string, cwd: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
-      const p = Bun.spawnSync(
-        ['gh', 'pr', 'view', url, '--json', 'state,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments'],
-        { cwd, timeout: 60_000 },
-      )
       let v: WatchedPr | null = null
       try {
+        const p = Bun.spawnSync(
+          ['gh', 'pr', 'view', url, '--json', 'state,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments'],
+          { cwd, timeout: 60_000 },
+        )
         if (p.exitCode === 0) {
           const j = JSON.parse(p.stdout.toString())
           v = {
@@ -5534,7 +5534,7 @@ async function watchPass() {
           }
         }
       } catch {
-        // unreadable output counts as a failed view
+        // a missing binary or unreadable output counts as a failed view
       }
       if (!v) errors++
       cache.set(url, v)
@@ -5542,10 +5542,16 @@ async function watchPass() {
     }
     const viewMr = async (url: string, cwd: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
-      const r = await gitlabForge(spawnGlab).view(url, cwd)
-      const notes = 'viewed' in r ? await gitlabWatchNotes(spawnGlab, url, cwd) : null
+      let r: Awaited<ReturnType<ReturnType<typeof gitlabForge>['view']>> | null = null
+      let notes: Awaited<ReturnType<typeof gitlabWatchNotes>> = null
+      try {
+        r = await gitlabForge(spawnGlab).view(url, cwd)
+        notes = 'viewed' in r ? await gitlabWatchNotes(spawnGlab, url, cwd) : null
+      } catch {
+        // a missing glab binary counts as a failed view
+      }
       const v: WatchedPr | null =
-        'viewed' in r && notes
+        r && 'viewed' in r && notes
           ? {
               url,
               state: r.viewed.state,
