@@ -32,7 +32,7 @@ export default {
   agent: SONNET,
   params: {
     claude: 'claude-smart --new --no-channels',
-    exec_model: 'claude-sonnet-5[1m]',
+    exec_model: 'claude-sonnet-5-5[1m]',
     judge_model: 'claude-opus-5-5[1m]',
   },
   backoffSec: 60,
