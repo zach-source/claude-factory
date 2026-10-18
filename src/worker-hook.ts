@@ -3014,8 +3014,9 @@ function anyShellReason(
     }
     if (bw === 'env') {
       if (envChdirPresent(words, j)) moved = true
-      const val = envSplitStringValue(words, j)
-      if (val === undefined) continue
+      const scan = envSplitStringScan(words, j)
+      if (scan === undefined) continue
+      const val = scan.value
       // claude-factory-vco: GNU env and macOS /usr/bin/env read \_ or a real newline in this
       // value as a word break, quoted or not. They read \t as a tab in the same word. Any other
       // backslash use, including a lone trailing backslash, exits env with status 1. denyAt's
@@ -3027,7 +3028,14 @@ function anyShellReason(
       // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
       // or gh verb; env expands it to one command word at run time, past this guard's sight.
       if (val.includes('$')) return ENV_SPLIT_VAR_REASON
-      const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved)
+      // claude-factory-s1fj: env runs the split words PLUS every later argv word as one command.
+      // Scan them together. Single quotes keep each later word one literal word in denyAt, and
+      // each quote inside a word becomes '\'' so segments() reads it back as a literal quote.
+      let text = val
+      if (scan.end < words.length) {
+        text += ' ' + words.slice(scan.end).map(w => `'${w.replace(/'/g, `'\\''`)}'`).join(' ')
+      }
+      const r = denyAt(text, root, personOnly, gate, depth + 1, state, moved)
       if (r) return r
       break
     }
