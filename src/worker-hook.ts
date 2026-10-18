@@ -548,7 +548,7 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
 function shellSlotWord(w: string): boolean {
   const bw = baseWord(w)
   return (
-    bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash' || /[$`*?[\]{}]/.test(w) || w.startsWith('~')
+    bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash' || /[$*?[\]{}]/.test(w) || w.startsWith('~')
   )
 }
 

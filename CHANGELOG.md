@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- The worker hook now reads the `-c` script after a dynamic word in the shell slot. Before, `SH=sh; $SH -c 'git push origin main'`, `/bin/s? -c '...'` and `s{h,} -c '...'` ran the script unchecked, because the guard matched only the literal names `sh`, `bash`, `zsh` and `dash`. A word with `$`, a glob, a brace or a leading `~` now takes the same path. The guard denies only when the script itself is denied, so `$CC -c foo.c` stays allowed. The `bd` scan has the same fix (claude-factory-sft4).
+
 - The worker hook now reads every word after `--` in `git push` and `git send-pack` as an operand, as git does. Before, `git push -- origin main -n` was allowed as a dry run, and `git push -- origin -o main` hid the `main` refspec as a value (claude-factory-zs39). A flag-like ref name after `--`, such as `-n`, is no longer read as a flag.
 
 - Workers and the manager now run the `haiku` alias on Haiku 5.5 (`claude-haiku-5-5`): `ANTHROPIC_DEFAULT_HAIKU_MODEL` is set in their settings env, since Claude Code 2.1.291 still maps `haiku` to Haiku 4.5. Workers also get `SHUNT_MODEL=haiku`, so a shunt-guard denial names the model to hand a large read to (`Agent` with `model: haiku`). In 7 days of transcripts, workers hit the guard 91 times and never delegated the read, because the denial named no model and workers do not load the `shunt` skill. A user's own value for either variable wins. The manager's `briefer` subagent (no tools, at most 3 turns) moves from Sonnet to Haiku.
