@@ -115,6 +115,37 @@ export const ALIAS_REASON =
   'that command reads a file of aliases this hook cannot check. Run the full command directly, ' +
   'with no alias. Do not retry this command.'
 
+// claude-factory-bemr: a git or gh alias in this host's config can hide a denied verb.
+// The alias can be set before this run started. It can name a denied verb such as push or checkout.
+// gitReason and ghReason compare only literal builtin verb names. So the old alias hid the real verb (claude-factory-c63 bypass).
+//
+// This guard now looks up an unknown git or gh verb in gate.gitAliases or gate.ghAliases.
+// It splits the expansion text into words. Real git and gh do the same.
+// Then it scans the expanded command again.
+//
+// The guard denies with ALIAS_USE_REASON, not a silent allow, in these cases:
+//   - it cannot read the alias table;
+//   - the table sits behind an earlier directory or config-dir change;
+//   - the alias runs a shell command;
+//   - its text holds a character this guard cannot split;
+//   - the chain of aliases runs past MAX_ALIAS_DEPTH levels.
+export const ALIAS_USE_REASON =
+  'The factory denies this command: its first word is not a plain git or gh verb, and this guard ' +
+  'cannot read it as a safe, pre-existing alias. A git or gh alias set before this run started can ' +
+  'hide a denied verb, such as push or checkout, with no new word of its own on this command line. ' +
+  'This guard denies the word when it cannot read the git or gh alias table (no answer from git ' +
+  'config or gh alias list), when the table sits behind an earlier cd, pushd, popd, chdir, env -C, ' +
+  '--git-dir, GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME change, when the alias runs a shell command ' +
+  '(a leading !), when its text holds a dollar sign, a quote, or a backslash this guard cannot ' +
+  'split safely, or past a chain of 10 aliases. Run the full command directly, with no alias. Do ' +
+  'not retry this exact command.'
+
+// claude-factory-bemr: the depth cap on a chain of git or gh aliases that each expand to another
+// alias (alias.x=y, alias.y=z, ...). Real git and gh each follow such a chain themselves; this
+// guard fails closed past this many levels, the same fail-closed rule MAX_SHELL_DEPTH uses for a
+// stacked eval or sh -c chain.
+const MAX_ALIAS_DEPTH = 10
+
 // claude-factory-zl5.3
 export const PUSH_REASON =
   'The factory denies this command: a worker never pushes straight to a protected branch, by ' +
@@ -182,6 +213,17 @@ export interface HookGate {
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
+
+  /** claude-factory-bemr: a map from a git alias name (lowercase, with no `alias.` prefix) to its
+   * raw config expansion text, for every `alias.<name>` key `git -C <dir> config --get-regexp
+   * ^alias\.` already set before this run started. Empty when the repo at `dir` sets none;
+   * undefined on any read error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
+  gitAliases?: (dir?: string, timeoutMs?: number) => Map<string, string> | undefined
+  /** claude-factory-bemr: a map from a gh alias name to its raw expansion text, from `gh alias
+   * list`. gh ships one alias of its own (`co: pr checkout`), so this is defined even with no
+   * user config; undefined only on a read error. `timeoutMs` bounds the gh spawn
+   * (claude-factory-dts.4). */
+  ghAliases?: (timeoutMs?: number) => Map<string, string> | undefined
 }
 
 /**
