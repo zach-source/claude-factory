@@ -1812,6 +1812,12 @@ function joinedWords(words: string[]): string {
 }
 
 // `moved` is true when a cd, pushd or popd word ran before this segment (claude-factory-ty8y.20).
+const SEGMENT_MAY_TOUCH_RE = /config|xdg|git|worktree|work-tree|[*?[{<>]|(^|\n)-C(\n|$)/i
+// One pass over the joined words. When it fails, none of the four ty8y segment checks can match.
+function segmentMayTouchGit(words: string[]): boolean {
+  return SEGMENT_MAY_TOUCH_RE.test(joinedWords(words))
+}
+
 function gitWorkTreeOutside(words: string[], root: string | undefined, moved = false): boolean {
   if (!/--work-tree|GIT_WORK_TREE=|--git-dir|GIT_DIR=|(^|\n)-C(\n|$)/.test(joinedWords(words))) return false
   const bad = (raw: string | undefined): boolean => pathOutsideRoot(raw, root)
@@ -5521,7 +5527,8 @@ function denyAt(
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
     const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
     if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
-    if (hasGitWordIn(words)) state.gitWord = true
+    const mayTouch = segmentMayTouchGit(words)
+    if (mayTouch && hasGitWordIn(words)) state.gitWord = true
     const isGitSegment = b === 'git' || /^git-/.test(b)
     const operandSkip: OperandSkip = READER_COMMANDS.has(b)
       ? 'reader'
@@ -5534,11 +5541,9 @@ function denyAt(
           (b === 'bun' && cmd[1] === 'test')
         ? 'operands'
         : 'none'
-    const configUse = globalGitConfigUse(
-      words,
-      operandSkip,
-      b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
-    )
+    const configUse = mayTouch
+      ? globalGitConfigUse(words, operandSkip, b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir')
+      : undefined
     if (configUse === 'mention') state.globalGitConfig = true
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
     // hide a kubectl, ko or helm word that follows it.
@@ -5581,8 +5586,7 @@ function denyAt(
     if (shellReason) return shellReason
     if (
       configUse === 'write' ||
-      gitWorkTreeOutside(words, root, movedSoFar) ||
-      gitCoreWorktreeOutside(words, root)
+      (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
     if (b === 'rm') {
