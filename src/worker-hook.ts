@@ -63,7 +63,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs'
-import { resolve as resolvePath } from 'node:path'
+import { isAbsolute, join as joinPath, resolve as resolvePath } from 'node:path'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -889,27 +889,27 @@ const KO_MUTATING_VERBS = new Set(['apply', 'create', 'delete', 'run'])
 const HELM_MUTATING_VERBS = new Set(['install', 'upgrade', 'uninstall', 'delete', 'del', 'un', 'rollback'])
 
 /**
- * Finds the value of the LAST flag in `names` in `words`. A flag can take the `--flag value`
- * form or the `--flag=value` form.
- * claude-factory-25z.8: kubectl, ko and helm all use the last copy of a repeated flag, not the
- * first.
- * This function stops at a literal `--`. A word after `--` is an operand, or an argument to the
- * command kubectl runs (for example `kubectl run x -- --dry-run=client`). It is never a kubectl
- * flag.
+ * Finds each value of a flag in `names`, in word order. A flag can use the `--flag value` form
+ * or the `--flag=value` form.
+ *
+ * This function stops at a literal `--`. A word after `--` is an operand, not a flag.
+ *
+ * claude-factory-bemr.8: `flagValue` below keeps only the last value. Call this function for a
+ * flag that git applies anew each time it appears, such as `-C`.
  */
-function flagValue(words: string[], names: Set<string>): string | undefined {
-  let result: string | undefined
+function flagValuesInOrder(words: string[], names: Set<string>): string[] {
+  const result: string[] = []
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     if (w === '--') break
     if (names.has(w)) {
-      result = words[i + 1]
+      result.push(words[i + 1]!)
       continue
     }
     let matched = false
     for (const n of names) {
       if (w.startsWith(`${n}=`)) {
-        result = w.slice(n.length + 1)
+        result.push(w.slice(n.length + 1))
         matched = true
         break
       }
@@ -919,12 +919,23 @@ function flagValue(words: string[], names: Set<string>): string | undefined {
     // For example, `-XPUT` sets the value to PUT. curl does the same. A long flag (`--method`) never takes this form.
     for (const n of names) {
       if (n.length === 2 && n[1] !== '-' && w.startsWith(n) && w.length > n.length) {
-        result = w.slice(n.length)
+        result.push(w.slice(n.length))
         break
       }
     }
   }
   return result
+}
+
+/**
+ * Finds the value of the LAST flag in `names` in `words`. See `flagValuesInOrder` for the word
+ * forms this reads.
+ * claude-factory-25z.8: kubectl, ko and helm all use the last copy of a repeated flag, not the
+ * first.
+ */
+function flagValue(words: string[], names: Set<string>): string | undefined {
+  const values = flagValuesInOrder(words, names)
+  return values.length > 0 ? values[values.length - 1] : undefined
 }
 
 // the charset `factory rig add --person-only-context` accepts (src/cli.ts:3663): a literal name
@@ -1708,7 +1719,19 @@ function anyGhReason(
 
 // claude-factory-zl5.3: git's own global flags that take a value word (`git -C dir push ...`).
 // The verb search steps past them. GH_VALUE_FLAGS does the same for `gh`.
-const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
+//
+// claude-factory-bemr.9: `--attr-source` and `--config-env` also take one value word each.
+// Real git reads that word as-is, even a literal `--` (`git --attr-source -- zz` runs the `zz`
+// alias). The verb search must step past that value word, not mark it `uncertain`.
+const GIT_VALUE_FLAGS = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--attr-source',
+  '--config-env',
+])
 
 // claude-factory-bemr.5: git's own global flags that never take a value word.
 // Real git's synopsis lists each one with no argument.
@@ -2680,6 +2703,25 @@ function splitCmdline(text: string): string[] | undefined {
 }
 
 /**
+ * Folds every -C word in `tail`, in order, into one path for gate.gitAliases.
+ *
+ * claude-factory-bemr.8: real git applies each -C word as its own `cd`, one after the other.
+ * `git -C a -C b` lands in `a/b`, not in `b` alone. An absolute -C word resets the path, the
+ * same way a `cd /abs/path` does: it clears any -C word that came before it.
+ *
+ * Returns undefined when `tail` holds no -C word.
+ */
+function gitCDir(tail: string[]): string | undefined {
+  const values = flagValuesInOrder(tail, new Set(['-C']))
+  if (values.length === 0) return undefined
+  let acc = '.'
+  for (const v of values) {
+    acc = isAbsolute(v) ? v : joinPath(acc, v)
+  }
+  return acc
+}
+
+/**
  * Returns the reason to deny `cmd`, a command that starts with a `git` word.
  * Returns undefined to allow `cmd`.
  *
@@ -2723,7 +2765,12 @@ function gitReason(
   // If effectiveMoved is true, this function must not trust the -C value.
   // A relative -C path resolves against the directory where this hook started.
   // It must not resolve against a directory that an earlier cd moved the command to.
-  const effectiveMoved = moved || flagValue(tail, new Set(['--git-dir'])) !== undefined
+  //
+  // claude-factory-bemr.10: --bare moves the command the same way --git-dir does. Real git
+  // reads a different config file there. `git --bare status` still passes below, since status
+  // is a builtin word and never reaches the alias-resolution block.
+  const effectiveMoved =
+    moved || flagValue(tail, new Set(['--git-dir'])) !== undefined || tail.includes('--bare')
   const cValue = flagValue(tail, new Set(['-C']))
   const dir = cValue ?? root
   const verb = vi >= 0 ? tail[vi] : undefined
@@ -2731,7 +2778,11 @@ function gitReason(
   // It must not get dir's root fallback.
   // claude-factory-ox33 tracks that same root fallback for gate.headOf. It is out of scope here.
   // gate.gitAliases picks its own default: the tool call's own cwd, not CLAUDE_PROJECT_DIR.
-  const aliasDir = cValue
+  //
+  // claude-factory-bemr.8: real git applies each -C word in turn, each one relative to where the
+  // word before it left (`git -C a -C b` lands in a/b). gitCDir folds them this way. The cValue
+  // field above reads only the last -C word, and so can miss a table in an earlier -C alone.
+  const aliasDir = gitCDir(tail)
   //
   // See claude-factory-bemr. This part of the function finds a git alias for the verb.
   // It does not run this part when the verb position is not sure.
@@ -2783,13 +2834,16 @@ function gitReason(
     //
     //   2. The alias table cannot be read.
     //
-    //   3. A non-flag word before a literal -- is both a non-builtin word and a key in the
+    //   3. A non-flag word, anywhere in tail, is both a non-builtin word and a key in the
     //      alias table. That word is a likely alias use. This guard cannot place it for sure.
+    //
+    // claude-factory-bemr.9: this scan does not stop at a literal --. An unrecognized flag can
+    // take -- as its own value (`git --attr-source -- zz` runs the `zz` alias), so this guard
+    // scans every word in tail for the real verb.
     if (effectiveMoved) return ALIAS_USE_REASON
     const table = gate.gitAliases?.(aliasDir)
     if (!table) return ALIAS_USE_REASON
     for (const w of tail) {
-      if (w === '--') break
       if (w.startsWith('-') && w !== '-') continue
       const lw = w.toLowerCase()
       if (GIT_BUILTIN_VERBS.has(lw)) continue
