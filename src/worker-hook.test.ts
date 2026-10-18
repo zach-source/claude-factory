@@ -3013,6 +3013,9 @@ const DENY_GLOBAL_GIT_CONFIG_WRITE = [
   'printf x >> "$XDG_CONFIG_HOME/git/config"; git push',
   'printf x >> ~/.config/git/config; git push',
   'printf x >> /etc/gitconfig; git push',
+  // each regex alternative alone: a literal git/config path, and a bare XDG_CONFIG_HOME word.
+  'printf x >> /home/acme/xdg/git/config; git push',
+  'printf x >> $XDG_CONFIG_HOME/${n}; git push',
   'echo x | tee -a ~/.gitconfig; git push',
   "sed -i '' 's/a/b/' ~/.gitconfig; git push",
   'cp f ~/.gitconfig; git push',
