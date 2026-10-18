@@ -166,6 +166,16 @@ minor release may change the factory format, the CLI or the run state.
   | Dynamic word before a `kubectl rollout, auth, certificate` sub-verb, or behind an unknown wrapper | `caffeinate $K apply -f x --context acme` | claude-factory-p43v.16 |
   | Wrapper flag, or `coproc`, before the dynamic command-word pair | `sudo -u x $G $V origin main` | claude-factory-p43v.19 |
   | Dynamic command word before `--config-env` (attached or two-word form) | `$G --config-env alias.p=E p origin main` | claude-factory-p43v.20 |
+  | Unlisted wrapper flag before the dynamic command-word pair, known or unknown, attached or separate, with or without a value | `sudo -E $G $V origin main` | claude-factory-p43v.21 |
+  | `coproc NAME` before a brace group or subshell, before the dynamic command-word pair | `coproc NAME { $G $V origin main; }` | claude-factory-p43v.22 |
+
+  `commandAnchors` (`src/worker-hook.ts`) gives a short list of start indices. It replaces the
+  old single verb-slot index. It goes around a wrapper's flags, known or unknown. An unknown
+  flag does not move the real command off that index.
+
+  An unknown flag can read the next word as its own value. This is why the hook denies
+  `sudo -Z v cp "$A" "$B"`. The hook cannot tell `v` apart from the value of `-Z`, with `cp` as
+  the real command. This is an accepted deny, not an over-deny.
 
   The dynamic command-word check for `kubectl, ko, helm` (claude-factory-p43v.10) now returns
   `DYNAMIC_VERB_REASON`, not `LIVE_REASON`. `LIVE_REASON` names `kubectl`, `ko` or `helm` by name.
