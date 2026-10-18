@@ -420,7 +420,9 @@ test('scanReason denies a 40000-word sh -- scan, fast, no personOnly (claude-fac
 }, 500)
 
 test('scanReason denies a 40000-word dynamic-shell-word scan, fast (claude-factory-sft4)', () => {
-  expect(scanReason('echo ' + '$S '.repeat(SCAN_N) + '-c ' + '-x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+  expect(scanReason('echo ' + '$S '.repeat(SCAN_N) + '-c ' + '-x '.repeat(SCAN_N) + '; rm -rf x')).toBe(
+    REASON,
+  )
 }, 500)
 
 test('scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
