@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Model defaults move to the current models, at the same per-token prices: `exec_model` is now `claude-sonnet-5-5[1m]` (was `claude-sonnet-5[1m]`) in the lifecycle, sweeps, release, review-loop and rework factories, and `security_model` is now `claude-fable-5-1` (was `claude-fable-5`) in lifecycle and sweeps. `judge_model` stays `claude-opus-5-5[1m]`. A rig's `--param` or `FACTORY_EXEC_MODEL` / `FACTORY_SECURITY_MODEL` still overrides them.
+
 - Fixed: `gitReason` (`src/worker-hook.ts`) read a `git push`'s dir from
   `flagValue(tail, {-C}) ?? root`, where `root` is the worktree root. A
   relative `-C <dir>` value stayed unresolved text; the real `headOf`
