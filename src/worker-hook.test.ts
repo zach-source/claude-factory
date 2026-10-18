@@ -4428,6 +4428,10 @@ const SFT4_DENY = [
   `nice $N eval 'git push origin main' -c x`,
   `env -S '/bin/s?' -c ${SFT4_PUSH}`,
   `env -S "/bin/s? -c 'git push origin main'"`,
+  `"\`echo sh\`" -c ${SFT4_PUSH}`,
+  `"\`echo /bin/sh\`" -c ${SFT4_PUSH}`,
+  `"\`echo sh\`" -c 'rm -rf x'`,
+  `"\`echo sh\`" -c 'gh pr merge 1'`,
 ]
 
 test.each(SFT4_DENY)('denyReason denies a dynamic shell word: %s (claude-factory-sft4)', cmd => {
@@ -4437,6 +4441,7 @@ test.each(SFT4_DENY)('denyReason denies a dynamic shell word: %s (claude-factory
 test('denyReason denies a bd command behind a dynamic shell word (claude-factory-sft4)', () => {
   expect(denyReason("SH=sh; env -i $SH -c 'bd create x'")).toBe(BEADS_ACTOR_REASON)
   expect(denyReason("env -u BEADS_ACTOR $SH -c 'bd create x'")).toBe(BEADS_ACTOR_REASON)
+  expect(denyReason('env -i "`echo sh`" -c \'bd create x\'')).toBe(BEADS_ACTOR_REASON)
 })
 
 const SFT4_ALLOW = [

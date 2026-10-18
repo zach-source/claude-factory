@@ -1003,7 +1003,7 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
 // guard reads the -c script after it. The script is denied only when the script itself is denied.
 const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash'])
 function shellSlotWord(w: string): boolean {
-  return SHELL_NAMES.has(baseWord(w)) || /[$*?[\]{}]/.test(w) || w.startsWith('~')
+  return SHELL_NAMES.has(baseWord(w)) || /[$`*?[\]{}]/.test(w) || w.startsWith('~')
 }
 
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
