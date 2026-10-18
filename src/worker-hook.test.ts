@@ -483,6 +483,23 @@ const BEADS_ACTOR_CLEAR_DENY = [
   'env --ignore-environment PATH=/usr/bin bd create "x" -l factory',
   'export -n BEADS_ACTOR; bd create "x" -l factory',
   'declare -n BEADS_ACTOR',
+  // claude-factory-igj: these new lines close 4 gaps in the old scan.
+  // Gap 1: one word can hold an option and the name BEADS_ACTOR together.
+  'env -uBEADS_ACTOR bd create "x" -l factory',
+  'env -0u BEADS_ACTOR bd create "x" -l factory',
+  'env --uns=BEADS_ACTOR bd create "x" -l factory',
+  'env --uns BEADS_ACTOR bd create "x" -l factory',
+  // Gap 2: a lone dash works the same as -i.
+  'env - bd create "x" -l factory',
+  // Gap 3: a short word or a shortened long word can also mean -i.
+  'env -iu FOO bd create "x" -l factory',
+  'env -vi bd create "x" -l factory',
+  'env --ign bd create "x" -l factory',
+  'env --ignore-env bd create "x" -l factory',
+  // Gap 4: the scan must not stop at an option's own value word.
+  'env -C /tmp -u BEADS_ACTOR bd create "x" -l factory',
+  'env -P /usr/bin -i bd create "x" -l factory',
+  'env -a foo -i bd create "x" -l factory',
 ]
 
 test.each(BEADS_ACTOR_CLEAR_DENY)('denyReason denies %s (claude-factory-8pc.27)', cmd => {
@@ -496,6 +513,28 @@ test('denyReason allows env -i on a command that is not bd (claude-factory-8pc.2
 
 test('denyReason allows env -u on a variable other than BEADS_ACTOR (claude-factory-8pc.27)', () => {
   expect(denyReason('env -u OTHER_VAR bd create "x" -l factory')).toBeUndefined()
+})
+
+// claude-factory-igj: the wider scan must still allow these lines.
+// It must not deny an option's own value word.
+// It must not deny a bd flag or argument that only holds the text BEADS_ACTOR.
+// It must not deny a wrapper that runs git, not bd.
+const BEADS_ACTOR_CLEAR_ALLOW = [
+  'env -i ls',
+  'env -i PATH=/usr/bin ls',
+  'bd list',
+  'bd create "x" -l factory',
+  'env -u OTHER_VAR bd create "x" -l factory',
+  'echo BEADS_ACTOR_LOG=1',
+  'env GIT_EDITOR=true git commit -m "fix BEADS_ACTOR guard"',
+  'env FOO=1 bd list --include-infra',
+  'env FOO=1 bd create "x" -d "BEADS_ACTOR note"',
+  'env -C /tmp bd list',
+  'env -C/opt/bin bd list',
+]
+
+test.each(BEADS_ACTOR_CLEAR_ALLOW)('denyReason allows %s (claude-factory-igj)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
 })
 
 // claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it
