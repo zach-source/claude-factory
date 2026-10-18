@@ -2108,6 +2108,115 @@ test('denyReason allows HOME set with no git word (claude-factory-zl5.45)', () =
   expect(denyReason('HOME=d echo hi')).toBeUndefined()
 })
 
+// claude-factory-c63: gitReason reads the current branch one time, at scan time, through
+// gate.headOf. One command can change the branch. The same command can push HEAD.
+//
+// The branch changes after the scan. A check against the old branch name does not find the push.
+// This guard now denies by default. If one command has a branch-change word and a later push to HEAD, it denies the command.
+// The denial uses PUSH_REASON. The guard does not need to know the new branch name.
+const C63_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+
+const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
+  'git checkout main; git push o HEAD',
+  'git branch -M main && git push o HEAD',
+  'git branch -m main; git push',
+  'git branch --move factory/x main && git push o @',
+  'git switch main && git push',
+  'git switch -c main && git push -u o HEAD',
+  'git symbolic-ref HEAD refs/heads/main; git push o head',
+  'git push o HEAD && git checkout main',
+  'git -C . checkout main; git push o +HEAD',
+  'git-checkout main; git push o HEAD',
+  "bash -c 'git checkout main'; git push o HEAD",
+  'git checkout main; bash -c "git push o HEAD"',
+  'gh pr checkout 5 && git push',
+  'git checkout main; git send-pack o HEAD',
+  // claude-factory-c63.4: a rebase that names an explicit `<branch>` operand checks it out first.
+  'git rebase origin/main main && git push o HEAD',
+  'git rebase --onto origin/main x main; git push',
+  // claude-factory-c63.5: `git stash branch <name>` makes and checks out a new branch.
+  'git stash branch release && git push o HEAD',
+  // claude-factory-c63.6: the uncertain-verb path, with an unknown global flag or a nested shell.
+  'git --bogus checkout main && git push o HEAD',
+  // 2 unknown words push `rebase`/`stash` out of `firstVerbIndex`'s reach, so only the
+  // uncertain-verb word scan (not the certain-verb path) can find them.
+  'git --bogus value rebase main main && git push o HEAD',
+  'git --bogus value stash branch x && git push o HEAD',
+  "eval 'git checkout main' && git push o HEAD",
+  "env -S 'git checkout main' && git push o HEAD",
+  'git symbolic-ref -d HEAD; git push',
+  'git branch --mo main; git push',
+  'git branch -fM main; git push',
+  // claude-factory-c63.7: with `--root`, rebase takes no `<upstream>`, so 1 operand is the
+  // explicit `<branch>` and checks it out first.
+  'git rebase --root main && git push o HEAD',
+  'git rebase -i --root main; git push',
+  // claude-factory-c63.8: `git bisect reset <commit>` checks out `<commit>` and ends the bisect.
+  'git bisect start HEAD HEAD~1; git bisect reset main; git push o HEAD',
+  'git --bogus value bisect reset main && git push o HEAD',
+  // claude-factory-c63.9: `git update-ref --stdin` can run a hidden `symref-update HEAD <ref>`
+  // line this hook cannot read. The guard denies on the `--stdin` flag alone.
+  "printf 'symref-update HEAD refs/heads/main\\n' | git update-ref --stdin && git push o HEAD",
+  'git update-ref --stdin < refs.txt; git push o HEAD',
+  'git --bogus value update-ref --stdin && git push o HEAD',
+  // claude-factory-c63.10: the uncertain-verb word scan also covers `branch` and `update-ref`,
+  // and `ghReason`'s uncertain path covers `checkout` for `gh pr checkout`.
+  'git --bogus value branch -M main && git push o HEAD',
+  'gh --bogus value pr checkout 5 && git push o HEAD',
+  // claude-factory-c63.11: git accepts a 3-or-more character abbreviation of a long flag.
+  // `--stdi` and `--st` read stdin the same as `--stdin`; `--roo` and `--ro` read `--root`
+  // the same way.
+  "printf 'symref-update HEAD refs/heads/main\\n' | git update-ref --stdi && git push o HEAD",
+  "printf 'symref-update HEAD refs/heads/main\\n' | git update-ref --st && git push o HEAD",
+  'git rebase --roo main && git push o HEAD',
+  'git rebase --ro main && git push o HEAD',
+]
+
+test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(
+  'denyReason denies %j (claude-factory-c63: a same-command branch change then a HEAD push fails closed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, C63_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+const ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH = [
+  'git checkout other && git status',
+  'git branch -a && git push o HEAD',
+  'git symbolic-ref --short HEAD && git push o HEAD',
+  'git checkout main; git push o factory/x',
+  'git checkout main; git push o HEAD:factory/x',
+  'git checkout main; git push -n o HEAD',
+  'git push o HEAD',
+  // claude-factory-c63.4: no explicit `<branch>` operand, so rebase keeps the current branch.
+  'git rebase origin/main && git push',
+  // claude-factory-c63.5: a stash subcommand other than `branch` does not change the branch.
+  'git stash pop && git push o HEAD',
+  // claude-factory-c63.6: `--merged` is a list flag, not the rename flag `-m`/`-M`/`--move`.
+  'git branch --merged && git push o HEAD',
+  // claude-factory-c63.7: `--root` with no operand names no `<branch>`, so rebase keeps the
+  // current branch checked out.
+  'git rebase --root && git push o HEAD',
+  // claude-factory-c63.8: `git bisect reset` with no operand returns to the branch bisect
+  // started from. It does not name a new one.
+  'git bisect reset && git push o HEAD',
+  // claude-factory-c63.9: with no `--stdin`, `update-ref` only moves a ref's target commit. It
+  // never moves the `HEAD` symref, so the branch does not change.
+  'git update-ref HEAD abc123 && git push o HEAD',
+  'git update-ref refs/heads/other abc123 && git push o HEAD',
+  //
+  // claude-factory-c63.11: `--no-root` is not an abbreviation of `--root`. It does not start
+  // with `--root`. So rebase still needs 2 operands to name an explicit `<branch>`. 1 operand
+  // is not enough.
+  'git rebase --no-root main && git push o HEAD',
+]
+
+test.each(ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH)(
+  'denyReason allows %j (claude-factory-c63: no branch change, or the push names an explicit, unprotected target)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, C63_GATE)).toBeUndefined()
+  },
+)
+
 // claude-factory-68gn: `gitReason` read the current branch with `gate.headOf(root)`.
 // `root` never moves, but an earlier `cd`, `pushd` or `popd` word in one command can move the real
 // push to another repository. A `HEAD` alias push (`HEAD`, `@`, or no refspec at all) then reads
