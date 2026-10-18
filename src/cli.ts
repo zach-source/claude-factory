@@ -5518,7 +5518,14 @@ async function watchPass() {
       let v: WatchedPr | null = null
       try {
         const p = Bun.spawnSync(
-          ['gh', 'pr', 'view', url, '--json', 'state,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments'],
+          [
+            'gh',
+            'pr',
+            'view',
+            url,
+            '--json',
+            'state,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments',
+          ],
           { cwd, timeout: 60_000 },
         )
         if (p.exitCode === 0) {
