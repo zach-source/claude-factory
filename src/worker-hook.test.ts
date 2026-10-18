@@ -2426,6 +2426,205 @@ test('denyReason still denies git push --repo -- origin main (claude-factory-zs3
   expect(denyReason('git push --repo -- origin main', undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
 })
 
+// claude-factory-cu5m: the shell expands a dynamic word before git runs. A dynamic word has a
+// dollar sign, a backtick, a glob or a brace. It can become `--all`, `--mirror` or `--`.
+// The parsers cannot read it. So the guard must deny it. Real git 2.54 confirmed the first 3 rows.
+const DENY_DYNAMIC_PUSH_WORD = [
+  'R=--all; git push $R origin',
+  'git push $R origin',
+  'git push "$R" origin',
+  'git push --$X origin',
+  'git push -$X origin',
+  'git push $R feature',
+  "git push $'--' origin main -n",
+  'git push ${D} origin main -n',
+  'git push -$X- origin main -n',
+  'git push "$(echo --)" origin main -n',
+  'git send-pack $R ../r.git',
+  'git send-pack $R ../r.git feature',
+  'git push --repo $R feature',
+  'git push -o $X origin feature',
+  'git push --push-option=$X origin feature',
+  'git push -- $R feature',
+  'git push `echo --all` origin',
+  'git push * origin',
+  'git push {--all,} origin',
+  'git send-pack --receive-pack $X ../r.git feature',
+  'git send-pack ../r.git -$X feature',
+  'git-push $R origin',
+  'git-send-pack $R ../r.git feature',
+  'git -C . push $R origin',
+  'git push origin feature --repo=$R',
+  'git send-pack `echo --all` ../r.git',
+  'git-send-pack `echo --all` ../r.git',
+  'git-push `echo --all` origin',
+  'git push "`echo --all`" origin',
+  'gi\\t push `echo --all` origin',
+  "g''it push `echo --all` origin",
+  '"gi"t push `echo --all` origin',
+  'git pu\\sh `echo --all` origin',
+  "git pu''sh `echo --all` origin",
+  'git push (-)-all origin',
+  'git push (--all|--mirror) origin',
+  'touch -- --all; git push (-)-all origin',
+  'touch -- --all; git push origin (-)-all',
+  'hash -d a=--all; git push ~a origin',
+  'git push ~a origin',
+  'git push origin ~a',
+  'git send-pack ~a ../r.git',
+]
+
+// origin/main (hewq) denies every unquoted ANSI-C quote first, with its own reason.
+const denyWithPushReason = (cmd: string) => {
+  const reason = denyReason(cmd, undefined, undefined, ZS39_GATE)
+  if (cmd.includes('$' + "'")) expect(reason).toBeDefined()
+  else expect(reason).toBe(PUSH_REASON)
+}
+
+test.each(DENY_DYNAMIC_PUSH_WORD)(
+  'denyReason denies %j (claude-factory-cu5m, dynamic word)',
+  denyWithPushReason,
+)
+
+const DENY_DYNAMIC_GLOBAL_WORD = [
+  'git -c $Y push origin',
+  'git -c "$Y" push origin feature',
+  'git -c ${Y} push origin',
+  'git -c x$Y=1 push origin',
+  'git --config-env=$Y push origin',
+  'git --config-env $Y push origin',
+  'git -c $Y send-pack ../r.git feature',
+  'git -c user.name=$N push origin feature',
+]
+
+test.each(DENY_DYNAMIC_GLOBAL_WORD)(
+  'denyReason denies %j (claude-factory-cu5m.6, dynamic global word)',
+  cmd => {
+    // origin/main (p43v) denies a dynamic -c or --config-env key first, with DYNAMIC_VERB_REASON.
+    expect([PUSH_REASON, DYNAMIC_VERB_REASON]).toContain(
+      denyReason(cmd, undefined, undefined, ZS39_GATE) as string,
+    )
+  },
+)
+
+const DENY_PROCESS_SUBST = [
+  'git push origin feature --repo <(:) main',
+  'git push origin feature --repo >(:) main',
+  'git push origin feature -o <(:) main',
+  'git send-pack ../r.git feature --receive-pack <(:) main',
+]
+
+test.each(DENY_PROCESS_SUBST)('denyReason denies %j (claude-factory-cu5m.10, process substitution)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
+const DENY_REDIRECT_AMP = ['2>&1', '>&2', '<&0', '1>&-', '>&-', '>|log', '>>|log', '2>|log'].flatMap(op => [
+  `git push origin feature ${op} main`,
+  `git send-pack ../r.git feature ${op} main`,
+])
+
+test.each(DENY_REDIRECT_AMP)('denyReason denies %j (claude-factory-cu5m.12, & or | redirect)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
+const ALLOW_REDIRECT_AMP = [
+  'git push origin feature >/dev/null 2>&1',
+  'git push -u origin feature 2>&1 | tail -5',
+  'git push origin feature &',
+  'git push origin feature |& cat',
+  'git push origin feature >|log',
+  'echo hi >&2 && git push origin feature',
+]
+
+test.each(ALLOW_REDIRECT_AMP)('denyReason allows %j (claude-factory-cu5m.12, & or | redirect)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
+})
+
+const DENY_REDIRECT_AMP_GT = ['&>/dev/null', '&>>log', '&>|log', '&>!log'].flatMap(op => [
+  `git push origin feature ${op} main`,
+  `git send-pack ../r.git feature ${op} main`,
+])
+
+test.each(DENY_REDIRECT_AMP_GT)('denyReason denies %j (claude-factory-cu5m.13, &> redirect)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
+// claude-factory-cu5m.14: oracle = git as a shell function that writes its args to a file; zsh 5.9
+// and bash run each row. A DENY op is one where the shell passes main to git. The test spawns no shell.
+const SHELL_OPERATOR_DENY = [
+  '2>&1',
+  '>&2',
+  '<&0',
+  '1>&-',
+  '>&-',
+  '&>/dev/null',
+  '&>>log',
+  '&>|log',
+  '>|log',
+  '>>|log',
+  '2>|log',
+  '>!log',
+  '>>!log',
+  '&>!log',
+  '>log',
+  '> log',
+  '>>log',
+  '2>log',
+  '<log',
+  '< log',
+  '<>log',
+  '<<<x',
+  '<(:)',
+  '>(:)',
+  '=(:)',
+  '$(:)',
+  '"$(:)"',
+  '`:`',
+  '{a,b}',
+]
+const SHELL_OPERATOR_ALLOW = ['|&', '&|', '&!', ';', '&&', '||', '|', '&', '2>&1|cat', '2>&1;']
+const SHELL_OPERATOR_SWEEP: [string, boolean][] = [
+  ...SHELL_OPERATOR_DENY.map(op => [op, true] as [string, boolean]),
+  ...SHELL_OPERATOR_ALLOW.map(op => [op, false] as [string, boolean]),
+].flatMap(([op, deny]) => [
+  [`git push origin feature ${op} main`, deny] as [string, boolean],
+  [`git send-pack ../r.git feature ${op} main`, deny] as [string, boolean],
+])
+
+test.each(SHELL_OPERATOR_SWEEP)('denyReason sweep %j denies=%j (claude-factory-cu5m.14)', (cmd, deny) => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(deny ? PUSH_REASON : undefined)
+})
+
+const ALLOW_DYNAMIC_PUSH_WORD = [
+  'git status &>/dev/null',
+  'cat <(git log) && git status',
+  'diff <(sort a) <(sort b)',
+  'git push origin feature 2>&1 | tee >(cat)',
+  'git -c core.pager=$P log',
+  'git push origin feature',
+  'git push -u origin feature',
+  'git push origin +feature',
+  'git push origin HEAD:refs/heads/feature',
+  'git push git@github.com:acme/widget.git feature',
+  'git push ~/r.git feature',
+  'git push -n origin main',
+  'git send-pack ../r.git feature',
+  'git push',
+  'git push origin feature 2>&1',
+  'git push origin feature --force-with-lease',
+  'echo `date` && git status',
+  'docker push acme/widget:`date +%s`',
+  'git push origin feature && (cd /x && ls)',
+  '(git push origin feature)',
+  'echo "$(git rev-parse HEAD)"',
+  'echo $(git push origin feature)',
+  'f() { git push origin feature; }',
+]
+
+test.each(ALLOW_DYNAMIC_PUSH_WORD)('denyReason allows %j (claude-factory-cu5m, no dynamic word)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
+})
+
 // claude-factory-zl5.41: review-r2 found 3 siblings of the zl5.21/zl5.28/zl5.34 config-write
 // guard: `remote.*.mirror` (acts like `--mirror` on every later push to that remote),
 // `include.path`/`includeIf.*.path` (loads another config file this guard cannot read), and the
@@ -4463,6 +4662,24 @@ test.each(SFT4_ALLOW)('denyReason allows a harmless dynamic word: %s (claude-fac
 test('scanReason denies a 40000-word run of $SH words, fast (claude-factory-sft4)', () => {
   expect(scanReason('echo ' + '$SH '.repeat(SCAN_N) + "-c 'rm -rf x'")).toBe(REASON)
 }, 500)
+
+const ESCAPED_REDIR_PREFIXES = ['\\>&', '\\>|', '\\<&', "'>'&", '">"&', "$'>'&"]
+
+const DENY_ESCAPED_REDIR = [
+  ...ESCAPED_REDIR_PREFIXES.flatMap(op => [
+    `echo ${op}git push origin main`,
+    `true ${op}git send-pack ../r.git main`,
+  ]),
+]
+
+test.each(DENY_ESCAPED_REDIR)(
+  'denyReason denies %j (claude-factory-cu5m.15, escaped redirect char)',
+  denyWithPushReason,
+)
+
+test('denyReason keeps the gh merge deny after an escaped redirect (claude-factory-cu5m.15)', () => {
+  expect(denyReason('echo \\>&gh pr merge 5')).toBeDefined()
+})
 
 // claude-factory-p43v: a dynamic word at the git verb slot hides the real command. gitReason now
 // denies that word first, with DYNAMIC_VERB_REASON.
