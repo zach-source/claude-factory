@@ -1510,8 +1510,10 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
 // claude-factory-cu5m.13: the same scan covers `&>` (also `&>>`, `&>|`, `&>!`). zsh and bash read it
 // as a redirect, but `segments()` splits at its `&` (dash reads `&` then `>`), so the words after it
 // leave the push tail. It over-denies `git push origin feature &>/dev/null`.
+// claude-factory-abmq: bash joins `&BSNL>` into `&>`, so the scan allows backslash-newline pairs
+// between the `&` and the `>`. It also denies `git push origin feature &BSNL>/dev/null`.
 function backtickBesidePush(command: string): boolean {
-  if (!/`|&>/.test(command)) return false
+  if (!/`|&(?:\\\n)*>/.test(command)) return false
   const words = segments(command).flat().map(baseWord)
   return (
     words.some(b => b === 'git' || /^git-/.test(b)) &&
