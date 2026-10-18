@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
   ENV_SPLIT_VAR_REASON,
@@ -444,6 +445,56 @@ test('scanReason still allows a 40000-word sh scan whose last word is a `-c` fla
 
 test('denyReason denies the same no-script sh scan with LONG_COMMAND_REASON (claude-factory-dts)', () => {
   expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBe(LONG_COMMAND_REASON)
+})
+
+// claude-factory-8pc.24: bd fills a bead's created_by from BEADS_ACTOR, which the flood guard's
+// sweepFiler trusts. A worker that sets, clears or re-exports BEADS_ACTOR escapes the cap.
+const BEADS_ACTOR_DENY = [
+  'BEADS_ACTOR=person bd create "x" -l factory',
+  'env BEADS_ACTOR=person bd create "x" -l factory',
+  'export BEADS_ACTOR=person',
+  'export BEADS_ACTOR',
+  'unset BEADS_ACTOR',
+  'declare -x BEADS_ACTOR=person',
+  'bd create "x"; BEADS_ACTOR=person bd create "y" -l factory',
+  "bash -c 'BEADS_ACTOR=person bd create x -l factory'",
+]
+
+test.each(BEADS_ACTOR_DENY)('denyReason denies %s (claude-factory-8pc.24)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+test('denyReason allows a plain bd command and an unrelated VAR=val assignment (claude-factory-8pc.24)', () => {
+  expect(denyReason('bd create "x" -l factory')).toBeUndefined()
+  expect(denyReason('FOO=1 bd list --all')).toBeUndefined()
+  // a word that only contains the text BEADS_ACTOR, not an assignment or export of it, is not denied
+  expect(denyReason('echo BEADS_ACTOR_LOG=1')).toBeUndefined()
+})
+
+// claude-factory-8pc.27: each line clears BEADS_ACTOR before bd runs. bd then uses its own
+// default actor. sweepFiler (src/sweeps.ts) never matches the filed bead. The round-7 security
+// review found 3 of these forms let through by the claude-factory-8pc.24 fix.
+const BEADS_ACTOR_CLEAR_DENY = [
+  'env -u BEADS_ACTOR bd create "x" -l factory',
+  'env --unset=BEADS_ACTOR bd create "x" -l factory',
+  'env --unset BEADS_ACTOR bd create "x" -l factory',
+  'env -i PATH=/usr/bin bd create "x" -l factory',
+  'env --ignore-environment PATH=/usr/bin bd create "x" -l factory',
+  'export -n BEADS_ACTOR; bd create "x" -l factory',
+  'declare -n BEADS_ACTOR',
+]
+
+test.each(BEADS_ACTOR_CLEAR_DENY)('denyReason denies %s (claude-factory-8pc.27)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+test('denyReason allows env -i on a command that is not bd (claude-factory-8pc.27)', () => {
+  // env -i clears BEADS_ACTOR too, but it is this gap only when the cleared command is bd itself
+  expect(denyReason('env -i PATH=/usr/bin ls')).toBeUndefined()
+})
+
+test('denyReason allows env -u on a variable other than BEADS_ACTOR (claude-factory-8pc.27)', () => {
+  expect(denyReason('env -u OTHER_VAR bd create "x" -l factory')).toBeUndefined()
 })
 
 // claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it

@@ -355,6 +355,55 @@ function realCommand(words: string[]): string[] {
   }
 }
 
+// claude-factory-8pc.24: bd fills a bead's created_by field from the BEADS_ACTOR variable.
+// See src/cli.ts lines 1089 and 1198.
+// The flood guard's sweepFiler (src/sweeps.ts) trusts created_by to find a sweep-filed bead.
+// A worker can set, clear or re-export BEADS_ACTOR itself.
+// That files a bead the guard never sees, with no cap and no sweep-queue allowlist.
+//
+// This check is defense in depth, not a full fix.
+// A worker can still write around a denied command in other ways.
+// The real boundary stays server-side: the flood guard must never trust a label or field the
+// filer itself controls.
+// claude-factory-8pc.18 fixed the same gap for the sweep:<station> label.
+export const BEADS_ACTOR_REASON =
+  'The factory denies this command: do not set, clear, export, or re-export BEADS_ACTOR. ' +
+  "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
+  'sweep-filed bead. Do not retry this command.'
+
+/** This function returns true when a word in `words` sets, clears or (re-)exports BEADS_ACTOR. */
+function touchesBeadsActor(words: string[]): boolean {
+  let envClearsAll = false
+  let runsBd = false
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (/^BEADS_ACTOR=/.test(w)) return true
+    const b = baseWord(w)
+    if (b === 'bd') runsBd = true
+    // claude-factory-8pc.27: an option word (-n, -x, and so on) can come between the verb and
+    // the name, as in `export -n BEADS_ACTOR`. Step past each option word first.
+    if (b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') {
+      let j = i + 1
+      while (words[j]?.startsWith('-') && words[j] !== '--') j++
+      if (words[j] !== undefined && /^BEADS_ACTOR(=|$)/.test(words[j]!)) return true
+    }
+    if (b === 'unset' && words.slice(i + 1).includes('BEADS_ACTOR')) return true
+    // claude-factory-8pc.27: `env -u BEADS_ACTOR` and `env --unset=BEADS_ACTOR` clear the name
+    // for the command that env runs. `env -i` (or `--ignore-environment`) clears every name in
+    // the environment. Deny `env -i` only when the segment also runs `bd`.
+    if (b === 'env') {
+      for (let j = i + 1; j < words.length; j++) {
+        const ew = words[j]!
+        if (ew === '--unset=BEADS_ACTOR') return true
+        if ((ew === '-u' || ew === '--unset') && words[j + 1] === 'BEADS_ACTOR') return true
+        if (ew === '-i' || ew === '--ignore-environment') envClearsAll = true
+        if (!ew.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(ew)) break
+      }
+    }
+  }
+  return envClearsAll && runsBd
+}
+
 /**
  * True when `words` has an `xargs` word, with a `git` or `gh` word after it in the same segment.
  *
@@ -2033,6 +2082,10 @@ function denyAt(
   // below (claude-factory-zl5.44: that check reads the whole raw `command` text, not one segment).
   let hasDangerousConfigEnv = false
   for (const words of segments(command)) {
+    // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
+    // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
+    // ...` both still show the assignment here.
+    if (touchesBeadsActor(words)) return BEADS_ACTOR_REASON
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
