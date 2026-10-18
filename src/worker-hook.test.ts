@@ -962,6 +962,154 @@ test.each(ALLOW_PUSH)('denyReason allows %j (current branch unknown here)', cmd 
   expect(denyReason(cmd)).toBeUndefined()
 })
 
+// claude-factory-ctae.1: git parse-options accepts a unique prefix of a long flag name. Each
+// row below is an abbreviation of a `PUSH_BROAD_FLAGS` member. Real git 2.54 confirmed that
+// `git push --mirr <bare>` pushes every ref, `main` included, the same reach as `--mirror`.
+const DENY_PUSH_BROAD_FLAG_ABBREVIATION = [
+  'git push --mirr o',
+  'git push --mi o',
+  'git push --al o',
+  'git push --branc o',
+  'git push --prun o',
+]
+
+test.each(DENY_PUSH_BROAD_FLAG_ABBREVIATION)(
+  'denyReason denies %j (claude-factory-ctae.1, an abbreviated broad push flag)',
+  cmd => {
+    const gate = { headOf: () => 'factory/x', originHead: () => 'main' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-ctae.2: an abbreviation of `--repo`, `--push-option`, `--receive-pack` or
+// `--exec` still takes the next word as its value, the same as the exact flag. This guard cannot
+// tell which word git reads as the value and which as a refspec, so it denies the whole push.
+// Real git 2.54 confirmed that `git push --rece git-receive-pack o` on `main` pushes `main`.
+const DENY_PUSH_VALUE_FLAG_ABBREVIATION = [
+  'git push --rece x o',
+  'git push --rep x o',
+  'git push --exe x o',
+  'git push --push-o x o',
+]
+
+test.each(DENY_PUSH_VALUE_FLAG_ABBREVIATION)(
+  'denyReason denies %j (claude-factory-ctae.2, an abbreviated push value flag)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the exact push value flag, which skips its own value word (claude-factory-ctae.2)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(denyReason('git push --receive-pack x o factory/x', undefined, undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-ctae.3: a `--no-dry-run` word, or a unique abbreviation of it, clears `dryRun`
+// again, in any order with `-n`/`--dry-run` on the same command line. Real git 2.54 confirmed
+// that each row below moves `main`, even though a bare `-n` or `--dry-run` alone never pushes.
+const DENY_PUSH_NO_DRY_RUN = ['git push -n --no-dry-run o main', 'git push --dry-run --no-dr o main']
+
+test.each(DENY_PUSH_NO_DRY_RUN)(
+  'denyReason denies %j (claude-factory-ctae.3, --no-dry-run clears dry-run)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason denies git send-pack --dry-run --no-dry-run o main (claude-factory-ctae.3)', () => {
+  expect(denyReason('git send-pack --dry-run --no-dry-run o main')).toBe(PUSH_REASON)
+})
+
+// claude-factory-ctae.7: the push side has both an exact and an abbreviated `--no-dry-run` row
+// (`DENY_PUSH_NO_DRY_RUN` above). This row gives send-pack the same abbreviated-form coverage.
+test('denyReason denies git send-pack --dry-run --no-dr o main (claude-factory-ctae.7, abbreviated --no-dry-run)', () => {
+  expect(denyReason('git send-pack --dry-run --no-dr o main')).toBe(PUSH_REASON)
+})
+
+// claude-factory-ctae.5: these flags already deny through the existing refspec check. Each row
+// pins that result so a future change to the flag scan cannot silently stop denying it.
+const DENY_PUSH_DELETE_OR_FORCE_WITH_LEASE = [
+  'git push --del o main',
+  'git push --force-with o main',
+  'git push --force-with-lease=main o main',
+  'git push -d o main',
+]
+
+test.each(DENY_PUSH_DELETE_OR_FORCE_WITH_LEASE)(
+  'denyReason denies %j (claude-factory-ctae.5, --delete and --force-with-lease abbreviations)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows git push --del o factory/x (claude-factory-ctae.5)', () => {
+  expect(denyReason('git push --del o factory/x')).toBeUndefined()
+})
+
+// claude-factory-ctae.9: `--recurse-submodules` takes a required value word, the same as
+// `--repo` or `--exec`. Real git 2.54 confirmed this: `git push --recurse-submodules no x`,
+// with headOf=main and no refspec, pushes the current branch (`main`) to remote `x`. Without
+// this flag in the value-flag sets, the guard read `no` as the remote and `x` as an
+// unprotected refspec, and allowed the call.
+const DENY_PUSH_RECURSE_SUBMODULES = ['git push --recurse-submodules no x', 'git push --recurse-sub no x']
+
+test.each(DENY_PUSH_RECURSE_SUBMODULES)(
+  'denyReason denies %j (claude-factory-ctae.9, --recurse-submodules is a push value flag)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the exact push --recurse-submodules, which skips its own value word (claude-factory-ctae.9)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(
+    denyReason('git push --recurse-submodules no o factory/x', undefined, undefined, gate),
+  ).toBeUndefined()
+})
+
+// claude-factory-ctae.11: `-o` takes a required value word, the same as `--repo` or `--exec`.
+// A short-flag cluster that also holds `o`, for example `-uo` or `-fo`, takes the next word as
+// that same value. Real git 2.54 confirmed this: `git push -uo x origin` on `main`, with no
+// other refspec, pushes `main` to remote `origin`.
+const DENY_PUSH_SHORT_FLAG_CLUSTER_WITH_O = ['git push -uo x origin', 'git push -fo x origin']
+
+test.each(DENY_PUSH_SHORT_FLAG_CLUSTER_WITH_O)(
+  'denyReason denies %j (claude-factory-ctae.11, a short-flag cluster that holds -o)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-ctae.12: an abbreviated value flag, or an `-o` short-flag cluster, hides the
+// next word as that flag's own value.
+//
+// Before this fix, `gitPushDenied` read `dryRun` before it read this `unreadableValueFlag` risk.
+// A hidden `-n` or `--dry-run` word is really that flag's own value, not a dry-run flag.
+// The old check order made the guard allow the whole call as a false dry run.
+//
+// Real git 2.54 confirmed the real risk. Each row below moves `main`, even with the apparent
+// dry-run flag present.
+const DENY_PUSH_UNREADABLE_VALUE_FLAG_THEN_DRY_RUN_WORD = [
+  'git push --rep -n origin main',
+  'git push --rep --dry-run origin main',
+  'git push -uo -n origin',
+  'git push --push-o -n origin main',
+]
+
+test.each(DENY_PUSH_UNREADABLE_VALUE_FLAG_THEN_DRY_RUN_WORD)(
+  'denyReason denies %j (claude-factory-ctae.12, an unreadable value flag denies before the dry-run allow)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-ctae.12: `--mirror` does not hide a later word as its own value, so a real
+// `-n` right before it still means a dry run. This row pins that this fix did not turn the
+// `broad` flags into another `unreadableValueFlag` case.
+test('denyReason allows git push -n --mirror o (claude-factory-ctae.12, a true broad flag stays a real dry run)', () => {
+  expect(denyReason('git push -n --mirror o')).toBeUndefined()
+})
+
 test('denyReason allows a bare git push, git push origin HEAD and git push -u origin HEAD on a run branch', () => {
   const gate = { headOf: () => 'factory/x' }
   expect(denyReason('git push', undefined, undefined, gate)).toBeUndefined()
@@ -1710,6 +1858,113 @@ test('denyReason allows git send-pack with an explicit run-branch ref and no --s
   expect(denyReason('git send-pack ../remote.git refs/heads/feature')).toBeUndefined()
 })
 
+// claude-factory-ctae.4: a unique abbreviation of `--all`, `--mirror` or `--stdin` denies the
+// same way the exact flag does. Real git 2.54 confirmed each row below moves `main`.
+const DENY_SEND_PACK_BROAD_FLAG_ABBREVIATION = [
+  'git send-pack --mirr ../remote.git refs/heads/factory/x',
+  'git send-pack --al ../remote.git refs/heads/factory/x',
+  'git send-pack --stdi ../remote.git refs/heads/factory/x',
+]
+
+test.each(DENY_SEND_PACK_BROAD_FLAG_ABBREVIATION)(
+  'denyReason denies %j (claude-factory-ctae.4, an abbreviated send-pack broad flag)',
+  cmd => {
+    const gate = { headOf: () => 'factory/x' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-ctae.4: an abbreviation of `--receive-pack` or `--exec` still takes the next
+// word as its value, the same as the exact flag. This guard cannot tell which word git reads as
+// the value, so it denies the whole call. Real git 2.54 confirmed that `git send-pack
+// --receive-pack git-receive-pack <remote>` with no ref moves every branch, `main` included.
+const DENY_SEND_PACK_VALUE_FLAG = [
+  'git send-pack --receive-pack x ../remote.git',
+  'git send-pack --exec x ../remote.git',
+  'git send-pack --rece x ../remote.git refs/heads/factory/x',
+  // claude-factory-ctae.6: `--push-option` is a 3rd member of `SEND_PACK_VALUE_FLAGS`, with no
+  // row of its own until now. An abbreviation still takes a value word this guard cannot read.
+  'git send-pack --push-o x ../remote.git',
+]
+
+test.each(DENY_SEND_PACK_VALUE_FLAG)(
+  'denyReason denies %j (claude-factory-ctae.4, a send-pack value flag with no ref or an abbreviated form)',
+  cmd => {
+    const gate = { headOf: () => 'factory/x' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the exact send-pack value flag, which skips its own value word (claude-factory-ctae.4)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(
+    denyReason(
+      'git send-pack --receive-pack x ../remote.git refs/heads/factory/x',
+      undefined,
+      undefined,
+      gate,
+    ),
+  ).toBeUndefined()
+})
+
+// claude-factory-ctae.6: the exact `--push-option` word also skips its own value word, the same
+// as `--receive-pack` above. Only the abbreviated form denies.
+test('denyReason allows the exact send-pack --push-option, which skips its own value word (claude-factory-ctae.6)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(
+    denyReason(
+      'git send-pack --push-option x ../remote.git refs/heads/factory/x',
+      undefined,
+      undefined,
+      gate,
+    ),
+  ).toBeUndefined()
+})
+
+// claude-factory-ctae.8: `--remote` is a 4th member of `SEND_PACK_VALUE_FLAGS`, with no row of
+// its own until now. Real git 2.54 confirmed that `git send-pack --remote x ../remote.git`,
+// with no ref, reads `x` as the value of `--remote` and pushes every matching branch. The
+// abbreviated `--remo` form still takes a value word this guard cannot read.
+const DENY_SEND_PACK_REMOTE = [
+  'git send-pack --remote x ../remote.git',
+  'git send-pack --remo x ../remote.git refs/heads/factory/x',
+]
+
+test.each(DENY_SEND_PACK_REMOTE)(
+  'denyReason denies %j (claude-factory-ctae.8, send-pack --remote is a value flag)',
+  cmd => {
+    const gate = { headOf: () => 'factory/x' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the exact send-pack --remote, which skips its own value word (claude-factory-ctae.8)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(
+    denyReason('git send-pack --remote x ../remote.git refs/heads/factory/x', undefined, undefined, gate),
+  ).toBeUndefined()
+})
+
+// claude-factory-ctae.12: the send-pack side of the same check-order bug.
+//
+// Before this fix, `sendPackDenied` read `dryRun` before it read `unsafeValueFlag`.
+// A `--dry-run` word right after an abbreviated `send-pack` value flag is really that flag's
+// own value word. It is not a dry-run flag.
+// The old check order made the guard allow the whole call.
+//
+// Real git 2.54 confirmed each row below moves `main`.
+const DENY_SEND_PACK_UNSAFE_VALUE_FLAG_THEN_DRY_RUN_WORD = [
+  'git send-pack --push-o --dry-run ../r.git main',
+  'git send-pack --rece --dry-run ../r.git main',
+]
+
+test.each(DENY_SEND_PACK_UNSAFE_VALUE_FLAG_THEN_DRY_RUN_WORD)(
+  'denyReason denies %j (claude-factory-ctae.12, an unsafe send-pack value flag denies before the dry-run allow)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
 // claude-factory-zl5.41: review-r2 found 3 siblings of the zl5.21/zl5.28/zl5.34 config-write
 // guard: `remote.*.mirror` (acts like `--mirror` on every later push to that remote),
 // `include.path`/`includeIf.*.path` (loads another config file this guard cannot read), and the
@@ -2054,6 +2309,14 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   "printf 'symref-update HEAD refs/heads/main\\n' | git update-ref --st && git push o HEAD",
   'git rebase --roo main && git push o HEAD',
   'git rebase --ro main && git push o HEAD',
+  // claude-factory-ctae.13: `pushReadsCurrentBranch` now parses `send-pack` with
+  // `sendPackOperands`, the same parser `sendPackDenied` uses. The old, separate scan did not
+  // clear `dryRun` on `--no-dry-run`, and did not skip a `SEND_PACK_VALUE_FLAGS` value word.
+  // Real git 2.54 confirmed each row below moves `main`, on branch `factory/x` after the
+  // earlier `git checkout main` moves it.
+  'git checkout main; git send-pack -n --no-dry-run o HEAD',
+  'git checkout main; git send-pack --dry-run --no-dr o HEAD',
+  'git checkout main; git send-pack --remote -n o HEAD',
 ]
 
 test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(
