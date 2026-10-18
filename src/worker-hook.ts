@@ -2149,8 +2149,16 @@ function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
 }
 
 /**
- * Folds every `-C` value in `words` into `base`, in order. Real git folds a repeated `-C`
- * global flag in the same way. An absolute value replaces the dir. A relative value attaches to
+ * `gitChdir` returns this value instead of a dir string when it cannot trust the dir that it folded.
+ * A caller must then treat the dir as unknown. It must not call `gate.headOf` with it.
+ */
+const GIT_CHDIR_UNSAFE = Symbol('git-chdir-unsafe')
+
+/**
+ * The function folds every `-C` value in `words` into `base`, in order.
+ * Real git folds a repeated `-C` global flag in the same way.
+ *
+ * An absolute value replaces the dir. For a relative value, the function resolves it against
  * the dir so far, through `resolvePath`. An empty value (`-C ""`) changes nothing.
  *
  * `words` must hold only the words before the git verb (`vi`, see claude-factory-zl5.3).
@@ -2160,15 +2168,39 @@ function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
  * claude-factory-3f2z: This change closes the gap. Before this change, a relative `-C <dir>`
  * resolved against the cwd of the hook process. It now resolves against the cwd of the tool
  * call (`base`, from `gate.cwd`).
+ *
+ * claude-factory-3f2z.7: `-c`, `--git-dir`, `--work-tree` and `--namespace` (the rest of
+ * `GIT_VALUE_FLAGS`) also take a value word, with no `=`. The function must step over that
+ * value word, the same way `firstVerbIndex` does. So it never reads that word as a `-C` flag.
+ *
+ * A word before the verb that this function does not know can take a value word of its own.
+ * This happens with a git version or flag that this hook does not know.
+ * The word is not in `GIT_VALUE_FLAGS`, so `firstVerbIndex` already marks the verb search `uncertain`.
+ *
+ * In this case, the word after the unknown flag can look like a `-C` flag. That word is really
+ * the value of the unknown flag. The word after that can look like the value of a `-C` flag. That
+ * word is really the start of the folded dir.
+ *
+ * This function cannot tell a real `-C <dir>` apart from this case when the value it would fold
+ * starts with `-`. A real directory name almost never starts with `-`. So the function fails
+ * closed. It returns `GIT_CHDIR_UNSAFE` instead of folding a dir that it cannot trust.
  */
-function gitChdir(words: string[], base: string | undefined): string | undefined {
+function gitChdir(words: string[], base: string | undefined): string | undefined | typeof GIT_CHDIR_UNSAFE {
   let dir = base
   for (let i = 0; i < words.length; i++) {
-    if (words[i] !== '-C') continue
-    const v = words[i + 1]
-    i++
-    if (!v) continue
-    dir = v.startsWith('/') ? v : resolvePath(dir ?? '', v)
+    const w = words[i]!
+    if (w === '-C') {
+      const v = words[i + 1]
+      i++
+      if (!v) continue
+      if (v.startsWith('-') && v !== '-') return GIT_CHDIR_UNSAFE
+      dir = v.startsWith('/') ? v : resolvePath(dir ?? '', v)
+      continue
+    }
+    if (!w.includes('=') && GIT_VALUE_FLAGS.has(w)) {
+      i++
+      continue
+    }
   }
   return dir
 }
@@ -2250,8 +2282,13 @@ function gitReason(
   // and not `root` alone.
   const effectiveMoved = moved || flagValue(tail, new Set(['--git-dir'])) !== undefined
   const dir = effectiveMoved ? undefined : gitChdir(tail.slice(0, verbIndex), gate.cwd ?? root)
-  const currentBranch = effectiveMoved ? undefined : gate.headOf?.(dir)
-  const reason = effectiveMoved ? PUSH_DIR_REASON : PUSH_REASON
+  // claude-factory-3f2z.7: `dir` is `GIT_CHDIR_UNSAFE` when `gitChdir` cannot trust the fold
+  // (an unknown flag's value word can be misread as `-C`, and the word after that as the `-C`
+  // value). This guard then must not call `gate.headOf` with that symbol: it treats the branch
+  // as unknown, the same way it treats `effectiveMoved`, and reports `PUSH_DIR_REASON`.
+  const dirUnsafe = dir === GIT_CHDIR_UNSAFE
+  const currentBranch = effectiveMoved || dirUnsafe ? undefined : gate.headOf?.(dir)
+  const reason = effectiveMoved || dirUnsafe ? PUSH_DIR_REASON : PUSH_REASON
   if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? reason : undefined
   return gitPushDenied(pushTail, currentBranch, gate) ? reason : undefined
 }

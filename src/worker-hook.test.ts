@@ -1178,6 +1178,87 @@ test('denyReason reads root for a push dir when gate.cwd is unset (claude-factor
   expect(dirs).toEqual(['/acme/root'])
 })
 
+// claude-factory-3f2z.7: `-c`, `--git-dir`, `--work-tree` and `--namespace` each take one
+// value word, with no `=`. gitChdir must step over that value word.
+// gitChdir must not read that word as a `-C` flag.
+//
+// Each row below puts an extra `-C` word after one of these flags. That extra `-C` word is
+// the flag's own value. It is not a real `-C` flag.
+//
+// The real `-C` word follows the extra word. The real `-C` word must set the dir.
+// headOf here denies only at /acme/prot. A wrong fold reads the extra `-C` word as the real
+// flag. A wrong fold then allows the push.
+const GIT_CHDIR_VALUE_FLAG_ROWS: [string, boolean][] = [
+  ['git --namespace -C -C /acme/prot push origin HEAD', false],
+  ['git --work-tree -C -C /acme/prot push origin HEAD', false],
+  ['git --namespace -C -C /acme/prot send-pack origin HEAD', true],
+]
+
+test.each(GIT_CHDIR_VALUE_FLAG_ROWS)(
+  'denyReason steps over a value-flag word before folding -C, for %j (claude-factory-3f2z.7)',
+  (cmd, isSendPack) => {
+    const dirs: (string | undefined)[] = []
+    const gate: HookGate = {
+      cwd: '/acme/cwd',
+      headOf: dir => {
+        dirs.push(dir)
+        return dir === '/acme/prot' ? 'main' : 'factory/x'
+      },
+    }
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_REASON)
+    expect(dirs).toEqual(['/acme/prot'])
+    void isSendPack
+  },
+)
+
+// claude-factory-3f2z.7: regression guard. Here the real `-C` word comes first, so it
+// already sets the dir to the protected dir.
+//
+// The extra `-C` word is the value of `--namespace`. It is the last word, so it sets
+// nothing. This command must stay denied after the fix, the same as before the fix.
+test('denyReason keeps denying when the real -C comes before a value-flag word (claude-factory-3f2z.7)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    cwd: '/acme/cwd',
+    headOf: dir => {
+      dirs.push(dir)
+      return dir === '/acme/prot' ? 'main' : 'factory/x'
+    },
+  }
+  expect(denyReason('git -C /acme/prot --namespace -C push origin HEAD', '/acme/root', undefined, gate)).toBe(
+    PUSH_REASON,
+  )
+  expect(dirs).toEqual(['/acme/prot'])
+})
+
+// claude-factory-3f2z.7: an unknown flag before the verb can also take a value word.
+// This hook does not know that flag, through the uncertain-verb fallback.
+//
+// A value word that starts with `-` can look like a `-C` flag. gitChdir then cannot tell a
+// real `-C <dir>` word apart from this value word.
+// gitChdir must fail closed in this case. It must deny with PUSH_DIR_REASON, and must not
+// call gate.headOf.
+const GIT_CHDIR_UNSAFE_ROWS: [string][] = [
+  ['git --attr-source -C -C /acme/prot push origin HEAD'],
+  ['git --attr-source -C -C /acme/prot send-pack origin HEAD'],
+]
+
+test.each(GIT_CHDIR_UNSAFE_ROWS)(
+  'denyReason fails closed on an unresolved -C value, for %j (claude-factory-3f2z.7)',
+  cmd => {
+    const dirs: (string | undefined)[] = []
+    const gate: HookGate = {
+      cwd: '/acme/cwd',
+      headOf: dir => {
+        dirs.push(dir)
+        return dir === '/acme/prot' ? 'main' : 'factory/x'
+      },
+    }
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_DIR_REASON)
+    expect(dirs).toEqual([])
+  },
+)
+
 test('denyReason reads an undefined push dir when neither gate.cwd nor root is set (claude-factory-3f2z.1, AC5)', () => {
   const dirs: (string | undefined)[] = []
   const gate: HookGate = {

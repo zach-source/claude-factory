@@ -21,6 +21,12 @@ minor release may change the factory format, the CLI or the run state.
     an empty value changes nothing.
   - Fix: `main()` sets `gate.cwd = i.cwd || root`, the same fallback
     `readFile` already uses for a `gh api` file argument.
+  - Fix: `gitChdir` now steps over the value word of `-c`, `--git-dir`,
+    `--work-tree` and `--namespace`. Before this fix, `gitChdir` read
+    any `-C` word as the `-C` flag, even a flag's own value word, and a
+    real `-C` after it can get ignored (a fail-open). `gitChdir` now
+    also denies the push when an unknown flag's value word looks like
+    `-C`. (claude-factory-3f2z.7)
 - `worker-hook`: fail closed when one command changes the branch (`checkout`,
   `switch`, `branch -m`/`-M`, `symbolic-ref HEAD`, `rebase <upstream> <branch>`,
   `rebase --root <branch>`, `stash branch`, `bisect reset <ref>`, `update-ref --stdin`,
