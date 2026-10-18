@@ -544,6 +544,32 @@ function segments(cmd: string, info?: { dollarQuote: boolean; funcDef?: boolean 
   return segs.filter(s => s.length > 0)
 }
 
+// claude-factory-4i60: words that can come before a `function` keyword in a command position.
+const FUNCTION_PREFIX_WORDS = new Set([
+  '{',
+  '(',
+  '!',
+  'time',
+  '-p',
+  'then',
+  'do',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+])
+
+/**
+ * claude-factory-4i60: true when this segment defines a shell function with the `function`
+ * keyword. The lexer already drops quotes and escapes, so `\function` matches too.
+ */
+function namesFunctionDefinition(words: string[]): boolean {
+  let k = 0
+  while (k < words.length && FUNCTION_PREFIX_WORDS.has(words[k]!)) k++
+  return words[k] === 'function'
+}
+
 /** true when `w` is a short-flag cluster (e.g. `-rf`) or a long flag (`--recursive`) that means recursive */
 function recursiveFlag(w: string): boolean {
   if (w === '--recursive' || w.startsWith('--recursive=')) return true
@@ -4926,7 +4952,9 @@ function denyAt(
   const quoteInfo = { dollarQuote: false, funcDef: false }
   const commandSegments = segments(command, quoteInfo)
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  let definesFunction = quoteInfo.funcDef
   for (const words of commandSegments) {
+    if (namesFunctionDefinition(words)) definesFunction = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
@@ -5014,7 +5042,7 @@ function denyAt(
   }
   if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
-  if (quoteInfo.funcDef) return FUNCTION_DEF_REASON
+  if (definesFunction) return FUNCTION_DEF_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 

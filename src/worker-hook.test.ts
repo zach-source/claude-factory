@@ -2955,6 +2955,19 @@ const DENY_FUNCTION_DEF = [
   `echo $(f() { sh "$@"; }; f -c 'git push origin main')`,
   'echo `f() { sh "$@"; }; f -c "git push origin main"`',
   `f() { sh "$@"; }; export -f f; bash -c 'f -c "git push origin main"'`,
+  // function keyword (4i60.2)
+  `function f { sh "$@"; }; f -c 'git push origin main'`,
+  `function f() { sh "$@"; }; f -c 'git push origin main'`,
+  `{ function f { sh "$@"; }; }; f -c 'git push origin main'`,
+  `if true; then function f { sh "$@"; }; fi; f -c 'git push origin main'`,
+  `! function f { sh "$@"; }; f -c 'git push origin main'`,
+  `time function f { sh "$@"; }; f -c 'git push origin main'`,
+  `time -p function f { sh "$@"; }; f -c 'git push origin main'`,
+  `! time function f { sh "$@"; }; f -c 'git push origin main'`,
+  `func\\\ntion f { sh "$@"; }; f -c 'git push origin main'`,
+  `\\function f { :; }`,
+  `while true; do function f { :; }; done`,
+  `true || function f { :; }`,
   // moved from ALLOW_DYNAMIC_PUSH_WORD: the guard now denies every definition
   'f() { git push origin feature; }',
   // accepted over-denies: an empty pair is a definition shape
