@@ -1497,6 +1497,22 @@ function ghReason(cmd: string[], gate: HookGate, state: ScanState): string | und
     if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
     if (ghApiReadyDenied(apiArgs, gate)) return gate.station === 'release' ? undefined : READY_REASON
     if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
+
+    // claude-factory-p43v.11: a dynamic endpoint or method can still hide a merge or push call
+    // that the 3 literal checks above miss, because they compare the word's raw, unresolved
+    // text against a fixed pattern or method name.
+    // A dynamic -X or --method value fails closed at once.
+    // A dynamic endpoint fails closed only when the effective method is not GET.
+    const methodRaw = flagValue(apiArgs, new Set(['-X', '--method']))
+    if (methodRaw !== undefined && dynamicWord(methodRaw)) return DYNAMIC_VERB_REASON
+    const { index: dei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+    const dynamicEndpoint = dei >= 0 ? apiArgs[dei] : undefined
+    if (dynamicEndpoint !== undefined && dynamicWord(dynamicEndpoint)) {
+      const hasData =
+        ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
+      const effective = (methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase()
+      if (effective !== 'GET') return DYNAMIC_VERB_REASON
+    }
     return undefined
   }
   if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
