@@ -1616,11 +1616,12 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   // a short-flag cluster ahead of S, value as its own word
   //
   // claude-factory-68gn.13/.14 (review round 3): every row below that pushes gets
-  // `PUSH_DIR_REASON`, not `PUSH_REASON`. `wordsCarryChdir` (`envChdirPresent`'s own scan) fails
-  // closed on any `-S`/`--split-string` word on its own, with no look at what it holds. These
-  // rows carry `claude-factory-dgf`'s own fix for `envSplitStringValue` (the sibling scan that
-  // reads what the `-S` value holds, so the guard can still recurse into it): a value flag ahead
-  // of `-S` must not hide it.
+  // `PUSH_DIR_REASON`, not `PUSH_REASON`.
+  // - `wordsCarryChdir` (the scan in `envChdirPresent`) fails closed on any
+  //   `-S`/`--split-string` word alone. It does not read what the word holds.
+  // - These rows use the fix from `claude-factory-dgf` for `envSplitStringValue`. That scan reads
+  //   what the `-S` value holds, so the guard can still recurse into it.
+  // - A value flag ahead of `-S` must not hide it.
   ["env -vS 'git push origin main'", 'PUSH_DIR_REASON'],
   ["env --split-string='git push origin main'", 'PUSH_DIR_REASON'],
   // claude-factory-dgf (AC1): a value flag takes its own value word (FOO, /tmp, /usr/bin). That
@@ -1640,7 +1641,7 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   ["env --spl 'git push origin main'", 'PUSH_DIR_REASON'],
   ["env --sp='git push origin main'", 'PUSH_DIR_REASON'],
   //
-  // claude-factory-dgf.4: a prefix of a long value flag name must also skip its value word.
+  // claude-factory-dgf.4: a prefix of a long value flag name must also skip the value word.
   // Real GNU env 9.11 runs `--uns FOO -S` and `--ch /tmp -S`.
   ["env --uns FOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
   ["env --ch /tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
@@ -1650,13 +1651,13 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   ["env --unset=FOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
   ["env --chdir=/tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
   //
-  // claude-factory-dgf.6: the attached short form (`-uFOO`) holds its value in one word too.
+  // claude-factory-dgf.6: the attached short form (`-uFOO`) also holds its value in one word.
   // It must not take the next word. That word is the real `-S`.
   ["env -uFOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
   ["env -C/tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
   //
   // claude-factory-dgf.7: a bare `-` is not an option word. The scan must pass it and continue.
-  // Real macOS `/usr/bin/env - -S 'echo x'` runs the string: BSD `env` reads `-` as an option.
+  // Real macOS `/usr/bin/env - -S 'echo x'` runs the string. BSD `env` reads `-` as an option.
   ["env - -S 'git push origin main'", 'PUSH_DIR_REASON'],
 ]
 const ENV_SPLIT_STRING_REASON: Record<string, string> = {

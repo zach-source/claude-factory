@@ -1815,25 +1815,23 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * regression shapes that a blind jump past a miss would break.
  */
 // claude-factory-dgf: `env` (GNU and BSD) reads each word after `env` as an option. It stops at
-// the first word that is not an option. That word, and each word after it, is the real command.
+// the first word that is not an option. That word and each word after it is the real command.
 //
 // `-u`/`--unset`, `-C`/`--chdir`, `-P`/`-L`/`-U` (BSD) and `--argv0`/`-a` (GNU) each take a
-// value. You can give the value in two ways. Attach it to the flag: `-uFOO`, `--unset=FOO`.
-// Or give it as the next word: `-u FOO`. In the second way, the value word does not start with
-// `-`.
+// value. You can give the value in one of two ways:
 //
-// The old scan stopped at that word and read it as the real command.
-// It did not get to a later `-S`.
-// The scan below reads each value flag's own value in place of the command.
-// This means it can get to a later `-S`.
+// - In the same word as the flag: `-uFOO`, `--unset=FOO`.
+// - As the next word: `-u FOO`. In this case, the value word does not start with `-`.
+//
+// The old scan read that word as the real command, so it never reached a later `-S`. The scan
+// below reads the value of each value flag, not the command. So it can reach a later `-S`.
 //
 // GNU `getopt_long` also accepts a prefix of a long option name. It does so when the prefix names
 // only one option. `--spl` and `--unset` (the full name) both name their own option this way.
 //
 // claude-factory-68gn.11: BSD `env` also reads a value after `-P` (alternate PATH), `-L` (login
-// class) and `-U` (login). `ENV_SHORT_VALUE_FLAGS` carries these two BSD letters too, alongside
-// GNU's `u`, `C` and `a`. Checked on macOS: `env -u FOO -C /usr pwd` prints `/usr`, not the
-// worktree root.
+// class) and `-U` (login). `ENV_SHORT_VALUE_FLAGS` has these two BSD letters too, with GNU's `u`,
+// `C` and `a`. Checked on macOS: `env -u FOO -C /usr pwd` prints `/usr`, not the worktree root.
 const ENV_LONG_SPLIT_STRING = 'split-string'
 const ENV_LONG_VALUE_FLAGS = ['unset', 'chdir', 'argv0']
 const ENV_SHORT_VALUE_FLAGS = new Set(['u', 'C', 'P', 'L', 'U', 'a'])
@@ -2174,16 +2172,16 @@ export function denyReason(
 }
 
 /**
- * The scan `denyReason` runs, with no length cap (claude-factory-dts). `denyReason` is the one
- * public entry point that checks `MAX_COMMAND_LENGTH`; a recursive call (through `anyShellReason`,
- * for `eval` or `sh -c`) reads a substring of a command `denyReason` already capped, so this inner
- * scan needs no cap of its own.
+ * The scan `denyReason` runs, with no length cap (claude-factory-dts). `denyReason` is the only
+ * public entry point that checks `MAX_COMMAND_LENGTH`. A recursive call (through `anyShellReason`,
+ * for `eval` or `sh -c`) reads a substring of a command that `denyReason` already capped. So this
+ * inner scan does not need a cap of its own.
  *
- * `memoGate` wraps `gate` once here, so every recursion level (`denyAt`, `anyShellReason`)
- * through this one call shares one memoized `headOf`/`originHead`, in place of one real git spawn
- * for every push segment (claude-factory-dts).
+ * `memoGate` wraps `gate` once here. So every recursion level (`denyAt`, `anyShellReason`) that
+ * goes through this one call shares one memoized `headOf`/`originHead`. This replaces one real git
+ * spawn for every push segment (claude-factory-dts).
  *
- * claude-factory-68gn: `false` is this command's own `movedBefore` seed (see `denyAt` below): no
+ * claude-factory-68gn: `false` is the `movedBefore` seed for this command (see `denyAt` below). No
  * `cd`, `pushd` or `popd` word has run yet at the top of a fresh `scanReason` call.
  */
 export function scanReason(
