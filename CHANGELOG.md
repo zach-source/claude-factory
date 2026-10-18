@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+## 0.13.0 (2026-10-17)
+
 - An edge into `done` can now carry `requeue: true` or `requeue: { factory?, station? }`. The
   run ends, but the bead stays open, ready and `factory`-labeled instead of closed or deferred,
   so the next dispatch starts a new run on it, in the factory and station its labels name (for
