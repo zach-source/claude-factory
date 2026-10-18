@@ -1027,6 +1027,20 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
  * `denyAt` calls this only when `hasDangerousConfigEnv` is already true, so a stray `git`-shaped
  * word in an unrelated value only matters alongside one of the `DANGEROUS_GIT_CONFIG_ENV` names.
  */
+// claude-factory-cu5m: `segments()` ends a segment at a backtick and drops it. So the output of a
+// backtick command is not a word of the `git push` segment, and the push parsers cannot see it.
+// That output can be `--all`. This scan reads the raw text: a backtick, a git word and a push or
+// send-pack word together. It over-denies a backtick that sits in an unrelated quoted argument.
+// This is fail closed.
+function backtickBesidePush(command: string): boolean {
+  if (!command.includes('`')) return false
+  const words = command.split(/['"`\s;&|()<>]+/).filter(Boolean).map(baseWord)
+  return (
+    words.some(b => b === 'git' || /^git-/.test(b)) &&
+    words.some(b => b === 'push' || b === 'send-pack' || b === 'git-push' || b === 'git-send-pack')
+  )
+}
+
 function commandHasGitWord(command: string): boolean {
   for (const w of command.split(/['"`\s;&|()<>]+/)) {
     if (!w) continue
@@ -2138,7 +2152,11 @@ function pushOperands(tail: string[]): {
   unreadableValueFlag: boolean
   tags: boolean
   dryRun: boolean
+  dynamicWord: boolean
 } {
+  // claude-factory-cu5m: the shell expands or splits a dynamic word before git runs. The word
+  // can become `--all`, `--mirror` or `--`. This guard cannot read it, so it tests every word.
+  const dynamicWord = tail.some(w => REFSPEC_UNSAFE.test(w))
   const operands: string[] = []
   let broad = false
   let unreadableValueFlag = false
@@ -2172,7 +2190,7 @@ function pushOperands(tail: string[]): {
     }
     operands.push(w)
   }
-  return { operands, broad, unreadableValueFlag, tags, dryRun: dryRun && !noDryRun }
+  return { operands, broad, unreadableValueFlag, tags, dryRun: dryRun && !noDryRun, dynamicWord }
 }
 
 /**
@@ -2212,11 +2230,13 @@ function protectedBranchSet(gate: HookGate): { branches: Set<string>; unresolved
  * For these, this guard reads `currentBranch`.
  */
 function gitPushDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
-  const { operands, broad, unreadableValueFlag, tags, dryRun } = pushOperands(tail)
+  const { operands, broad, unreadableValueFlag, tags, dryRun, dynamicWord } = pushOperands(tail)
   // claude-factory-ctae.12: this check must come before the dryRun check. A word that looks
   // like `-n` or `--dry-run`, right after an abbreviated value flag or an `-o` short-flag
   // cluster, is really that flag's own value word. It is not a real dry-run flag.
   if (unreadableValueFlag) return true
+  // claude-factory-cu5m: deny a dynamic word before the dryRun check. The word can hide a flag.
+  if (dynamicWord) return true
   if (dryRun) return false
   if (broad) return true
   const refspecs = operands.slice(1)
@@ -2484,7 +2504,10 @@ function sendPackOperands(tail: string[]): {
   stdin: boolean
   dryRun: boolean
   unsafeValueFlag: boolean
+  dynamicWord: boolean
 } {
+  // claude-factory-cu5m: same rule as `pushOperands`. Test every word of `tail`.
+  const dynamicWord = tail.some(w => REFSPEC_UNSAFE.test(w))
   const operands: string[] = []
   let broad = false
   let dryRun = false
@@ -2513,15 +2536,17 @@ function sendPackOperands(tail: string[]): {
     }
     operands.push(w)
   }
-  return { operands, broad, stdin, dryRun: dryRun && !noDryRun, unsafeValueFlag }
+  return { operands, broad, stdin, dryRun: dryRun && !noDryRun, unsafeValueFlag, dynamicWord }
 }
 
 function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
-  const { operands, broad, stdin, dryRun, unsafeValueFlag } = sendPackOperands(tail)
+  const { operands, broad, stdin, dryRun, unsafeValueFlag, dynamicWord } = sendPackOperands(tail)
   // claude-factory-ctae.12: this check must come before the dryRun check, the same order
   // `gitPushDenied` uses. A word that looks like `-n` or `--dry-run`, right after an
   // abbreviated value flag, is really that flag's own value word. It is not a real dry-run flag.
   if (unsafeValueFlag) return true
+  // claude-factory-cu5m: deny a dynamic word before the dryRun check. The word can hide a flag.
+  if (dynamicWord) return true
   if (dryRun) return false
   if (broad || stdin) return true
   const refspecs = operands.slice(1)
@@ -2767,11 +2792,15 @@ function isHeadAliasRefspec(spec: string): boolean {
  */
 function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
   if (isSendPack) {
-    const { operands, dryRun } = sendPackOperands(tail)
+    const { operands, dryRun, dynamicWord } = sendPackOperands(tail)
+    // claude-factory-cu5m: keep parser parity with `sendPackDenied`.
+    if (dynamicWord) return true
     if (dryRun) return false
     return operands.slice(1).some(isHeadAliasRefspec)
   }
-  const { operands, tags, dryRun } = pushOperands(tail)
+  const { operands, tags, dryRun, dynamicWord } = pushOperands(tail)
+  // claude-factory-cu5m: keep parser parity with `gitPushDenied`.
+  if (dynamicWord) return true
   if (dryRun) return false
   const refspecs = operands.slice(1)
   const specs = refspecs.length ? refspecs : tags ? [] : ['HEAD']
@@ -3980,6 +4009,7 @@ function denyAt(
     if (hasGhConfigEnvWord(words)) ghConfigMovedSoFar = true
   }
   if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
+  if (backtickBesidePush(command)) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
