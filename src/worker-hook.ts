@@ -324,7 +324,7 @@ export interface HookGate {
  * when `globalGitConfig` is true and `gitWord` is true. `gitWord` comes from the dequoted segment
  * words, so `"gi"t` counts. `hasDangerousConfigEnv` reads it too.
  * Residual, not fixed: a path built from a shell variable (`F=~/.gitconfig; echo x >> $F`), a
- * Write or Edit tool write (claude-factory-ak7), a `.git/config` write alone (claude-factory-cpn), and a directory copy with no path operand (`cp -R /r/acme/dot/. ~/`, `tar -xf x.tar -C ~`).
+ * Write or Edit tool write (claude-factory-ak7), a `.git/config` write alone (claude-factory-cpn), and a directory copy with no path operand (`cp -R /r/acme/dot/. ~/`, `tar -xf x.tar -C ~`). Round 3 added: a work tree outside the root, `--git-dir`, gh clone, the `.config` directory, dot segments, `--reporter-outfile`.
  */
 interface ScanState {
   branchChange: boolean
@@ -964,11 +964,11 @@ const OUTPUT_FLAG_EXACT_RE = new RegExp(`^(${OUTPUT_FLAG_SOURCE})$`)
 
 // claude-factory-ty8y.14: true when a work tree flag or env word moves the work tree out of `root`.
 // A git checkout or restore into another work tree can write the global git config.
-function gitWorkTreeOutside(words: string[], root: string): boolean {
+function gitWorkTreeOutside(words: string[], root: string | undefined): boolean {
   const bad = (raw: string | undefined): boolean => {
     const v = (raw ?? '').replace(/^["']+|["']+$/g, '')
     if (v === '.') return false
-    if (v === root || v.startsWith(root + '/')) return false
+    if (root && (v === root || v.startsWith(root + '/'))) return false
     return !v || v.startsWith('/') || /[~$`\\]|(^|\/)\.\.(\/|$)/.test(v)
   }
   for (let i = 0; i < words.length; i++) {
