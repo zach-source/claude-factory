@@ -3177,6 +3177,54 @@ test.each([
   expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
 })
 
+// ty8y.19-22 (review r4): dot segments under the root, the cwd as work tree, core.worktree, gh --clone.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R4 = [
+  'git --work-tree=/r/acme/widget/../.. checkout HEAD -- .',
+  'git --work-tree=/r/acme/widget/sub/../../.. checkout -f HEAD',
+  'GIT_WORK_TREE=/r/acme/widget/.. git checkout -f HEAD',
+  'git -C ~ --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'cd /Users/acme && git --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'pushd ~; git --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'git -C ~ --git-dir /r/acme/widget/.git checkout -f HEAD',
+  'cd /Users/acme && GIT_DIR=. git checkout -f HEAD',
+  'pushd ~; GIT_DIR=. git checkout -f HEAD',
+  'GIT_DIR=. git -C ~ checkout -f HEAD',
+  'git config core.worktree /Users/acme',
+  'git config --local core.worktree ~',
+  'git config --add core.worktree /etc',
+  'git config --replace-all core.worktree /x',
+  'git config set core.worktree /x',
+  'git config CORE.WorkTree /x',
+  'git -c core.worktree=/x checkout -f HEAD',
+  'git -c CORE.WorkTree=. status',
+  'gh repo fork acme/evil --clone -- ~/.config/git',
+  'gh repo fork acme/evil --clone=true -- ~/.config/git',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R4)(
+  'denyReason denies %j alone (claude-factory-ty8y r4)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'git --work-tree=/r/acme/widget/sub status',
+  'git --work-tree=. status',
+  'git --git-dir=.git log',
+  'git -C src status',
+  'git -C /r/acme/widget/sub status',
+  'git config core.worktree .',
+  'git config --get core.worktree',
+  'git config core.worktree /r/acme/widget/sub',
+  'gh repo fork acme/evil --clone=false',
+  'gh issue list --search gitconfig',
+])('denyReason allows %j (claude-factory-ty8y r4)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
 // ty8y.5: a quoted or escaped git word still counts as a git word.
 const DENY_QUOTED_GIT_WORD = [
   'printf x >> ~/.gitconfig; "gi"t push',
