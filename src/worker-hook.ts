@@ -2551,6 +2551,49 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
   return false
 }
 
+// claude-factory-p43v.10: the union of every mutating kubectl, ko and helm verb that
+// anyDynamicLiveApplyReason checks after a dynamic command word, and every flag of theirs that
+// takes a value word. This hook does not know which of the 3 tools a dynamic word resolves to,
+// so it checks against all 3 tools' own sets at once.
+const LIVE_APPLY_MUTATING_VERBS = new Set<string>([
+  ...KUBECTL_MUTATING_VERBS,
+  ...KO_MUTATING_VERBS,
+  ...HELM_MUTATING_VERBS,
+])
+const LIVE_APPLY_VALUE_FLAGS = new Set<string>([
+  ...KUBECTL_VALUE_FLAGS,
+  ...KO_VALUE_FLAGS,
+  ...HELM_VALUE_FLAGS,
+])
+
+/**
+ * True when `words` opens with a dynamic command word, and the next non-flag word in
+ * `realCommand(words)` names a mutating kubectl, ko or helm verb (claude-factory-p43v.10).
+ * `liveApplyDenied` only runs after `anyLiveApplyWord` finds a literal `kubectl`, `ko` or `helm`
+ * word. A dynamic word, such as `$K` in `$K apply -f x --context acme`, is none of those 3
+ * literal words, so that scan never calls `liveApplyDenied` at all.
+ *
+ * This check mirrors `anyDynamicCommandReason`'s `cmd[0]` anchor (claude-factory-p43v.8): it
+ * denies only when the dynamic word sits at the command slot itself, not at an unrelated
+ * argument. Once it finds a mutating verb there, it reads the `--context` or `--kube-context`
+ * value the same way `liveApplyDenied` does, and fails closed the same way: a missing, dynamic,
+ * or `personOnly` context denies with `LIVE_REASON`, the reason a literal `kubectl`, `ko` or
+ * `helm` call gives for the same verb and context.
+ */
+function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): boolean {
+  const cmd = realCommand(words)
+  if (!cmd.length || !dynamicWord(cmd[0]!)) return false
+  let k = 1
+  while (k < cmd.length) {
+    const w = cmd[k]!
+    if (!w.startsWith('-') || w === '-') break
+    k += LIVE_APPLY_VALUE_FLAGS.has(w) ? 2 : 1
+  }
+  if (k >= cmd.length || !LIVE_APPLY_MUTATING_VERBS.has(cmd[k]!)) return false
+  const ctx = flagValue(cmd, new Set(['--context', '--kube-context']))
+  return contextDenied(ctx, personOnly)
+}
+
 /**
  * Looks for a `sh`, `bash`, `zsh`, `dash` or `eval` word at any position in `words`. It recurses
  * into denyReason on the script that word runs.
@@ -3077,7 +3120,14 @@ function denyAt(
     const b = baseWord(cmd[0]!)
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
-    if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
+    // claude-factory-p43v.10: a dynamic word at the command slot can hide kubectl, ko or helm
+    // itself. anyLiveApplyWord never finds that word, since it is not one of the 3 literal names.
+    if (
+      personOnly?.length &&
+      (anyLiveApplyWord(words, personOnly) || anyDynamicLiveApplyReason(words, personOnly))
+    ) {
+      return LIVE_REASON
+    }
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
     // timeout) can push past position 0.
     const ghFound = anyGhReason(words, g, state)
