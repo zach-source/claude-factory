@@ -426,6 +426,13 @@ function segments(cmd: string): string[][] {
       endSeg()
       continue
     }
+    if ((c === '&' || c === '|') && '<>'.includes(cmd[i - 1] ?? '\0')) {
+      // claude-factory-cu5m.12: a `&` or `|` right after `<` or `>` is part of a redirect
+      // (`>&`, `<&`, `>|`, `>>|`) in zsh, bash and sh. It is not a separator.
+      word += c
+      hasWord = true
+      continue
+    }
     if (';|&\n`'.includes(c)) {
       endSeg()
       continue
