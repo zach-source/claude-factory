@@ -2308,16 +2308,41 @@ function isPushConfigWrite(name: string, value: string | undefined): boolean {
  *
  * It uses the same fail-closed rule as `REFSPEC_UNSAFE`, for a value that this guard does not
  * read in full.
+ *
+ * claude-factory-bemr.13: `--config-env` also has a bare 2-word form, `--config-env name=envvar`,
+ * with no `=` right after `--config-env` itself. Real git 2.54 runs that form the same as the
+ * attached form. This guard checks the same name against the same key list for both forms.
+ *
+ * claude-factory-bemr.14: this scan steps over the value word of each other flag in
+ * `GIT_VALUE_FLAGS` (such as `--attr-source`) before it checks for a literal `--`. Real git 2.54
+ * can read that literal `--` as the value word of `--attr-source`, not as the end of the flags.
+ * A scan that breaks there, or that does not step over that value word, misses a `-c` or
+ * `--config-env` word right after it.
  */
 // claude-factory-zl5.34: `--config-env=<name>=<envvar>` sets `<name>` from the text of the
 // environment variable named `<envvar>`. It sets the same key that `-c <name>=<value>` sets from
-// the command line. Real git accepts only this one attached form, with `=` right after `--config-env`.
+// the command line.
 const CONFIG_ENV_PREFIX = '--config-env='
+
+/**
+ * Checks `name` against the same key list that `gitDashCPushDenied` denies for a `-c name=value`
+ * write: `alias.*`, `remote.*.push`, `remote.*.mirror`, `push.default`, `include.path`,
+ * `includeIf.*.path`. Shared by the attached `--config-env=` form and the bare 2-word form
+ * (claude-factory-bemr.13).
+ */
+function isDeniedConfigEnvName(name: string): boolean {
+  return (
+    isRemotePushName(name) ||
+    isRemoteMirrorName(name) ||
+    isAliasName(name) ||
+    isPushDefaultName(name) ||
+    isIncludeName(name)
+  )
+}
 
 function gitDashCPushDenied(tail: string[]): boolean {
   for (let i = 0; i < tail.length; i++) {
     const w = tail[i]!
-    if (w === '--') break
     if (w.startsWith(CONFIG_ENV_PREFIX)) {
       // claude-factory-zl5.34: This guard can read the name of `<envvar>`, but not the text of the
       // environment variable that it names.
@@ -2330,23 +2355,35 @@ function gitDashCPushDenied(tail: string[]): boolean {
       const rest = w.slice(CONFIG_ENV_PREFIX.length)
       const eq = rest.indexOf('=')
       if (eq < 0) continue
-      const name = rest.slice(0, eq)
-      if (
-        isRemotePushName(name) ||
-        isRemoteMirrorName(name) ||
-        isAliasName(name) ||
-        isPushDefaultName(name) ||
-        isIncludeName(name)
-      )
-        return true
+      if (isDeniedConfigEnvName(rest.slice(0, eq))) return true
+      continue
+    }
+    // claude-factory-bemr.13: the bare 2-word form. Real git reads the next word as `name=envvar`,
+    // with no `=` right after `--config-env` itself.
+    if (w === '--config-env') {
+      const pair = tail[i + 1]
+      i++
+      const eq = pair?.indexOf('=') ?? -1
+      if (pair === undefined || eq < 0) continue
+      if (isDeniedConfigEnvName(pair.slice(0, eq))) return true
       continue
     }
     // real git reads `-c name=value` only as 2 separate words: no `=` form, no `--config` form.
-    if (w !== '-c') continue
-    const pair = tail[i + 1]
-    const eq = pair?.indexOf('=') ?? -1
-    if (pair === undefined || eq < 0) continue
-    if (isPushConfigWrite(pair.slice(0, eq), pair.slice(eq + 1))) return true
+    if (w === '-c') {
+      const pair = tail[i + 1]
+      i++
+      const eq = pair?.indexOf('=') ?? -1
+      if (pair === undefined || eq < 0) continue
+      if (isPushConfigWrite(pair.slice(0, eq), pair.slice(eq + 1))) return true
+      continue
+    }
+    if (w === '--') break
+    // claude-factory-bemr.14: step over the value word of every other GIT_VALUE_FLAGS flag
+    // (such as `--attr-source`), so a `--` it reads as its own value does not end this scan.
+    if (!w.includes('=') && GIT_VALUE_FLAGS.has(w)) {
+      i++
+      continue
+    }
   }
   return false
 }
@@ -2923,23 +2960,47 @@ function splitCmdline(text: string): string[] | undefined {
 }
 
 /**
- * This function combines every -C word in `tail` into one path for gate.gitAliases.
- * The words are read in order.
+ * From all -C words in `tail`, `gitGlobalDirFlags` makes one path for gate.gitAliases. It also
+ * sets a flag when `tail` has a `--git-dir` word, for `effectiveMoved` in `gitReason`. It reads
+ * the words once, in order.
  *
- * claude-factory-bemr.8: real git does a separate `cd` for each -C word.
- * For example, `git -C a -C b` lands in `a/b`, not in `b` alone.
- * An absolute -C word resets the path. It clears any -C word that comes before it.
+ * claude-factory-bemr.8: Git does one `cd` for each -C word.
+ * For example, `git -C a -C b` goes to `a/b`, not only to `b`.
+ * An absolute -C word sets the path. It clears each -C word that comes before it.
  *
- * If `tail` has no -C word, the result is undefined.
+ * claude-factory-bemr.14: This function does not stop at a literal `--`. It also skips the value
+ * word of each other flag in `GIT_VALUE_FLAGS`. Git 2.54 can read these words as the value of
+ * `--attr-source` or `--config-env`:
+ *   - a literal `--`
+ *   - a word that looks like `-C` or `--git-dir`
+ * A scan that stops at `--`, or that does not skip that value word, reads it as a `-C` or
+ * `--git-dir` flag by mistake.
+ *
+ * `cDir` has no value when `tail` has no `-C` word.
  */
-function gitCDir(tail: string[]): string | undefined {
-  const values = flagValuesInOrder(tail, new Set(['-C']))
-  if (values.length === 0) return undefined
-  let acc = '.'
-  for (const v of values) {
-    acc = isAbsolute(v) ? v : joinPath(acc, v)
+function gitGlobalDirFlags(tail: string[]): { cDir: string | undefined; hasGitDir: boolean } {
+  let cDir: string | undefined
+  let hasGitDir = false
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
+    if (w === '--git-dir' || w.startsWith('--git-dir=')) {
+      hasGitDir = true
+      if (w === '--git-dir') i++
+      continue
+    }
+    if (w === '-C') {
+      const v = tail[i + 1]
+      i++
+      if (!v) continue
+      cDir = isAbsolute(v) ? v : joinPath(cDir ?? '.', v)
+      continue
+    }
+    if (!w.includes('=') && GIT_VALUE_FLAGS.has(w)) {
+      i++
+      continue
+    }
   }
-  return acc
+  return { cDir, hasGitDir }
 }
 
 /**
@@ -3048,8 +3109,12 @@ function gitReason(
   // different config file there.
   // `git --bare status` still passes below. The word status is a builtin word, so it never
   // reaches the alias-resolution block.
-  const effectiveMoved =
-    moved || flagValue(tail, new Set(['--git-dir'])) !== undefined || tail.includes('--bare')
+  //
+  // claude-factory-bemr.14: gitGlobalDirFlags finds the --git-dir flag and the -C fold in one
+  // pass. Neither read stops at a literal --, so --attr-source cannot hide either flag behind
+  // its own value word.
+  const { cDir: aliasDir, hasGitDir } = gitGlobalDirFlags(tail)
+  const effectiveMoved = moved || hasGitDir || tail.includes('--bare')
   const verb = vi >= 0 ? tail[vi] : undefined
   // claude-factory-bemr.6: gate.gitAliases gets the raw -C value, or undefined with no -C.
   // It must not get a root fallback.
@@ -3059,8 +3124,7 @@ function gitReason(
   // claude-factory-bemr.8: real git applies each -C word in turn. Each word is relative to the
   // directory that the previous -C word sets. For example, `git -C a -C b` lands in a/b.
   //
-  // gitCDir combines the words in this way. It folds every -C word, not only the last one.
-  const aliasDir = gitCDir(tail)
+  // gitGlobalDirFlags combines the words in this way. It folds every -C word, not only the last one.
   //
   // See claude-factory-bemr. This part of the function finds a git alias for the verb.
   // It does not run this part when the verb position is not sure.

@@ -2171,6 +2171,26 @@ test('denyReason allows --config-env on an unrelated key (claude-factory-zl5.34)
   expect(denyReason('git --config-env=user.name=ENVVAR push origin feature')).toBeUndefined()
 })
 
+// claude-factory-bemr.13: `--config-env` has a second, bare form: `--config-env name=envvar`,
+// with no `=` right after `--config-env` itself. Real git 2.54 runs this form the same way it
+// runs the attached form above. This guard must read the same name from either form.
+const DENY_CONFIG_ENV_PUSH_BARE_FORM = [
+  'git --config-env alias.p=ENVVAR p origin',
+  'git --config-env remote.origin.push=ENVVAR push origin',
+]
+
+test.each(DENY_CONFIG_ENV_PUSH_BARE_FORM)(
+  'denyReason denies %j, the bare --config-env form (claude-factory-bemr.13)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the bare --config-env form on an unrelated key (claude-factory-bemr.13)', () => {
+  expect(denyReason('git --config-env user.name=ENVVAR push origin feature')).toBeUndefined()
+})
+
 // claude-factory-zl5.35: `git send-pack` is the plumbing `git push` itself calls, with no `push`
 // word on its own command line. It takes the same refspec syntax, so this guard checks it the
 // same way, through `refspecTarget` and `protectedBranchSet`.
@@ -3807,6 +3827,57 @@ test('denyReason denies ALIAS_USE_REASON when an unknown flag before -- leaves t
   expect(denyReason('git --totally-unknown-flag -- p origin main', undefined, undefined, gate)).toBe(
     ALIAS_USE_REASON,
   )
+})
+
+// claude-factory-bemr.14: `--attr-source` (a sibling of `--config-env`, both in GIT_VALUE_FLAGS)
+// can read a literal `--` as its own value word. A scan for `-C`, `--git-dir` or `-c` before the
+// git verb must not stop at that `--`: real git 2.54 still reads a flag right after it.
+//
+// This row proves the -C fold. Without --attr-source, "git -C OTHER p origin main" already
+// denies PUSH_REASON through the same alias table lookup at dir "OTHER".
+test('denyReason denies "git --attr-source -- -C OTHER p origin main" with PUSH_REASON (claude-factory-bemr.14)', () => {
+  const gate: HookGate = {
+    gitAliases: dir => (dir === 'OTHER' ? new Map([['p', 'push']]) : new Map()),
+  }
+  expect(denyReason('git --attr-source -- -C OTHER p origin main', undefined, undefined, gate)).toBe(
+    PUSH_REASON,
+  )
+})
+
+// claude-factory-bemr.14: this row proves the --git-dir check. Without --attr-source, "git
+// --git-dir OTHER/.git p origin main" already denies ALIAS_USE_REASON: a --git-dir flag makes
+// the alias table unknown (claude-factory-68gn), the same as an earlier cd.
+test('denyReason denies "git --attr-source -- --git-dir OTHER/.git p origin main" with ALIAS_USE_REASON (claude-factory-bemr.14)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['p', 'push']]) }
+  expect(
+    denyReason('git --attr-source -- --git-dir OTHER/.git p origin main', undefined, undefined, gate),
+  ).toBe(ALIAS_USE_REASON)
+})
+
+// claude-factory-bemr.14: `gitDashCPushDenied` has the same `--` hazard. These two rows prove it
+// for the `-c name=value` form and the attached `--config-env=name=value` form.
+test('denyReason denies "git --attr-source -- -c alias.p=push p origin main" with PUSH_REASON (claude-factory-bemr.14)', () => {
+  expect(denyReason('git --attr-source -- -c alias.p=push p origin main')).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git --attr-source -- --config-env=alias.p=E p origin main" with PUSH_REASON (claude-factory-bemr.14)', () => {
+  expect(denyReason('git --attr-source -- --config-env=alias.p=E p origin main')).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.14: `--attr-source` also reads a word that looks like `-C` as its own
+// value word, not as a real -C flag. A scan that does not step over that value word misreads the
+// word after it (here "sub") as the start of the folded dir, and asks gate.gitAliases for the
+// wrong directory. The fixed scan asks for the tool call's own cwd (undefined here) instead.
+test('denyReason reads gate.gitAliases for the cwd, not a word --attr-source consumed, with "git --attr-source -C sub" (claude-factory-bemr.14)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    gitAliases: dir => {
+      dirs.push(dir)
+      return new Map([['sub', 'status']])
+    },
+  }
+  denyReason('git --attr-source -C sub', undefined, undefined, gate)
+  expect(dirs).toEqual([undefined])
 })
 
 // claude-factory-bemr.7: these tests check worker-hook.ts's own exported GIT_BUILTIN_VERBS and
