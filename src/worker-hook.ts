@@ -217,6 +217,8 @@ export const XARGS_REASON =
 //
 // A check for one literal verb, such as push, cannot match an unexpanded word. Every check after
 // it then reads the wrong verb, or no verb at all.
+export const SH_DYNAMIC_FLAG_REASON = 'placeholder'
+
 export const DYNAMIC_VERB_REASON =
   'The factory denies this command: a word at the command or subcommand slot holds a shell ' +
   'expansion ($, a backtick, a glob, a brace, or a leading ~). The shell expands this word at ' +
