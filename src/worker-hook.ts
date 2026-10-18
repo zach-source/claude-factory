@@ -208,8 +208,9 @@ export const DOLLAR_QUOTE_REASON =
 export const FUNCTION_DEF_REASON =
   'The factory denies this command: it defines a shell function. A function name can hide a git, ' +
   'gh, sh, eval, kubectl or rm word from this guard, and the guard cannot follow the call. Write ' +
-  'the commands plainly, or put the function in a .scratch script file and run it with bash or ' +
-  'zsh. Do not retry this exact command.'
+  'the commands plainly, or write the function to a .scratch script file with the Write tool and ' +
+  'run it with bash or zsh. A heredoc write of the function is also denied. Do not retry this ' +
+  'exact command.'
 
 // claude-factory-zl5.33
 export const XARGS_REASON =
@@ -570,6 +571,15 @@ function namesFunctionDefinition(words: string[]): boolean {
   let k = 0
   while (k < words.length && FUNCTION_PREFIX_WORDS.has(words[k]!)) k++
   if (words[k] === 'function') return true
+  // claude-factory-4i60.5: a command position also follows `{`, `always` and the like inside
+  // the segment (zsh `repeat 1 {`, `if [[ 1 ]] {`, `} always {`), `repeat <word>`, and `time --`.
+  for (let j = 1; j < words.length; j++) {
+    if (words[j] !== 'function') continue
+    const prev = words[j - 1]!
+    if (FUNCTION_PREFIX_WORDS.has(prev) && prev !== '-p' && prev !== 'time') return true
+    if (prev === 'always' || words[j - 2] === 'repeat') return true
+    if (prev === '--' && (words[j - 2] === 'time' || words[j - 2] === '-p')) return true
+  }
   // the zsh functions table, a bash BASH_FUNC_ import, and a bash function-import value
   return words.some(
     w => FUNCTION_TABLE_WORD.test(w) || w.includes('BASH_FUNC_') || FUNCTION_IMPORT_VALUE.test(w),

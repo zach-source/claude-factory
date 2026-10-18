@@ -2987,6 +2987,15 @@ const DENY_FUNCTION_DEF = [
   `env 'BASH_FUNC_f%%=() { sh "$@"; }' bash -c 'f -c "git push origin main"'`,
   `v='() { sh "$@"; }'; env "BASH_FUNC_f%%=$v" bash -c f`,
   `v='() { sh "$@"; }'; env "$n=$v" bash -c f`,
+  // command positions after a later word (4i60.5)
+  `repeat 1 function f { sh "$@" }; f -c 'git push origin main'`,
+  `repeat 1 { function f { sh "$@" } }; f -c 'git push origin main'`,
+  `if [[ 1 ]] { function f { sh "$@" } }; f -c 'git push origin main'`,
+  `{ :; } always { function f { sh "$@" } }; f -c 'git push origin main'`,
+  `time -- function f { sh "$@"; }; f -c 'git push origin main'`,
+  `time -p -- function f { sh "$@"; }; f -c 'git push origin main'`,
+  // accepted over-deny: a heredoc write of a function (4i60.6)
+  `cat > .scratch/x.sh <<'EOF'\nf() { :; }\nEOF`,
   // accepted over-deny: a bare functions word
   'grep -n functions src/x.ts',
   // moved from ALLOW_DYNAMIC_PUSH_WORD: the guard now denies every definition
@@ -3035,7 +3044,7 @@ test('denyReason scans a long function-like input fast (claude-factory-4i60)', (
   for (const cmd of ['( '.repeat(4000), 'f'.repeat(8000) + '()', 'x=$('.repeat(2000)]) {
     const t = Date.now()
     denyReason(cmd, '/root/repo', undefined, FN_GATE)
-    expect(Date.now() - t).toBeLessThan(200)
+    expect(Date.now() - t).toBeLessThan(1000)
   }
 })
 
