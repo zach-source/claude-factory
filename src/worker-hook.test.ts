@@ -5952,6 +5952,34 @@ test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (c
   expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
 })
 
+const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
+test.each(['bin/factory gc --dry-run', 'FACTORY_HOME=/t /abs/bin/factory gc'])(
+  'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
+  cmd => {
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => SLASH_ALIASES),
+      ),
+    ).toBeUndefined()
+  },
+)
+test.each(['sudo gc', 'FOO=1 gc', 'echo x && gc', 'gc'])(
+  'denyReason still denies %j with gc as an alias at command position or after a bare word (claude-factory-1zr5)',
+  cmd => {
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => SLASH_ALIASES),
+      ),
+    ).toBe(SHELL_ALIAS_REASON)
+  },
+)
+
 test('denyReason rescans an alias that does not run git: kubectl, rm -rf, a gh wrapper (claude-factory-1zr5)', () => {
   expect(denyReason('k --context acme apply -f x', '/w', ['acme'], SNAP_GATE)).toBe(LIVE_REASON)
   expect(denyReason('rmrf build', '/w', undefined, SNAP_GATE)).toBe(REASON)

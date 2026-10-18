@@ -5212,7 +5212,10 @@ function shellAliasReason(
   moved: boolean,
   ghMoved: boolean,
 ): string | undefined {
-  for (let i = 0; i < words.length; i++) {
+  let end = words.length
+  const first = words.findIndex(w => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))
+  if (first >= 0 && words[first]!.includes('/') && !table.has(words[first]!)) end = first + 1
+  for (let i = 0; i < end; i++) {
     const name = words[i]!
     if (!table.has(name) || stack.includes(name)) continue
     const value = table.get(name)
