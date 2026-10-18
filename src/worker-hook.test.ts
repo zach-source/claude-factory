@@ -550,12 +550,24 @@ test('scanReason denies a 200000-word find -execdir scan with a recursive rm at 
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
-async function run(stdin: string, env?: Record<string, string | undefined>, argv: string[] = []) {
+// claude-factory-3f2z.2: `cwd` sets the filesystem cwd of the spawned hook process. It does not
+// set `tool_input.cwd`. That value is inside `stdin`.
+//
+// `cwd` stands in for the cwd of the real Claude Code host process. A prior Bash call runs
+// `cd`. This can leave the host process on a second repo. That repo can be different from the
+// worktree root and from `tool_input.cwd`.
+async function run(
+  stdin: string,
+  env?: Record<string, string | undefined>,
+  argv: string[] = [],
+  cwd?: string,
+) {
   const p = Bun.spawn(['bun', HOOK, ...argv], {
     stdin: new Response(stdin),
     stdout: 'pipe',
     stderr: 'pipe',
     env,
+    cwd,
   })
   const out = await new Response(p.stdout).text()
   const code = await p.exited
@@ -1467,6 +1479,109 @@ test('run as `bun src/worker-hook.ts`, with origin/HEAD set to develop a push to
   })
   const allowed = await run(allowInput, env)
   expect(allowed).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+// claude-factory-3f2z.2: main() must set gate.cwd from tool_input.cwd. It must not use the
+// worktree root (CLAUDE_PROJECT_DIR).
+//
+// This test keeps CLAUDE_PROJECT_DIR set. The zl5.9 and zl5.12 tests above do not. This test
+// proves the real cross-repo case.
+//
+// A prior Bash call runs `cd`. This leaves tool_input.cwd on a second repo. A later
+// `git push origin HEAD` or bare `git push` must read the branch of that second repo. It must
+// not read the branch of the worktree root (claude-factory-3f2z, AC1).
+test('run as `bun src/worker-hook.ts` with CLAUDE_PROJECT_DIR set, a HEAD push denies on the tool call cwd repo, not on root (claude-factory-3f2z.2, AC1)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wh-3f2z-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', root])
+  Bun.spawnSync(['git', '-C', root, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', root, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const other = mkdtempSync(join(tmpdir(), 'wh-3f2z-other-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', other])
+  Bun.spawnSync(['git', '-C', other, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: root }
+  for (const command of ['git push origin HEAD', 'git push']) {
+    const input = JSON.stringify({ tool_name: 'Bash', cwd: other, tool_input: { command } })
+    const denied = await run(input, env)
+    expect(denied.code).toBe(0)
+    expect(JSON.parse(denied.out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: PUSH_REASON,
+      },
+    })
+  }
+}, 10_000)
+
+// claude-factory-3f2z.2 (AC2): the same wiring must not wrongly deny a push.
+//
+// The tool call cwd repo is on an unprotected branch. The hook must still allow the push. This
+// is true even though the worktree root is on another branch.
+test('run as `bun src/worker-hook.ts` with CLAUDE_PROJECT_DIR set, a HEAD push allows on the tool call cwd repo when its branch is unprotected (claude-factory-3f2z.2, AC2)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wh-3f2z-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', root])
+  Bun.spawnSync(['git', '-C', root, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', root, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const other = mkdtempSync(join(tmpdir(), 'wh-3f2z-other-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'feature', other])
+  Bun.spawnSync(['git', '-C', other, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: root }
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: other,
+    tool_input: { command: 'git push origin HEAD' },
+  })
+  expect(await run(input, env)).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+// claude-factory-3f2z.2 (AC3): a relative `git -C sub push origin HEAD` must resolve `sub`
+// against tool_input.cwd. It must not use the hook process's own filesystem cwd. It must not
+// use the worktree root.
+//
+// `rootDir/sub` and `processCwdDir/sub` are both on an unprotected branch (`feature`). A hook
+// that reads either one by mistake allows the push. `toolCwdDir/sub` is the real target, and it
+// is on `main`. Only a fix that resolves against `tool_input.cwd` denies here.
+test('run as `bun src/worker-hook.ts`, a relative git -C sub push resolves against tool_input.cwd, not the hook process cwd or root (claude-factory-3f2z.2, AC3)', async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'wh-3f2z-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', rootDir])
+  Bun.spawnSync(['git', '-C', rootDir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    rootDir,
+    'symbolic-ref',
+    'refs/remotes/origin/HEAD',
+    'refs/remotes/origin/main',
+  ])
+  const rootSub = join(rootDir, 'sub')
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'feature', rootSub])
+  Bun.spawnSync(['git', '-C', rootSub, 'commit', '-q', '-m', 'init', '--allow-empty'])
+
+  const processCwdDir = mkdtempSync(join(tmpdir(), 'wh-3f2z-hookcwd-'))
+  const processCwdSub = join(processCwdDir, 'sub')
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'feature', processCwdSub])
+  Bun.spawnSync(['git', '-C', processCwdSub, 'commit', '-q', '-m', 'init', '--allow-empty'])
+
+  const toolCwdDir = mkdtempSync(join(tmpdir(), 'wh-3f2z-toolcwd-'))
+  const toolCwdSub = join(toolCwdDir, 'sub')
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', toolCwdSub])
+  Bun.spawnSync(['git', '-C', toolCwdSub, 'commit', '-q', '-m', 'init', '--allow-empty'])
+
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: rootDir }
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: toolCwdDir,
+    tool_input: { command: 'git -C sub push origin HEAD' },
+  })
+  const denied = await run(input, env, [], processCwdDir)
+  expect(denied.code).toBe(0)
+  expect(JSON.parse(denied.out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
 }, 10_000)
 
 // claude-factory-zl5.8: main() wires gate.readFile to a real, capped file read, resolved against

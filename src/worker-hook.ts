@@ -2238,6 +2238,12 @@ async function main() {
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
     protectedBranches,
+    // claude-factory-3f2z.2: this is the tool call's own cwd, not `root`. `gitReason`'s push-dir
+    // fold (`gitChdir`) uses this value.
+    //
+    // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`, the same as
+    // `readFile` below.
+    cwd: i.cwd || root,
     headOf: (dir, timeoutMs) =>
       gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD'], timeoutMs),
     originHead: timeoutMs =>
