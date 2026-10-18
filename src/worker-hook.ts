@@ -569,6 +569,154 @@ function realCommand(words: string[]): string[] {
   }
 }
 
+// claude-factory-p43v.21: This list contains `WRAPPERS`, plus `timeout` and `xargs`.
+// `commandAnchors` reads the flags of each wrapper in the same way that `realCommand` does.
+// It uses the same `WRAPPER_VALUE_FLAGS` and `WRAPPER_BARE_FLAGS` maps.
+// `realCommand` keeps only one index, the index where it stops.
+// `commandAnchors` can keep more than one index.
+const LEAD_WRAPPERS = new Set([...WRAPPERS, 'timeout', 'xargs'])
+
+// claude-factory-p43v.21: This limit sets the maximum number of candidate indices.
+// `commandAnchors` gives no more indices than this limit.
+// Each row that this hook must deny resolves in one of the first candidates.
+// For the full rule, read the doc comment of the function.
+//
+// `MAX_COMMAND_LENGTH` (8192) sets the maximum number of words in the full command.
+// This limit adds a second, low-cost safeguard.
+// It stops `commandAnchors` before it reads a long run of plain, non-dynamic words, one at a time.
+// This occurs if no wrapper flag is unknown to this hook.
+const MAX_COMMAND_ANCHORS = 16
+
+/**
+ * Returns each index in `words` where the shell can start the real command.
+ *
+ * claude-factory-p43v.21: Before this change, `anyDynamicCommandReason` and
+ * `anyDynamicLiveApplyReason` read only `realCommand(words)[0]`.
+ * These checks treat that index as the only index where the actual command starts.
+ * `realCommand` stops at a wrapper flag that `skipWrapperFlags` does not know by name.
+ * Then it keeps that flag word, or a word after it, at index 0.
+ * So the dynamic-word checks read the incorrect word.
+ *
+ * This function gives a short list of candidate start indices.
+ * It replaces the one index.
+ * The caller checks each candidate with `words.slice(a)`.
+ * The earlier code checked `realCommand(words)` in the same manner.
+ *
+ * It first skips a `VAR=val` word or a `RESERVED_LEADING_WORDS` word at the start.
+ * For example: `do`, `then`, `if`, `coproc` (claude-factory-p43v.15/.19).
+ *
+ * If the next word is not a known wrapper, that word is the only candidate.
+ *
+ * If it is a known wrapper (`sudo`, `env`, `nice`, `time`, `exec`, `command`, `builtin`,
+ * `nohup`, `timeout`, `xargs`), this function reads the flags of that wrapper.
+ *
+ * - The function skips each flag that this hook knows for that wrapper.
+ *   If the flag has a value, the function also skips the value word.
+ *
+ * - `timeout` also skips one word that gives the time (`5`, `30s`) after its own flags.
+ *
+ * - `--` ends the wrapper's own flags. The word after it is the only candidate.
+ *   No more checks occur. A literal `--` shows clearly where the actual command starts.
+ *
+ * - If a word is itself a known wrapper, this function starts the same walk again at that word.
+ *   This function checks a nested wrapper (for example `sudo env sh -c ...`) in one step.
+ *
+ * - For each other flag, this hook does not know the flag by name.
+ *   The function skips that flag. The next word can be a value of that flag.
+ *   That word is not the actual command.
+ *
+ * The first plain word that this walk finds is always a candidate.
+ * After that, this function adds the next non-flag word as a candidate if one of these
+ * conditions applies:
+ *
+ * - The added word is dynamic (claude-factory-p43v.1).
+ *
+ * - An unknown flag can have taken an earlier word as its value.
+ *
+ * This function stops adding candidates in these cases:
+ *
+ * - After it adds a dynamic word, it adds one more word and stops.
+ *   The pair check of claude-factory-p43v.8 does not need more words than this.
+ *
+ * - There are no more words.
+ *
+ * - The number of candidates becomes equal to `MAX_COMMAND_ANCHORS`.
+ */
+function commandAnchors(words: string[]): number[] {
+  let i = 0
+  while (i < words.length) {
+    const w = words[i]!
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || RESERVED_LEADING_WORDS.has(w)) {
+      i++
+      continue
+    }
+    break
+  }
+  if (i >= words.length) return []
+  let base = baseWord(words[i]!)
+  if (!LEAD_WRAPPERS.has(base)) return [i]
+
+  let j = i + 1
+  let mayBeValue = false
+  for (;;) {
+    if (j >= words.length) return []
+    const w = words[j]!
+    const valueFlags = WRAPPER_VALUE_FLAGS[base]
+    const bareFlags = WRAPPER_BARE_FLAGS[base]
+    if (w === '--') {
+      j++
+      if (j >= words.length) return []
+      const nb = baseWord(words[j]!)
+      if (LEAD_WRAPPERS.has(nb)) {
+        base = nb
+        j++
+        mayBeValue = false
+        continue
+      }
+      return [j]
+    }
+    if (valueFlags?.has(w)) {
+      j += 2
+      continue
+    }
+    if (bareFlags?.has(w)) {
+      j += 1
+      continue
+    }
+    if (w.startsWith('-') && w !== '-') {
+      j++
+      mayBeValue = true
+      continue
+    }
+    if (base === 'timeout' && /^[\d.]+[smhd]?$/.test(w)) {
+      j++
+      continue
+    }
+    const nb = baseWord(w)
+    if (LEAD_WRAPPERS.has(nb)) {
+      base = nb
+      j++
+      mayBeValue = false
+      continue
+    }
+    break
+  }
+
+  const anchors = [j]
+  let k = j
+  for (;;) {
+    const dyn = dynamicWord(words[k]!)
+    if (!dyn && !mayBeValue) break
+    let k2 = k + 1
+    while (k2 < words.length && words[k2]!.startsWith('-') && words[k2] !== '-') k2++
+    if (k2 >= words.length) break
+    anchors.push(k2)
+    if (dyn || anchors.length >= MAX_COMMAND_ANCHORS) break
+    k = k2
+  }
+  return anchors
+}
+
 // claude-factory-8pc.24: bd fills a bead's created_by field from the BEADS_ACTOR variable.
 // See src/cli.ts lines 1089 and 1198.
 // The flood guard's sweepFiler (src/sweeps.ts) trusts created_by to find a sweep-filed bead.
@@ -2956,23 +3104,31 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
  * So `$G $V origin main` (after `G=git V=push`) reads `$G` as the command.
  * It never checks `$V`. `$V` is not in `DYNAMIC_COMMAND_TRIGGER`, so the old scan moves on.
  *
- * This check runs first. It starts at `cmd[0]`, the real command word that `realCommand` finds.
- * It denies when `cmd[0]` is dynamic and the next non-flag word in `cmd` is dynamic too.
+ * This check runs first, for each index `a` in `commandAnchors(words)`.
+ * It uses `cmd = words.slice(a)` each time.
+ *
+ * Claude-factory-p43v.21: `commandAnchors` can find an index behind a wrapper flag this hook
+ * does not know by name. `realCommand(words)[0]` alone used to find the wrong word there, or no
+ * word at all.
+ *
+ * The check denies when `cmd[0]` is dynamic and the next non-flag word in `cmd` is dynamic too.
  * Because of this start point, `cp "$A" "$B"` and `"$PY" -c 'print(1)'` pass the check.
  * Neither `cp` nor the script word of `"$PY" -c` is the second dynamic word in a pair that
  * starts at the command slot.
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
-  const cmd = realCommand(words)
-  if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
-  if (cmd.length > 0 && dynamicWord(cmd[0]!)) {
-    let k = 1
-    while (k < cmd.length) {
-      const w = cmd[k]!
-      if (!w.startsWith('-') || w === '-') break
-      k += GIT_VALUE_FLAGS.has(w) || GH_VALUE_FLAGS.has(w) ? 2 : 1
+  for (const a of commandAnchors(words)) {
+    const cmd = words.slice(a)
+    if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
+    if (cmd.length > 0 && dynamicWord(cmd[0]!)) {
+      let k = 1
+      while (k < cmd.length) {
+        const w = cmd[k]!
+        if (!w.startsWith('-') || w === '-') break
+        k += GIT_VALUE_FLAGS.has(w) || GH_VALUE_FLAGS.has(w) ? 2 : 1
+      }
+      if (k < cmd.length && dynamicWord(cmd[k]!)) return DYNAMIC_VERB_REASON
     }
-    if (k < cmd.length && dynamicWord(cmd[k]!)) return DYNAMIC_VERB_REASON
   }
 
   let sawGitWord = false
@@ -3080,9 +3236,13 @@ function anyToolLiveApplyDenied(tail: string[], personOnly: string[]): boolean {
  * word sits at the command slot.
  */
 function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): string | undefined {
-  const cmd = realCommand(words)
-  if (cmd.length && dynamicWord(cmd[0]!) && anyToolLiveApplyDenied(cmd.slice(1), personOnly)) {
-    return DYNAMIC_VERB_REASON
+  // claude-factory-p43v.21: `commandAnchors` can name an index behind a wrapper flag this hook
+  // does not know by name, where `realCommand(words)[0]` alone finds the wrong word.
+  for (const a of commandAnchors(words)) {
+    const cmd = words.slice(a)
+    if (cmd.length && dynamicWord(cmd[0]!) && anyToolLiveApplyDenied(cmd.slice(1), personOnly)) {
+      return DYNAMIC_VERB_REASON
+    }
   }
   for (let j = 0; j < words.length; j++) {
     if (!dynamicWord(words[j]!)) continue
