@@ -2558,6 +2558,8 @@ const DENY_ENV_SPLIT_SHELL: Array<[string, string | undefined]> = [
   ["env -S 'eval' 'git push origin main'", undefined],
   ["env -S 'nice sh' -c 'git push origin main'", undefined],
   ["env -S 'env' sh -c 'git push origin main'", undefined],
+  ["env -S 'gh pr #x' merge 5", 'MERGE_REASON'],
+  ["env -S 'gh pr # c' merge 5", 'MERGE_REASON'],
 ]
 test.each(DENY_ENV_SPLIT_SHELL)(
   'denyReason denies %j (claude-factory-s1fj, env -S shell word runs the later -c script)',

@@ -3597,6 +3597,13 @@ function envChdirPresent(words: string[], j: number): boolean {
 // This function does not scan for that assignment itself.
 // It only carries the value down, unchanged, into a nested script.
 // A recursed-into `denyAt` call then runs its own scan for that assignment.
+// claude-factory-s1fj: env reads a word that starts with # in an -S value as a comment to the end
+// of the value. It keeps the words after the value. Cut the value there, as env does.
+function envSplitCommentCut(val: string): string {
+  const m = /(^|\s)#/.exec(val)
+  return m ? val.slice(0, m.index) : val
+}
+
 function anyShellReason(
   words: string[],
   root: string | undefined,
@@ -3644,7 +3651,7 @@ function anyShellReason(
         'env',
         ...words.slice(j + 1, span.sIndex),
         ...(prefix ? ['-' + prefix] : []),
-        ...segments(val).flat(),
+        ...segments(envSplitCommentCut(val)).flat(),
         ...words.slice(span.end),
       ]
       const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
