@@ -44,6 +44,16 @@ minor release may change the factory format, the CLI or the run state.
     `gitReason` now returns the deny reason at once when it finds the
     untrusted `pushTail`, and it does not call `gitPushDenied`,
     `sendPackDenied`, or `gate.headOf`. (claude-factory-3f2z.9)
+- `worker-hook`: fail closed when one command does one of these, then pushes `HEAD` to a
+  protected branch in the same command (claude-factory-9zd5):
+  - writes a git administrative path (`.git`, `.git/HEAD`, a linked worktree's
+    `.git/worktrees/<name>/HEAD`, or `.git/config`)
+  - names a `--git-dir`/`--absolute-git-dir`/`--git-path`/`--git-common-dir` flag, or a
+    `GIT_DIR`/`GIT_COMMON_DIR` name
+  - writes a plain word or glob named `HEAD` outside `git`/`gh` argv (a redirect target, or a
+    `dd`, `mv` or `ln` operand), with no `.git` path needed at all
+  - runs from a cwd already inside a `.git`-named directory
+
 - `worker-hook`: the protected-branch push guard now denies a unique abbreviation of a `git push`
   or `git send-pack` long flag, the same as the full flag name. This covers `--all`,
   `--branches`, `--mirror`, `--prune`, `--repo`, `--push-option`, `--receive-pack`, `--exec`,
