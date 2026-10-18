@@ -585,6 +585,13 @@ const BEADS_ACTOR_SPLIT_STRING_DENY = [
   "env -S'-i bd create x' -l factory",
   'env -S\'-i\' bd create "x" -l factory',
   "env -S '-u BEADS_ACTOR bd create x' -l factory",
+  // claude-factory-igj.10 (PR #109 review round 3): a short cluster can hold other option
+  // letters before S (`-iS...`). The old scan dropped the whole -S word, so a clear-all `i`
+  // right before S never ran. Real env clears the environment for each line below.
+  "env -iS'bd create x'",
+  "env -iS 'bd create x'",
+  "env -0iS'bd create x'",
+  'env -iS\'sh -c "bd create x"\'',
 ]
 
 test.each(BEADS_ACTOR_SPLIT_STRING_DENY)('denyReason denies %s (claude-factory-igj)', cmd => {
