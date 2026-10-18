@@ -381,6 +381,7 @@ function baseWord(w: string): string {
 /**
  * Splits a command string into segments (shell words).
  * It splits on &&, ||, ;, |, &, a newline, ( ), $( and a backtick.
+ * It keeps a ( and ) marker word for a paren in argument position, such as a zsh glob group or <( and >(.
  * It keeps a single-quoted span literal.
  * It reads a backslash escape (\\ \" \$ \`) inside a double-quoted span.
  * It reads a backslash escape outside quotes too.
@@ -401,6 +402,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
   let word = ''
   let hasWord = false
   let quote: '"' | "'" | null = null
+  const parens: boolean[] = []
   // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
   let inBacktick = false
   const endWord = () => {
@@ -413,8 +415,12 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
     segs.push(cur)
     cur = []
   }
+  let redirPrev = false
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
+    // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
+    const afterRedir = redirPrev
+    redirPrev = false
     if (quote === "'") {
       if (c === "'") quote = null
       else word += c
@@ -453,6 +459,32 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
       i++
       continue
     }
+    if (c === '(' || c === ')') {
+      // claude-factory-cu5m: in zsh a `(` in argument position starts a glob group, such as
+      // `(-)-all`. Keep a marker word, so the push parsers see it. A subshell and `$(`
+      // add no marker, and neither does the `)` that closes them. `<(` and `>(` keep one, because a word after them must stay in the push tail.
+      const prev = cmd[i - 1] ?? ''
+      if (c === '(') {
+        const arg = (hasWord || cur.length > 0) && prev !== '$'
+        parens.push(arg)
+        if (arg) {
+          endWord()
+          cur.push('(')
+        }
+      } else if (parens.pop()) {
+        endWord()
+        cur.push(')')
+      }
+      endSeg()
+      continue
+    }
+    if ((c === '&' || c === '|') && afterRedir) {
+      // claude-factory-cu5m.12: a `&` or `|` right after `<` or `>` is part of a redirect
+      // (`>&`, `<&`, `>|`, `>>|`) in zsh, bash and sh. It is not a separator.
+      word += c
+      hasWord = true
+      continue
+    }
     // claude-factory-p43v: an opening backtick starts a command substitution. This guard cannot
     // read it, so it ends the segment here. It keeps a backtick mark in the word it ends, so a
     // later scan can see that this word is unsafe. A closing backtick only ends the segment.
@@ -465,7 +497,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
       endSeg()
       continue
     }
-    if (';|&\n()'.includes(c)) {
+    if (';|&\n'.includes(c)) {
       endSeg()
       continue
     }
@@ -483,6 +515,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
     }
     word += c
     hasWord = true
+    redirPrev = c === '<' || c === '>'
   }
   endSeg()
   return segs.filter(s => s.length > 0)
@@ -1711,6 +1744,23 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
   return cwd.split('/').some(part => part.toLowerCase().endsWith('.git'))
 }
 
+// claude-factory-cu5m: `segments()` ends a segment at a backtick and drops it. So the output of a
+// backtick command is not a word of the `git push` segment, and the push parsers cannot see it.
+// That output can be `--all`. This scan reads the raw text: a backtick, a git word and a push or
+// send-pack word together. It over-denies a backtick that sits in an unrelated quoted argument.
+// This is fail closed.
+// claude-factory-cu5m.13: the same scan covers `&>` (also `&>>`, `&>|`, `&>!`). zsh and bash read it
+// as a redirect, but `segments()` splits at its `&` (dash reads `&` then `>`), so the words after it
+// leave the push tail. It over-denies `git push origin feature &>/dev/null`.
+function backtickBesidePush(command: string): boolean {
+  if (!/`|&>/.test(command)) return false
+  const words = segments(command).flat().map(baseWord)
+  return (
+    words.some(b => b === 'git' || /^git-/.test(b)) &&
+    words.some(b => b === 'push' || b === 'send-pack' || b === 'git-push' || b === 'git-send-pack')
+  )
+}
+
 /**
  * True when any word in the raw `command` text has baseWord `git` or `git-<verb>`
  * (claude-factory-zl5.44).
@@ -2753,6 +2803,9 @@ const PUSH_BROAD_FLAGS = ['--all', '--branches', '--mirror', '--prune']
 // This guard cannot resolve any of these before git does. It treats the refspec as unknown and
 // fails closed. It denies the push.
 const REFSPEC_UNSAFE = /[$`*?[\]{}]/
+// claude-factory-cu5m: a word the shell can expand to a flag before git runs. It adds a zsh named
+// directory (`~name`, for example after `hash -d name=--all`) to REFSPEC_UNSAFE. `~/path` stays safe.
+const dynamicPushWord = (w: string): boolean => REFSPEC_UNSAFE.test(w) || /[()]/.test(w) || /^~[^/]/.test(w)
 
 // claude-factory-p43v: dynamicWord checks a command or subcommand word, in place of a push
 // refspec. It uses the same character set as REFSPEC_UNSAFE.
@@ -2912,7 +2965,11 @@ function pushOperands(tail: string[]): {
   unreadableValueFlag: boolean
   tags: boolean
   dryRun: boolean
+  dynamicWord: boolean
 } {
+  // claude-factory-cu5m: the shell expands or splits a dynamic word before git runs. The word
+  // can become `--all`, `--mirror` or `--`. This guard cannot read it, so it tests every word.
+  const dynamicWord = tail.some(dynamicPushWord)
   const operands: string[] = []
   let broad = false
   let unreadableValueFlag = false
@@ -2946,7 +3003,7 @@ function pushOperands(tail: string[]): {
     }
     operands.push(w)
   }
-  return { operands, broad, unreadableValueFlag, tags, dryRun: dryRun && !noDryRun }
+  return { operands, broad, unreadableValueFlag, tags, dryRun: dryRun && !noDryRun, dynamicWord }
 }
 
 /**
@@ -2986,11 +3043,13 @@ function protectedBranchSet(gate: HookGate): { branches: Set<string>; unresolved
  * For these, this guard reads `currentBranch`.
  */
 function gitPushDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
-  const { operands, broad, unreadableValueFlag, tags, dryRun } = pushOperands(tail)
+  const { operands, broad, unreadableValueFlag, tags, dryRun, dynamicWord } = pushOperands(tail)
   // claude-factory-ctae.12: this check must come before the dryRun check. A word that looks
   // like `-n` or `--dry-run`, right after an abbreviated value flag or an `-o` short-flag
   // cluster, is really that flag's own value word. It is not a real dry-run flag.
   if (unreadableValueFlag) return true
+  // claude-factory-cu5m: deny a dynamic word before the dryRun check. The word can hide a flag.
+  if (dynamicWord) return true
   if (dryRun) return false
   if (broad) return true
   const refspecs = operands.slice(1)
@@ -3342,7 +3401,10 @@ function sendPackOperands(tail: string[]): {
   stdin: boolean
   dryRun: boolean
   unsafeValueFlag: boolean
+  dynamicWord: boolean
 } {
+  // claude-factory-cu5m: same rule as `pushOperands`. Test every word of `tail`.
+  const dynamicWord = tail.some(dynamicPushWord)
   const operands: string[] = []
   let broad = false
   let dryRun = false
@@ -3371,15 +3433,17 @@ function sendPackOperands(tail: string[]): {
     }
     operands.push(w)
   }
-  return { operands, broad, stdin, dryRun: dryRun && !noDryRun, unsafeValueFlag }
+  return { operands, broad, stdin, dryRun: dryRun && !noDryRun, unsafeValueFlag, dynamicWord }
 }
 
 function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
-  const { operands, broad, stdin, dryRun, unsafeValueFlag } = sendPackOperands(tail)
+  const { operands, broad, stdin, dryRun, unsafeValueFlag, dynamicWord } = sendPackOperands(tail)
   // claude-factory-ctae.12: this check must come before the dryRun check, the same order
   // `gitPushDenied` uses. A word that looks like `-n` or `--dry-run`, right after an
   // abbreviated value flag, is really that flag's own value word. It is not a real dry-run flag.
   if (unsafeValueFlag) return true
+  // claude-factory-cu5m: deny a dynamic word before the dryRun check. The word can hide a flag.
+  if (dynamicWord) return true
   if (dryRun) return false
   if (broad || stdin) return true
   const refspecs = operands.slice(1)
@@ -3638,11 +3702,15 @@ function isHeadAliasRefspec(spec: string): boolean {
  */
 function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
   if (isSendPack) {
-    const { operands, dryRun } = sendPackOperands(tail)
+    const { operands, dryRun, dynamicWord } = sendPackOperands(tail)
+    // claude-factory-cu5m: keep parser parity with `sendPackDenied`.
+    if (dynamicWord) return true
     if (dryRun) return false
     return operands.slice(1).some(isHeadAliasRefspec)
   }
-  const { operands, tags, dryRun } = pushOperands(tail)
+  const { operands, tags, dryRun, dynamicWord } = pushOperands(tail)
+  // claude-factory-cu5m: keep parser parity with `gitPushDenied`.
+  if (dynamicWord) return true
   if (dryRun) return false
   const refspecs = operands.slice(1)
   const specs = refspecs.length ? refspecs : tags ? [] : ['HEAD']
@@ -4129,6 +4197,9 @@ function gitReason(
   // This guard does not trust `pushTail`, so it cannot parse it.
   // It denies the push directly. It does not get to `gitPushDenied` or `sendPackDenied`.
   if (uncertainChdirUnsafe) return PUSH_DIR_REASON
+  // claude-factory-cu5m.6: a dynamic word before the verb can expand to `-c remote.X.push=...` or
+  // to a pair that `gitDashCPushDenied` cannot read. This guard denies it before any dry-run check.
+  if (tail.slice(0, verbIndex).some(dynamicPushWord)) return PUSH_REASON
   if (pushReadsCurrentBranch(pushTail, isSendPack)) state.headPush = true
   // claude-factory-68gn: a --git-dir flag moves the push the same way a cd does, so it folds into
   // `moved` here instead of into `dir`. Once `moved`, a -C value is not trusted either: a relative
@@ -5151,6 +5222,7 @@ function denyAt(
     if (hasGhConfigEnvWord(words)) ghConfigMovedSoFar = true
   }
   if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
+  if (backtickBesidePush(command)) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
