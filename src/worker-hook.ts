@@ -108,6 +108,13 @@ export const PUSH_REASON =
   'for the change, or a revert pull request for a rollback. Only a person pushes or merges a ' +
   'protected branch. Do not retry this command.'
 
+// claude-factory-vco
+export const ENV_SPLIT_ESCAPE_REASON =
+  'The factory denies this command: an env -S or env --split-string value holds a backslash or ' +
+  'a newline. env reads an escape such as \\_ as a word break, so this guard cannot read the ' +
+  'real command. Write the command words plainly, without env -S. Do not retry this exact ' +
+  'command.'
+
 // claude-factory-z1p: the env -S and --split-string flags change a ${NAME} word in the value
 // into one command word when env runs. denyAt reads only the typed text, so it cannot see the
 // changed command (GNU env 9.11 and macOS /usr/bin/env both do this).
@@ -1878,6 +1885,13 @@ function anyShellReason(
     if (bw === 'env') {
       const val = envSplitStringValue(words, j)
       if (val === undefined) continue
+      // claude-factory-vco: GNU env and macOS /usr/bin/env read \_ or a real newline in this
+      // value as a word break, quoted or not. They read \t as a tab in the same word. Any other
+      // backslash use, including a lone trailing backslash, exits env with status 1. denyAt's
+      // own tokenizer does none of this, so a hidden command such as 'git\_push\_origin\_main'
+      // stays one harmless word there. Fail closed on any backslash or newline instead of
+      // chasing every parser gap this escape can open.
+      if (/[\\\n]/.test(val)) return ENV_SPLIT_ESCAPE_REASON
       // claude-factory-z1p: fail closed on a dollar sign before denyAt tokenizes the literal
       // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
       // or gh verb; env expands it to one command word at run time, past this guard's sight.

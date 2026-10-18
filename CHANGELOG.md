@@ -950,6 +950,13 @@ minor release may change the factory format, the CLI or the run state.
   runs, so the old check on the typed text alone can miss a real push or merge hidden this way.
   (claude-factory-z1p)
 
+- The worker-hook deny gate now denies an `env -S`/`--split-string` value with a backslash or a
+  real newline, for example `env -S 'git\_push acme/widget main'`. `env` reads `\_` or a real
+  newline there as a word break, but the old gate read the whole value as one word, so it let
+  the command pass. (claude-factory-vco)
+  - `src/worker-hook.ts` adds the `ENV_SPLIT_ESCAPE_REASON` constant. `anyShellReason` checks
+    for this mark before it calls `denyAt`.
+
 ## 0.12.0 (2026-10-15)
 
 - Memory: factory memory now tiers after each dream, instead of growing one small file per lesson forever. `<topic>/LONG.md` holds the long tier (one `## summary` heading and a stable `<!-- id: ... -->` per merged entry); `CORE.md` bullets are indexed as fact notes. A pure `decide()` (`src/memory.ts`) picks what to merge, archive, promote or flag as a possible duplicate; `applyTiers()` runs it for real, merging a shown-or-helped short note into its topic's `LONG.md` once it is 7 days old and archiving a never-helped, 30-day-stale or `superseded:` note into `.archive/<topic>.md`, with no usage lost (`compact()`'s rename log now follows a chain and a `#id`). `factory dream` runs this pass itself right after it commits, in its own `compact: N merged, M archived, F files -> G files` commit, unless `FACTORY_MEMORY_TIERS=0`; `factory memory compact [--dry-run]` runs it by hand. The dream prompt names the tiers and now lists promotion candidates (a `LONG.md` entry helped across 3+ runs) and possible duplicates (two `LONG.md` entries scoring the same by `longSimPairs()`) for the dream to act on. `factory memory eval` scores search (recall@5, MRR) against a fixed query set, to check tiering did not cost search quality. (claude-factory-59r)

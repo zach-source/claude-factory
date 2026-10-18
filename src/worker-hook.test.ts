@@ -7,6 +7,7 @@ import {
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   type HookGate,
   LIVE_REASON,
@@ -1711,6 +1712,47 @@ test.each(DENY_ENV_SPLIT_STRING)(
 )
 
 test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.42)', () => {
+  expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
+  expect(denyReason('env -i git status')).toBeUndefined()
+})
+
+// claude-factory-vco: GNU env and macOS /usr/bin/env split an env -S value at each \_ and at
+// each real newline, quoted or not. denyAt's tokenizer does not split there, so a value such
+// as 'git\_push\_origin\_main' stays one word and never matches the push check. Each row below
+// holds a backslash or a newline and must deny with ENV_SPLIT_ESCAPE_REASON.
+const DENY_ENV_SPLIT_ESCAPE: string[] = [
+  // the 3 bead rows (claude-factory-vco)
+  "env -S 'git\\_push\\_origin\\_main'",
+  "env -S 'git push\\_origin main'",
+  "env -S 'gh\\_pr merge 5'",
+  // the same value in every flag form -S/--split-string accepts
+  "env -S'git\\_push origin main'",
+  "env -vS 'git\\_push origin main'",
+  "env --split-string='git\\_push origin main'",
+  'env -S "git\\_push origin main"',
+  "/usr/bin/env -S 'git\\_push origin main'",
+  // a real newline inside the value
+  "env -S 'git\npush origin main'",
+  // another \_ word break, later in the value
+  "env -S 'rm\\_-rf\\_/'",
+  // a lone trailing backslash, with no character after it before the closing quote
+  "env -S 'git push origin main\\'",
+]
+
+test.each(DENY_ENV_SPLIT_ESCAPE)(
+  'denyReason denies %j (claude-factory-vco, a backslash or newline in an env -S value hides the real command)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(ENV_SPLIT_ESCAPE_REASON)
+  },
+)
+
+test('denyReason allows env -S values with no backslash and no newline (claude-factory-vco)', () => {
+  expect(denyReason("env -S 'echo hi'")).toBeUndefined()
+  expect(denyReason("env -S 'git status'")).toBeUndefined()
+  // the gate must not depend on gate or root
+  const gate = { headOf: () => 'feature' }
+  expect(denyReason("env -S 'git status'", undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason("env -S 'git status'", '/some/root')).toBeUndefined()
   expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
   expect(denyReason('env -i git status')).toBeUndefined()
 })
