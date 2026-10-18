@@ -2850,7 +2850,11 @@ test('denyReason denies a gh alias chain deeper than MAX_ALIAS_DEPTH with ALIAS_
 // pattern as if it opened a git or gh command. The round-1 review asked to decide this and pin
 // it with test rows. This guard keeps the wider scan (it already fails closed, the same choice
 // this guard makes everywhere else), so each row here denies.
-const BEMR11_NON_COMMAND_GIT_WORD_COMMANDS = ['cd docs && grep git README.md', 'grep -rn git src', 'grep gh README.md']
+const BEMR11_NON_COMMAND_GIT_WORD_COMMANDS = [
+  'cd docs && grep git README.md',
+  'grep -rn git src',
+  'grep gh README.md',
+]
 
 test.each(BEMR11_NON_COMMAND_GIT_WORD_COMMANDS)(
   'denyReason denies %j with ALIAS_USE_REASON: a git or gh word in an unrelated argument still opens the alias scan (claude-factory-bemr.11)',
@@ -3052,7 +3056,9 @@ test('denyReason denies "git --bare co main && git push o HEAD" with ALIAS_USE_R
     originHead: () => 'main',
     gitAliases: () => new Map([['co', 'checkout']]),
   }
-  expect(denyReason('git --bare co main && git push o HEAD', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+  expect(denyReason('git --bare co main && git push o HEAD', undefined, undefined, gate)).toBe(
+    ALIAS_USE_REASON,
+  )
 })
 
 // claude-factory-bemr.10: `status` is a builtin word. The alias-resolution block never runs for
