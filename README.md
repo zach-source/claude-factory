@@ -395,10 +395,11 @@ A later review found 4 more disguised forms. The hook now denies these too:
   way. Each one is the same unreadable-file hazard as `GIT_CONFIG_GLOBAL`. `GIT_DIR=<dir>` and
   `GIT_COMMON_DIR=<dir>` point git at a different repository. That repository's config file
   denies the same way.
-- a `cd`, `pushd` or `popd` word anywhere before `git push` or `git send-pack`, in this segment
-  or an earlier one. Each one can move the push to a different repository. An `env -C` flag, an
-  `env --chdir` flag, or a `git --git-dir` flag moves the one command it wraps the same way. The
-  hook cannot read the branch in that other repository. So a push that names `HEAD` or `@`
+- a `cd`, `pushd`, `popd` or `chdir` word anywhere before `git push` or `git send-pack`, in this
+  segment or an earlier one. zsh's own `chdir` builtin does the same job as `cd`. Each one can
+  move the push to a different repository. An `env -C` flag, an `env --chdir` flag, or a
+  `git --git-dir` flag moves the one command it wraps the same way. The hook cannot read the
+  branch in that other repository. So a push that names `HEAD` or `@`
   denies outright, with a distinct reason (`PUSH_DIR_REASON`) that tells the worker to name the
   branch directly, instead of retrying the same command. A push to an explicit branch still
   allows, as long as that branch is not itself protected.

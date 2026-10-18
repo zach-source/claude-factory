@@ -1509,6 +1509,10 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   // a short-flag cluster ahead of S, value as its own word
   ["env -vS 'git push origin main'", 'PUSH_REASON'],
   ["env --split-string='git push origin main'", 'PUSH_REASON'],
+  // claude-factory-68gn.6: a value flag (-u NAME) ahead of -S must not hide it either. This is
+  // the same stop-at-the-first-non-dash-word bug envChdirPresent had for -C, in the sibling
+  // function envSplitStringValue.
+  ["env -u FOO -S 'git push origin main'", 'PUSH_REASON'],
 ]
 const ENV_SPLIT_STRING_REASON: Record<string, string> = {
   MERGE_REASON,
@@ -1663,6 +1667,10 @@ const DENY_PUSH_AFTER_DIR_CHANGE = [
   'command cd /other && git push origin HEAD',
   'cd /other && git push origin @',
   'cd /other && git send-pack origin HEAD',
+  // claude-factory-68gn.5: zsh's chdir builtin does the same job as cd. zsh is the worker
+  // shell on this host. This guard must list chdir too, not only cd, pushd and popd.
+  'chdir /other && git push origin HEAD',
+  'builtin chdir /other && git push origin HEAD',
 ]
 
 test.each(DENY_PUSH_AFTER_DIR_CHANGE)(
@@ -1670,7 +1678,8 @@ test.each(DENY_PUSH_AFTER_DIR_CHANGE)(
   cmd => {
     let calls = 0
     // this gate would allow the push if it were ever consulted: 'feature' is not a protected
-    // branch. The test still expects a deny, and AC3 (below) checks the call count separately.
+    // branch. The test still expects a deny, and this also checks the call count (AC3's own
+    // dedicated test below checks the same thing for one row, with no other assertion mixed in).
     const gate = {
       headOf: (dir?: string) => {
         calls++
@@ -1678,7 +1687,7 @@ test.each(DENY_PUSH_AFTER_DIR_CHANGE)(
       },
     }
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
-    void calls
+    expect(calls).toBe(0)
   },
 )
 
@@ -1722,8 +1731,9 @@ const DENY_PUSH_AFTER_DIR_CHANGE_EXPLICIT_PROTECTED = [
 test.each(DENY_PUSH_AFTER_DIR_CHANGE_EXPLICIT_PROTECTED)(
   'denyReason denies %j: an explicit protected target still denies after a directory change (claude-factory-68gn, AC4)',
   cmd => {
-    const reason = denyReason(cmd, '/root/repo')
-    expect(reason === PUSH_REASON || reason === PUSH_DIR_REASON).toBe(true)
+    // moved is true here, so gitReason's reason is always PUSH_DIR_REASON (claude-factory-68gn.9:
+    // pin the one reason the code returns, so a change of reason shows up as a test failure).
+    expect(denyReason(cmd, '/root/repo')).toBe(PUSH_DIR_REASON)
   },
 )
 
@@ -1769,10 +1779,32 @@ const DENY_PUSH_AFTER_ENV_OR_GIT_DIR_MOVE = [
   'env --chdir=/other git push origin HEAD',
   'git --git-dir /other/.git push origin HEAD',
   'git --git-dir=/other/.git push origin HEAD',
+  // claude-factory-68gn.6: a value flag before -C or --chdir must not hide it. env -u FOO
+  // -C /usr pwd prints /usr: the flag takes the word right after it as its value.
+  'env -u FOO -C /other git push origin HEAD',
+  'env --unset FOO --chdir /other git push origin HEAD',
+  "env -u FOO -C /other sh -c 'git push origin HEAD'",
 ]
 
 test.each(DENY_PUSH_AFTER_ENV_OR_GIT_DIR_MOVE)(
   'denyReason denies %j: env -C/--chdir and git --git-dir move the push like a cd (claude-factory-68gn, AC7)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+  },
+)
+
+// claude-factory-68gn.7: anyShellReason reads its own env -C/--chdir flag (through
+// envChdirPresent) before it recurses into sh -c, bash -c or eval. This differs from the rows
+// above: those go through anyGitReason's flat scan, since git follows env directly in the same
+// segment. These rows push env -C's own moved flag through anyShellReason's recursion instead.
+const DENY_PUSH_AFTER_ENV_CHDIR_THROUGH_RECURSION = [
+  "env -C /other sh -c 'git push origin HEAD'",
+  "env --chdir=/other bash -c 'git push origin HEAD'",
+]
+
+test.each(DENY_PUSH_AFTER_ENV_CHDIR_THROUGH_RECURSION)(
+  'denyReason denies %j: env -C/--chdir carries through anyShellReason recursion (claude-factory-68gn, AC7/.7)',
   cmd => {
     const gate = { headOf: () => 'feature' }
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)

@@ -102,17 +102,17 @@ export const PUSH_REASON =
   'for the change, or a revert pull request for a rollback. Only a person pushes or merges a ' +
   'protected branch. Do not retry this command.'
 
-// claude-factory-68gn: a cd, pushd or popd word can change the directory before a git push or
-// git send-pack word. An env -C flag, an env --chdir flag, or a git --git-dir flag can do the
-// same thing. Each one can move the push to a different repository.
+// claude-factory-68gn: a cd, pushd, popd or chdir word can change the directory before a git
+// push or git send-pack word. An env -C flag, an env --chdir flag, or a git --git-dir flag can
+// do the same thing. Each one can move the push to a different repository.
 //
 // This guard cannot read the branch in that other repository. So it fails closed, the same way
 // claude-factory-zl5.12 already does for an unresolved HEAD.
 export const PUSH_DIR_REASON =
-  'The factory denies this command: it changes the current directory (cd, pushd, popd, env -C, ' +
-  '--chdir, or git --git-dir) before a git push or git send-pack. The factory cannot read the ' +
-  'current branch there. A push that names HEAD or @ then denies outright. Name the remote ' +
-  'branch directly instead, for example git push origin <run branch>, and never name a ' +
+  'The factory denies this command: it changes the current directory (cd, pushd, popd, chdir, ' +
+  'env -C, --chdir, or git --git-dir) before a git push or git send-pack. The factory cannot ' +
+  'read the current branch there. A push that names HEAD or @ then denies outright. Name the ' +
+  'remote branch directly instead, for example git push origin <run branch>, and never name a ' +
   'protected branch. Do not retry this exact command.'
 
 // claude-factory-z1p: the env -S and --split-string flags change a ${NAME} word in the value
@@ -1669,9 +1669,11 @@ function gitReason(
 const GIT_DASHED_BINARY = /^git-(.+)$/
 
 // claude-factory-68gn: a word whose baseWord is one of these changes the shell's current
-// directory (cd, pushd) or restores an earlier one (popd). `denyAt` tracks this across the whole
-// command. `anyGitReason` and `anyShellReason` also track it within one segment, word by word.
-const DIR_CHANGE_WORDS = new Set(['cd', 'pushd', 'popd'])
+// directory. cd, pushd and chdir change it. popd restores an earlier one. zsh's own chdir
+// builtin does the same job as cd, and zsh is the worker shell on this host (claude-factory-
+// 68gn.5). denyAt tracks this across the whole command. anyGitReason and anyShellReason also
+// track it within one segment, word by word.
+const DIR_CHANGE_WORDS = new Set(['cd', 'pushd', 'popd', 'chdir'])
 
 /** True when any word in `words` has a baseWord in `DIR_CHANGE_WORDS` (claude-factory-68gn). */
 function hasDirChangeWord(words: string[]): boolean {
@@ -1799,11 +1801,20 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * approximation: see src/worker-hook.test.ts for the differential checks and for the two
  * regression shapes that a blind jump past a miss would break.
  */
+// claude-factory-68gn.6: these GNU and BSD `env` flags take the next word as their own value,
+// not as `env`'s own command: `-u name`/`--unset name` removes a variable, and BSD `env` also
+// reads a value after `-P` (alternate PATH), `-L` (login class) and `-U` (login). A scan that
+// stops at the first word not starting with `-` mistakes that value for `env`'s own command, and
+// so misses a `-C`/`--chdir`/`-S`/`--split-string` flag that comes after it. Checked on macOS:
+// `env -u FOO -C /usr pwd` prints `/usr`, not the worktree root.
+const ENV_VALUE_FLAG_WORDS = new Set(['-u', '--unset', '-P', '-L', '-U'])
+
 /**
  * Reads the value an `env -S`/`env --split-string` word at `words[j]` would split and run, or
  * undefined when no such flag is present (claude-factory-zl5.42). Stops and returns undefined at
  * the first word that does not start with `-`: that word is `env`'s own command, and `-S` did not
- * appear before it.
+ * appear before it. claude-factory-68gn.6: a word in `ENV_VALUE_FLAG_WORDS` consumes the next
+ * word as its own value first, so that value cannot end this scan early.
  */
 function envSplitStringValue(words: string[], j: number): string | undefined {
   for (let k = j + 1; k < words.length; k++) {
@@ -1816,6 +1827,10 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
     // value sits right after the `S` in this one word).
     const shortCluster = /^-[a-zA-Z]*S([\s\S]*)$/.exec(w)
     if (shortCluster) return shortCluster[1] || words[k + 1]
+    if (ENV_VALUE_FLAG_WORDS.has(w)) {
+      k++
+      continue
+    }
     if (!w.startsWith('-')) return undefined
   }
   return undefined
@@ -1828,7 +1843,10 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
  * `--chdir dir`), the attached long form (`--chdir=dir`), the attached short form (`-Cdir`), and a
  * short-flag cluster carrying `C` (`-vC dir`), the same shapes `envSplitStringValue` already
  * reads for `-S`. It stops at the first word that does not start with `-`: that word is `env`'s
- * own command, and no chdir flag appeared before it.
+ * own command, and no chdir flag appeared before it. claude-factory-68gn.6: a word in
+ * `ENV_VALUE_FLAG_WORDS`, or a bare `-S`/`--split-string` (its value is `envSplitStringValue`'s
+ * own concern, not this scan's), consumes the next word as its value first, so that value cannot
+ * end this scan early and hide a `-C`/`--chdir` that comes after it.
  */
 function envChdirPresent(words: string[], j: number): boolean {
   for (let k = j + 1; k < words.length; k++) {
@@ -1837,6 +1855,10 @@ function envChdirPresent(words: string[], j: number): boolean {
     if (/^--chdir=/.test(w)) return true
     const shortCluster = /^-[a-zA-Z]*C/.exec(w)
     if (shortCluster) return true
+    if (ENV_VALUE_FLAG_WORDS.has(w) || w === '-S' || w === '--split-string') {
+      k++
+      continue
+    }
     if (!w.startsWith('-')) return false
   }
   return false
@@ -1941,7 +1963,8 @@ export function denyReason(
 /**
  * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
  * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
- * `depth + 1` at each of its 3 recursion sites.
+ * `depth + 1` at each of its 4 recursion sites: one for `env -S`, two for `sh`/`bash`/`zsh`/
+ * `dash -c` (one for the `--` form, one for the plain form), and one for `eval`.
  *
  * claude-factory-68gn: `movedBefore` is true when a `cd`, `pushd` or `popd` word already ran
  * before `command`, either in an outer command's earlier segment or in the script `command`
@@ -2019,12 +2042,12 @@ function denyAt(
         if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
       }
     }
-    // claude-factory-68gn: a cd, pushd or popd word anywhere in this segment moves the shell's
-    // own current directory for every segment after it (not for an env -C or --git-dir flag,
-    // which only moves the one command it wraps: those fold into `hasDirChangeBefore` instead,
-    // inside the same segment). This check runs after the checks above, so it affects only a
-    // later segment's push, never this one: anyGitReason and anyShellReason already read this
-    // segment's own `cd`/`pushd`/`popd` word through their own `hasDirChangeBefore` scan.
+    // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
+    // shell's own current directory for every segment after it (not for an env -C or --git-dir
+    // flag, which only moves the one command it wraps: anyGitReason's and anyShellReason's own
+    // `moved` accumulator reads those, and this segment's own cd/pushd/popd/chdir word, through
+    // their own forward scan). This check runs after the checks above, so it affects only a
+    // later segment's push, never this one.
     if (hasDirChangeWord(words)) movedSoFar = true
   }
   if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON

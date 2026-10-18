@@ -845,6 +845,14 @@ minor release may change the factory format, the CLI or the run state.
   - The `moved` state threads through `denyAt`'s `sh -c`/`bash -c`/`eval`/
     `env -S` recursion too, so a `cd` before one of those still denies a
     `HEAD` push inside the recursed script.
+  - Fix: `DIR_CHANGE_WORDS` also lists `chdir`, zsh's own builtin for the
+    same job as `cd`. zsh is the worker shell on this host, so `chdir
+    /other && git push origin HEAD` denied the same as a `cd` would.
+  - Fix: `envChdirPresent` and `envSplitStringValue` now skip the value
+    word of `-u`/`--unset`, `-P`, `-L` and `-U`. Before this fix, a value
+    flag ahead of `-C`/`--chdir` or `-S`/`--split-string` hid it: `env -u
+    FOO -C /other git push origin HEAD` allowed, the same way a real
+    `env -u FOO -C /usr pwd` prints `/usr`, not the worktree root.
 - `worker-hook` now denies an `env -S`/`env --split-string` value that holds a dollar sign, for
   example `git ${FOO} origin main`. `env` changes a `${NAME}` word into one command word when it
   runs, so the old check on the typed text alone can miss a real push or merge hidden this way.
