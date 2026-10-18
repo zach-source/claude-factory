@@ -1520,6 +1520,9 @@ function runTokenSwap(
   return until
 }
 
+/** the model behind the `haiku` alias for workers and the manager. Claude Code 2.1.291 maps it to Haiku 4.5 */
+export const HAIKU = 'claude-haiku-5-5'
+
 /**
  * a worker's own Claude settings, in full: none of the user's plugins, agents, skills, global `CLAUDE.md` or auto memory.
  * Those cost a worker tens of thousands of tokens a turn it never uses, so this wins instead.
@@ -1552,6 +1555,10 @@ export const workerSettings = (
     claudeMdExcludes: [globalClaudeMd],
     autoMemoryEnabled: false, // workers share the factory's memory, not the user's per-repo notes
     env: {
+      // the shunt guard's denial names SHUNT_MODEL; the Agent tool takes only an alias, so `haiku`
+      // must point at the current Haiku. A user's own value for either wins
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: HAIKU,
+      SHUNT_MODEL: 'haiku',
       ...user.env,
       ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
@@ -1666,7 +1673,13 @@ export const managerCommand = (extra: string[] = []) => [
   '--plugin-dir',
   join(ROOT, 'mod'),
   '--settings',
-  JSON.stringify({ env: { ...withoutFleet().env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } }),
+  JSON.stringify({
+    env: {
+      ...withoutFleet().env,
+      ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: HAIKU,
+    },
+  }),
   ...extra,
 ]
 
