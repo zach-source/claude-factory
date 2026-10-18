@@ -1682,6 +1682,15 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   // claude-factory-c63.8: `git bisect reset <commit>` checks out `<commit>` and ends the bisect.
   'git bisect start HEAD HEAD~1; git bisect reset main; git push o HEAD',
   'git --bogus value bisect reset main && git push o HEAD',
+  // claude-factory-c63.9: `git update-ref --stdin` can run a hidden `symref-update HEAD <ref>`
+  // line this hook cannot read. The guard denies on the `--stdin` flag alone.
+  "printf 'symref-update HEAD refs/heads/main\\n' | git update-ref --stdin && git push o HEAD",
+  'git update-ref --stdin < refs.txt; git push o HEAD',
+  'git --bogus value update-ref --stdin && git push o HEAD',
+  // claude-factory-c63.10: the uncertain-verb word scan also covers `branch` and `update-ref`,
+  // and `ghReason`'s uncertain path covers `checkout` for `gh pr checkout`.
+  'git --bogus value branch -M main && git push o HEAD',
+  'gh --bogus value pr checkout 5 && git push o HEAD',
 ]
 
 test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(
@@ -1711,6 +1720,10 @@ const ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH = [
   // claude-factory-c63.8: `git bisect reset` with no operand returns to the branch bisect
   // started from. It does not name a new one.
   'git bisect reset && git push o HEAD',
+  // claude-factory-c63.9: with no `--stdin`, `update-ref` only moves a ref's target commit. It
+  // never moves the `HEAD` symref, so the branch does not change.
+  'git update-ref HEAD abc123 && git push o HEAD',
+  'git update-ref refs/heads/other abc123 && git push o HEAD',
 ]
 
 test.each(ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH)(

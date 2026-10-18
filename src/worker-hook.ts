@@ -51,6 +51,7 @@
  *   - `git rebase` with an explicit `<branch>` operand, or `git rebase --root <branch>`
  *   - `git stash branch <name>`
  *   - `git bisect reset <commit>`
+ *   - `git update-ref --stdin`, which can run a hidden `symref-update HEAD <ref>` line
  *   - `gh pr checkout`
  * This hook denies the combination without the new branch name.
  *
@@ -176,6 +177,7 @@ export interface HookGate {
  *   - `git rebase` with an explicit `<branch>` operand, or `git rebase --root <branch>`
  *   - `git stash branch <name>`
  *   - `git bisect reset <commit>`
+ *   - `git update-ref --stdin`, which can run a hidden `symref-update HEAD <ref>` line
  *   - `gh pr checkout`
  *
  * `headPush` becomes true when a segment holds a `git push` or `git send-pack` call.
@@ -1186,6 +1188,11 @@ function ghReason(cmd: string[], gate: HookGate, state: ScanState): string | und
     if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
     if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
       return gate.station === 'release' ? undefined : READY_REASON
+    // claude-factory-c63.10: an unknown global flag can hide the `pr` word the same way it
+    // hides `verb` above, so a plain word scan for `checkout` is the only check left. No
+    // probe today reaches a real `gh pr checkout` call this way: real gh exits with code 1
+    // on the unknown flag first. This word scan still sets `branchChange`, fail closed.
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['checkout']))) state.branchChange = true
   }
   return undefined
 }
@@ -1647,15 +1654,25 @@ function sendPackDenied(tail: string[], currentBranch: string | undefined, gate:
 // word can change the branch first. The subcommand `git stash branch <name>` makes a new branch
 // and checks it out.
 //
-// claude-factory-c63.8 added `bisect`. `git bisect reset <commit>` checks out `<commit>` and
-// ends the bisect.
+// claude-factory-c63.8 added `bisect`. The command `git bisect reset <commit>` checks out
+// `<commit>`. It also ends the bisect.
+//
+// claude-factory-c63.9 added `update-ref`. The command `git update-ref --stdin` can read a
+// line from stdin that this hook cannot see: `symref-update HEAD <ref>`. So this word scan
+// denies the whole call. It does not check the rest of the call.
+//
+// claude-factory-c63.10 added `branch`. A plain word scan cannot tell a rename flag (`-m` or
+// `-M`) from a read-only `git branch` call. So the scan denies both. This path is rare, because
+// it needs an unknown global flag first. Real git exits with code 129 on that flag.
 const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set([
   'checkout',
   'switch',
+  'branch',
   'symbolic-ref',
   'rebase',
   'stash',
   'bisect',
+  'update-ref',
 ])
 
 /**
@@ -1750,11 +1767,32 @@ function stashChangesBranch(args: string[]): boolean {
 }
 
 /**
+ * True when `args`, the arguments of a `git update-ref` call, hold `--stdin` (claude-factory-c63.9).
+ * `git update-ref --stdin` reads its own ref commands from standard input. This hook cannot read
+ * that input. One stdin command, `symref-update HEAD <ref>`, points `HEAD` at a new branch. So
+ * this function denies the whole call on the `--stdin` flag alone. It does not check the rest of
+ * the call's own command-line words.
+ *
+ * Real git 2.54 confirms the risk: `git update-ref --stdin`, with a piped `symref-update HEAD
+ * refs/heads/<branch>` line, moves the branch that `git symbolic-ref --short HEAD` reports next.
+ * A plain `git update-ref HEAD <sha>` or `git update-ref refs/heads/<name> <sha>`, with no
+ * `--stdin`, only updates a ref's target commit. Neither one moves the `HEAD` symref itself, so
+ * neither changes the current branch.
+ */
+function updateRefChangesBranch(args: string[]): boolean {
+  for (const w of args) {
+    if (w === '--') break
+    if (w === '--stdin') return true
+  }
+  return false
+}
+
+/**
  * True when `verb`, a git subcommand word, can change the branch `gate.headOf` names next
  * (claude-factory-c63). `checkout` and `switch` always can, with any `args`. `branch`,
- * `symbolic-ref`, `rebase`, `stash` and `bisect` can only with the `args` that
- * `branchRenameDenied`, `symbolicRefWrites`, `rebaseChangesBranch`, `stashChangesBranch`
- * and `bisectChangesBranch` examine.
+ * `symbolic-ref`, `rebase`, `stash`, `bisect` and `update-ref` can only with the `args` that
+ * `branchRenameDenied`, `symbolicRefWrites`, `rebaseChangesBranch`, `stashChangesBranch`,
+ * `bisectChangesBranch` and `updateRefChangesBranch` examine.
  */
 function gitChangesBranch(verb: string, args: string[]): boolean {
   if (verb === 'checkout' || verb === 'switch') return true
@@ -1763,6 +1801,7 @@ function gitChangesBranch(verb: string, args: string[]): boolean {
   if (verb === 'rebase') return rebaseChangesBranch(args)
   if (verb === 'stash') return stashChangesBranch(args)
   if (verb === 'bisect') return bisectChangesBranch(args)
+  if (verb === 'update-ref') return updateRefChangesBranch(args)
   return false
 }
 
