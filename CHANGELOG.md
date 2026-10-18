@@ -150,6 +150,30 @@ minor release may change the factory format, the CLI or the run state.
   alias `co` for `pr checkout` let `gh co 5 && git push` do the same.
   (claude-factory-bemr)
 
+- Fix: 3 gaps in the alias-use guard above.
+
+  - `gitReason` now skips these flags when it looks for the verb word:
+
+    ```
+    -p -P --paginate --no-pager --bare --no-replace-objects --literal-pathspecs
+    --glob-pathspecs --noglob-pathspecs --icase-pathspecs --no-optional-locks
+    --no-advice --no-lazy-fetch
+    ```
+
+    Before this fix, one flag from this list can come before the verb. The search then did not decide. The alias check did not run. This command pushed a protected branch: `git --no-pager co main && git push o HEAD`.
+
+    `gitReason` now stops the command with `ALIAS_USE_REASON` when the search cannot decide for another reason. This happens in 2 cases.
+
+    In the first case, a word before `--` is not a builtin verb. That word matches a key in the alias table. In the second case, `gitReason` cannot read the alias table.
+
+  - `gitReason` reads the alias table at the `-C` value of the git command. Without a `-C` value, it reads the table at the cwd of the tool call. Before this fix, it always read the table at the repository root.
+
+    An earlier `cd` into a second repository hid the alias table of that repository. The table defines `alias.p=push`. The alias check did not run for this command: `git p origin main`.
+
+  - `GIT_BUILTIN_VERBS` and `GH_BUILTIN_VERBS` are now exported names. The tests for these 2 sets now check the shipped sets, not a separate copy.
+
+  (claude-factory-bemr.5, claude-factory-bemr.6, claude-factory-bemr.7)
+
 ## 0.13.0 (2026-10-18)
 
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
