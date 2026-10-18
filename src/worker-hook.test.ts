@@ -537,6 +537,18 @@ test.each(BEADS_ACTOR_CLEAR_ALLOW)('denyReason allows %s (claude-factory-igj)', 
   expect(denyReason(cmd)).toBeUndefined()
 })
 
+// claude-factory-igj AC5: env -S splits a string into words at run time.
+// Each line below hides a clear-all flag or the name BEADS_ACTOR inside that string.
+const BEADS_ACTOR_SPLIT_STRING_DENY = [
+  "env -S'-i bd create x' -l factory",
+  'env -S\'-i\' bd create "x" -l factory',
+  "env -S '-u BEADS_ACTOR bd create x' -l factory",
+]
+
+test.each(BEADS_ACTOR_SPLIT_STRING_DENY)('denyReason denies %s (claude-factory-igj)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
 // claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it
 // runs cmd.slice(i + 1), then reads rest[0]. A slice costs O(n - i). A run of n -exec words makes
 // n such slices, so the find branch costs O(n^2).
