@@ -2,6 +2,7 @@
 // station links. This module only decides, from plain data, so tests need no gh. A parked station wakes
 // for a real change: a new head commit, a merge, a close, or a review or comment by a person. A bot
 // comment, a CI status or a label changes only `updatedAt`, which is not a reason to start a worker.
+import { WATCHED_PARK_MIN } from './machine'
 
 /** a review or comment on a pull or merge request, as the watch reads it */
 export type Note = {
@@ -177,12 +178,9 @@ export function watchDecide(i: DecideInput): Decision | null {
     i.now >= i.wakeAt - REPARK_LEAD_MIN * 60_000 &&
     !(i.seen?.reparkedUntil && i.now < i.seen.reparkedUntil - REPARK_LEAD_MIN * 60_000)
   )
-    return { kind: 'repark', wakeAt: i.now + REPARK_PARK_MIN * 60_000 }
+    return { kind: 'repark', wakeAt: i.now + WATCHED_PARK_MIN * 60_000 }
   return null
 }
-
-/** how long a re-park waits: the watched-park fallback of machine.ts */
-export const REPARK_PARK_MIN = 480
 
 function wake(p: WatchedPr, what: string): Decision {
   return {

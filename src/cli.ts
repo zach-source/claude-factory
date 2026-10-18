@@ -127,6 +127,7 @@ import {
   forgeNote,
   forgeOf,
   gitlabForge,
+  gitlabWatchNotes,
   mrsIn,
   parseGitlabLabeled,
   parseMergedPrs,
@@ -5502,9 +5503,14 @@ async function watchPass() {
   const routed: { run: string; node: string; url: string; outcome: string; at: number }[] = []
   const reparked: { run: string; node: string; wakeAt: number }[] = []
   const seenFile = join(HOME, 'watch-seen.json')
-  const store: Record<string, Seen> = existsSync(seenFile) ? readJson(seenFile) : {}
+  let store: Record<string, Seen> = {}
   const live = new Set<string>()
   try {
+    try {
+      if (existsSync(seenFile)) store = readJson(seenFile)
+    } catch {
+      // an unreadable baseline file starts empty; the pass writes a new one
+    }
     // cwd only sets where gh/glab spawns from; the first parked run naming a URL this pass picks it,
     // and every later run that names the same URL reuses the one answer, with no second call
     const viewGh = async (url: string, cwd: string): Promise<WatchedPr | null> => {
@@ -5537,8 +5543,9 @@ async function watchPass() {
     const viewMr = async (url: string, cwd: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
       const r = await gitlabForge(spawnGlab).view(url, cwd)
+      const notes = 'viewed' in r ? await gitlabWatchNotes(spawnGlab, url, cwd) : null
       const v: WatchedPr | null =
-        'viewed' in r
+        'viewed' in r && notes
           ? {
               url,
               state: r.viewed.state,
@@ -5546,11 +5553,11 @@ async function watchPass() {
               headRefOid: r.viewed.headSha,
               mergedAt: r.viewed.mergedAt,
               closedAt: r.viewed.closedAt,
-              notes: r.viewed.notes,
+              notes,
               changesRequested: r.viewed.reviewDecision === 'CHANGES_REQUESTED',
             }
           : null
-      if (!('viewed' in r)) errors++
+      if (!v) errors++
       cache.set(url, v)
       return v
     }
@@ -5579,6 +5586,12 @@ async function watchPass() {
           store[key] = {
             heads: Object.fromEntries(prs.flatMap(p => (p.headRefOid ? [[p.url, p.headRefOid]] : []))),
             changes: Object.fromEntries(prs.map(p => [p.url, !!p.changesRequested])),
+          }
+        else
+          // a URL whose first view failed gets its baseline at its first good view
+          for (const p of prs) {
+            if (p.headRefOid && !(p.url in seen.heads)) seen.heads[p.url] = p.headRefOid
+            if (seen.changes && !(p.url in seen.changes)) seen.changes[p.url] = !!p.changesRequested
           }
         const now = Date.now()
         const d = watchDecide({

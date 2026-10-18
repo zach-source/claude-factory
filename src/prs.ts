@@ -556,7 +556,6 @@ export type Viewed = Pick<
   headSha?: string
   mergedAt?: string
   closedAt?: string
-  notes?: Note[]
 }
 export function parseView(out: string): Viewed | null {
   let v: Record<string, unknown>
@@ -677,7 +676,7 @@ export const forgeNote = (gitlabHost?: string): string[] =>
 
 /** an MR (`GET projects/:id/merge_requests/:iid`) and its approvals (`.../approvals`, optional: a failed
  * or missing answer leaves the review decision blank rather than failing the view) mapped onto `Viewed` */
-export function parseGitlabView(mrOut: string, approvalsOut = '', notesOut = ''): Viewed | null {
+export function parseGitlabView(mrOut: string, approvalsOut = ''): Viewed | null {
   const mr = asJson(mrOut) as Json | null
   if (!mr || typeof mr !== 'object' || Array.isArray(mr)) return null
   const pipeline = (mr.head_pipeline ?? mr.pipeline) as Json | null | undefined
@@ -704,12 +703,13 @@ export function parseGitlabView(mrOut: string, approvalsOut = '', notesOut = '')
     headSha: str(mr.sha) || undefined,
     mergedAt: str(mr.merged_at) || undefined,
     closedAt: str(mr.closed_at) || undefined,
-    notes: notesOut ? gitlabNotes(notesOut) : undefined,
   }
 }
 
-/** the human notes of an MR (`.../notes`): a system note (a push, a label) and a bot's note are not a person's */
-export function gitlabNotes(out: string): Note[] {
+/** the human notes of an MR (`.../notes`): a system note (a push, a label) and a bot's note are not a person's,
+ * and neither is a note by a user who is not a member of the project: on a public project anyone can comment.
+ * `members` holds the ids of the users with project access of Developer or above (`gitlabWatchNotes`). */
+export function gitlabNotes(out: string, members: Set<number> = new Set()): Note[] {
   const list = asJson(out)
   if (!Array.isArray(list)) return []
   const notes: Note[] = []
@@ -717,14 +717,46 @@ export function gitlabNotes(out: string): Note[] {
     const at = Date.parse(str(n?.created_at))
     if (!n || Number.isNaN(at)) continue
     const author = n.author as Json | undefined
+    const id = typeof author?.id === 'number' ? author.id : -1
     notes.push({
       at,
-      person: n.system !== true && isPerson(str(author?.username), 'MEMBER', author?.bot === true),
+      person:
+        n.system !== true &&
+        isPerson(str(author?.username), members.has(id) ? 'MEMBER' : 'NONE', author?.bot === true),
       changesRequested: false,
       body: str(n.body),
     })
   }
   return notes
+}
+
+/** the person notes of a merge request for the park watch, or null when glab could not say. The author of each
+ * human note is checked against the project members (`members/all/:id`, access level 30 or above). A 404 means
+ * not a member. Any other failure fails the whole call, so the watch never trusts a note it could not check. */
+export async function gitlabWatchNotes(glab: Gh, url: string, cwd: string): Promise<Note[] | null> {
+  const ref = prRef(url)
+  if (!ref) return null
+  const host = new URL(url).hostname
+  const base = `projects/${encodeURIComponent(ref.repo)}`
+  const api = (path: string) => glab(['api', '--hostname', host, path], timed(cwd))
+  const res = await api(`${base}/merge_requests/${ref.number}/notes?sort=desc&per_page=50`)
+  if (res.code !== 0) return null
+  const list = asJson(res.out)
+  if (!Array.isArray(list)) return null
+  const ids = new Set<number>()
+  for (const n of list as Json[]) {
+    const a = n?.author as Json | undefined
+    if (n?.system !== true && a?.bot !== true && typeof a?.id === 'number') ids.add(a.id)
+  }
+  const members = new Set<number>()
+  for (const id of ids) {
+    const m = await api(`${base}/members/all/${id}`)
+    if (m.code === 0) {
+      const level = (asJson(m.out) as Json | null)?.access_level
+      if (typeof level === 'number' && level >= 30) members.add(id)
+    } else if (!/404/.test(m.err)) return null
+  }
+  return gitlabNotes(res.out, members)
 }
 
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh
@@ -874,21 +906,8 @@ export const gitlabForge = (glab: Gh): Forge => {
       const ref = prRef(url)!
       const path = `${project(ref.repo)}/${ref.number}`
       const host = new URL(url).hostname
-      const [mr, approvals, notes] = await Promise.all([
-        api(host, path, cwd),
-        api(host, `${path}/approvals`, cwd),
-        api(host, `${path}/notes?sort=desc&per_page=50`, cwd),
-      ])
-      const viewed =
-        mr.code === 0
-          ? parseGitlabView(
-              mr.out,
-              approvals.code === 0 ? approvals.out : '',
-              notes.code === 0 ? notes.out : '',
-            )
-          : null
-      // the park watch must see every person note: a view without them fails, so it never re-parks past one
-      if (viewed && notes.code !== 0) return { err: notes.err }
+      const [mr, approvals] = await Promise.all([api(host, path, cwd), api(host, `${path}/approvals`, cwd)])
+      const viewed = mr.code === 0 ? parseGitlabView(mr.out, approvals.code === 0 ? approvals.out : '') : null
       return viewed ? { viewed } : { err: mr.code === 0 ? 'glab api: unparseable JSON' : mr.err }
     },
   }

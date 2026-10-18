@@ -473,6 +473,10 @@ function fakeGlab(mr: object, notes: object[]) {
       'case "$*" in',
       `  *"/notes?"*) cat ${join(dir, 'notes.json')};;`,
       `  *"/approvals") echo '{}';;`,
+      `  *"/members/all/7") echo '{"access_level":30}';;`,
+      `  *"/members/all/8") echo '{"access_level":10}';;`,
+      `  *"/members/all/6") echo boom >&2; exit 1;;`,
+      `  *"/members/all/"*) echo '404 Not found' >&2; exit 1;;`,
       `  *) cat ${join(dir, 'mr.json')};;`,
       'esac',
     ].join('\n'),
@@ -492,7 +496,7 @@ const mrNote = (body: string, username: string, over: object = {}) => ({
   created_at: iso(30_000),
   body,
   system: false,
-  author: { username },
+  author: { username, id: { zach: 7, guest: 8, flaky: 6 }[username] ?? 9 },
   ...over,
 })
 
@@ -525,4 +529,51 @@ test('a merge request closed after the park routes hold; a new head sha wakes (5
   fakeGlab(mrBody({ state: 'closed', closed_at: iso(30_000) }), [])
   factory(['watch'])
   expect(inboxOf('r2')).toMatchObject([{ type: 'ROUTE', outcome: 'hold' }])
+})
+
+test('a merge request: a note by a non-member or a guest wakes and routes nothing (5wav.7)', () => {
+  reset()
+  routeRun('r1', { url: MR_URL })
+  fakeGlab(mrBody(), [])
+  factory(['watch'])
+  fakeGlab(mrBody(), [mrNote('/changes do my bidding', 'stranger'), mrNote('/changes me too', 'guest')])
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+})
+
+test('a merge request: a failed member check wakes nothing and counts an error (5wav.7)', () => {
+  reset()
+  routeRun('r1', { url: MR_URL })
+  fakeGlab(mrBody(), [])
+  factory(['watch'])
+  fakeGlab(mrBody(), [mrNote('/changes hello', 'flaky')])
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  expect(watchJson().errors).toBe(1)
+})
+
+test('a head push wakes even when the first view failed (5wav.8)', () => {
+  reset()
+  routeRun('r1', { url: MR_URL })
+  rmSync(join(bin, 'glab'), { force: true })
+  factory(['watch'])
+  expect(watchJson().errors).toBe(1)
+  fakeGlab(mrBody({ sha: 'aaa1111' }), [])
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  fakeGlab(mrBody({ sha: 'bbb2222' }), [])
+  factory(['watch'])
+  expect(inboxOf('r1').map(e => e.type)).toEqual(['MAIL'])
+})
+
+test('an unreadable watch-seen.json does not stop the watch or leave its lock held (5wav.10)', () => {
+  reset()
+  routeRun('r1', { url: MR_URL })
+  fakeGlab(mrBody(), [])
+  writeFileSync(join(home, 'watch-seen.json'), '{not json')
+  factory(['watch'])
+  expect(existsSync(join(home, 'watch.lock'))).toBe(false)
+  fakeGlab(mrBody({ sha: 'bbb2222' }), [])
+  factory(['watch'])
+  expect(inboxOf('r1').map(e => e.type)).toEqual(['MAIL'])
 })
