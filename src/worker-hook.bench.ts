@@ -62,6 +62,12 @@
  * The "find" bead (claude-factory-lbn) reports 80 ms at `n=20000`, 400 ms at `n=40000`, and 1.36 s at `n=80000`.
  * That bead does not give a load average.
  * Compare your time at the same `n` with those numbers to judge the effect of load noise on your run.
+ *
+ * Shape "dynamic" (claude-factory-p43v.5 AC10): `anyDynamicCommandReason` (`src/worker-hook.ts`)
+ * scans a segment once. It uses a lazy pointer. It finds a dynamic word that hides a git or gh
+ * verb or subcommand. This row checks the scan's `O(n)` cost on a long run of `$A push` words.
+ * No dynamic word starts its own rescan. The default `n=1024` gives an 8192-char command
+ * (`'$A push '` is 8 chars). Run `bun run src/worker-hook.bench.ts dynamic` for this row alone.
  */
 import { scanReason } from './worker-hook'
 
@@ -71,6 +77,10 @@ function shellRun(n: number): string {
 
 function findRun(n: number): string {
   return 'find . ' + '-exec '.repeat(n)
+}
+
+function dynamicRun(n: number): string {
+  return '$A push '.repeat(n).trimEnd()
 }
 
 function timeOnce(command: string): number {
@@ -85,10 +95,12 @@ function fmtBytes(n: number): string {
 
 async function main() {
   const args = process.argv.slice(2)
-  const shape = args[0] === 'find' || args[0] === 'shell' ? args[0] : 'shell'
-  const sizeArg = args[0] === 'find' || args[0] === 'shell' ? args[1] : args[0]
-  const buildRun = shape === 'find' ? findRun : shellRun
-  const sizes = Number(sizeArg ?? 0) > 0 ? [Number(sizeArg)] : [2500, 5000, 10000, 20000, 40000]
+  const shapes = new Set(['find', 'shell', 'dynamic'])
+  const shape = shapes.has(args[0] ?? '') ? args[0]! : 'shell'
+  const sizeArg = shapes.has(args[0] ?? '') ? args[1] : args[0]
+  const buildRun = shape === 'find' ? findRun : shape === 'dynamic' ? dynamicRun : shellRun
+  const defaultSizes = shape === 'dynamic' ? [1024] : [2500, 5000, 10000, 20000, 40000]
+  const sizes = Number(sizeArg ?? 0) > 0 ? [Number(sizeArg)] : defaultSizes
   console.log(
     `node ${process.version ?? ''} bun ${process.versions?.bun ?? ''} pid ${process.pid} shape ${shape}`,
   )

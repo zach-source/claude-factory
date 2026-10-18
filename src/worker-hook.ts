@@ -2387,6 +2387,88 @@ function anyGitReason(
   return undefined
 }
 
+// claude-factory-p43v.5: `anyGitReason` and `anyGhReason` check these words in a `gitReason` or
+// `ghReason` call. A dynamic word can sit in the command or subcommand slot and hide one of
+// them, with no literal `git` or `gh` word before it. This set names each hidden word.
+const DYNAMIC_COMMAND_TRIGGER = new Set([
+  'push',
+  'send-pack',
+  'checkout',
+  'switch',
+  'branch',
+  'symbolic-ref',
+  'rebase',
+  'stash',
+  'bisect',
+  'update-ref',
+  'config',
+  'pr',
+  'repo',
+  'alias',
+  'api',
+])
+
+/**
+ * Returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real command
+ * (claude-factory-p43v.5). No wrapper that this hook knows by name has named the command.
+ * No `git`, `gh` or `git-*` word has named it either. Returns undefined to allow `words`.
+ *
+ * This function checks two cases.
+ *
+ * AC8: `realCommand(words)` reduces to one bare word. That word is `$`.
+ *
+ * It can also end in the backtick marker that `segments()` leaves on an unquoted opening
+ * backtick (claude-factory-p43v.2). Both forms mean that a substitution gives the command name.
+ * This hook cannot read that substitution. It denies the segment outright.
+ *
+ * AC7: a one-pass, lazy-pointer scan over the rest of the segment. It costs O(n).
+ *
+ * No dynamic word starts its own rescan (claude-factory-p43v.5 AC10). The scan tracks one fact.
+ * That fact is whether a literal `git`, `gh` or `git-*` word has run yet.
+ * Before that word runs, a dynamic word denies in two cases.
+ *
+ * - First, its next non-flag word is in `DYNAMIC_COMMAND_TRIGGER`.
+ *   The scan skips the value word of a `GIT_VALUE_FLAGS` or `GH_VALUE_FLAGS` flag.
+ * - Second, a `-c name=value` flag runs right after it.
+ *   The key is one that `isPushConfigWrite` denies. This is the dynamic-command-word form of
+ *   `gitDashCPushDenied`.
+ *
+ * A flag run does not count as "the next word" on its own.
+ * It carries the pending dynamic word forward.
+ */
+function anyDynamicCommandReason(words: string[]): string | undefined {
+  const cmd = realCommand(words)
+  if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
+
+  let sawGitWord = false
+  let pendingDynamic = false
+  for (let i = 0; i < words.length;) {
+    const w = words[i]!
+    const b = baseWord(w)
+    if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
+      sawGitWord = true
+      pendingDynamic = false
+      i++
+      continue
+    }
+    if (w.startsWith('-') && w !== '-') {
+      if (w === '-c' && !sawGitWord && pendingDynamic) {
+        const pair = words[i + 1]
+        const eq = pair?.indexOf('=') ?? -1
+        if (pair !== undefined && eq >= 0 && isPushConfigWrite(pair.slice(0, eq), pair.slice(eq + 1))) {
+          return DYNAMIC_VERB_REASON
+        }
+      }
+      i += GIT_VALUE_FLAGS.has(w) || GH_VALUE_FLAGS.has(w) ? 2 : 1
+      continue
+    }
+    if (!sawGitWord && pendingDynamic && DYNAMIC_COMMAND_TRIGGER.has(w)) return DYNAMIC_VERB_REASON
+    pendingDynamic = !sawGitWord && dynamicWord(w)
+    i++
+  }
+  return undefined
+}
+
 /**
  * True when a word in `words` is a bare `kubectl`, `ko` or `helm` token. From that word on, the
  * words must start a mutating command denied by `personOnly`.
@@ -2942,6 +3024,11 @@ function denyAt(
     // into this one.
     const gitFound = anyGitReason(words, root, g, state, movedSoFar)
     if (gitFound) return gitFound
+    // claude-factory-p43v.5: a dynamic word, with no git or gh word of its own before it, can
+    // still hide a verb or subcommand that anyGitReason and anyGhReason never see, because no
+    // literal git or gh word ever starts this segment.
+    const dynamicCmdFound = anyDynamicCommandReason(words)
+    if (dynamicCmdFound) return dynamicCmdFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.

@@ -2741,3 +2741,72 @@ test.each(DENY_DYNAMIC_GIT_CONFIG_KEY)(
 test('denyReason allows git config user.name "$N" (claude-factory-p43v.4 AC6: a literal key with a dynamic value stays allowed)', () => {
   expect(denyReason('git config user.name "$N"', '/x', undefined, P43V_GATE)).toBeUndefined()
 })
+
+// AC7: a dynamic command word can hide the real command. Each row has no literal git or gh
+// word before the dynamic word. The next non-flag word is a trigger word, such as push, pr or
+// config. No wrapper name on this list strips the dynamic word by name.
+const DENY_DYNAMIC_COMMAND_WORD = [
+  'G=git; $G push o main',
+  '"$GIT" push o main',
+  'sudo $G push o main',
+  'watch $G push o main',
+  'timeout 5 $G push o main',
+  '$X 5 $G push o main',
+  '$G -C x push o main',
+  '$G -c alias.p=push p o main',
+  '$GH pr merge 5',
+]
+
+test.each(DENY_DYNAMIC_COMMAND_WORD)(
+  'denyReason denies %j (claude-factory-p43v.5 AC7: a dynamic command word before a guarded verb fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// AC8: a command substitution or backtick expression at the command slot. segments() ends the
+// word there (claude-factory-p43v.2), so the whole segment reduces to a bare `$` or a
+// backtick-marked word. That alone denies, with no need to read the trailing words.
+const DENY_SUBSTITUTION_OPENER = [
+  '$(which git) push o main',
+  'sudo $(which git) push o main',
+  '`which git` push o main',
+]
+
+test.each(DENY_SUBSTITUTION_OPENER)(
+  'denyReason denies %j (claude-factory-p43v.5 AC8: a substitution opener at the command slot fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// AC9 (more rows): a dynamic command word scan must not deny a loop variable, a value flag's own
+// value, or a command this guard already denies for another reason with its old reason.
+const ALLOW_OR_UNCHANGED_DYNAMIC_COMMAND_WORD: Array<[string, string | undefined]> = [
+  ['for f in a b; do git add $f; done', undefined],
+  ['git log $REF', undefined],
+  ['git diff "$BASE"...HEAD', undefined],
+  ['git commit -m "$MSG"', undefined],
+  ['git commit -m "$(cat m)"', undefined],
+  ['git commit -m $(cat m)', undefined],
+  ['gh pr view $N', undefined],
+  ['gh pr create --title "$T" --body-file f', undefined],
+  ['git -C "$WT" status', undefined],
+  ['git -C "$WT" checkout -b x', undefined],
+  ['X=$(git rev-parse HEAD)', undefined],
+  ['bd update $ID -s in_progress', undefined],
+  ['"$HOME/.local/bin/claude" plugin test mod', undefined],
+  ['"$PY" -c \'print(1)\'', undefined],
+  ['echo $(date)', undefined],
+  ['git checkout "$B"', undefined],
+  ['cp "$A" "$B"', undefined],
+  ['git push origin "$BR"', PUSH_REASON],
+  ['git -C "$D" push o main', PUSH_REASON],
+]
+
+test.each(ALLOW_OR_UNCHANGED_DYNAMIC_COMMAND_WORD)(
+  'denyReason keeps its old verdict for %j (claude-factory-p43v.5 AC9: no over-deny from the dynamic command word scan)',
+  (cmd, reason) => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(reason)
+  },
+)
