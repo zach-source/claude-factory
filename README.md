@@ -398,6 +398,10 @@ these forms:
   it, clears an earlier `-n`/`--dry-run` flag on the same command line, in either order. The hook
   then checks the push as normal.
 
+  `git push -o <value>` is also a value flag. A short-flag cluster that holds the letter `o`,
+  for example `-uo` or `-fo`, takes the next word as that same value. The hook denies the whole
+  call, the same as it denies an abbreviated long value flag.
+
 - `git -c remote.<name>.mirror=<value>` or `git config remote.<name>.mirror <value>`. Each one
   makes a later, plain push to that remote act like `--mirror`.
 

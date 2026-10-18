@@ -12,7 +12,9 @@ minor release may change the factory format, the CLI or the run state.
   `--recurse-submodules`, `--remote` and `--stdin`. An abbreviated value flag (`--repo`,
   `--push-option`, `--receive-pack`, `--exec`, `--recurse-submodules` on push; `--receive-pack`,
   `--exec`, `--push-option`, `--remote` on send-pack) still takes the next word as its value, so
-  the guard denies the whole call instead of a guess. A `--no-dry-run` word, or an abbreviation of
+  the guard denies the whole call instead of a guess. `git push -o <value>` works the same way:
+  a short-flag cluster that also holds the letter `o` (`-uo`, `-fo`) takes the next word as that
+  value too, so the guard denies the whole call. A `--no-dry-run` word, or an abbreviation of
   it, now clears an earlier `-n`/`--dry-run` flag on the same command line, in either order. Real
   git 2.54 confirmed each form still pushes a protected branch. (claude-factory-ctae)
 
