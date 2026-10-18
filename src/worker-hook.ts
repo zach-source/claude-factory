@@ -378,6 +378,38 @@ export const BEADS_ACTOR_REASON =
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
+const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
+
+// claude-factory-igj: a value flag (u, C, P, a) or S ends a short option cluster.
+// The text after it is that flag's own value, not more option letters.
+function envClusterClearsAll(chars: string): boolean {
+  for (const c of chars) {
+    if (c === 'S' || ENV_SHORT_VALUE_FLAGS.has(c)) return false
+    if (c === 'i') return true
+  }
+  return false
+}
+
+// claude-factory-igj: true when w, a word env reads as its own option, clears the whole
+// environment: a lone dash, an -i cluster, or a short form of --ignore-environment.
+function envWordClearsAll(w: string): boolean {
+  if (w === '-') return true
+  if (w.startsWith('--')) {
+    const body = w.slice(2)
+    const eqAt = body.indexOf('=')
+    const name = eqAt === -1 ? body : body.slice(0, eqAt)
+    return name.length > 0 && ENV_IGNORE_ENVIRONMENT_LONG.startsWith(name)
+  }
+  if (w.startsWith('-') && w !== '--') return envClusterClearsAll(w.slice(1))
+  return false
+}
+
+// claude-factory-igj: true when w, a word env reads as its own option, names BEADS_ACTOR:
+// the bare name, or a dash word that holds it (-uBEADS_ACTOR, --unset=BEADS_ACTOR).
+function envWordNamesBeadsActor(w: string): boolean {
+  return w === 'BEADS_ACTOR' || (w.startsWith('-') && w.includes('BEADS_ACTOR'))
+}
+
 /** This function returns true when a word in `words` sets, clears or (re-)exports BEADS_ACTOR. */
 function touchesBeadsActor(words: string[]): boolean {
   let envClearsAll = false
@@ -395,16 +427,17 @@ function touchesBeadsActor(words: string[]): boolean {
       if (words[j] !== undefined && /^BEADS_ACTOR(=|$)/.test(words[j]!)) return true
     }
     if (b === 'unset' && words.slice(i + 1).includes('BEADS_ACTOR')) return true
-    // claude-factory-8pc.27: `env -u BEADS_ACTOR` and `env --unset=BEADS_ACTOR` clear the name
-    // for the command that env runs. `env -i` (or `--ignore-environment`) clears every name in
-    // the environment. Deny `env -i` only when the segment also runs `bd`.
+    // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
+    // runs. `env -i` clears every name.
+    // claude-factory-igj: the old scan stopped at the first word that was not itself an
+    // option, so a value flag's own value word (`-C /tmp`) ended the scan too soon. The scan
+    // below reads every word up to the word that runs `bd` instead.
     if (b === 'env') {
       for (let j = i + 1; j < words.length; j++) {
         const ew = words[j]!
-        if (ew === '--unset=BEADS_ACTOR') return true
-        if ((ew === '-u' || ew === '--unset') && words[j + 1] === 'BEADS_ACTOR') return true
-        if (ew === '-i' || ew === '--ignore-environment') envClearsAll = true
-        if (!ew.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(ew)) break
+        if (baseWord(ew) === 'bd') break
+        if (envWordNamesBeadsActor(ew)) return true
+        if (envWordClearsAll(ew)) envClearsAll = true
       }
     }
   }
