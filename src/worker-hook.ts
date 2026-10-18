@@ -410,8 +410,14 @@ function envWordNamesBeadsActor(w: string): boolean {
   return w === 'BEADS_ACTOR' || (w.startsWith('-') && w.includes('BEADS_ACTOR'))
 }
 
+// claude-factory-igj: env -S STRING splits STRING into words at run time, and env runs them as
+// its own arguments. A value folded into its own option syntax, in one word such as
+// `-S-i bd create x`, needs its own scan: this function recurses on it through
+// envSplitStringScan. depth bounds that recursion.
+
 /** This function returns true when a word in `words` sets, clears or (re-)exports BEADS_ACTOR. */
-function touchesBeadsActor(words: string[]): boolean {
+function touchesBeadsActor(words: string[], depth = 0): boolean {
+  if (depth > MAX_SHELL_DEPTH) return true
   let envClearsAll = false
   let runsBd = false
   for (let i = 0; i < words.length; i++) {
@@ -431,11 +437,24 @@ function touchesBeadsActor(words: string[]): boolean {
     // runs. `env -i` clears every name.
     // claude-factory-igj: the old scan stopped at the first word that was not itself an
     // option, so a value flag's own value word (`-C /tmp`) ended the scan too soon. The scan
-    // below reads every word up to the word that runs `bd` instead.
+    // below reads every word up to the word that runs `bd` instead, and recurses into an
+    // `env -S` value's own words (see the comment above this function).
     if (b === 'env') {
+      const span = envSplitStringScan(words, i)
       for (let j = i + 1; j < words.length; j++) {
         const ew = words[j]!
         if (baseWord(ew) === 'bd') break
+        if (span && span.sIndex === j) {
+          const recombined = [
+            'env',
+            ...words.slice(i + 1, j),
+            ...segments(span.value).flat(),
+            ...words.slice(span.end),
+          ]
+          if (touchesBeadsActor(recombined, depth + 1)) return true
+          j = span.end - 1 // skip the flag and its own value word; it already ran above
+          continue
+        }
         if (envWordNamesBeadsActor(ew)) return true
         if (envWordClearsAll(ew)) envClearsAll = true
       }
@@ -1855,13 +1874,13 @@ const ENV_LONG_SPLIT_STRING = 'split-string'
 const ENV_LONG_VALUE_FLAGS = ['unset', 'chdir', 'argv0']
 const ENV_SHORT_VALUE_FLAGS = new Set(['u', 'C', 'P', 'a'])
 
-/**
- * Reads the value that the `env -S`/`env --split-string` word at `words[j]` splits and runs.
- * Returns undefined when no such flag is present (claude-factory-zl5.42, claude-factory-dgf).
- * Stops and returns undefined at the first word that is not an option and not an option's own
- * value word. That word is the command of `env`. `-S` did not appear before it.
- */
-function envSplitStringValue(words: string[], j: number): string | undefined {
+// claude-factory-zl5.42 / claude-factory-dgf: finds an env -S/--split-string flag after words[j].
+// Returns its value, its own index sIndex, and end, the index of the first word after it.
+// claude-factory-igj: touchesBeadsActor uses sIndex and end for its own recursive scan.
+function envSplitStringScan(
+  words: string[],
+  j: number,
+): { value: string; sIndex: number; end: number } | undefined {
   for (let k = j + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '-') continue // a bare `-` operand: not an option, keeps the scan going
@@ -1872,7 +1891,9 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
       const name = eqAt === -1 ? body : body.slice(0, eqAt)
       const attached = eqAt === -1 ? undefined : body.slice(eqAt + 1)
       if (name.length > 0 && ENV_LONG_SPLIT_STRING.startsWith(name)) {
-        return attached !== undefined ? attached : words[k + 1]
+        if (attached !== undefined) return { value: attached, sIndex: k, end: k + 1 }
+        const v = words[k + 1]
+        return v === undefined ? undefined : { value: v, sIndex: k, end: k + 2 }
       }
       if (
         attached === undefined &&
@@ -1889,7 +1910,9 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
         const c = chars[ci]!
         if (c === 'S') {
           const rest = chars.slice(ci + 1)
-          return rest.length > 0 ? rest : words[k + 1]
+          if (rest.length > 0) return { value: rest, sIndex: k, end: k + 1 }
+          const v = words[k + 1]
+          return v === undefined ? undefined : { value: v, sIndex: k, end: k + 2 }
         }
         if (ENV_SHORT_VALUE_FLAGS.has(c)) {
           const rest = chars.slice(ci + 1)
@@ -1902,6 +1925,15 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
     return undefined
   }
   return undefined
+}
+
+/**
+ * Reads the value that the `env -S`/`env --split-string` word at `words[j]` splits and runs.
+ * Returns undefined when no such flag is present. A thin wrapper over `envSplitStringScan`: see
+ * that function for the scan rules.
+ */
+function envSplitStringValue(words: string[], j: number): string | undefined {
+  return envSplitStringScan(words, j)?.value
 }
 
 function anyShellReason(
