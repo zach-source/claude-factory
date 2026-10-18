@@ -1414,3 +1414,45 @@ test('forgeNote tells a GitLab worker the glab equivalents, and a GitHub worker 
     expect(note).toContain(gl)
   expect(forgeNote()).toEqual([])
 })
+
+test('parseGitlabView reads the head sha, merge and close times and the person notes for the park watch (5wav AC10)', () => {
+  const notes = JSON.stringify([
+    {
+      created_at: '2026-10-12T10:00:00Z',
+      body: '/changes rename it',
+      system: false,
+      author: { username: 'zach' },
+    },
+    {
+      created_at: '2026-10-12T10:01:00Z',
+      body: 'pushed 1 commit',
+      system: true,
+      author: { username: 'zach' },
+    },
+    {
+      created_at: '2026-10-12T10:02:00Z',
+      body: 'bot',
+      system: false,
+      author: { username: 'project_9_bot_x' },
+    },
+    { created_at: '2026-10-12T10:03:00Z', body: 'bot', system: false, author: { username: 'ci', bot: true } },
+    { created_at: 'garbage', body: 'x', system: false, author: { username: 'zach' } },
+  ])
+  const v = parseGitlabView(
+    JSON.stringify({
+      ...MR,
+      sha: 'abc1234',
+      merged_at: '2026-10-12T11:00:00Z',
+      closed_at: '2026-10-12T12:00:00Z',
+    }),
+    '',
+    notes,
+  )!
+  expect(v).toMatchObject({
+    headSha: 'abc1234',
+    mergedAt: '2026-10-12T11:00:00Z',
+    closedAt: '2026-10-12T12:00:00Z',
+  })
+  expect(v.notes!.map(n => n.person)).toEqual([true, false, false, false])
+  expect(v.notes![0]).toMatchObject({ body: '/changes rename it', changesRequested: false })
+})

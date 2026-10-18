@@ -5538,7 +5538,18 @@ async function watchPass() {
       if (cache.has(url)) return cache.get(url)!
       const r = await gitlabForge(spawnGlab).view(url, cwd)
       const v: WatchedPr | null =
-        'viewed' in r ? { url, state: r.viewed.state, updatedAt: r.viewed.updatedAt } : null
+        'viewed' in r
+          ? {
+              url,
+              state: r.viewed.state,
+              updatedAt: r.viewed.updatedAt,
+              headRefOid: r.viewed.headSha,
+              mergedAt: r.viewed.mergedAt,
+              closedAt: r.viewed.closedAt,
+              notes: r.viewed.notes,
+              changesRequested: r.viewed.reviewDecision === 'CHANGES_REQUESTED',
+            }
+          : null
       if (!('viewed' in r)) errors++
       cache.set(url, v)
       return v
@@ -5567,6 +5578,7 @@ async function watchPass() {
         if (!seen)
           store[key] = {
             heads: Object.fromEntries(prs.flatMap(p => (p.headRefOid ? [[p.url, p.headRefOid]] : []))),
+            changes: Object.fromEntries(prs.map(p => [p.url, !!p.changesRequested])),
           }
         const now = Date.now()
         const d = watchDecide({

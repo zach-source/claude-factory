@@ -3,6 +3,7 @@
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
 import { mrsIn, prsIn, type Entry } from './machine'
+import { isPerson, type Note } from './watch'
 export { mrsIn }
 
 export type PrSource = 'report' | 'mail' | 'search' | 'branch'
@@ -551,6 +552,11 @@ export type Viewed = Pick<
 > & {
   headRefName: string
   body: string
+  /** GitLab only (claude-factory-5wav): what the park watch reads beyond the fields above */
+  headSha?: string
+  mergedAt?: string
+  closedAt?: string
+  notes?: Note[]
 }
 export function parseView(out: string): Viewed | null {
   let v: Record<string, unknown>
@@ -671,7 +677,7 @@ export const forgeNote = (gitlabHost?: string): string[] =>
 
 /** an MR (`GET projects/:id/merge_requests/:iid`) and its approvals (`.../approvals`, optional: a failed
  * or missing answer leaves the review decision blank rather than failing the view) mapped onto `Viewed` */
-export function parseGitlabView(mrOut: string, approvalsOut = ''): Viewed | null {
+export function parseGitlabView(mrOut: string, approvalsOut = '', notesOut = ''): Viewed | null {
   const mr = asJson(mrOut) as Json | null
   if (!mr || typeof mr !== 'object' || Array.isArray(mr)) return null
   const pipeline = (mr.head_pipeline ?? mr.pipeline) as Json | null | undefined
@@ -695,7 +701,30 @@ export function parseGitlabView(mrOut: string, approvalsOut = ''): Viewed | null
     updatedAt: str(mr.updated_at),
     headRefName: str(mr.source_branch),
     body: str(mr.description),
+    headSha: str(mr.sha) || undefined,
+    mergedAt: str(mr.merged_at) || undefined,
+    closedAt: str(mr.closed_at) || undefined,
+    notes: notesOut ? gitlabNotes(notesOut) : undefined,
   }
+}
+
+/** the human notes of an MR (`.../notes`): a system note (a push, a label) and a bot's note are not a person's */
+export function gitlabNotes(out: string): Note[] {
+  const list = asJson(out)
+  if (!Array.isArray(list)) return []
+  const notes: Note[] = []
+  for (const n of list as Json[]) {
+    const at = Date.parse(str(n?.created_at))
+    if (!n || Number.isNaN(at)) continue
+    const author = n.author as Json | undefined
+    notes.push({
+      at,
+      person: n.system !== true && isPerson(str(author?.username), 'MEMBER', author?.bot === true),
+      changesRequested: false,
+      body: str(n.body),
+    })
+  }
+  return notes
 }
 
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh
@@ -845,8 +874,21 @@ export const gitlabForge = (glab: Gh): Forge => {
       const ref = prRef(url)!
       const path = `${project(ref.repo)}/${ref.number}`
       const host = new URL(url).hostname
-      const [mr, approvals] = await Promise.all([api(host, path, cwd), api(host, `${path}/approvals`, cwd)])
-      const viewed = mr.code === 0 ? parseGitlabView(mr.out, approvals.code === 0 ? approvals.out : '') : null
+      const [mr, approvals, notes] = await Promise.all([
+        api(host, path, cwd),
+        api(host, `${path}/approvals`, cwd),
+        api(host, `${path}/notes?sort=desc&per_page=50`, cwd),
+      ])
+      const viewed =
+        mr.code === 0
+          ? parseGitlabView(
+              mr.out,
+              approvals.code === 0 ? approvals.out : '',
+              notes.code === 0 ? notes.out : '',
+            )
+          : null
+      // the park watch must see every person note: a view without them fails, so it never re-parks past one
+      if (viewed && notes.code !== 0) return { err: notes.err }
       return viewed ? { viewed } : { err: mr.code === 0 ? 'glab api: unparseable JSON' : mr.err }
     },
   }

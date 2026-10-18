@@ -72,7 +72,7 @@ function parkedRun(
   id: string,
   repoDir: string,
   factoryFile: string,
-  opts: { def?: Factory; at?: number; bead?: string } = {},
+  opts: { def?: Factory; at?: number; bead?: string; url?: string } = {},
 ) {
   const actor = createActor(compile(opts.def ?? SHIP)).start()
   actor.send({ type: 'GOTO', node: 'release', at: 0 })
@@ -81,7 +81,7 @@ function parkedRun(
     type: 'DONE',
     seq,
     outcome: 'ready',
-    summary: `ready to ship ${PR}`,
+    summary: `ready to ship ${opts.url ?? PR}`,
     at: opts.at ?? PARKED_AT,
   })
   const d = join(home, 'runs', id)
@@ -316,7 +316,7 @@ const stateOf = (id: string) =>
   JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')).snapshot
 const watchJson = () => JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
 
-function routeRun(id: string, opts: { at?: number; bead?: string } = {}) {
+function routeRun(id: string, opts: { at?: number; bead?: string; url?: string } = {}) {
   const f = join(dir, 'route-ship.json')
   writeFileSync(f, JSON.stringify(ROUTE_SHIP))
   const r = repo()
@@ -458,4 +458,71 @@ test('a failed gh view posts no route and no re-park (5wav AC6)', () => {
   factory(['watch'])
   expect(inboxOf('r1')).toEqual([])
   expect(watchJson().errors).toBe(1)
+})
+
+const MR_URL = 'https://gitlab.example.com/acme/widget/-/merge_requests/9'
+
+/** a fake glab: `glab api ... <path>` answers the control files for the MR, its approvals and its notes */
+function fakeGlab(mr: object, notes: object[]) {
+  writeFileSync(join(dir, 'mr.json'), JSON.stringify(mr))
+  writeFileSync(join(dir, 'notes.json'), JSON.stringify(notes))
+  writeFileSync(
+    join(bin, 'glab'),
+    [
+      '#!/bin/sh',
+      'case "$*" in',
+      `  *"/notes?"*) cat ${join(dir, 'notes.json')};;`,
+      `  *"/approvals") echo '{}';;`,
+      `  *) cat ${join(dir, 'mr.json')};;`,
+      'esac',
+    ].join('\n'),
+  )
+  chmodSync(join(bin, 'glab'), 0o755)
+}
+const mrBody = (over: object = {}) => ({
+  title: 't',
+  state: 'opened',
+  updated_at: iso(30_000),
+  source_branch: 'b',
+  sha: 'aaa1111',
+  detailed_merge_status: 'mergeable',
+  ...over,
+})
+const mrNote = (body: string, username: string, over: object = {}) => ({
+  created_at: iso(30_000),
+  body,
+  system: false,
+  author: { username },
+  ...over,
+})
+
+test('a merge request: system and bot notes wake nothing; a person /changes note routes changes (5wav AC10)', () => {
+  reset()
+  routeRun('r1', { url: MR_URL })
+  fakeGlab(mrBody(), [
+    mrNote('added label', 'zach', { system: true }),
+    mrNote('/changes from a bot', 'project_3_bot_x'),
+  ])
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  fakeGlab(mrBody({ sha: 'bbb2222' }), [mrNote('/changes use the helper', 'zach')])
+  factory(['watch'])
+  const events = inboxOf('r1')
+  expect(events).toHaveLength(1)
+  expect(events[0]).toMatchObject({ type: 'ROUTE', node: 'deploy', outcome: 'changes' })
+  expect(String(events[0]!.summary)).toContain('/changes use the helper')
+})
+
+test('a merge request closed after the park routes hold; a new head sha wakes (5wav AC10)', () => {
+  reset()
+  routeRun('r1', { url: MR_URL })
+  fakeGlab(mrBody(), [])
+  factory(['watch'])
+  fakeGlab(mrBody({ sha: 'bbb2222' }), [])
+  factory(['watch'])
+  expect(inboxOf('r1').map(e => e.type)).toEqual(['MAIL'])
+  routeRun('r2', { url: MR_URL })
+  fakeGlab(mrBody({ state: 'closed', closed_at: iso(30_000) }), [])
+  factory(['watch'])
+  expect(inboxOf('r2')).toMatchObject([{ type: 'ROUTE', outcome: 'hold' }])
 })
