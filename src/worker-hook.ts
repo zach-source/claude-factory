@@ -124,11 +124,19 @@ export const ALIAS_REASON =
 // Then it scans the expanded command again.
 //
 // The guard denies with ALIAS_USE_REASON, not a silent allow, in these cases:
+//
 //   - it cannot read the alias table;
+//
 //   - the table sits behind an earlier directory or config-dir change;
+//
 //   - the alias runs a shell command;
+//
 //   - its text holds a character this guard cannot split;
-//   - the chain of aliases runs past MAX_ALIAS_DEPTH levels.
+//
+//   - the chain of aliases runs past MAX_ALIAS_DEPTH levels;
+//
+//   - an unknown global flag (claude-factory-bemr.5) leaves the verb position unsure, and a
+//     later word before -- matches a key in the alias table.
 export const ALIAS_USE_REASON =
   'The factory denies this command: its first word is not a plain git or gh verb, and this guard ' +
   'cannot read it as a safe, pre-existing alias. A git or gh alias set before this run started can ' +
@@ -136,9 +144,11 @@ export const ALIAS_USE_REASON =
   'This guard denies the word when it cannot read the git or gh alias table (no answer from git ' +
   'config or gh alias list), when the table sits behind an earlier cd, pushd, popd, chdir, env -C, ' +
   '--git-dir, GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME change, when the alias runs a shell command ' +
-  '(a leading !), when its text holds a dollar sign, a quote, or a backslash this guard cannot ' +
-  'split safely, or past a chain of 10 aliases. Run the full command directly, with no alias. Do ' +
-  'not retry this exact command.'
+  '(a leading !), when a gh alias text holds a dollar sign, a quote, or a backslash gh cannot ' +
+  'split safely, when a git alias text holds an unclosed quote or a trailing backslash git cannot ' +
+  'split, when an unknown global flag leaves the verb word unsure and a later word matches a known ' +
+  'alias, or past a chain of 10 aliases. Run the full command directly, with no alias. Do not ' +
+  'retry this exact command.'
 
 // claude-factory-bemr: the depth cap on a chain of git or gh aliases that each expand to another
 // alias (alias.x=y, alias.y=z, ...). Real git and gh each follow such a chain themselves; this
@@ -938,8 +948,17 @@ function unknownFlagValue(v: string): boolean {
  * Step past a known global flag. If the flag is in `valueFlags` and has no `=`, step past its
  * value word too. Return `uncertain: true` when a flag has no `=` and is not in `valueFlags`
  * (claude-factory-25z.6): this function then does not know if the flag takes a value word.
+ *
+ * claude-factory-bemr.5: `noValueFlags` names flags that never take a value word.
+ * The search steps past one of these flags with no doubt.
+ * It does not set `uncertain` for it.
+ * A caller that does not pass `noValueFlags` keeps the old behavior with no change.
  */
-function firstVerbIndex(words: string[], valueFlags: Set<string>): { index: number; uncertain: boolean } {
+function firstVerbIndex(
+  words: string[],
+  valueFlags: Set<string>,
+  noValueFlags?: Set<string>,
+): { index: number; uncertain: boolean } {
   let uncertain = false
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
@@ -949,6 +968,7 @@ function firstVerbIndex(words: string[], valueFlags: Set<string>): { index: numb
         i++
         continue
       }
+      if (noValueFlags?.has(w)) continue
       uncertain = true
       continue
     }
@@ -1470,7 +1490,7 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
 // `accessibility`, since gh runs it as a real command too.
 // A real `gh` always picks a builtin command over a same-named alias.
 // `ghReason` below does the same.
-const GH_BUILTIN_VERBS = new Set([
+export const GH_BUILTIN_VERBS = new Set([
   'auth',
   'browse',
   'codespace',
@@ -1689,6 +1709,26 @@ function anyGhReason(
 // claude-factory-zl5.3: git's own global flags that take a value word (`git -C dir push ...`).
 // The verb search steps past them. GH_VALUE_FLAGS does the same for `gh`.
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
+
+// claude-factory-bemr.5: git's own global flags that never take a value word.
+// Real git's synopsis lists each one with no argument.
+// The verb search steps past one of these with no doubt, the same as a known value flag.
+// This guard already knows the next word is the verb, not that flag's value.
+const GIT_NO_VALUE_GLOBAL_FLAGS = new Set([
+  '-p',
+  '-P',
+  '--paginate',
+  '--no-pager',
+  '--bare',
+  '--no-replace-objects',
+  '--literal-pathspecs',
+  '--glob-pathspecs',
+  '--noglob-pathspecs',
+  '--icase-pathspecs',
+  '--no-optional-locks',
+  '--no-advice',
+  '--no-lazy-fetch',
+])
 // `git push`'s own flags that take a value word. The operand search steps past them.
 //
 // claude-factory-ctae.9: `git push`'s usage text lists `--recurse-submodules
@@ -2446,7 +2486,7 @@ function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
 // A name missing here only costs one extra alias-table lookup.
 // A name here that real git does not treat as a builtin would let an alias of that name run
 // unseen, so AC10 checks this set against a real git on every run that has one.
-const GIT_BUILTIN_VERBS = new Set([
+export const GIT_BUILTIN_VERBS = new Set([
   'add',
   'am',
   'annotate',
@@ -2676,7 +2716,7 @@ function gitReason(
 ): string | undefined {
   const tail = cmd.slice(1)
   if (gitDashCPushDenied(tail)) return PUSH_REASON
-  const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS)
+  const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS, GIT_NO_VALUE_GLOBAL_FLAGS)
   // See claude-factory-68gn. A --git-dir flag moves the command, the same as a cd word.
   // The effectiveMoved value includes this flag. The dir value does not include this flag.
   //
@@ -2684,27 +2724,41 @@ function gitReason(
   // A relative -C path resolves against the directory where this hook started.
   // It must not resolve against a directory that an earlier cd moved the command to.
   const effectiveMoved = moved || flagValue(tail, new Set(['--git-dir'])) !== undefined
-  const dir = flagValue(tail, new Set(['-C'])) ?? root
+  const cValue = flagValue(tail, new Set(['-C']))
+  const dir = cValue ?? root
   const verb = vi >= 0 ? tail[vi] : undefined
+  // claude-factory-bemr.6: gate.gitAliases gets the raw -C value, or undefined with no -C.
+  // It must not get dir's root fallback.
+  // claude-factory-ox33 tracks that same root fallback for gate.headOf. It is out of scope here.
+  // gate.gitAliases picks its own default: the tool call's own cwd, not CLAUDE_PROJECT_DIR.
+  const aliasDir = cValue
   //
   // See claude-factory-bemr. This part of the function finds a git alias for the verb.
   // It does not run this part when the verb position is not sure.
   // It also does not run this part when verb is a builtin command.
   // Git uses a builtin command before an alias with the same name. This function does the same.
   //
-  // This part denies the command with ALIAS_USE_REASON under three conditions.
-  // The first condition is effectiveMoved equal to true.
-  // An earlier cd, pushd, popd or --git-dir word makes the alias table unknown for that
-  // directory.
+  // claude-factory-bemr.7: this part denies the command with ALIAS_USE_REASON under five
+  // conditions:
   //
-  // The second condition is an alias chain deeper than MAX_ALIAS_DEPTH levels.
-  // This limit stops a cycle of aliases. A cycle of aliases can stop the hook from completing.
-  // The third condition is an alias table that is unset or undefined.
-  // The hook cannot read the table. It then denies the command instead of a guess.
+  //   1. effectiveMoved is true. An earlier cd, pushd, popd or --git-dir word makes the alias
+  //      table unknown for that directory.
+  //
+  //   2. The alias chain runs deeper than MAX_ALIAS_DEPTH levels. This limit stops a cycle of
+  //      aliases, which could stop the hook from completing.
+  //
+  //   3. The alias table is unset or undefined. The hook cannot read the table. It denies the
+  //      command instead of a guess.
+  //
+  //   4. The alias entry's text starts with `!`. That alias runs a shell command, not a plain
+  //      git command.
+  //
+  //   5. splitCmdline cannot split the alias entry's text. One example is an unclosed quote.
+  //      Another is a trailing backslash.
   if (!uncertain && verb !== undefined && !GIT_BUILTIN_VERBS.has(verb)) {
     if (effectiveMoved) return ALIAS_USE_REASON
     if (aliasDepth > MAX_ALIAS_DEPTH) return ALIAS_USE_REASON
-    const table = gate.gitAliases?.(dir)
+    const table = gate.gitAliases?.(aliasDir)
     if (!table) return ALIAS_USE_REASON
     const text = table.get(verb.toLowerCase())
     if (text !== undefined) {
@@ -2716,6 +2770,31 @@ function gitReason(
     }
     // no entry for this word: an external git-<verb> or unrecognized word, fall through to the
     // checks below unchanged, the same as before this guard existed.
+  } else if (uncertain) {
+    // claude-factory-bemr.5: an unknown flag makes the verb search uncertain.
+    // The flag is not in GIT_VALUE_FLAGS or GIT_NO_VALUE_GLOBAL_FLAGS.
+    // The word firstVerbIndex found may be a flag's value, not the real verb.
+    // This guard cannot place one alias at the verb slot for sure in that case.
+    // It must not allow the command in silence either.
+    //
+    // This part denies ALIAS_USE_REASON under three conditions:
+    //
+    //   1. effectiveMoved is true.
+    //
+    //   2. The alias table cannot be read.
+    //
+    //   3. A non-flag word before a literal -- is both a non-builtin word and a key in the
+    //      alias table. That word is a likely alias use. This guard cannot place it for sure.
+    if (effectiveMoved) return ALIAS_USE_REASON
+    const table = gate.gitAliases?.(aliasDir)
+    if (!table) return ALIAS_USE_REASON
+    for (const w of tail) {
+      if (w === '--') break
+      if (w.startsWith('-') && w !== '-') continue
+      const lw = w.toLowerCase()
+      if (GIT_BUILTIN_VERBS.has(lw)) continue
+      if (table.has(lw)) return ALIAS_USE_REASON
+    }
   }
   if (vi >= 0 && gitChangesBranch(tail[vi]!, tail.slice(vi + 1))) {
     state.branchChange = true
@@ -3586,7 +3665,17 @@ async function main() {
     // claude-factory-zl5.8: this resolves against the tool call's own cwd, not `root`.
     // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`.
     readFile: path => readSmallFile(path, i.cwd || root),
-    gitAliases: (dir, timeoutMs) => gitConfigAliases(dir ?? root, timeoutMs),
+    // claude-factory-bemr.6: this code reads the alias table at the tool call's own cwd.
+    // It does not read the table at root.
+    // The Bash tool runs the command at i.cwd. An earlier cd word can move i.cwd away from
+    // root (CLAUDE_PROJECT_DIR).
+    //
+    // dir can be a relative -C value. Resolve dir against i.cwd.
+    // Do not resolve dir against the hook process's own cwd.
+    //
+    // When dir is unset, the lookup dir is i.cwd. The code falls back to root only when
+    // i.cwd is also unset. readFile uses this same fallback rule.
+    gitAliases: (dir, timeoutMs) => gitConfigAliases(resolvePath(i.cwd || root, dir ?? '.'), timeoutMs),
     ghAliases: timeoutMs => ghAliasList(timeoutMs),
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)

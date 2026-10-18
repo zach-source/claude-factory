@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -10,6 +10,8 @@ import {
   denyReason,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
+  GH_BUILTIN_VERBS,
+  GIT_BUILTIN_VERBS,
   type HookGate,
   LIVE_REASON,
   LONG_COMMAND_REASON,
@@ -1801,8 +1803,15 @@ test('denyReason denies git send-pack to a protected branch (claude-factory-zl5.
   expect(denyReason('git send-pack origin refs/heads/main')).toBe(PUSH_REASON)
   expect(denyReason('git send-pack --all origin')).toBe(PUSH_REASON)
   expect(denyReason('git send-pack origin', undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
-  // the uncertain-verb path: an unrecognized global flag ahead of send-pack
-  expect(denyReason('git --unknown-flag send-pack origin main')).toBe(PUSH_REASON)
+  // the uncertain-verb path: an unrecognized global flag ahead of send-pack.
+  // claude-factory-bemr.5 (AC11): an explicit empty gitAliases stub keeps this row's original
+  // intent (the uncertain-verb push-tail scan, not an alias) now that the uncertain path also
+  // reads the alias table.
+  expect(
+    denyReason('git --unknown-flag send-pack origin main', undefined, undefined, {
+      gitAliases: () => new Map(),
+    }),
+  ).toBe(PUSH_REASON)
 })
 
 test('denyReason allows git send-pack to a run branch (claude-factory-zl5.35)', () => {
@@ -2253,7 +2262,14 @@ test('denyReason allows HOME set with no git word (claude-factory-zl5.45)', () =
 // The branch changes after the scan. A check against the old branch name does not find the push.
 // This guard now denies by default. If one command has a branch-change word and a later push to HEAD, it denies the command.
 // The denial uses PUSH_REASON. The guard does not need to know the new branch name.
-const C63_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+// claude-factory-bemr.5 (AC11): gitAliases is an explicit stub with no entries. These rows test
+// the uncertain-verb path with an unrelated flag, not an alias; an empty table keeps that intent
+// while still letting the new uncertain-fallback alias check read a (real, empty) table.
+const C63_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+}
 
 const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   'git checkout main; git push o HEAD',
@@ -2968,201 +2984,144 @@ test('run as `bun src/worker-hook.ts`, a real git alias co=checkout cannot hide 
   expect(await run(stInput, env)).toEqual({ out: '', code: 0 })
 }, 20_000)
 
-//
-// claude-factory-bemr (AC10): these two arrays copy worker-hook.ts's own GIT_BUILTIN_VERBS and
-// GH_BUILTIN_VERBS sets.
-//
-// The test checks each name against the host's real git and gh.
-// git is absent on some hosts. The test then skips.
-const TEST_GIT_BUILTIN_VERBS = [
-  'add',
-  'am',
-  'annotate',
-  'apply',
-  'archive',
-  'backfill',
-  'bisect',
-  'blame',
-  'branch',
-  'bugreport',
-  'bundle',
-  'cat-file',
-  'check-attr',
-  'check-ignore',
-  'check-mailmap',
-  'check-ref-format',
-  'checkout',
-  'checkout--worker',
-  'checkout-index',
-  'cherry',
-  'cherry-pick',
-  'clean',
-  'clone',
-  'column',
-  'commit',
-  'commit-graph',
-  'commit-tree',
-  'config',
-  'count-objects',
-  'credential',
-  'credential-cache',
-  'credential-cache--daemon',
-  'credential-store',
-  'describe',
-  'diagnose',
-  'diff',
-  'diff-files',
-  'diff-index',
-  'diff-pairs',
-  'diff-tree',
-  'difftool',
-  'fast-export',
-  'fast-import',
-  'fetch',
-  'fetch-pack',
-  'fmt-merge-msg',
-  'for-each-ref',
-  'for-each-repo',
-  'format-patch',
-  'fsck',
-  'fsck-objects',
-  'fsmonitor--daemon',
-  'gc',
-  'get-tar-commit-id',
-  'grep',
-  'hash-object',
-  'help',
-  'history',
-  'hook',
-  'index-pack',
-  'init',
-  'init-db',
-  'interpret-trailers',
-  'last-modified',
-  'log',
-  'ls-files',
-  'ls-remote',
-  'ls-tree',
-  'mailinfo',
-  'mailsplit',
-  'maintenance',
-  'merge',
-  'merge-base',
-  'merge-file',
-  'merge-index',
-  'merge-ours',
-  'merge-recursive',
-  'merge-recursive-ours',
-  'merge-recursive-theirs',
-  'merge-subtree',
-  'merge-tree',
-  'mktag',
-  'mktree',
-  'multi-pack-index',
-  'mv',
-  'name-rev',
-  'notes',
-  'pack-objects',
-  'pack-redundant',
-  'pack-refs',
-  'patch-id',
-  'pickaxe',
-  'prune',
-  'prune-packed',
-  'pull',
-  'push',
-  'range-diff',
-  'read-tree',
-  'rebase',
-  'receive-pack',
-  'reflog',
-  'refs',
-  'remote',
-  'remote-ext',
-  'remote-fd',
-  'repack',
-  'replace',
-  'replay',
-  'repo',
-  'rerere',
-  'reset',
-  'restore',
-  'rev-list',
-  'rev-parse',
-  'revert',
-  'rm',
-  'send-pack',
-  'shortlog',
-  'show',
-  'show-branch',
-  'show-index',
-  'show-ref',
-  'sparse-checkout',
-  'stage',
-  'stash',
-  'status',
-  'stripspace',
-  'submodule--helper',
-  'switch',
-  'symbolic-ref',
-  'tag',
-  'unpack-file',
-  'unpack-objects',
-  'update-index',
-  'update-ref',
-  'update-server-info',
-  'upload-archive',
-  'upload-archive--writer',
-  'upload-pack',
-  'var',
-  'verify-commit',
-  'verify-pack',
-  'verify-tag',
-  'version',
-  'whatchanged',
-  'worktree',
-  'write-tree',
-]
-const TEST_GH_BUILTIN_VERBS = [
-  'auth',
-  'browse',
-  'codespace',
-  'discussion',
-  'gist',
-  'issue',
-  'org',
-  'pr',
-  'project',
-  'release',
-  'repo',
-  'skill',
-  'cache',
-  'run',
-  'workflow',
-  'agent-task',
-  'alias',
-  'api',
-  'attestation',
-  'completion',
-  'config',
-  'copilot',
-  'extension',
-  'gpg-key',
-  'label',
-  'licenses',
-  'preview',
-  'ruleset',
-  'search',
-  'secret',
-  'ssh-key',
-  'status',
-  'variable',
-  'accessibility',
-  'help',
-  'version',
+// claude-factory-bemr.5 (AC12): each flag here is a real git global flag.
+// Git 2.54.0 confirms each one takes no value word (`git --no-pager status`, `git -P status`).
+// The verb search must step past each flag with no doubt.
+// The alias lookup must then run at the real verb slot (`co`), not at the flag's own word.
+const GIT_NO_VALUE_GLOBAL_FLAGS_FOR_TEST = [
+  '-p',
+  '-P',
+  '--paginate',
+  '--no-pager',
+  '--bare',
+  '--no-replace-objects',
+  '--literal-pathspecs',
+  '--glob-pathspecs',
+  '--noglob-pathspecs',
+  '--icase-pathspecs',
+  '--no-optional-locks',
+  '--no-advice',
+  '--no-lazy-fetch',
 ]
 
-test('every TEST_GIT_BUILTIN_VERBS name is a real git builtin (claude-factory-bemr, AC10)', () => {
+test.each(GIT_NO_VALUE_GLOBAL_FLAGS_FOR_TEST)(
+  'denyReason denies "git %s co main && git push o HEAD" (claude-factory-bemr.5, AC12)',
+  flag => {
+    const gate: HookGate = {
+      headOf: () => 'factory/x',
+      originHead: () => 'main',
+      gitAliases: () => new Map([['co', 'checkout']]),
+    }
+    expect(denyReason(`git ${flag} co main && git push o HEAD`, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-bemr.5 (AC12): an unknown flag still leaves the verb search unsure.
+// It is not a value flag. It is not a no-value global flag either.
+// This guard must not allow that command in silence.
+// It scans every non-flag word before a literal `--` instead.
+test('denyReason denies ALIAS_USE_REASON when an unknown flag leaves the verb unsure and a later word is a non-builtin alias (claude-factory-bemr.5, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['co', 'checkout']]) }
+  expect(denyReason('git --totally-unknown-flag co main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies ALIAS_USE_REASON when an unknown flag leaves the verb unsure and the alias table cannot be read (claude-factory-bemr.5, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => undefined }
+  expect(denyReason('git --totally-unknown-flag status', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies ALIAS_USE_REASON when an unknown flag leaves the verb unsure and an earlier cd already moved the directory (claude-factory-bemr.5, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map() }
+  expect(denyReason('cd /tmp && git --totally-unknown-flag status', undefined, undefined, gate)).toBe(
+    ALIAS_USE_REASON,
+  )
+})
+
+// claude-factory-bemr.5 (AC12): an unknown flag can still leave a command allowed.
+// The table here is readable and empty.
+// Every word after the flag is a builtin word.
+// The fallback scan finds nothing that looks like an alias, so it allows the command.
+test('denyReason allows "git --totally-unknown-flag status" with a readable empty alias table (claude-factory-bemr.5, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map() }
+  expect(denyReason('git --totally-unknown-flag status', undefined, undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-bemr.6 (AC13): main() must read the git alias table at i.cwd.
+// It must not read the table at CLAUDE_PROJECT_DIR.
+// This test spawns the real binary with two repos.
+// The first repo stands in for CLAUDE_PROJECT_DIR. It sets no alias.
+// The second repo is the Bash tool's cwd. It sets a local alias.p = push.
+//
+// Before this fix, the hook read the first repo's empty table and found no entry for p.
+// The hook then allowed the command.
+test("run as `bun src/worker-hook.ts`, a real git alias set only in the tool call's cwd cannot hide the push guard (claude-factory-bemr.6, AC13)", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
+  const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-cwd-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', cwdDir])
+  Bun.spawnSync(['git', '-C', cwdDir, 'config', 'alias.p', 'push'])
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-gh-config-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  env.CLAUDE_PROJECT_DIR = projectDir
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  delete env.GIT_CONFIG_GLOBAL
+  env.GH_CONFIG_DIR = ghConfigDir
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git p origin main' },
+  })
+  const { out, code } = await run(input, env)
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+}, 20_000)
+
+// claude-factory-bemr.6 (AC13): a relative -C value must resolve against the tool call's own cwd.
+// It must not resolve against the hook process's own cwd.
+// sub is a plain subdirectory of cwdDir, with no .git of its own.
+// git -C sub still reads cwdDir's alias table, the same way real git walks up to find the repo.
+test("run as `bun src/worker-hook.ts`, a relative -C resolves against the tool call's own cwd (claude-factory-bemr.6, AC13)", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-root2-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
+  const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-cwd2-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', cwdDir])
+  Bun.spawnSync(['git', '-C', cwdDir, 'config', 'alias.p', 'push'])
+  mkdirSync(join(cwdDir, 'sub'))
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-gh-config2-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  env.CLAUDE_PROJECT_DIR = projectDir
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  delete env.GIT_CONFIG_GLOBAL
+  env.GH_CONFIG_DIR = ghConfigDir
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git -C sub p origin main' },
+  })
+  const { out, code } = await run(input, env)
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+}, 20_000)
+
+// claude-factory-bemr.7: these tests check worker-hook.ts's own exported GIT_BUILTIN_VERBS and
+// GH_BUILTIN_VERBS sets, not a copy. An edit to either shipped set now reaches this test.
+//
+// Each test checks every name against the host's real git or gh. git or gh can be absent on
+// some hosts. The test then skips.
+
+test('every GIT_BUILTIN_VERBS name is a real git builtin (claude-factory-bemr.7, AC10)', () => {
   let real: Set<string>
   try {
     const p = Bun.spawnSync(['git', '--list-cmds=builtins'])
@@ -3171,12 +3130,24 @@ test('every TEST_GIT_BUILTIN_VERBS name is a real git builtin (claude-factory-be
   } catch {
     return
   }
-  for (const name of TEST_GIT_BUILTIN_VERBS) {
+  for (const name of GIT_BUILTIN_VERBS) {
     expect(real.has(name)).toBe(true)
   }
 })
 
-test("every TEST_GH_BUILTIN_VERBS name is a real gh command, and not one of this host's own gh aliases (claude-factory-bemr, AC10)", () => {
+// claude-factory-bemr.7: `gh help`'s own command-list lines each start with two spaces, the
+// command name, then a colon (for example `  org:           Manage organizations`). The old
+// check used `helpText.includes(name)`, a plain substring test. That test passed `org` for the
+// wrong reason: `org` sits inside the word `organizations` in that same line, not because `org`
+// is its own listed command. `listedNames` holds only a whole name taken from the start of such
+// a line, from every section (CORE COMMANDS, GITHUB ACTIONS COMMANDS, ALIAS COMMANDS, ADDITIONAL
+// COMMANDS, HELP TOPICS).
+//
+// `gh help` and `gh version` run as real commands, but gh's own top-level listing never prints
+// either one as a `name:` line: it prints them only as the `--help` and `--version` flags, in
+// the FLAGS section. `flagNames` holds a name taken the same way from that section, with its
+// leading `--` removed, so `help` and `version` can still match there.
+test("every GH_BUILTIN_VERBS name is a real gh command, and not one of this host's own gh aliases (claude-factory-bemr.7, AC10)", () => {
   let helpText: string
   try {
     const p = Bun.spawnSync(['gh', 'help'])
@@ -3193,11 +3164,17 @@ test("every TEST_GH_BUILTIN_VERBS name is a real gh command, and not one of this
       .split('\n')
       .slice(1)
       .map(line => line.trim().split(/\s+/)[0])
-      .filter(Boolean),
+      .filter(Boolean)
+      .map(w => w!.replace(/:$/, '')),
   )
-  for (const name of TEST_GH_BUILTIN_VERBS) {
+  const listedNames = new Set(Array.from(helpText.matchAll(/^ {2}([a-z][a-z-]*):/gm)).map(m => m[1]!))
+  const flagsSection = helpText.split(/\n(?=[A-Z][A-Z ]+\n)/).find(block => block.startsWith('FLAGS'))
+  const flagNames = new Set(
+    Array.from((flagsSection ?? '').matchAll(/^ {2}--([a-z][a-z-]*)/gm)).map(m => m[1]!),
+  )
+  for (const name of GH_BUILTIN_VERBS) {
     expect(aliasNames.has(name)).toBe(false)
-    expect(helpText.includes(name)).toBe(true)
+    expect(listedNames.has(name) || flagNames.has(name)).toBe(true)
   }
 })
 
