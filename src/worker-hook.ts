@@ -328,6 +328,8 @@ interface ScanState {
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
+  /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
+  substFallbacks: number
 }
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
@@ -361,6 +363,10 @@ interface DqSubstitution {
 }
 
 const MAX_SUBST_NEST = 64
+
+// claude-factory-2pdm.16: each fallback read costs O(n) and scans the rest of the command again.
+// Past this many in one top-level call, the command denies with DEEP_COMMAND_REASON.
+const MAX_SUBST_FALLBACKS = 8
 
 interface Joined {
   text: string
@@ -409,20 +415,23 @@ function joinContinuations(cmd: string): Joined {
  * (`case`, `${`), the body is the rest of the command. `end` then points right after the opener,
  * so the caller keeps the double-quote reading of the rest and the quotes stay in step.
  */
-function dqSubstitution(cmd: string, start: number): { body: string; end: number } | undefined {
+function dqSubstitution(
+  cmd: string,
+  start: number,
+): { body: string; end: number; fallback: boolean } | undefined {
   if (cmd[start] === '`') {
     for (let j = start + 1; j < cmd.length; j++) {
       if (cmd[j] === '\\') j++
       else if (cmd[j] === '`') {
-        return { body: cmd.slice(start + 1, j).replace(/\\([`\\$"])/g, '$1'), end: j + 1 }
+        return { body: cmd.slice(start + 1, j).replace(/\\([`\\$"])/g, '$1'), end: j + 1, fallback: false }
       }
     }
-    return { body: cmd.slice(start + 1).replace(/\\([`\\$"])/g, '$1'), end: start + 1 }
+    return { body: cmd.slice(start + 1).replace(/\\([`\\$"])/g, '$1'), end: start + 1, fallback: true }
   }
   if (cmd[start] !== '$' || cmd[start + 1] !== '(') return undefined
   const close = parenEnd(cmd, start + 2, 0)
-  if (close < 0) return { body: cmd.slice(start + 2), end: start + 2 }
-  return { body: cmd.slice(start + 2, close), end: close + 1 }
+  if (close < 0) return { body: cmd.slice(start + 2), end: start + 2, fallback: true }
+  return { body: cmd.slice(start + 2, close), end: close + 1, fallback: false }
 }
 
 /**
@@ -626,7 +635,11 @@ function isCatHeredoc(body: string): boolean {
  * When `subs` is set, segments() pushes the body of each command substitution found inside a
  * double-quoted span. The caller must scan each body. The word keeps its raw text.
  */
-function segments(cmd: string, info?: { dollarQuote: boolean }, subs?: DqSubstitution[]): string[][] {
+function segments(
+  cmd: string,
+  info?: { dollarQuote: boolean; state?: ScanState; deep?: boolean },
+  subs?: DqSubstitution[],
+): string[][] {
   const segs: string[][] = []
   let cur: string[] = []
   let word = ''
@@ -660,10 +673,15 @@ function segments(cmd: string, info?: { dollarQuote: boolean }, subs?: DqSubstit
     }
     if (quote === '"') {
       let sub: { body: string; end: number } | undefined
-      if (c === '$' || c === '`') {
+      if ((c === '$' || c === '`') && !info?.deep) {
         joined ??= joinContinuations(cmd)
         const r = dqSubstitution(joined.text, joined.toJoined[i]!)
-        if (r) sub = { body: r.body, end: joined.toOrig[r.end]! }
+        if (r) {
+          sub = { body: r.body, end: joined.toOrig[r.end]! }
+          if (r.fallback && info?.state && ++info.state.substFallbacks > MAX_SUBST_FALLBACKS) {
+            info.deep = true
+          }
+        }
       }
       if (sub) {
         // claude-factory-2pdm: the shell runs a command substitution inside double quotes. The
@@ -5062,7 +5080,7 @@ export function scanReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
-  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false }
+  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false, substFallbacks: 0 }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
@@ -5125,8 +5143,12 @@ function denyAt(
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
   const subs: DqSubstitution[] = []
-  const quoteInfo = { dollarQuote: false }
+  const quoteInfo: { dollarQuote: boolean; state: ScanState; deep?: boolean } = {
+    dollarQuote: false,
+    state,
+  }
   const segs = segments(command, quoteInfo, subs)
+  if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment

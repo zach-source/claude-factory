@@ -4695,6 +4695,21 @@ test('denyReason scans many double-quoted substitutions and an unmatched chain f
   expect(performance.now() - t0).toBeLessThan(1000)
 })
 
+test('denyReason denies a spaced deep-open substitution chain in double quotes, fast (2pdm.16)', () => {
+  const rows = ['echo "' + '$(a '.repeat(2040), 'git push origin main #"' + '$(a '.repeat(2040)]
+  for (const row of rows) {
+    const t0 = performance.now()
+    expect(denyReason(row, '/root/repo', ['acme'], DQ_GATE)).toBeTruthy()
+    expect(performance.now() - t0).toBeLessThan(1000)
+  }
+})
+
+test('denyReason does not give the deep reason for a few fallback substitutions (2pdm.16)', () => {
+  expect(denyReason('echo "$(echo ${HOME}) $(echo ${PWD})"', '/root/repo', ['acme'], DQ_GATE)).not.toBe(
+    DEEP_COMMAND_REASON,
+  )
+})
+
 const ESCAPED_REDIR_PREFIXES = ['\\>&', '\\>|', '\\<&', "'>'&", '">"&', "$'>'&"]
 
 const DENY_ESCAPED_REDIR = [
