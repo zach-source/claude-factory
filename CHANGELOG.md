@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- The worker hook now folds the command word to lowercase before each `git`, `gh`, shell, `sudo`, `xargs`, `kubectl`, `helm` and `rm` check. macOS APFS ignores case, so `Git push origin main`, `GH pr merge 1` and `/bin/SH -c 'git push origin main'` ran the real program and passed every guard. A non-ASCII word folds with upper then lower case, so the long s (U+017F) that APFS folds to `s` also denies (claude-factory-a8pr).
+
 - Added regression tests for a bug. A shell variable word before the `git` verb hides a protected push. Three example commands: `git $X push origin main`, `git "$X" push origin HEAD`, and `git -C sub $X push origin main`. The `DYNAMIC_VERB_REASON` fix from claude-factory-p43v already denies them on `main`. The new rows set `gate.gitAliases` and `gate.ghAliases`, the gate shape `main()` uses in production. The existing `P43V_GATE` rows leave both unset (claude-factory-bjp0).
 
 - Fixed: a nested `env -S` or `env -i eval` command made the worker hook scan take about 2x longer for each level. A 219-character command took 82 s, past the 10 s hook timeout, so the hook failed open and the command ran unchecked. The scan now reads each `env -S` span and each `eval` word once. A work budget (`MAX_SCAN_WORK`) also stops any scan that grows too large and denies with `SCAN_BUDGET_REASON`. No other verdict changes (claude-factory-cbai).
@@ -15,6 +17,8 @@ minor release may change the factory format, the CLI or the run state.
 - The worker hook now denies an unquoted `$'...'` or `$"..."` quote. Before, `bash -c $'git push origin main'` and `sh -c $'git\x20push origin main'` were allowed, because the guard read the quote as a plain word. Bash and zsh decode the quote in different ways, so the hook denies it. It also denies harmless uses such as `echo $'a\tb'` (claude-factory-hewq).
 
 - The worker hook now scans the command that `env -S` really runs. `env` puts the split words into argv and keeps reading the words after the value. Before, `env -S 'sh' -c 'git push origin main'` was allowed, because the scan stopped after the `-S` value. The hook now denies it, and the `bash`, `zsh`, `sh -x`, `--split-string=`, `eval` and `git -C` forms too (claude-factory-s1fj).
+
+- The worker hook now scans a command substitution inside double quotes, `"$(...)"` or a backtick pair. Before, `echo "$(git push origin main)"` was allowed, because the quoted span stayed one word and no guard read its body. Each body now goes through every guard, as the unquoted form does. The usual `git commit -m "$(cat <<'EOF' ... EOF)"` form is still allowed.
 
 - The worker hook now reads every word after `--` in `git push` and `git send-pack` as an operand, as git does. Before, `git push -- origin main -n` was allowed as a dry run, and `git push -- origin -o main` hid the `main` refspec as a value (claude-factory-zs39). A flag-like ref name after `--`, such as `-n`, is no longer read as a flag.
 
