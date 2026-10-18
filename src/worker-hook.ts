@@ -570,7 +570,7 @@ function realCommand(words: string[]): string[] {
 }
 
 // claude-factory-p43v.21: This list contains `WRAPPERS`, plus `timeout` and `xargs`.
-// `commandAnchors` reads the flags of each wrapper in the same way that `realCommand` does.
+// `commandAnchors` reads the flags of each wrapper, as `realCommand` does.
 // It uses the same `WRAPPER_VALUE_FLAGS` and `WRAPPER_BARE_FLAGS` maps.
 // `realCommand` keeps only one index, the index where it stops.
 // `commandAnchors` can keep more than one index.
@@ -583,16 +583,16 @@ const LEAD_WRAPPERS = new Set([...WRAPPERS, 'timeout', 'xargs'])
 //
 // `MAX_COMMAND_LENGTH` (8192) sets the maximum number of words in the full command.
 // This limit adds a second, low-cost safeguard.
-// It stops `commandAnchors` before it reads a long run of plain, non-dynamic words, one at a time.
+// It stops `commandAnchors` before it reads a long list of plain, non-dynamic words, one at a time.
 // This occurs if no wrapper flag is unknown to this hook.
 const MAX_COMMAND_ANCHORS = 16
 
 /**
- * Returns each index in `words` where the shell can start the real command.
+ * Gives each index in `words` where the shell can start the actual command.
  *
  * claude-factory-p43v.21: Before this change, `anyDynamicCommandReason` and
  * `anyDynamicLiveApplyReason` read only `realCommand(words)[0]`.
- * These checks treat that index as the only index where the actual command starts.
+ * These checks use that index as the only index where the actual command starts.
  * `realCommand` stops at a wrapper flag that `skipWrapperFlags` does not know by name.
  * Then it keeps that flag word, or a word after it, at index 0.
  * So the dynamic-word checks read the incorrect word.
@@ -633,10 +633,10 @@ const MAX_COMMAND_ANCHORS = 16
  *
  * - An unknown flag can have taken an earlier word as its value.
  *
- * This function stops adding candidates in these cases:
+ * This function stops adding candidates if one of these conditions applies:
  *
  * - After it adds a dynamic word, it adds one more word and stops.
- *   The pair check of claude-factory-p43v.8 does not need more words than this.
+ *   The pair check of claude-factory-p43v.8 checks no more words than this.
  *
  * - There are no more words.
  *
