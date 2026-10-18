@@ -122,6 +122,10 @@ minor release may change the factory format, the CLI or the run state.
   | Dynamic word before a guarded verb | `$G push origin main` | claude-factory-p43v.5 |
   | Substitution opener | `$(which git) push origin main` | claude-factory-p43v.5 |
   | Dynamic word at the `kubectl, ko, helm` verb slot, or at the `kubectl rollout, auth, certificate` subcommand slot | - | claude-factory-p43v.6 |
+  | Two dynamic command words in a row | `$G $V origin main` | claude-factory-p43v.8 |
+  | Dynamic `git -c`/`--config-env` key | `git -c $K=push p origin main` | claude-factory-p43v.9 |
+  | Dynamic command word before a mutating `kubectl, ko, helm` verb | `$K apply -f x --context acme` | claude-factory-p43v.10 |
+  | Dynamic `gh api` endpoint or `-X`/`--method` value | `gh api $E -X PUT` | claude-factory-p43v.11 |
 
   A dynamic `git` branch-change argument also marks the branch as changed.
   The table below lists each verb, the push rule, and the loop rule.
