@@ -5784,6 +5784,16 @@ const A8PR_DENY: [string, string][] = [
   ['Kubectl apply -f x.yaml --context acme', 'kubectl apply -f x.yaml --context acme'],
   ['Helm upgrade x y --kube-context acme', 'helm upgrade x y --kube-context acme'],
   ['Rm -rf /etc', 'rm -rf /etc'],
+  // U+017F (long s) folds to s on APFS; toLowerCase alone keeps it
+  ["ſh -c 'git push origin main'", "sh -c 'git push origin main'"],
+  ["/bin/ſh -c 'git push origin main'", "/bin/sh -c 'git push origin main'"],
+  ["baſh -c 'git push origin main'", "bash -c 'git push origin main'"],
+  ["zſh -c 'git push origin main'", "zsh -c 'git push origin main'"],
+  ["daſh -c 'git push origin main'", "dash -c 'git push origin main'"],
+  ["ſh -c 'gh pr merge 1'", "sh -c 'gh pr merge 1'"],
+  ["ſh -c 'git config --global alias.p push'", "sh -c 'git config --global alias.p push'"],
+  ['echo main | xargſ git push origin', 'echo main | xargs git push origin'],
+  ['ſudo rm -rf /etc', 'sudo rm -rf /etc'],
 ]
 
 test.each(A8PR_DENY)('denyReason denies %j like its lowercase twin (claude-factory-a8pr)', (cmd, twin) => {

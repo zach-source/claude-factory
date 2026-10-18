@@ -372,12 +372,13 @@ const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', '
 /**
  * the lowercase basename of a command word: drops a leading backslash (`\rm`) and any path
  * (`/bin/rm`). It lowercases because macOS APFS is case-insensitive: `Git`, `GH` and `/bin/SH`
- * run the real binaries, so every guard must see them as `git`, `gh` and `sh`.
+ * run the real binaries, so every guard must see them as `git`, `gh` and `sh`. APFS also folds
+ * U+017F (long s) to `s`, so the fold goes through upper case: `toLowerCase` alone keeps it.
  */
 function baseWord(w: string): string {
   const s = w.replace(/^\\/, '')
   const i = s.lastIndexOf('/')
-  return (i >= 0 ? s.slice(i + 1) : s).toLowerCase()
+  return (i >= 0 ? s.slice(i + 1) : s).toUpperCase().toLowerCase()
 }
 
 /**
