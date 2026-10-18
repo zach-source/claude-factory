@@ -5750,3 +5750,51 @@ test('denyReason denies git -C sub $X push origin main (claude-factory-bjp0 AC3:
 test('denyReason allows git push origin factory/x (claude-factory-bjp0 AC4: control, a literal push to the current branch stays allowed)', () => {
   expect(denyReason('git push origin factory/x', '/w', undefined, BJP0_GATE_FACTORYX)).toBeUndefined()
 })
+
+// claude-factory-a8pr: macOS APFS resolves Git, GH, SH to the real binaries, so a capitalized
+// command word must get the same verdict as its lowercase twin.
+const A8PR_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+}
+const A8PR_ROOT = '/r/acme/widget'
+const A8PR_PERSON_ONLY = ['acme']
+const a8prVerdict = (cmd: string) => denyReason(cmd, A8PR_ROOT, A8PR_PERSON_ONLY, A8PR_GATE)
+
+const A8PR_DENY: [string, string][] = [
+  ['Git push origin main', 'git push origin main'],
+  ['GIT push origin main', 'git push origin main'],
+  ['Git-push origin main', 'git-push origin main'],
+  ['/usr/bin/Git push origin main', '/usr/bin/git push origin main'],
+  ['Git config --global alias.p push', 'git config --global alias.p push'],
+  ['Git checkout main && git push', 'git checkout main && git push'],
+  ['Gh pr merge 1', 'gh pr merge 1'],
+  ['GH pr merge 1', 'gh pr merge 1'],
+  ['Gh pr ready 1', 'gh pr ready 1'],
+  ['Gh api -X PUT repos/acme/widget/pulls/1/merge', 'gh api -X PUT repos/acme/widget/pulls/1/merge'],
+  ["SH -c 'git push origin main'", "sh -c 'git push origin main'"],
+  ["Sh -c 'git push origin main'", "sh -c 'git push origin main'"],
+  ["/bin/SH -c 'git push origin main'", "/bin/sh -c 'git push origin main'"],
+  ["BASH -c 'git push origin main'", "bash -c 'git push origin main'"],
+  ["Zsh -c 'git push origin main'", "zsh -c 'git push origin main'"],
+  ['Sudo Git push origin main', 'sudo git push origin main'],
+  ['Env Git push origin main', 'env git push origin main'],
+  ['Kubectl apply -f x.yaml --context acme', 'kubectl apply -f x.yaml --context acme'],
+  ['Helm upgrade x y --kube-context acme', 'helm upgrade x y --kube-context acme'],
+  ['Rm -rf /etc', 'rm -rf /etc'],
+]
+
+test.each(A8PR_DENY)('denyReason denies %j like its lowercase twin (claude-factory-a8pr)', (cmd, twin) => {
+  const want = a8prVerdict(twin)
+  expect(want).toBeDefined()
+  expect(a8prVerdict(cmd)).toBe(want)
+})
+
+test.each(['Git status', 'Gh pr view 1', 'Git log --oneline'])(
+  'denyReason allows %j (claude-factory-a8pr: reads stay allowed)',
+  cmd => {
+    expect(a8prVerdict(cmd)).toBeUndefined()
+  },
+)
