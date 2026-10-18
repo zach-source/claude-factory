@@ -108,6 +108,18 @@ export const PUSH_REASON =
   'for the change, or a revert pull request for a rollback. Only a person pushes or merges a ' +
   'protected branch. Do not retry this command.'
 
+// claude-factory-z1p: the env -S and --split-string flags change a ${NAME} word in the value
+// into one command word when env runs. denyAt reads only the typed text, so it cannot see the
+// changed command (GNU env 9.11 and macOS /usr/bin/env both do this).
+//
+// A dollar sign with no braces makes env -S stop with an error. So this guard can deny any
+// dollar sign in the value with no cost: no real command uses that form (checked on macOS,
+// 2026-10-17).
+export const ENV_SPLIT_VAR_REASON =
+  'The factory denies this command: an env -S or env --split-string value holds a dollar sign. ' +
+  'env expands ${NAME} in this value into a command word, so this guard cannot read the real ' +
+  'command. Write the command words plainly, without env -S. Do not retry this exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -1767,6 +1779,10 @@ function anyShellReason(
     if (bw === 'env') {
       const val = envSplitStringValue(words, j)
       if (val === undefined) continue
+      // claude-factory-z1p: fail closed on a dollar sign before denyAt tokenizes the literal
+      // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
+      // or gh verb; env expands it to one command word at run time, past this guard's sight.
+      if (val.includes('$')) return ENV_SPLIT_VAR_REASON
       const r = denyAt(val, root, personOnly, gate, depth + 1)
       if (r) return r
       break
