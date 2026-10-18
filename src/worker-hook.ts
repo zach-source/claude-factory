@@ -362,6 +362,45 @@ interface DqSubstitution {
 
 const MAX_SUBST_NEST = 64
 
+interface Joined {
+  text: string
+  toOrig: number[]
+  toJoined: number[]
+}
+
+/**
+ * claude-factory-2pdm: drops each backslash-newline pair (a POSIX line continuation) and keeps the
+ * maps between the two index spaces. An escaped pair such as `\\` stays whole. The substitution
+ * reader runs on the joined text, so its lookaheads never see a continuation.
+ */
+function joinContinuations(cmd: string): Joined {
+  if (!cmd.includes('\\\n')) {
+    const id = Array.from({ length: cmd.length + 1 }, (_, k) => k)
+    return { text: cmd, toOrig: id, toJoined: id }
+  }
+  let text = ''
+  const toOrig: number[] = []
+  const toJoined: number[] = []
+  for (let k = 0; k < cmd.length; k++) {
+    if (cmd[k] === '\\' && cmd[k + 1] === '\n') {
+      toJoined[k] = text.length
+      toJoined[k + 1] = text.length
+      k++
+      continue
+    }
+    const n = cmd[k] === '\\' && k + 1 < cmd.length ? 2 : 1
+    for (let m = 0; m < n; m++) {
+      toJoined[k + m] = text.length
+      toOrig.push(k + m)
+      text += cmd[k + m]
+    }
+    k += n - 1
+  }
+  toJoined[cmd.length] = text.length
+  toOrig.push(cmd.length)
+  return { text, toOrig, toJoined }
+}
+
 /**
  * claude-factory-2pdm: `start` is the index of a `$` or a backtick inside a double-quoted span.
  * Returns the body of the command substitution that starts there, and the index right after its
@@ -464,6 +503,87 @@ function parenEnd(cmd: string, from: number, nest: number): number {
 }
 
 /**
+ * claude-factory-2pdm: a quote char inside a comment or a here-document line is not a quote, but
+ * segments() reads it as one and hides the commands after it. This returns the body with each
+ * comment cut to the end of its line, and each quote char in a here-document line made a space.
+ * It keeps every newline, and keeps the other here-document text, because a shell can read it.
+ * A nested `$(` span inside double quotes stays as it is: scanning that span cleans it again.
+ */
+function cleanSubstitutionBody(body: string): string {
+  let out = ''
+  const pending: { delim: string; dash: boolean }[] = []
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]!
+    let slashes = 0
+    while (i - 1 - slashes >= 0 && body[i - 1 - slashes] === '\\') slashes++
+    const wordStart = i === 0 || (slashes % 2 === 0 && /[\s;&|()]/.test(body[i - 1]!))
+    if (c === '\\') {
+      out += body.slice(i, i + 2)
+      i++
+    } else if (c === "'") {
+      const e = body.indexOf("'", i + 1)
+      if (e < 0) return out + body.slice(i)
+      out += body.slice(i, e + 1)
+      i = e
+    } else if (c === '$' && body[i + 1] === "'") {
+      let e = i + 2
+      for (; e < body.length && body[e] !== "'"; e++) if (body[e] === '\\') e++
+      out += body.slice(i, e + 1)
+      i = e
+    } else if (c === '"') {
+      let e = i + 1
+      for (; e < body.length && body[e] !== '"'; e++) {
+        if (body[e] === '\\') e++
+        else if (body[e] === '`') {
+          for (e++; e < body.length && body[e] !== '`'; e++) if (body[e] === '\\') e++
+        } else if (body[e] === '$' && body[e + 1] === '(') {
+          const close = parenEnd(body, e + 2, 0)
+          if (close < 0) return out + body.slice(i)
+          e = close
+        }
+      }
+      out += body.slice(i, e + 1)
+      i = e
+    } else if (c === '`') {
+      let e = i + 1
+      for (; e < body.length && body[e] !== '`'; e++) if (body[e] === '\\') e++
+      out += body.slice(i, e + 1)
+      i = e
+    } else if (c === '#' && wordStart) {
+      while (i + 1 < body.length && body[i + 1] !== '\n') i++
+    } else if (c === '<' && body[i + 1] === '<' && body[i + 2] !== '<') {
+      const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()'"]+))/.exec(body.slice(i, i + 300))
+      if (!m) {
+        out += c
+        continue
+      }
+      pending.push({ delim: m[2] ?? m[3] ?? m[4] ?? '', dash: m[1] === '-' })
+      out += m[0]
+      i += m[0].length - 1
+    } else if (c === '\n' && pending.length) {
+      out += c
+      let at = i + 1
+      for (const p of pending) {
+        while (at <= body.length) {
+          const nl = body.indexOf('\n', at)
+          const line = body.slice(at, nl < 0 ? body.length : nl)
+          const isEnd = (p.dash ? line.replace(/^\t+/, '') : line) === p.delim
+          out += isEnd ? line : line.replace(/['"]/g, ' ')
+          at = nl < 0 ? body.length + 1 : nl + 1
+          if (nl >= 0) out += '\n'
+          if (isEnd) break
+        }
+      }
+      pending.length = 0
+      i = at - 1
+    } else {
+      out += c
+    }
+  }
+  return out
+}
+
+/**
  * claude-factory-2pdm: true for the body of the usual commit-message form, `cat <<'EOF'`, a quoted
  * delimiter, its lines, the delimiter line, and then only blank space. The shell prints those
  * lines. It runs none of them.
@@ -503,10 +623,10 @@ function isCatHeredoc(body: string): boolean {
  */
 function segments(cmd: string, info?: { dollarQuote: boolean }, subs?: DqSubstitution[]): string[][] {
   const segs: string[][] = []
-  let nonEmpty = 0
   let cur: string[] = []
   let word = ''
   let hasWord = false
+  let joined: Joined | undefined
   let quote: '"' | "'" | null = null
   // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
   let inBacktick = false
@@ -518,7 +638,6 @@ function segments(cmd: string, info?: { dollarQuote: boolean }, subs?: DqSubstit
   const endSeg = () => {
     endWord()
     segs.push(cur)
-    if (cur.length > 0) nonEmpty++
     cur = []
   }
   for (let i = 0; i < cmd.length; i++) {
@@ -530,12 +649,17 @@ function segments(cmd: string, info?: { dollarQuote: boolean }, subs?: DqSubstit
       continue
     }
     if (quote === '"') {
-      const sub = c === '$' || c === '`' ? dqSubstitution(cmd, i) : undefined
+      let sub: { body: string; end: number } | undefined
+      if (c === '$' || c === '`') {
+        joined ??= joinContinuations(cmd)
+        const r = dqSubstitution(joined.text, joined.toJoined[i]!)
+        if (r) sub = { body: r.body, end: joined.toOrig[r.end]! }
+      }
       if (sub) {
         // claude-factory-2pdm: the shell runs a command substitution inside double quotes. The
         // raw text stays in this word, so the dynamic-word checks still see the `$`. The body
         // goes to `subs` for denyAt to scan.
-        subs?.push({ body: sub.body, at: nonEmpty })
+        subs?.push({ body: sub.body, at: segs.length })
         word += cmd.slice(i, sub.end)
         i = sub.end - 1
       } else if (c === '"') quote = null
@@ -4936,7 +5060,16 @@ function denyAt(
     for (; subIdx < subs.length && subs[subIdx]!.at <= upTo; subIdx++) {
       const body = subs[subIdx]!.body
       if (isCatHeredoc(body)) continue
-      const r = denyAt(body, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      const r = denyAt(
+        cleanSubstitutionBody(body),
+        root,
+        personOnly,
+        g,
+        depth + 1,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
       if (r) return r
     }
     return undefined

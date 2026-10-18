@@ -4436,8 +4436,21 @@ const DENY_DQ_SUBST: [string, string][] = [
   // bash ends a here-document at a line that starts with the delimiter and then a paren
   ['git commit -m "$(cat <<\'EOF\'\nmsg\nEOF)" && git push origin main', PUSH_REASON],
   ['echo "$(bash <<\'EOF\'\nEOF)"; git push origin main', PUSH_REASON],
-  // a hash after a paren starts a comment, an escaped space does not
+  // a hash after a paren starts a comment
   ['echo "$( (true)# )\ngit push origin main\n)"', PUSH_REASON],
+  // a quote char in a comment or here-document text is not a quote
+  ['echo "$(true # a"b\ngit push origin main\n)"', PUSH_REASON],
+  ['echo "$(true # don\'t\ngit push origin main\n)"', PUSH_REASON],
+  ["echo \"$(cat <<'EOF'\ndon't\nEOF\ngit push origin main\n)\"", PUSH_REASON],
+  ['echo "$(cat <<EOF\ndon\'t\nEOF\ngit push origin main\n)"', PUSH_REASON],
+  // a backslash-newline inside a lookahead of the substitution reader
+  ['echo "$\\\n(git push origin main)"', PUSH_REASON],
+  ['x="$\\\n(git push origin main)"', PUSH_REASON],
+  ['echo "$(echo $\\\n{x//)/}; git push origin main)"', PUSH_REASON],
+  ['echo "$(true; c\\\nase a in a) git push origin main;; esac)"', PUSH_REASON],
+  ['echo "$(cat <\\\n<\'EOF\'\n)\nEOF\ngit push origin main\n)"', PUSH_REASON],
+  // a substitution after an empty segment still counts in order: the body moves HEAD before the push
+  ['; echo "$(git checkout main)"; git push', PUSH_REASON],
 ]
 
 test.each(DENY_DQ_SUBST)('denyReason denies %j (double-quoted substitution)', (cmd, reason) => {
