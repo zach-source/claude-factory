@@ -123,9 +123,11 @@ const clip = (s: string) => (s.length > BODY_CLIP ? s.slice(0, BODY_CLIP) : s)
 export function watchDecide(i: DecideInput): Decision | null {
   const { prs, parkedAt } = i
   if (!prs.length) return null
+  // a route is posted and waits for the tick: post nothing more for this park
+  if (i.seen?.routed) return null
   const after = (n: Note) => n.at > parkedAt
   const allClosed = prs.every(p => p.state === 'CLOSED')
-  if (!i.failed && allClosed && i.canHold && !i.seen?.routed) {
+  if (!i.failed && allClosed && i.canHold) {
     const closed = prs.filter(p => closedAt(p) > parkedAt)
     if (i.isPreLaunch || closed.length) {
       const p = closed[0] ?? prs[0]!
@@ -138,7 +140,7 @@ export function watchDecide(i: DecideInput): Decision | null {
       return { kind: 'hold', text, url: p.url }
     }
   }
-  if (!i.failed && i.canChange && !i.seen?.routed) {
+  if (!i.failed && i.canChange) {
     const open = prs.filter(p => p.state === 'OPEN')
     for (const p of open) {
       const reqs = (p.notes ?? []).filter(n => after(n) && isChangeRequest(n))
