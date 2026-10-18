@@ -1066,6 +1066,19 @@ test('denyReason allows the exact push --recurse-submodules, which skips its own
   ).toBeUndefined()
 })
 
+// claude-factory-ctae.11: `-o` takes a required value word, the same as `--repo` or `--exec`.
+// A short-flag cluster that also holds `o`, for example `-uo` or `-fo`, takes the next word as
+// that same value. Real git 2.54 confirmed this: `git push -uo x origin` on `main`, with no
+// other refspec, pushes `main` to remote `origin`.
+const DENY_PUSH_SHORT_FLAG_CLUSTER_WITH_O = ['git push -uo x origin', 'git push -fo x origin']
+
+test.each(DENY_PUSH_SHORT_FLAG_CLUSTER_WITH_O)(
+  'denyReason denies %j (claude-factory-ctae.11, a short-flag cluster that holds -o)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+  },
+)
+
 test('denyReason allows a bare git push, git push origin HEAD and git push -u origin HEAD on a run branch', () => {
   const gate = { headOf: () => 'factory/x' }
   expect(denyReason('git push', undefined, undefined, gate)).toBeUndefined()

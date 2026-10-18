@@ -1644,9 +1644,15 @@ function refspecTarget(
  * Each of these flags can push or prune every branch. No refspec names a branch.
  * claude-factory-ctae.1: `broad` is also true for a unique abbreviation of one of those flags.
  *
- * claude-factory-ctae.2: `broad` is also true for a unique abbreviation of a value flag in
- * `GIT_PUSH_LONG_VALUE_FLAGS`. Each such flag hides a refspec.
- * This guard cannot read that refspec.
+ * claude-factory-ctae.2: `broad` is also `true` for a unique abbreviation of a value flag in
+ * `GIT_PUSH_LONG_VALUE_FLAGS`. Each of these flags hides a refspec. This guard cannot read
+ * that hidden refspec.
+ *
+ * claude-factory-ctae.11: `broad` is also `true` for a short-flag cluster that holds the
+ * letter `o` (for example `-uo`, `-fo`). The only flag not in this group is `-o` alone.
+ * Git parse-options reads the next word as the value of `-o`. This guard cannot tell that
+ * word from a refspec.
+ *
  * `tags` is true for `--tags`.
  *
  * `dryRun` is true for `-n` or `--dry-run`. A dry run never pushes.
@@ -1675,7 +1681,12 @@ function pushOperands(tail: string[]): {
         i++
         continue
       }
-      if (PUSH_BROAD_FLAGS.some(f => matchesLongFlagPrefix(w, f))) broad = true
+      // claude-factory-ctae.11: a short-flag cluster other than `-o` itself that holds the
+      // letter `o` (`-uo`, `-fo`) also reads the next word as `-o`'s value. This guard cannot
+      // tell that word from a refspec, so it fails closed the same way it does for an
+      // abbreviated long value flag.
+      if (w.startsWith('-') && !w.startsWith('--') && w !== '-o' && w.slice(1).includes('o')) broad = true
+      else if (PUSH_BROAD_FLAGS.some(f => matchesLongFlagPrefix(w, f))) broad = true
       else if (GIT_PUSH_LONG_VALUE_FLAGS.some(f => matchesLongFlagPrefix(w, f))) broad = true
       else if (w === '--tags') tags = true
       else if (w === '-n' || w === '--dry-run') dryRun = true
