@@ -423,6 +423,8 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
       // characters and joins the text around them into one word. It does not end the word and it
       // does not keep a literal newline.
       if (cmd[i + 1] === '\n') {
+        // claude-factory-abmq: a continuation is not a char, so `>BSNL&1` stays one redirect.
+        redirPrev = afterRedir
         i++
         continue
       }
