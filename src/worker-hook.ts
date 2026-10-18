@@ -203,6 +203,14 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
+// guard denies every shell function definition.
+export const FUNCTION_DEF_REASON =
+  'The factory denies this command: it defines a shell function. A function name can hide a git, ' +
+  'gh, sh, eval, kubectl or rm word from this guard, and the guard cannot follow the call. Write ' +
+  'the commands plainly, or put the function in a .scratch script file and run it with bash or ' +
+  'zsh. Do not retry this exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -394,7 +402,7 @@ function baseWord(w: string): string {
  * claude-factory-p43v: an opening backtick keeps a backtick mark in the word it ends. A closing
  * backtick keeps no mark of its own.
  */
-function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
+function segments(cmd: string, info?: { dollarQuote: boolean; funcDef?: boolean }): string[][] {
   const segs: string[][] = []
   let cur: string[] = []
   let word = ''
@@ -414,8 +422,13 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
     cur = []
   }
   let redirPrev = false
+  // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
+  // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
+  let exemptPrev = false
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
+    const wasExempt = exemptPrev
+    exemptPrev = false
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir = redirPrev
     redirPrev = false
@@ -446,6 +459,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
       // does not keep a literal newline.
       if (cmd[i + 1] === '\n') {
         i++
+        exemptPrev = wasExempt
         continue
       }
       word += cmd[++i]
@@ -463,6 +477,16 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
       // add no marker, and neither does the `)` that closes them. `<(` and `>(` keep one, because a word after them must stay in the push tail.
       const prev = cmd[i - 1] ?? ''
       if (c === '(') {
+        // claude-factory-4i60: an empty `()` pair after a word is a function definition.
+        if (info && !wasExempt) {
+          let j = i + 1
+          while (j < cmd.length) {
+            if (cmd[j] === ' ' || cmd[j] === '\t' || cmd[j] === '\n') j++
+            else if (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+            else break
+          }
+          if (cmd[j] === ')') info.funcDef = true
+        }
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
         if (arg) {
@@ -514,6 +538,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
+    exemptPrev = c === '$' || c === '<' || c === '>' || c === '='
   }
   endSeg()
   return segs.filter(s => s.length > 0)
@@ -4172,7 +4197,7 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length;) {
+  for (let i = 0; i < words.length; ) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
@@ -4898,7 +4923,7 @@ function denyAt(
   // claude-factory-bemr: the same kind of flag, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
-  const quoteInfo = { dollarQuote: false }
+  const quoteInfo = { dollarQuote: false, funcDef: false }
   const commandSegments = segments(command, quoteInfo)
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   for (const words of commandSegments) {
@@ -4989,6 +5014,7 @@ function denyAt(
   }
   if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
+  if (quoteInfo.funcDef) return FUNCTION_DEF_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 

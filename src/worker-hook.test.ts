@@ -10,6 +10,7 @@ import {
   denyReason,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
+  FUNCTION_DEF_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   GH_BUILTIN_VERBS,
@@ -2613,7 +2614,6 @@ const ALLOW_DYNAMIC_PUSH_WORD = [
   '(git push origin feature)',
   'echo "$(git rev-parse HEAD)"',
   'echo $(git push origin feature)',
-  'f() { git push origin feature; }',
 ]
 
 test.each(ALLOW_DYNAMIC_PUSH_WORD)('denyReason allows %j (claude-factory-cu5m, no dynamic word)', cmd => {
@@ -2919,6 +2919,89 @@ test('denyReason allows a $ that does not start a $-quote (claude-factory-hewq)'
     "echo $\\\n\\'x\\'",
   ]) {
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+  }
+})
+
+// claude-factory-4i60: a call word can hide a git, sh or rm word in a function body.
+// The guard cannot follow the call. It denies every function definition.
+const FN_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+}
+const DENY_FUNCTION_DEF = [
+  `f() { sh "$@"; }; f -c 'git push origin main'`,
+  `f () { sh "$@"; }; f -c 'git push origin main'`,
+  `f ( ) { sh "$@"; }; f -c 'git push origin main'`,
+  `f(\t) { sh "$@"; }; f -c 'git push origin main'`,
+  `f(\\\n) { sh "$@"; }; f -c 'git push origin main'`,
+  `f( \\\n \\\n ) { sh "$@"; }; f -c 'git push origin main'`,
+  `f\\\n() { sh "$@"; }; f -c 'git push origin main'`,
+  `f()\n{ sh "$@"; }\nf -c 'git push origin main'`,
+  `f() ( sh "$@" ); f -c 'git push origin main'`,
+  `f()(sh "$@");f -c 'git push origin main'`,
+  `f() sh "$@"; f -c 'git push origin main'`,
+  `f g () { sh "$@" }; g -c 'git push origin main'`,
+  `"f"() { sh "$@"; }; f -c 'git push origin main'`,
+  `'f'() { sh "$@"; }; f -c 'git push origin main'`,
+  `echo \\$() { sh "$@"; }`,
+  `a\\=() { sh "$@"; }; a= -c 'git push origin main'`,
+  `\\<() { sh "$@"; }; \\< -c 'git push origin main'`,
+  `f() { rm "$@"; }; f -rf /tmp/x`,
+  `eval 'f() { sh "$@"; }'; f -c 'git push origin main'`,
+  `sh -c 'f() { sh "$@"; }; f -c "git push origin main"'`,
+  `bash -c 'f() { sh "$@"; }; f -c "git push origin main"'`,
+  `zsh -c 'f() { sh "$@"; }; f -c "git push origin main"'`,
+  `echo $(f() { sh "$@"; }; f -c 'git push origin main')`,
+  'echo `f() { sh "$@"; }; f -c "git push origin main"`',
+  `f() { sh "$@"; }; export -f f; bash -c 'f -c "git push origin main"'`,
+  // moved from ALLOW_DYNAMIC_PUSH_WORD: the guard now denies every definition
+  'f() { git push origin feature; }',
+  // accepted over-denies: an empty pair is a definition shape
+  '(( ))',
+  'ls *()',
+]
+
+test.each(DENY_FUNCTION_DEF)('denyReason denies %j (claude-factory-4i60, function definition)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, FN_GATE)).toBe(FUNCTION_DEF_REASON)
+})
+
+// These rows had another deny reason before 4i60. The more specific reason still wins.
+test('denyReason keeps the older reason for definitions with another deny (claude-factory-4i60)', () => {
+  const run = (c: string) => denyReason(c, '/root/repo', undefined, FN_GATE)
+  expect(run('g() { git "$@"; }; g push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(run('git-x() { git "$@"; }; git-x push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(run(`() { sh "$@" } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  expect(run(`function { sh "$@" } -c 'git push origin main'`)).toBe(PUSH_REASON)
+})
+
+const ALLOW_FUNCTION_DEF_LOOKALIKE = [
+  'a=(); echo hi',
+  'a+=(); echo hi',
+  'x=$(); echo hi',
+  'x=$( ); echo hi',
+  'x=$\\\n(); echo hi',
+  'diff <() >()',
+  'cat =()',
+  'diff <(sort a) <(sort b)',
+  'grep -n function src/x.ts',
+  'echo function',
+  'git log --grep=function',
+  'git commit -m "fix f() { x }"',
+  `echo 'f() { sh "$@"; }'`,
+  'bash .scratch/x.sh',
+  'ls functions.txt',
+]
+
+test.each(ALLOW_FUNCTION_DEF_LOOKALIKE)('denyReason allows %j (claude-factory-4i60, no definition)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, FN_GATE)).toBeUndefined()
+})
+
+test('denyReason scans a long function-like input fast (claude-factory-4i60)', () => {
+  for (const cmd of ['( '.repeat(4000), 'f'.repeat(8000) + '()', 'x=$('.repeat(2000)]) {
+    const t = Date.now()
+    denyReason(cmd, '/root/repo', undefined, FN_GATE)
+    expect(Date.now() - t).toBeLessThan(200)
   }
 })
 
