@@ -234,6 +234,22 @@ test('validate rejects broken graphs', () => {
   expect(validate(def)).toBe(def)
 })
 
+test('validate refuses a requeue edge that does not go into done, that also defers or rejects, or that names an invalid factory/station', () => {
+  const rejects = (edge: object) => () =>
+    validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
+  expect(rejects({ to: 'a', requeue: true })).toThrow('only an edge into done requeues')
+  expect(rejects({ to: 'done', requeue: true, defer: true })).toThrow('defers, rejects or requeues, only one')
+  expect(rejects({ to: 'done', requeue: true, reject: true })).toThrow(
+    'defers, rejects or requeues, only one',
+  )
+  expect(rejects({ to: 'done', requeue: { factory: '../x' } })).toThrow('requeue name "../x" is invalid')
+  expect(rejects({ to: 'done', requeue: { station: 'Not-Lower' } })).toThrow(
+    'requeue name "Not-Lower" is invalid',
+  )
+  expect(rejects({ to: 'done', requeue: true })).not.toThrow()
+  expect(rejects({ to: 'done', requeue: { factory: 'release', station: 'implement' } })).not.toThrow()
+})
+
 test('a blocked worker parks its station without spending an attempt, and mail or the clock wakes it', () => {
   const { send } = run()
   send({ type: 'FAIL', seq: 1, reason: 'flaky', at: 1 })

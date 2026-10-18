@@ -833,6 +833,51 @@ test("brief()'s memory section tells a worker to pass --kind on memory add (clau
   expect(text).toContain('--until')
 })
 
+// claude-factory-wnm (A10): a requeue edge can hand the same bead to a later run, in another
+// factory or station. That run's brief must tell the worker the bead's comments are earlier
+// runs' reports, to read first. A run with no bead gets no such line.
+test("brief() tells a worker with a bead to read its comments first, as earlier runs' reports (A10)", () => {
+  const def = {
+    name: 'f',
+    start: 'implement',
+    nodes: { implement: { prompt: 'do the thing', next: { ready: 'verify' } } },
+  }
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const withBead = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-wnm-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-wnm-test',
+    branch: 'b',
+    bead: 'acme-1',
+  }
+  const withBeadText = brief(withBead, def, 'implement', c, [])
+  expect(withBeadText).toContain("acme-1's comments first")
+  expect(withBeadText).toContain("earlier runs' reports")
+
+  const noBead = { ...withBead, bead: undefined }
+  const noBeadText = brief(noBead, def, 'implement', c, [])
+  expect(noBeadText).not.toContain('comments first')
+})
+
 test('brief() tells an awaitsPr pre-launch park apart from a worker-reported block (claude-factory-960)', () => {
   const run = {
     id: 'r1',

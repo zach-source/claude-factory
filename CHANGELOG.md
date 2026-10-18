@@ -69,6 +69,34 @@ minor release may change the factory format, the CLI or the run state.
     (claude-factory-8pc.24, .27; the remaining `env -u`/`env -i` sibling forms are follow-up
     claude-factory-igj).
 
+- An edge into `done` can now carry `requeue: true` or `requeue: { factory?, station? }`. The
+  run ends, but the bead stays open, ready and `factory`-labeled instead of closed or deferred,
+  so the next dispatch starts a new run on it, in the factory and station its labels name (for
+  example, `lifecycle` to `release`, with no hand `factory start`). Dispatch now reads a
+  `factory:<name>` label next to `station:<name>` to pick which factory to compile a run from.
+  `factory metrics` counts this ending as `requeued`, ahead of `rejected`/`closed` and apart from
+  the ship rate. A run with a bead gets a brief line to read the bead's comments first, since a
+  requeued bead's comments are earlier runs' reports. (claude-factory-wnm)
+  - `src/machine.ts`: `Edge.requeue` and `validate()` rules that refuse `requeue` off an edge not
+    into `done`, beside `defer`/`reject`, or with a bad factory/station name (checked against
+    `beads.ts`'s own `NAME` pattern, not a second copy).
+  - `src/beads.ts`: `factoryOf(b)` reads the `factory:<name>` label (never from a Linear-sourced
+    bead, never a path; never a bead with two such labels). `requeue(id, runId, to?)` releases the
+    claim, keeps the bead open and `factory`-labeled, swaps labels one field at a time when `to`
+    names one (`factory` swaps `factory:*`, `station` swaps `station:*`), and stamps
+    `requeued_from`, `requeued_at`, `requeues` in metadata. A requeue edge on a Linear-sourced bead
+    defers instead, since dispatch cannot read its labels back.
+  - `src/cli.ts`: `track()` settles a `requeue` edge (capped by `REQUEUE_MAX = 5`, then
+    deferred, with the `requeues` metadata reset to 0 so an undefer starts a fresh count); it
+    also clears a stale `requeued` flag when a person revives an ended run with `GOTO`.
+    `dispatch()` resolves each bead's `factory:<name>` through a new
+    `namedFactorySource(name, repo)` (never `factorySource`'s literal-path branch), and defers
+    only that bead on an unknown name, a factory that fails to load, or a `station:<name>` the
+    named factory lacks. `precheckSkip` makes 0 `gh` calls for the one dispatch right after a
+    requeue, for the bead carrying `requeued_from`; dispatch clears that metadata once it has
+    started that one run.
+  - `src/metrics.ts`: `fate()` returns `requeued` before `rejected`/`closed`; `shipRate` leaves it
+    out of the ended-run count.
 - A worker can never merge or push its own default branch. Only a person's merge, through
   auto-merge, can ship a pull request. (claude-factory-zl5)
   - Cause: the owner's ruleset decision (2026-10-16) lets GitHub merge a pull request on
@@ -392,6 +420,7 @@ minor release may change the factory format, the CLI or the run state.
   path. `memory compact` now removes such a usage line. (claude-factory-5o7)
   - `src/memory.ts`: `noteExists()` for a path with no `#` now needs
     `path.endsWith('.md') && statSync().isFile()`, the same `.md`-only rule as `walk()`.
+
 - Each memory topic now has a cap of 15 short notes (`TOPIC_CAP`). Set
   `FACTORY_MEMORY_TOPIC_CAP` to override it. `decide()` merges a topic's oldest notes once the
   topic holds more notes than the cap. `dream` and `memory compact` name topics still over the
@@ -862,6 +891,10 @@ minor release may change the factory format, the CLI or the run state.
     marker. PR #76 fixed the directory-as-`--supersedes` case. PR #78
     fixed the `#`-path case (for example `beads#x`, where `beads` is a
     directory).
+- `worker-hook` now denies an `env -S`/`env --split-string` value that holds a dollar sign, for
+  example `git ${FOO} origin main`. `env` changes a `${NAME}` word into one command word when it
+  runs, so the old check on the typed text alone can miss a real push or merge hidden this way.
+  (claude-factory-z1p)
 
 ## 0.12.0 (2026-10-15)
 

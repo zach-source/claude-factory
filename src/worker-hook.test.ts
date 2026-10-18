@@ -7,6 +7,7 @@ import {
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  ENV_SPLIT_VAR_REASON,
   LIVE_REASON,
   LONG_COMMAND_REASON,
   MERGE_REASON,
@@ -1575,6 +1576,42 @@ test.each(DENY_ENV_SPLIT_STRING)(
 test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.42)', () => {
   expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
   expect(denyReason('env -i git status')).toBeUndefined()
+})
+
+// claude-factory-z1p: env -S and --split-string change a ${NAME} word into one command word
+// when env runs. A row such as `FOO=push env -S 'git ${FOO} origin main'` really pushes. The
+// shell prefix assignment sets FOO. Then env turns `${FOO}` into `push`. denyAt reads only the
+// typed `${FOO}` text, so it never matches a push or merge check. This guard denies any `$` in
+// the value first, before denyAt runs.
+const DENY_ENV_SPLIT_VAR = [
+  "FOO=push env -S 'git ${FOO} origin main'",
+  "FOO=merge env -S 'gh pr ${FOO} 5'",
+  // env -i clears the inherited environment; real env still expands ${FOO} to the value a
+  // later prefix assignment or the caller's own shell sets, so this still hides a push.
+  "env -i -S 'git ${FOO} origin main'",
+  // the attached form: no space between -S and the quoted value
+  'env -S"git ${FOO} origin main"',
+  "env --split-string='git ${FOO} origin main'",
+  // a short-flag cluster ahead of S, value as its own word
+  "env -vS 'git ${FOO} origin main'",
+  // a ${NAME} reference inside a word, not the whole word
+  "env -S 'git pu${X} origin main'",
+  // a bare dollar sign with no braces: env -S itself fails on this, so denying it costs nothing
+  "env -S 'echo $HOME'",
+]
+
+test.each(DENY_ENV_SPLIT_VAR)(
+  'denyReason denies %j (claude-factory-z1p, env -S with a dollar sign hides the real command)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(ENV_SPLIT_VAR_REASON)
+  },
+)
+
+test('denyReason allows env -S/--split-string with no dollar sign (claude-factory-z1p)', () => {
+  expect(denyReason("env -S 'echo hi'")).toBeUndefined()
+  expect(denyReason('env FOO=bar printenv FOO')).toBeUndefined()
+  expect(denyReason('echo ${HOME}')).toBeUndefined()
+  expect(denyReason('FOO=1 printenv FOO')).toBeUndefined()
 })
 
 // claude-factory-zl5.43: a dashed git-core binary name (`git-push`, `git-send-pack`, found on

@@ -2,14 +2,36 @@
 // event carries its own `at`, so a run is a fold over its events and the
 // persisted snapshot is the whole truth. The runner (cli.ts) does the effects.
 import { assign, setup } from 'xstate'
+import { NAME } from './beads'
 
 /**
- * where an outcome goes: a node id or 'done'; or an object whose `delayMin` parks the run, with no worker,
- * that long first, and whose `defer` (into 'done' only) ends the run but leaves its tracked work open for a person;
- * `reject` (into 'done' only) ends it with the work left open and ready, out of the factory's queue until a person
- * queues it again
+ * The outcome goes to a node id, or to 'done'. An edge can also be an object. Its `to` field holds
+ * the node id or 'done'.
+ *
+ * The `delayMin` field parks the run for that many minutes. No worker runs in this interval. Then
+ * the run moves on.
+ *
+ * The `defer` field (`to: 'done'` only) ends the run. The work stays open for a person to pick up.
+ *
+ * The `reject` field (`to: 'done'` only) also ends the run. The work stays open and ready. It stays
+ * out of the factory's queue until a person queues it again.
+ *
+ * The `requeue` field (`to: 'done'` only) also ends the run. It keeps the bead ready and
+ * factory-labeled, not closed or deferred. The next dispatch starts a new run for the bead.
+ *
+ * With `requeue: true`, the bead keeps its own `factory:<name>` and `station:<name>` labels, as the
+ * worker set them. The `requeue` object names the factory, the station, or the two, to continue at.
+ * It replaces each label that its fields name.
  */
-export type Edge = string | { to: string; delayMin?: number; defer?: true; reject?: true }
+export type Edge =
+  | string
+  | {
+      to: string
+      delayMin?: number
+      defer?: true
+      reject?: true
+      requeue?: true | { factory?: string; station?: string }
+    }
 export const edgeTo = (e: Edge) => (typeof e === 'string' ? e : e.to)
 const delayOf = (e: Edge) => (typeof e === 'string' ? 0 : (e.delayMin ?? 0))
 
@@ -274,6 +296,20 @@ export function validate(def: Factory): Factory {
             edge.defer &&
             edge.reject &&
             `${id}: an edge defers or rejects, not both`,
+          typeof edge !== 'string' &&
+            edge.requeue &&
+            edge.to !== 'done' &&
+            `${id}: only an edge into done requeues`,
+          typeof edge !== 'string' &&
+            edge.requeue &&
+            (edge.defer || edge.reject) &&
+            `${id}: an edge defers, rejects or requeues, only one`,
+          ...(typeof edge !== 'string' && typeof edge.requeue === 'object'
+            ? (['factory', 'station'] as const)
+                .map(k => edge.requeue && typeof edge.requeue === 'object' && edge.requeue[k])
+                .filter((name): name is string => !!name && !NAME.test(name))
+                .map(name => `${id}: outcome "${outcome}" requeue name "${name}" is invalid`)
+            : []),
         ]),
       ]
     }),
