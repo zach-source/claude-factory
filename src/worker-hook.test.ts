@@ -5222,3 +5222,48 @@ test.each([...DENY_CHASE_PAST_CAP_SKIPS_FLAGS])(
     expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
   },
 )
+
+// claude-factory-p43v.35 (review round 8, review 5563842942): the chase in `commandAnchors`
+// reads a dynamic word `k` as the real command and stops there, through `if (dyn) break`. When
+// `mayBeValue` is set, `k` can be an unknown flag's own value, not the real command. When a flag
+// word sits between `k` and `k2`, `k2` can be a flag's value too. Neither word anchors the real
+// command, so it never gets a chance to deny.
+//
+// AC20: each row below must give `DYNAMIC_VERB_REASON`.
+//
+const AC20_DENY_FLAG_VALUE_BEFORE_PAIR = [
+  'sudo --user $U --close-from 3 $G $V o main',
+  'sudo --user $U --close-from 3 $(which git) push o main',
+  'sudo --user $U --close-from 3 $GH $V merge 5',
+  'env --unset "$X" --chdir /tmp $G $V o main',
+  'env --chdir "$D" -u X $G $V o main',
+  'sudo -Z $A -Y lit $G $V o main',
+  'nice --adjustment "$N" --zz 5 $G $V o main',
+  'xargs --max-args $N --max-procs 4 $G $V o main',
+]
+
+test.each(AC20_DENY_FLAG_VALUE_BEFORE_PAIR)(
+  'denyReason denies %j with personOnly acme (claude-factory-p43v.35 AC20: a dynamic flag value before another flag pair no longer hides the dynamic payload)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// AC21: each row below has no dynamic command pair and must stay allowed. The fix must not
+// deny a plain wrapped command only because an unknown flag's value looks like a command word.
+const AC21_ALLOW_NO_DYNAMIC_PAIR = [
+  'sudo --chdir "$D" --user x ls',
+  'sudo --user $U --close-from 3 ls',
+  'env --unset "$X" --chdir /tmp make test',
+  'env --chdir "$D" make test',
+  'xargs -n 1 cp "$A"',
+  'sudo -u x cp "$A" "$B"',
+  'cp "$A" "$B"',
+]
+
+test.each(AC21_ALLOW_NO_DYNAMIC_PAIR)(
+  'denyReason allows %j with personOnly acme (claude-factory-p43v.35 AC21: no over-deny when the wrapped command has no dynamic pair)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
+  },
+)

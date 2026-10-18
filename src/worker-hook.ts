@@ -940,7 +940,11 @@ function commandAnchors(words: string[]): number[] {
         continue outer
       }
       anchors.push(k2)
-      if (dyn) break
+      // claude-factory-p43v.35: `dyn` alone must not stop the chase here.
+      // A true `mayBeValue` can mark word `k` as an unknown flag's own value, not the real
+      // command. A flag word between `k` and `k2` can also mark `k2` as a flag's value.
+      // This pair is not a true anchor in that case. The chase must go on from `k2`.
+      if (dyn && (!mayBeValue || k2 === k + 1)) break
       if (anchors.length >= MAX_COMMAND_ANCHORS) {
         // claude-factory-p43v.27/.32: the loop above stops at a set number of candidates. Many
         // unknown flags in a row can use up that number before the loop finds the actual
@@ -4062,7 +4066,8 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
           const name = pair.slice(0, eq)
           // claude-factory-p43v.20: `--config-env`'s two-word form reads an envvar name, not a
           // value, so it uses `isDeniedConfigEnvName`'s key-only check, not `isPushConfigWrite`.
-          const denied = w === '-c' ? isPushConfigWrite(name, pair.slice(eq + 1)) : isDeniedConfigEnvName(name)
+          const denied =
+            w === '-c' ? isPushConfigWrite(name, pair.slice(eq + 1)) : isDeniedConfigEnvName(name)
           if (denied) return DYNAMIC_VERB_REASON
         }
       }

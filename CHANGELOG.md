@@ -219,6 +219,7 @@ minor release may change the factory format, the CLI or the run state.
   | `timeout`'s duration operand in the GNU `1e1` or `inf` form | `timeout 1e1 $G $V origin main` | claude-factory-p43v.31 |
   | A nested wrapper's own name, or an unpaired dynamic flag value, stopping the chase early | `sudo -Z "$P" env $G $V origin main` | claude-factory-p43v.32 |
   | A single dynamic word past the `MAX_COMMAND_ANCHORS` cap, with a literal tail and no dynamic partner | `sudo` plus 16 `-R /` pairs plus `$K apply -f x` | claude-factory-p43v.33 |
+  | A dynamic flag value before another flag pair stops the chase too soon | `sudo --user $U --close-from 3 $G $V origin main` | claude-factory-p43v.35 |
 
   `commandAnchors` (`src/worker-hook.ts`) gives a short list of start indices. It replaces the
   old single verb-slot index. It goes around a wrapper's flags, known or unknown. An unknown
