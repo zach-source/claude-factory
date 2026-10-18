@@ -196,6 +196,13 @@ export const ENV_SPLIT_VAR_REASON =
   'env expands ${NAME} in this value into a command word, so this guard cannot read the real ' +
   'command. Write the command words plainly, without env -S. Do not retry this exact command.'
 
+// claude-factory-hewq: bash and zsh decode an unquoted $'...' or $"..." quote, and they decode it
+// in different ways. segments() cannot read the real words, so denyAt denies the quote.
+export const DOLLAR_QUOTE_REASON =
+  'The factory denies this command: it holds an unquoted $\'...\' or $"..." quote. The shell ' +
+  'decodes this quote, so this guard cannot read the real command words. Write the words ' +
+  'plainly, or use printf or a file. Do not retry this exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
