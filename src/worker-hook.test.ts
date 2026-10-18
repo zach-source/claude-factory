@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +7,7 @@ import {
   DEEP_COMMAND_REASON,
   denyReason,
   ENV_SPLIT_VAR_REASON,
+  type HookGate,
   LIVE_REASON,
   LONG_COMMAND_REASON,
   MERGE_REASON,
@@ -14,6 +15,7 @@ import {
   PUSH_REASON,
   READY_REASON,
   REASON,
+  scanReason,
   XARGS_REASON,
 } from './worker-hook'
 
@@ -285,8 +287,9 @@ test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-fac
 // For n=2000, the time used is 679 ms.
 // For n=4000, the time used is 4008 ms.
 //
-// This test does not set personOnly. The 8192-character limit applies only when personOnly is set.
-// So it does not apply here.
+// This command is over 8192 characters, so denyReason denies it with LONG_COMMAND_REASON on
+// every rig (claude-factory-dts). scanReason runs the same scan with no length cap, so it still
+// proves the depth limit fix directly.
 //
 // A high load can make more time necessary for this check.
 // The time necessary can then be more than the 10 s time limit of the PreToolUse hook.
@@ -299,12 +302,17 @@ test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-fac
 // This check is much faster than the 500 ms time limit of this test.
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 const DEEP_RM_N = 4000
+const DEEP_RM_COMMAND = 'eval '.repeat(DEEP_RM_N) + 'rm '.repeat(DEEP_RM_N) + '; rm -rf x'
 
-test('denyReason denies a 4000-level stacked eval rm -rf form, fast, no personOnly (claude-factory-epz)', () => {
-  expect(denyReason('eval '.repeat(DEEP_RM_N) + 'rm '.repeat(DEEP_RM_N) + '; rm -rf x')).toBe(
-    DEEP_COMMAND_REASON,
-  )
+test('scanReason denies a 4000-level stacked eval rm -rf form, fast, no personOnly (claude-factory-epz)', () => {
+  expect(scanReason(DEEP_RM_COMMAND)).toBe(DEEP_COMMAND_REASON)
 }, 500)
+
+// claude-factory-dts: the same over-8192-character command denies with LONG_COMMAND_REASON
+// through denyReason, on every rig, with no personOnly set.
+test('denyReason denies the same 4000-level stacked eval rm -rf form with LONG_COMMAND_REASON (claude-factory-dts)', () => {
+  expect(denyReason(DEEP_RM_COMMAND)).toBe(LONG_COMMAND_REASON)
+})
 
 test('denyReason denies a command nesting 33 eval levels (claude-factory-epz)', () => {
   expect(denyReason('eval '.repeat(33) + 'ls')).toBe(DEEP_COMMAND_REASON)
@@ -329,8 +337,13 @@ test('denyReason denies a 33-level stacked eval command with personOnly set too 
 // claude-factory-25z.20: the .17 fix made the scan linear. But a command of n eval words, then n
 // bare kubectl words, then a real apply still costs about n^3. A command built to be about 26 KB
 // can push that scan past the 10 s PreToolUse hook timeout. A timed-out hook runs the command
-// unchecked. So denyReason now denies a command longer than 8192 characters outright, before any
-// scan, when personOnly is set.
+// unchecked. So denyReason denies a command longer than 8192 characters outright, before any
+// scan.
+//
+// claude-factory-dts: this cap now applies on every rig, not only one with a person-only kube
+// context. The old behavior (today's test name) was the bug this bead fixes, so this test now
+// asserts the new, approved behavior: the cap denies with no personOnly set, the same as with
+// personOnly set.
 const LONG_COMMAND_8192 = 'x'.repeat(8192)
 const LONG_COMMAND_8193 = 'x'.repeat(8193)
 
@@ -338,13 +351,19 @@ test('denyReason denies a command over 8192 characters outright when personOnly 
   expect(denyReason(LONG_COMMAND_8193, undefined, ACME)).toBe(LONG_COMMAND_REASON)
 })
 
-test('denyReason keeps today’s behavior for a command over 8192 characters when personOnly is empty or absent (claude-factory-25z.20)', () => {
-  expect(denyReason(LONG_COMMAND_8193)).toBeUndefined()
-  expect(denyReason(LONG_COMMAND_8193, undefined, [])).toBeUndefined()
+test('denyReason denies a command over 8192 characters outright on every rig, personOnly empty or absent (claude-factory-dts)', () => {
+  expect(denyReason(LONG_COMMAND_8193)).toBe(LONG_COMMAND_REASON)
+  expect(denyReason(LONG_COMMAND_8193, undefined, [])).toBe(LONG_COMMAND_REASON)
 })
 
 test('denyReason gives a normal verdict for a command at exactly 8192 characters, personOnly set (claude-factory-25z.20)', () => {
   expect(denyReason(LONG_COMMAND_8192, undefined, ACME)).toBeUndefined()
+})
+
+// claude-factory-dts: the cap applies on every rig, so a command at exactly 8192 characters still
+// gives a normal verdict with no personOnly set at all.
+test('denyReason gives a normal verdict for a command at exactly 8192 characters, personOnly absent (claude-factory-dts)', () => {
+  expect(denyReason(LONG_COMMAND_8192)).toBeUndefined()
 })
 
 // claude-factory-1by: anyShellReason calls shCFlagIndex(words.slice(j)) for each sh/bash/zsh/dash
@@ -352,9 +371,11 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
 //
 // The scan it feeds also costs O(n-j). On a miss, j moves by only 1.
 //
-// So a run of n such words with no `-c` cluster costs O(n^2). No personOnly is set here.
+// So a run of n such words with no `-c` cluster costs O(n^2).
 //
-// So the 8192-character cap (claude-factory-25z.20) does not apply. Nothing else bounds the scan.
+// Each command below is over 8192 characters. denyReason now denies each one with
+// LONG_COMMAND_REASON on every rig (claude-factory-dts). scanReason runs the same scan with no
+// length cap, so it still proves the linear-time fix directly.
 //
 // Measured on the pre-fix code, load 12-30:
 //
@@ -379,21 +400,27 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 const SCAN_N = 40000
 
-test('denyReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(denyReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(scanReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
 
-test('denyReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(denyReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(scanReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
 
-test('denyReason denies a 40000-word sh -- scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(denyReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies a 40000-word sh -- scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(scanReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
 
-test('denyReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(denyReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
+  expect(scanReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
+
+// claude-factory-dts: one of the commands above, run through denyReason instead, denies with
+// LONG_COMMAND_REASON: it is over 8192 characters, and the cap applies before any scan.
+test('denyReason denies the same 40000-word sh scan with LONG_COMMAND_REASON (claude-factory-dts)', () => {
+  expect(denyReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(LONG_COMMAND_REASON)
+})
 
 // claude-factory-1by: shapes the fix must keep denying or allowing exactly as before. A fix that
 // jumps `j` blindly to the end of a segment on a cluster miss would wrongly allow the first two:
@@ -410,14 +437,23 @@ test('denyReason still denies `sh -x -lc "rm -rf x"` (claude-factory-1by)', () =
   expect(denyReason('sh -x -lc "rm -rf x"')).toBe(REASON)
 })
 
-test('denyReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
-  expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
+// claude-factory-dts: this command is also over 8192 characters, so scanReason (no length cap)
+// keeps the old allow verdict, and denyReason now denies it with LONG_COMMAND_REASON.
+test('scanReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
+  expect(scanReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
+})
+
+test('denyReason denies the same no-script sh scan with LONG_COMMAND_REASON (claude-factory-dts)', () => {
+  expect(denyReason('sh '.repeat(SCAN_N) + '-c ls')).toBe(LONG_COMMAND_REASON)
 })
 
 // claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it
 // runs cmd.slice(i + 1), then reads rest[0]. A slice costs O(n - i). A run of n -exec words makes
-// n such slices, so the find branch costs O(n^2). This test does not set personOnly. So the
-// 8192-character cap (claude-factory-25z.20) does not apply.
+// n such slices, so the find branch costs O(n^2).
+//
+// Each command below is over 8192 characters. denyReason now denies each one with
+// LONG_COMMAND_REASON on every rig (claude-factory-dts). scanReason runs the same scan with no
+// length cap, so it still proves the linear-time fix directly.
 //
 // Measured on the pre-fix code, load 13.81:
 //
@@ -435,24 +471,30 @@ test('denyReason still allows a 40000-word sh scan whose last word is a `-c` fla
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 const FIND_N = 200000
 
-test('denyReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)', () => {
-  expect(denyReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
+test('scanReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)', () => {
+  expect(scanReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
+
+// claude-factory-dts: the same over-8192-character command denies with LONG_COMMAND_REASON
+// through denyReason, on every rig.
+test('denyReason denies the same 200000-word find -exec scan with LONG_COMMAND_REASON (claude-factory-dts)', () => {
+  expect(denyReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(LONG_COMMAND_REASON)
+})
 
 // claude-factory-lbn: this shape still slices once per -exec word. It does so even when the fix
 // checks baseWord(cmd[i + 1]) === 'rm' before the slice (the bead's own first proposal).
 // The slice itself costs O(n), not the check before it. Each rm here carries no recursive flag.
 // So the command must stay allowed.
-test('denyReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)', () => {
-  expect(denyReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
+test('scanReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)', () => {
+  expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
 }, 500)
 
-test('denyReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)', () => {
-  expect(denyReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
+test('scanReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)', () => {
+  expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
 }, 500)
 
-test('denyReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)', () => {
-  expect(denyReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
+test('scanReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)', () => {
+  expect(scanReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
 }, 500)
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
@@ -953,6 +995,66 @@ test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, a push t
   const withoutArgv = await run(input, env)
   expect(withoutArgv).toEqual({ out: '', code: 0 })
 }, 10_000)
+
+// claude-factory-dts: a long multi-push command must deny fast, inside the hook's 10 s timeout.
+// The old code ran one spawn per push segment, with no cache: 583 segments took 10527 ms at
+// load 52, past the timeout, so the hook failed open. memoGate caches each spawn, so the fix
+// denies the same command well under 10 s.
+test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, 583 stacked push segments deny with PUSH_REASON, under 10s (claude-factory-dts)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-push-long-multi-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  delete env.FACTORY_OUTBOX
+  delete env.FACTORY_FROM
+  env.FACTORY_SELF_UPDATE = '0'
+  const command = 'git push o b; '.repeat(583) + 'git push origin main'
+  expect(command.length).toBe(8182)
+  const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command } })
+  const start = Date.now()
+  const { out, code } = await run(input, env, ['--protected-branches', 'acme/deploy'])
+  const elapsedMs = Date.now() - start
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+  expect(elapsedMs).toBeLessThan(10_000)
+}, 30_000)
+
+// claude-factory-dts: this command has 1500 push segments, 21020 characters, over the
+// MAX_COMMAND_LENGTH cap of 8192. The hook now denies it with LONG_COMMAND_REASON on every rig,
+// not only one with --person-only-contexts set. Before the fix, a rig with no
+// --person-only-contexts scanned the whole command, which took 25876 ms at load 52, past the
+// hook's 10 s timeout.
+test('run as `bun src/worker-hook.ts --protected-branches acme/deploy`, 1500 stacked push segments deny with LONG_COMMAND_REASON (claude-factory-dts)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-push-too-long-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  delete env.FACTORY_OUTBOX
+  delete env.FACTORY_FROM
+  env.FACTORY_SELF_UPDATE = '0'
+  const command = 'git push o b; '.repeat(1500) + 'git push origin main'
+  expect(command.length).toBe(21020)
+  const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command } })
+  const { out, code } = await run(input, env, ['--protected-branches', 'acme/deploy'])
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: LONG_COMMAND_REASON,
+    },
+  })
+}, 30_000)
 
 // claude-factory-zl5.10: a REST or GraphQL call can write a ref or a file through the API. This
 // can commit to, or delete, a protected branch with no `git push` word on the command line.
@@ -1512,12 +1614,50 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   // the attached form: no space between -S and the quoted value
   ["env -S'git push origin main'", 'PUSH_DIR_REASON'],
   // a short-flag cluster ahead of S, value as its own word
+  //
+  // claude-factory-68gn.13/.14 (review round 3): every row below that pushes gets
+  // `PUSH_DIR_REASON`, not `PUSH_REASON`. `wordsCarryChdir` (`envChdirPresent`'s own scan) fails
+  // closed on any `-S`/`--split-string` word on its own, with no look at what it holds. These
+  // rows carry `claude-factory-dgf`'s own fix for `envSplitStringValue` (the sibling scan that
+  // reads what the `-S` value holds, so the guard can still recurse into it): a value flag ahead
+  // of `-S` must not hide it.
   ["env -vS 'git push origin main'", 'PUSH_DIR_REASON'],
   ["env --split-string='git push origin main'", 'PUSH_DIR_REASON'],
-  // claude-factory-68gn.6: a value flag (-u NAME) ahead of -S must not hide it either. This is
-  // the same stop-at-the-first-non-dash-word bug envChdirPresent had for -C, in the sibling
-  // function envSplitStringValue.
+  // claude-factory-dgf (AC1): a value flag takes its own value word (FOO, /tmp, /usr/bin). That
+  // word does not start with `-`. The old scan stopped there and never reached `-S`. The fix must
+  // skip past the value word.
   ["env -u FOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -C /tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  ["env -P /usr/bin -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  // claude-factory-dgf (AC2): the long forms of the same value flags.
+  ["env --unset FOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env --chdir /tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  ["env --argv0 x -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -a x -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  // claude-factory-dgf (AC3): a short cluster that ends in a value flag (`-iu FOO`) skips one word.
+  ["env -iu FOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  // claude-factory-dgf (AC4): GNU getopt_long accepts a unique prefix of a long option name.
+  ["env --spl 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env --sp='git push origin main'", 'PUSH_DIR_REASON'],
+  //
+  // claude-factory-dgf.4: a prefix of a long value flag name must also skip its value word.
+  // Real GNU env 9.11 runs `--uns FOO -S` and `--ch /tmp -S`.
+  ["env --uns FOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env --ch /tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  //
+  // claude-factory-dgf.5: the attached long form (`--unset=FOO`) holds its value in one word.
+  // It must not take the next word too. That word is the real `-S`.
+  ["env --unset=FOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env --chdir=/tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  //
+  // claude-factory-dgf.6: the attached short form (`-uFOO`) holds its value in one word too.
+  // It must not take the next word. That word is the real `-S`.
+  ["env -uFOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env -C/tmp -S 'gh pr merge 5'", 'MERGE_REASON'],
+  //
+  // claude-factory-dgf.7: a bare `-` is not an option word. The scan must pass it and continue.
+  // Real macOS `/usr/bin/env - -S 'echo x'` runs the string: BSD `env` reads `-` as an option.
+  ["env - -S 'git push origin main'", 'PUSH_DIR_REASON'],
 ]
 const ENV_SPLIT_STRING_REASON: Record<string, string> = {
   MERGE_REASON,
@@ -1526,7 +1666,7 @@ const ENV_SPLIT_STRING_REASON: Record<string, string> = {
 }
 
 test.each(DENY_ENV_SPLIT_STRING)(
-  'denyReason denies %j (claude-factory-zl5.42, env -S/--split-string hides the real command)',
+  'denyReason denies %j (claude-factory-zl5.42/dgf, env -S/--split-string hides the real command)',
   (cmd, reasonName) => {
     expect(denyReason(cmd)).toBe(ENV_SPLIT_STRING_REASON[reasonName])
   },
@@ -1535,6 +1675,18 @@ test.each(DENY_ENV_SPLIT_STRING)(
 test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.42)', () => {
   expect(denyReason('env FOO=1 echo hi')).toBeUndefined()
   expect(denyReason('env -i git status')).toBeUndefined()
+})
+
+// claude-factory-dgf (AC5): these forms must stay allowed. Real `env` stops reading options
+// at the first `NAME=VALUE` word. A `-S` after that word is the command itself, not a flag.
+// `-u` and `-C` with no later `-S` set up the environment for an unrelated command. `-uS` is
+// one cluster whose first character, `u`, takes the rest of the word, `S`, as its own value.
+// So this cluster has no separate `-S` flag.
+test('denyReason allows env value-flag forms with no real split-string flag (claude-factory-dgf)', () => {
+  expect(denyReason("env FOO=1 -S 'git push origin main'")).toBeUndefined()
+  expect(denyReason('env -u FOO echo hi')).toBeUndefined()
+  expect(denyReason('env -C /tmp git status')).toBeUndefined()
+  expect(denyReason("env -uS 'git push origin main'")).toBeUndefined()
 })
 
 // claude-factory-z1p: env -S and --split-string change a ${NAME} word into one command word
@@ -1971,4 +2123,176 @@ test('denyReason never calls gate.headOf for a push after an env -S of any form 
     PUSH_DIR_REASON,
   )
   expect(calls).toBe(0)
+})
+
+// claude-factory-dts: a counting fake gate. It wraps each real git-reading function the test
+// gives it, and counts each real call. It never counts a call memoGate skips (a cache hit, or a
+// headOf call past MAX_HEAD_DIRS).
+function countingGate(real: {
+  headOf?: (dir?: string) => string | undefined
+  originHead?: () => string | undefined
+}) {
+  const calls = { headOf: 0, originHead: 0 }
+  const gate: HookGate = {}
+  if (real.headOf) {
+    const fn = real.headOf
+    gate.headOf = dir => {
+      calls.headOf++
+      return fn(dir)
+    }
+  }
+  if (real.originHead) {
+    const fn = real.originHead
+    gate.originHead = () => {
+      calls.originHead++
+      return fn()
+    }
+  }
+  return { gate, calls }
+}
+
+// claude-factory-dts (AC1, AC2): before the fix, gitReason called gate.headOf(dir) once per push
+// segment, and protectedBranchSet called gate.originHead() once per push segment (inside
+// gitPushDenied). A command with 583 'git push o b;' segments plus a trailing protected push
+// made 584 calls of each, pre-fix. The memo now makes one real call of each, for the whole
+// denyReason call.
+test('denyReason calls gate.originHead and gate.headOf at most once each across 583 push segments (claude-factory-dts, AC1/AC2)', () => {
+  const { gate, calls } = countingGate({ headOf: () => 'feature', originHead: () => 'main' })
+  const command = 'git push o b; '.repeat(583) + 'git push origin main'
+  expect(denyReason(command, undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(calls.originHead).toBe(1)
+  expect(calls.headOf).toBe(1)
+})
+
+// claude-factory-dts (AC3): headOf keeps one cached result for each distinct dir, up to
+// MAX_HEAD_DIRS = 8. Here, 20 segments name 20 distinct dirs, and none push HEAD, so the
+// verdict does not depend on headOf's result. The call count still stays at or under 8.
+test('denyReason calls gate.headOf for at most 8 distinct dirs, out of 20 (claude-factory-dts, AC3)', () => {
+  const { gate, calls } = countingGate({ headOf: dir => `branch-of-${dir}`, originHead: () => 'main' })
+  const command = Array.from({ length: 20 }, (_, i) => `git -C d${i} push o b`).join('; ')
+  expect(denyReason(command, undefined, undefined, gate)).toBeUndefined()
+  expect(calls.headOf).toBeLessThanOrEqual(8)
+})
+
+// claude-factory-dts (AC3): the first 8 segments each name a new distinct dir (d1..d8), so they
+// fill the memo's cache. The 9th segment names a 9th distinct dir (d9) and pushes HEAD. Past
+// MAX_HEAD_DIRS, headOf(d9) returns undefined with no real call: the current branch there is
+// unknown, so the push fails closed (denies), the same rule an unresolvable headOf already used
+// before this memo existed (claude-factory-zl5.12).
+test('denyReason fails closed on a 9th distinct dir past MAX_HEAD_DIRS=8 (claude-factory-dts, AC3)', () => {
+  const { gate, calls } = countingGate({ headOf: dir => `branch-of-${dir}` })
+  const eightDirs = Array.from({ length: 8 }, (_, i) => `git -C d${i + 1} push o b`).join('; ')
+  const command = `${eightDirs}; git -C d9 push o HEAD`
+  expect(denyReason(command, undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(calls.headOf).toBe(8)
+})
+
+// claude-factory-dts (AC4): the memo must cache an unresolved (undefined) gate.originHead result
+// too, and keep giving that same unresolved answer on every later call within one denyReason
+// call. An unresolved origin/HEAD denies every branch-targeting push (claude-factory-zl5.13), so
+// the first of 2 push segments already denies; the memo still makes only 1 real call.
+test('denyReason caches an undefined gate.originHead result, and still denies every push (claude-factory-dts, AC4)', () => {
+  const { gate, calls } = countingGate({ originHead: () => undefined })
+  expect(denyReason('git push o b; git push o b', undefined, undefined, gate)).toBe(PUSH_REASON)
+  expect(calls.originHead).toBe(1)
+})
+
+// claude-factory-dts (AC4): a rig that wires no gate.originHead and no gate.headOf at all must
+// keep today's behavior: no origin/HEAD check at all, and no fail-closed current-branch check
+// for a non-HEAD push. memoGate must leave an unset field unset, not call a function that is not
+// there.
+test('denyReason with no gate.headOf or gate.originHead at all keeps allowing an unprotected push (claude-factory-dts, AC4)', () => {
+  expect(denyReason('git push origin develop', undefined, undefined, {})).toBeUndefined()
+})
+
+// claude-factory-dts (AC4): one memo, built once at the denyReason entry, must cover every
+// recursion level anyShellReason takes through `sh -c` or `eval`, not only the top-level scan.
+// The inner `sh -c` script holds 2 push segments of its own; the outer command holds a 3rd. All
+// 3 read the current branch and origin/HEAD through the same memo, so each real function still
+// runs once, even though the scan recurses one level deeper to reach 2 of the 3 segments.
+test('denyReason shares one memo across an sh -c recursion level (claude-factory-dts, AC4)', () => {
+  const { gate, calls } = countingGate({ headOf: () => 'feature', originHead: () => 'main' })
+  const command = `sh -c 'git push o b; git push o b'; git push o b`
+  expect(denyReason(command, undefined, undefined, gate)).toBeUndefined()
+  expect(calls.headOf).toBe(1)
+  expect(calls.originHead).toBe(1)
+})
+
+// claude-factory-dts.4: MAX_HEAD_DIRS limits the spawn count. It does not limit the spawn time.
+// A slow git command can use its full timeout on each spawn.
+// Up to 8 headOf dirs plus 1 originHead spawn can add up to 9 full timeouts.
+// That is more than the hook's own 10 s PreToolUse timeout.
+// A shared deadline (GATE_BUDGET_MS = 6000 ms) limits the total spawn time too.
+//
+// This test uses a fake clock. It does not use a sleep.
+// The fake headOf moves the clock forward by 5500 ms on each call.
+// This is a spawn of 5500 ms.
+// `spyOn(Date, 'now')` makes memoGate read the fake clock. It does not change memoGate.
+test('denyReason stops spawning headOf once the shared gate budget runs out, before MAX_HEAD_DIRS, and still denies the trailing push (claude-factory-dts.4)', () => {
+  let fakeNow = 0
+  const dateSpy = spyOn(Date, 'now').mockImplementation(() => fakeNow)
+  try {
+    let headOfCalls = 0
+    const seenTimeouts: (number | undefined)[] = []
+    const gate: HookGate = {
+      headOf: (dir, timeoutMs) => {
+        headOfCalls++
+        seenTimeouts.push(timeoutMs)
+        fakeNow += 5500
+        return `branch-of-${dir}`
+      },
+    }
+    // 2 segments name 2 dirs (d1, d2). This is below MAX_HEAD_DIRS = 8.
+    // A 3rd segment names a 3rd dir (d3). It pushes HEAD.
+    // Its verdict uses the result of headOf(d3).
+    const command = 'git -C d1 push o b; git -C d2 push o b; git -C d3 push o HEAD'
+    // The budget ends after 2 calls (5500 ms, then 11000 ms of fake time).
+    // This is before MAX_HEAD_DIRS = 8.
+    //
+    // The memo skips the 3rd call. No spawn occurs.
+    // The current branch at d3 is unknown. It then fails closed: PUSH_REASON.
+    // This is the same rule that the MAX_HEAD_DIRS cap uses.
+    expect(denyReason(command, undefined, undefined, gate)).toBe(PUSH_REASON)
+    expect(headOfCalls).toBe(2)
+    // Each call gets a timeoutMs of at most the time left before the shared deadline.
+    // At the start, timeoutMs is 2000 ms. This is the full per-spawn cap.
+    // Then timeoutMs is 500 ms. This occurs when only 500 ms of budget is left.
+    expect(seenTimeouts).toEqual([2000, 500])
+  } finally {
+    dateSpy.mockRestore()
+  }
+})
+
+// claude-factory-dts.4: the shared deadline applies to the two gate fields, not only headOf.
+// One slow headOf call uses all of the GATE_BUDGET_MS = 6000 ms budget.
+// gitReason reads headOf before gitPushDenied reads originHead (see :1623 and :1332).
+// So that one slow call also stops the originHead spawn in the same push segment.
+//
+// The target branch here ('feature-branch') is not main, master, or in gate.protectedBranches.
+// An originHead call that finds a different branch can let this push pass.
+// When the budget is spent, the memo skips that spawn. It gives an unresolved answer.
+// An unresolved answer fails closed (claude-factory-zl5.13): PUSH_REASON.
+test('a single slow headOf call that spends the whole gate budget also skips the originHead spawn in the same push (claude-factory-dts.4)', () => {
+  let fakeNow = 0
+  const dateSpy = spyOn(Date, 'now').mockImplementation(() => fakeNow)
+  try {
+    let headOfCalls = 0
+    let originHeadCalls = 0
+    const gate: HookGate = {
+      headOf: () => {
+        headOfCalls++
+        fakeNow += 7000
+        return 'feature'
+      },
+      originHead: () => {
+        originHeadCalls++
+        return 'release'
+      },
+    }
+    expect(denyReason('git push origin feature-branch', undefined, undefined, gate)).toBe(PUSH_REASON)
+    expect(headOfCalls).toBe(1)
+    expect(originHeadCalls).toBe(0)
+  } finally {
+    dateSpy.mockRestore()
+  }
 })
