@@ -484,6 +484,34 @@ const BEADS_ACTOR_CLEAR_DENY = [
   'env --ignore-environment PATH=/usr/bin bd create "x" -l factory',
   'export -n BEADS_ACTOR; bd create "x" -l factory',
   'declare -n BEADS_ACTOR',
+  // claude-factory-igj: these new lines close 4 gaps in the old scan.
+  // Gap 1: one word can hold an option and the name BEADS_ACTOR together.
+  'env -uBEADS_ACTOR bd create "x" -l factory',
+  'env -0u BEADS_ACTOR bd create "x" -l factory',
+  'env --uns=BEADS_ACTOR bd create "x" -l factory',
+  'env --uns BEADS_ACTOR bd create "x" -l factory',
+  // Gap 2: a lone dash works the same as -i.
+  'env - bd create "x" -l factory',
+  // Gap 3: a short word or a shortened long word can also mean -i.
+  'env -iu FOO bd create "x" -l factory',
+  'env -vi bd create "x" -l factory',
+  'env --ign bd create "x" -l factory',
+  'env --ignore-env bd create "x" -l factory',
+  // Gap 4: the scan must not stop at an option's own value word.
+  'env -C /tmp -u BEADS_ACTOR bd create "x" -l factory',
+  'env -P /usr/bin -i bd create "x" -l factory',
+  'env -a foo -i bd create "x" -l factory',
+  // claude-factory-igj.4 (PR #109 review round 1): Gap 5. A value flag whose own value is the
+  // word `bd` must not stop the scan before a later `-u BEADS_ACTOR` or `-i`.
+  'env -u bd -u BEADS_ACTOR bd create "x" -l factory',
+  'env -C bd -u BEADS_ACTOR bd create "x" -l factory',
+  'env -C ./bd -i bd create "x" -l factory',
+  'env -a bd -i bd create "x" -l factory',
+  'env -P /x/bd -i bd create "x" -l factory',
+  'env --chdir bd -i bd create "x" -l factory',
+  'env --unset bd -i bd create "x" -l factory',
+  'env -u bd -i bd create "x" -l factory',
+  'env -S"-u bd -i" bd create "x" -l factory',
 ]
 
 test.each(BEADS_ACTOR_CLEAR_DENY)('denyReason denies %s (claude-factory-8pc.27)', cmd => {
@@ -497,6 +525,70 @@ test('denyReason allows env -i on a command that is not bd (claude-factory-8pc.2
 
 test('denyReason allows env -u on a variable other than BEADS_ACTOR (claude-factory-8pc.27)', () => {
   expect(denyReason('env -u OTHER_VAR bd create "x" -l factory')).toBeUndefined()
+})
+
+// claude-factory-igj: the wider scan must still allow these lines.
+// It must not deny an option's own value word.
+// It must not deny a bd flag or argument that only holds the text BEADS_ACTOR.
+// It must not deny a wrapper that runs git, not bd.
+const BEADS_ACTOR_CLEAR_ALLOW = [
+  'env -i ls',
+  'env -i PATH=/usr/bin ls',
+  'bd list',
+  'bd create "x" -l factory',
+  'env -u OTHER_VAR bd create "x" -l factory',
+  'echo BEADS_ACTOR_LOG=1',
+  'env GIT_EDITOR=true git commit -m "fix BEADS_ACTOR guard"',
+  'env FOO=1 bd list --include-infra',
+  'env FOO=1 bd create "x" -d "BEADS_ACTOR note"',
+  'env -C /tmp bd list',
+  'env -C/opt/bin bd list',
+  // claude-factory-igj.5 (PR #109 review round 1): the wider scan must not read past env's own
+  // real command into that command's own flags and arguments.
+  'env LC_ALL=C grep -rn BEADS_ACTOR src',
+  'env FOO=1 grep -i x bd',
+]
+
+test.each(BEADS_ACTOR_CLEAR_ALLOW)('denyReason allows %s (claude-factory-igj)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+// claude-factory-igj.6: a sh/bash -c script, or an eval word, can hide a bd word inside it.
+// The check must find that bd word. This is true even under a clear-all env -i.
+//
+// claude-factory-igj.8: a wrapper word between env -i and the shell word must not hide the
+// shell -c script. The old scan checked only the one word right after env's own options. Each
+// line below adds a wrapper word there (env, nice, nohup, timeout 5, sudo, command, exec, time,
+// or xargs), which hid the sh -c script from the old scan.
+const BEADS_ACTOR_SHELL_SCRIPT_DENY = [
+  'env -i sh -c "bd create x"',
+  'env -i bash -c "bd create x -l factory"',
+  'env -i eval "bd create x"',
+  'env -i env sh -c "bd create x"',
+  'env -i nice sh -c "bd create x"',
+  'env -i nohup sh -c "bd create x"',
+  'env -i timeout 5 sh -c "bd create x"',
+  'env -i sudo sh -c "bd create x"',
+  'env -i command sh -c "bd create x"',
+  'env -i exec sh -c "bd create x"',
+  'env -i time sh -c "bd create x"',
+  'env -i xargs sh -c "bd create x"',
+]
+
+test.each(BEADS_ACTOR_SHELL_SCRIPT_DENY)('denyReason denies %s (claude-factory-igj.6)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+// claude-factory-igj AC5: env -S splits a string into words at run time.
+// Each line below hides a clear-all flag or the name BEADS_ACTOR inside that string.
+const BEADS_ACTOR_SPLIT_STRING_DENY = [
+  "env -S'-i bd create x' -l factory",
+  'env -S\'-i\' bd create "x" -l factory',
+  "env -S '-u BEADS_ACTOR bd create x' -l factory",
+]
+
+test.each(BEADS_ACTOR_SPLIT_STRING_DENY)('denyReason denies %s (claude-factory-igj)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
 })
 
 // claude-factory-lbn: denyAt's find branch loops i over cmd. At each -exec/-execdir word, it
