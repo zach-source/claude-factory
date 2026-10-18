@@ -1586,6 +1586,9 @@ function globalGitConfigUse(
   skip: OperandSkip,
   isCd = false,
 ): 'write' | 'mention' | undefined {
+  // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
+  // the text config or XDG, a glob character, a brace, or a redirect operator.
+  if (!/config|XDG|[*?[{<>]/i.test(words.join('\n'))) return undefined
   let use: 'mention' | undefined
   let pending = false
   let prevWriterFlag = false
