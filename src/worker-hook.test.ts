@@ -2418,6 +2418,59 @@ test('denyReason still denies git push --repo -- origin main (claude-factory-zs3
   expect(denyReason('git push --repo -- origin main', undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
 })
 
+// claude-factory-cu5m: the shell expands a dynamic word before git runs. A dynamic word has a
+// dollar sign, a backtick, a glob or a brace. It can become `--all`, `--mirror` or `--`.
+// The parsers cannot read it. So the guard must deny it. Real git 2.54 confirmed the first 3 rows.
+const DENY_DYNAMIC_PUSH_WORD = [
+  'R=--all; git push $R origin',
+  'git push $R origin',
+  'git push "$R" origin',
+  'git push --$X origin',
+  'git push -$X origin',
+  'git push $R feature',
+  "git push $'--' origin main -n",
+  'git push ${D} origin main -n',
+  'git push -$X- origin main -n',
+  'git push "$(echo --)" origin main -n',
+  'git send-pack $R ../r.git',
+  'git send-pack $R ../r.git feature',
+  'git push --repo $R feature',
+  'git push -o $X origin feature',
+  'git push --push-option=$X origin feature',
+  'git push -- $R feature',
+  'git push `echo --all` origin',
+  'git push * origin',
+  'git push {--all,} origin',
+  'git send-pack --receive-pack $X ../r.git feature',
+  'git send-pack ../r.git -$X feature',
+  'git-push $R origin',
+  'git-send-pack $R ../r.git feature',
+  'git -C . push $R origin',
+  'git push origin feature --repo=$R',
+]
+
+test.each(DENY_DYNAMIC_PUSH_WORD)('denyReason denies %j (claude-factory-cu5m, dynamic word)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
+const ALLOW_DYNAMIC_PUSH_WORD = [
+  'git push origin feature',
+  'git push -u origin feature',
+  'git push origin +feature',
+  'git push origin HEAD:refs/heads/feature',
+  'git push git@github.com:acme/widget.git feature',
+  'git push ~/r.git feature',
+  'git push -n origin main',
+  'git send-pack ../r.git feature',
+  'git push',
+  'git push origin feature 2>&1',
+  'git push origin feature --force-with-lease',
+]
+
+test.each(ALLOW_DYNAMIC_PUSH_WORD)('denyReason allows %j (claude-factory-cu5m, no dynamic word)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
+})
+
 // claude-factory-zl5.41: review-r2 found 3 siblings of the zl5.21/zl5.28/zl5.34 config-write
 // guard: `remote.*.mirror` (acts like `--mirror` on every later push to that remote),
 // `include.path`/`includeIf.*.path` (loads another config file this guard cannot read), and the
