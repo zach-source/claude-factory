@@ -1293,7 +1293,10 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
   if (process.env.FACTORY_LEAN === '0') return []
   const settings = {
     autoMemoryEnabled: false,
-    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_ENV_FILE: `${ax.FACTORY_DIR}/src/worker-shell-env.sh` },
+    env: {
+      ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+      CLAUDE_ENV_FILE: `${ax.FACTORY_DIR}/src/worker-shell-env.sh`,
+    },
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000,
     disableBundledSkills: true,
