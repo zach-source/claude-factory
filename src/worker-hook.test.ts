@@ -3133,7 +3133,7 @@ test.each(DENY_DYNAMIC_DASH_C_KEY)(
   },
 )
 
-test('denyReason allows git -c user.name="$N" push origin main (claude-factory-p43v.9: a literal key with a dynamic value stays allowed)', () => {
+test('denyReason denies git -c user.name="$N" push origin main with PUSH_REASON, not DYNAMIC_VERB_REASON (claude-factory-p43v.18: a literal key with a dynamic value)', () => {
   expect(denyReason('git -c user.name="$N" push origin main', '/x', undefined, P43V_GATE)).toBe(PUSH_REASON)
 })
 
@@ -3144,9 +3144,9 @@ const DENY_DYNAMIC_LIVE_APPLY_COMMAND_WORD = [
 ]
 
 test.each(DENY_DYNAMIC_LIVE_APPLY_COMMAND_WORD)(
-  'denyReason denies %j with personOnly acme (claude-factory-p43v.10: a dynamic command word before a mutating kubectl/ko/helm verb fails closed)',
+  'denyReason denies %j with personOnly acme, with DYNAMIC_VERB_REASON not LIVE_REASON (claude-factory-p43v.10/.17: a dynamic command word before a mutating kubectl/ko/helm verb fails closed)',
   cmd => {
-    expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+    expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
   },
 )
 
@@ -3175,3 +3175,106 @@ test('denyReason allows gh api repos/acme/widget/pulls/$N (claude-factory-p43v.1
 test('denyReason allows gh api $E -X GET (claude-factory-p43v.11: an explicit GET of a dynamic endpoint stays allowed)', () => {
   expect(denyReason('gh api $E -X GET', '/x', undefined, P43V_GATE)).toBeUndefined()
 })
+
+// claude-factory-p43v.13: a `-c`/`--config-env` pair can be dynamic as a whole.
+// It then has no literal `=` for gitDashCKeyDynamic to split on. It hides the key.
+const DENY_DYNAMIC_DASH_C_PAIR = [
+  'git -c "$KV" p origin main',
+  'git -c $KV p origin main',
+  'git --config-env=$KE p origin main',
+]
+
+test.each(DENY_DYNAMIC_DASH_C_PAIR)(
+  'denyReason denies %j (claude-factory-p43v.13: a dynamic -c/--config-env pair with no literal = fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// claude-factory-p43v.14: a dynamic -c key can follow a dynamic command word.
+// `anyDynamicCommandReason`'s own -c check compared the key only against a fixed name list.
+const DENY_DYNAMIC_COMMAND_DASH_C_KEY = ['$G -c $K=push p origin main', '$G -c "$KV" p origin main']
+
+test.each(DENY_DYNAMIC_COMMAND_DASH_C_KEY)(
+  'denyReason denies %j (claude-factory-p43v.14: a dynamic -c key after a dynamic command word fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// claude-factory-p43v.15: a shell reserved word (do, then, if, !) can sit before the dynamic
+// command word. It then moves the dynamic word off cmd[0]. The p43v.8 and p43v.10 anchors miss it.
+const DENY_DYNAMIC_COMMAND_AFTER_RESERVED_WORD = [
+  'for f in a; do $G $V origin main; done',
+  'if true; then $G $V origin main; fi',
+  'while true; do $G $V origin main; done',
+  '! $G $V origin main',
+  'if $G $V origin main; then :; fi',
+  'for f in a; do $G -c $K=push p origin main; done',
+]
+
+test.each(DENY_DYNAMIC_COMMAND_AFTER_RESERVED_WORD)(
+  'denyReason denies %j (claude-factory-p43v.15: a shell reserved word before the dynamic command word still fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+const DENY_DYNAMIC_LIVE_APPLY_AFTER_RESERVED_WORD = [
+  'if true; then $K apply -f x --context acme; fi',
+  '! $K apply -f x --context acme',
+]
+
+test.each(DENY_DYNAMIC_LIVE_APPLY_AFTER_RESERVED_WORD)(
+  'denyReason denies %j with personOnly acme (claude-factory-p43v.15: a shell reserved word before the dynamic live-apply word still fails closed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason allows cp "$A" "$B" (claude-factory-p43v.15: no over-deny from the reserved-word skip)', () => {
+  expect(denyReason('cp "$A" "$B"', '/x', undefined, P43V_GATE)).toBeUndefined()
+})
+
+test('denyReason allows for f in *.ts; do git add $f; done (claude-factory-p43v.15: a loop over an argument still allows)', () => {
+  expect(denyReason('for f in *.ts; do git add $f; done', '/x', undefined, P43V_GATE)).toBeUndefined()
+})
+
+// claude-factory-p43v.16: a dynamic word can sit before a kubectl rollout, auth or certificate
+// sub-verb. Each case hid a live-apply call.
+// An unknown wrapper, such as caffeinate, can also push a dynamic word past position 0.
+// anyLiveApplyWord never finds a word that is not a literal kubectl, ko or helm name.
+const DENY_DYNAMIC_LIVE_APPLY_SUBVERB = [
+  '$K rollout restart deploy/x --context acme',
+  '$K rollout undo deploy/x --context acme',
+  '$K certificate approve x --context acme',
+  '$K auth reconcile -f x --context acme',
+  'caffeinate $K apply -f x --context acme',
+]
+
+test.each(DENY_DYNAMIC_LIVE_APPLY_SUBVERB)(
+  'denyReason denies %j with personOnly acme (claude-factory-p43v.16: a dynamic word before a kubectl sub-verb, or behind an unknown wrapper, fails closed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason allows $K apply -f x --context kind-x with personOnly acme (claude-factory-p43v.16: an unlisted context stays allowed)', () => {
+  expect(denyReason('$K apply -f x --context kind-x', undefined, ACME)).toBeUndefined()
+})
+
+test('denyReason allows $K get pods --context acme with personOnly acme (claude-factory-p43v.16: a read-only verb stays allowed)', () => {
+  expect(denyReason('$K get pods --context acme', undefined, ACME)).toBeUndefined()
+})
+
+// claude-factory-p43v.17: a dynamic word with no --context can sit before "install" or "run".
+// Those match a helm or ko verb. The old code denied this with LIVE_REASON.
+// That reason names kubectl, ko or helm. The hook read none of those 3 words here.
+const DENY_DYNAMIC_UNNAMED_TOOL = ['$PIP install requests', '"$NPM" install']
+
+test.each(DENY_DYNAMIC_UNNAMED_TOOL)(
+  'denyReason denies %j with personOnly acme, with DYNAMIC_VERB_REASON not LIVE_REASON (claude-factory-p43v.17)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
+  },
+)

@@ -426,6 +426,11 @@ function riskyTarget(t: string, root?: string): boolean {
   return !resolved.startsWith(base + '/')
 }
 
+// claude-factory-p43v.15: a shell reserved word can open a segment, right before the real
+// command word. realCommand skips each one, so the p43v.8 and p43v.10 checks still find the
+// real command word behind it.
+const RESERVED_LEADING_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!'])
+
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   let w = words
@@ -433,6 +438,10 @@ function realCommand(words: string[]): string[] {
     if (!w.length) return w
     const head = w[0]!
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
+      w = w.slice(1)
+      continue
+    }
+    if (RESERVED_LEADING_WORDS.has(head)) {
       w = w.slice(1)
       continue
     }
@@ -1965,32 +1974,53 @@ function gitDashCPushDenied(tail: string[]): boolean {
 }
 
 /**
- * True when a `-c name=value` or `--config-env=name=envvar` flag's key part is dynamic
- * (claude-factory-p43v.9). This is the sibling of `gitConfigKeyDynamic`, for the global `-c` or
- * `--config-env` flag that `gitDashCPushDenied` reads right above.
+ * True when `pair` hides its key from `isPushConfigWrite`.
+ * `pair` is the key=value text of a `-c` or `--config-env` value word.
+ * The caller removes the flag name and any `=` prefix first.
+ * claude-factory-p43v.9 added this check. claude-factory-p43v.13 extended it.
  *
- * `isPushConfigWrite` compares the key against a fixed list of names. The shell has not
- * resolved a dynamic key yet. So that compare cannot match it, and the write passes through
- * unchecked. For example, `git -c $K=push p origin main` can set `alias.p` to `push`, with no
- * check at all.
+ * When `pair` has a literal `=`, this function checks only the key part, which is the text before
+ * that `=`.
+ *
+ * `pair` can also be dynamic as a whole, with no literal `=` of its own.
+ * The shell expands one word, such as `$KV`, into the whole `key=value` text at run time.
+ * `gitDashCKeyDynamic` and `isPushConfigWrite` cannot read a key inside that expansion, so this
+ * function checks all of `pair`.
+ * For example, `git -c "$KV" p origin main` can set `alias.p=push` through a `$KV` that holds that
+ * whole pair. The command line has no `=` to split.
+ */
+function dashCPairKeyDynamic(pair: string | undefined): boolean {
+  if (pair === undefined) return false
+  const eq = pair.indexOf('=')
+  return dynamicWord(eq >= 0 ? pair.slice(0, eq) : pair)
+}
+
+/**
+ * True when the key part of a `-c name=value` or `--config-env=name=envvar` flag is dynamic.
+ * This check comes from claude-factory-p43v.9.
+ * It is the sibling of `gitConfigKeyDynamic`, for the global `-c` or `--config-env` flag that
+ * `gitDashCPushDenied` reads right above.
+ *
+ * `isPushConfigWrite` compares the key with a fixed list of names.
+ * The shell does not resolve a dynamic key yet.
+ * That comparison cannot match the dynamic key, so the write passes without a check.
+ * For example, `git -c $K=push p origin main` can set `alias.p` to `push` with no check at all.
  *
  * This function denies the dynamic key itself, with `DYNAMIC_VERB_REASON`, before
- * `isPushConfigWrite` ever reads it.
+ * `isPushConfigWrite` reads it.
+ * `dashCPairKeyDynamic` also covers the case where the whole `-c`/`--config-env` value is dynamic,
+ * with no literal `=` of its own (claude-factory-p43v.13).
  */
 function gitDashCKeyDynamic(tail: string[]): boolean {
   for (let i = 0; i < tail.length; i++) {
     const w = tail[i]!
     if (w === '--') break
     if (w.startsWith(CONFIG_ENV_PREFIX)) {
-      const rest = w.slice(CONFIG_ENV_PREFIX.length)
-      const eq = rest.indexOf('=')
-      if (eq >= 0 && dynamicWord(rest.slice(0, eq))) return true
+      if (dashCPairKeyDynamic(w.slice(CONFIG_ENV_PREFIX.length))) return true
       continue
     }
     if (w !== '-c') continue
-    const pair = tail[i + 1]
-    const eq = pair?.indexOf('=') ?? -1
-    if (pair !== undefined && eq >= 0 && dynamicWord(pair.slice(0, eq))) return true
+    if (dashCPairKeyDynamic(tail[i + 1])) return true
   }
   return false
 }
@@ -2648,6 +2678,9 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
     if (w.startsWith('-') && w !== '-') {
       if (w === '-c' && !sawGitWord && pendingDynamic) {
         const pair = words[i + 1]
+        // claude-factory-p43v.14: a dynamic key, or a pair with no literal `=` of its own,
+        // fails closed the same way `gitDashCKeyDynamic` does for a literal `git` command.
+        if (dashCPairKeyDynamic(pair)) return DYNAMIC_VERB_REASON
         const eq = pair?.indexOf('=') ?? -1
         if (pair !== undefined && eq >= 0 && isPushConfigWrite(pair.slice(0, eq), pair.slice(eq + 1))) {
           return DYNAMIC_VERB_REASON
@@ -2682,47 +2715,61 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
   return false
 }
 
-// claude-factory-p43v.10: the union of every mutating kubectl, ko and helm verb that
-// anyDynamicLiveApplyReason checks after a dynamic command word, and every flag of theirs that
-// takes a value word. This hook does not know which of the 3 tools a dynamic word resolves to,
-// so it checks against all 3 tools' own sets at once.
-const LIVE_APPLY_MUTATING_VERBS = new Set<string>([
-  ...KUBECTL_MUTATING_VERBS,
-  ...KO_MUTATING_VERBS,
-  ...HELM_MUTATING_VERBS,
-])
-const LIVE_APPLY_VALUE_FLAGS = new Set<string>([
-  ...KUBECTL_VALUE_FLAGS,
-  ...KO_VALUE_FLAGS,
-  ...HELM_VALUE_FLAGS,
-])
+/**
+ * Returns true when `liveApplyDenied` denies `cmd`, with `tool` substituted at its own position 0.
+ * The `anyDynamicLiveApplyReason` function does not know which of `kubectl`, `ko` or `helm` a dynamic word resolves to at run time.
+ * This function checks all 3 tools. It fails closed when any one of them is denied (claude-factory-p43v.16).
+ */
+function anyToolLiveApplyDenied(tail: string[], personOnly: string[]): boolean {
+  return ['kubectl', 'ko', 'helm'].some(tool => liveApplyDenied([tool, ...tail], personOnly))
+}
 
 /**
- * True when `words` opens with a dynamic command word, and the next non-flag word in
- * `realCommand(words)` names a mutating kubectl, ko or helm verb (claude-factory-p43v.10).
- * `liveApplyDenied` only runs after `anyLiveApplyWord` finds a literal `kubectl`, `ko` or `helm`
- * word. A dynamic word, such as `$K` in `$K apply -f x --context acme`, is none of those 3
- * literal words, so that scan never calls `liveApplyDenied` at all.
+ * Returns `DYNAMIC_VERB_REASON` when a dynamic word hides a mutating `kubectl`, `ko` or `helm` call.
+ * Returns undefined to allow `words`.
  *
- * This check mirrors `anyDynamicCommandReason`'s `cmd[0]` anchor (claude-factory-p43v.8): it
- * denies only when the dynamic word sits at the command slot itself, not at an unrelated
- * argument. Once it finds a mutating verb there, it reads the `--context` or `--kube-context`
- * value the same way `liveApplyDenied` does, and fails closed the same way: a missing, dynamic,
- * or `personOnly` context denies with `LIVE_REASON`, the reason a literal `kubectl`, `ko` or
- * `helm` call gives for the same verb and context.
+ * `liveApplyDenied` runs only after `anyLiveApplyWord` finds a literal `kubectl`, `ko` or `helm` word.
+ * A dynamic word, such as `$K` in `$K apply -f x --context acme`, is none of those 3 literal words.
+ * That scan never calls `liveApplyDenied` for such a word (claude-factory-p43v.10).
+ *
+ * This function checks two cases. Both cases use `anyToolLiveApplyDenied`, which owns every verb,
+ * sub-verb, flag and context rule that `liveApplyDenied` has.
+ *
+ * First, `realCommand(words)` can open with a dynamic word. This is the `cmd[0]` anchor from
+ * claude-factory-p43v.8. This case also covers a dynamic kubectl rollout, auth or certificate
+ * sub-verb, such as `$K rollout restart deploy/x --context acme` (claude-factory-p43v.16).
+ * The old code checked only a flat verb set, so it missed every sub-verb rule.
+ *
+ * Second, an unknown wrapper, such as `caffeinate`, can move a dynamic word past position 0
+ * (claude-factory-p43v.16). This case checks every position in `words`, the same way
+ * `anyLiveApplyWord` checks a literal tool name.
+ *
+ * This wider check applies only when an explicit `--context` or `--kube-context` flag names a
+ * context in `personOnly`. A rule that fails closed when the command names no context, applied
+ * at every position, would deny far too much. The word after any dynamic word need not name a
+ * live-apply tool at all (claude-factory-p43v.17).
+ *
+ * Either case returns `DYNAMIC_VERB_REASON`, not `LIVE_REASON`. `LIVE_REASON` names `kubectl`,
+ * `ko` or `helm` outright.
+ *
+ * This function never reads one of those 3 literal words. A dynamic word, such as `$PIP` in
+ * `$PIP install requests`, can also match a mutating verb of a tool that this hook never names
+ * (claude-factory-p43v.17). `DYNAMIC_VERB_REASON` names the real cause instead. An unreadable
+ * word sits at the command slot.
  */
-function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): boolean {
+function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): string | undefined {
   const cmd = realCommand(words)
-  if (!cmd.length || !dynamicWord(cmd[0]!)) return false
-  let k = 1
-  while (k < cmd.length) {
-    const w = cmd[k]!
-    if (!w.startsWith('-') || w === '-') break
-    k += LIVE_APPLY_VALUE_FLAGS.has(w) ? 2 : 1
+  if (cmd.length && dynamicWord(cmd[0]!) && anyToolLiveApplyDenied(cmd.slice(1), personOnly)) {
+    return DYNAMIC_VERB_REASON
   }
-  if (k >= cmd.length || !LIVE_APPLY_MUTATING_VERBS.has(cmd[k]!)) return false
-  const ctx = flagValue(cmd, new Set(['--context', '--kube-context']))
-  return contextDenied(ctx, personOnly)
+  for (let j = 0; j < words.length; j++) {
+    if (!dynamicWord(words[j]!)) continue
+    const rest = words.slice(j + 1)
+    const ctx = flagValue(rest, new Set(['--context', '--kube-context']))
+    if (ctx === undefined || !personOnly.includes(ctx)) continue
+    if (anyToolLiveApplyDenied(rest, personOnly)) return DYNAMIC_VERB_REASON
+  }
+  return undefined
 }
 
 /**
@@ -3249,15 +3296,16 @@ function denyAt(
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
-    // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
-    // strip by name cannot hide a kubectl, ko or helm word that follows it.
-    // claude-factory-p43v.10: a dynamic word at the command slot can hide kubectl, ko or helm
-    // itself. anyLiveApplyWord never finds that word, since it is not one of the 3 literal names.
-    if (
-      personOnly?.length &&
-      (anyLiveApplyWord(words, personOnly) || anyDynamicLiveApplyReason(words, personOnly))
-    ) {
-      return LIVE_REASON
+    // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
+    // hide a kubectl, ko or helm word that follows it.
+    //
+    // claude-factory-p43v.10/.16/.17: a dynamic word can also hide kubectl, ko or helm itself.
+    // anyLiveApplyWord never finds that word. The dynamic-word check returns its own reason,
+    // DYNAMIC_VERB_REASON, not LIVE_REASON.
+    if (personOnly?.length) {
+      if (anyLiveApplyWord(words, personOnly)) return LIVE_REASON
+      const dynamicLiveApply = anyDynamicLiveApplyReason(words, personOnly)
+      if (dynamicLiveApply) return dynamicLiveApply
     }
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
     // timeout) can push past position 0.

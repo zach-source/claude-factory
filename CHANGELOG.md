@@ -150,6 +150,15 @@ minor release may change the factory format, the CLI or the run state.
   | Dynamic `git -c`/`--config-env` key | `git -c $K=push p origin main` | claude-factory-p43v.9 |
   | Dynamic command word before a mutating `kubectl, ko, helm` verb | `$K apply -f x --context acme` | claude-factory-p43v.10 |
   | Dynamic `gh api` endpoint or `-X`/`--method` value | `gh api $E -X PUT` | claude-factory-p43v.11 |
+  | Dynamic `-c`/`--config-env` pair with no literal `=` | `git -c "$KV" p origin main` | claude-factory-p43v.13 |
+  | Dynamic `-c` key after a dynamic command word | `$G -c $K=push p origin main` | claude-factory-p43v.14 |
+  | Shell reserved word (`do, then, if, !`) before the dynamic command word | `for f in a; do $G $V origin main; done` | claude-factory-p43v.15 |
+  | Dynamic word before a `kubectl rollout, auth, certificate` sub-verb, or behind an unknown wrapper | `caffeinate $K apply -f x --context acme` | claude-factory-p43v.16 |
+
+  The dynamic command-word check for `kubectl, ko, helm` (claude-factory-p43v.10) now returns
+  `DYNAMIC_VERB_REASON`, not `LIVE_REASON`. `LIVE_REASON` names `kubectl`, `ko` or `helm` by name.
+  This check can deny a command that names none of those 3 tools, such as `$PIP install
+  requests` (claude-factory-p43v.17).
 
   A dynamic `git` branch-change argument also marks the branch as changed.
   The table below lists each verb, the push rule, and the loop rule.
