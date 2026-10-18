@@ -35,6 +35,15 @@ minor release may change the factory format, the CLI or the run state.
     read the wrong, unprotected dir (a fail-open). The uncertain-verb
     fallback now also denies the push when its own guessed `pushTail`
     holds a literal `-C` word. (claude-factory-3f2z.8)
+
+  - Fix: The denial from the previous fix did not stop `gitReason`, which
+    still called `gitPushDenied` and `sendPackDenied` with the untrusted
+    `pushTail`. In that tail, a bare `push`, a push with only a remote
+    operand, and a push with `--force` and no refspec all read as safe.
+    So the push was still allowed.
+    `gitReason` now returns the deny reason at once when it finds the
+    untrusted `pushTail`, and it does not call `gitPushDenied`,
+    `sendPackDenied`, or `gate.headOf`. (claude-factory-3f2z.9)
 - `worker-hook`: fail closed when one command changes the branch (`checkout`,
   `switch`, `branch -m`/`-M`, `symbolic-ref HEAD`, `rebase <upstream> <branch>`,
   `rebase --root <branch>`, `stash branch`, `bisect reset <ref>`, `update-ref --stdin`,
