@@ -44,6 +44,30 @@ minor release may change the factory format, the CLI or the run state.
     `gitReason` now returns the deny reason at once when it finds the
     untrusted `pushTail`, and it does not call `gitPushDenied`,
     `sendPackDenied`, or `gate.headOf`. (claude-factory-3f2z.9)
+- `worker-hook`: the protected-branch push guard now denies a unique abbreviation of a `git push`
+  or `git send-pack` long flag, the same as the full flag name. This covers `--all`,
+  `--branches`, `--mirror`, `--prune`, `--repo`, `--push-option`, `--receive-pack`, `--exec`,
+  `--recurse-submodules`, `--remote` and `--stdin`. An abbreviated value flag (`--repo`,
+  `--push-option`, `--receive-pack`, `--exec`, `--recurse-submodules` on push; `--receive-pack`,
+  `--exec`, `--push-option`, `--remote` on send-pack) still takes the next word as its value, so
+  the guard denies the whole call instead of a guess. `git push -o <value>` works the same way:
+  a short-flag cluster that also holds the letter `o` (`-uo`, `-fo`) takes the next word as that
+  value too, so the guard denies the whole call. A `--no-dry-run` word, or an abbreviation of
+  it, now clears an earlier `-n`/`--dry-run` flag on the same command line, in either order. Real
+  git 2.54 confirmed each form still pushes a protected branch.
+
+  The guard now checks this value-flag risk before it checks for a dry run.
+  A word right after an abbreviated value flag, or an `-o` short-flag cluster, can look like
+  `-n` or `--dry-run`. That word is really the flag's own value. It is not a dry-run flag.
+  Real git 2.54 confirmed the risk. `git push --rep -n origin main` still pushes.
+  `git push -uo -n origin` also still pushes.
+  A true dry-run flag with no value flag in front of it still allows the push.
+  One example is `git push -n --mirror o`.
+
+  `sendPackDenied` and the same-command HEAD-push risk check now share one parser for a
+  `git send-pack` call's arguments. A flag change in one parser can no longer drift out of
+  step with the other. (claude-factory-ctae)
+
 - `worker-hook`: fail closed when one command changes the branch (`checkout`,
   `switch`, `branch -m`/`-M`, `symbolic-ref HEAD`, `rebase <upstream> <branch>`,
   `rebase --root <branch>`, `stash branch`, `bisect reset <ref>`, `update-ref --stdin`,
