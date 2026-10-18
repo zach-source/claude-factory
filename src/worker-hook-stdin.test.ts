@@ -5,7 +5,7 @@ import { denyReason, SHELL_STDIN_REASON } from './worker-hook'
 // process substitution. xargs before a shell word hides the script too. These rows are static
 // probes: no row runs a live shell.
 const GATE = {
-  headOf: (dir: string) => (dir === '/root/repo' ? 'factory/x' : 'main'),
+  headOf: (dir?: string) => (dir === '/root/repo' ? 'factory/x' : 'main'),
   originHead: () => 'main',
 }
 
@@ -28,6 +28,9 @@ const DENY = [
   'echo P | bash -o errexit',
   'echo P | bash -x',
   'echo P | sh -s',
+  'echo P | sh -s file.sh',
+  'echo P | bash --rcfile f',
+  'echo P | xargs --zz v $SH',
   'echo P | sh -',
   'echo P | sh /dev/stdin',
   'echo P | sh /dev/fd/0',
@@ -73,6 +76,7 @@ const ALLOW = [
   'echo x | bash -- file.sh',
   'echo x | sh -c "echo hi"',
   'echo x | bash -lc "echo hi"',
+  'echo P | xargs sh -c "echo hi" _',
   'command -v bash',
   'which zsh',
   'bash',

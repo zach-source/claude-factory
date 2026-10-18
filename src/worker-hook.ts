@@ -1406,8 +1406,24 @@ function shellStdinReason(words: string[], state: ScanState): string | undefined
 }
 
 const XARGS_VALUE_FLAGS = new Set([
-  '-I', '-i', '-n', '-L', '-l', '-P', '-s', '-E', '-e', '-d', '-a',
-  '--max-args', '--max-procs', '--max-lines', '--max-chars', '--delimiter', '--arg-file', '--eof',
+  '-I',
+  '-i',
+  '-n',
+  '-L',
+  '-l',
+  '-P',
+  '-s',
+  '-E',
+  '-e',
+  '-d',
+  '-a',
+  '--max-args',
+  '--max-procs',
+  '--max-lines',
+  '--max-chars',
+  '--delimiter',
+  '--arg-file',
+  '--eof',
   '--replace',
 ])
 
