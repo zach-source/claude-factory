@@ -196,6 +196,13 @@ export const ENV_SPLIT_VAR_REASON =
   'env expands ${NAME} in this value into a command word, so this guard cannot read the real ' +
   'command. Write the command words plainly, without env -S. Do not retry this exact command.'
 
+// claude-factory-hewq: bash and zsh decode an unquoted $'...' or $"..." quote, and they decode it
+// in different ways. segments() cannot read the real words, so denyAt denies the quote.
+export const DOLLAR_QUOTE_REASON =
+  'The factory denies this command: it holds an unquoted $\'...\' or $"..." quote. The shell ' +
+  'decodes this quote, so this guard cannot read the real command words. Write the words ' +
+  'plainly, or use printf or a file. Do not retry this exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -365,7 +372,7 @@ function baseWord(w: string): string {
  * claude-factory-p43v: an opening backtick keeps a backtick mark in the word it ends. A closing
  * backtick keeps no mark of its own.
  */
-function segments(cmd: string): string[][] {
+function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
   const segs: string[][] = []
   let cur: string[] = []
   let word = ''
@@ -473,6 +480,14 @@ function segments(cmd: string): string[][] {
     if (/\s/.test(c)) {
       endWord()
       continue
+    }
+    // claude-factory-hewq: an unquoted $' or $" starts a quote the shell decodes. Flag it. The word
+    // output stays the same, and denyAt denies the whole command.
+    // A backslash-newline pair between the $ and the quote drops at lexing, so skip it (hewq.4).
+    if (info && c === '$') {
+      let j = i + 1
+      while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+      if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
     word += c
     hasWord = true
@@ -4841,7 +4856,10 @@ function denyAt(
   // claude-factory-bemr: the same kind of flag, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
-  for (const words of segments(command)) {
+  const quoteInfo = { dollarQuote: false }
+  const commandSegments = segments(command, quoteInfo)
+  if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  for (const words of commandSegments) {
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.

@@ -8,6 +8,7 @@ import {
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
@@ -2467,9 +2468,17 @@ const DENY_DYNAMIC_PUSH_WORD = [
   'git send-pack ~a ../r.git',
 ]
 
-test.each(DENY_DYNAMIC_PUSH_WORD)('denyReason denies %j (claude-factory-cu5m, dynamic word)', cmd => {
-  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
-})
+// origin/main (hewq) denies every unquoted ANSI-C quote first, with its own reason.
+const denyWithPushReason = (cmd: string) => {
+  const reason = denyReason(cmd, undefined, undefined, ZS39_GATE)
+  if (cmd.includes('$' + "'")) expect(reason).toBeDefined()
+  else expect(reason).toBe(PUSH_REASON)
+}
+
+test.each(DENY_DYNAMIC_PUSH_WORD)(
+  'denyReason denies %j (claude-factory-cu5m, dynamic word)',
+  denyWithPushReason,
+)
 
 const DENY_DYNAMIC_GLOBAL_WORD = [
   'git -c $Y push origin',
@@ -2873,7 +2882,46 @@ test('denyReason allows env -S/--split-string with no dollar sign (claude-factor
   expect(denyReason('FOO=1 printenv FOO')).toBeUndefined()
 })
 
-// claude-factory-zl5.43: a dashed git-core binary name (`git-push`, `git-send-pack`, found on
+// claude-factory-hewq: an unquoted $'...' or $"..." quote is decoded by bash and zsh, and the two
+// shells decode it differently. segments() cannot read the real words, so denyAt denies it.
+const DENY_DOLLAR_QUOTE = [
+  "bash -c $'git push origin main'",
+  "sh -c $'git\\x20push origin main'",
+  "env -S 'sh' -c $'git\\x20push origin main'",
+  'bash -c $"git push origin main"',
+  "echo $'it\\'s' ; git push origin main",
+  'bash -c "bash -c \\$\'git push origin main\'"',
+  // a line continuation between the $ and the quote does not hide it (hewq.4)
+  "bash -c $\\\n'git push origin main'",
+  "sh -c $\\\n'git\\x20push origin main'",
+  "bash -c $\\\n\\\n'git push origin main'",
+  "env -S 'sh' -c $\\\n'git\\x20push origin main'",
+  'bash -c $\\\n"git push origin main"',
+  // accepted over-deny: a harmless escape also denies
+  "echo $'a\\tb'",
+  "IFS=$'\\n' read -r x",
+]
+
+test.each(DENY_DOLLAR_QUOTE)('denyReason denies %j (claude-factory-hewq, $-quote hides words)', cmd => {
+  expect(
+    denyReason(cmd, '/root/repo', undefined, { headOf: () => 'factory/x', originHead: () => 'main' }),
+  ).toBe(DOLLAR_QUOTE_REASON)
+})
+
+test('denyReason allows a $ that does not start a $-quote (claude-factory-hewq)', () => {
+  const gate = { headOf: () => 'factory/x', originHead: () => 'main' }
+  for (const cmd of [
+    "echo \\$'x'",
+    'echo \'$\'"x"',
+    'echo "$\'x\'"',
+    'git push origin factory/x',
+    "echo $\\\n\\'x\\'",
+  ]) {
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+  }
+})
+
+// claude-factory-zl5.43: a dashed git-core binary name (`git-push`,`git-send-pack`, found on
 // PATH or under `git --exec-path`) runs the same code as `git <verb>`, with no `git` word in the
 // command line at all. Real git 2.54 moved remote `main` through the plain `git-push` form.
 test('denyReason denies dashed git-core binaries (claude-factory-zl5.43)', () => {
@@ -4545,9 +4593,10 @@ const DENY_ESCAPED_REDIR = [
   ]),
 ]
 
-test.each(DENY_ESCAPED_REDIR)('denyReason denies %j (claude-factory-cu5m.15, escaped redirect char)', cmd => {
-  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
-})
+test.each(DENY_ESCAPED_REDIR)(
+  'denyReason denies %j (claude-factory-cu5m.15, escaped redirect char)',
+  denyWithPushReason,
+)
 
 test('denyReason keeps the gh merge deny after an escaped redirect (claude-factory-cu5m.15)', () => {
   expect(denyReason('echo \\>&gh pr merge 5')).toBeDefined()
