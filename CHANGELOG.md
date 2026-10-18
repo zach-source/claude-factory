@@ -6,7 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
-- The worker hook now denies a `git push` or `git send-pack` that has a shell-dynamic word: a `$`, a backtick, a glob or a brace. The shell can expand such a word to `--all`, `--mirror` or `--` before git runs, and the parsers read it as a literal remote or flag. A backtick next to a push in one command also denies (claude-factory-cu5m). The guard also denies a zsh glob group such as `(-)-all` and a `~name` word in the push tail, and it reads a quoted `git` or `push` word next to a backtick.
+- The worker hook now denies a `git push` or `git send-pack` that has a shell-dynamic word: a `$`, a backtick, a glob or a brace. The shell can expand such a word to `--all`, `--mirror` or `--` before git runs, and the parsers read it as a literal remote or flag. A backtick next to a push in one command also denies (claude-factory-cu5m). The guard also denies a zsh glob group such as `(-)-all` and a `~name` word in the push tail, and it reads a quoted `git` or `push` word next to a backtick. It also keeps a redirect such as `2>&1`, `>&2` or `>|log` inside the push tail, and it denies `&>` beside a push.
 
 - The worker hook now reads every word after `--` in `git push` and `git send-pack` as an operand, as git does. Before, `git push -- origin main -n` was allowed as a dry run, and `git push -- origin -o main` hid the `main` refspec as a value (claude-factory-zs39). A flag-like ref name after `--`, such as `-n`, is no longer read as a flag.
 

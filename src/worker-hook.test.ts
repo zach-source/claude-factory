@@ -2530,6 +2530,52 @@ test.each(DENY_REDIRECT_AMP_GT)('denyReason denies %j (claude-factory-cu5m.13, &
   expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
 })
 
+// claude-factory-cu5m.14: oracle = git as a shell function that writes its args to a file; zsh 5.9
+// and bash run each row. A DENY op is one where the shell passes main to git. The test spawns no shell.
+const SHELL_OPERATOR_DENY = [
+  '2>&1',
+  '>&2',
+  '<&0',
+  '1>&-',
+  '>&-',
+  '&>/dev/null',
+  '&>>log',
+  '&>|log',
+  '>|log',
+  '>>|log',
+  '2>|log',
+  '>!log',
+  '>>!log',
+  '&>!log',
+  '>log',
+  '> log',
+  '>>log',
+  '2>log',
+  '<log',
+  '< log',
+  '<>log',
+  '<<<x',
+  '<(:)',
+  '>(:)',
+  '=(:)',
+  '$(:)',
+  '"$(:)"',
+  '`:`',
+  '{a,b}',
+]
+const SHELL_OPERATOR_ALLOW = ['|&', '&|', '&!', ';', '&&', '||', '|', '&', '2>&1|cat', '2>&1;']
+const SHELL_OPERATOR_SWEEP: [string, boolean][] = [
+  ...SHELL_OPERATOR_DENY.map(op => [op, true] as [string, boolean]),
+  ...SHELL_OPERATOR_ALLOW.map(op => [op, false] as [string, boolean]),
+].flatMap(([op, deny]) => [
+  [`git push origin feature ${op} main`, deny] as [string, boolean],
+  [`git send-pack ../r.git feature ${op} main`, deny] as [string, boolean],
+])
+
+test.each(SHELL_OPERATOR_SWEEP)('denyReason sweep %j denies=%j (claude-factory-cu5m.14)', (cmd, deny) => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(deny ? PUSH_REASON : undefined)
+})
+
 const ALLOW_DYNAMIC_PUSH_WORD = [
   'git status &>/dev/null',
   'cat <(git log) && git status',
