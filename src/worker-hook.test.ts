@@ -2694,3 +2694,50 @@ test.each(ALLOW_DYNAMIC_GH_WORD_NOT_AT_VERB_SLOT)(
     expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
   },
 )
+
+// AC5: a dynamic argument to a branch-change verb sets state.branchChange. Paired with a later
+// HEAD push, the whole command denies with PUSH_REASON, the c63 rule, even though neither
+// segment alone denies.
+const DENY_DYNAMIC_BRANCH_CHANGE_ARG_THEN_HEAD_PUSH = [
+  'git stash $V main; git push o HEAD',
+  'git bisect $V; git push o HEAD',
+  'git branch $F main; git push o HEAD',
+  'git rebase $X; git push o HEAD',
+  'git update-ref HEAD $R; git push o HEAD',
+]
+
+test.each(DENY_DYNAMIC_BRANCH_CHANGE_ARG_THEN_HEAD_PUSH)(
+  'denyReason denies %j (claude-factory-p43v.4 AC5: a dynamic branch-change arg then a HEAD push fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+// Each AC5 command, with no later push, stays allowed: branchChange alone never denies.
+const ALLOW_DYNAMIC_BRANCH_CHANGE_ARG_NO_PUSH = ['git stash $V', 'git rebase "$BASE"', 'git branch $F']
+
+test.each(ALLOW_DYNAMIC_BRANCH_CHANGE_ARG_NO_PUSH)(
+  'denyReason allows %j (claude-factory-p43v.4 AC5: a dynamic branch-change arg with no push stays allowed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// AC6: a dynamic git config key fails closed, with DYNAMIC_VERB_REASON: isPushConfigWrite cannot
+// check a key this guard cannot read.
+const DENY_DYNAMIC_GIT_CONFIG_KEY = [
+  'git config $K push',
+  'git config $S alias.p push',
+  'git config set $K push',
+]
+
+test.each(DENY_DYNAMIC_GIT_CONFIG_KEY)(
+  'denyReason denies %j (claude-factory-p43v.4 AC6: a dynamic git config key fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason allows git config user.name "$N" (claude-factory-p43v.4 AC6: a literal key with a dynamic value stays allowed)', () => {
+  expect(denyReason('git config user.name "$N"', '/x', undefined, P43V_GATE)).toBeUndefined()
+})

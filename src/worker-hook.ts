@@ -1894,7 +1894,14 @@ const GIT_CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '-t', '--type', '--defau
  * the key name, and the real key name as the value, so it checked the wrong pair and let the
  * write through. This guard now skips one leading `set` word before it reads the key and value.
  */
-function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
+/**
+ * Reads the key and value operands of a `git config` call's own arguments (`configArgs`).
+ * gitConfigSubcommandPushDenied and gitConfigKeyDynamic each need this same scan, so it is one
+ * function, not two copies.
+ *
+ * Returns undefined when `configArgs` names no key operand.
+ */
+function gitConfigKeyValue(configArgs: string[]): { name: string; value: string | undefined } | undefined {
   const operands: string[] = []
   for (let i = 0; i < configArgs.length; i++) {
     const w = configArgs[i]!
@@ -1911,8 +1918,23 @@ function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
   }
   const start = operands[0] === 'set' ? 1 : 0
   const name = operands[start]
-  if (name === undefined) return false
-  return isPushConfigWrite(name, operands[start + 1])
+  if (name === undefined) return undefined
+  return { name, value: operands[start + 1] }
+}
+
+function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
+  const kv = gitConfigKeyValue(configArgs)
+  return kv !== undefined && isPushConfigWrite(kv.name, kv.value)
+}
+
+/**
+ * True when the key operand of `configArgs` is dynamic (claude-factory-p43v). The shell has not
+ * resolved this key yet, so isPushConfigWrite cannot check it. The caller denies with
+ * DYNAMIC_VERB_REASON, not PUSH_REASON, so it learns to write the key plainly.
+ */
+function gitConfigKeyDynamic(configArgs: string[]): boolean {
+  const kv = gitConfigKeyValue(configArgs)
+  return kv !== undefined && dynamicWord(kv.name)
 }
 
 // claude-factory-zl5.35: `git send-pack` is the plumbing command that `git push` itself calls.
@@ -1993,6 +2015,19 @@ const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set([
   'bisect',
   'update-ref',
 ])
+
+// claude-factory-p43v: true when a word in the list is dynamic, before a literal -- word, if
+// any. This is the dynamicWord form of hasMutatingWordBeforeDashDash.
+//
+// One of these words, for one of the branch-change verbs, can hide a rename flag, a stdin flag,
+// or a branch name. This guard fails closed on an unread word. It sets state.branchChange.
+function hasDynamicWordBeforeDashDash(words: string[]): boolean {
+  for (const w of words) {
+    if (w === '--') return false
+    if (dynamicWord(w)) return true
+  }
+  return false
+}
 
 /**
  * True when `word` equals `longFlag`, a long flag such as `--stdin`.
@@ -2239,14 +2274,22 @@ function gitReason(
   // subcommand. The checks below test the word against a fixed list of names, so they miss it.
   // This check denies the word first.
   if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
-  if (vi >= 0 && gitChangesBranch(tail[vi]!, tail.slice(vi + 1))) {
+  // claude-factory-p43v: a dynamic word in the args of branch, symbolic-ref, rebase, stash,
+  // bisect or update-ref can hide a rename flag, a stdin flag, or a branch name. This guard
+  // fails closed on that word the same way it fails closed on a literal one.
+  if (
+    vi >= 0 &&
+    (gitChangesBranch(tail[vi]!, tail.slice(vi + 1)) ||
+      (BRANCH_CHANGE_UNCERTAIN_VERBS.has(tail[vi]!) && hasDynamicWordBeforeDashDash(tail.slice(vi + 1))))
+  ) {
     state.branchChange = true
   } else if (uncertain && hasMutatingWordBeforeDashDash(tail, BRANCH_CHANGE_UNCERTAIN_VERBS)) {
     state.branchChange = true
   }
   // claude-factory-zl5.21: the `git config` subcommand's own form of the same two writes.
-  if (vi >= 0 && tail[vi] === 'config' && gitConfigSubcommandPushDenied(tail.slice(vi + 1))) {
-    return PUSH_REASON
+  if (vi >= 0 && tail[vi] === 'config') {
+    if (gitConfigKeyDynamic(tail.slice(vi + 1))) return DYNAMIC_VERB_REASON
+    if (gitConfigSubcommandPushDenied(tail.slice(vi + 1))) return PUSH_REASON
   }
   let pushTail: string[] | undefined
   let isSendPack = false
