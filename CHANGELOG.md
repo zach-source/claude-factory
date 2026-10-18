@@ -30,6 +30,9 @@ minor release may change the factory format, the CLI or the run state.
   - `env -i sh -c 'bd create x'` and `env -i bash -c "..."`: a `bd` word hides in a shell `-c`
     script, under a clear-all `env -i`
   - `env -i eval "bd create x"`: a `bd` word hides in an `eval` word, under a clear-all `env -i`
+  - `env -iS'bd create x'`: a short cluster can hold other option letters before the `env -S`
+    flag. The earlier fix for `env -S` removed the whole word. That removal lost a clear-all
+    `i` right before the flag
 
   The fix also corrects an error in the first version of the wider scan. That version read past
   the `env` command itself. It also read into the flags and arguments of the command that `env`
