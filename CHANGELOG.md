@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Added regression tests for a bug. A shell variable word before the `git` verb hides a protected push. Three example commands: `git $X push origin main`, `git "$X" push origin HEAD`, and `git -C sub $X push origin main`. The `DYNAMIC_VERB_REASON` fix from claude-factory-p43v already denies them on `main`. The new rows set `gate.gitAliases` and `gate.ghAliases`, the gate shape `main()` uses in production. The existing `P43V_GATE` rows leave both unset (claude-factory-bjp0).
+
 - The worker hook now scans the command that `env -S` really runs. `env` puts the split words into argv and keeps reading the words after the value. Before, `env -S 'sh' -c 'git push origin main'` was allowed, because the scan stopped after the `-S` value. The hook now denies it, and the `bash`, `zsh`, `sh -x`, `--split-string=`, `eval` and `git -C` forms too (claude-factory-s1fj).
 
 - The worker hook now reads every word after `--` in `git push` and `git send-pack` as an operand, as git does. Before, `git push -- origin main -n` was allowed as a dry run, and `git push -- origin -o main` hid the `main` refspec as a value (claude-factory-zs39). A flag-like ref name after `--`, such as `-n`, is no longer read as a flag.
