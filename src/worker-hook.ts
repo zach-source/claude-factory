@@ -1034,7 +1034,10 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
 // This is fail closed.
 function backtickBesidePush(command: string): boolean {
   if (!command.includes('`')) return false
-  const words = command.split(/['"`\s;&|()<>]+/).filter(Boolean).map(baseWord)
+  const words = command
+    .split(/['"`\s;&|()<>]+/)
+    .filter(Boolean)
+    .map(baseWord)
   return (
     words.some(b => b === 'git' || /^git-/.test(b)) &&
     words.some(b => b === 'push' || b === 'send-pack' || b === 'git-push' || b === 'git-send-pack')
