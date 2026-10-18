@@ -324,7 +324,8 @@ export interface HookGate {
  * when `globalGitConfig` is true and `gitWord` is true. `gitWord` comes from the dequoted segment
  * words, so `"gi"t` counts. `hasDangerousConfigEnv` reads it too.
  * Residual, not fixed: a path built from a shell variable (`F=~/.gitconfig; echo x >> $F`), a
- * Write or Edit tool write (claude-factory-ak7), a `.git/config` write alone (claude-factory-cpn), and a directory copy with no path operand (`cp -R /r/acme/dot/. ~/`, `tar -xf x.tar -C ~`). Round 3 added: a work tree outside the root, `--git-dir`, gh clone, the `.config` directory, dot segments, `--reporter-outfile`.
+ * Write or Edit tool write (claude-factory-ak7), a `.git/config` write alone (claude-factory-cpn), and a directory copy with no path operand (`cp -R /r/acme/dot/. ~/`, `tar -xf x.tar -C ~`).
+ * Fix for the whole class: claude-factory-yoib (a push-time read of the effective git config).
  */
 interface ScanState {
   branchChange: boolean
@@ -964,24 +965,69 @@ const OUTPUT_FLAG_EXACT_RE = new RegExp(`^(${OUTPUT_FLAG_SOURCE})$`)
 
 // claude-factory-ty8y.14: true when a work tree flag or env word moves the work tree out of `root`.
 // A git checkout or restore into another work tree can write the global git config.
-function gitWorkTreeOutside(words: string[], root: string | undefined): boolean {
-  const bad = (raw: string | undefined): boolean => {
-    const v = (raw ?? '').replace(/^["']+|["']+$/g, '')
-    if (v === '.') return false
-    if (root && (v === root || v.startsWith(root + '/'))) return false
-    return !v || v.startsWith('/') || /[~$`\\]|(^|\/)\.\.(\/|$)/.test(v)
-  }
+// claude-factory-ty8y.19: a `..` segment is bad, also when the path stays under `root`.
+// The `..` test runs before the root test. This guard fails closed.
+function pathOutsideRoot(raw: string | undefined, root: string | undefined): boolean {
+  const v = (raw ?? '').replace(/^["']+|["']+$/g, '')
+  if (v === '.') return false
+  if (!v || /[~$`\\]|(^|\/)\.\.(\/|$)/.test(v)) return true
+  if (root && (v === root || v.startsWith(root + '/'))) return false
+  return v.startsWith('/')
+}
+
+// `moved` is true when a cd, pushd or popd word ran before this segment (claude-factory-ty8y.20).
+function gitWorkTreeOutside(words: string[], root: string | undefined, moved = false): boolean {
+  const bad = (raw: string | undefined): boolean => pathOutsideRoot(raw, root)
+  let hasWorkTree = false
+  let hasGitDir = false
+  let badC = false
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     if (w === '--work-tree') {
+      hasWorkTree = true
       if (bad(words[i + 1])) return true
     } else if (w.startsWith('--work-tree=')) {
+      hasWorkTree = true
       if (bad(w.slice(12))) return true
     } else if (w.startsWith('GIT_WORK_TREE=')) {
+      hasWorkTree = true
       if (bad(w.slice(14))) return true
+    } else if (w === '--git-dir' || w.startsWith('--git-dir=') || w.startsWith('GIT_DIR=')) {
+      hasGitDir = true
+    } else if (w === '-C' && bad(words[i + 1])) {
+      badC = true
     }
   }
-  return false
+  // claude-factory-ty8y.20: a git dir with no work tree makes the cwd the work tree.
+  return hasGitDir && !hasWorkTree && (moved || badC)
+}
+
+// claude-factory-ty8y.21: a git config write of core.worktree, or any `-c core.worktree=`, moves the
+// work tree. A value outside `root` denies. A read form has no value word, so it allows.
+function gitCoreWorktreeOutside(words: string[], root: string | undefined): boolean {
+  if (words.some(w => /^(-c|--config-env)?core\.worktree=/i.test(w))) return true
+  if (!words.some(w => baseWord(w) === 'git')) return false
+  const at = words.indexOf('config')
+  if (at < 0) return false
+  const operands: string[] = []
+  const args = words.slice(at + 1)
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!
+    if (w === '--') {
+      operands.push(...args.slice(i + 1))
+      break
+    }
+    if (w.startsWith('-') && w !== '-') {
+      if (!w.includes('=') && GIT_CONFIG_VALUE_FLAGS.has(w)) i++
+      continue
+    }
+    operands.push(w)
+  }
+  const start = operands[0] === 'set' ? 1 : 0
+  const name = (operands[start] ?? '').replace(/^["']+|["']+$/g, '')
+  if (!/^core\.worktree$/i.test(name)) return false
+  const value = operands[start + 1]
+  return value !== undefined && pathOutsideRoot(value, root)
 }
 
 // claude-factory-ty8y.17: collapses `//`, `/./` and a trailing `/.` so a path spelling cannot dodge the regexes.
@@ -4131,7 +4177,11 @@ function denyAt(
     const operandSkip: OperandSkip = READER_COMMANDS.has(b)
       ? 'reader'
       : (isGitSegment && !words.some(w => GIT_OPERAND_WRITER_RE.test(w))) ||
-          (TEXT_OPERAND_COMMANDS.has(b) && !(b === 'gh' && words.includes('clone'))) ||
+          (TEXT_OPERAND_COMMANDS.has(b) &&
+            !(
+              b === 'gh' &&
+              (words.includes('clone') || words.some(w => /^--clone(=(?!false$)|$)/.test(w)))
+            )) ||
           (b === 'bun' && cmd[1] === 'test')
         ? 'operands'
         : 'none'
@@ -4167,7 +4217,12 @@ function denyAt(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
-    if (configUse === 'write' || gitWorkTreeOutside(words, root)) return GLOBAL_GIT_CONFIG_REASON
+    if (
+      configUse === 'write' ||
+      gitWorkTreeOutside(words, root, movedSoFar) ||
+      gitCoreWorktreeOutside(words, root)
+    )
+      return GLOBAL_GIT_CONFIG_REASON
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
