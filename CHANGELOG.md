@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- The worker hook now reads a word-start `#` comment and a here-document body. A quote in this text hid a later `git push origin main` from `segments()`. Two examples are `true # don't` and `cat <<EOF` with `don't` in the body. Bash and zsh ran the push. Now `segments()` skips a clear comment. It also drops the text of a here-document that only a text command (`cat`, `git`, `gh`) reads. If it cannot read a `#` or a here-document with certainty, the hook denies with the new `COMMENT_REASON` or `HEREDOC_REASON` (claude-factory-wmsr).
+
 - The worker hook now folds the command word to lowercase before each `git`, `gh`, shell, `sudo`, `xargs`, `kubectl`, `helm` and `rm` check. macOS APFS ignores case, so `Git push origin main`, `GH pr merge 1` and `/bin/SH -c 'git push origin main'` ran the real program and passed every guard. A non-ASCII word folds with upper then lower case, so the long s (U+017F) that APFS folds to `s` also denies (claude-factory-a8pr).
 
 - Added regression tests for a bug. A shell variable word before the `git` verb hides a protected push. Three example commands: `git $X push origin main`, `git "$X" push origin HEAD`, and `git -C sub $X push origin main`. The `DYNAMIC_VERB_REASON` fix from claude-factory-p43v already denies them on `main`. The new rows set `gate.gitAliases` and `gate.ghAliases`, the gate shape `main()` uses in production. The existing `P43V_GATE` rows leave both unset (claude-factory-bjp0).
