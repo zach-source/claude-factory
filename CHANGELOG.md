@@ -8,12 +8,13 @@ minor release may change the factory format, the CLI or the run state.
 
 - `worker-hook`: the protected-branch push guard now denies a unique abbreviation of a `git push`
   or `git send-pack` long flag, the same as the full flag name. This covers `--all`,
-  `--branches`, `--mirror`, `--prune`, `--repo`, `--push-option`, `--receive-pack`, `--exec` and
-  `--stdin`. An abbreviated value flag (`--repo`, `--push-option`, `--receive-pack`, `--exec`)
-  still takes the next word as its value, so the guard denies the whole call instead of a guess.
-  A `--no-dry-run` word, or an abbreviation of it, now clears an earlier `-n`/`--dry-run` flag on
-  the same command line, in either order. Real git 2.54 confirmed each form still pushes a
-  protected branch. (claude-factory-ctae)
+  `--branches`, `--mirror`, `--prune`, `--repo`, `--push-option`, `--receive-pack`, `--exec`,
+  `--recurse-submodules`, `--remote` and `--stdin`. An abbreviated value flag (`--repo`,
+  `--push-option`, `--receive-pack`, `--exec`, `--recurse-submodules` on push; `--receive-pack`,
+  `--exec`, `--push-option`, `--remote` on send-pack) still takes the next word as its value, so
+  the guard denies the whole call instead of a guess. A `--no-dry-run` word, or an abbreviation of
+  it, now clears an earlier `-n`/`--dry-run` flag on the same command line, in either order. Real
+  git 2.54 confirmed each form still pushes a protected branch. (claude-factory-ctae)
 
 - `worker-hook`: fail closed when one command changes the branch (`checkout`,
   `switch`, `branch -m`/`-M`, `symbolic-ref HEAD`, `rebase <upstream> <branch>`,

@@ -1517,14 +1517,33 @@ function anyGhReason(words: string[], gate: HookGate, state: ScanState): string 
 // The verb search steps past them. GH_VALUE_FLAGS does the same for `gh`.
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
 // `git push`'s own flags that take a value word. The operand search steps past them.
-const GIT_PUSH_VALUE_FLAGS = new Set(['--repo', '-o', '--push-option', '--receive-pack', '--exec'])
+//
+// claude-factory-ctae.9: `git push`'s usage text lists `--recurse-submodules
+// (check|on-demand|no)` as a flag with a required value. Real git 2.54 confirmed this.
+// `git push --recurse-submodules no <remote>` reads `no` as that value, not as the remote.
+// `--no-recurse-submodules` takes no value of its own. This guard leaves it out of this set.
+const GIT_PUSH_VALUE_FLAGS = new Set([
+  '--repo',
+  '-o',
+  '--push-option',
+  '--receive-pack',
+  '--exec',
+  '--recurse-submodules',
+])
 
 // claude-factory-ctae.2: the long-flag members of `GIT_PUSH_VALUE_FLAGS`, for abbreviation checks.
 // Git parse-options accepts a unique prefix of each long flag name.
 // An exact word matches `GIT_PUSH_VALUE_FLAGS` above and skips its value word.
 // An abbreviation reaches the same flag. This guard cannot tell which word git reads as the value
 // and which as a refspec. It denies the whole push instead of a guess (fail closed).
-const GIT_PUSH_LONG_VALUE_FLAGS = ['--repo', '--push-option', '--receive-pack', '--exec']
+// claude-factory-ctae.9: `--recurse-submodules` joins this list for the same reason.
+const GIT_PUSH_LONG_VALUE_FLAGS = [
+  '--repo',
+  '--push-option',
+  '--receive-pack',
+  '--exec',
+  '--recurse-submodules',
+]
 
 // A `git push` flag that pushes every branch, or deletes a remote branch with no local match.
 // Each flag can reach a protected branch with no refspec that names it.
@@ -1632,8 +1651,9 @@ function refspecTarget(
  *
  * `dryRun` is true for `-n` or `--dry-run`. A dry run never pushes.
  * The caller allows it without more checks.
- * claude-factory-ctae.3: A later word that is a unique abbreviation of `--no-dry-run` clears
- * `dryRun` again. Git itself reads the 2 flags together, and this guard does the same.
+ * claude-factory-ctae.3: a unique abbreviation of `--no-dry-run`, in any position, clears
+ * `dryRun` again. Real git instead uses whichever of the two flags comes last. This guard's
+ * rule only adds denies, so it stays fail closed (claude-factory-ctae.10).
  */
 function pushOperands(tail: string[]): {
   operands: string[]
@@ -1908,10 +1928,16 @@ function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
 // This guard now denies outright on `--mirror`, `--stdin`, or no ref at all. It still checks a
 // named ref against the protected branch set, the same as before.
 
-// claude-factory-ctae.4: `send-pack`'s own flags that take a value word. An exact word here
-// skips the value word. A unique abbreviation of one of these flags still takes a value word,
-// but this guard cannot read it, so `sendPackDenied` denies the whole call instead of a guess.
-const SEND_PACK_VALUE_FLAGS = new Set(['--receive-pack', '--exec', '--push-option'])
+// claude-factory-ctae.4: these `send-pack` flags each use the next word as a value.
+// This guard skips the exact flag's value word. A short form of the flag also uses the
+// next word as a value, but this guard cannot read it. So `sendPackDenied` denies the
+// whole call instead of a guess.
+//
+// claude-factory-ctae.8: `--remote` joins this list. Real git 2.54's help text lists
+// `--[no-]remote <remote>` as a flag with a value. The man page does not list this flag.
+// `git send-pack --remote x ../remote.git` with no ref uses `x` as that value, not as a ref.
+// Without `--remote` in this set, this guard read `x` as the remote and the URL as the one ref.
+const SEND_PACK_VALUE_FLAGS = new Set(['--receive-pack', '--exec', '--push-option', '--remote'])
 
 // claude-factory-ctae.4: git parse-options accepts a unique prefix of a long flag name here too.
 // This guard now checks `--all`, `--mirror` and `--stdin` the same way `pushOperands` does for

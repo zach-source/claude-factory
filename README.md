@@ -384,14 +384,18 @@ these forms:
   remote branch with the same name. It does not push `HEAD` alone, and it has the same broad effect
   as `push.default=matching`. The hook also denies `--stdin` (refs read from the command's own stdin)
   and `--mirror` (the same broad effect as `--all`, with deletes) outright.
-- a unique abbreviation of a `git push` or `git send-pack` long flag (claude-factory-ctae). GNU
-  `getopt_long` accepts the prefix in place of the full name, and reaches the same flag. This
-  covers the push flags `--all`, `--branches`, `--mirror` and `--prune`; the push and send-pack
-  value flags `--repo`, `--push-option`, `--receive-pack` and `--exec`; and the send-pack flag
-  `--stdin`. The hook denies each abbreviation the same as the full flag name. An abbreviated
-  value flag still takes the next word as its value, the same as the full name, so the hook
-  denies the whole call instead of a guess. A `--no-dry-run` word, or an abbreviation of it,
-  clears an earlier `-n`/`--dry-run` flag on the same command line, in either order; the hook
+- a unique abbreviation of a `git push` or `git send-pack` long flag (claude-factory-ctae). Git's
+  own `parse-options` code accepts the prefix in place of the full name. It reaches the same
+  flag. The hook denies each abbreviation the same as the full flag name. This covers:
+  - the push flags `--all`, `--branches`, `--mirror` and `--prune`
+  - the push value flags `--repo`, `--push-option`, `--receive-pack`, `--exec` and
+    `--recurse-submodules`
+  - the send-pack value flags `--receive-pack`, `--exec`, `--push-option` and `--remote`
+  - the send-pack flag `--stdin`
+
+  An abbreviated value flag still takes the next word as its value, the same as the full name.
+  The hook denies the whole call instead of a guess. A `--no-dry-run` word, or an abbreviation of
+  it, clears an earlier `-n`/`--dry-run` flag on the same command line, in either order. The hook
   then checks the push as normal.
 
 - `git -c remote.<name>.mirror=<value>` or `git config remote.<name>.mirror <value>`. Each one

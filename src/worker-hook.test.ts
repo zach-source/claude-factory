@@ -1045,6 +1045,27 @@ test('denyReason allows git push --del o factory/x (claude-factory-ctae.5)', () 
   expect(denyReason('git push --del o factory/x')).toBeUndefined()
 })
 
+// claude-factory-ctae.9: `--recurse-submodules` takes a required value word, the same as
+// `--repo` or `--exec`. Real git 2.54 confirmed this: `git push --recurse-submodules no x`,
+// with headOf=main and no refspec, pushes the current branch (`main`) to remote `x`. Without
+// this flag in the value-flag sets, the guard read `no` as the remote and `x` as an
+// unprotected refspec, and allowed the call.
+const DENY_PUSH_RECURSE_SUBMODULES = ['git push --recurse-submodules no x', 'git push --recurse-sub no x']
+
+test.each(DENY_PUSH_RECURSE_SUBMODULES)(
+  'denyReason denies %j (claude-factory-ctae.9, --recurse-submodules is a push value flag)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the exact push --recurse-submodules, which skips its own value word (claude-factory-ctae.9)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(
+    denyReason('git push --recurse-submodules no o factory/x', undefined, undefined, gate),
+  ).toBeUndefined()
+})
+
 test('denyReason allows a bare git push, git push origin HEAD and git push -u origin HEAD on a run branch', () => {
   const gate = { headOf: () => 'factory/x' }
   expect(denyReason('git push', undefined, undefined, gate)).toBeUndefined()
@@ -1853,6 +1874,30 @@ test('denyReason allows the exact send-pack --push-option, which skips its own v
       undefined,
       gate,
     ),
+  ).toBeUndefined()
+})
+
+// claude-factory-ctae.8: `--remote` is a 4th member of `SEND_PACK_VALUE_FLAGS`, with no row of
+// its own until now. Real git 2.54 confirmed that `git send-pack --remote x ../remote.git`,
+// with no ref, reads `x` as the value of `--remote` and pushes every matching branch. The
+// abbreviated `--remo` form still takes a value word this guard cannot read.
+const DENY_SEND_PACK_REMOTE = [
+  'git send-pack --remote x ../remote.git',
+  'git send-pack --remo x ../remote.git refs/heads/factory/x',
+]
+
+test.each(DENY_SEND_PACK_REMOTE)(
+  'denyReason denies %j (claude-factory-ctae.8, send-pack --remote is a value flag)',
+  cmd => {
+    const gate = { headOf: () => 'factory/x' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the exact send-pack --remote, which skips its own value word (claude-factory-ctae.8)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(
+    denyReason('git send-pack --remote x ../remote.git refs/heads/factory/x', undefined, undefined, gate),
   ).toBeUndefined()
 })
 
