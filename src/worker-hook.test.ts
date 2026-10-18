@@ -500,6 +500,17 @@ const BEADS_ACTOR_CLEAR_DENY = [
   'env -C /tmp -u BEADS_ACTOR bd create "x" -l factory',
   'env -P /usr/bin -i bd create "x" -l factory',
   'env -a foo -i bd create "x" -l factory',
+  // claude-factory-igj.4 (PR #109 review round 1): Gap 5. A value flag whose own value is the
+  // word `bd` must not stop the scan before a later `-u BEADS_ACTOR` or `-i`.
+  'env -u bd -u BEADS_ACTOR bd create "x" -l factory',
+  'env -C bd -u BEADS_ACTOR bd create "x" -l factory',
+  'env -C ./bd -i bd create "x" -l factory',
+  'env -a bd -i bd create "x" -l factory',
+  'env -P /x/bd -i bd create "x" -l factory',
+  'env --chdir bd -i bd create "x" -l factory',
+  'env --unset bd -i bd create "x" -l factory',
+  'env -u bd -i bd create "x" -l factory',
+  'env -S"-u bd -i" bd create "x" -l factory',
 ]
 
 test.each(BEADS_ACTOR_CLEAR_DENY)('denyReason denies %s (claude-factory-8pc.27)', cmd => {
@@ -531,10 +542,26 @@ const BEADS_ACTOR_CLEAR_ALLOW = [
   'env FOO=1 bd create "x" -d "BEADS_ACTOR note"',
   'env -C /tmp bd list',
   'env -C/opt/bin bd list',
+  // claude-factory-igj.5 (PR #109 review round 1): the wider scan must not read past env's own
+  // real command into that command's own flags and arguments.
+  'env LC_ALL=C grep -rn BEADS_ACTOR src',
+  'env FOO=1 grep -i x bd',
 ]
 
 test.each(BEADS_ACTOR_CLEAR_ALLOW)('denyReason allows %s (claude-factory-igj)', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
+})
+
+// claude-factory-igj.6 (PR #109 review round 1): a bd word hidden inside a sh/bash -c or eval
+// script, under a clear-all env -i, must still deny: runsBd must not read only literal words.
+const BEADS_ACTOR_SHELL_SCRIPT_DENY = [
+  'env -i sh -c "bd create x"',
+  'env -i bash -c "bd create x -l factory"',
+  'env -i eval "bd create x"',
+]
+
+test.each(BEADS_ACTOR_SHELL_SCRIPT_DENY)('denyReason denies %s (claude-factory-igj.6)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
 })
 
 // claude-factory-igj AC5: env -S splits a string into words at run time.
