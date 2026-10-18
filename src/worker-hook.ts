@@ -328,6 +328,8 @@ interface ScanState {
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
+  /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
+  substFallbacks: number
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
   // reads. Below zero, the scan stops and denies (fail closed).
   work: number
@@ -369,11 +371,276 @@ const MAX_SHELL_DEPTH = 32
 // wrapper commands whose own name we skip to find the command they run
 const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
 
-/** the basename of a command word: drops a leading backslash (`\rm`) and any path (`/bin/rm`) */
+/**
+ * the lowercase basename of a command word: drops a leading backslash (`\rm`) and any path
+ * (`/bin/rm`). It lowercases because macOS APFS is case-insensitive: `Git`, `GH` and `/bin/SH`
+ * run the real binaries, so every guard must see them as `git`, `gh` and `sh`. APFS also folds
+ * U+017F (long s) to `s`, so the fold goes through upper case: `toLowerCase` alone keeps it.
+ */
 function baseWord(w: string): string {
   const s = w.replace(/^\\/, '')
   const i = s.lastIndexOf('/')
-  return i >= 0 ? s.slice(i + 1) : s
+  const b = i >= 0 ? s.slice(i + 1) : s
+  // ASCII fast path: the upper-then-lower fold is slow on huge scans
+  return /[^\x00-\x7f]/.test(b) ? b.toUpperCase().toLowerCase() : b.toLowerCase()
+}
+
+/** a command substitution found inside a double-quoted span: its body, and the count of segments before it */
+interface DqSubstitution {
+  body: string
+  at: number
+}
+
+const MAX_SUBST_NEST = 64
+
+// claude-factory-2pdm.16: each fallback read costs O(n) and scans the rest of the command again.
+// Past this many in one top-level call, the command denies with DEEP_COMMAND_REASON.
+const MAX_SUBST_FALLBACKS = 8
+
+interface Joined {
+  text: string
+  toOrig: number[]
+  toJoined: number[]
+}
+
+/**
+ * claude-factory-2pdm: drops each backslash-newline pair (a POSIX line continuation) and keeps the
+ * maps between the two index spaces. An escaped pair such as `\\` stays whole. The substitution
+ * reader runs on the joined text, so its lookaheads never see a continuation.
+ */
+function joinContinuations(cmd: string): Joined {
+  if (!cmd.includes('\\\n')) {
+    const id = Array.from({ length: cmd.length + 1 }, (_, k) => k)
+    return { text: cmd, toOrig: id, toJoined: id }
+  }
+  let text = ''
+  const toOrig: number[] = []
+  const toJoined: number[] = []
+  for (let k = 0; k < cmd.length; k++) {
+    if (cmd[k] === '\\' && cmd[k + 1] === '\n') {
+      toJoined[k] = text.length
+      toJoined[k + 1] = text.length
+      k++
+      continue
+    }
+    const n = cmd[k] === '\\' && k + 1 < cmd.length ? 2 : 1
+    for (let m = 0; m < n; m++) {
+      toJoined[k + m] = text.length
+      toOrig.push(k + m)
+      text += cmd[k + m]
+    }
+    k += n - 1
+  }
+  toJoined[cmd.length] = text.length
+  toOrig.push(cmd.length)
+  return { text, toOrig, toJoined }
+}
+
+/**
+ * claude-factory-2pdm: `start` is the index of a `$` or a backtick inside a double-quoted span.
+ * Returns the body of the command substitution that starts there, and the index right after its
+ * close. Returns undefined when no substitution starts there.
+ * Fail closed: when the close is not found, or the body holds a word this matcher cannot read
+ * (`case`, `${`), the body is the rest of the command. `end` then points right after the opener,
+ * so the caller keeps the double-quote reading of the rest and the quotes stay in step.
+ */
+function dqSubstitution(
+  cmd: string,
+  start: number,
+): { body: string; end: number; fallback: boolean } | undefined {
+  if (cmd[start] === '`') {
+    for (let j = start + 1; j < cmd.length; j++) {
+      if (cmd[j] === '\\') j++
+      else if (cmd[j] === '`') {
+        return { body: cmd.slice(start + 1, j).replace(/\\([`\\$"])/g, '$1'), end: j + 1, fallback: false }
+      }
+    }
+    return { body: cmd.slice(start + 1).replace(/\\([`\\$"])/g, '$1'), end: start + 1, fallback: true }
+  }
+  if (cmd[start] !== '$' || cmd[start + 1] !== '(') return undefined
+  const close = parenEnd(cmd, start + 2, 0)
+  if (close < 0) return { body: cmd.slice(start + 2), end: start + 2, fallback: true }
+  return { body: cmd.slice(start + 2, close), end: close + 1, fallback: false }
+}
+
+/**
+ * Returns the index of the `)` that closes a `$(` whose body starts at `from`, or -1.
+ * It reads single quotes, double quotes (with a nested substitution), `$'..'`, a backslash escape,
+ * a backtick span, a word-start comment, a here-document and nested parentheses.
+ * It returns -1 for a word it cannot read: `case`, `${`, or a nest deeper than MAX_SUBST_NEST.
+ */
+function parenEnd(cmd: string, from: number, nest: number): number {
+  if (nest > MAX_SUBST_NEST) return -1
+  let depth = 1
+  const pending: { delim: string; dash: boolean }[] = []
+  for (let i = from; i < cmd.length; i++) {
+    const c = cmd[i]!
+    const prev = cmd[i - 1]
+    let slashes = 0
+    while (i - 1 - slashes >= from && cmd[i - 1 - slashes] === '\\') slashes++
+    const wordStart = i === from || (slashes % 2 === 0 && /[\s;&|()]/.test(prev ?? ''))
+    if (c === '\\') {
+      i++
+    } else if (c === "'") {
+      i = cmd.indexOf("'", i + 1)
+      if (i < 0) return -1
+    } else if (c === '$' && cmd[i + 1] === "'") {
+      for (i += 2; i < cmd.length && cmd[i] !== "'"; i++) if (cmd[i] === '\\') i++
+      if (i >= cmd.length) return -1
+    } else if (c === '$' && cmd[i + 1] === '{') {
+      return -1
+    } else if (c === '"') {
+      for (i++; i < cmd.length && cmd[i] !== '"'; i++) {
+        if (cmd[i] === '\\') i++
+        else if (cmd[i] === '`') {
+          for (i++; i < cmd.length && cmd[i] !== '`'; i++) if (cmd[i] === '\\') i++
+        } else if (cmd[i] === '$' && cmd[i + 1] === '(') {
+          const e = parenEnd(cmd, i + 2, nest + 1)
+          if (e < 0) return -1
+          i = e
+        }
+      }
+      if (i >= cmd.length) return -1
+    } else if (c === '`') {
+      for (i++; i < cmd.length && cmd[i] !== '`'; i++) if (cmd[i] === '\\') i++
+      if (i >= cmd.length) return -1
+    } else if (c === '#' && wordStart) {
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+    } else if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<') {
+      const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()'"]+))/.exec(cmd.slice(i, i + 300))
+      if (!m) return -1
+      const after = cmd[i + m[0].length]
+      if (after !== undefined && !/[\s;&|<>()]/.test(after)) return -1
+      if ((m[2] ?? m[3] ?? m[4] ?? '').includes('\\')) return -1
+      pending.push({ delim: m[2] ?? m[3] ?? m[4] ?? '', dash: m[1] === '-' })
+      i += m[0].length - 1
+    } else if (c === '\n' && pending.length) {
+      let at = i + 1
+      for (const p of pending) {
+        for (;;) {
+          if (at > cmd.length) return -1
+          const nl = cmd.indexOf('\n', at)
+          const line = cmd.slice(at, nl < 0 ? cmd.length : nl)
+          at = nl < 0 ? cmd.length + 1 : nl + 1
+          const l = p.dash ? line.replace(/^\t+/, '') : line
+          if (l === p.delim) break
+          if (p.delim !== '' && l.startsWith(p.delim)) return -1
+        }
+      }
+      pending.length = 0
+      i = at - 1
+    } else if (c === '(') {
+      depth++
+    } else if (c === ')') {
+      if (--depth === 0) return i
+    } else if (wordStart && c === 'c' && /^case[\s]/.test(cmd.slice(i, i + 5))) {
+      return -1
+    }
+  }
+  return -1
+}
+
+/**
+ * claude-factory-2pdm: a quote char inside a comment or a here-document line is not a quote, but
+ * segments() reads it as one and hides the commands after it. This returns the body with each
+ * quote char and backtick in a comment, and each quote char in a here-document line, made a space.
+ * It never drops comment text: the word-start test can be wrong after a close paren or in a brace.
+ * It keeps every newline, and keeps the other here-document text, because a shell can read it.
+ * A nested `$(` span inside double quotes stays as it is: scanning that span cleans it again.
+ */
+function cleanSubstitutionBody(body: string): string {
+  let out = ''
+  const pending: { delim: string; dash: boolean }[] = []
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]!
+    let slashes = 0
+    while (i - 1 - slashes >= 0 && body[i - 1 - slashes] === '\\') slashes++
+    const wordStart = i === 0 || (slashes % 2 === 0 && /[\s;&|()]/.test(body[i - 1]!))
+    if (c === '\\') {
+      out += body.slice(i, i + 2)
+      i++
+    } else if (c === "'") {
+      const e = body.indexOf("'", i + 1)
+      if (e < 0) return out + body.slice(i)
+      out += body.slice(i, e + 1)
+      i = e
+    } else if (c === '$' && body[i + 1] === "'") {
+      let e = i + 2
+      for (; e < body.length && body[e] !== "'"; e++) if (body[e] === '\\') e++
+      out += body.slice(i, e + 1)
+      i = e
+    } else if (c === '"') {
+      let e = i + 1
+      for (; e < body.length && body[e] !== '"'; e++) {
+        if (body[e] === '\\') e++
+        else if (body[e] === '`') {
+          for (e++; e < body.length && body[e] !== '`'; e++) if (body[e] === '\\') e++
+        } else if (body[e] === '$' && body[e + 1] === '(') {
+          const close = parenEnd(body, e + 2, 0)
+          if (close < 0) return out + body.slice(i)
+          e = close
+        }
+      }
+      out += body.slice(i, e + 1)
+      i = e
+    } else if (c === '`') {
+      let e = i + 1
+      for (; e < body.length && body[e] !== '`'; e++) if (body[e] === '\\') e++
+      out += body.slice(i, e + 1)
+      i = e
+    } else if (c === '#' && wordStart) {
+      let e = i
+      while (e + 1 < body.length && body[e + 1] !== '\n') e++
+      out += body.slice(i, e + 1).replace(/['"`]/g, ' ')
+      i = e
+    } else if (c === '<' && body[i + 1] === '<' && body[i + 2] !== '<') {
+      const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()'"]+))/.exec(body.slice(i, i + 300))
+      if (!m) {
+        out += c
+        continue
+      }
+      pending.push({ delim: m[2] ?? m[3] ?? m[4] ?? '', dash: m[1] === '-' })
+      out += m[0]
+      i += m[0].length - 1
+    } else if (c === '\n' && pending.length) {
+      out += c
+      let at = i + 1
+      for (const p of pending) {
+        while (at <= body.length) {
+          const nl = body.indexOf('\n', at)
+          const line = body.slice(at, nl < 0 ? body.length : nl)
+          const isEnd = (p.dash ? line.replace(/^\t+/, '') : line) === p.delim
+          out += isEnd ? line : line.replace(/['"]/g, ' ')
+          at = nl < 0 ? body.length + 1 : nl + 1
+          if (nl >= 0) out += '\n'
+          if (isEnd) break
+        }
+      }
+      pending.length = 0
+      i = at - 1
+    } else {
+      out += c
+    }
+  }
+  return out
+}
+
+/**
+ * claude-factory-2pdm: true for the body of the usual commit-message form, `cat <<'EOF'`, a quoted
+ * delimiter, its lines, the delimiter line, and then only blank space. The shell prints those
+ * lines. It runs none of them.
+ */
+function isCatHeredoc(body: string): boolean {
+  const m = /^\s*cat[ \t]+<<(-?)[ \t]*(?:'([^'\s]+)'|"([^"\s]+)"|\\([A-Za-z_]\w*))[ \t]*\n/.exec(body)
+  if (!m) return false
+  const delim = m[2] ?? m[3] ?? m[4]!
+  const lines = body.slice(m[0].length).split('\n')
+  for (let k = 0; k < lines.length; k++) {
+    const line = m[1] === '-' ? lines[k]!.replace(/^\t+/, '') : lines[k]!
+    if (line === delim) return lines.slice(k + 1).every(l => l.trim() === '')
+    if (line.startsWith(delim)) return false
+  }
+  return false
 }
 
 /**
@@ -393,12 +660,20 @@ function baseWord(w: string): string {
  *
  * claude-factory-p43v: an opening backtick keeps a backtick mark in the word it ends. A closing
  * backtick keeps no mark of its own.
+ *
+ * When `subs` is set, segments() pushes the body of each command substitution found inside a
+ * double-quoted span. The caller must scan each body. The word keeps its raw text.
  */
-function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
+function segments(
+  cmd: string,
+  info?: { dollarQuote: boolean; state?: ScanState; deep?: boolean },
+  subs?: DqSubstitution[],
+): string[][] {
   const segs: string[][] = []
   let cur: string[] = []
   let word = ''
   let hasWord = false
+  let joined: Joined | undefined
   let quote: '"' | "'" | null = null
   const parens: boolean[] = []
   // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
@@ -426,7 +701,25 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
       continue
     }
     if (quote === '"') {
-      if (c === '"') quote = null
+      let sub: { body: string; end: number } | undefined
+      if ((c === '$' || c === '`') && !info?.deep) {
+        joined ??= joinContinuations(cmd)
+        const r = dqSubstitution(joined.text, joined.toJoined[i]!)
+        if (r) {
+          sub = { body: r.body, end: joined.toOrig[r.end]! }
+          if (r.fallback && info?.state && ++info.state.substFallbacks > MAX_SUBST_FALLBACKS) {
+            info.deep = true
+          }
+        }
+      }
+      if (sub) {
+        // claude-factory-2pdm: the shell runs a command substitution inside double quotes. The
+        // raw text stays in this word, so the dynamic-word checks still see the `$`. The body
+        // goes to `subs` for denyAt to scan.
+        subs?.push({ body: sub.body, at: segs.length })
+        word += cmd.slice(i, sub.end)
+        i = sub.end - 1
+      } else if (c === '"') quote = null
       // a backslash-newline is a POSIX line continuation even inside double quotes: the shell
       // removes both characters and joins the surrounding text, it does not keep a literal newline.
       else if (c === '\\' && cmd[i + 1] === '\n') i++
@@ -4854,7 +5147,13 @@ export function scanReason(
   gate?: HookGate,
   budget: number = MAX_SCAN_WORK,
 ): string | undefined {
-  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false, work: budget }
+  const state: ScanState = {
+    branchChange: false,
+    headPush: false,
+    gitAdminPath: false,
+    substFallbacks: 0,
+    work: budget,
+  }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
@@ -4917,10 +5216,39 @@ function denyAt(
   // claude-factory-bemr: the same kind of flag, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
-  const quoteInfo = { dollarQuote: false }
-  const commandSegments = segments(command, quoteInfo)
+  const subs: DqSubstitution[] = []
+  const quoteInfo: { dollarQuote: boolean; state: ScanState; deep?: boolean } = {
+    dollarQuote: false,
+    state,
+  }
+  const segs = segments(command, quoteInfo, subs)
+  if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
-  for (const words of commandSegments) {
+  let subIdx = 0
+  // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
+  // `upTo`, in order, so a body that moves HEAD counts for a later push.
+  const scanSubs = (upTo: number): string | undefined => {
+    for (; subIdx < subs.length && subs[subIdx]!.at <= upTo; subIdx++) {
+      const body = subs[subIdx]!.body
+      if (isCatHeredoc(body)) continue
+      const r = denyAt(
+        cleanSubstitutionBody(body),
+        root,
+        personOnly,
+        g,
+        depth + 1,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
+      if (r) return r
+    }
+    return undefined
+  }
+  for (let segIdx = 0; segIdx < segs.length; segIdx++) {
+    const subReason = scanSubs(segIdx)
+    if (subReason) return subReason
+    const words = segs[segIdx]!
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
@@ -5006,6 +5334,8 @@ function denyAt(
     // lookup, the same way movedSoFar does above for a git alias lookup.
     if (hasGhConfigEnvWord(words)) ghConfigMovedSoFar = true
   }
+  const tailReason = scanSubs(Infinity)
+  if (tailReason) return tailReason
   if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
