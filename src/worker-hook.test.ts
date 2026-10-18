@@ -553,12 +553,26 @@ test.each(BEADS_ACTOR_CLEAR_ALLOW)('denyReason allows %s (claude-factory-igj)', 
   expect(denyReason(cmd)).toBeUndefined()
 })
 
-// claude-factory-igj.6 (PR #109 review round 1): a bd word hidden inside a sh/bash -c or eval
-// script, under a clear-all env -i, must still deny: runsBd must not read only literal words.
+// claude-factory-igj.6: a sh/bash -c script, or an eval word, can hide a bd word inside it.
+// The check must find that bd word. This is true even under a clear-all env -i.
+//
+// claude-factory-igj.8: a wrapper word between env -i and the shell word must not hide the
+// shell -c script. The old scan checked only the one word right after env's own options. Each
+// line below adds a wrapper word there (env, nice, nohup, timeout 5, sudo, command, exec, time,
+// or xargs), which hid the sh -c script from the old scan.
 const BEADS_ACTOR_SHELL_SCRIPT_DENY = [
   'env -i sh -c "bd create x"',
   'env -i bash -c "bd create x -l factory"',
   'env -i eval "bd create x"',
+  'env -i env sh -c "bd create x"',
+  'env -i nice sh -c "bd create x"',
+  'env -i nohup sh -c "bd create x"',
+  'env -i timeout 5 sh -c "bd create x"',
+  'env -i sudo sh -c "bd create x"',
+  'env -i command sh -c "bd create x"',
+  'env -i exec sh -c "bd create x"',
+  'env -i time sh -c "bd create x"',
+  'env -i xargs sh -c "bd create x"',
 ]
 
 test.each(BEADS_ACTOR_SHELL_SCRIPT_DENY)('denyReason denies %s (claude-factory-igj.6)', cmd => {

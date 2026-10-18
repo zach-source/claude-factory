@@ -416,23 +416,36 @@ function shCScriptValue(words: string[], start: number): string | undefined {
   return undefined
 }
 
+// claude-factory-igj: this checks words from index start to the end of the one segment words.
+// It returns true for a bd word there, or for a sh/bash/zsh/dash -c script or an eval word that
+// holds a bd word. depth bounds the recursion. MAX_SHELL_DEPTH bounds it the same way, for
+// anyShellReason's own eval/sh -c recursion.
+//
+// claude-factory-igj.8: the scan reads every word after start, not only words[start]. A wrapper
+// word (env, nice, nohup, sudo, and so on) can sit between start and the sh/bash/zsh/dash or
+// eval word. This scan still finds that later word.
+function segmentRunsBdCommand(words: string[], start: number, depth: number): boolean {
+  for (let k = start; k < words.length; k++) {
+    const bw = baseWord(words[k]!)
+    if (bw === 'bd') return true
+    if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+      const script = shCScriptValue(words, k)
+      if (script !== undefined && stringNamesBdCommand(script, depth + 1)) return true
+    } else if (bw === 'eval') {
+      const rest = words.slice(k + 1).join(' ')
+      if (rest && stringNamesBdCommand(rest, depth + 1)) return true
+    }
+  }
+  return false
+}
+
 // claude-factory-igj: true when a bd word sits anywhere inside s, read as shell words, or
 // inside a sh/bash/zsh/dash -c script or an eval word nested in s. depth bounds the recursion
 // the same way MAX_SHELL_DEPTH bounds anyShellReason's eval/sh -c recursion.
 function stringNamesBdCommand(s: string, depth = 0): boolean {
   if (depth > MAX_SHELL_DEPTH) return true
   for (const seg of segments(s)) {
-    for (let k = 0; k < seg.length; k++) {
-      const bw = baseWord(seg[k]!)
-      if (bw === 'bd') return true
-      if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
-        const script = shCScriptValue(seg, k)
-        if (script !== undefined && stringNamesBdCommand(script, depth + 1)) return true
-      } else if (bw === 'eval') {
-        const rest = seg.slice(k + 1).join(' ')
-        if (rest && stringNamesBdCommand(rest, depth + 1)) return true
-      }
-    }
+    if (segmentRunsBdCommand(seg, 0, depth)) return true
   }
   return false
 }
@@ -585,15 +598,11 @@ function touchesBeadsActor(words: string[], depth = 0): boolean {
       if (scan.clearsAll) {
         envClearsAll = true
         const { cmdStart } = scan
-        if (cmdStart < words.length) {
-          const cb = baseWord(words[cmdStart]!)
-          if (cb === 'sh' || cb === 'bash' || cb === 'zsh' || cb === 'dash') {
-            const script = shCScriptValue(words, cmdStart)
-            if (script !== undefined && stringNamesBdCommand(script, depth + 1)) runsBd = true
-          } else if (cb === 'eval') {
-            const rest = words.slice(cmdStart + 1).join(' ')
-            if (rest && stringNamesBdCommand(rest, depth + 1)) runsBd = true
-          }
+        // claude-factory-igj.8: scan every word from cmdStart to the end of this segment, not
+        // only words[cmdStart]. A wrapper word (env, nice, nohup, sudo, and so on) can sit
+        // between env's own options and the real sh/bash/zsh/dash or eval word.
+        if (cmdStart < words.length && segmentRunsBdCommand(words, cmdStart, depth + 1)) {
+          runsBd = true
         }
       }
     }
