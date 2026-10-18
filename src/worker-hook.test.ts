@@ -2663,3 +2663,34 @@ test.each(ALLOW_DYNAMIC_WORD_NOT_AT_VERB_SLOT)(
 test('denyReason denies a backtick command substitution at the git verb slot (claude-factory-p43v.2 AC3)', () => {
   expect(denyReason('git `echo push` o main', '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
 })
+
+// AC4: a dynamic word at the gh verb slot, or at the pr/repo/alias subcommand slot, fails closed.
+const DENY_DYNAMIC_GH_VERB = [
+  'gh $V merge 5',
+  'gh "$V" pr merge 5',
+  'gh pr $V 5',
+  'gh pr "$V" 5',
+  'gh repo $S',
+  'gh alias $S p pr all',
+]
+
+test.each(DENY_DYNAMIC_GH_VERB)(
+  'denyReason denies %j (claude-factory-p43v.3 AC4: a dynamic word at the gh verb or sub slot fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason denies %j (claude-factory-p43v.3 AC4: a dynamic gh sub slot denies even with a later git push)', () => {
+  expect(denyReason('gh pr $S 5; git push o HEAD', '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+// gh commands with a dynamic word off the verb/sub slot stay allowed (no over-deny).
+const ALLOW_DYNAMIC_GH_WORD_NOT_AT_VERB_SLOT = ['gh pr view $N', 'gh pr create --title "$T" --body-file f']
+
+test.each(ALLOW_DYNAMIC_GH_WORD_NOT_AT_VERB_SLOT)(
+  'denyReason allows %j (claude-factory-p43v.3 AC4: a dynamic word off the gh verb/sub slot is not the verb)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)

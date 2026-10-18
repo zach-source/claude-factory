@@ -1469,6 +1469,13 @@ function ghReason(cmd: string[], gate: HookGate, state: ScanState): string | und
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
   const verb = vi >= 0 ? tail[vi] : undefined
   const sub = vi >= 0 ? tail[vi + 1] : undefined
+  // claude-factory-p43v: a dynamic verb word hides the real gh command, the same risk
+  // dynamicWord already denies at the git verb slot. A dynamic sub word under pr, repo or alias
+  // hides the real merge, sync, ready, checkout or alias-set call, so this guard denies that too.
+  if (verb !== undefined && dynamicWord(verb)) return DYNAMIC_VERB_REASON
+  if ((verb === 'pr' || verb === 'repo' || verb === 'alias') && sub !== undefined && dynamicWord(sub)) {
+    return DYNAMIC_VERB_REASON
+  }
   if (verb === 'pr' && sub === 'checkout') state.branchChange = true
   if (verb === 'pr' && sub === 'merge') return MERGE_REASON
   if (verb === 'repo' && sub === 'sync') return MERGE_REASON
