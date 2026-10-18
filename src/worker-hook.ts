@@ -3594,7 +3594,7 @@ function envSplitCommentCut(val: string): string {
       else if (c === '\\' && quote === '"') i++
     } else if (c === "'" || c === '"') quote = c
     else if (c === '\\') i++
-    else if (c === '#' && (i === 0 || /\s/.test(val[i - 1]!))) return val.slice(0, i)
+    else if (c === '#' && (i === 0 || /[ \t\n\v\f\r]/.test(val[i - 1]!))) return val.slice(0, i)
   }
   return val
 }
