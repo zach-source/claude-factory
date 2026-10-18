@@ -1840,6 +1840,13 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   // and `ghReason`'s uncertain path covers `checkout` for `gh pr checkout`.
   'git --bogus value branch -M main && git push o HEAD',
   'gh --bogus value pr checkout 5 && git push o HEAD',
+  // claude-factory-c63.11: git accepts a 3-or-more character abbreviation of a long flag.
+  // `--stdi` and `--st` read stdin the same as `--stdin`; `--roo` and `--ro` read `--root`
+  // the same way.
+  "printf 'symref-update HEAD refs/heads/main\\n' | git update-ref --stdi && git push o HEAD",
+  "printf 'symref-update HEAD refs/heads/main\\n' | git update-ref --st && git push o HEAD",
+  'git rebase --roo main && git push o HEAD',
+  'git rebase --ro main && git push o HEAD',
 ]
 
 test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(
@@ -1873,6 +1880,11 @@ const ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH = [
   // never moves the `HEAD` symref, so the branch does not change.
   'git update-ref HEAD abc123 && git push o HEAD',
   'git update-ref refs/heads/other abc123 && git push o HEAD',
+  //
+  // claude-factory-c63.11: `--no-root` is not an abbreviation of `--root`. It does not start
+  // with `--root`. So rebase still needs 2 operands to name an explicit `<branch>`. 1 operand
+  // is not enough.
+  'git rebase --no-root main && git push o HEAD',
 ]
 
 test.each(ALLOW_BRANCH_CHANGE_NO_HEAD_PUSH)(

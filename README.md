@@ -289,10 +289,12 @@ A worker's PreToolUse hook denies these commands:
   - `git branch -m`/`-M`
   - a `git symbolic-ref` write
   - `git rebase` with an explicit `<branch>` operand
-  - `git rebase --root <branch>`
+  - `git rebase --root <branch>`, or `--root` shortened to 3 or more characters (for example
+    `--roo` or `--ro`)
   - `git stash branch <name>`
   - `git bisect reset <commit>`
-  - `git update-ref --stdin`
+  - `git update-ref --stdin`, or `--stdin` shortened to 3 or more characters (for example
+    `--stdi` or `--st`)
   - `gh pr checkout`
 
   Run the branch change and the push as 2 separate commands.

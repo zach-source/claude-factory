@@ -1684,14 +1684,38 @@ const BRANCH_CHANGE_UNCERTAIN_VERBS = new Set([
 ])
 
 /**
- * True when `args`, the arguments of a `git branch` call, holds a rename flag (claude-factory-c63):
- * `-m`, `-M`, `--move`, a `--mo` abbreviation of it, or a short-flag cluster that holds `m` or `M`.
- * A rename can change the branch `gate.headOf` names next.
+ * True when `word` equals `longFlag`, a long flag such as `--stdin`.
+ * It is also true when `word` is an abbreviation of `longFlag` with 3 or more characters
+ * (claude-factory-c63.11).
+ *
+ * Git's option parser accepts a short, unique abbreviation of a long flag.
+ * It also accepts some abbreviations that can match another flag's name.
+ * This function does not tell these two kinds apart.
+ * It treats every abbreviation of `longFlag` as a match. This fails closed.
+ *
+ * A real abbreviation that matches two flags makes git refuse the whole call.
+ * In that case, git exits with code 129.
+ *
+ * Real git 2.54 confirms this risk.
+ * `git update-ref --stdi` (or `--st`) reads stdin, the same as `--stdin`.
+ * `git rebase --roo <branch>` (or `--ro <branch>`) reads `--root` the same way.
+ * Both commands exit with code 0.
+ */
+function matchesLongFlagPrefix(word: string, longFlag: string): boolean {
+  if (word === longFlag) return true
+  return word.length >= 3 && word.startsWith('--') && longFlag.startsWith(word)
+}
+
+/**
+ * True when `args`, the arguments of a `git branch` call, holds a rename flag (claude-factory-c63).
+ * The rename flags are `-m`, `-M`, `--move`, and an abbreviation of `--move` (claude-factory-c63.11).
+ * A short-flag cluster that holds `m` or `M` is also a rename flag.
+ * A rename can change the branch that `gate.headOf` names next.
  */
 function branchRenameDenied(args: string[]): boolean {
   for (const w of args) {
     if (w === '--') break
-    if (w.startsWith('--mo')) return true
+    if (matchesLongFlagPrefix(w, '--move')) return true
     if (w.startsWith('-') && !w.startsWith('--') && /[mM]/.test(w.slice(1))) return true
   }
   return false
@@ -1718,9 +1742,9 @@ function symbolicRefWrites(args: string[]): boolean {
  * (claude-factory-c63.4, claude-factory-c63.7).
  *
  * If `args` has 2 or more words that are not flags, `git rebase [<upstream> [<branch>]]`
- * checks out `<branch>` first. With `--root`, the call skips `<upstream>`. Then, if `args`
- * has 1 word that is not a flag, that word is `<branch>`. `git rebase --root <branch>` then
- * checks out `<branch>`.
+ * checks out `<branch>` first. With `--root` (or an abbreviation of it, claude-factory-c63.11),
+ * the call skips `<upstream>`. Then, if `args` has 1 word that is not a flag, that word is
+ * `<branch>`. `git rebase --root <branch>` then checks out `<branch>`.
  *
  * If `args` has fewer words that are not flags, the call contains no `<branch>`.
  * `rebase` then keeps the current branch checked out. A value flag such as `--onto <newbase>`
@@ -1731,7 +1755,7 @@ function rebaseChangesBranch(args: string[]): boolean {
   let root = false
   for (const w of args) {
     if (w === '--') break
-    if (w === '--root') root = true
+    if (matchesLongFlagPrefix(w, '--root')) root = true
     if (w.startsWith('-')) continue
     operands++
   }
@@ -1775,32 +1799,37 @@ function stashChangesBranch(args: string[]): boolean {
 }
 
 /**
- * True when `args`, the arguments of a `git update-ref` call, hold `--stdin` (claude-factory-c63.9).
- * `git update-ref --stdin` reads its own ref commands from standard input. This hook cannot read
- * that input. One stdin command, `symref-update HEAD <ref>`, points `HEAD` at a new branch. So
- * this function denies the whole call on the `--stdin` flag alone. It does not check the rest of
- * the call's own command-line words.
+ * True when `args`, the arguments of a `git update-ref` call, hold `--stdin` or an abbreviation
+ * of it (claude-factory-c63.9, claude-factory-c63.11).
  *
- * Real git 2.54 confirms the risk: `git update-ref --stdin`, with a piped `symref-update HEAD
- * refs/heads/<branch>` line, moves the branch that `git symbolic-ref --short HEAD` reports next.
- * A plain `git update-ref HEAD <sha>` or `git update-ref refs/heads/<name> <sha>`, with no
- * `--stdin`, only updates a ref's target commit. Neither one moves the `HEAD` symref itself, so
- * neither changes the current branch.
+ * `git update-ref --stdin` reads its own ref commands from standard input. This hook cannot read
+ * that input. One stdin command, `symref-update HEAD <ref>`, can point `HEAD` at a new branch.
+ * So this function denies the whole call on the `--stdin` flag alone. It does not check the rest
+ * of the call's command-line words.
+ *
+ * Real git 2.54 confirms this risk. When a piped `symref-update HEAD refs/heads/<branch>` line
+ * reaches `git update-ref --stdin`, it moves the branch. `git symbolic-ref --short HEAD` then
+ * reports the new branch.
+ *
+ * A plain `git update-ref HEAD <sha>`, with no `--stdin`, only updates a ref's target commit.
+ * The same is true for `git update-ref refs/heads/<name> <sha>`. Neither command moves the
+ * `HEAD` symref itself. So neither command changes the current branch.
  */
 function updateRefChangesBranch(args: string[]): boolean {
   for (const w of args) {
     if (w === '--') break
-    if (w === '--stdin') return true
+    if (matchesLongFlagPrefix(w, '--stdin')) return true
   }
   return false
 }
 
 /**
- * True when `verb`, a git subcommand word, can change the branch `gate.headOf` names next
- * (claude-factory-c63). `checkout` and `switch` always can, with any `args`. `branch`,
- * `symbolic-ref`, `rebase`, `stash`, `bisect` and `update-ref` can only with the `args` that
- * `branchRenameDenied`, `symbolicRefWrites`, `rebaseChangesBranch`, `stashChangesBranch`,
- * `bisectChangesBranch` and `updateRefChangesBranch` examine.
+ * Returns `true` when `verb` can change the next branch that `gate.headOf` names (claude-factory-c63).
+ * `verb` is a git subcommand.
+ *
+ * `checkout` and `switch` can change the branch with all `args`.
+ * `branch`, `symbolic-ref`, `rebase`, `stash`, `bisect` and `update-ref` can change the branch only with some `args`.
+ * The functions `branchRenameDenied`, `symbolicRefWrites`, `rebaseChangesBranch`, `stashChangesBranch`, `bisectChangesBranch` and `updateRefChangesBranch` examine those `args`.
  */
 function gitChangesBranch(verb: string, args: string[]): boolean {
   if (verb === 'checkout' || verb === 'switch') return true
