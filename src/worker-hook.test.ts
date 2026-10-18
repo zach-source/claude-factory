@@ -4087,12 +4087,23 @@ test('denyReason denies the AC19 wrapper-lead bench shape (claude-factory-p43v.2
   expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
 })
 
-// claude-factory-p43v.28: a bare `{}` word, as `xargs -I {}` uses it, is not dynamic. No shell
-// expands it. Before this fix, `cp` or `delete` after a `{}` word matched a kubectl mutating verb,
-// and denyReason denied an ordinary xargs command with no real git, gh, kubectl, ko or helm call.
+// A bare `{}` word is not dynamic at the command slot. No shell expands this word there.
+// `denyReason` must not read `cp` or `delete` after `{}` as a kubectl verb that changes
+// data. The command `xargs -I {}` puts `{}` at this slot. `denyReason` must not deny this
+// kind of `xargs` command, even with no real call to `git`, `gh`, `kubectl`, `ko` or
+// `helm`. This rule has the id claude-factory-p43v.28.
 //
-// `anyDynamicLiveApplyReason` runs only with a non-empty `personOnly` (src/worker-hook.ts:3959).
-// These rows need `ACME`, not `undefined`, to reach the buggy path at all.
+// `{}` is still dynamic outside the command slot. `commandAnchors` must read `{}` as not
+// dynamic only at the command slot. The `cmd[0]` check in `anyDynamicCommandReason` must
+// do the same. The `cmd[0]` check in `anyDynamicLiveApplyReason` must do the same. This
+// rule is in `dynamicCommandWord`, in `src/worker-hook.ts`. The rows below must still
+// pass after this fix. This rule has the id claude-factory-p43v.29.
+//
+// The function `anyDynamicLiveApplyReason` runs only when `personOnly` is not empty. This
+// rule is at `src/worker-hook.ts:3959`. The rows below must set `personOnly` to `ACME`.
+// They must not set `personOnly` to `undefined`. The value `ACME` makes the test run the
+// part of the code that had the bug. The value `undefined` does not make the test run
+// this part of the code.
 const ALLOW_XARGS_BARE_BRACES = [
   'xargs -I {} cp {} dest',
   'git ls-files | xargs -I {} cp {} out/',
@@ -4102,7 +4113,7 @@ const ALLOW_XARGS_BARE_BRACES = [
 ]
 
 test.each(ALLOW_XARGS_BARE_BRACES)(
-  'denyReason allows %j with personOnly acme (claude-factory-p43v.28: a bare {} word is not dynamic)',
+  'denyReason allows %j with personOnly acme (claude-factory-p43v.28/.29: {} at the command slot is not dynamic)',
   cmd => {
     expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
   },
@@ -4130,13 +4141,6 @@ test.each(DENY_BRACE_COMMAND_WORD)(
   'denyReason denies %j (claude-factory-p43v.29: a {} word at the command or verb slot stays dynamic)',
   cmd => {
     expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
-  },
-)
-
-test.each(ALLOW_XARGS_BARE_BRACES)(
-  'denyReason still allows %j with personOnly acme (claude-factory-p43v.29: dynamicCommandWord keeps the p43v.28 fix)',
-  cmd => {
-    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
   },
 )
 
@@ -4251,3 +4255,65 @@ test('denyReason finishes quickly on a long sudo -Z v env chain (claude-factory-
   expect(r).toBe(DYNAMIC_VERB_REASON)
   expect(ms).toBeLessThan(2000)
 })
+
+// claude-factory-p43v.33: Before this change, `scanForFirstDynamicPair` added an anchor only
+// for a correct pair, 2 dynamic words next to each other. After the `MAX_COMMAND_ANCHORS` cap,
+// a payload with only 1 dynamic word did not get an anchor. Each row that follows has only 1
+// dynamic word after the cap, with 1 or more literal words after it. This literal part can be
+// a resolved binary from `$(which git)`. Special code in `segments()` for parentheses can
+// divide the literal part into 2 pieces. It can also be only 1 dynamic command word (`$K`,
+// `$G`, or `$GH`) before a literal verb or flag.
+//
+// `R33` contains the flag `-R` many times. `sudo` has `-R` as its flag for "run as this role".
+// This hook's `WRAPPER_VALUE_FLAGS.sudo` does not contain `-R` as a value flag or as a bare
+// flag. Because of this, each pair is unknown to `commandAnchors`, and the chase continues
+// after the cap. `N33` contains `-Z v env` many times. The chase starts again at each nested
+// `env`, so these rows use the cap's other exit, in the nested-wrapper branch.
+const R33 = '-R / '.repeat(16)
+const N33 = '-Z v env '.repeat(9)
+
+const DENY_PAST_CAP_SINGLE_DYNAMIC_WORD = [
+  `sudo ${R33}$(which git) push o main`,
+  'sudo ' + R33 + '`which git` push o main',
+  `sudo ${R33}$K apply -f x`,
+  `sudo ${R33}$G -C . $V o main`,
+  `sudo ${R33}$GH -R a/b $V merge 5`,
+  `sudo ${R33}"$G" -c a.b=1 "\${V}" o main`,
+  `sudo ${N33}$(which git) push o main`,
+  `sudo ${N33}$K apply -f x`,
+]
+
+test.each(DENY_PAST_CAP_SINGLE_DYNAMIC_WORD)(
+  'denyReason denies %j (claude-factory-p43v.33: a lone dynamic word past the cap still anchors)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+// claude-factory-p43v.33: `sudo R ls` and `sudo R cp a b` have no dynamic word at all. They must
+// stay allowed: the fallback anchor only fires when the forward scan finds a real dynamic word.
+// `sudo R cp "$A" "$B"` already denies before this fix too (a true pair, `$A` next to `$B`, with
+// no flag between them). It is an accepted deny, not a new one from this fix.
+const ALLOW_PAST_CAP_NO_DYNAMIC_WORD = [`sudo ${R33}ls`, `sudo ${R33}cp a b`]
+
+test.each(ALLOW_PAST_CAP_NO_DYNAMIC_WORD)(
+  'denyReason allows %j (claude-factory-p43v.33: no over-deny when nothing past the cap is dynamic)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
+  },
+)
+
+test('denyReason still denies sudo R cp "$A" "$B" (claude-factory-p43v.33: a true pair past the cap is an accepted deny, unchanged by this fix)', () => {
+  const cmd = `sudo ${R33}cp "$A" "$B"`
+  expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+// claude-factory-p43v.27/.32 rows must stay denied: a true dynamic pair past the cap must still
+// win over the new single-word fallback, so a lone unrelated dynamic word earlier in a long
+// padding run never shadows the real `$G $V` pair that follows it.
+test.each([...DENY_CHASE_PAST_CAP_SKIPS_FLAGS])(
+  'denyReason still denies %j (claude-factory-p43v.33: a true pair still wins over the single-word fallback)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)

@@ -214,6 +214,7 @@ minor release may change the factory format, the CLI or the run state.
   | `NAME=value` operand with a dot, a dash or a leading digit in the name, or after a wrapper's own `--` | `env a.b=1 $G $V origin main`, `env -- A=1 $G $V origin main` | claude-factory-p43v.30 |
   | `timeout`'s duration operand in the GNU `1e1` or `inf` form | `timeout 1e1 $G $V origin main` | claude-factory-p43v.31 |
   | A nested wrapper's own name, or an unpaired dynamic flag value, stopping the chase early | `sudo -Z "$P" env $G $V origin main` | claude-factory-p43v.32 |
+  | A single dynamic word past the `MAX_COMMAND_ANCHORS` cap, with a literal tail and no dynamic partner | `sudo` plus 16 `-R /` pairs plus `$K apply -f x` | claude-factory-p43v.33 |
 
   `commandAnchors` (`src/worker-hook.ts`) gives a short list of start indices. It replaces the
   old single verb-slot index. It goes around a wrapper's flags, known or unknown. An unknown
@@ -223,12 +224,21 @@ minor release may change the factory format, the CLI or the run state.
   `sudo -Z v cp "$A" "$B"`. The hook cannot tell `v` apart from the value of `-Z`, with `cp` as
   the real command. This is an accepted deny, not an over-deny.
 
-  Fixed an over-deny: a bare `{}` word, as `xargs -I {}` uses it, is not dynamic. No shell
-  expands it.
+  The hook had a bug. A bare `{}` word matched a kubectl mutating verb by mistake. The match
+  happened at the command slot. This fix removes that match. `{}` stays dynamic in all other
+  positions (claude-factory-p43v.28).
 
-  Before this fix, `cp` or `delete` after a `{}` word matched a kubectl mutating verb. The hook
-  denied an ordinary command such as `xargs -I {} cp {} dest`, with no git, gh, kubectl, ko or
-  helm call in it. (claude-factory-p43v.28)
+  Before this fix, the hook read `{}` after `cp` or `delete`. The hook read it as a kubectl
+  mutating verb. The hook then denied an ordinary command. The command was
+  `xargs -I {} cp {} dest`. That command has no git, gh, kubectl, ko or helm call.
+
+  A later fix (claude-factory-p43v.29) kept the command-slot exemption, but made `{}` dynamic
+  again in every other position. Now `find -exec` cannot hide a real git call behind `{}`, and
+  `xargs -I {}` cannot hide a real gh call behind `{}` either.
+
+  Only 3 call sites in `src/worker-hook.ts` still skip `{}` at the command slot. One site is
+  `commandAnchors`. The other 2 sites are the `cmd[0]` check in `anyDynamicCommandReason`, and
+  the `cmd[0]` check in `anyDynamicLiveApplyReason`.
 
   The dynamic command-word check for `kubectl, ko, helm` (claude-factory-p43v.10) now returns
   `DYNAMIC_VERB_REASON`, not `LIVE_REASON`. `LIVE_REASON` names `kubectl`, `ko` or `helm` by name.

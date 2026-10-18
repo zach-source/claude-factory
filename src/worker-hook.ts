@@ -672,18 +672,55 @@ const MAX_COMMAND_ANCHORS = 16
  *
  * - The number of candidates becomes equal to `MAX_COMMAND_ANCHORS`.
  */
-// claude-factory-p43v.32: shared by the two capped exits of `commandAnchors`, right below. Scans
-// `words`, from `start` on, for the first dynamic pair: a non-flag word `dynamicCommandWord`
-// reads as dynamic, whose own next non-flag word `dynamicWord` also reads as dynamic. It skips
-// every flag word along the way, even one whose own attached value holds a `$` or a backtick. A
-// flag word is never the real command, so this scan must not stop on one, or settle for one
-// dynamic word with no dynamic partner. It pushes at most 2 more indices onto `anchors`. The
-// scan cost is O(n).
+// claude-factory-p43v.32/p43v.33: `commandAnchors`, below this comment, has two capped exits.
+// Both exits call this one function.
+//
+// The scan reads `words` from `start` onward.
+// It looks for the first dynamic pair.
+// A dynamic pair is 2 non-flag words, one right after the other, with only flag words in between.
+// The function `dynamicCommandWord` must give `true` for the first word.
+// The function `dynamicWord` must give `true` for the second word.
+//
+// The scan skips each flag word.
+// The scan skips a flag word even when its value has a `$` or a backtick.
+// A flag word is never the real command.
+// The scan must not stop on a flag word.
+// If a later pair exists, the scan must not accept one dynamic word with no partner.
+//
+// claude-factory-p43v.33: a real command can hide behind one dynamic word.
+// The tail after this word has only literal words.
+// One example is a resolved binary from `$(which git)`.
+// `segments()` splits this binary into 2 words.
+// The split happens at the parentheses.
+// A literal `push` word comes after the split.
+//
+// A second example is `$K apply -f x`.
+// In this example, `apply` is a plain word, not a dynamic word.
+// The pair rule alone never anchors this single dynamic word.
+// Some later checks need only `cmd[0]` to be dynamic.
+// These checks never run on the word in this example.
+// Two examples of these checks are the bare `$` or backtick check, and the live-apply check.
+//
+// This scan remembers the first dynamic word.
+// The word can have a partner.
+// The word can have no partner.
+// The scan pushes the word as a fallback index.
+// The forward scan must find no pair first.
+// A later pair always wins over the fallback.
+//
+// The padding shape `-R / ... $G $V o main` still gives `$G`/`$V` as a pair.
+// An earlier, unrelated dynamic word in the padding never hides this pair.
+//
+// The scan pushes at most 2 more indices onto `anchors`.
+// The scan never pushes more than 2 indices.
+// The scan runs in O(n) time.
 function scanForFirstDynamicPair(words: string[], start: number, anchors: number[]): void {
+  let firstSingle = -1
   for (let m = start; m < words.length; m++) {
     const mw = words[m]!
     if (mw.startsWith('-') && mw !== '-') continue
     if (!dynamicCommandWord(mw)) continue
+    if (firstSingle < 0) firstSingle = m
     let m2 = m + 1
     while (m2 < words.length && words[m2]!.startsWith('-') && words[m2] !== '-') m2++
     if (m2 >= words.length || !dynamicWord(words[m2]!)) continue
@@ -691,6 +728,7 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
     anchors.push(m2)
     return
   }
+  if (firstSingle >= 0) anchors.push(firstSingle)
 }
 
 function commandAnchors(words: string[]): number[] {
