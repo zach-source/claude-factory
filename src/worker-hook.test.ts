@@ -3023,8 +3023,8 @@ const DENY_GLOBAL_GIT_CONFIG_WRITE = [
   `python3 -c "open('/Users/acme/.gitconfig','a').write('x')"; git push`,
   'printf x >> ~/.git\\\nconfig; git push',
   'bash -c "printf x >> ~/.gitconfig"; git push',
-  'cd ~ && printf x >> .gitconfig && cd - && git push',
-  'cd ~/.config/git && printf x >> config; cd /r/acme/widget; git push',
+  'cd ~ && printf x >> .gitconfig && cd - && git status',
+  'cd ~/.config/git && printf x >> config; cd /r/acme/widget; git status',
   // AC2: order and nesting do not matter.
   'git push; printf x >> ~/.gitconfig',
   "printf x >> ~/.gitconfig; bash -c 'git push'",

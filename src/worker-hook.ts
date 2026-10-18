@@ -304,11 +304,21 @@ export interface HookGate {
  * a match. `denyReason` denies with `PUSH_REASON` when `headPush` is true and either
  * `branchChange` or `gitAdminPath` is true. This is the same rule as above. It now covers this
  * new, verb-free write path too.
+ *
+ * claude-factory-ty8y: `globalGitConfig` adds a fourth fact. A shell redirect, or another file
+ * tool, can write the global git config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`,
+ * `/etc/gitconfig`) with no `git` word. That file can set `remote.<n>.push`, `push.default` or an
+ * alias that pushes. `denyAt` sets `globalGitConfig` when a segment's raw words name such a path.
+ * `scanReason` denies with `PUSH_REASON` when `globalGitConfig` is true and the command holds any
+ * git word. It does this before the `headPush` check: an alias call, such as `git p`, sets no
+ * `headPush`. This is the same rule as `hasDangerousConfigEnv`.
+ * Residual, not fixed: a path built from shell variables or globs, and a Write or Edit tool write.
  */
 interface ScanState {
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
+  globalGitConfig: boolean
 }
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
@@ -858,6 +868,21 @@ const GIT_NAME_RE = /(^|[^A-Za-z0-9_.-])\.git(?![A-Za-z0-9_-])/i
 // See the bead's RISK section.
 // The worker must make one more Bash call with an explicit refspec.
 const GIT_DIR_FLAG_RE = /--git-dir|--absolute-git-dir|--git-path|--git-common-dir|GIT_DIR|GIT_COMMON_DIR/i
+
+// claude-factory-ty8y: a word that names the global git config file. The alternatives are:
+// `gitconfig` (`~/.gitconfig`, `/etc/gitconfig`), `git/config` (`$XDG_CONFIG_HOME/git/config`),
+// a `.config` directory word (a `cd` into it, then a bare `git/config` or `config` write), and
+// `XDG_CONFIG_HOME`. It does not match `vite.config.ts`, `.gitignore`, `widget.git` or `.git/config`.
+const GLOBAL_GIT_CONFIG_RE =
+  /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|(^|[^A-Za-z0-9_.-])\.config(?=\/|$)|XDG_CONFIG_HOME/i
+
+/**
+ * claude-factory-ty8y: true when any raw word of a segment names the global git config.
+ * It has no skip rule and no redirect parse, so it fails closed on a read as well as a write.
+ */
+function namesGlobalGitConfig(words: string[]): boolean {
+  return words.some(word => GLOBAL_GIT_CONFIG_RE.test(word))
+}
 
 // claude-factory-9zd5: removes a leading redirect operator from a word.
 // This applies to one word that holds the operator and the target, with no space.
@@ -3846,10 +3871,13 @@ export function scanReason(
   personOnly?: string[],
   gate?: HookGate,
 ): string | undefined {
-  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false }
+  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false, globalGitConfig: false }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
+  // claude-factory-ty8y: a global git config path word plus any git word denies, before the
+  // headPush check, because an alias call sets no headPush.
+  if (state.globalGitConfig && commandHasGitWord(command)) return PUSH_REASON
   if (!state.headPush) return undefined
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
@@ -3925,6 +3953,7 @@ function denyAt(
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
     const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
     if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
+    if (namesGlobalGitConfig(words)) state.globalGitConfig = true
     // claude-factory-25z.12: scan every word, not only cmd[0], so a wrapper this hook does not
     // strip by name cannot hide a kubectl, ko or helm word that follows it.
     if (personOnly?.length && anyLiveApplyWord(words, personOnly)) return LIVE_REASON
