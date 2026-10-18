@@ -2544,6 +2544,35 @@ test.each(DENY_REDIRECT_AMP_GT)('denyReason denies %j (claude-factory-cu5m.13, &
   expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
 })
 
+// claude-factory-abmq: bash joins a backslash-newline inside a redirect operator, so `>BSNL&1` is `>&1`.
+// segments() dropped the continuation and then read the `&` or `|` as a segment end.
+const DENY_REDIRECT_CONT = [
+  '>\\\n&1',
+  '>\\\n|log',
+  '<\\\n&0',
+  '2>\\\n&1',
+  '>\\\n\\\n&1',
+  '&\\\n>log',
+  '&\\\n>>log',
+].flatMap(op => [`git push origin feature ${op} main`, `git send-pack ../r.git feature ${op} main`])
+
+test.each(DENY_REDIRECT_CONT)('denyReason denies %j (claude-factory-abmq, continuation in redirect)', cmd => {
+  expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
+const ALLOW_REDIRECT_CONT = [
+  'git push origin feature 2>&1',
+  'git push origin feature >\\\n&1',
+  'git send-pack ../r.git feature >\\\n|log',
+]
+
+test.each(ALLOW_REDIRECT_CONT)(
+  'denyReason allows %j (claude-factory-abmq, continuation in redirect)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
+  },
+)
+
 // claude-factory-cu5m.14: oracle = git as a shell function that writes its args to a file; zsh 5.9
 // and bash run each row. A DENY op is one where the shell passes main to git. The test spawns no shell.
 const SHELL_OPERATOR_DENY = [
@@ -4585,6 +4614,132 @@ test('a single slow headOf call that spends the whole gate budget also skips the
   }
 })
 
+// claude-factory-2pdm: a command substitution inside double quotes runs in the shell. Every guard
+// must see its body, as it sees the same text outside quotes.
+const DQ_GATE: HookGate = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map(),
+  ghAliases: () => new Map(),
+}
+const BT = '`'
+const DENY_DQ_SUBST: [string, string][] = [
+  ['echo "$(git push origin main)"', PUSH_REASON],
+  ['x="$(git push origin main)"', PUSH_REASON],
+  ['v="$(gh pr merge 5)"', MERGE_REASON],
+  ['echo "${X:-$(git push origin main)}"', PUSH_REASON],
+  ['echo "$(git push "origin" main)"', PUSH_REASON],
+  ['echo "a $(git send-pack ../r.git main) b"', PUSH_REASON],
+  ['echo "$(gh pr merge 5)"', MERGE_REASON],
+  ['echo "$(rm -rf x)"', REASON],
+  ['echo "$(kubectl --context acme apply -f x)"', LIVE_REASON],
+  ['echo "$(git checkout main)"; git push', PUSH_REASON],
+  [`echo "${BT}git push origin main${BT}"`, PUSH_REASON],
+  // parse traps
+  ['echo "$(echo x # )\ngit push origin main)"', PUSH_REASON],
+  ['echo "$(case a in a) git push origin main;; esac)"', PUSH_REASON],
+  ['echo "$(git\\\n push origin main)"', PUSH_REASON],
+  ['echo "$(echo ")"; git push origin main)"', PUSH_REASON],
+  ['echo "$(echo \\); git push origin main)"', PUSH_REASON],
+  ['echo "$(echo $(true); git push origin main)"', PUSH_REASON],
+  ['echo "$(echo "$(echo "x")"; git push origin main)"', PUSH_REASON],
+  ['echo "$(echo ${x//)/}; git push origin main)"', PUSH_REASON],
+  ['echo "$(bash <<\'EOF\'\ngit push origin main\nEOF\n)"', PUSH_REASON],
+  ['echo "$(echo "$(git push origin main)")"', PUSH_REASON],
+  ['echo "$(echo \')\'; git push origin main)"', PUSH_REASON],
+  ['echo "$(echo "x"; git push origin main)"', PUSH_REASON],
+  ['echo "$(git push origin main', PUSH_REASON],
+  ['echo "$(cat <<\'EOF\'\nx\nEOF\n; git push origin main)"', PUSH_REASON],
+  ['echo "$(cat <<EOF\ngit push origin main\nEOF\n)"', PUSH_REASON],
+  ['echo "$(cat <<\'EOF\' ; git push origin main\nx\nEOF\n)"', PUSH_REASON],
+  // fallback keeps the quote reading: code after the closing quote stays visible
+  ['x="$(echo ${HOME})" && git push origin main', PUSH_REASON],
+  ['x="$(case a in a) true;; esac)" && git push origin main', PUSH_REASON],
+  ['x="$(echo \\;#)" && git push origin main', PUSH_REASON],
+  [`x="${BT}echo hi" && git push origin main`, PUSH_REASON],
+  // here-document delimiter words that continue
+  ['echo "$(bash <<\'EOF\'x\ngit push origin main\nEOFx\n)"', PUSH_REASON],
+  ['echo "$(bash <<E"OF"\ngit push origin main\nEOF\n)"', PUSH_REASON],
+  ['echo "$(bash <<E\\OF\ngit push origin main\nEOF\n)"', PUSH_REASON],
+  [`echo "$(bash <<'E'"OF"\ngit push origin main\nEOF\n)"`, PUSH_REASON],
+  // bash ends a here-document at a line that starts with the delimiter and then a paren
+  ['git commit -m "$(cat <<\'EOF\'\nmsg\nEOF)" && git push origin main', PUSH_REASON],
+  ['echo "$(bash <<\'EOF\'\nEOF)"; git push origin main', PUSH_REASON],
+  // a hash after a paren starts a comment
+  ['echo "$( (true)# )\ngit push origin main\n)"', PUSH_REASON],
+  // a quote char in a comment or here-document text is not a quote
+  ['echo "$(true # a"b\ngit push origin main\n)"', PUSH_REASON],
+  ['echo "$(true # don\'t\ngit push origin main\n)"', PUSH_REASON],
+  ["echo \"$(cat <<'EOF'\ndon't\nEOF\ngit push origin main\n)\"", PUSH_REASON],
+  ['echo "$(cat <<EOF\ndon\'t\nEOF\ngit push origin main\n)"', PUSH_REASON],
+  // a backslash-newline inside a lookahead of the substitution reader
+  ['echo "$\\\n(git push origin main)"', PUSH_REASON],
+  ['x="$\\\n(git push origin main)"', PUSH_REASON],
+  ['echo "$(echo $\\\n{x//)/}; git push origin main)"', PUSH_REASON],
+  ['echo "$(true; c\\\nase a in a) git push origin main;; esac)"', PUSH_REASON],
+  ['echo "$(cat <\\\n<\'EOF\'\n)\nEOF\ngit push origin main\n)"', PUSH_REASON],
+  // a hash after a close paren or inside a brace is not a comment
+  ['echo "$(echo $(true)#; git push origin main)"', PUSH_REASON],
+  ['echo "$(echo $((1))#; git push origin main)"', PUSH_REASON],
+  ['echo "$(cat <(true)#; git push origin main)"', PUSH_REASON],
+  ['echo "$(echo ${x:- #}; git push origin main)"', PUSH_REASON],
+  // a substitution after an empty segment still counts in order: the body moves HEAD before the push
+  ['; echo "$(git checkout main)"; git push', PUSH_REASON],
+]
+
+test.each(DENY_DQ_SUBST)('denyReason denies %j (double-quoted substitution)', (cmd, reason) => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
+})
+
+const ALLOW_DQ_SUBST = [
+  'echo "git push origin main"',
+  "echo 'git push origin main'",
+  "echo '$(git push origin main)'",
+  'echo "\\$(git push origin main)"',
+  "git commit -m \"$(cat <<'EOF'\nworker-hook: deny git push origin main in quotes\n\nIt don't scan rm -rf x.\nEOF\n)\"",
+  'git commit -m "$(cat <<-\'EOF\'\n\tgit push origin main\n\tEOF\n)"',
+  'git commit -m "$(date) fix"',
+  'echo "$((1+2))"',
+  'echo "$(date # don\'t panic\n)"',
+  'gh pr create --title t --body "$(cat .scratch/body.md)"',
+]
+
+test.each(ALLOW_DQ_SUBST)('denyReason allows %j (double-quoted text)', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeUndefined()
+})
+
+test('denyReason keeps a gh api graphql file query in double quotes denied', () => {
+  expect(denyReason('gh api graphql -f query="$(cat f)"', '/root/repo', ['acme'], DQ_GATE)).toBe(MERGE_REASON)
+})
+
+test('denyReason denies a deep double-quoted substitution nest', () => {
+  expect(denyReason('echo "$('.repeat(40) + 'true' + ')"'.repeat(40), '/root/repo', ['acme'], DQ_GATE)).toBe(
+    DEEP_COMMAND_REASON,
+  )
+})
+
+test('denyReason scans many double-quoted substitutions and an unmatched chain fast', () => {
+  const t0 = performance.now()
+  denyReason(Array.from({ length: 1000 }, () => '"$(true)"').join(' '), '/root/repo', ['acme'], DQ_GATE)
+  denyReason('echo "$(' + 'a "$('.repeat(1000), '/root/repo', ['acme'], DQ_GATE)
+  expect(performance.now() - t0).toBeLessThan(1000)
+})
+
+test('denyReason denies a spaced deep-open substitution chain in double quotes, fast (2pdm.16)', () => {
+  const rows = ['echo "' + '$(a '.repeat(2040), 'git push origin main #"' + '$(a '.repeat(2040)]
+  for (const row of rows) {
+    const t0 = performance.now()
+    expect(denyReason(row, '/root/repo', ['acme'], DQ_GATE)).toBeTruthy()
+    expect(performance.now() - t0).toBeLessThan(1000)
+  }
+})
+
+test('denyReason does not give the deep reason for a few fallback substitutions (2pdm.16)', () => {
+  expect(denyReason('echo "$(echo ${HOME}) $(echo ${PWD})"', '/root/repo', ['acme'], DQ_GATE)).not.toBe(
+    DEEP_COMMAND_REASON,
+  )
+})
+
 // claude-factory-cbai: a nested `env -S` or `env -i eval` command made the beads-actor scan cost
 // about 2x for each level. A 219-char command took 82 s, past the 10 s hook timeout, so the hook
 // failed open. These rows check the time of one denyReason call and pin the verdicts.
@@ -5750,3 +5905,61 @@ test('denyReason denies git -C sub $X push origin main (claude-factory-bjp0 AC3:
 test('denyReason allows git push origin factory/x (claude-factory-bjp0 AC4: control, a literal push to the current branch stays allowed)', () => {
   expect(denyReason('git push origin factory/x', '/w', undefined, BJP0_GATE_FACTORYX)).toBeUndefined()
 })
+
+// claude-factory-a8pr: macOS APFS resolves Git, GH, SH to the real binaries, so a capitalized
+// command word must get the same verdict as its lowercase twin.
+const A8PR_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+}
+const A8PR_ROOT = '/r/acme/widget'
+const A8PR_PERSON_ONLY = ['acme']
+const a8prVerdict = (cmd: string) => denyReason(cmd, A8PR_ROOT, A8PR_PERSON_ONLY, A8PR_GATE)
+
+const A8PR_DENY: [string, string][] = [
+  ['Git push origin main', 'git push origin main'],
+  ['GIT push origin main', 'git push origin main'],
+  ['Git-push origin main', 'git-push origin main'],
+  ['/usr/bin/Git push origin main', '/usr/bin/git push origin main'],
+  ['Git config --global alias.p push', 'git config --global alias.p push'],
+  ['Git checkout main && git push', 'git checkout main && git push'],
+  ['Gh pr merge 1', 'gh pr merge 1'],
+  ['GH pr merge 1', 'gh pr merge 1'],
+  ['Gh pr ready 1', 'gh pr ready 1'],
+  ['Gh api -X PUT repos/acme/widget/pulls/1/merge', 'gh api -X PUT repos/acme/widget/pulls/1/merge'],
+  ["SH -c 'git push origin main'", "sh -c 'git push origin main'"],
+  ["Sh -c 'git push origin main'", "sh -c 'git push origin main'"],
+  ["/bin/SH -c 'git push origin main'", "/bin/sh -c 'git push origin main'"],
+  ["BASH -c 'git push origin main'", "bash -c 'git push origin main'"],
+  ["Zsh -c 'git push origin main'", "zsh -c 'git push origin main'"],
+  ['Sudo Git push origin main', 'sudo git push origin main'],
+  ['Env Git push origin main', 'env git push origin main'],
+  ['Kubectl apply -f x.yaml --context acme', 'kubectl apply -f x.yaml --context acme'],
+  ['Helm upgrade x y --kube-context acme', 'helm upgrade x y --kube-context acme'],
+  ['Rm -rf /etc', 'rm -rf /etc'],
+  // U+017F (long s) folds to s on APFS; toLowerCase alone keeps it
+  ["ſh -c 'git push origin main'", "sh -c 'git push origin main'"],
+  ["/bin/ſh -c 'git push origin main'", "/bin/sh -c 'git push origin main'"],
+  ["baſh -c 'git push origin main'", "bash -c 'git push origin main'"],
+  ["zſh -c 'git push origin main'", "zsh -c 'git push origin main'"],
+  ["daſh -c 'git push origin main'", "dash -c 'git push origin main'"],
+  ["ſh -c 'gh pr merge 1'", "sh -c 'gh pr merge 1'"],
+  ["ſh -c 'git config --global alias.p push'", "sh -c 'git config --global alias.p push'"],
+  ['echo main | xargſ git push origin', 'echo main | xargs git push origin'],
+  ['ſudo rm -rf /etc', 'sudo rm -rf /etc'],
+]
+
+test.each(A8PR_DENY)('denyReason denies %j like its lowercase twin (claude-factory-a8pr)', (cmd, twin) => {
+  const want = a8prVerdict(twin)
+  expect(want).toBeDefined()
+  expect(a8prVerdict(cmd)).toBe(want)
+})
+
+test.each(['Git status', 'Gh pr view 1', 'Git log --oneline'])(
+  'denyReason allows %j (claude-factory-a8pr: reads stay allowed)',
+  cmd => {
+    expect(a8prVerdict(cmd)).toBeUndefined()
+  },
+)
