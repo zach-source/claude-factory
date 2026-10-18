@@ -1517,10 +1517,40 @@ function anyGhReason(words: string[], gate: HookGate, state: ScanState): string 
 // The verb search steps past them. GH_VALUE_FLAGS does the same for `gh`.
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
 // `git push`'s own flags that take a value word. The operand search steps past them.
-const GIT_PUSH_VALUE_FLAGS = new Set(['--repo', '-o', '--push-option', '--receive-pack', '--exec'])
+//
+// claude-factory-ctae.9: `git push`'s usage text lists `--recurse-submodules
+// (check|on-demand|no)` as a flag with a required value. Real git 2.54 confirmed this.
+// `git push --recurse-submodules no <remote>` reads `no` as that value, not as the remote.
+// `--no-recurse-submodules` takes no value of its own. This guard leaves it out of this set.
+const GIT_PUSH_VALUE_FLAGS = new Set([
+  '--repo',
+  '-o',
+  '--push-option',
+  '--receive-pack',
+  '--exec',
+  '--recurse-submodules',
+])
+
+// claude-factory-ctae.2: the long-flag members of `GIT_PUSH_VALUE_FLAGS`, for abbreviation checks.
+// Git parse-options accepts a unique prefix of each long flag name.
+// An exact word matches `GIT_PUSH_VALUE_FLAGS` above and skips its value word.
+// An abbreviation reaches the same flag. This guard cannot tell which word git reads as the value
+// and which as a refspec. It denies the whole push instead of a guess (fail closed).
+// claude-factory-ctae.9: `--recurse-submodules` joins this list for the same reason.
+const GIT_PUSH_LONG_VALUE_FLAGS = [
+  '--repo',
+  '--push-option',
+  '--receive-pack',
+  '--exec',
+  '--recurse-submodules',
+]
+
 // A `git push` flag that pushes every branch, or deletes a remote branch with no local match.
-// Each flag can reach a protected branch with no refspec that names it. This guard denies these flags outright.
-const PUSH_BROAD_FLAGS = new Set(['--all', '--branches', '--mirror', '--prune'])
+// Each flag can reach a protected branch with no refspec that names it.
+// This guard denies these flags outright.
+// claude-factory-ctae.1: it also denies a unique abbreviation of one flag.
+// Git parse-options accepts a unique long-flag prefix the same as the full flag name.
+const PUSH_BROAD_FLAGS = ['--all', '--branches', '--mirror', '--prune']
 // A refspec that has a `$variable`, a backtick, a glob (`*`, `?`, `[`, `]`) or a brace (`{`, `}`).
 // This guard cannot resolve any of these before git does. It treats the refspec as unknown and
 // fails closed. It denies the push.
@@ -1606,27 +1636,49 @@ function refspecTarget(
 }
 
 /**
- * Parses `tail`, which holds the arguments of a `git push` call after the `push` word.
+ * `tail` holds the arguments of a `git push` call after the `push` word.
  * `operands` holds every non-flag word, in order.
- * `operands[0]` is the remote, when named. The rest are refspecs.
+ * `operands[0]` is the remote, if the call names one. The other operands are refspecs.
  *
- * `broad` is true for these flags: `--all`, `--branches`, `--mirror` and `--prune`.
- * Each one can push or prune every branch with no refspec that names one.
+ * `broad` is true for `--all`, `--branches`, `--mirror` and `--prune`.
+ * Each of these flags can push or prune every branch. No refspec names a branch.
+ * claude-factory-ctae.1: `broad` is also true for a unique abbreviation of one of those flags.
+ * These flags do not hide a later word as a flag's own value. A real `-n` or `--dry-run`
+ * word elsewhere on the same line still means a dry run.
+ *
+ * `unreadableValueFlag` is `true` for 2 cases.
+ * Case 1: a unique abbreviation of a value flag in `GIT_PUSH_LONG_VALUE_FLAGS` (claude-factory-ctae.2).
+ * Case 2: a short-flag cluster that holds the letter `o`, but not `-o` alone.
+ * Examples are `-uo` and `-fo` (claude-factory-ctae.11).
+ *
+ * Each of these 2 forms hides a word behind a flag's own value. That hidden word can be a
+ * refspec, or another flag such as `-n`, and this guard cannot read it.
+ * claude-factory-ctae.12: the caller must check `unreadableValueFlag` before it reads `dryRun`.
+ * A word after one of these 2 forms that looks like `-n` or `--dry-run` is that flag's own value.
+ * It is not a dry-run flag. Real git 2.54 confirmed this risk: `git push --rep -n origin main`
+ * and `git push -uo -n origin` both move `main`.
+ *
  * `tags` is true for `--tags`.
  *
- * `dryRun` is true for `-n` or `--dry-run`.
- * This never pushes, so the caller allows it outright.
+ * `dryRun` is true for `-n` or `--dry-run`. A dry run never pushes. The caller allows it
+ * with no more checks, but only after it checks `unreadableValueFlag` first.
+ * claude-factory-ctae.3: a unique abbreviation of `--no-dry-run` clears `dryRun` again.
+ * Real git uses whichever of the 2 flags comes last on the command line (claude-factory-ctae.10).
+ * This guard's own rule only adds denies, so the guard stays fail closed.
  */
 function pushOperands(tail: string[]): {
   operands: string[]
   broad: boolean
+  unreadableValueFlag: boolean
   tags: boolean
   dryRun: boolean
 } {
   const operands: string[] = []
   let broad = false
+  let unreadableValueFlag = false
   let tags = false
   let dryRun = false
+  let noDryRun = false
   for (let i = 0; i < tail.length; i++) {
     const w = tail[i]!
     if (w === '--') continue
@@ -1636,14 +1688,21 @@ function pushOperands(tail: string[]): {
         i++
         continue
       }
-      if (PUSH_BROAD_FLAGS.has(w)) broad = true
+      // claude-factory-ctae.11: a short-flag cluster other than `-o` itself that holds the
+      // letter `o` (`-uo`, `-fo`) also reads the next word as `-o`'s value. This guard cannot
+      // tell that word from a refspec, so it fails closed the same way it does for an
+      // abbreviated long value flag.
+      if (!w.startsWith('--') && w !== '-o' && w.slice(1).includes('o')) unreadableValueFlag = true
+      else if (PUSH_BROAD_FLAGS.some(f => matchesLongFlagPrefix(w, f))) broad = true
+      else if (GIT_PUSH_LONG_VALUE_FLAGS.some(f => matchesLongFlagPrefix(w, f))) unreadableValueFlag = true
       else if (w === '--tags') tags = true
       else if (w === '-n' || w === '--dry-run') dryRun = true
+      else if (matchesLongFlagPrefix(w, '--no-dry-run')) noDryRun = true
       continue
     }
     operands.push(w)
   }
-  return { operands, broad, tags, dryRun }
+  return { operands, broad, unreadableValueFlag, tags, dryRun: dryRun && !noDryRun }
 }
 
 /**
@@ -1683,7 +1742,11 @@ function protectedBranchSet(gate: HookGate): { branches: Set<string>; unresolved
  * For these, this guard reads `currentBranch`.
  */
 function gitPushDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
-  const { operands, broad, tags, dryRun } = pushOperands(tail)
+  const { operands, broad, unreadableValueFlag, tags, dryRun } = pushOperands(tail)
+  // claude-factory-ctae.12: this check must come before the dryRun check. A word that looks
+  // like `-n` or `--dry-run`, right after an abbreviated value flag or an `-o` short-flag
+  // cluster, is really that flag's own value word. It is not a real dry-run flag.
+  if (unreadableValueFlag) return true
   if (dryRun) return false
   if (broad) return true
   const refspecs = operands.slice(1)
@@ -1871,37 +1934,83 @@ function gitConfigSubcommandPushDenied(configArgs: string[]): boolean {
 
 // claude-factory-zl5.35: `git send-pack` is the plumbing command that `git push` itself calls.
 // It moves refs to a remote over the same transports that `push` uses, such as ssh.
-//
+
 // It has no `push` word of its own, and its synopsis is `git send-pack [--all] [--dry-run]
 // [--mirror] [--stdin] [<host>:]<directory> [<ref>...]`. The first word that is not a flag is
 // the destination, not a refspec. The other words use the same refspec syntax that
 // `gitPushDenied` already reads. So this guard reuses `refspecTarget` on each one.
-//
+
 // claude-factory-zl5.40: an earlier version of this guard read no ref as a push of `HEAD` alone.
 // Real git confirmed the real rule: with no ref and no `--all`, send-pack pushes every local
 // branch to a same-named remote branch, the same broad reach as `push.default=matching`.
-//
+
 // This guard also ignored 2 flags. `--stdin` reads refs from its own stdin, text this guard
 // cannot read. `--mirror` has the same broad reach as `--all`, and also deletes refs.
-//
+
 // This guard now denies outright on `--mirror`, `--stdin`, or no ref at all. It still checks a
 // named ref against the protected branch set, the same as before.
-function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
+
+// claude-factory-ctae.4: these `send-pack` flags each use the next word as a value.
+// This guard skips the exact flag's value word. A short form of the flag also uses the
+// next word as a value, but this guard cannot read it. So `sendPackDenied` denies the
+// whole call instead of a guess.
+//
+// claude-factory-ctae.8: `--remote` joins this list. Real git 2.54's help text lists
+// `--[no-]remote <remote>` as a flag with a value. The man page does not list this flag.
+// `git send-pack --remote x ../remote.git` with no ref uses `x` as that value, not as a ref.
+// Without `--remote` in this set, this guard read `x` as the remote and the URL as the one ref.
+const SEND_PACK_VALUE_FLAGS = new Set(['--receive-pack', '--exec', '--push-option', '--remote'])
+
+// claude-factory-ctae.4: git's parse-options code accepts a unique prefix of a long flag name
+// here too. This guard checks `--all`, `--mirror` and `--stdin` the same way `pushOperands`
+// checks them for `git push`. `--no-stdin` stays an exact match. An exact match only relaxes
+// the guard.
+//
+// claude-factory-ctae.13: `sendPackDenied` and `pushReadsCurrentBranch` must parse a `send-pack`
+// call the same way. Before this change, each function had its own parser.
+// One parser can skip a flag's value word that the other parser does not skip.
+// A call can then pass both checks, when the call must fail at least one check.
+// Both functions now call this one parser.
+function sendPackOperands(tail: string[]): {
+  operands: string[]
+  broad: boolean
+  stdin: boolean
+  dryRun: boolean
+  unsafeValueFlag: boolean
+} {
   const operands: string[] = []
   let broad = false
   let dryRun = false
+  let noDryRun = false
   let stdin = false
-  for (const w of tail) {
+  let unsafeValueFlag = false
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
     if (w === '--') continue
     if (w.startsWith('-') && w !== '-') {
-      if (w === '--all' || w === '--mirror') broad = true
+      if (SEND_PACK_VALUE_FLAGS.has(w)) {
+        i++
+        continue
+      }
+      if (matchesLongFlagPrefix(w, '--all') || matchesLongFlagPrefix(w, '--mirror')) broad = true
       else if (w === '--dry-run' || w === '-n') dryRun = true
-      else if (w === '--stdin') stdin = true
+      else if (matchesLongFlagPrefix(w, '--no-dry-run')) noDryRun = true
+      else if (matchesLongFlagPrefix(w, '--stdin')) stdin = true
       else if (w === '--no-stdin') stdin = false
+      else if ([...SEND_PACK_VALUE_FLAGS].some(f => matchesLongFlagPrefix(w, f))) unsafeValueFlag = true
       continue
     }
     operands.push(w)
   }
+  return { operands, broad, stdin, dryRun: dryRun && !noDryRun, unsafeValueFlag }
+}
+
+function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
+  const { operands, broad, stdin, dryRun, unsafeValueFlag } = sendPackOperands(tail)
+  // claude-factory-ctae.12: this check must come before the dryRun check, the same order
+  // `gitPushDenied` uses. A word that looks like `-n` or `--dry-run`, right after an
+  // abbreviated value flag, is really that flag's own value word. It is not a real dry-run flag.
+  if (unsafeValueFlag) return true
   if (dryRun) return false
   if (broad || stdin) return true
   const refspecs = operands.slice(1)
@@ -2129,19 +2238,25 @@ function isHeadAliasRefspec(spec: string): boolean {
  *
  * A later branch change in the same command can move the branch past the name that `currentBranch` holds.
  * This function shows the risk. It does not resolve the real target.
+ *
+ * claude-factory-ctae.13: the `send-pack` branch now calls `sendPackOperands`, the same parser
+ * `sendPackDenied` uses.
+ *
+ * Before this change, this branch had its own scan, apart from `sendPackOperands`.
+ * That old scan did not clear `dryRun` on `--no-dry-run`.
+ * It also did not skip the value word of a flag in `SEND_PACK_VALUE_FLAGS`.
+ * The old scan can read a wrong `dryRun` value, or a wrong `operands` list, from the same
+ * `tail` that `sendPackDenied` reads correctly.
+ * This function can then return `false`, even when the call really reads `currentBranch`.
+ *
+ * Real git 2.54 confirmed the risk.
+ * In one test, an earlier word in the same command moved `currentBranch` to `main`.
+ * After that word, `git send-pack -n --no-dry-run o HEAD` really sent `HEAD`.
+ * Real git resolved that `HEAD` to `main`. The command was not a dry run.
  */
 function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
   if (isSendPack) {
-    const operands: string[] = []
-    let dryRun = false
-    for (const w of tail) {
-      if (w === '--') continue
-      if (w.startsWith('-') && w !== '-') {
-        if (w === '-n' || w === '--dry-run') dryRun = true
-        continue
-      }
-      operands.push(w)
-    }
+    const { operands, dryRun } = sendPackOperands(tail)
     if (dryRun) return false
     return operands.slice(1).some(isHeadAliasRefspec)
   }
