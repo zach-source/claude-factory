@@ -693,6 +693,11 @@ function commandAnchors(words: string[]): number[] {
     const bareFlags = WRAPPER_BARE_FLAGS[base]
     if (w === '--') {
       j++
+      // claude-factory-p43v.26: `timeout`'s duration word (`5`, `30s`) can also follow its own
+      // `--`. Skip it here too.
+      // If this check is absent, `j` stops on the duration word. The caller then reads the
+      // duration word, not the real command, as the only anchor.
+      if (base === 'timeout' && j < words.length && /^[\d.]+[smhd]?$/.test(words[j]!)) j++
       if (j >= words.length) return []
       const nb = baseWord(words[j]!)
       if (LEAD_WRAPPERS.has(nb)) {
@@ -709,6 +714,14 @@ function commandAnchors(words: string[]): number[] {
     }
     if (bareFlags?.has(w)) {
       j += 1
+      continue
+    }
+    // claude-factory-p43v.25: a `NAME=value` word can follow a wrapper's own name or flags.
+    // `sudo` and `env` both read this form as an environment variable to set for the real
+    // command, not as that command. Skip each one; `realCommand` already skips this form before
+    // it reads the wrapper's own name.
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+      j++
       continue
     }
     if (w.startsWith('-') && w !== '-') {
@@ -739,7 +752,25 @@ function commandAnchors(words: string[]): number[] {
     while (k2 < words.length && words[k2]!.startsWith('-') && words[k2] !== '-') k2++
     if (k2 >= words.length) break
     anchors.push(k2)
-    if (dyn || anchors.length >= MAX_COMMAND_ANCHORS) break
+    if (dyn) break
+    if (anchors.length >= MAX_COMMAND_ANCHORS) {
+      // claude-factory-p43v.27: the loop above stops at a set number of candidates. Many
+      // unknown flags in a row can use up that number before the loop finds the actual dynamic
+      // word.
+      //
+      // After the cap, check the remaining words one by one for the first dynamic word. Add
+      // that word, and the non-flag word after it, as two more candidates. The function cost
+      // stays O(n).
+      for (let m = k2; m < words.length; m++) {
+        if (!dynamicWord(words[m]!)) continue
+        anchors.push(m)
+        let m2 = m + 1
+        while (m2 < words.length && words[m2]!.startsWith('-') && words[m2] !== '-') m2++
+        if (m2 < words.length) anchors.push(m2)
+        break
+      }
+      break
+    }
     k = k2
   }
   return anchors
@@ -2100,7 +2131,20 @@ const REFSPEC_UNSAFE = /[$`*?[\]{}]/
 // dynamicWord also treats a leading tilde as dynamic. The shell reads a leading tilde as a home
 // directory, before it runs the word as a command. A matched word hides the real verb this
 // guard must read.
+//
+// claude-factory-p43v.28: the exact word `{}` is not dynamic. No shell expands a bare `{}`.
+// Brace expansion needs a comma or a range inside the braces, for example `{a,b}` or `{1..5}`.
+//
+// `xargs -I {}` reads each `{}` word and puts the input line there. xargs does this itself; the
+// shell does not change `{}`.
+//
+// Before this change, `dynamicWord('{}')` gave `true`. A command such as `xargs -I {} cp {} dest`
+// then read `{}` as a dynamic command word before `cp`. The guard denied it.
+//
+// A brace word with text inside it, for example `{push,}`, still matches REFSPEC_UNSAFE. It
+// stays dynamic.
 function dynamicWord(w: string): boolean {
+  if (w === '{}') return false
   return REFSPEC_UNSAFE.test(w) || w.startsWith('~')
 }
 

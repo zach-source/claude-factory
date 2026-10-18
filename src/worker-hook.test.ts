@@ -4026,3 +4026,85 @@ test('denyReason denies coproc NAME { $G $V o main; } (claude-factory-p43v.22: a
 test('denyReason denies coproc NAME { git push o main; } with PUSH_REASON (claude-factory-p43v.22: a literal push behind a coproc name keeps its own reason)', () => {
   expect(denyReason('coproc NAME { git push o main; }', '/x', undefined, P43V_GATE)).toBe(PUSH_REASON)
 })
+
+// claude-factory-p43v.25: `env` and `sudo` both read a `NAME=value` word after their own name, or
+// after their own flags, as an environment variable to set for the real command. commandAnchors
+// must skip that word too, the same way it skips one before the wrapper's own name.
+const DENY_WRAPPER_NAME_EQUALS_VALUE = [
+  'env A=1 $G $V o main',
+  'sudo A=1 $G $V o main',
+  'env -i A=1 B=2 $G $V o main',
+  'env A=1 $(which git) push o main',
+  'nohup env A=1 $G $V o main',
+]
+
+test.each(DENY_WRAPPER_NAME_EQUALS_VALUE)(
+  'denyReason denies %j (claude-factory-p43v.25: a NAME=value operand after a wrapper still hides the dynamic pair)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+const ALLOW_WRAPPER_NAME_EQUALS_VALUE_SAFE_PAYLOAD = ['env A=1 ls', 'env A=1 cp "$A" "$B"']
+
+test.each(ALLOW_WRAPPER_NAME_EQUALS_VALUE_SAFE_PAYLOAD)(
+  'denyReason allows %j (claude-factory-p43v.25: no over-deny from the NAME=value skip)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.26: `timeout`'s own duration word can follow its own `--`, the same way it
+// can follow a known or an unknown flag. commandAnchors must skip it there too.
+const DENY_TIMEOUT_DASHDASH_DURATION = ['timeout -- 5 $G $V o main', 'timeout -s KILL -- 5 $G $V o main']
+
+test.each(DENY_TIMEOUT_DASHDASH_DURATION)(
+  'denyReason denies %j (claude-factory-p43v.26: timeout -- DURATION still hides the dynamic pair)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason allows timeout -- 30 bun test (claude-factory-p43v.26: no over-deny from the timeout -- duration skip)', () => {
+  expect(denyReason('timeout -- 30 bun test', '/x', undefined, P43V_GATE)).toBeUndefined()
+})
+
+// claude-factory-p43v.27: MAX_COMMAND_ANCHORS caps the number of candidates the wrapper-flag
+// chase adds. A long run of unknown flag/value pairs can use up that cap before the chase
+// reaches the real dynamic word. commandAnchors must fall back to a single forward scan.
+test('denyReason denies sudo with 16 unknown -R / pairs before $G $V o main (claude-factory-p43v.27: the MAX_COMMAND_ANCHORS cap still finds the dynamic pair)', () => {
+  const cmd = 'sudo ' + '-R / '.repeat(16) + '$G $V o main'
+  expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason denies sudo with 8 real sudo value-flag pairs before $G $V o main (claude-factory-p43v.27: known value flags also exhaust the cap)', () => {
+  const cmd = 'sudo ' + '-R / -t 5 '.repeat(8) + '-R / $G $V o main'
+  expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason denies the AC19 wrapper-lead bench shape (claude-factory-p43v.27: sudo with 1024 unknown -Z v pairs before $G $V o main)', () => {
+  const cmd = 'sudo ' + '-Z v '.repeat(1024) + '$G $V o main'
+  expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
+// claude-factory-p43v.28: a bare `{}` word, as `xargs -I {}` uses it, is not dynamic. No shell
+// expands it. Before this fix, `cp` or `delete` after a `{}` word matched a kubectl mutating verb,
+// so denyReason denied an ordinary xargs command with no real git, gh, kubectl, ko or helm call.
+const ALLOW_XARGS_BARE_BRACES = [
+  'xargs -I {} cp {} dest',
+  'git ls-files | xargs -I {} cp {} out/',
+  'xargs -I {} cp {} "$D"',
+  'xargs -I{} cp {} "$D"',
+  'xargs -I {} delete {}',
+]
+
+test.each(ALLOW_XARGS_BARE_BRACES)(
+  'denyReason allows %j (claude-factory-p43v.28: a bare {} word is not dynamic)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)
+
+test('denyReason denies git {push,} o main (claude-factory-p43v.28: a brace word with text inside it stays dynamic)', () => {
+  expect(denyReason('git {push,} o main', '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
