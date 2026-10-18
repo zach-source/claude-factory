@@ -1823,3 +1823,70 @@ test.each(ALLOW_PUSH_AFTER_ENV_OR_GIT_DIR_MOVE_EXPLICIT_BRANCH)(
     expect(denyReason(cmd, '/root/repo')).toBeUndefined()
   },
 )
+
+// claude-factory-68gn.10: review round 2 found that an `env -S`/`env --split-string` value is
+// itself re-parsed as more `env` flags at run time. A `-C`/`--chdir` hidden inside that value
+// moves the child the same way a literal `-C` word would (checked on this host: `env -S '-C
+// /usr' pwd` prints `/usr`). `envChdirPresent` skipped the whole value word without reading it,
+// so each row below allowed before this fix (58eda29).
+const DENY_PUSH_AFTER_ENV_SPLIT_STRING_HIDES_CHDIR = [
+  "env -S '-C /other' git push origin HEAD",
+  "env --split-string '-C /other' git push origin HEAD",
+  "env -S'-C /other' git push origin HEAD",
+  "env --split-string='-C /other' git push origin HEAD",
+  "env -S '-u FOO -C /other' git push origin HEAD",
+]
+
+test.each(DENY_PUSH_AFTER_ENV_SPLIT_STRING_HIDES_CHDIR)(
+  'denyReason denies %j: an env -S/--split-string value hides a -C/--chdir (claude-factory-68gn.10)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+  },
+)
+
+test('denyReason allows an env -S/--split-string chdir to an explicit non-protected branch (claude-factory-68gn.10)', () => {
+  expect(denyReason("env -S '-C /other' git push origin feature", '/root/repo')).toBeUndefined()
+})
+
+// claude-factory-68gn.11: review round 2 found that `-a`/`--argv0` (GNU env's own zeroth-argument
+// flag) and a short-flag cluster whose last letter is a value flag (`-iu`, `-va`, `-0u`) were
+// both missing from the value-flag scan. Each row below allowed before this fix (58eda29): the
+// scan misread the value word right after one of these as `env`'s own command, and stopped
+// before it ever reached the `-C`/`--chdir` or `-S`/`--split-string` flag that came after it.
+const DENY_PUSH_AFTER_ENV_VALUE_FLAG_HIDES_CHDIR = [
+  'env -a x -C /other git push origin HEAD',
+  'env --argv0 x --chdir /other git push origin HEAD',
+  'env -iu FOO -C /other git push origin HEAD',
+  'env -va x -C /other git push origin HEAD',
+  'env -0u FOO --chdir=/other git push origin HEAD',
+]
+
+test.each(DENY_PUSH_AFTER_ENV_VALUE_FLAG_HIDES_CHDIR)(
+  'denyReason denies %j: -a/--argv0 or a clustered value flag hides a -C/--chdir (claude-factory-68gn.11)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+  },
+)
+
+// claude-factory-68gn.11: the same miss, but for envSplitStringValue's own scan: a push straight
+// to main, with no cd at all, hidden behind -a/-iu ahead of -S.
+const DENY_ENV_VALUE_FLAG_HIDES_SPLIT_STRING = [
+  "env -a x -S 'git push origin main'",
+  "env -iu FOO -S 'git push origin main'",
+]
+
+test.each(DENY_ENV_VALUE_FLAG_HIDES_SPLIT_STRING)(
+  'denyReason denies %j: -a/--argv0 or a clustered value flag hides -S/--split-string (claude-factory-68gn.11)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows an env -a/clustered-flag chdir or split-string to an explicit non-protected branch (claude-factory-68gn.11)', () => {
+  expect(denyReason('env -a x -C /other git push origin feature', '/root/repo')).toBeUndefined()
+  expect(denyReason('env -iu FOO -C /other git push origin feature', '/root/repo')).toBeUndefined()
+  expect(denyReason("env -a x -S 'git push origin feature'")).toBeUndefined()
+  expect(denyReason("env -iu FOO -S 'git push origin feature'")).toBeUndefined()
+})

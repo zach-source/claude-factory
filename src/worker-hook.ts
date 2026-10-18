@@ -1801,20 +1801,69 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * approximation: see src/worker-hook.test.ts for the differential checks and for the two
  * regression shapes that a blind jump past a miss would break.
  */
-// claude-factory-68gn.6: these GNU and BSD `env` flags take the next word as their own value,
-// not as `env`'s own command: `-u name`/`--unset name` removes a variable, and BSD `env` also
-// reads a value after `-P` (alternate PATH), `-L` (login class) and `-U` (login). A scan that
-// stops at the first word not starting with `-` mistakes that value for `env`'s own command, and
-// so misses a `-C`/`--chdir`/`-S`/`--split-string` flag that comes after it. Checked on macOS:
-// `env -u FOO -C /usr pwd` prints `/usr`, not the worktree root.
-const ENV_VALUE_FLAG_WORDS = new Set(['-u', '--unset', '-P', '-L', '-U'])
+// claude-factory-68gn.6: these GNU and BSD `env` flags take the next word as their own value.
+// They do not take the next word as `env`'s own command. `-u name`/`--unset name` removes a
+// variable. BSD `env` also reads a value after `-P` (alternate PATH), `-L` (login class) and
+// `-U` (login). A scan that stops at the first word not starting with `-` reads this value as
+// `env`'s own command by mistake. The scan then misses a `-C`/`--chdir`/`-S`/`--split-string`
+// flag that comes after it. Checked on macOS: `env -u FOO -C /usr pwd` prints `/usr`, not the
+// worktree root. claude-factory-68gn.11: GNU `env` also reads a value after `-a`/`--argv0` (the
+// zeroth argument of the command it runs). Checked on this host (GNU coreutils 9.11):
+// `env -a foo -C /usr pwd` prints `/usr`.
+const ENV_VALUE_FLAG_WORDS = new Set(['-u', '--unset', '-P', '-L', '-U', '-a', '--argv0'])
+
+// claude-factory-68gn.11: `-i` (`--ignore-environment`), `-0` (`--null`) and `-v` (`--debug`)
+// take no value of their own. So a short-flag cluster that mixes one or more of them with
+// exactly one value-taking flag still ends in that one value letter: `a` (`--argv0`), `u`
+// (`--unset`), or, on BSD `env`, `P`, `L` or `U`. `ENV_VALUE_FLAG_WORDS` matches only a whole
+// word. So it misses a cluster such as `-iu`, `-va` or `-0u`. Checked on this host: `env -iu FOO
+// -C /usr pwd` and `env -va x -C /usr pwd` both print `/usr`. A plain `-u FOO -C /usr pwd`
+// prints the same thing. A value letter with more text right after it in the same word
+// (`-iuFOO`) is the attached form of its own value. The word already carries the value, so no
+// next word needs skipping. This pattern does not match that shape: its `$` anchor requires the
+// value letter to be the word's last character.
+const ENV_CLUSTER_VALUE_FLAG = /^-[iv0]*[auPLU]$/
+
+/** True when `w` is an `env` flag whose own value is a separate word right after it. */
+function envValueFlagConsumesNextWord(w: string): boolean {
+  return ENV_VALUE_FLAG_WORDS.has(w) || ENV_CLUSTER_VALUE_FLAG.test(w)
+}
+
+/**
+ * Splits `value` into words on whitespace. This is the same simple word split that
+ * `env -S`/`env --split-string` itself does at run time (claude-factory-68gn.10).
+ */
+function splitStringWords(value: string): string[] {
+  return value.split(/\s+/).filter(Boolean)
+}
+
+/**
+ * True when `words` carries a `-C`/`--chdir` flag before its own command word. This reads the
+ * same shapes `envChdirPresent` reads (claude-factory-68gn.10). It is `envChdirPresent`'s own
+ * forward scan, pulled out on its own. This lets it run again on the words an
+ * `env -S`/`env --split-string` value splits into, not only on the words of the outer command.
+ */
+function wordsCarryChdir(words: string[]): boolean {
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k]!
+    if (w === '-C' || w === '--chdir') return true
+    if (/^--chdir=/.test(w)) return true
+    if (/^-[a-zA-Z]*C/.test(w)) return true
+    if (envValueFlagConsumesNextWord(w)) {
+      k++
+      continue
+    }
+    if (!w.startsWith('-')) return false
+  }
+  return false
+}
 
 /**
  * Reads the value an `env -S`/`env --split-string` word at `words[j]` would split and run, or
  * undefined when no such flag is present (claude-factory-zl5.42). Stops and returns undefined at
  * the first word that does not start with `-`: that word is `env`'s own command, and `-S` did not
- * appear before it. claude-factory-68gn.6: a word in `ENV_VALUE_FLAG_WORDS` consumes the next
- * word as its own value first, so that value cannot end this scan early.
+ * appear before it. claude-factory-68gn.6/.11: a word `envValueFlagConsumesNextWord` matches
+ * consumes the next word as its own value first, so that value cannot end this scan early.
  */
 function envSplitStringValue(words: string[], j: number): string | undefined {
   for (let k = j + 1; k < words.length; k++) {
@@ -1827,7 +1876,7 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
     // value sits right after the `S` in this one word).
     const shortCluster = /^-[a-zA-Z]*S([\s\S]*)$/.exec(w)
     if (shortCluster) return shortCluster[1] || words[k + 1]
-    if (ENV_VALUE_FLAG_WORDS.has(w)) {
+    if (envValueFlagConsumesNextWord(w)) {
       k++
       continue
     }
@@ -1843,19 +1892,42 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
  * `--chdir dir`), the attached long form (`--chdir=dir`), the attached short form (`-Cdir`), and a
  * short-flag cluster carrying `C` (`-vC dir`), the same shapes `envSplitStringValue` already
  * reads for `-S`. It stops at the first word that does not start with `-`: that word is `env`'s
- * own command, and no chdir flag appeared before it. claude-factory-68gn.6: a word in
- * `ENV_VALUE_FLAG_WORDS`, or a bare `-S`/`--split-string` (its value is `envSplitStringValue`'s
- * own concern, not this scan's), consumes the next word as its value first, so that value cannot
- * end this scan early and hide a `-C`/`--chdir` that comes after it.
+ * own command, and no chdir flag appeared before it. claude-factory-68gn.6/.11: a word
+ * `envValueFlagConsumesNextWord` matches consumes the next word as its own value first, so that
+ * value cannot end this scan early and hide a `-C`/`--chdir` that comes after it.
+ *
+ * claude-factory-68gn.10: GNU and BSD `env` both re-parse an `-S`/`--split-string` value as more
+ * of `env`'s own flags at run time, so a `-C`/`--chdir` hidden inside that value moves the child
+ * the same way a literal `-C` word would (checked on this host: `env -S '-C /usr' pwd` prints
+ * `/usr`). This reads the bare (`-S '-C /usr'`), attached (`-S'-C /usr'`, `--split-string=-C
+ * /usr`) and short-flag-cluster (`-vS '-C /usr'`) forms the same way `envSplitStringValue` does,
+ * and checks the split value's own words with `wordsCarryChdir` before trusting it is inert.
  */
 function envChdirPresent(words: string[], j: number): boolean {
   for (let k = j + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '-C' || w === '--chdir') return true
     if (/^--chdir=/.test(w)) return true
-    const shortCluster = /^-[a-zA-Z]*C/.exec(w)
-    if (shortCluster) return true
-    if (ENV_VALUE_FLAG_WORDS.has(w) || w === '-S' || w === '--split-string') {
+    const shortClusterC = /^-[a-zA-Z]*C/.exec(w)
+    if (shortClusterC) return true
+    if (w === '-S' || w === '--split-string') {
+      if (wordsCarryChdir(splitStringWords(words[k + 1] ?? ''))) return true
+      k++
+      continue
+    }
+    const longEq = /^--split-string=([\s\S]*)$/.exec(w)
+    if (longEq) {
+      if (wordsCarryChdir(splitStringWords(longEq[1] ?? ''))) return true
+      continue
+    }
+    const shortClusterS = /^-[a-zA-Z]*S([\s\S]*)$/.exec(w)
+    if (shortClusterS) {
+      const val = shortClusterS[1] || words[k + 1]
+      if (wordsCarryChdir(splitStringWords(val ?? ''))) return true
+      if (!shortClusterS[1]) k++
+      continue
+    }
+    if (envValueFlagConsumesNextWord(w)) {
       k++
       continue
     }

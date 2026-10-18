@@ -398,11 +398,18 @@ A later review found 4 more disguised forms. The hook now denies these too:
 - a `cd`, `pushd`, `popd` or `chdir` word anywhere before `git push` or `git send-pack`, in this
   segment or an earlier one. zsh's own `chdir` builtin does the same job as `cd`. Each one can
   move the push to a different repository. An `env -C` flag, an `env --chdir` flag, or a
-  `git --git-dir` flag moves the one command it wraps the same way. The hook cannot read the
-  branch in that other repository. So a push that names `HEAD` or `@`
+  `git --git-dir` flag moves the one command it wraps the same way. A `-C`/`--chdir` flag hidden
+  inside an `env -S`/`env --split-string` value moves it the same way too: GNU and BSD `env`
+  both re-parse that value as more of `env`'s own flags at run time, for example
+  `env -S '-C /other' git push origin HEAD`. The hook cannot read the branch in that other
+  repository. So a push that names `HEAD` or `@`
   denies outright, with a distinct reason (`PUSH_DIR_REASON`) that tells the worker to name the
   branch directly, instead of retrying the same command. A push to an explicit branch still
   allows, as long as that branch is not itself protected.
+- a value flag ahead of `-C`/`--chdir` or `-S`/`--split-string`, including `-a`/`--argv0` (the
+  zeroth argument of the command `env` runs) and a short-flag cluster whose last letter is a
+  value flag, such as `-iu`, `-va` or `-0u`. Each one takes the next word as its own value, not
+  as `env`'s own command, for example `env -iu FOO -C /other git push origin HEAD`.
 
 The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
 read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook

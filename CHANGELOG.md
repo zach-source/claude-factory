@@ -853,6 +853,19 @@ minor release may change the factory format, the CLI or the run state.
     flag ahead of `-C`/`--chdir` or `-S`/`--split-string` hid it: `env -u
     FOO -C /other git push origin HEAD` allowed, the same way a real
     `env -u FOO -C /usr pwd` prints `/usr`, not the worktree root.
+  - Fix (review round 2): `envChdirPresent` now also reads a `-C`/
+    `--chdir` flag hidden inside an `env -S`/`env --split-string` value.
+    GNU and BSD `env` both re-parse that value as more of `env`'s own
+    flags at run time: `env -S '-C /usr' pwd` prints `/usr`. Before this
+    fix, `env -S '-C /other' git push origin HEAD` allowed.
+    (claude-factory-68gn.10)
+  - Fix (review round 2): the value-flag skip above also covers `-a`/
+    `--argv0` (the zeroth argument of the command `env` runs) and a
+    short-flag cluster whose last letter is a value flag, such as `-iu`,
+    `-va` or `-0u`. Before this fix, `env -iu FOO -C /other git push
+    origin HEAD` and `env -a x -S 'git push origin main'` both allowed:
+    `env -iu FOO -C /usr pwd` prints `/usr` the same way `env -u FOO -C
+    /usr pwd` does. (claude-factory-68gn.11)
 - `worker-hook` now denies an `env -S`/`env --split-string` value that holds a dollar sign, for
   example `git ${FOO} origin main`. `env` changes a `${NAME}` word into one command word when it
   runs, so the old check on the typed text alone can miss a real push or merge hidden this way.
