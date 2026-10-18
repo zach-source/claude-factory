@@ -2292,6 +2292,16 @@ function gitReason(
     if (pushTail?.includes('-C')) uncertainChdirUnsafe = true
   }
   if (!pushTail) return undefined
+  // claude-factory-3f2z.9: `uncertainChdirUnsafe` can have the value `true`.
+  // When it has this value, the verb position that this code finds is not correct.
+  // Then `pushTail` is also incorrect, not only `dir`.
+  // The correct refspec can be hard to see in an incorrect `pushTail`.
+  // It can look like a remote name or one more operand.
+  //
+  // Git reads the correct verb. That verb is after the incorrect one in the command. Git pushes the current branch to that verb.
+  // This guard does not trust `pushTail`, so it cannot parse it.
+  // It denies the push directly. It does not get to `gitPushDenied` or `sendPackDenied`.
+  if (uncertainChdirUnsafe) return PUSH_DIR_REASON
   if (pushReadsCurrentBranch(pushTail, isSendPack)) state.headPush = true
   // claude-factory-68gn: a --git-dir flag moves the push the same way a cd does, so it folds into
   // `moved` here instead of into `dir`. Once `moved`, a -C value is not trusted either: a relative

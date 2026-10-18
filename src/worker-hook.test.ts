@@ -1270,9 +1270,17 @@ test.each(GIT_CHDIR_UNSAFE_ROWS)(
 // push or send-pack verb. Before the fix, the old code trusted that fake word outright and
 // missed a real -C word that came after it. gate.headOf then read gate.cwd, an unprotected dir,
 // and the push allowed.
+// claude-factory-3f2z.9 (P1 fail-open regression): the fallback found the fake verb's own
+// `pushTail`, with no refspec, a remote-only operand, or `--force`. The old code still asked
+// gitPushDenied/sendPackDenied with that wrong pushTail. A bare push, or a push with no
+// branch-naming refspec, read as safe there, so the push allowed.
 const GIT_CHDIR_FAKE_VERB_ROWS: [string][] = [
   ['git --attr-source push -C /acme/prot push origin HEAD'],
   ['git --attr-source send-pack -C /acme/prot send-pack origin HEAD'],
+  ['git --attr-source push -C /acme/prot push'],
+  ['git --attr-source push -C /acme/prot push origin'],
+  ['git --attr-source push -C /acme/prot push --force'],
+  ['git --attr-source send-pack -C /acme/prot send-pack origin'],
 ]
 
 test.each(GIT_CHDIR_FAKE_VERB_ROWS)(
