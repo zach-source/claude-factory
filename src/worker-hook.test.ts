@@ -1394,19 +1394,23 @@ test('denyReason keeps denying when the real -C comes before a value-flag word (
 //
 // A value word that starts with `-` can look like a `-C` flag. gitChdir then cannot tell a
 // real `-C <dir>` word apart from this value word.
-// gitChdir must fail closed in this case. It must deny with PUSH_DIR_REASON, and must not
-// call gate.headOf.
+// gitChdir must fail closed in this case. It must not call gate.headOf.
 // claude-factory-bemr.12: `--super-prefix` stands in for `--attr-source` here. `--attr-source`
 // moved into `GIT_VALUE_FLAGS` under claude-factory-bemr.9, so it no longer tests this row's
 // point (a flag this hook does not know). `--super-prefix` is a real git global flag, and this
 // hook still does not know it.
+//
+// claude-factory-bemr.16 (AC20): each command here has a literal `-C` word in `tail`. The
+// uncertain-path alias check now denies these with `ALIAS_USE_REASON`, before `gitChdir` ever
+// runs. This is a deny-to-deny reason change: the row stayed denied, and `gate.headOf` is still
+// never called.
 const GIT_CHDIR_UNSAFE_ROWS: [string][] = [
   ['git --super-prefix -C -C /acme/prot push origin HEAD'],
   ['git --super-prefix -C -C /acme/prot send-pack origin HEAD'],
 ]
 
 test.each(GIT_CHDIR_UNSAFE_ROWS)(
-  'denyReason fails closed on an unresolved -C value, for %j (claude-factory-3f2z.7)',
+  'denyReason fails closed on an unresolved -C value, for %j (claude-factory-3f2z.7, bemr.16)',
   cmd => {
     const dirs: (string | undefined)[] = []
     const gate: HookGate = {
@@ -1420,7 +1424,7 @@ test.each(GIT_CHDIR_UNSAFE_ROWS)(
       // reaches the `-C`-unsafe fallback this row tests.
       gitAliases: () => new Map(),
     }
-    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_DIR_REASON)
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(ALIAS_USE_REASON)
     expect(dirs).toEqual([])
   },
 )
@@ -1445,8 +1449,11 @@ const GIT_CHDIR_FAKE_VERB_ROWS: [string][] = [
   ['git --super-prefix send-pack -C /acme/prot send-pack origin'],
 ]
 
+// claude-factory-bemr.16 (AC20): each row has a literal `-C` word in `tail`. The uncertain-path
+// alias check now denies these with `ALIAS_USE_REASON`, before the fake-verb push logic below it
+// ever runs. Deny-to-deny reason change: `gate.headOf` stays uncalled.
 test.each(GIT_CHDIR_FAKE_VERB_ROWS)(
-  'denyReason does not trust a fake push/send-pack word as the verb, for %j (claude-factory-3f2z.8)',
+  'denyReason does not trust a fake push/send-pack word as the verb, for %j (claude-factory-3f2z.8, bemr.16)',
   cmd => {
     const dirs: (string | undefined)[] = []
     const gate: HookGate = {
@@ -1458,7 +1465,7 @@ test.each(GIT_CHDIR_FAKE_VERB_ROWS)(
       // claude-factory-bemr.12: see GIT_CHDIR_UNSAFE_ROWS above.
       gitAliases: () => new Map(),
     }
-    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_DIR_REASON)
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(ALIAS_USE_REASON)
     expect(dirs).toEqual([])
   },
 )
@@ -3315,16 +3322,19 @@ test('denyReason denies "git p origin main": an alias to push denies the same as
   expect(denyReason('git p origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
 })
 
-test('denyReason denies "git -C /w p origin main", and reads gate.gitAliases for dir /w (claude-factory-bemr, AC2)', () => {
-  const dirs: (string | undefined)[] = []
+// claude-factory-bemr.16: "git -C /w p origin main" has a -C word before the non-builtin verb
+// p. This guard no longer reads gate.gitAliases at dir /w: it denies ALIAS_USE_REASON outright,
+// with no call to gate.gitAliases at all (AC15).
+test('denyReason denies "git -C /w p origin main" with ALIAS_USE_REASON, and never calls gate.gitAliases (claude-factory-bemr.16, AC15)', () => {
+  let calls = 0
   const gate: HookGate = {
-    gitAliases: dir => {
-      dirs.push(dir)
+    gitAliases: () => {
+      calls++
       return new Map([['p', 'push']])
     },
   }
-  expect(denyReason('git -C /w p origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
-  expect(dirs).toContain('/w')
+  expect(denyReason('git -C /w p origin main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+  expect(calls).toBe(0)
 })
 
 test('denyReason denies "git CO main && git push o HEAD": the alias lookup folds the verb to lower case (claude-factory-bemr, AC3)', () => {
@@ -3455,6 +3465,8 @@ const BEMR_AC7_ALLOW_COMMANDS = [
   'git st',
   'git lg',
   'gh pv 5',
+  // claude-factory-bemr.16 (AC17): a no-value global flag still allows an alias with no -C word.
+  'git --no-pager co feature',
 ]
 
 test.each(BEMR_AC7_ALLOW_COMMANDS)(
@@ -3509,24 +3521,27 @@ test('denyReason calls neither gate.gitAliases nor gate.ghAliases for a builtin 
   expect(calls.ghAliases).toBe(0)
 })
 
-test('denyReason calls gate.gitAliases at most once per distinct dir, within MAX_HEAD_DIRS=8 (claude-factory-bemr, AC8)', () => {
-  const calls: (string | undefined)[] = []
+// claude-factory-bemr.16: gate.gitAliases now takes no dir argument. It always reads the tool
+// call's own cwd. memoGate keeps one cached value for the whole denyReason call, the same way
+// it already does for gate.ghAliases, so a command with many segments spawns git config at
+// most once.
+test('denyReason calls gate.gitAliases at most once for one denyReason call, across many segments (claude-factory-bemr.16, AC8)', () => {
+  let calls = 0
   const gate: HookGate = {
-    gitAliases: dir => {
-      calls.push(dir)
+    gitAliases: () => {
+      calls++
       return new Map()
     },
   }
-  const command = Array.from({ length: 8 }, (_, i) => `git -C d${i} x main`).join('; ')
+  const command = Array.from({ length: 8 }, (_, i) => `git x${i} main`).join('; ')
   expect(denyReason(command, undefined, undefined, gate)).toBeUndefined()
-  expect(calls.length).toBe(8)
-  expect(new Set(calls).size).toBe(8)
+  expect(calls).toBe(1)
 })
 
-// claude-factory-bemr (AC8): a 9th distinct dir past MAX_HEAD_DIRS=8 gets an unresolved table
-// with no real call, the same fail-closed answer gate.headOf already gives past that cap. The
-// command then denies with ALIAS_USE_REASON instead of guessing that dir's alias table.
-test('denyReason denies with ALIAS_USE_REASON past MAX_HEAD_DIRS=8 distinct dirs (claude-factory-bemr, AC8)', () => {
+// claude-factory-bemr.16 (AC15): a -C word before a non-builtin verb denies ALIAS_USE_REASON
+// outright, for every segment, with no call to gate.gitAliases at all. A command with many such
+// segments must not need many git config spawns, or any.
+test('denyReason denies with ALIAS_USE_REASON and calls gate.gitAliases 0 times for many "-C <dir> <non-builtin verb>" segments (claude-factory-bemr.16, AC15)', () => {
   let calls = 0
   const gate: HookGate = {
     gitAliases: () => {
@@ -3536,7 +3551,7 @@ test('denyReason denies with ALIAS_USE_REASON past MAX_HEAD_DIRS=8 distinct dirs
   }
   const command = Array.from({ length: 9 }, (_, i) => `git -C d${i} x main`).join('; ')
   expect(denyReason(command, undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
-  expect(calls).toBeLessThanOrEqual(8)
+  expect(calls).toBe(0)
 })
 
 // claude-factory-bemr (AC9): this spawns the real `bun src/worker-hook.ts` binary.
@@ -3718,11 +3733,12 @@ test("run as `bun src/worker-hook.ts`, a real git alias set only in the tool cal
   })
 }, 20_000)
 
-// claude-factory-bemr.6 (AC13): a relative -C value must resolve against the tool call's own cwd.
-// It must not resolve against the hook process's own cwd.
-// sub is a plain subdirectory of cwdDir, with no .git of its own.
-// git -C sub still reads cwdDir's alias table, the same way real git walks up to find the repo.
-test("run as `bun src/worker-hook.ts`, a relative -C resolves against the tool call's own cwd (claude-factory-bemr.6, AC13)", async () => {
+// claude-factory-bemr.16 (AC15): a -C word before a non-builtin verb now denies ALIAS_USE_REASON
+// outright, even when the dir it names really does hold the alias the old fold would have found.
+// This test starts the real binary. cwdDir sets alias.p = push. sub is a plain subdirectory of
+// cwdDir, with no .git of its own. The old fold would have read cwdDir's table and found p, and
+// denied PUSH_REASON. The new guard never computes that dir at all.
+test('run as `bun src/worker-hook.ts`, "git -C sub p origin main" denies ALIAS_USE_REASON (claude-factory-bemr.16, AC15)', async () => {
   const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-root2-'))
   Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
   const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-cwd2-'))
@@ -3746,32 +3762,45 @@ test("run as `bun src/worker-hook.ts`, a relative -C resolves against the tool c
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: PUSH_REASON,
+      permissionDecisionReason: ALIAS_USE_REASON,
     },
   })
 }, 20_000)
 
-// claude-factory-bemr.8 (AC13): real git applies each -C word in order.
-// For example, `git -C a -C b` lands in `a/b`, not only in `b`.
-// A guard that reads only the last -C word asks for the alias table of the wrong directory.
-test('denyReason reads gate.gitAliases for the folded dir a/b with "git -C a -C b p origin main" (claude-factory-bemr.8, AC13)', () => {
-  const dirs: (string | undefined)[] = []
-  const gate: HookGate = {
-    gitAliases: dir => {
-      dirs.push(dir)
-      return new Map([['p', 'push']])
-    },
-  }
-  expect(denyReason('git -C a -C b p origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
-  expect(dirs).toContain('a/b')
-})
+// claude-factory-bemr.16 (AC15): the plan's own 3 example bypasses from review rounds 1-4 each
+// deny ALIAS_USE_REASON, with no call to gate.gitAliases. None of these commands reaches the
+// table lookup: each has a -C word before, or anywhere around, the non-builtin verb.
+const BEMR16_AC15_COMMANDS = [
+  'git -C sub co main && git push o HEAD',
+  'git -C a -C b p origin main',
+  'git --attr-source -- -C other p origin main',
+]
 
-// claude-factory-bemr.8 (AC13): this test starts the real binary.
-// The directory cwdDir/a has no alias of its own.
-// Only cwdDir/a/b sets alias.p = push. It is a separate git repository.
-// If the guard reads only the last -C word (`b`, relative to cwdDir), it misses this repository.
-// It then reads the table of cwdDir instead.
-test('run as `bun src/worker-hook.ts`, "git -C a -C b" folds both -C words before it reads the alias table (claude-factory-bemr.8, AC13)', async () => {
+test.each(BEMR16_AC15_COMMANDS)(
+  'denyReason denies %j with ALIAS_USE_REASON, and never calls gate.gitAliases (claude-factory-bemr.16, AC15)',
+  cmd => {
+    let calls = 0
+    const gate: HookGate = {
+      headOf: () => 'factory/x',
+      originHead: () => 'main',
+      gitAliases: () => {
+        calls++
+        return new Map([
+          ['co', 'checkout'],
+          ['p', 'push'],
+        ])
+      },
+    }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+    expect(calls).toBe(0)
+  },
+)
+
+// claude-factory-bemr.16 (AC15): this test starts the real binary. cwdDir/a has no alias of its
+// own. Only cwdDir/a/b sets alias.p = push. The old fold would have read cwdDir/a/b's table
+// through 2 folded -C words and found p, and denied PUSH_REASON. The new guard denies
+// ALIAS_USE_REASON outright instead, with no git config spawn for the alias table.
+test('run as `bun src/worker-hook.ts`, "git -C a -C b p origin main" denies ALIAS_USE_REASON (claude-factory-bemr.16, AC15)', async () => {
   const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr8-root-'))
   Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
   const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr8-cwd-'))
@@ -3798,7 +3827,102 @@ test('run as `bun src/worker-hook.ts`, "git -C a -C b" folds both -C words befor
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
+      permissionDecisionReason: ALIAS_USE_REASON,
+    },
+  })
+}, 20_000)
+
+// claude-factory-bemr.16 (AC14): this is the bead's own original repro. A -C word that sits
+// after the git verb (`git sw -C main`, where sw is an alias for switch) is not a global flag at
+// all: real git's switch reads its own -C as a create-and-switch flag. The old gitGlobalDirFlags
+// fold scanned the whole tail, found this post-verb -C, and asked gate.gitAliases for the wrong
+// directory ("main"). That directory's table had no sw entry, so the old guard allowed the
+// command. The new guard reads gate.gitAliases at the tool call's own cwd only, with no fold, so
+// it resolves sw -> switch correctly, sees switch changes the branch, and denies the later push.
+test('denyReason denies "git sw -C main && git push origin HEAD" with PUSH_REASON (claude-factory-bemr.16, AC14)', () => {
+  const gate: HookGate = {
+    headOf: () => 'factory/x',
+    originHead: () => 'main',
+    gitAliases: () => new Map([['sw', 'switch']]),
+  }
+  expect(denyReason('git sw -C main && git push origin HEAD', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.16 (AC14): --exec-path (2-word form, no =) is an unknown flag that takes
+// no attached value, so the verb search stays unsure: firstVerbIndex reads the next word, /x, as
+// the unsure candidate verb. The uncertain-path -C check then denies outright, with no attempt to
+// place the real -C word before or after the real verb (sw).
+test('denyReason denies "git --exec-path /x sw -C main && git push origin HEAD" with ALIAS_USE_REASON (claude-factory-bemr.16, AC14)', () => {
+  const gate: HookGate = {
+    headOf: () => 'factory/x',
+    originHead: () => 'main',
+    gitAliases: () => new Map([['sw', 'switch']]),
+  }
+  expect(
+    denyReason('git --exec-path /x sw -C main && git push origin HEAD', undefined, undefined, gate),
+  ).toBe(ALIAS_USE_REASON)
+})
+
+// claude-factory-bemr.16 (AC16): a -C before a builtin verb is not changed by this fix. The
+// alias-resolution block never runs for a builtin verb, so these 3 rows keep their old outcomes.
+// "status" and "log" are read-only, so they allow. "push" denies PUSH_REASON through gitChdir,
+// the separate, already-correct pre-verb -C fold that only the push path uses.
+test('denyReason allows "git -C sub status" and "git -C sub log" (claude-factory-bemr.16, AC16)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['co', 'checkout']]) }
+  expect(denyReason('git -C sub status', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git -C sub log', undefined, undefined, gate)).toBeUndefined()
+})
+
+test('denyReason denies "git -C sub push origin factory/x" with PUSH_REASON when factory/x is protected (claude-factory-bemr.16, AC16)', () => {
+  const gate: HookGate = {
+    protectedBranches: ['factory/x'],
+    gitAliases: () => new Map([['co', 'checkout']]),
+  }
+  expect(denyReason('git -C sub push origin factory/x', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.16 (AC18): this test starts the real binary, with input.cwd in a second
+// repo that sets a local alias.p = push. "git p origin main" has no -C word, so it reaches the
+// table lookup at cwd and denies PUSH_REASON. "git -C . p origin main" has a -C word before the
+// verb, so it denies ALIAS_USE_REASON outright, with no git config spawn for the alias table.
+test('run as `bun src/worker-hook.ts`, AC18: cwd alias denies PUSH_REASON with no -C, ALIAS_USE_REASON with -C . (claude-factory-bemr.16, AC18)', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr16-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
+  const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr16-cwd-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', cwdDir])
+  Bun.spawnSync(['git', '-C', cwdDir, 'config', 'alias.p', 'push'])
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr16-gh-config-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  env.CLAUDE_PROJECT_DIR = projectDir
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  delete env.GIT_CONFIG_GLOBAL
+  env.GH_CONFIG_DIR = ghConfigDir
+  const plainInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git p origin main' },
+  })
+  const { out: plainOut, code: plainCode } = await run(plainInput, env)
+  expect(plainCode).toBe(0)
+  expect(JSON.parse(plainOut.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
       permissionDecisionReason: PUSH_REASON,
+    },
+  })
+  const dotCInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git -C . p origin main' },
+  })
+  const { out: dotCOut, code: dotCCode } = await run(dotCInput, env)
+  expect(dotCCode).toBe(0)
+  expect(JSON.parse(dotCOut.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: ALIAS_USE_REASON,
     },
   })
 }, 20_000)
@@ -3829,19 +3953,24 @@ test('denyReason denies ALIAS_USE_REASON when an unknown flag before -- leaves t
   )
 })
 
-// claude-factory-bemr.14: `--attr-source` (a sibling of `--config-env`, both in GIT_VALUE_FLAGS)
-// can read a literal `--` as its own value word. A scan for `-C`, `--git-dir` or `-c` before the
-// git verb must not stop at that `--`: real git 2.54 still reads a flag right after it.
+// claude-factory-bemr.14 / bemr.16: `--attr-source` (a sibling of `--config-env`, both in
+// GIT_VALUE_FLAGS) can read a literal `--` as its own value word. A scan for the real verb must
+// not stop at that `--`: real git 2.54 still reads a flag right after it.
 //
-// This row proves the -C fold. Without --attr-source, "git -C OTHER p origin main" already
-// denies PUSH_REASON through the same alias table lookup at dir "OTHER".
-test('denyReason denies "git --attr-source -- -C OTHER p origin main" with PUSH_REASON (claude-factory-bemr.14)', () => {
+// bemr.16: this row is one of the plan's own AC15 examples (BEMR16_AC15_COMMANDS above). It
+// stays here too, to keep the --attr-source nuance documented next to the --git-dir row below.
+test('denyReason denies "git --attr-source -- -C OTHER p origin main" with ALIAS_USE_REASON, and never calls gate.gitAliases (claude-factory-bemr.14, bemr.16)', () => {
+  let calls = 0
   const gate: HookGate = {
-    gitAliases: dir => (dir === 'OTHER' ? new Map([['p', 'push']]) : new Map()),
+    gitAliases: () => {
+      calls++
+      return new Map([['p', 'push']])
+    },
   }
   expect(denyReason('git --attr-source -- -C OTHER p origin main', undefined, undefined, gate)).toBe(
-    PUSH_REASON,
+    ALIAS_USE_REASON,
   )
+  expect(calls).toBe(0)
 })
 
 // claude-factory-bemr.14: this row proves the --git-dir check. Without --attr-source, "git
@@ -3864,20 +3993,21 @@ test('denyReason denies "git --attr-source -- --config-env=alias.p=E p origin ma
   expect(denyReason('git --attr-source -- --config-env=alias.p=E p origin main')).toBe(PUSH_REASON)
 })
 
-// claude-factory-bemr.14: `--attr-source` also reads a word that looks like `-C` as its own
-// value word, not as a real -C flag. A scan that does not step over that value word misreads the
-// word after it (here "sub") as the start of the folded dir, and asks gate.gitAliases for the
-// wrong directory. The fixed scan asks for the tool call's own cwd (undefined here) instead.
-test('denyReason reads gate.gitAliases for the cwd, not a word --attr-source consumed, with "git --attr-source -C sub" (claude-factory-bemr.14)', () => {
-  const dirs: (string | undefined)[] = []
+// claude-factory-bemr.14 / bemr.16: `--attr-source` also reads a word that looks like `-C` as
+// its own value word, not as a real -C flag. That consumed word still appears literally in
+// `tail.slice(0, vi)`. The guard denies on the literal word, with no attempt to tell a consumed
+// value apart from a real flag (bemr.16's narrower, conservative rule). It calls gate.gitAliases
+// 0 times.
+test('denyReason denies "git --attr-source -C sub" with ALIAS_USE_REASON, and never calls gate.gitAliases (claude-factory-bemr.14, bemr.16)', () => {
+  let calls = 0
   const gate: HookGate = {
-    gitAliases: dir => {
-      dirs.push(dir)
+    gitAliases: () => {
+      calls++
       return new Map([['sub', 'status']])
     },
   }
-  denyReason('git --attr-source -C sub', undefined, undefined, gate)
-  expect(dirs).toEqual([undefined])
+  expect(denyReason('git --attr-source -C sub', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+  expect(calls).toBe(0)
 })
 
 // claude-factory-bemr.7: these tests check worker-hook.ts's own exported GIT_BUILTIN_VERBS and

@@ -63,7 +63,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs'
-import { isAbsolute, join as joinPath, resolve as resolvePath } from 'node:path'
+import { resolve as resolvePath } from 'node:path'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -242,11 +242,21 @@ export interface HookGate {
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
 
-  /** claude-factory-bemr: a map from a git alias name (lowercase, with no `alias.` prefix) to its
-   * raw config expansion text, for every `alias.<name>` key `git -C <dir> config --get-regexp
-   * ^alias\.` already set before this run started. Empty when the repo at `dir` sets none;
-   * undefined on any read error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
-  gitAliases?: (dir?: string, timeoutMs?: number) => Map<string, string> | undefined
+  /** claude-factory-bemr: a map from a git alias name (lowercase, no `alias.` prefix) to its raw
+   * config text. The keys come from `alias.<name>` in `git config --get-regexp ^alias\.`. The
+   * hook reads this at the tool call's own cwd, before this run started.
+   *
+   * The map is empty when that directory sets no alias. It is undefined on a read error.
+   *
+   * claude-factory-bemr.16: this field reads one directory only: the tool call's own cwd. It
+   * takes no `dir` argument.
+   *
+   * An earlier design folded `-C` words to guess a different directory. That fold had to match
+   * git's own parser exactly. Three rounds (bemr.8, bemr.14, bemr.16) each found one more mismatch
+   * between the fold and git. `gitReason` now denies outright when a word can move this directory
+   * away from cwd. It does not try to compute the new directory. `timeoutMs` bounds the git spawn
+   * (claude-factory-dts.4). */
+  gitAliases?: (timeoutMs?: number) => Map<string, string> | undefined
   /** claude-factory-bemr: a map from a gh alias name to its raw expansion text, from `gh alias
    * list`. gh ships one alias of its own (`co: pr checkout`), so this is defined even with no
    * user config; undefined only on a read error. `timeoutMs` bounds the gh spawn
@@ -2960,47 +2970,21 @@ function splitCmdline(text: string): string[] | undefined {
 }
 
 /**
- * From all -C words in `tail`, `gitGlobalDirFlags` makes one path for gate.gitAliases. It also
- * sets a flag when `tail` has a `--git-dir` word, for `effectiveMoved` in `gitReason`. It reads
- * the words once, in order.
+ * True when a word in `tail` is `--git-dir` or starts with `--git-dir=`.
  *
- * claude-factory-bemr.8: Git does one `cd` for each -C word.
- * For example, `git -C a -C b` goes to `a/b`, not only to `b`.
- * An absolute -C word sets the path. It clears each -C word that comes before it.
+ * claude-factory-bemr.16: this is a plain whole-tail word test.
  *
- * claude-factory-bemr.14: This function does not stop at a literal `--`. It also skips the value
- * word of each other flag in `GIT_VALUE_FLAGS`. Git 2.54 can read these words as the value of
- * `--attr-source` or `--config-env`:
- *   - a literal `--`
- *   - a word that looks like `-C` or `--git-dir`
- * A scan that stops at `--`, or that does not skip that value word, reads it as a `-C` or
- * `--git-dir` flag by mistake.
+ * An earlier design also folded every `-C` word into one directory, for `gate.gitAliases`. That
+ * fold had to match git's own global-option parser exactly. Three review rounds each found one
+ * more case where the fold and git disagreed. Each disagreement let the hook allow a command it
+ * should have denied.
  *
- * `cDir` has no value when `tail` has no `-C` word.
+ * `gitReason` no longer folds a `-C` directory at all. It reads `gate.gitAliases` at the tool
+ * call's own cwd. It denies outright when a `-C` word could move that read elsewhere. See
+ * `gate.gitAliases`'s own comment.
  */
-function gitGlobalDirFlags(tail: string[]): { cDir: string | undefined; hasGitDir: boolean } {
-  let cDir: string | undefined
-  let hasGitDir = false
-  for (let i = 0; i < tail.length; i++) {
-    const w = tail[i]!
-    if (w === '--git-dir' || w.startsWith('--git-dir=')) {
-      hasGitDir = true
-      if (w === '--git-dir') i++
-      continue
-    }
-    if (w === '-C') {
-      const v = tail[i + 1]
-      i++
-      if (!v) continue
-      cDir = isAbsolute(v) ? v : joinPath(cDir ?? '.', v)
-      continue
-    }
-    if (!w.includes('=') && GIT_VALUE_FLAGS.has(w)) {
-      i++
-      continue
-    }
-  }
-  return { cDir, hasGitDir }
+function hasGitDirWord(tail: string[]): boolean {
+  return tail.some(w => w === '--git-dir' || w.startsWith('--git-dir='))
 }
 
 /**
@@ -3110,35 +3094,31 @@ function gitReason(
   // `git --bare status` still passes below. The word status is a builtin word, so it never
   // reaches the alias-resolution block.
   //
-  // claude-factory-bemr.14: gitGlobalDirFlags finds the --git-dir flag and the -C fold in one
-  // pass. Neither read stops at a literal --, so --attr-source cannot hide either flag behind
-  // its own value word.
-  const { cDir: aliasDir, hasGitDir } = gitGlobalDirFlags(tail)
-  const effectiveMoved = moved || hasGitDir || tail.includes('--bare')
+  // claude-factory-bemr.16: hasGitDirWord is a plain whole-tail word test. It does not fold a
+  // -C directory any more; see gate.gitAliases's own comment for why.
+  const effectiveMoved = moved || hasGitDirWord(tail) || tail.includes('--bare')
   const verb = vi >= 0 ? tail[vi] : undefined
-  // claude-factory-bemr.6: gate.gitAliases gets the raw -C value, or undefined with no -C.
-  // It must not get a root fallback.
-  // claude-factory-ox33 tracks that same root fallback for gate.headOf. It is out of scope here.
-  // gate.gitAliases picks its own default: the tool call's own cwd, not CLAUDE_PROJECT_DIR.
-  //
-  // claude-factory-bemr.8: real git applies each -C word in turn. Each word is relative to the
-  // directory that the previous -C word sets. For example, `git -C a -C b` lands in a/b.
-  //
-  // gitGlobalDirFlags combines the words in this way. It folds every -C word, not only the last one.
   //
   // See claude-factory-bemr. This part of the function finds a git alias for the verb.
   // It does not run this part when the verb position is not sure.
   // It also does not run this part when verb is a builtin command.
   // Git uses a builtin command before an alias with the same name. This function does the same.
   //
-  // claude-factory-bemr.7: this part denies the command with ALIAS_USE_REASON under five
+  // claude-factory-bemr.16: gate.gitAliases always reads the tool call's own cwd. It takes no
+  // dir argument. A -C word before the verb can move where real git would read the alias table.
+  // This guard does not try to follow that word to a new directory. It denies the command
+  // outright instead, under one more condition than before:
+  //
+  //   0. tail.slice(0, vi), the words before the verb, holds a literal -C word.
+  //
+  // claude-factory-bemr.7: this part denies the command with ALIAS_USE_REASON under five more
   // conditions:
   //
-  //   1. effectiveMoved is true. An earlier cd, pushd, popd or --git-dir word makes the alias
-  //      table unknown for that directory.
+  //   1. effectiveMoved is true. An earlier cd, pushd, popd, --git-dir or --bare word makes the
+  //      alias table unknown for that directory.
   //
   //   2. The alias chain runs deeper than MAX_ALIAS_DEPTH levels. This limit stops a cycle of
-  //      aliases, which could stop the hook from completing.
+  //      aliases, which can stop the hook from completing.
   //
   //   3. The alias table is unset or undefined. The hook cannot read the table. It denies the
   //      command instead of a guess.
@@ -3149,9 +3129,10 @@ function gitReason(
   //   5. splitCmdline cannot split the alias entry's text. One example is an unclosed quote.
   //      Another is a trailing backslash.
   if (!uncertain && verb !== undefined && !GIT_BUILTIN_VERBS.has(verb)) {
+    if (tail.slice(0, vi).includes('-C')) return ALIAS_USE_REASON
     if (effectiveMoved) return ALIAS_USE_REASON
     if (aliasDepth > MAX_ALIAS_DEPTH) return ALIAS_USE_REASON
-    const table = gate.gitAliases?.(aliasDir)
+    const table = gate.gitAliases?.()
     if (!table) return ALIAS_USE_REASON
     const text = table.get(verb.toLowerCase())
     if (text !== undefined) {
@@ -3170,20 +3151,24 @@ function gitReason(
     // This guard cannot place one alias at the verb slot for sure in that case.
     // It must not allow the command in silence either.
     //
-    // This part denies ALIAS_USE_REASON under three conditions:
+    // This part denies ALIAS_USE_REASON under four conditions:
     //
     //   1. effectiveMoved is true.
     //
-    //   2. The alias table cannot be read.
+    //   2. claude-factory-bemr.16: a literal -C word sits anywhere in tail. This guard cannot
+    //      place that word before or after the real verb for sure, so it denies either way.
     //
-    //   3. A non-flag word, anywhere in tail, is both a non-builtin word and a key in the
+    //   3. The alias table cannot be read.
+    //
+    //   4. A non-flag word, anywhere in tail, is both a non-builtin word and a key in the
     //      alias table. That word is a likely alias use. This guard cannot place it for sure.
     //
     // claude-factory-bemr.9: this scan does not stop at a literal --. An unrecognized flag can
     // use -- as its value. For example, `git --attr-source -- zz` runs the `zz` alias.
     // This guard scans every word in tail for the real verb.
     if (effectiveMoved) return ALIAS_USE_REASON
-    const table = gate.gitAliases?.(aliasDir)
+    if (tail.includes('-C')) return ALIAS_USE_REASON
+    const table = gate.gitAliases?.()
     if (!table) return ALIAS_USE_REASON
     for (const w of tail) {
       if (w.startsWith('-') && w !== '-') continue
@@ -3782,19 +3767,20 @@ function memoGate(gate: HookGate): HookGate {
       return result
     }
   }
-  // claude-factory-bemr: gitAliases keeps one cached result for each separate dir, the same
-  // rule headOf uses. MAX_HEAD_DIRS caps the number of separate dirs, so a command with many
-  // segments cannot force many git config spawns.
+  // claude-factory-bemr: gitAliases spawns git config at most one time for one denyReason call.
+  // claude-factory-bemr.16: gate.gitAliases takes no dir argument any more: it always reads the
+  // tool call's own cwd, so one cached value covers the whole call, the same way memo.ghAliases
+  // does above.
   if (gate.gitAliases) {
     const real = gate.gitAliases
-    const cache = new Map<string | undefined, Map<string, string> | undefined>()
-    memo.gitAliases = dir => {
-      if (cache.has(dir)) return cache.get(dir)
-      if (cache.size >= MAX_HEAD_DIRS) return undefined
-      const remaining = deadline - Date.now()
-      if (remaining <= 0) return undefined
-      const result = real(dir, Math.min(2000, remaining))
-      cache.set(dir, result)
+    let called = false
+    let result: Map<string, string> | undefined
+    memo.gitAliases = () => {
+      if (!called) {
+        called = true
+        const remaining = deadline - Date.now()
+        if (remaining > 0) result = real(Math.min(2000, remaining))
+      }
       return result
     }
   }
@@ -4029,7 +4015,9 @@ function readSmallFile(path: string, cwd: string): string | undefined {
 
 //
 // claude-factory-bemr: this function reads every alias entry from git config, for gate.gitAliases.
-// dir is the directory to read config for. gitReason already picked that directory.
+// dir is the directory to read config for.
+// claude-factory-bemr.16: main() always calls this with the tool call's own cwd. It never
+// passes a directory that a -C fold computed.
 // An exit code of 1 means git found no alias entry. The function then gives an empty map.
 // Any other exit code, or an error, gives undefined. gitReason then denies the command, the
 // same answer it gives for an unset gate.gitAliases.
@@ -4113,12 +4101,10 @@ async function main() {
     // The Bash tool runs the command at i.cwd. An earlier cd word can move i.cwd away from
     // root (CLAUDE_PROJECT_DIR).
     //
-    // dir can be a relative -C value. Resolve dir against i.cwd.
-    // Do not resolve dir against the hook process's own cwd.
-    //
-    // When dir is unset, the lookup dir is i.cwd. The code falls back to root only when
-    // i.cwd is also unset. readFile uses this same fallback rule.
-    gitAliases: (dir, timeoutMs) => gitConfigAliases(resolvePath(i.cwd || root, dir ?? '.'), timeoutMs),
+    // claude-factory-bemr.16: this code takes no -C value and no dir argument. gitReason denies
+    // outright instead of asking this code to read a different directory. readFile uses the
+    // same i.cwd-then-root fallback rule.
+    gitAliases: timeoutMs => gitConfigAliases(i.cwd || root, timeoutMs),
     ghAliases: timeoutMs => ghAliasList(timeoutMs),
     // claude-factory-3f2z.2 / claude-factory-9zd5: the tool call's own cwd, with no fallback to
     // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
