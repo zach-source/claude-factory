@@ -5952,13 +5952,20 @@ const SNAP_DENY_ALIAS = [
   'A+=/x gco main',
   'C[k]+=/x gp origin main',
   'a=/x gp origin main',
+  'A[a]b]=/x gp origin main',
 ]
 test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (claude-factory-1zr5)', cmd => {
   expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
 })
 
 const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
-test.each(['bin/factory gc --dry-run', 'FACTORY_HOME=/t /abs/bin/factory gc'])(
+test.each([
+  'bin/factory gc --dry-run',
+  'FACTORY_HOME=/t /abs/bin/factory gc',
+  'A+=1 /abs/bin/factory gc',
+  'B[1]=2 /abs/bin/factory gc',
+  'C[k]+=3 /abs/bin/factory gc',
+])(
   'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
   cmd => {
     expect(
