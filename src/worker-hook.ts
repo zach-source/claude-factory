@@ -1836,35 +1836,6 @@ function envValueFlagConsumesNextWord(w: string): boolean {
 }
 
 /**
- * Splits `value` into words on whitespace. This is the same simple word split that
- * `env -S`/`env --split-string` itself does at run time (claude-factory-68gn.10).
- */
-function splitStringWords(value: string): string[] {
-  return value.split(/\s+/).filter(Boolean)
-}
-
-/**
- * True when `words` carries a `-C`/`--chdir` flag before its own command word. This reads the
- * same shapes `envChdirPresent` reads (claude-factory-68gn.10). It is `envChdirPresent`'s own
- * forward scan, pulled out on its own. This lets it run again on the words an
- * `env -S`/`env --split-string` value splits into, not only on the words of the outer command.
- */
-function wordsCarryChdir(words: string[]): boolean {
-  for (let k = 0; k < words.length; k++) {
-    const w = words[k]!
-    if (w === '-C' || w === '--chdir') return true
-    if (/^--chdir=/.test(w)) return true
-    if (/^-[a-zA-Z]*C/.test(w)) return true
-    if (envValueFlagConsumesNextWord(w)) {
-      k++
-      continue
-    }
-    if (!w.startsWith('-')) return false
-  }
-  return false
-}
-
-/**
  * Reads the value an `env -S`/`env --split-string` word at `words[j]` would split and run, or
  * undefined when no such flag is present (claude-factory-zl5.42). Stops and returns undefined at
  * the first word that does not start with `-`: that word is `env`'s own command, and `-S` did not
@@ -1891,55 +1862,101 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
   return undefined
 }
 
+// claude-factory-68gn.12: GNU `getopt_long` accepts a unique prefix of a long option name, which a whole-word match misses.
+// Real GNU coreutils 9.11 `env` runs `--ch=/usr`, `--chd /usr`, `--u NAME`, `--uns NAME` and `--arg ARG`.
+// Each form works the same as the full name.
+// `wordsCarryChdir` matches a prefix against the base names below.
+// `chdir` and `split-string` each move or hide the command (see the comment on `wordsCarryChdir` below).
+// `unset` and `argv0` take a value of their own, but do neither on their own.
+const ENV_LONG_CHDIR_NAMES = ['chdir', 'split-string']
+const ENV_LONG_VALUE_ONLY_NAMES = ['unset', 'argv0']
+// On this host (GNU coreutils 9.11), `env --help` lists these as the only other long options with no value.
+// A long option must match one of these names in full, not by a prefix.
+// A prefix match stays ambiguous between a flag named here and a flag that `wordsCarryChdir` does not know.
+// Such flags include `--block-signal`, `--ignore-signal` and others.
+// So `wordsCarryChdir` fails closed on such a match (claude-factory-68gn.12).
+const ENV_LONG_NOVALUE_NAMES = ['ignore-environment', 'null', 'debug', 'help', 'version']
+// The short letters `u` and `a` stand for `unset` and `argv0`.
+// BSD `env` has its own `-P` (alternate `PATH`), `-L` (login class) and `-U` (login).
+// Each of these takes a value of its own, as the next word or attached to the flag word.
+// None of them moves or hides the command.
+const ENV_SHORT_VALUE_ONLY_LETTERS = new Set(['u', 'a', 'P', 'L', 'U'])
+
 /**
- * True when an `env` word at `words[j]` carries a `-C`/`--chdir` flag before its own command word
- * (claude-factory-68gn). GNU and BSD `env` both change the child command's current directory with
- * this flag, the same hazard as a `cd` run just before it. This reads the plain form (`-C dir`,
- * `--chdir dir`), the attached long form (`--chdir=dir`), the attached short form (`-Cdir`), and a
- * short-flag cluster carrying `C` (`-vC dir`), the same shapes `envSplitStringValue` already
- * reads for `-S`. It stops at the first word that does not start with `-`: that word is `env`'s
- * own command, and no chdir flag appeared before it. claude-factory-68gn.6/.11: a word
- * `envValueFlagConsumesNextWord` matches consumes the next word as its own value first, so that
- * value cannot end this scan early and hide a `-C`/`--chdir` that comes after it.
+ * This function checks the `env` flags that start at `start`.
+ * It returns true when `env` has a `-C`/`--chdir` or `-S`/`--split-string` flag before its command.
+ * `envChdirPresent` is the caller for the real command line.
+ * The same scan reads the first words of a recursed-into script, through `denyAt`.
+ * GNU and BSD `env` change the child command's directory with `-C`/`--chdir`, as `cd` does.
+ * On any `-S`/`--split-string` word, the function fails closed (returns true) and does not look past it.
  *
- * claude-factory-68gn.10: GNU and BSD `env` both re-parse an `-S`/`--split-string` value as more
- * of `env`'s own flags at run time, so a `-C`/`--chdir` hidden inside that value moves the child
- * the same way a literal `-C` word would (checked on this host: `env -S '-C /usr' pwd` prints
- * `/usr`). This reads the bare (`-S '-C /usr'`), attached (`-S'-C /usr'`, `--split-string=-C
- * /usr`) and short-flag-cluster (`-vS '-C /usr'`) forms the same way `envSplitStringValue` does,
- * and checks the split value's own words with `wordsCarryChdir` before trusting it is inert.
+ * ```text
+ * -C forms read (claude-factory-68gn.12 for prefixes):
+ *   -C dir, --chdir dir
+ *   --chdir=dir
+ *   -Cdir
+ *   -vC dir (short-flag cluster that includes C)
+ *   unique prefix of the long name
+ *
+ * -S forms that fail closed:
+ *   -S value
+ *   -Svalue, --split-string=value
+ *   -vS value (short-flag cluster that ends with S)
+ *
+ * -S values not read (checked on this host):
+ *   env -S '-C /usr' pwd        prints /usr (claude-factory-68gn.10)
+ *   env -S '"-C" /usr' pwd      prints /usr; the quotes come off before the split (claude-factory-68gn.13)
+ *   env -S '-u' X -C /usr pwd   prints /usr; env appends the command-line words to the split words,
+ *                               so X becomes the value of -u and -C moves the command (claude-factory-68gn.14)
+ *   GNU and BSD env re-parse an -S value as more env flags at run time.
+ * ```
  */
-function envChdirPresent(words: string[], j: number): boolean {
-  for (let k = j + 1; k < words.length; k++) {
+function wordsCarryChdir(words: string[], start: number): boolean {
+  for (let k = start; k < words.length; k++) {
     const w = words[k]!
-    if (w === '-C' || w === '--chdir') return true
-    if (/^--chdir=/.test(w)) return true
-    const shortClusterC = /^-[a-zA-Z]*C/.exec(w)
-    if (shortClusterC) return true
-    if (w === '-S' || w === '--split-string') {
-      if (wordsCarryChdir(splitStringWords(words[k + 1] ?? ''))) return true
-      k++
+    if (w === '-') continue // a bare `-` operand, not a flag: BSD `env` reads it as `-i`
+    if (w === '--') return false // ends env's own option parsing; the real command follows
+    if (w.startsWith('--')) {
+      const body = w.slice(2)
+      const eqAt = body.indexOf('=')
+      const name = eqAt === -1 ? body : body.slice(0, eqAt)
+      const attached = eqAt !== -1
+      if (name.length === 0) return true // "---foo" and the like: not a name we know, fail closed
+      if (ENV_LONG_NOVALUE_NAMES.includes(name)) continue
+      if (ENV_LONG_CHDIR_NAMES.some(full => full.startsWith(name))) return true
+      if (ENV_LONG_VALUE_ONLY_NAMES.some(full => full.startsWith(name))) {
+        if (!attached) k++
+        continue
+      }
+      return true // an unrecognized or ambiguous long option name: fail closed
+    }
+    if (w.startsWith('-') && w.length > 1) {
+      const chars = w.slice(1)
+      let hazard = false
+      let consumesNextWord = false
+      for (let ci = 0; ci < chars.length; ci++) {
+        const c = chars[ci]!
+        if (c === 'C' || c === 'S') {
+          hazard = true
+          break
+        }
+        if (ENV_SHORT_VALUE_ONLY_LETTERS.has(c)) {
+          if (chars.slice(ci + 1).length === 0) consumesNextWord = true
+          break
+        }
+      }
+      if (hazard) return true
+      if (consumesNextWord) k++
       continue
     }
-    const longEq = /^--split-string=([\s\S]*)$/.exec(w)
-    if (longEq) {
-      if (wordsCarryChdir(splitStringWords(longEq[1] ?? ''))) return true
-      continue
-    }
-    const shortClusterS = /^-[a-zA-Z]*S([\s\S]*)$/.exec(w)
-    if (shortClusterS) {
-      const val = shortClusterS[1] || words[k + 1]
-      if (wordsCarryChdir(splitStringWords(val ?? ''))) return true
-      if (!shortClusterS[1]) k++
-      continue
-    }
-    if (envValueFlagConsumesNextWord(w)) {
-      k++
-      continue
-    }
-    if (!w.startsWith('-')) return false
+    return false // env's own command word; no chdir-hazard flag appeared before it
   }
   return false
+}
+
+/** `wordsCarryChdir`'s own entry point for the real command line (claude-factory-68gn). */
+function envChdirPresent(words: string[], j: number): boolean {
+  return wordsCarryChdir(words, j + 1)
 }
 
 // claude-factory-68gn: `movedBefore` is the same fail-closed state `denyAt` already tracks

@@ -1500,24 +1500,29 @@ test('denyReason allows an unrelated config key and an unrelated env var (claude
 // push: BSD and GNU `env` split the string into words and run it, the same shape of hazard as
 // `eval`. Real git 2.54 moved remote `main` for the push row below (`env -S 'git push -q origin
 // main'`). Each row below pairs the flag form with the reason the recursed command itself denies.
+//
+// claude-factory-68gn.13/.14 (review round 3): the push rows use `PUSH_DIR_REASON`, not
+// `PUSH_REASON`, since `wordsCarryChdir` (`envChdirPresent`'s own scan) now fails closed on any
+// `-S`/`--split-string` word on its own, with no look at what it holds. `gh pr merge`/`gh pr
+// ready` never read the current branch, so they deny with the same reason either way.
 const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   ["env -S 'gh pr merge 5'", 'MERGE_REASON'],
   ["env -S 'gh pr ready 5'", 'READY_REASON'],
-  ["env -S 'git push origin main'", 'PUSH_REASON'],
+  ["env -S 'git push origin main'", 'PUSH_DIR_REASON'],
   // the attached form: no space between -S and the quoted value
-  ["env -S'git push origin main'", 'PUSH_REASON'],
+  ["env -S'git push origin main'", 'PUSH_DIR_REASON'],
   // a short-flag cluster ahead of S, value as its own word
-  ["env -vS 'git push origin main'", 'PUSH_REASON'],
-  ["env --split-string='git push origin main'", 'PUSH_REASON'],
+  ["env -vS 'git push origin main'", 'PUSH_DIR_REASON'],
+  ["env --split-string='git push origin main'", 'PUSH_DIR_REASON'],
   // claude-factory-68gn.6: a value flag (-u NAME) ahead of -S must not hide it either. This is
   // the same stop-at-the-first-non-dash-word bug envChdirPresent had for -C, in the sibling
   // function envSplitStringValue.
-  ["env -u FOO -S 'git push origin main'", 'PUSH_REASON'],
+  ["env -u FOO -S 'git push origin main'", 'PUSH_DIR_REASON'],
 ]
 const ENV_SPLIT_STRING_REASON: Record<string, string> = {
   MERGE_REASON,
   READY_REASON,
-  PUSH_REASON,
+  PUSH_DIR_REASON,
 }
 
 test.each(DENY_ENV_SPLIT_STRING)(
@@ -1872,6 +1877,10 @@ test.each(DENY_PUSH_AFTER_ENV_VALUE_FLAG_HIDES_CHDIR)(
 
 // claude-factory-68gn.11: the same miss, but for envSplitStringValue's own scan: a push straight
 // to main, with no cd at all, hidden behind -a/-iu ahead of -S.
+//
+// claude-factory-68gn.13/.14 (review round 3): these deny with PUSH_DIR_REASON, not PUSH_REASON,
+// for the same reason the zl5.42 table above does: wordsCarryChdir now fails closed on any -S
+// word on its own.
 const DENY_ENV_VALUE_FLAG_HIDES_SPLIT_STRING = [
   "env -a x -S 'git push origin main'",
   "env -iu FOO -S 'git push origin main'",
@@ -1880,7 +1889,7 @@ const DENY_ENV_VALUE_FLAG_HIDES_SPLIT_STRING = [
 test.each(DENY_ENV_VALUE_FLAG_HIDES_SPLIT_STRING)(
   'denyReason denies %j: -a/--argv0 or a clustered value flag hides -S/--split-string (claude-factory-68gn.11)',
   cmd => {
-    expect(denyReason(cmd)).toBe(PUSH_REASON)
+    expect(denyReason(cmd)).toBe(PUSH_DIR_REASON)
   },
 )
 
@@ -1889,4 +1898,77 @@ test('denyReason allows an env -a/clustered-flag chdir or split-string to an exp
   expect(denyReason('env -iu FOO -C /other git push origin feature', '/root/repo')).toBeUndefined()
   expect(denyReason("env -a x -S 'git push origin feature'")).toBeUndefined()
   expect(denyReason("env -iu FOO -S 'git push origin feature'")).toBeUndefined()
+})
+
+// claude-factory-68gn.12 (review round 3): GNU getopt_long accepts a unique prefix of a long
+// option name. wordsCarryChdir matched only the whole name.
+// A prefix hid a -C/--chdir or an -S/--split-string flag.
+// This is the same class of gap as claude-factory-68gn.6/.11.
+// Checked on this host (GNU coreutils 9.11): env --ch=/usr pwd and env --chd /usr pwd both
+// print /usr.
+const DENY_PUSH_AFTER_ENV_LONG_FLAG_PREFIX = [
+  'env --ch=/other git push origin HEAD',
+  'env --chd /other git push origin HEAD',
+  'env --u FOO -C /other git push origin HEAD',
+  'env --uns FOO -C /other git push origin HEAD',
+  'env --arg x -C /other git push origin HEAD',
+  "env --spl='-C /other' git push origin HEAD",
+]
+
+test.each(DENY_PUSH_AFTER_ENV_LONG_FLAG_PREFIX)(
+  'denyReason denies %j: a unique prefix of a long env flag name still carries its hazard (claude-factory-68gn.12)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+  },
+)
+
+test('denyReason allows a prefixed env long flag to an explicit non-protected branch (claude-factory-68gn.12)', () => {
+  expect(denyReason('env --ch=/other git push origin feature', '/root/repo')).toBeUndefined()
+  expect(denyReason('env --arg x -C /other git push origin feature', '/root/repo')).toBeUndefined()
+})
+
+// claude-factory-68gn.13/.14 (review round 3): wordsCarryChdir no longer reads an -S/
+// --split-string value at all.
+// It fails closed on the flag itself: bare, attached, or ending a short cluster.
+// This closes two gaps at once.
+//
+// - claude-factory-68gn.13: GNU and BSD env -S strip a matching quote pair from each word in
+//   the value, before the split. The old scan split on whitespace alone.
+//   So a quoted -C inside the value kept its quote marks, as one word, and never matched.
+//   Checked on this host: env -S '"-C" /other' pwd and env -S "'-C' /other" pwd both print
+//   /other.
+// - claude-factory-68gn.14: env also appends the words already on its own command line, after
+//   the -S value, to the value's own split words.
+//   It reads that whole combined list as one.
+//   Checked on this host: env -S '-u' X -C /other pwd prints /other.
+//   X becomes -u's value, and -C moves the command.
+const DENY_PUSH_AFTER_ENV_SPLIT_STRING_EDGE_CASES = [
+  'env -S \'"-C" /other\' git push origin HEAD',
+  'env -S "\'-C\' /other" git push origin HEAD',
+  "env -S '-u' X -C /other git push origin HEAD",
+  "env -S '-u' X --chdir=/other git push origin HEAD",
+]
+
+test.each(DENY_PUSH_AFTER_ENV_SPLIT_STRING_EDGE_CASES)(
+  'denyReason denies %j: a quoted or combined-argv -S value still fails closed (claude-factory-68gn.13/.14)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(PUSH_DIR_REASON)
+  },
+)
+
+// claude-factory-68gn, AC3: no mutation of these two forms trusts gate.headOf once -S is present.
+test('denyReason never calls gate.headOf for a push after an env -S of any form (claude-factory-68gn.13/.14, AC3)', () => {
+  let calls = 0
+  const gate = {
+    headOf: () => {
+      calls++
+      return 'feature'
+    },
+  }
+  expect(denyReason('env -S \'"-C" /other\' git push origin HEAD', '/root/repo', undefined, gate)).toBe(
+    PUSH_DIR_REASON,
+  )
+  expect(calls).toBe(0)
 })

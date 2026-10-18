@@ -866,6 +866,24 @@ minor release may change the factory format, the CLI or the run state.
     origin HEAD` and `env -a x -S 'git push origin main'` both allowed:
     `env -iu FOO -C /usr pwd` prints `/usr` the same way `env -u FOO -C
     /usr pwd` does. (claude-factory-68gn.11)
+  - Fix (review round 3): `wordsCarryChdir` now reads a unique prefix of
+    a long `env` flag name. GNU `getopt_long` accepts a prefix in place
+    of the name in full. Before this fix, `env --ch=/other git push
+    origin HEAD` and `env --arg x -C /other git push origin HEAD` both
+    allowed. (claude-factory-68gn.12)
+  - Fix (review round 3): `wordsCarryChdir` no longer reads what an
+    `-S`/`--split-string` value holds. It denies the flag itself now, in
+    any form. GNU and BSD `env` strip a quote pair from each word in the
+    value before the split. The old code split on whitespace alone, and
+    missed a quoted flag inside: `env -S '"-C" /other' pwd` prints
+    `/other`. Before this fix, the quoted form allowed.
+    (claude-factory-68gn.13)
+  - Fix (review round 3): `env` also appends the words already on its
+    own command line, after an `-S`/`--split-string` value, to that
+    value's own split words. It reads the combined list as one:
+    `env -S '-u' X -C /other pwd` prints `/other`, since `X` becomes
+    `-u`'s value and `-C` moves the command. Before this fix, this
+    shape allowed too. (claude-factory-68gn.14)
 - `worker-hook` now denies an `env -S`/`env --split-string` value that holds a dollar sign, for
   example `git ${FOO} origin main`. `env` changes a `${NAME}` word into one command word when it
   runs, so the old check on the typed text alone can miss a real push or merge hidden this way.
