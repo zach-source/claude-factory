@@ -369,11 +369,15 @@ const MAX_SHELL_DEPTH = 32
 // wrapper commands whose own name we skip to find the command they run
 const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
 
-/** the basename of a command word: drops a leading backslash (`\rm`) and any path (`/bin/rm`) */
+/**
+ * the lowercase basename of a command word: drops a leading backslash (`\rm`) and any path
+ * (`/bin/rm`). It lowercases because macOS APFS is case-insensitive: `Git`, `GH` and `/bin/SH`
+ * run the real binaries, so every guard must see them as `git`, `gh` and `sh`.
+ */
 function baseWord(w: string): string {
   const s = w.replace(/^\\/, '')
   const i = s.lastIndexOf('/')
-  return i >= 0 ? s.slice(i + 1) : s
+  return (i >= 0 ? s.slice(i + 1) : s).toLowerCase()
 }
 
 /**
