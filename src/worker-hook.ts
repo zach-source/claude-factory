@@ -348,7 +348,8 @@ const MAX_SUBST_NEST = 64
  * Returns the body of the command substitution that starts there, and the index right after its
  * close. Returns undefined when no substitution starts there.
  * Fail closed: when the close is not found, or the body holds a word this matcher cannot read
- * (`case`, `${`), the body is the rest of the command and `end` is the command length.
+ * (`case`, `${`), the body is the rest of the command. `end` then points right after the opener,
+ * so the caller keeps the double-quote reading of the rest and the quotes stay in step.
  */
 function dqSubstitution(cmd: string, start: number): { body: string; end: number } | undefined {
   if (cmd[start] === '`') {
@@ -358,11 +359,11 @@ function dqSubstitution(cmd: string, start: number): { body: string; end: number
         return { body: cmd.slice(start + 1, j).replace(/\\([`\\$"])/g, '$1'), end: j + 1 }
       }
     }
-    return { body: cmd.slice(start + 1).replace(/\\([`\\$"])/g, '$1'), end: cmd.length }
+    return { body: cmd.slice(start + 1).replace(/\\([`\\$"])/g, '$1'), end: start + 1 }
   }
   if (cmd[start] !== '$' || cmd[start + 1] !== '(') return undefined
   const close = parenEnd(cmd, start + 2, 0)
-  if (close < 0) return { body: cmd.slice(start + 2), end: cmd.length }
+  if (close < 0) return { body: cmd.slice(start + 2), end: start + 2 }
   return { body: cmd.slice(start + 2, close), end: close + 1 }
 }
 
@@ -379,7 +380,9 @@ function parenEnd(cmd: string, from: number, nest: number): number {
   for (let i = from; i < cmd.length; i++) {
     const c = cmd[i]!
     const prev = cmd[i - 1]
-    const wordStart = i === from || /[\s;&|(]/.test(prev ?? '')
+    let slashes = 0
+    while (i - 1 - slashes >= from && cmd[i - 1 - slashes] === '\\') slashes++
+    const wordStart = i === from || (slashes % 2 === 0 && /[\s;&|()]/.test(prev ?? ''))
     if (c === '\\') {
       i++
     } else if (c === "'") {
@@ -410,6 +413,9 @@ function parenEnd(cmd: string, from: number, nest: number): number {
     } else if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<') {
       const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()'"]+))/.exec(cmd.slice(i, i + 300))
       if (!m) return -1
+      const after = cmd[i + m[0].length]
+      if (after !== undefined && !/[\s;&|<>()]/.test(after)) return -1
+      if ((m[2] ?? m[3] ?? m[4] ?? '').includes('\\')) return -1
       pending.push({ delim: m[2] ?? m[3] ?? m[4] ?? '', dash: m[1] === '-' })
       i += m[0].length - 1
     } else if (c === '\n' && pending.length) {
@@ -420,7 +426,9 @@ function parenEnd(cmd: string, from: number, nest: number): number {
           const nl = cmd.indexOf('\n', at)
           const line = cmd.slice(at, nl < 0 ? cmd.length : nl)
           at = nl < 0 ? cmd.length + 1 : nl + 1
-          if ((p.dash ? line.replace(/^\t+/, '') : line) === p.delim) break
+          const l = p.dash ? line.replace(/^\t+/, '') : line
+          if (l === p.delim) break
+          if (p.delim !== '' && l.startsWith(p.delim)) return -1
         }
       }
       pending.length = 0
@@ -449,6 +457,7 @@ function isCatHeredoc(body: string): boolean {
   for (let k = 0; k < lines.length; k++) {
     const line = m[1] === '-' ? lines[k]!.replace(/^\t+/, '') : lines[k]!
     if (line === delim) return lines.slice(k + 1).every(l => l.trim() === '')
+    if (line.startsWith(delim)) return false
   }
   return false
 }
@@ -466,6 +475,9 @@ function isCatHeredoc(body: string): boolean {
  * A backslash right before a real newline is a POSIX line continuation, inside double quotes or
  * outside them. Both characters drop and the text around them joins into one word, the same as a
  * real shell. This never ends a word. It never keeps a literal newline.
+ *
+ * When `subs` is given, segments() pushes the body of each command substitution found inside a
+ * double-quoted span. The caller must scan each body. The word keeps its raw text.
  */
 function segments(cmd: string, subs?: DqSubstitution[]): string[][] {
   const segs: string[][] = []

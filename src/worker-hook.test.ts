@@ -4328,6 +4328,21 @@ const DENY_DQ_SUBST: [string, string][] = [
   ['echo "$(cat <<\'EOF\'\nx\nEOF\n; git push origin main)"', PUSH_REASON],
   ['echo "$(cat <<EOF\ngit push origin main\nEOF\n)"', PUSH_REASON],
   ['echo "$(cat <<\'EOF\' ; git push origin main\nx\nEOF\n)"', PUSH_REASON],
+  // fallback keeps the quote reading: code after the closing quote stays visible
+  ['x="$(echo ${HOME})" && git push origin main', PUSH_REASON],
+  ['x="$(case a in a) true;; esac)" && git push origin main', PUSH_REASON],
+  ['x="$(echo \\;#)" && git push origin main', PUSH_REASON],
+  [`x="${BT}echo hi" && git push origin main`, PUSH_REASON],
+  // here-document delimiter words that continue
+  ['echo "$(bash <<\'EOF\'x\ngit push origin main\nEOFx\n)"', PUSH_REASON],
+  ['echo "$(bash <<E"OF"\ngit push origin main\nEOF\n)"', PUSH_REASON],
+  ['echo "$(bash <<E\\OF\ngit push origin main\nEOF\n)"', PUSH_REASON],
+  [`echo "$(bash <<'E'"OF"\ngit push origin main\nEOF\n)"`, PUSH_REASON],
+  // bash ends a here-document at a line that starts with the delimiter and then a paren
+  ["git commit -m \"$(cat <<'EOF'\nmsg\nEOF)\" && git push origin main", PUSH_REASON],
+  ['echo "$(bash <<\'EOF\'\nEOF)"; git push origin main', PUSH_REASON],
+  // a hash after a paren starts a comment, an escaped space does not
+  ['echo "$( (true)# )\ngit push origin main\n)"', PUSH_REASON],
 ]
 
 test.each(DENY_DQ_SUBST)('denyReason denies %j (double-quoted substitution)', (cmd, reason) => {
