@@ -8,6 +8,7 @@ import {
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
@@ -2682,7 +2683,46 @@ test('denyReason allows env -S/--split-string with no dollar sign (claude-factor
   expect(denyReason('FOO=1 printenv FOO')).toBeUndefined()
 })
 
-// claude-factory-zl5.43: a dashed git-core binary name (`git-push`, `git-send-pack`, found on
+// claude-factory-hewq: an unquoted $'...' or $"..." quote is decoded by bash and zsh, and the two
+// shells decode it differently. segments() cannot read the real words, so denyAt denies it.
+const DENY_DOLLAR_QUOTE = [
+  "bash -c $'git push origin main'",
+  "sh -c $'git\\x20push origin main'",
+  "env -S 'sh' -c $'git\\x20push origin main'",
+  'bash -c $"git push origin main"',
+  "echo $'it\\'s' ; git push origin main",
+  'bash -c "bash -c \\$\'git push origin main\'"',
+  // a line continuation between the $ and the quote does not hide it (hewq.4)
+  "bash -c $\\\n'git push origin main'",
+  "sh -c $\\\n'git\\x20push origin main'",
+  "bash -c $\\\n\\\n'git push origin main'",
+  "env -S 'sh' -c $\\\n'git\\x20push origin main'",
+  'bash -c $\\\n"git push origin main"',
+  // accepted over-deny: a harmless escape also denies
+  "echo $'a\\tb'",
+  "IFS=$'\\n' read -r x",
+]
+
+test.each(DENY_DOLLAR_QUOTE)('denyReason denies %j (claude-factory-hewq, $-quote hides words)', cmd => {
+  expect(
+    denyReason(cmd, '/root/repo', undefined, { headOf: () => 'factory/x', originHead: () => 'main' }),
+  ).toBe(DOLLAR_QUOTE_REASON)
+})
+
+test('denyReason allows a $ that does not start a $-quote (claude-factory-hewq)', () => {
+  const gate = { headOf: () => 'factory/x', originHead: () => 'main' }
+  for (const cmd of [
+    "echo \\$'x'",
+    'echo \'$\'"x"',
+    'echo "$\'x\'"',
+    'git push origin factory/x',
+    "echo $\\\n\\'x\\'",
+  ]) {
+    expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+  }
+})
+
+// claude-factory-zl5.43: a dashed git-core binary name (`git-push`,`git-send-pack`, found on
 // PATH or under `git --exec-path`) runs the same code as `git <verb>`, with no `git` word in the
 // command line at all. Real git 2.54 moved remote `main` through the plain `git-push` form.
 test('denyReason denies dashed git-core binaries (claude-factory-zl5.43)', () => {

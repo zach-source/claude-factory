@@ -473,6 +473,13 @@ A later review found 6 more disguised forms. The hook now denies these too:
   A check on the typed text alone misses the real, changed command.
   The hook denies any dollar sign in such a value for this reason.
 
+- An unquoted `$'...'` or `$"..."` quote hides the real words.
+  One example is `bash -c $'git\x20push origin main'`.
+  `bash` and `zsh` decode this quote, and they decode it in different ways.
+  The hook cannot read the real words, so it denies any such quote outside other quotes.
+  This also denies harmless uses such as `echo $'a\tb'`.
+  Write the words plainly, or use `printf` or a file (claude-factory-hewq).
+
 - A dash can hide a git-core binary name.
   Two examples are `git-push` and `git-send-pack`.
   A shell finds this name on `PATH` or under `git --exec-path`.
