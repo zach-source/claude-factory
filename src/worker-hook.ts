@@ -328,6 +328,28 @@ interface ScanState {
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
+  // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
+  // reads. Below zero, the scan stops and denies (fail closed).
+  work: number
+}
+
+// claude-factory-cbai: this reason is for a command whose scan reads more than the work budget.
+export const SCAN_BUDGET_REASON =
+  'The factory denies this command: the factory cannot check it in the time it has, because the ' +
+  'command nests too many wrapper words. Run the inner command directly. Do not retry this exact command.'
+
+// claude-factory-cbai: the default work budget of one scanReason call, in characters read. A
+// nested env -S or eval command can make a scan cost 2^n. A hook that passes its 10 s timeout
+// lets the command run (fail open). The budget is a fail-closed bound on any such growth.
+// Calibration: the largest work of any test in worker-hook.test.ts is 3,600,054 characters (the
+// 1.8 MB uncapped scanReason rows). 16,000,000 is more than 4x that. An 8192-character stacked
+// env -i eval command spends it in about 0.7 s.
+export const MAX_SCAN_WORK = 16_000_000
+
+/** Subtracts n from the work left. Returns true when the budget is spent. */
+function spendWork(state: ScanState, n: number): boolean {
+  state.work -= n
+  return state.work < 0
 }
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
@@ -1055,16 +1077,21 @@ function shCScriptValue(words: string[], start: number): string | undefined {
 // claude-factory-igj.8: the scan reads every word after start, not only words[start]. A wrapper
 // word (env, nice, nohup, sudo, and so on) can sit between start and the sh/bash/zsh/dash or
 // eval word. This scan still finds that later word.
-function segmentRunsBdCommand(words: string[], start: number, depth: number): boolean {
+function segmentRunsBdCommand(words: string[], start: number, depth: number, state: ScanState): boolean {
+  // claude-factory-cbai: the first eval word's recursion reads every later word of the segment
+  // (rest holds them all, later eval words too). A later eval word then needs no recursion of its
+  // own. Without this skip, n stacked eval words cost about 2^n work.
+  let evalScanned = false
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
       const script = shCScriptValue(words, k)
-      if (script !== undefined && stringNamesBdCommand(script, depth + 1)) return true
-    } else if (bw === 'eval') {
+      if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
+    } else if (bw === 'eval' && !evalScanned) {
+      evalScanned = true
       const rest = words.slice(k + 1).join(' ')
-      if (rest && stringNamesBdCommand(rest, depth + 1)) return true
+      if (rest && stringNamesBdCommand(rest, state, depth + 1)) return true
     }
   }
   return false
@@ -1073,10 +1100,10 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number): bo
 // claude-factory-igj: true when a bd word sits anywhere inside s, read as shell words, or
 // inside a sh/bash/zsh/dash -c script or an eval word nested in s. depth bounds the recursion
 // the same way MAX_SHELL_DEPTH bounds anyShellReason's eval/sh -c recursion.
-function stringNamesBdCommand(s: string, depth = 0): boolean {
-  if (depth > MAX_SHELL_DEPTH) return true
+function stringNamesBdCommand(s: string, state: ScanState, depth = 0): boolean {
+  if (depth > MAX_SHELL_DEPTH || spendWork(state, s.length)) return true
   for (const seg of segments(s)) {
-    if (segmentRunsBdCommand(seg, 0, depth)) return true
+    if (segmentRunsBdCommand(seg, 0, depth, state)) return true
   }
   return false
 }
@@ -1117,6 +1144,8 @@ function envOptionScan(
   words: string[],
   envIndex: number,
   depth: number,
+  state: ScanState,
+  spanScanned: { done: boolean },
 ): { cmdStart: number; clearsAll: boolean } | true {
   const span = envSplitStringScan(words, envIndex)
   let clearsAll = false
@@ -1132,14 +1161,21 @@ function envOptionScan(
       const sWord = words[j]!
       const prefix =
         sWord.startsWith('-') && !sWord.startsWith('--') ? sWord.slice(1, sWord.indexOf('S')) : ''
-      const recombined = [
-        'env',
-        ...words.slice(envIndex + 1, j),
-        ...(prefix ? ['-' + prefix] : []),
-        ...segments(span.value).flat(),
-        ...words.slice(span.end),
-      ]
-      if (touchesBeadsActor(recombined, depth + 1)) return true
+      // claude-factory-cbai: the first env -S span of a segment recurses on a rebuilt line that
+      // holds every later word. Each later env word's span sits in that line with the same
+      // prefix, value and suffix, so the recursion reads it there. A later span then needs no
+      // recursion of its own. Without this skip, n nested spans cost about 2^n work.
+      if (!spanScanned.done) {
+        spanScanned.done = true
+        const recombined = [
+          'env',
+          ...words.slice(envIndex + 1, j),
+          ...(prefix ? ['-' + prefix] : []),
+          ...segments(span.value).flat(),
+          ...words.slice(span.end),
+        ]
+        if (touchesBeadsActor(recombined, state, depth + 1)) return true
+      }
       j = span.end - 1 // skip the flag and its own value word; it already ran above
       continue
     }
@@ -1214,8 +1250,12 @@ function envOptionScan(
  * A plain, whole-word scan of `words` would not find that word.
  * For example, in `env -i sh -c 'bd create x'`, the word `bd` is inside the script text.
  */
-function touchesBeadsActor(words: string[], depth = 0): boolean {
+function touchesBeadsActor(words: string[], state: ScanState, depth = 0): boolean {
   if (depth > MAX_SHELL_DEPTH) return true
+  let chars = 0
+  for (const w of words) chars += w.length + 1
+  if (spendWork(state, chars)) return true
+  const spanScanned = { done: false }
   let envClearsAll = false
   let runsBd = false
   for (let i = 0; i < words.length; i++) {
@@ -1234,7 +1274,7 @@ function touchesBeadsActor(words: string[], depth = 0): boolean {
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {
-      const scan = envOptionScan(words, i, depth)
+      const scan = envOptionScan(words, i, depth, state, spanScanned)
       if (scan === true) return true
       if (scan.clearsAll) {
         envClearsAll = true
@@ -1242,7 +1282,7 @@ function touchesBeadsActor(words: string[], depth = 0): boolean {
         // claude-factory-igj.8: scan every word from cmdStart to the end of this segment, not
         // only words[cmdStart]. A wrapper word (env, nice, nohup, sudo, and so on) can sit
         // between env's own options and the real sh/bash/zsh/dash or eval word.
-        if (cmdStart < words.length && segmentRunsBdCommand(words, cmdStart, depth + 1)) {
+        if (cmdStart < words.length && segmentRunsBdCommand(words, cmdStart, depth + 1, state)) {
           runsBd = true
         }
       }
@@ -4793,8 +4833,9 @@ export function scanReason(
   root?: string,
   personOnly?: string[],
   gate?: HookGate,
+  budget: number = MAX_SCAN_WORK,
 ): string | undefined {
-  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false }
+  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false, work: budget }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
@@ -4837,6 +4878,7 @@ function denyAt(
   ghConfigMovedBefore: boolean,
 ): string | undefined {
   if (!command) return undefined
+  if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
   // claude-factory-epz: a deep command denies here, with no personOnly check at all. The
   // MAX_COMMAND_LENGTH cap (claude-factory-25z.20) now runs once, in denyReason, before this
   // function ever runs (claude-factory-dts). denyAt itself checks no length at all.
@@ -4863,7 +4905,9 @@ function denyAt(
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
-    if (touchesBeadsActor(words)) return BEADS_ACTOR_REASON
+    if (touchesBeadsActor(words, state)) {
+      return state.work < 0 ? SCAN_BUDGET_REASON : BEADS_ACTOR_REASON
+    }
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
