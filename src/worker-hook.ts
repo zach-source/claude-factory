@@ -442,8 +442,190 @@ export const BEADS_ACTOR_REASON =
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
-/** This function returns true when a word in `words` sets, clears or (re-)exports BEADS_ACTOR. */
-function touchesBeadsActor(words: string[]): boolean {
+const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
+
+// claude-factory-igj: returns true when a bare value word (not a dash word) names BEADS_ACTOR.
+// A match is any text that contains the name, which also matches the exact name.
+// This match is defensive and fails closed. See BEADS_ACTOR_REASON above.
+function valueNamesBeadsActor(v: string | undefined): boolean {
+  return v !== undefined && v.includes('BEADS_ACTOR')
+}
+
+// claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
+// way anyShellReason finds it: the first flag cluster that holds c, then the first word after it
+// that is not itself a flag, or the word right after a literal --.
+function shCScriptValue(words: string[], start: number): string | undefined {
+  let nc = start
+  while (nc < words.length && words[nc] !== '--' && !isShCCluster(words[nc]!)) nc++
+  if (nc >= words.length || words[nc] === '--') return undefined
+  for (let k = nc + 1; k < words.length; k++) {
+    const w = words[k]!
+    if (w === '--') return words[k + 1]
+    if (w.startsWith('-')) continue
+    return w
+  }
+  return undefined
+}
+
+// claude-factory-igj: this checks words from index start to the end of the one segment words.
+// It returns true for a bd word there, or for a sh/bash/zsh/dash -c script or an eval word that
+// holds a bd word. depth bounds the recursion. MAX_SHELL_DEPTH bounds it the same way, for
+// anyShellReason's own eval/sh -c recursion.
+//
+// claude-factory-igj.8: the scan reads every word after start, not only words[start]. A wrapper
+// word (env, nice, nohup, sudo, and so on) can sit between start and the sh/bash/zsh/dash or
+// eval word. This scan still finds that later word.
+function segmentRunsBdCommand(words: string[], start: number, depth: number): boolean {
+  for (let k = start; k < words.length; k++) {
+    const bw = baseWord(words[k]!)
+    if (bw === 'bd') return true
+    if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+      const script = shCScriptValue(words, k)
+      if (script !== undefined && stringNamesBdCommand(script, depth + 1)) return true
+    } else if (bw === 'eval') {
+      const rest = words.slice(k + 1).join(' ')
+      if (rest && stringNamesBdCommand(rest, depth + 1)) return true
+    }
+  }
+  return false
+}
+
+// claude-factory-igj: true when a bd word sits anywhere inside s, read as shell words, or
+// inside a sh/bash/zsh/dash -c script or an eval word nested in s. depth bounds the recursion
+// the same way MAX_SHELL_DEPTH bounds anyShellReason's eval/sh -c recursion.
+function stringNamesBdCommand(s: string, depth = 0): boolean {
+  if (depth > MAX_SHELL_DEPTH) return true
+  for (const seg of segments(s)) {
+    if (segmentRunsBdCommand(seg, 0, depth)) return true
+  }
+  return false
+}
+
+/**
+ * Scans the options and `NAME=value` assignments of an `env` word.
+ * The scan starts right after `words[envIndex]`.
+ *
+ * It returns `true` when it finds a word that names `BEADS_ACTOR`. Such a word is one of these:
+ * - The bare name.
+ * - A dash word that holds the name (`-uBEADS_ACTOR`, `--unset=BEADS_ACTOR`).
+ * - The separate value word of a value flag (`-u BEADS_ACTOR`, `--unset BEADS_ACTOR`).
+ *
+ * It also returns `true` when an `env -S` value sets, clears or (re-)exports `BEADS_ACTOR`.
+ * The scan reads that value with its own recursive scan.
+ *
+ * Otherwise, it returns `cmdStart`. This is the index of the real command word of `env`.
+ * The value is `words.length` when every later word is an option or an assignment.
+ *
+ * It also returns `clearsAll`. This is `true` when a `-i` cluster, a lone `-`, or an
+ * `--ignore-environment` prefix clears the whole environment.
+ * The command at `cmdStart` runs under that cleared environment.
+ *
+ * claude-factory-igj: the old scan stopped at the first word that was not a recognized env option.
+ * A value flag's own value word (`-C /tmp`, `-u bd`) ended the scan.
+ * So a later `-u BEADS_ACTOR` or `-i` never ran.
+ *
+ * This scan walks a value flag past its own value word.
+ * It parses argv the same way real `env` does.
+ * The scan stops only at the real command word.
+ * That word is the first word that is neither an option nor a `NAME=value` assignment.
+ * It can also be the word after a literal `--`.
+ *
+ * A word at or after that command word is never read as one of env's own options.
+ * The caller reads it as the real command's own word instead.
+ */
+function envOptionScan(
+  words: string[],
+  envIndex: number,
+  depth: number,
+): { cmdStart: number; clearsAll: boolean } | true {
+  const span = envSplitStringScan(words, envIndex)
+  let clearsAll = false
+  for (let j = envIndex + 1; j < words.length; j++) {
+    const ew = words[j]!
+    if (span && span.sIndex === j) {
+      const recombined = [
+        'env',
+        ...words.slice(envIndex + 1, j),
+        ...segments(span.value).flat(),
+        ...words.slice(span.end),
+      ]
+      if (touchesBeadsActor(recombined, depth + 1)) return true
+      j = span.end - 1 // skip the flag and its own value word; it already ran above
+      continue
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(ew)) continue // a NAME=value assignment: not the command
+    if (ew === '--') return { cmdStart: j + 1, clearsAll }
+    if (ew === '-') {
+      clearsAll = true
+      continue
+    }
+    if (ew.startsWith('--')) {
+      const body = ew.slice(2)
+      const eqAt = body.indexOf('=')
+      const name = eqAt === -1 ? body : body.slice(0, eqAt)
+      const attached = eqAt === -1 ? undefined : body.slice(eqAt + 1)
+      if (name.length > 0 && ENV_IGNORE_ENVIRONMENT_LONG.startsWith(name)) {
+        clearsAll = true
+        continue
+      }
+      if (
+        attached === undefined &&
+        name.length > 0 &&
+        ENV_LONG_VALUE_FLAGS.some(full => full.startsWith(name))
+      ) {
+        if (valueNamesBeadsActor(words[j + 1])) return true
+        j++ // skip this flag's own separate value word
+        continue
+      }
+      if (attached !== undefined && attached.includes('BEADS_ACTOR')) return true
+      continue // an unrelated long option (--debug, --version, ...): keep scanning
+    }
+    if (ew.startsWith('-') && ew.length > 1) {
+      const chars = ew.slice(1)
+      for (let ci = 0; ci < chars.length; ci++) {
+        const c = chars[ci]!
+        if (c === 'i') {
+          clearsAll = true
+          continue
+        }
+        if (c === 'S' || ENV_SHORT_VALUE_FLAGS.has(c)) {
+          const rest = chars.slice(ci + 1)
+          const value = rest.length > 0 ? rest : words[j + 1]
+          if (rest.length === 0) j++ // the value is the next whole word: skip it
+          if (c !== 'S' && valueNamesBeadsActor(value)) return true
+          break // the cluster's value, attached or skipped, ends the cluster
+        }
+      }
+      continue
+    }
+    return { cmdStart: j, clearsAll } // the real command: not an option, not an assignment
+  }
+  return { cmdStart: words.length, clearsAll }
+}
+
+/**
+ * This function returns true when a word in `words` sets, clears, or (re-)exports BEADS_ACTOR.
+ *
+ * claude-factory-igj: when a word is `env`, `envOptionScan` finds the clear-all flags of `env`.
+ * It also finds any word that names `BEADS_ACTOR`.
+ * It reports where the real command of `env` starts.
+ *
+ * The command can be a `bd` word.
+ * It can run under a cleared environment (`clearsAll`).
+ * In this case, the check `b === 'bd'` below sets `runsBd`.
+ * This check runs for every word in `words`, at any position.
+ *
+ * `stringNamesBdCommand` checks the command in two cases:
+ * - The command is a `sh`, `bash`, `zsh` or `dash` word with a `-c` script.
+ * - The command is an `eval` word.
+ *
+ * In each case, `stringNamesBdCommand` checks the text that the command runs.
+ * `stringNamesBdCommand` looks for a `bd` word in that text.
+ * A plain, whole-word scan of `words` would not find that word.
+ * For example, in `env -i sh -c 'bd create x'`, the word `bd` is inside the script text.
+ */
+function touchesBeadsActor(words: string[], depth = 0): boolean {
+  if (depth > MAX_SHELL_DEPTH) return true
   let envClearsAll = false
   let runsBd = false
   for (let i = 0; i < words.length; i++) {
@@ -459,16 +641,20 @@ function touchesBeadsActor(words: string[]): boolean {
       if (words[j] !== undefined && /^BEADS_ACTOR(=|$)/.test(words[j]!)) return true
     }
     if (b === 'unset' && words.slice(i + 1).includes('BEADS_ACTOR')) return true
-    // claude-factory-8pc.27: `env -u BEADS_ACTOR` and `env --unset=BEADS_ACTOR` clear the name
-    // for the command that env runs. `env -i` (or `--ignore-environment`) clears every name in
-    // the environment. Deny `env -i` only when the segment also runs `bd`.
+    // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
+    // runs. `env -i` clears every name.
     if (b === 'env') {
-      for (let j = i + 1; j < words.length; j++) {
-        const ew = words[j]!
-        if (ew === '--unset=BEADS_ACTOR') return true
-        if ((ew === '-u' || ew === '--unset') && words[j + 1] === 'BEADS_ACTOR') return true
-        if (ew === '-i' || ew === '--ignore-environment') envClearsAll = true
-        if (!ew.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(ew)) break
+      const scan = envOptionScan(words, i, depth)
+      if (scan === true) return true
+      if (scan.clearsAll) {
+        envClearsAll = true
+        const { cmdStart } = scan
+        // claude-factory-igj.8: scan every word from cmdStart to the end of this segment, not
+        // only words[cmdStart]. A wrapper word (env, nice, nohup, sudo, and so on) can sit
+        // between env's own options and the real sh/bash/zsh/dash or eval word.
+        if (cmdStart < words.length && segmentRunsBdCommand(words, cmdStart, depth + 1)) {
+          runsBd = true
+        }
       }
     }
   }
@@ -2200,13 +2386,13 @@ const ENV_LONG_SPLIT_STRING = 'split-string'
 const ENV_LONG_VALUE_FLAGS = ['unset', 'chdir', 'argv0']
 const ENV_SHORT_VALUE_FLAGS = new Set(['u', 'C', 'P', 'L', 'U', 'a'])
 
-/**
- * Reads the value that the `env -S`/`env --split-string` word at `words[j]` splits and runs.
- * Returns undefined when no such flag is present (claude-factory-zl5.42, claude-factory-dgf).
- * Stops and returns undefined at the first word that is not an option and not an option's own
- * value word. That word is the command of `env`. `-S` did not appear before it.
- */
-function envSplitStringValue(words: string[], j: number): string | undefined {
+// claude-factory-zl5.42 / claude-factory-dgf: finds an env -S/--split-string flag after words[j].
+// Returns its value, its own index sIndex, and end, the index of the first word after it.
+// claude-factory-igj: touchesBeadsActor uses sIndex and end for its own recursive scan.
+function envSplitStringScan(
+  words: string[],
+  j: number,
+): { value: string; sIndex: number; end: number } | undefined {
   for (let k = j + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '-') continue // a bare `-` operand: not an option, keeps the scan going
@@ -2217,7 +2403,9 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
       const name = eqAt === -1 ? body : body.slice(0, eqAt)
       const attached = eqAt === -1 ? undefined : body.slice(eqAt + 1)
       if (name.length > 0 && ENV_LONG_SPLIT_STRING.startsWith(name)) {
-        return attached !== undefined ? attached : words[k + 1]
+        if (attached !== undefined) return { value: attached, sIndex: k, end: k + 1 }
+        const v = words[k + 1]
+        return v === undefined ? undefined : { value: v, sIndex: k, end: k + 2 }
       }
       if (
         attached === undefined &&
@@ -2234,7 +2422,9 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
         const c = chars[ci]!
         if (c === 'S') {
           const rest = chars.slice(ci + 1)
-          return rest.length > 0 ? rest : words[k + 1]
+          if (rest.length > 0) return { value: rest, sIndex: k, end: k + 1 }
+          const v = words[k + 1]
+          return v === undefined ? undefined : { value: v, sIndex: k, end: k + 2 }
         }
         if (ENV_SHORT_VALUE_FLAGS.has(c)) {
           const rest = chars.slice(ci + 1)
@@ -2247,6 +2437,15 @@ function envSplitStringValue(words: string[], j: number): string | undefined {
     return undefined
   }
   return undefined
+}
+
+/**
+ * Reads the value that the `env -S`/`env --split-string` word at `words[j]` splits and runs.
+ * Returns undefined when no such flag is present. A thin wrapper over `envSplitStringScan`: see
+ * that function for the scan rules.
+ */
+function envSplitStringValue(words: string[], j: number): string | undefined {
+  return envSplitStringScan(words, j)?.value
 }
 
 // claude-factory-68gn.12: GNU `getopt_long` accepts a unique prefix of a long option name, which a whole-word match misses.

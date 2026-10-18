@@ -12,6 +12,37 @@ minor release may change the factory format, the CLI or the run state.
   or a git-flag abbreviation of one of these) and then pushes `HEAD` to a protected
   branch in the same command. (claude-factory-c63)
 
+- `touchesBeadsActor` in `src/worker-hook.ts` now reads the options of an `env` word. It reads them
+  the same way as the real `env` command. The old scan stopped too soon.
+  It stopped at the first word that is not a flag, or at the first `bd` word.
+
+  The old scan did not catch these bypass forms:
+
+  - `env -uBEADS_ACTOR`: a short option joined to its value
+  - a lone `env -`: the same effect as `--ignore-environment`
+  - `env -iu FOO`: a cluster of short options
+  - `env -C /tmp -u BEADS_ACTOR`: the value flag `-C /tmp` ended the old scan too soon
+
+  The old scan also did not catch these forms:
+
+  - `env -S'-i ...'`: the `env -S` value can clear or unset `BEADS_ACTOR`
+  - `env -u bd -u BEADS_ACTOR`: the first `-u` value is `bd`, which ended the old scan before the later `-u BEADS_ACTOR`
+  - `env -i sh -c 'bd create x'` and `env -i bash -c "..."`: a `bd` word hides in a shell `-c`
+    script, under a clear-all `env -i`
+  - `env -i eval "bd create x"`: a `bd` word hides in an `eval` word, under a clear-all `env -i`
+
+  The fix also corrects an error in the first version of the wider scan. That version read past
+  the `env` command itself. It also read into the flags and arguments of the command that `env`
+  runs. The guard now allows these two lines again:
+
+  ```
+  env LC_ALL=C grep -rn BEADS_ACTOR src
+  env FOO=1 grep -i x bd
+  ```
+
+  The guard now denies every bypass form above. This change is bead claude-factory-igj.
+  It follows claude-factory-8pc.24 and claude-factory-8pc.27.
+
 - Fixed: `gitReason` (`src/worker-hook.ts`) read the current branch with
   `gate.headOf(root)`, where `root` never moves. An earlier `cd`, `pushd` or
   `popd` word in the same command can move the real push to a different
