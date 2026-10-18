@@ -1,15 +1,18 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
   DYNAMIC_VERB_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
+  GH_BUILTIN_VERBS,
+  GIT_BUILTIN_VERBS,
   type HookGate,
   LIVE_REASON,
   LONG_COMMAND_REASON,
@@ -1392,15 +1395,23 @@ test('denyReason keeps denying when the real -C comes before a value-flag word (
 //
 // A value word that starts with `-` can look like a `-C` flag. gitChdir then cannot tell a
 // real `-C <dir>` word apart from this value word.
-// gitChdir must fail closed in this case. It must deny with PUSH_DIR_REASON, and must not
-// call gate.headOf.
+// gitChdir must fail closed in this case. It must not call gate.headOf.
+// claude-factory-bemr.12: `--super-prefix` stands in for `--attr-source` here. `--attr-source`
+// moved into `GIT_VALUE_FLAGS` under claude-factory-bemr.9, so it no longer tests this row's
+// point (a flag this hook does not know). `--super-prefix` is a real git global flag, and this
+// hook still does not know it.
+//
+// claude-factory-bemr.16 (AC20): each command here has a literal `-C` word in `tail`. The
+// uncertain-path alias check now denies these with `ALIAS_USE_REASON`, before `gitChdir` ever
+// runs. This is a deny-to-deny reason change: the row stayed denied, and `gate.headOf` is still
+// never called.
 const GIT_CHDIR_UNSAFE_ROWS: [string][] = [
-  ['git --attr-source -C -C /acme/prot push origin HEAD'],
-  ['git --attr-source -C -C /acme/prot send-pack origin HEAD'],
+  ['git --super-prefix -C -C /acme/prot push origin HEAD'],
+  ['git --super-prefix -C -C /acme/prot send-pack origin HEAD'],
 ]
 
 test.each(GIT_CHDIR_UNSAFE_ROWS)(
-  'denyReason fails closed on an unresolved -C value, for %j (claude-factory-3f2z.7)',
+  'denyReason fails closed on an unresolved -C value, for %j (claude-factory-3f2z.7, bemr.16)',
   cmd => {
     const dirs: (string | undefined)[] = []
     const gate: HookGate = {
@@ -1409,8 +1420,12 @@ test.each(GIT_CHDIR_UNSAFE_ROWS)(
         dirs.push(dir)
         return dir === '/acme/prot' ? 'main' : 'factory/x'
       },
+      // claude-factory-bemr.12: an empty, readable alias table. `--super-prefix` leaves the verb
+      // search unsure, so the row must clear the bemr.9 uncertain-path alias check before it
+      // reaches the `-C`-unsafe fallback this row tests.
+      gitAliases: () => new Map(),
     }
-    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_DIR_REASON)
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(ALIAS_USE_REASON)
     expect(dirs).toEqual([])
   },
 )
@@ -1423,17 +1438,23 @@ test.each(GIT_CHDIR_UNSAFE_ROWS)(
 // `pushTail`, with no refspec, a remote-only operand, or `--force`. The old code still asked
 // gitPushDenied/sendPackDenied with that wrong pushTail. A bare push, or a push with no
 // branch-naming refspec, read as safe there, so the push allowed.
+// claude-factory-bemr.12: `--super-prefix` stands in for `--attr-source` here, for the same
+// reason as `GIT_CHDIR_UNSAFE_ROWS` above: `--attr-source` is now a known value flag
+// (claude-factory-bemr.9), so it no longer fakes an unknown flag's value word.
 const GIT_CHDIR_FAKE_VERB_ROWS: [string][] = [
-  ['git --attr-source push -C /acme/prot push origin HEAD'],
-  ['git --attr-source send-pack -C /acme/prot send-pack origin HEAD'],
-  ['git --attr-source push -C /acme/prot push'],
-  ['git --attr-source push -C /acme/prot push origin'],
-  ['git --attr-source push -C /acme/prot push --force'],
-  ['git --attr-source send-pack -C /acme/prot send-pack origin'],
+  ['git --super-prefix push -C /acme/prot push origin HEAD'],
+  ['git --super-prefix send-pack -C /acme/prot send-pack origin HEAD'],
+  ['git --super-prefix push -C /acme/prot push'],
+  ['git --super-prefix push -C /acme/prot push origin'],
+  ['git --super-prefix push -C /acme/prot push --force'],
+  ['git --super-prefix send-pack -C /acme/prot send-pack origin'],
 ]
 
+// claude-factory-bemr.16 (AC20): each row has a literal `-C` word in `tail`. The uncertain-path
+// alias check now denies these with `ALIAS_USE_REASON`, before the fake-verb push logic below it
+// ever runs. Deny-to-deny reason change: `gate.headOf` stays uncalled.
 test.each(GIT_CHDIR_FAKE_VERB_ROWS)(
-  'denyReason does not trust a fake push/send-pack word as the verb, for %j (claude-factory-3f2z.8)',
+  'denyReason does not trust a fake push/send-pack word as the verb, for %j (claude-factory-3f2z.8, bemr.16)',
   cmd => {
     const dirs: (string | undefined)[] = []
     const gate: HookGate = {
@@ -1442,8 +1463,10 @@ test.each(GIT_CHDIR_FAKE_VERB_ROWS)(
         dirs.push(dir)
         return dir === '/acme/prot' ? 'main' : 'factory/x'
       },
+      // claude-factory-bemr.12: see GIT_CHDIR_UNSAFE_ROWS above.
+      gitAliases: () => new Map(),
     }
-    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(PUSH_DIR_REASON)
+    expect(denyReason(cmd, '/acme/root', undefined, gate)).toBe(ALIAS_USE_REASON)
     expect(dirs).toEqual([])
   },
 )
@@ -2156,6 +2179,26 @@ test('denyReason allows --config-env on an unrelated key (claude-factory-zl5.34)
   expect(denyReason('git --config-env=user.name=ENVVAR push origin feature')).toBeUndefined()
 })
 
+// claude-factory-bemr.13: `--config-env` has a second, bare form: `--config-env name=envvar`,
+// with no `=` right after `--config-env` itself. Real git 2.54 runs this form the same way it
+// runs the attached form above. This guard must read the same name from either form.
+const DENY_CONFIG_ENV_PUSH_BARE_FORM = [
+  'git --config-env alias.p=ENVVAR p origin',
+  'git --config-env remote.origin.push=ENVVAR push origin',
+]
+
+test.each(DENY_CONFIG_ENV_PUSH_BARE_FORM)(
+  'denyReason denies %j, the bare --config-env form (claude-factory-bemr.13)',
+  cmd => {
+    const gate = { headOf: () => 'feature' }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason allows the bare --config-env form on an unrelated key (claude-factory-bemr.13)', () => {
+  expect(denyReason('git --config-env user.name=ENVVAR push origin feature')).toBeUndefined()
+})
+
 // claude-factory-zl5.35: `git send-pack` is the plumbing `git push` itself calls, with no `push`
 // word on its own command line. It takes the same refspec syntax, so this guard checks it the
 // same way, through `refspecTarget` and `protectedBranchSet`.
@@ -2163,8 +2206,15 @@ test('denyReason denies git send-pack to a protected branch (claude-factory-zl5.
   expect(denyReason('git send-pack origin refs/heads/main')).toBe(PUSH_REASON)
   expect(denyReason('git send-pack --all origin')).toBe(PUSH_REASON)
   expect(denyReason('git send-pack origin', undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
-  // the uncertain-verb path: an unrecognized global flag ahead of send-pack
-  expect(denyReason('git --unknown-flag send-pack origin main')).toBe(PUSH_REASON)
+  // the uncertain-verb path: an unrecognized global flag ahead of send-pack.
+  // claude-factory-bemr.5 (AC11): an explicit empty gitAliases stub keeps this row's original
+  // intent (the uncertain-verb push-tail scan, not an alias) now that the uncertain path also
+  // reads the alias table.
+  expect(
+    denyReason('git --unknown-flag send-pack origin main', undefined, undefined, {
+      gitAliases: () => new Map(),
+    }),
+  ).toBe(PUSH_REASON)
 })
 
 test('denyReason allows git send-pack to a run branch (claude-factory-zl5.35)', () => {
@@ -2326,6 +2376,48 @@ test.each(DENY_SEND_PACK_UNSAFE_VALUE_FLAG_THEN_DRY_RUN_WORD)(
     expect(denyReason(cmd)).toBe(PUSH_REASON)
   },
 )
+
+// claude-factory-zs39: git reads every word after the first `--` as an operand, never as a flag.
+// The old parsers skipped the `--` word and then read later words as flags. A `-n` after `--` hid
+// a real push to `main` as a dry run, and `--repo` or `-o` swallowed the refspec as a value.
+// Real git 2.54 confirmed each row below moves `main`.
+const ZS39_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const DENY_WORDS_AFTER_DOUBLE_DASH = [
+  'git push -- origin main -n',
+  'git push origin main -- --dry-run',
+  'git push -- origin --repo main',
+  'git push -- origin -o main',
+  'git push -- origin main --all',
+  'git send-pack -- ../r.git main -n',
+  'git send-pack ../r.git -- main --dry-run',
+]
+
+test.each(DENY_WORDS_AFTER_DOUBLE_DASH)(
+  'denyReason denies %j (claude-factory-zs39, words after -- are operands)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+// Real git 2.54 reads `-n` and `--all` after `--` as ref names that match nothing, so `main` stays.
+const ALLOW_WORDS_AFTER_DOUBLE_DASH = [
+  'git push -n -- origin main',
+  'git push -- origin factory/x',
+  'git send-pack -n -- ../r.git main',
+  'git push -- origin -n',
+  'git push -- origin --all',
+]
+
+test.each(ALLOW_WORDS_AFTER_DOUBLE_DASH)(
+  'denyReason allows %j (claude-factory-zs39, a real flag before -- or a flag-like ref name stays allowed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
+  },
+)
+
+test('denyReason still denies git push --repo -- origin main (claude-factory-zs39, the value flag eats --)', () => {
+  expect(denyReason('git push --repo -- origin main', undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
 
 // claude-factory-zl5.41: review-r2 found 3 siblings of the zl5.21/zl5.28/zl5.34 config-write
 // guard: `remote.*.mirror` (acts like `--mirror` on every later push to that remote),
@@ -2615,7 +2707,14 @@ test('denyReason allows HOME set with no git word (claude-factory-zl5.45)', () =
 // The branch changes after the scan. A check against the old branch name does not find the push.
 // This guard now denies by default. If one command has a branch-change word and a later push to HEAD, it denies the command.
 // The denial uses PUSH_REASON. The guard does not need to know the new branch name.
-const C63_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+// claude-factory-bemr.5 (AC11): gitAliases is an explicit stub with no entries. These rows test
+// the uncertain-verb path with an unrelated flag, not an alias; an empty table keeps that intent
+// while still letting the new uncertain-fallback alias check read a (real, empty) table.
+const C63_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+}
 
 const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   'git checkout main; git push o HEAD',
@@ -2679,6 +2778,9 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   'git checkout main; git send-pack -n --no-dry-run o HEAD',
   'git checkout main; git send-pack --dry-run --no-dr o HEAD',
   'git checkout main; git send-pack --remote -n o HEAD',
+  // claude-factory-zs39: words after `--` are operands.
+  'git checkout main; git push -- o HEAD -n',
+  'git checkout main; git send-pack -- o HEAD -n',
 ]
 
 test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(
@@ -3217,6 +3319,804 @@ test('denyReason never calls gate.headOf for a push after an env -S of any form 
     PUSH_DIR_REASON,
   )
   expect(calls).toBe(0)
+})
+
+// claude-factory-bemr: a pre-existing alias must not hide a guarded verb.
+// BEMR_GIT_ALIASES and BEMR_GH_ALIASES copy the real aliases from this bead's triage host.
+// That host ran git 2.54.0 and gh 2.98.0.
+const BEMR_GIT_ALIASES = new Map([
+  ['co', 'checkout'],
+  ['br', 'branch'],
+  ['st', 'status'],
+  ['lg', 'log --oneline --graph'],
+  ['wip', '!git stash'],
+  ['unwip', '!git stash pop'],
+])
+const BEMR_GH_ALIASES = new Map([
+  ['co', 'pr checkout'],
+  ['pv', 'pr view'],
+])
+//
+// claude-factory-bemr: headOf gives a branch name that is not a protected branch.
+// This proves each denied case below denies for the right reason.
+// The fix must set state.branchChange from the resolved alias.
+//
+// The test must not pass only because main or master is a protected name on its own.
+// originHead gives main, the value the real triage session read.
+const BEMR_GATE: HookGate = {
+  gitAliases: () => BEMR_GIT_ALIASES,
+  ghAliases: () => BEMR_GH_ALIASES,
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+}
+
+const BEMR_AC1_COMMANDS = [
+  'git co main && git push o HEAD',
+  'git br -M main && git push o HEAD',
+  'gh co 5 && git push',
+]
+
+test.each(BEMR_AC1_COMMANDS)(
+  'denyReason denies %j: a pre-existing alias that resolves to checkout/branch/pr-checkout must not hide the push (claude-factory-bemr, AC1)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, BEMR_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+test('denyReason denies "git p origin main": an alias to push denies the same as the literal verb (claude-factory-bemr, AC2)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['p', 'push']]) }
+  expect(denyReason('git p origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.16: "git -C /w p origin main" has a -C word before the non-builtin verb
+// p. This guard no longer reads gate.gitAliases at dir /w: it denies ALIAS_USE_REASON outright,
+// with no call to gate.gitAliases at all (AC15).
+test('denyReason denies "git -C /w p origin main" with ALIAS_USE_REASON, and never calls gate.gitAliases (claude-factory-bemr.16, AC15)', () => {
+  let calls = 0
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls++
+      return new Map([['p', 'push']])
+    },
+  }
+  expect(denyReason('git -C /w p origin main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+  expect(calls).toBe(0)
+})
+
+test('denyReason denies "git CO main && git push o HEAD": the alias lookup folds the verb to lower case (claude-factory-bemr, AC3)', () => {
+  expect(denyReason('git CO main && git push o HEAD', undefined, undefined, BEMR_GATE)).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git x main && git push o HEAD": a chain of two aliases still resolves to checkout (claude-factory-bemr, AC3)', () => {
+  const gate: HookGate = {
+    gitAliases: () =>
+      new Map([
+        ['x', 'co'],
+        ['co', 'checkout'],
+      ]),
+    headOf: () => 'factory/x',
+  }
+  expect(denyReason('git x main && git push o HEAD', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git q origin main": a quoted alias expansion still denies the push to main (claude-factory-bemr, AC4)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['q', 'pu"sh"']]) }
+  expect(denyReason('git q origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git q2 origin main" with ALIAS_USE_REASON: an unclosed quote in the alias text fails closed (claude-factory-bemr, AC4)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['q2', 'pu"sh']]) }
+  expect(denyReason('git q2 origin main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "git wip" with ALIAS_USE_REASON: a leading ! shell alias cannot be re-scanned (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('git wip', undefined, undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies a git alias chain deeper than MAX_ALIAS_DEPTH with ALIAS_USE_REASON (claude-factory-bemr, AC5)', () => {
+  const entries: [string, string][] = Array.from({ length: 20 }, (_, i) => [`b${i}`, `b${i + 1}`])
+  const gate: HookGate = { gitAliases: () => new Map(entries) }
+  expect(denyReason('git b0 main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "git zz main" with ALIAS_USE_REASON when gate.gitAliases is unset (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('git zz main', undefined, undefined, {})).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "git zz main" with ALIAS_USE_REASON when gate.gitAliases gives undefined (claude-factory-bemr, AC5)', () => {
+  const gate: HookGate = { gitAliases: () => undefined }
+  expect(denyReason('git zz main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "cd /other && git co main" with ALIAS_USE_REASON: an earlier cd hides the alias table for that directory (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('cd /other && git co main', undefined, undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "git --git-dir=/other co main" with ALIAS_USE_REASON: --git-dir hides the alias table the same way (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('git --git-dir=/other co main', undefined, undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "gh zz 5" with ALIAS_USE_REASON when gate.ghAliases is unset (claude-factory-bemr, AC5)', () => {
+  expect(denyReason('gh zz 5', undefined, undefined, {})).toBe(ALIAS_USE_REASON)
+})
+
+const BEMR_GH_CONFIG_ENV_COMMANDS = [
+  'GH_CONFIG_DIR=/x gh co 5',
+  'XDG_CONFIG_HOME=/x gh co 5',
+  'HOME=/x gh co 5',
+]
+
+test.each(BEMR_GH_CONFIG_ENV_COMMANDS)(
+  'denyReason denies %j with ALIAS_USE_REASON: a config-dir assignment before a non-builtin gh verb hides the alias table (claude-factory-bemr, AC5)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+  },
+)
+
+// claude-factory-axok: ghReason's own MAX_ALIAS_DEPTH check has no test.
+// The git-side chain check (AC5 above) has a matching gh check.
+// This test makes sure that no cyclic gh table can hang the hook.
+test('denyReason denies a gh alias chain deeper than MAX_ALIAS_DEPTH with ALIAS_USE_REASON (claude-factory-axok)', () => {
+  const entries: [string, string][] = Array.from({ length: 20 }, (_, i) => [`b${i}`, `b${i + 1}`])
+  const gate: HookGate = { ghAliases: () => new Map(entries) }
+  expect(denyReason('gh b0 5', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+// claude-factory-bemr.11: anyGitReason and anyGhReason examine every word of a command.
+// They do not examine only the command word.
+//
+// This finds a git or gh word that another command hides.
+// It also finds a git or gh word in a plain argument, such as a grep pattern.
+//
+// The round-1 review asked for a decision and for test rows.
+// This guard keeps the wider examination.
+// It denies when it is not sure, so each row here denies.
+const BEMR11_NON_COMMAND_GIT_WORD_COMMANDS = [
+  'cd docs && grep git README.md',
+  'grep -rn git src',
+  'grep gh README.md',
+]
+
+test.each(BEMR11_NON_COMMAND_GIT_WORD_COMMANDS)(
+  'denyReason denies %j with ALIAS_USE_REASON: a git or gh word in an unrelated argument still opens the alias scan (claude-factory-bemr.11)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, {})).toBe(ALIAS_USE_REASON)
+  },
+)
+
+test('denyReason denies "gh bang" with ALIAS_USE_REASON: a leading ! gh alias cannot be re-scanned (claude-factory-bemr, AC6)', () => {
+  const gate: HookGate = { ghAliases: () => new Map([['bang', '!echo hi']]) }
+  expect(denyReason('gh bang', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "gh dollar" with ALIAS_USE_REASON: a $ in the gh alias text cannot be re-scanned (claude-factory-bemr, AC6)', () => {
+  const gate: HookGate = { ghAliases: () => new Map([['dollar', 'pr list $X']]) }
+  expect(denyReason('gh dollar', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "gh zz 5" with ALIAS_USE_REASON when gate.ghAliases gives undefined (claude-factory-bemr, AC6)', () => {
+  const gate: HookGate = { ghAliases: () => undefined }
+  expect(denyReason('gh zz 5', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies "gh m 5" with MERGE_REASON: the re-scan of a gh alias to pr merge reaches the real merge guard (claude-factory-bemr, AC6)', () => {
+  const gate: HookGate = { ghAliases: () => new Map([['m', 'pr merge']]) }
+  expect(denyReason('gh m 5', undefined, undefined, gate)).toBe(MERGE_REASON)
+})
+
+const BEMR_AC7_ALLOW_COMMANDS = [
+  'git co feature',
+  'git co feature && git status',
+  'git checkout other && git status',
+  'git st',
+  'git lg',
+  'gh pv 5',
+  // claude-factory-bemr.16 (AC17): a no-value global flag still allows an alias with no -C word.
+  'git --no-pager co feature',
+]
+
+test.each(BEMR_AC7_ALLOW_COMMANDS)(
+  'denyReason allows %j: an alias to a read-only verb still allows (claude-factory-bemr, AC7)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, BEMR_GATE)).toBeUndefined()
+  },
+)
+
+test('denyReason allows "git status" when gate.gitAliases maps status to push: a builtin verb wins over an alias (claude-factory-bemr, AC7)', () => {
+  let calls = 0
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls++
+      return new Map([['status', 'push']])
+    },
+  }
+  expect(denyReason('git status', undefined, undefined, gate)).toBeUndefined()
+  expect(calls).toBe(0)
+})
+
+test('denyReason allows "git foo main" when gate.gitAliases resolves but has no foo entry (claude-factory-bemr, AC7)', () => {
+  const gate: HookGate = { gitAliases: () => new Map() }
+  expect(denyReason('git foo main', undefined, undefined, gate)).toBeUndefined()
+})
+
+//
+// claude-factory-bemr (AC8): a builtin verb must spawn neither gate.gitAliases nor
+// gate.ghAliases. countingGate above wraps only headOf and originHead, so this test uses its
+// own small counting gate for the two new fields.
+function countingAliasGate() {
+  const calls = { gitAliases: 0, ghAliases: 0 }
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls.gitAliases++
+      return new Map()
+    },
+    ghAliases: () => {
+      calls.ghAliases++
+      return new Map()
+    },
+  }
+  return { gate, calls }
+}
+
+test('denyReason calls neither gate.gitAliases nor gate.ghAliases for a builtin verb (claude-factory-bemr, AC8)', () => {
+  const { gate, calls } = countingAliasGate()
+  expect(denyReason('git push origin x', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git status', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('gh pr view', undefined, undefined, gate)).toBeUndefined()
+  expect(calls.gitAliases).toBe(0)
+  expect(calls.ghAliases).toBe(0)
+})
+
+// claude-factory-bemr.16: gate.gitAliases now takes no dir argument. It always reads the tool
+// call's own cwd. memoGate keeps one cached value for the whole denyReason call, the same way
+// it already does for gate.ghAliases, so a command with many segments spawns git config at
+// most once.
+test('denyReason calls gate.gitAliases at most once for one denyReason call, across many segments (claude-factory-bemr.16, AC8)', () => {
+  let calls = 0
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls++
+      return new Map()
+    },
+  }
+  const command = Array.from({ length: 8 }, (_, i) => `git x${i} main`).join('; ')
+  expect(denyReason(command, undefined, undefined, gate)).toBeUndefined()
+  expect(calls).toBe(1)
+})
+
+// claude-factory-bemr.16 (AC15): a -C word before a non-builtin verb denies ALIAS_USE_REASON
+// outright, for every segment, with no call to gate.gitAliases at all. A command with many such
+// segments must not need many git config spawns, or any.
+test('denyReason denies with ALIAS_USE_REASON and calls gate.gitAliases 0 times for many "-C <dir> <non-builtin verb>" segments (claude-factory-bemr.16, AC15)', () => {
+  let calls = 0
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls++
+      return new Map()
+    },
+  }
+  const command = Array.from({ length: 9 }, (_, i) => `git -C d${i} x main`).join('; ')
+  expect(denyReason(command, undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+  expect(calls).toBe(0)
+})
+
+// claude-factory-bemr (AC9): this spawns the real `bun src/worker-hook.ts` binary.
+// GIT_CONFIG_GLOBAL points git at one alias file, with co=checkout and st=status.
+// GIT_CONFIG_NOSYSTEM=1 blocks any system-wide alias. GH_CONFIG_DIR is an empty directory, so
+// gh alias list reads no alias of its own.
+test('run as `bun src/worker-hook.ts`, a real git alias co=checkout cannot hide the push guard (claude-factory-bemr, AC9)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wh-bemr-alias-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', dir])
+  Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const configFile = join(dir, 'gitconfig-bemr')
+  writeFileSync(configFile, '[alias]\n\tco = checkout\n\tbr = branch\n\tst = status\n')
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr-gh-config-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.CLAUDE_PROJECT_DIR
+  env.GIT_CONFIG_GLOBAL = configFile
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  env.GH_CONFIG_DIR = ghConfigDir
+  for (const cmd of [
+    'git co main && git push o HEAD',
+    'git br -M main && git push o HEAD',
+    'gh co 5 && git push',
+  ]) {
+    const input = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: cmd } })
+    const { out, code } = await run(input, env)
+    expect(code).toBe(0)
+    expect(JSON.parse(out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: PUSH_REASON,
+      },
+    })
+  }
+  const stInput = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: 'git st' } })
+  expect(await run(stInput, env)).toEqual({ out: '', code: 0 })
+}, 20_000)
+
+// claude-factory-bemr.5 (AC12): each flag here is a real git global flag.
+// Git 2.54.0 confirms each one takes no value word (`git --no-pager status`, `git -P status`).
+// The verb search must step past each flag with no doubt.
+// The alias lookup must then run at the real verb slot (`co`), not at the flag's own word.
+//
+// claude-factory-bemr.10: `--bare` is not in this list. It moves the command, as `--git-dir` does.
+// It has its own test below. It does not use the plain PUSH_REASON row that every other flag here uses.
+const GIT_NO_VALUE_GLOBAL_FLAGS_FOR_TEST = [
+  '-p',
+  '-P',
+  '--paginate',
+  '--no-pager',
+  '--no-replace-objects',
+  '--literal-pathspecs',
+  '--glob-pathspecs',
+  '--noglob-pathspecs',
+  '--icase-pathspecs',
+  '--no-optional-locks',
+  '--no-advice',
+  '--no-lazy-fetch',
+]
+
+test.each(GIT_NO_VALUE_GLOBAL_FLAGS_FOR_TEST)(
+  'denyReason denies "git %s co main && git push o HEAD" (claude-factory-bemr.5, AC12)',
+  flag => {
+    const gate: HookGate = {
+      headOf: () => 'factory/x',
+      originHead: () => 'main',
+      gitAliases: () => new Map([['co', 'checkout']]),
+    }
+    expect(denyReason(`git ${flag} co main && git push o HEAD`, undefined, undefined, gate)).toBe(PUSH_REASON)
+  },
+)
+
+// claude-factory-bemr.10: real git's `--bare` sets GIT_DIR to the current directory.
+// So real git reads a different config file.
+// A plain search at the same path finds another file.
+// When `--bare` is in the command, this guard cannot use an alias table that it reads in the plain way.
+// So it denies ALIAS_USE_REASON. It does not resolve `co` through the table and deny PUSH_REASON.
+test('denyReason denies "git --bare co main && git push o HEAD" with ALIAS_USE_REASON (claude-factory-bemr.10, AC12)', () => {
+  const gate: HookGate = {
+    headOf: () => 'factory/x',
+    originHead: () => 'main',
+    gitAliases: () => new Map([['co', 'checkout']]),
+  }
+  expect(denyReason('git --bare co main && git push o HEAD', undefined, undefined, gate)).toBe(
+    ALIAS_USE_REASON,
+  )
+})
+
+// claude-factory-bemr.10: `status` is a builtin word.
+// The alias-resolution block never runs for a builtin word.
+// So `--bare` does not change this verdict, even though it moves the command.
+test('denyReason allows "git --bare status" (claude-factory-bemr.10, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['co', 'checkout']]) }
+  expect(denyReason('git --bare status', undefined, undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-bemr.12: this guard folds `--bare` into one shared `effectiveMoved` value.
+// `push` is a builtin word. `gate.headOf` names a branch that is not protected. A plain
+// `git push origin HEAD` allows. `--bare` makes the branch read untrusted, so this guard denies
+// `PUSH_DIR_REASON` instead.
+test('denyReason denies "git --bare push origin HEAD" with PUSH_DIR_REASON (claude-factory-bemr.12)', () => {
+  const dirs: (string | undefined)[] = []
+  const gate: HookGate = {
+    headOf: dir => {
+      dirs.push(dir)
+      return 'feature'
+    },
+    originHead: () => 'main',
+  }
+  expect(denyReason('git push origin HEAD', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git --bare push origin HEAD', undefined, undefined, gate)).toBe(PUSH_DIR_REASON)
+  expect(dirs).toEqual([undefined])
+})
+
+// claude-factory-bemr.5 (AC12): an unknown flag still leaves the verb search unsure.
+// It is not a value flag. It is not a no-value global flag either.
+// This guard must not allow that command in silence.
+// It scans every non-flag word before a literal `--` instead.
+test('denyReason denies ALIAS_USE_REASON when an unknown flag leaves the verb unsure and a later word is a non-builtin alias (claude-factory-bemr.5, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['co', 'checkout']]) }
+  expect(denyReason('git --totally-unknown-flag co main', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies ALIAS_USE_REASON when an unknown flag leaves the verb unsure and the alias table cannot be read (claude-factory-bemr.5, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => undefined }
+  expect(denyReason('git --totally-unknown-flag status', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
+test('denyReason denies ALIAS_USE_REASON when an unknown flag leaves the verb unsure and an earlier cd already moved the directory (claude-factory-bemr.5, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map() }
+  expect(denyReason('cd /tmp && git --totally-unknown-flag status', undefined, undefined, gate)).toBe(
+    ALIAS_USE_REASON,
+  )
+})
+
+// claude-factory-bemr.5 (AC12): an unknown flag can still leave a command allowed.
+// The table here is readable and empty.
+// Every word after the flag is a builtin word.
+// The fallback scan finds nothing that looks like an alias, so it allows the command.
+test('denyReason allows "git --totally-unknown-flag status" with a readable empty alias table (claude-factory-bemr.5, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map() }
+  expect(denyReason('git --totally-unknown-flag status', undefined, undefined, gate)).toBeUndefined()
+})
+
+// claude-factory-bemr.6 (AC13): main() must read the git alias table at i.cwd.
+// It must not read the table at CLAUDE_PROJECT_DIR.
+// This test spawns the real binary with two repos.
+// The first repo stands in for CLAUDE_PROJECT_DIR. It sets no alias.
+// The second repo is the Bash tool's cwd. It sets a local alias.p = push.
+//
+// Before this fix, the hook read the first repo's empty table and found no entry for p.
+// The hook then allowed the command.
+test("run as `bun src/worker-hook.ts`, a real git alias set only in the tool call's cwd cannot hide the push guard (claude-factory-bemr.6, AC13)", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
+  const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-cwd-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', cwdDir])
+  Bun.spawnSync(['git', '-C', cwdDir, 'config', 'alias.p', 'push'])
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-gh-config-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  env.CLAUDE_PROJECT_DIR = projectDir
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  delete env.GIT_CONFIG_GLOBAL
+  env.GH_CONFIG_DIR = ghConfigDir
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git p origin main' },
+  })
+  const { out, code } = await run(input, env)
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+}, 20_000)
+
+// claude-factory-bemr.16 (AC15): a -C word before a non-builtin verb now denies ALIAS_USE_REASON
+// outright, even when the dir it names really does hold the alias the old fold would have found.
+// This test starts the real binary. cwdDir sets alias.p = push. sub is a plain subdirectory of
+// cwdDir, with no .git of its own. The old fold would have read cwdDir's table and found p, and
+// denied PUSH_REASON. The new guard never computes that dir at all.
+test('run as `bun src/worker-hook.ts`, "git -C sub p origin main" denies ALIAS_USE_REASON (claude-factory-bemr.16, AC15)', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-root2-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
+  const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-cwd2-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', cwdDir])
+  Bun.spawnSync(['git', '-C', cwdDir, 'config', 'alias.p', 'push'])
+  mkdirSync(join(cwdDir, 'sub'))
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr6-gh-config2-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  env.CLAUDE_PROJECT_DIR = projectDir
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  delete env.GIT_CONFIG_GLOBAL
+  env.GH_CONFIG_DIR = ghConfigDir
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git -C sub p origin main' },
+  })
+  const { out, code } = await run(input, env)
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: ALIAS_USE_REASON,
+    },
+  })
+}, 20_000)
+
+// claude-factory-bemr.16 (AC15): the plan's own 3 example bypasses from review rounds 1-4 each
+// deny ALIAS_USE_REASON, with no call to gate.gitAliases. None of these commands reaches the
+// table lookup: each has a -C word before, or anywhere around, the non-builtin verb.
+const BEMR16_AC15_COMMANDS = [
+  'git -C sub co main && git push o HEAD',
+  'git -C a -C b p origin main',
+  'git --attr-source -- -C other p origin main',
+]
+
+test.each(BEMR16_AC15_COMMANDS)(
+  'denyReason denies %j with ALIAS_USE_REASON, and never calls gate.gitAliases (claude-factory-bemr.16, AC15)',
+  cmd => {
+    let calls = 0
+    const gate: HookGate = {
+      headOf: () => 'factory/x',
+      originHead: () => 'main',
+      gitAliases: () => {
+        calls++
+        return new Map([
+          ['co', 'checkout'],
+          ['p', 'push'],
+        ])
+      },
+    }
+    expect(denyReason(cmd, undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+    expect(calls).toBe(0)
+  },
+)
+
+// claude-factory-bemr.16 (AC15): this test starts the real binary. cwdDir/a has no alias of its
+// own. Only cwdDir/a/b sets alias.p = push. The old fold would have read cwdDir/a/b's table
+// through 2 folded -C words and found p, and denied PUSH_REASON. The new guard denies
+// ALIAS_USE_REASON outright instead, with no git config spawn for the alias table.
+test('run as `bun src/worker-hook.ts`, "git -C a -C b p origin main" denies ALIAS_USE_REASON (claude-factory-bemr.16, AC15)', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr8-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
+  const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr8-cwd-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', cwdDir])
+  mkdirSync(join(cwdDir, 'a'))
+  const abDir = join(cwdDir, 'a', 'b')
+  mkdirSync(abDir)
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', abDir])
+  Bun.spawnSync(['git', '-C', abDir, 'config', 'alias.p', 'push'])
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr8-gh-config-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  env.CLAUDE_PROJECT_DIR = projectDir
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  delete env.GIT_CONFIG_GLOBAL
+  env.GH_CONFIG_DIR = ghConfigDir
+  const input = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git -C a -C b p origin main' },
+  })
+  const { out, code } = await run(input, env)
+  expect(code).toBe(0)
+  expect(JSON.parse(out.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: ALIAS_USE_REASON,
+    },
+  })
+}, 20_000)
+
+// claude-factory-bemr.16 (AC14): this is the bead's own original repro. A -C word that sits
+// after the git verb (`git sw -C main`, where sw is an alias for switch) is not a global flag at
+// all: real git's switch reads its own -C as a create-and-switch flag. The old gitGlobalDirFlags
+// fold scanned the whole tail, found this post-verb -C, and asked gate.gitAliases for the wrong
+// directory ("main"). That directory's table had no sw entry, so the old guard allowed the
+// command. The new guard reads gate.gitAliases at the tool call's own cwd only, with no fold, so
+// it resolves sw -> switch correctly, sees switch changes the branch, and denies the later push.
+test('denyReason denies "git sw -C main && git push origin HEAD" with PUSH_REASON (claude-factory-bemr.16, AC14)', () => {
+  const gate: HookGate = {
+    headOf: () => 'factory/x',
+    originHead: () => 'main',
+    gitAliases: () => new Map([['sw', 'switch']]),
+  }
+  expect(denyReason('git sw -C main && git push origin HEAD', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.16 (AC14): --exec-path (2-word form, no =) is an unknown flag that takes
+// no attached value, so the verb search stays unsure: firstVerbIndex reads the next word, /x, as
+// the unsure candidate verb. The uncertain-path -C check then denies outright, with no attempt to
+// place the real -C word before or after the real verb (sw).
+test('denyReason denies "git --exec-path /x sw -C main && git push origin HEAD" with ALIAS_USE_REASON (claude-factory-bemr.16, AC14)', () => {
+  const gate: HookGate = {
+    headOf: () => 'factory/x',
+    originHead: () => 'main',
+    gitAliases: () => new Map([['sw', 'switch']]),
+  }
+  expect(
+    denyReason('git --exec-path /x sw -C main && git push origin HEAD', undefined, undefined, gate),
+  ).toBe(ALIAS_USE_REASON)
+})
+
+// claude-factory-bemr.16 (AC16): a -C before a builtin verb is not changed by this fix. The
+// alias-resolution block never runs for a builtin verb, so these 3 rows keep their old outcomes.
+// "status" and "log" are read-only, so they allow. "push" denies PUSH_REASON through gitChdir,
+// the separate, already-correct pre-verb -C fold that only the push path uses.
+test('denyReason allows "git -C sub status" and "git -C sub log" (claude-factory-bemr.16, AC16)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['co', 'checkout']]) }
+  expect(denyReason('git -C sub status', undefined, undefined, gate)).toBeUndefined()
+  expect(denyReason('git -C sub log', undefined, undefined, gate)).toBeUndefined()
+})
+
+test('denyReason denies "git -C sub push origin factory/x" with PUSH_REASON when factory/x is protected (claude-factory-bemr.16, AC16)', () => {
+  const gate: HookGate = {
+    protectedBranches: ['factory/x'],
+    gitAliases: () => new Map([['co', 'checkout']]),
+  }
+  expect(denyReason('git -C sub push origin factory/x', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.16 (AC18): this test starts the real binary, with input.cwd in a second
+// repo that sets a local alias.p = push. "git p origin main" has no -C word, so it reaches the
+// table lookup at cwd and denies PUSH_REASON. "git -C . p origin main" has a -C word before the
+// verb, so it denies ALIAS_USE_REASON outright, with no git config spawn for the alias table.
+test('run as `bun src/worker-hook.ts`, AC18: cwd alias denies PUSH_REASON with no -C, ALIAS_USE_REASON with -C . (claude-factory-bemr.16, AC18)', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'wh-bemr16-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', projectDir])
+  const cwdDir = mkdtempSync(join(tmpdir(), 'wh-bemr16-cwd-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', cwdDir])
+  Bun.spawnSync(['git', '-C', cwdDir, 'config', 'alias.p', 'push'])
+  const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-bemr16-gh-config-'))
+  const env: Record<string, string | undefined> = { ...process.env }
+  env.CLAUDE_PROJECT_DIR = projectDir
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  delete env.GIT_CONFIG_GLOBAL
+  env.GH_CONFIG_DIR = ghConfigDir
+  const plainInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git p origin main' },
+  })
+  const { out: plainOut, code: plainCode } = await run(plainInput, env)
+  expect(plainCode).toBe(0)
+  expect(JSON.parse(plainOut.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: PUSH_REASON,
+    },
+  })
+  const dotCInput = JSON.stringify({
+    tool_name: 'Bash',
+    cwd: cwdDir,
+    tool_input: { command: 'git -C . p origin main' },
+  })
+  const { out: dotCOut, code: dotCCode } = await run(dotCInput, env)
+  expect(dotCCode).toBe(0)
+  expect(JSON.parse(dotCOut.trim())).toEqual({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: ALIAS_USE_REASON,
+    },
+  })
+}, 20_000)
+
+// claude-factory-bemr.9 (AC12): --attr-source takes one value word, even a literal --.
+// This flag must not leave the verb search unsure. It must step past the value word.
+// It must then place the alias lookup at the real verb (`p`).
+test('denyReason denies "git --attr-source -- p origin main" with PUSH_REASON (claude-factory-bemr.9, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['p', 'push']]) }
+  expect(denyReason('git --attr-source -- p origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.9 (AC12): --config-env also takes one value word.
+// This is true for its 2-word form, which has no attached =.
+test('denyReason denies "git --config-env x p origin main" with PUSH_REASON (claude-factory-bemr.9, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['p', 'push']]) }
+  expect(denyReason('git --config-env x p origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.9 (AC12): the uncertain-path fallback scan must not stop at a literal --.
+// An unrecognized flag can still leave the verb search unsure.
+// This happens even when this guard handles --attr-source.
+// So this guard scans the whole tail, including a word after --.
+test('denyReason denies ALIAS_USE_REASON when an unknown flag before -- leaves the verb unsure and a later word, after --, is a non-builtin alias (claude-factory-bemr.9, AC12)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['p', 'push']]) }
+  expect(denyReason('git --totally-unknown-flag -- p origin main', undefined, undefined, gate)).toBe(
+    ALIAS_USE_REASON,
+  )
+})
+
+// claude-factory-bemr.14 / bemr.16: `--attr-source` (a sibling of `--config-env`, both in
+// GIT_VALUE_FLAGS) can read a literal `--` as its own value word. A scan for the real verb must
+// not stop at that `--`: real git 2.54 still reads a flag right after it.
+//
+// bemr.16: this row is one of the plan's own AC15 examples (BEMR16_AC15_COMMANDS above). It
+// stays here too, to keep the --attr-source nuance documented next to the --git-dir row below.
+test('denyReason denies "git --attr-source -- -C OTHER p origin main" with ALIAS_USE_REASON, and never calls gate.gitAliases (claude-factory-bemr.14, bemr.16)', () => {
+  let calls = 0
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls++
+      return new Map([['p', 'push']])
+    },
+  }
+  expect(denyReason('git --attr-source -- -C OTHER p origin main', undefined, undefined, gate)).toBe(
+    ALIAS_USE_REASON,
+  )
+  expect(calls).toBe(0)
+})
+
+// claude-factory-bemr.14: this row proves the --git-dir check. Without --attr-source, "git
+// --git-dir OTHER/.git p origin main" already denies ALIAS_USE_REASON: a --git-dir flag makes
+// the alias table unknown (claude-factory-68gn), the same as an earlier cd.
+test('denyReason denies "git --attr-source -- --git-dir OTHER/.git p origin main" with ALIAS_USE_REASON (claude-factory-bemr.14)', () => {
+  const gate: HookGate = { gitAliases: () => new Map([['p', 'push']]) }
+  expect(
+    denyReason('git --attr-source -- --git-dir OTHER/.git p origin main', undefined, undefined, gate),
+  ).toBe(ALIAS_USE_REASON)
+})
+
+// claude-factory-bemr.14: `gitDashCPushDenied` has the same `--` hazard. These two rows prove it
+// for the `-c name=value` form and the attached `--config-env=name=value` form.
+test('denyReason denies "git --attr-source -- -c alias.p=push p origin main" with PUSH_REASON (claude-factory-bemr.14)', () => {
+  expect(denyReason('git --attr-source -- -c alias.p=push p origin main')).toBe(PUSH_REASON)
+})
+
+test('denyReason denies "git --attr-source -- --config-env=alias.p=E p origin main" with PUSH_REASON (claude-factory-bemr.14)', () => {
+  expect(denyReason('git --attr-source -- --config-env=alias.p=E p origin main')).toBe(PUSH_REASON)
+})
+
+// claude-factory-bemr.14 / bemr.16: `--attr-source` also reads a word that looks like `-C` as
+// its own value word, not as a real -C flag. That consumed word still appears literally in
+// `tail.slice(0, vi)`. The guard denies on the literal word, with no attempt to tell a consumed
+// value apart from a real flag (bemr.16's narrower, conservative rule). It calls gate.gitAliases
+// 0 times.
+test('denyReason denies "git --attr-source -C sub" with ALIAS_USE_REASON, and never calls gate.gitAliases (claude-factory-bemr.14, bemr.16)', () => {
+  let calls = 0
+  const gate: HookGate = {
+    gitAliases: () => {
+      calls++
+      return new Map([['sub', 'status']])
+    },
+  }
+  expect(denyReason('git --attr-source -C sub', undefined, undefined, gate)).toBe(ALIAS_USE_REASON)
+  expect(calls).toBe(0)
+})
+
+// claude-factory-bemr.7: these tests check worker-hook.ts's own exported GIT_BUILTIN_VERBS and
+// GH_BUILTIN_VERBS sets, not a copy. An edit to either shipped set now reaches this test.
+//
+// Each test checks every name against the host's real git or gh. git or gh can be absent on
+// some hosts. The test then skips.
+
+test('every GIT_BUILTIN_VERBS name is a real git builtin (claude-factory-bemr.7, AC10)', () => {
+  let real: Set<string>
+  try {
+    const p = Bun.spawnSync(['git', '--list-cmds=builtins'])
+    if (p.exitCode !== 0) return
+    real = new Set(p.stdout.toString().split(/\s+/).filter(Boolean))
+  } catch {
+    return
+  }
+  for (const name of GIT_BUILTIN_VERBS) {
+    expect(real.has(name)).toBe(true)
+  }
+})
+
+// claude-factory-bemr.7: `gh help`'s own command-list lines each start with two spaces, the
+// command name, then a colon (for example `  org:           Manage organizations`). The old
+// check used `helpText.includes(name)`, a plain substring test. That test passed `org` for the
+// wrong reason: `org` sits inside the word `organizations` in that same line, not because `org`
+// is its own listed command. `listedNames` holds only a whole name taken from the start of such
+// a line, from every section (CORE COMMANDS, GITHUB ACTIONS COMMANDS, ALIAS COMMANDS, ADDITIONAL
+// COMMANDS, HELP TOPICS).
+//
+// `gh help` and `gh version` run as real commands, but gh's own top-level listing never prints
+// either one as a `name:` line: it prints them only as the `--help` and `--version` flags, in
+// the FLAGS section. `flagNames` holds a name taken the same way from that section, with its
+// leading `--` removed, so `help` and `version` can still match there.
+test("every GH_BUILTIN_VERBS name is a real gh command, and not one of this host's own gh aliases (claude-factory-bemr.7, AC10)", () => {
+  let helpText: string
+  try {
+    const p = Bun.spawnSync(['gh', 'help'])
+    if (p.exitCode !== 0) return
+    helpText = p.stdout.toString()
+  } catch {
+    return
+  }
+  const aliasSection = helpText
+    .split(/\n(?=[A-Z][A-Z ]+\n)/)
+    .find(block => block.startsWith('ALIAS COMMANDS'))
+  const aliasNames = new Set(
+    (aliasSection ?? '')
+      .split('\n')
+      .slice(1)
+      .map(line => line.trim().split(/\s+/)[0])
+      .filter(Boolean)
+      .map(w => w!.replace(/:$/, '')),
+  )
+  const listedNames = new Set(Array.from(helpText.matchAll(/^ {2}([a-z][a-z-]*):/gm)).map(m => m[1]!))
+  const flagsSection = helpText.split(/\n(?=[A-Z][A-Z ]+\n)/).find(block => block.startsWith('FLAGS'))
+  const flagNames = new Set(
+    Array.from((flagsSection ?? '').matchAll(/^ {2}--([a-z][a-z-]*)/gm)).map(m => m[1]!),
+  )
+  for (const name of GH_BUILTIN_VERBS) {
+    expect(aliasNames.has(name)).toBe(false)
+    expect(listedNames.has(name) || flagNames.has(name)).toBe(true)
+  }
 })
 
 // claude-factory-dts: a counting fake gate. It wraps each real git-reading function the test
