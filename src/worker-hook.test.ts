@@ -2994,6 +2994,12 @@ const DENY_FUNCTION_DEF = [
   `{ :; } always { function f { sh "$@" } }; f -c 'git push origin main'`,
   `time -- function f { sh "$@"; }; f -c 'git push origin main'`,
   `time -p -- function f { sh "$@"; }; f -c 'git push origin main'`,
+  // command position after ]] (4i60.8)
+  `if [[ 1 ]] function f { sh "$@" }; f -c 'git push origin main'`,
+  `if [[ 0 == 1 ]] { :; } elif [[ 1 ]] function f { sh "$@" }; f -c 'git push origin main'`,
+  `while [[ 1 ]] function f { sh "$@" }; f -c 'git push origin main'`,
+  `until [[ 1 ]] function f { sh "$@" }; f -c 'git push origin main'`,
+  `if [[ 1 ]] \\function f { sh "$@" }; f -c 'git push origin main'`,
   // accepted over-deny: a heredoc write of a function (4i60.6)
   `cat > .scratch/x.sh <<'EOF'\nf() { :; }\nEOF`,
   // accepted over-deny: a bare functions word

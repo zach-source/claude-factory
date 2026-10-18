@@ -577,6 +577,7 @@ function namesFunctionDefinition(words: string[]): boolean {
     if (words[j] !== 'function') continue
     const prev = words[j - 1]!
     if (FUNCTION_PREFIX_WORDS.has(prev) && prev !== '-p' && prev !== 'time') return true
+    if (prev === ']]') return true
     if (words[j - 2] === 'repeat') return true
     if (prev === '--' && (words[j - 2] === 'time' || words[j - 2] === '-p')) return true
   }
