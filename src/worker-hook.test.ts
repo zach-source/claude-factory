@@ -2161,6 +2161,13 @@ const DENY_GIT_ADMIN_PATH_THEN_HEAD_PUSH = [
   // through a write to `.git/config` with no `git config` verb at all (R1 catches the `.git/config`
   // path; the bare `git push` after it reads `HEAD` by default).
   'printf \'[remote "o"] push = HEAD:refs/heads/main\' >> .git/config; git push',
+  //
+  // D16 (claude-factory-9zd5.6): a bare redirect operator can stand as its own word, inside a
+  // `git` segment. This makes `HEAD` a redirect-form word (`pendingRedirectTarget`). R2 still
+  // catches it, even when `isGitOrGhSegment` is true. A redirect target is always a write
+  // target, even in the git command's own segment.
+  'git show x:y > HEAD; git push o HEAD',
+  'git log >> HEAD; git push o HEAD',
 ]
 
 test.each(DENY_GIT_ADMIN_PATH_THEN_HEAD_PUSH)(
@@ -2178,7 +2185,7 @@ test.each(DENY_GIT_ADMIN_PATH_THEN_HEAD_PUSH)(
 //
 // This row still proves the command denies. It does not prove that `gitAdminPath` alone denies
 // it. D1-D5 and D7-D15 prove that.
-test('denyReason denies %j (claude-factory-9zd5, D6: a cd into .git, then a write and a push, still denies)', () => {
+test('denyReason denies the command (claude-factory-9zd5, D6: a cd into .git, then a write and a push, still denies)', () => {
   expect(
     denyReason(
       "cd .git && printf 'ref: refs/heads/main' > HEAD && cd .. && git push o HEAD",
@@ -2196,7 +2203,7 @@ test('denyReason denies %j (claude-factory-9zd5, D6: a cd into .git, then a writ
 // inside a `.git`-named directory is itself the signal.
 const GIT_ADMIN_CWD_GATE = { ...GIT_ADMIN_PATH_GATE, cwd: '/r/acme/.git' }
 
-test('denyReason denies %j (claude-factory-9zd5, D13: a HEAD push from a cwd inside a .git-named dir fails closed, even when the write target is built from a shell variable)', () => {
+test('denyReason denies the command (claude-factory-9zd5, D13: a HEAD push from a cwd inside a .git-named dir fails closed, even when the write target is built from a shell variable)', () => {
   expect(
     denyReason('x=HE; printf y > ${x}AD; git push o HEAD', undefined, undefined, GIT_ADMIN_CWD_GATE),
   ).toBe(PUSH_REASON)
@@ -2211,7 +2218,7 @@ const ALLOW_GIT_ADMIN_PATH_NO_HEAD_PUSH = [
   // A4: an explicit, unprotected or already-qualified refspec reads no current branch, so
   // `headPush` never becomes true, even next to a `.git/HEAD` write.
   'printf x > .git/HEAD; git push o factory/x',
-  'git push o HEAD:refs/heads/factory/x',
+  'printf x > .git/HEAD; git push o HEAD:refs/heads/factory/x',
   // A5: `.gitignore` and `.github` are not a `.git` name (R1's own lookahead excludes them), and
   // neither is a `HEAD`-named word (R2 needs an exact match, not a substring).
   'cat .gitignore && git push o HEAD',
@@ -2225,6 +2232,10 @@ const ALLOW_GIT_ADMIN_PATH_NO_HEAD_PUSH = [
   'echo "pushing HEAD" && git push',
   // A9: `git rev-parse HEAD` reads `HEAD` as a normal git argument, in its own segment.
   'sha=$(git rev-parse HEAD) && git push o HEAD',
+  // A11 (claude-factory-9zd5.5): `origin/HEAD` in a non-git segment (`echo`, not `git` or `gh`)
+  // still allows. `REMOTE_TRACKING_HEAD_RE` skips a remote-tracking-ref word on its own, with no
+  // help from the `isGitOrGhSegment` skip.
+  'echo origin/HEAD && git push o HEAD',
 ]
 
 test.each(ALLOW_GIT_ADMIN_PATH_NO_HEAD_PUSH)('denyReason allows %j', cmd => {
