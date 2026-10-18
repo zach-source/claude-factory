@@ -10,6 +10,17 @@ const GATE = {
 }
 
 const DENY = [
+  `echo P | XARGS sh -c`,
+  `echo P | xArgs sh -c`,
+  `echo P | /usr/bin/XARGS sh -c`,
+  `echo P | command XARGS -I % sh -c %`,
+  `echo P | env XARGS bash -c`,
+  `X=xargs; echo P | $X sh -c`,
+  `echo P | "$X" bash -c`,
+  `echo P | /usr/bin/xarg? sh -c`,
+  `echo P | bash --rcfile /dev/stdin -ic true`,
+  `echo P | bash --rcfile /dev/stdin -i ./run.sh`,
+  `echo P | bash --init-file /dev/stdin -i -c true`,
   'sh -- <<<P',
   'bash -- <<<P',
   'echo P | sh -- 2>/dev/null',
@@ -140,6 +151,8 @@ test('denyReason denies a dynamic shell word behind xargs -I (claude-factory-l43
 })
 
 const ALLOW = [
+  `echo x | xargs -n1 echo`,
+  `echo x | bash --rcfile ./rc.sh run.sh`,
   'sh -- script.sh',
   'echo x | sh -- run.sh 2>&1',
   'echo x | bash -o pipefail run.sh',
@@ -180,4 +193,8 @@ const ALLOW = [
 
 test.each(ALLOW)('denyReason allows %j (claude-factory-l43b, no stdin script)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, GATE)).toBeUndefined()
+})
+
+test('denyReason denies xargs in upper case before git (claude-factory-l43b.20)', () => {
+  expect(denyReason('echo origin main | XARGS git push', '/root/repo', undefined, GATE)).toBeDefined()
 })

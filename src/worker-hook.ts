@@ -1321,7 +1321,7 @@ function touchesBeadsActor(words: string[], state: ScanState, depth = 0): boolea
  */
 function xargsHidesOperand(words: string[]): boolean {
   for (let i = 0; i < words.length; i++) {
-    if (baseWord(words[i]!) !== 'xargs') continue
+    if (baseWord(words[i]!).toLowerCase() !== 'xargs') continue
     for (let j = i + 1; j < words.length; j++) {
       const b = baseWord(words[j]!)
       if (b === 'git' || b === 'gh') return true
@@ -1389,7 +1389,9 @@ function shellReadsStdin(words: string[], k: number): boolean {
     }
     if (isShCCluster(w)) return false
     if (SHELL_VALUE_LONG_FLAGS.has(w)) {
+      // claude-factory-l43b.21: bash -i reads the rcfile, so a non-plain value can name stdin.
       i++
+      if (!plainScriptOperand(words[i] ?? '')) return true
       continue
     }
     if (SHELL_SAFE_LONG_FLAGS.has(w)) continue
@@ -1430,6 +1432,8 @@ function shellStdinReason(words: string[], state: ScanState): string | undefined
   const rest = lead ? words.slice(lead) : words
   for (const a of commandAnchors(rest)) {
     if (dynamicCommandWord(rest[a]!) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
+    // claude-factory-l43b.20: a dynamic anchor can be xargs, so a shell word after it denies.
+    if (dynamicCommandWord(rest[a]!) && rest.slice(a + 1).some(isShellWord)) return SHELL_STDIN_REASON
     // claude-factory-l43b.9: `source` and `.` run the file they read like a shell script.
     if (SOURCE_WORDS.has(baseWord(rest[a]!)) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
   }
@@ -1470,7 +1474,7 @@ const XARGS_VALUE_FLAGS = new Set([
  */
 function xargsRunsShell(words: string[]): boolean {
   for (let i = 0; i < words.length; i++) {
-    if (baseWord(words[i]!) !== 'xargs') continue
+    if (baseWord(words[i]!).toLowerCase() !== 'xargs') continue
     const cands: number[] = []
     for (let j = i + 1; j < words.length; j++) {
       if (isShellWord(words[j]!)) return true
