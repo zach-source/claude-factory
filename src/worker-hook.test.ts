@@ -2971,6 +2971,7 @@ const DENY_FUNCTION_DEF = [
   // each prefix word alone, and a newline inside the pair
   `if false; then :; else function f { :; }; fi`,
   `if false; then :; elif true; then function f { :; }; fi`,
+  `if false; then :; elif function f { :; }; then :; fi`,
   `while function f { :; }; do :; done`,
   `until function f { :; }; do :; done`,
   `for x in a; do function f { :; }; done`,

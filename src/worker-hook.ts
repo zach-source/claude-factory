@@ -547,7 +547,6 @@ function segments(cmd: string, info?: { dollarQuote: boolean; funcDef?: boolean 
 // claude-factory-4i60: words that can come before a `function` keyword in a command position.
 const FUNCTION_PREFIX_WORDS = new Set([
   '{',
-  '(',
   '!',
   'time',
   '-p',
