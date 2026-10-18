@@ -4256,19 +4256,24 @@ test('denyReason finishes quickly on a long sudo -Z v env chain (claude-factory-
   expect(ms).toBeLessThan(2000)
 })
 
-// claude-factory-p43v.33: Before this change, `scanForFirstDynamicPair` added an anchor only
+// claude-factory-p43v.33: before this change, `scanForFirstDynamicPair` added an anchor only
 // for a correct pair, 2 dynamic words next to each other. After the `MAX_COMMAND_ANCHORS` cap,
-// a payload with only 1 dynamic word did not get an anchor. Each row that follows has only 1
-// dynamic word after the cap, with 1 or more literal words after it. This literal part can be
-// a resolved binary from `$(which git)`. Special code in `segments()` for parentheses can
-// divide the literal part into 2 pieces. It can also be only 1 dynamic command word (`$K`,
-// `$G`, or `$GH`) before a literal verb or flag.
+// a payload with only 1 dynamic word did not get an anchor.
 //
-// `R33` contains the flag `-R` many times. `sudo` has `-R` as its flag for "run as this role".
-// This hook's `WRAPPER_VALUE_FLAGS.sudo` does not contain `-R` as a value flag or as a bare
-// flag. Because of this, each pair is unknown to `commandAnchors`, and the chase continues
-// after the cap. `N33` contains `-Z v env` many times. The chase starts again at each nested
-// `env`, so these rows use the cap's other exit, in the nested-wrapper branch.
+// Each row below has only 1 dynamic word after the cap, with 1 or more literal words after it.
+// This literal part can be a resolved binary from `$(which git)`. Special code in `segments()`
+// for parentheses can divide this binary into 2 pieces.
+//
+// The 1 dynamic word can also be a command word on its own (`$K`, `$G`, or `$GH`), before a
+// literal verb or flag.
+//
+// `R33` repeats the flag `-R` many times. `-R` is a real `sudo` flag, for "run as this role".
+// This hook's `WRAPPER_VALUE_FLAGS.sudo` does not list `-R` as a value flag or as a bare flag.
+//
+// So each `-R /` pair stays unknown to `commandAnchors`, and the chase runs past the cap.
+//
+// `N33` repeats `-Z v env` many times. The chase restarts at each nested `env`, so these rows
+// go through the cap's other exit, inside the nested-wrapper branch.
 const R33 = '-R / '.repeat(16)
 const N33 = '-Z v env '.repeat(9)
 
