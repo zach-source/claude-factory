@@ -443,6 +443,40 @@ A later review found 6 more disguised forms. The hook now denies these too:
   `GIT_DIR=<dir>` and `GIT_COMMON_DIR=<dir>` point git at a different repository.
   The hook denies that repository's config file the same way.
 
+- a `cd`, `pushd`, `popd` or `chdir` word before `git push` or `git send-pack`, in this
+  segment or an earlier one. Each one can move the push to another repository.
+- zsh's own `chdir` builtin, which does the same job as `cd`.
+- an `env -C` flag, an `env --chdir` flag, or a `git --git-dir` flag. Each one moves the
+  command that it wraps, the same way as `cd`.
+- a unique prefix of a long flag name, such as `--ch` or `--chd` for `--chdir`. GNU
+  `getopt_long` accepts the prefix in place of the full name. It moves the command in the same
+  way.
+- a `-C`/`--chdir` flag hidden in an `env -S`/`env --split-string` value. GNU and BSD `env`
+  both parse that value again, as more of the `env` flags, when the command runs. For example,
+  `env -S '-C /other' git push origin HEAD`.
+- an `env -S` or `env --split-string` flag in any form, whether or not it hides a
+  `-C`/`--chdir` flag. The hook denies every form.
+  - GNU and BSD `env` add the command-line words after the value to its split words.
+  - They parse the whole list as one.
+  - The hook cannot check that result.
+
+Each of these moves the push to a directory where the hook cannot read the branch. So the hook
+denies a push that names `HEAD` or `@`, with a distinct reason (`PUSH_DIR_REASON`) that tells the
+worker to name the branch directly, not to retry the same command. The hook allows a push to an
+explicit branch that it does not protect.
+
+- a value flag placed before `-C`/`--chdir` or `-S`/`--split-string`.
+- This includes `-a`/`--argv0`. That flag sets the zeroth argument of the command that `env`
+  runs.
+- a short-flag cluster whose last letter is a value flag, such as `-iu`, `-va` or `-0u`. Each
+  one takes the next word as its own value, not as the command of `env`. For example,
+  `env -iu FOO -C /other git push origin HEAD`.
+- a unique prefix of those long flag names, such as `--u` or `--uns` for `--unset`, or `--arg`
+  for `--argv0`, which moves or hides the command.
+- a long flag name that this hook does not know, or a prefix that names more than one known
+  flag. The hook cannot tell these apart from a flag that moves or hides the command, so it
+  denies the push.
+
 The `env -S` fix above has a related gap. The hook still did not see `-S`. A value word of an
 `env` flag stood in front of it. The hook now denies these forms too:
 

@@ -12,6 +12,64 @@ minor release may change the factory format, the CLI or the run state.
   or a git-flag abbreviation of one of these) and then pushes `HEAD` to a protected
   branch in the same command. (claude-factory-c63)
 
+- Fixed: `gitReason` (`src/worker-hook.ts`) read the current branch with
+  `gate.headOf(root)`, where `root` never moves. An earlier `cd`, `pushd` or
+  `popd` word in the same command can move the real push to a different
+  repository. A `HEAD`-alias push (`HEAD`, `@`, or no refspec at all) then
+  read the wrong repository's branch, and can reach a protected branch
+  there unchecked. (claude-factory-68gn)
+  - Fix: `anyGitReason` and `anyShellReason` each track `moved` in one
+    forward pass over a segment's words, seeded by `denyAt`'s own
+    `movedSoFar` (true once a `cd`, `pushd` or `popd` word has run, in this
+    command or an outer one). An `env -C`/`env --chdir` flag or a `git
+    --git-dir` flag also sets `moved`, for the one command it wraps. Once
+    `moved`, `gitReason` never calls `gate.headOf` and never trusts a `-C`
+    value; a denied push returns the new `PUSH_DIR_REASON` in place of
+    `PUSH_REASON`. An explicit, non-protected branch still allows: it does
+    not need the current branch at all.
+  - The `moved` state threads through `denyAt`'s `sh -c`/`bash -c`/`eval`/
+    `env -S` recursion too, so a `cd` before one of those still denies a
+    `HEAD` push inside the recursed script.
+  - Fix: `DIR_CHANGE_WORDS` also lists `chdir`, zsh's own builtin for the
+    same job as `cd`. zsh is the worker shell on this host, so `chdir
+    /other && git push origin HEAD` denied the same as a `cd` would.
+  - Fix: `envChdirPresent` and `envSplitStringValue` now skip the value
+    word of `-u`/`--unset`, `-P`, `-L` and `-U`. Before this fix, a value
+    flag ahead of `-C`/`--chdir` or `-S`/`--split-string` hid it: `env -u
+    FOO -C /other git push origin HEAD` allowed, the same way a real
+    `env -u FOO -C /usr pwd` prints `/usr`, not the worktree root.
+  - Fix (review round 2): `envChdirPresent` now also reads a `-C`/
+    `--chdir` flag hidden inside an `env -S`/`env --split-string` value.
+    GNU and BSD `env` both re-parse that value as more of `env`'s own
+    flags at run time: `env -S '-C /usr' pwd` prints `/usr`. Before this
+    fix, `env -S '-C /other' git push origin HEAD` allowed.
+    (claude-factory-68gn.10)
+  - Fix (review round 2): the value-flag skip above also covers `-a`/
+    `--argv0` (the zeroth argument of the command `env` runs) and a
+    short-flag cluster whose last letter is a value flag, such as `-iu`,
+    `-va` or `-0u`. Before this fix, `env -iu FOO -C /other git push
+    origin HEAD` and `env -a x -S 'git push origin main'` both allowed:
+    `env -iu FOO -C /usr pwd` prints `/usr` the same way `env -u FOO -C
+    /usr pwd` does. (claude-factory-68gn.11)
+  - Fix (review round 3): `wordsCarryChdir` now reads a unique prefix of
+    a long `env` flag name. GNU `getopt_long` accepts a prefix in place
+    of the name in full. Before this fix, `env --ch=/other git push
+    origin HEAD` and `env --arg x -C /other git push origin HEAD` both
+    allowed. (claude-factory-68gn.12)
+  - Fix (review round 3): `wordsCarryChdir` no longer reads what an
+    `-S`/`--split-string` value holds. It denies the flag itself now, in
+    any form. GNU and BSD `env` strip a quote pair from each word in the
+    value before the split. The old code split on whitespace alone, and
+    missed a quoted flag inside: `env -S '"-C" /other' pwd` prints
+    `/other`. Before this fix, the quoted form allowed.
+    (claude-factory-68gn.13)
+  - Fix (review round 3): `env` also appends the words already on its
+    own command line, after an `-S`/`--split-string` value, to that
+    value's own split words. It reads the combined list as one:
+    `env -S '-u' X -C /other pwd` prints `/other`, since `X` becomes
+    `-u`'s value and `-C` moves the command. Before this fix, this
+    shape allowed too. (claude-factory-68gn.14)
+
 ## 0.13.0 (2026-10-18)
 
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
