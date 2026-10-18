@@ -6,6 +6,17 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `touchesBeadsActor` in `src/worker-hook.ts` now scans every word of an `env` segment up to
+  the first `bd` word. The old scan stopped too soon. It missed these bypass forms:
+
+  - `env -uBEADS_ACTOR` (a glued short option)
+  - a lone `env -` (same as `--ignore-environment`)
+  - `env -iu FOO` (a clustered short option)
+  - `env -C /tmp -u BEADS_ACTOR` (a value flag, `-C /tmp`, that ended the old scan early)
+  - `env -S'-i ...'` (an `env -S` value that itself clears or unsets `BEADS_ACTOR`)
+
+  The guard now denies all of them (claude-factory-igj, follow-up to claude-factory-8pc.24, .27).
+
 ## 0.13.0 (2026-10-18)
 
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
