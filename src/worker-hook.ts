@@ -394,10 +394,10 @@ export const BEADS_ACTOR_REASON =
 const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
 
 // claude-factory-igj: returns true when a bare value word (not a dash word) names BEADS_ACTOR.
-// A match is the exact name, or any text that contains it.
+// A match is any text that contains the name, which also matches the exact name.
 // This match is defensive and fails closed. See BEADS_ACTOR_REASON above.
 function valueNamesBeadsActor(v: string | undefined): boolean {
-  return v !== undefined && (v === 'BEADS_ACTOR' || v.includes('BEADS_ACTOR'))
+  return v !== undefined && v.includes('BEADS_ACTOR')
 }
 
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
