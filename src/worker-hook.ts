@@ -545,13 +545,13 @@ function envOptionScan(
     if (span && span.sIndex === j) {
       // claude-factory-igj item 10: a short cluster can place other letters before the S
       // flag. The old code below removed that whole word. It lost any letter before S,
-      // including i. This code now reads those letters as a prefix. An i in the prefix
-      // still sets clearsAll. The code adds the prefix back as its own word in the scan
-      // below.
+      // including i. This code now reads those letters as a prefix and puts the prefix
+      // back as its own word in the scan below. The recursive scan on that word then sets
+      // clearsAll the ordinary way, through the one cluster-letter loop below, not through
+      // a second copy of that rule here.
       const sWord = words[j]!
       const prefix =
         sWord.startsWith('-') && !sWord.startsWith('--') ? sWord.slice(1, sWord.indexOf('S')) : ''
-      if (prefix.includes('i')) clearsAll = true
       const recombined = [
         'env',
         ...words.slice(envIndex + 1, j),
