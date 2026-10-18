@@ -4111,3 +4111,146 @@ test.each(ALLOW_XARGS_BARE_BRACES)(
 test('denyReason denies git {push,} o main (claude-factory-p43v.28: a brace word with text inside it stays dynamic)', () => {
   expect(denyReason('git {push,} o main', '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
 })
+
+// claude-factory-p43v.29: p43v.28 made `dynamicWord('{}')` give `false` for every caller. That
+// stopped the `xargs -I {}` over-deny, but it also let `{}` hide a real `git` or `gh` verb, with
+// `find -exec` or `xargs -I {}` filling it in at run time. `dynamicCommandWord` is the real fix:
+// `{}` stays dynamic in `dynamicWord` itself, and only the command-slot checks that gave the
+// over-deny read `{}` as not dynamic.
+const DENY_BRACE_COMMAND_WORD = [
+  'find push -maxdepth 0 -exec git {} origin main ;',
+  'find . -exec git {} o main +',
+  'git {} o main',
+  '{} push o main',
+  'sh -c "git {} o main"',
+  'find merge -maxdepth 0 -exec gh pr {} 5 ;',
+]
+
+test.each(DENY_BRACE_COMMAND_WORD)(
+  'denyReason denies %j (claude-factory-p43v.29: a {} word at the command or verb slot stays dynamic)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test.each(ALLOW_XARGS_BARE_BRACES)(
+  'denyReason still allows %j with personOnly acme (claude-factory-p43v.29: dynamicCommandWord keeps the p43v.28 fix)',
+  cmd => {
+    expect(denyReason(cmd, '/x', ACME, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.30: `env` and `sudo` read any `NAME=value` operand as an assignment, not
+// only one shaped like a shell identifier. A name with a dot, a dash or a leading digit, or an
+// assignment after a literal `--`, used to reach the wrapper's own flag-value slot and hide the
+// dynamic pair behind it.
+const DENY_WIDE_ASSIGNMENT_OPERAND = [
+  'env a.b=1 $G $V o main',
+  'env a-b=1 $G $V o main',
+  'env 1A=x $G $V o main',
+  'env -i a.b=1 $G $V o main',
+  'sudo a.b=1 $G $V o main',
+  'env -- A=1 $G $V o main',
+  'sudo -- A=1 $G $V o main',
+]
+
+test.each(DENY_WIDE_ASSIGNMENT_OPERAND)(
+  'denyReason denies %j (claude-factory-p43v.30: a wide NAME=value operand still hides the dynamic pair)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+const ALLOW_WIDE_ASSIGNMENT_OPERAND = ['env a.b=1 ls', 'env A=1 ls', 'env A=1 cp "$A" "$B"']
+
+test.each(ALLOW_WIDE_ASSIGNMENT_OPERAND)(
+  'denyReason allows %j (claude-factory-p43v.30: no over-deny from the wider NAME=value skip)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.31: `timeout` always takes one duration operand, right after its own flags
+// or its own `--`. The old shape test missed GNU `timeout`'s own `1e1` and `inf` forms. This hook
+// now skips that one operand outright, whatever shape it has, so it cannot hide the dynamic pair
+// behind it.
+const DENY_TIMEOUT_ANY_DURATION_SHAPE = [
+  'timeout 1e1 $G $V o main',
+  'timeout inf $G $V o main',
+  'timeout -- 1e1 $G $V o main',
+]
+
+test.each(DENY_TIMEOUT_ANY_DURATION_SHAPE)(
+  'denyReason denies %j (claude-factory-p43v.31: timeout skips its duration operand whatever its shape)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+const ALLOW_TIMEOUT_ANY_DURATION_SHAPE = ['timeout 30 bun test', 'timeout -- 30 bun test']
+
+test.each(ALLOW_TIMEOUT_ANY_DURATION_SHAPE)(
+  'denyReason allows %j (claude-factory-p43v.31: no over-deny from the wider timeout duration skip)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.32: the chase in `commandAnchors` used to stop right after it added a
+// dynamic word, even when that word was only an unknown flag's own value, or itself a known
+// wrapper's name. Either case can hide the real dynamic pair deeper in the command.
+const DENY_CHASE_PAST_NESTED_WRAPPER = [
+  'sudo -Z "$P" env $G $V o main',
+  'sudo -Z $P env $(which git) push o main',
+]
+
+test.each(DENY_CHASE_PAST_NESTED_WRAPPER)(
+  'denyReason denies %j (claude-factory-p43v.32: the chase restarts at a nested wrapper, in place of stopping on its name)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+function pad17Flags(): string {
+  const parts: string[] = []
+  for (let n = 0; n <= 16; n++) parts.push(`-z${n}`, `v${n}`)
+  return parts.join(' ')
+}
+
+const DENY_CHASE_PAST_CAP_SKIPS_FLAGS = [
+  `sudo ${pad17Flags()} --x=$P 1 $G $V o main`,
+  `sudo ${pad17Flags()} -p $P 1 $G $V o main`,
+]
+
+test.each(DENY_CHASE_PAST_CAP_SKIPS_FLAGS)(
+  'denyReason denies %j (claude-factory-p43v.32: the post-cap scan skips flag words and keeps looking for a true dynamic pair)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+const ALLOW_CHASE_PAST_NESTED_WRAPPER = [
+  'sudo -u x cp "$A" "$B"',
+  'env -i "$PY" -c x',
+]
+
+test.each(ALLOW_CHASE_PAST_NESTED_WRAPPER)(
+  'denyReason allows %j (claude-factory-p43v.32: no over-deny from the chase restart or the post-cap pair scan)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-p43v.32: a long run of `-Z v env` repeats used to restart the chase once per
+// repeat, with no cap on how many times. `commandAnchors` grew `anchors` by 2 for each repeat,
+// with no bound, so a caller that re-slices `words` once per anchor paid O(n^2) for an O(n) input.
+// This test proves the cap now applies to that restart path too: it must finish well inside the
+// hook's 10 s fail-open timeout, with a wide margin, on a load-noisy CI runner.
+test('denyReason finishes quickly on a long sudo -Z v env chain (claude-factory-p43v.32: the restart path is capped, no O(n^2) blowup)', () => {
+  const cmd = 'sudo ' + '-Z $P env '.repeat(500) + '$G $V o main'
+  const t0 = performance.now()
+  const r = denyReason(cmd, '/x', undefined, P43V_GATE)
+  const ms = performance.now() - t0
+  expect(r).toBe(DYNAMIC_VERB_REASON)
+  expect(ms).toBeLessThan(2000)
+})

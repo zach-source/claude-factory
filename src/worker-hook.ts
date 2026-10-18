@@ -550,6 +550,22 @@ function skipWrapperFlags(wrapperName: string, words: string[]): string[] {
   return w
 }
 
+// claude-factory-p43v.25/.30: true when `w` is a `NAME=value` operand. A wrapper such as `sudo`
+// or `env` reads this word as an environment assignment for the command it runs next. It does
+// not read this word as that command.
+//
+// This matches any word with an `=` sign after its first letter. The name before the `=` need
+// not be a shell identifier. Proof, run on this host: `env a.b=1 sh -c 'echo x'`,
+// `env 1A=x sh -c 'echo x'` and `env -- A=1 sh -c 'echo $A'` each read the word before `sh` as an
+// assignment, not as the command (claude-factory-p43v.30).
+//
+// A word that starts with `-` never matches, even one with an `=` in it, for example an unknown
+// `--name=value` flag. `commandAnchors` reads such a word through its own dash-flag branch, in
+// place of this one.
+function wrapperAssignmentOperand(w: string): boolean {
+  return w[0] !== '-' && w.indexOf('=') > 0
+}
+
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   let w = words
@@ -656,6 +672,27 @@ const MAX_COMMAND_ANCHORS = 16
  *
  * - The number of candidates becomes equal to `MAX_COMMAND_ANCHORS`.
  */
+// claude-factory-p43v.32: shared by the two capped exits of `commandAnchors`, right below. Scans
+// `words`, from `start` on, for the first dynamic pair: a non-flag word `dynamicCommandWord`
+// reads as dynamic, whose own next non-flag word `dynamicWord` also reads as dynamic. It skips
+// every flag word along the way, even one whose own attached value holds a `$` or a backtick. A
+// flag word is never the real command, so this scan must not stop on one, or settle for one
+// dynamic word with no dynamic partner. It pushes at most 2 more indices onto `anchors`. The
+// scan cost is O(n).
+function scanForFirstDynamicPair(words: string[], start: number, anchors: number[]): void {
+  for (let m = start; m < words.length; m++) {
+    const mw = words[m]!
+    if (mw.startsWith('-') && mw !== '-') continue
+    if (!dynamicCommandWord(mw)) continue
+    let m2 = m + 1
+    while (m2 < words.length && words[m2]!.startsWith('-') && words[m2] !== '-') m2++
+    if (m2 >= words.length || !dynamicWord(words[m2]!)) continue
+    anchors.push(m)
+    anchors.push(m2)
+    return
+  }
+}
+
 function commandAnchors(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
@@ -684,96 +721,137 @@ function commandAnchors(words: string[]): number[] {
   let base = baseWord(words[i]!)
   if (!LEAD_WRAPPERS.has(base)) return [i]
 
+  const anchors: number[] = []
   let j = i + 1
   let mayBeValue = false
-  for (;;) {
-    if (j >= words.length) return []
-    const w = words[j]!
-    const valueFlags = WRAPPER_VALUE_FLAGS[base]
-    const bareFlags = WRAPPER_BARE_FLAGS[base]
-    if (w === '--') {
-      j++
-      // claude-factory-p43v.26: `timeout`'s duration word (`5`, `30s`) can also follow its own
-      // `--`. Skip it here too.
-      // If this check is absent, `j` stops on the duration word. The caller then reads the
-      // duration word, not the real command, as the only anchor.
-      if (base === 'timeout' && j < words.length && /^[\d.]+[smhd]?$/.test(words[j]!)) j++
-      if (j >= words.length) return []
-      const nb = baseWord(words[j]!)
+  let timeoutDurationPending = base === 'timeout'
+
+  // claude-factory-p43v.32: the outer loop can run more than once. One pass walks a wrapper's own
+  // flags and finds `j`, the first candidate after them. If the chase below then finds that the
+  // next candidate word is itself a known wrapper (for example `env` in
+  // `sudo -Z "$P" env $G $V origin main`), this hook has not yet read that wrapper's own flags.
+  // The outer loop runs the flag walk again, with `base` and `j` set to that wrapper, in place of
+  // adding the wrapper's own name as a flat, unchecked candidate.
+  outer: for (;;) {
+    for (;;) {
+      if (j >= words.length) return anchors
+      const w = words[j]!
+      const valueFlags = WRAPPER_VALUE_FLAGS[base]
+      const bareFlags = WRAPPER_BARE_FLAGS[base]
+      if (w === '--') {
+        j++
+        // A literal `--` ends the wrapper's own option list. The word right after it is the
+        // real command, once this branch skips a `timeout` duration or a `NAME=value` operand.
+        // It is never an unknown flag's own value. Clear `mayBeValue` here. An earlier unknown
+        // flag, before this `--`, must not make the chase below add a later, non-dynamic word
+        // as a candidate too.
+        mayBeValue = false
+        // claude-factory-p43v.26/.31: `timeout` always takes one duration operand (`5`, `30s`,
+        // `1e1`, `inf`), right after its own flags, or right after its own `--`. Skip that word
+        // here, whatever shape it has (claude-factory-p43v.31). `timeoutDurationPending` is
+        // `false` once this skip runs, so a later numeral word is read as a real argument, not
+        // skipped again.
+        if (base === 'timeout' && timeoutDurationPending && j < words.length) {
+          j++
+          timeoutDurationPending = false
+        }
+        // claude-factory-p43v.30: a `NAME=value` operand (claude-factory-p43v.25) can also
+        // follow a wrapper's own `--`. Skip each one here too.
+        while (j < words.length && wrapperAssignmentOperand(words[j]!)) j++
+        if (j >= words.length) return anchors
+        const nb = baseWord(words[j]!)
+        if (LEAD_WRAPPERS.has(nb)) {
+          base = nb
+          j++
+          mayBeValue = false
+          timeoutDurationPending = nb === 'timeout'
+          continue
+        }
+        break
+      }
+      if (valueFlags?.has(w)) {
+        j += 2
+        continue
+      }
+      if (bareFlags?.has(w)) {
+        j += 1
+        continue
+      }
+      // claude-factory-p43v.25/.30: a `NAME=value` word (see `wrapperAssignmentOperand`) can
+      // follow a wrapper's own name or flags. `sudo` and `env` both read this form as an
+      // environment variable to set for the real command, not as that command. Skip each one;
+      // `realCommand` already skips this form before it reads the wrapper's own name.
+      if (wrapperAssignmentOperand(w)) {
+        j++
+        continue
+      }
+      if (w.startsWith('-') && w !== '-') {
+        j++
+        mayBeValue = true
+        continue
+      }
+      if (base === 'timeout' && timeoutDurationPending) {
+        j++
+        timeoutDurationPending = false
+        continue
+      }
+      const nb = baseWord(w)
       if (LEAD_WRAPPERS.has(nb)) {
         base = nb
         j++
         mayBeValue = false
+        timeoutDurationPending = nb === 'timeout'
         continue
-      }
-      return [j]
-    }
-    if (valueFlags?.has(w)) {
-      j += 2
-      continue
-    }
-    if (bareFlags?.has(w)) {
-      j += 1
-      continue
-    }
-    // claude-factory-p43v.25: a `NAME=value` word can follow a wrapper's own name or flags.
-    // `sudo` and `env` both read this form as an environment variable to set for the real
-    // command, not as that command. Skip each one; `realCommand` already skips this form before
-    // it reads the wrapper's own name.
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
-      j++
-      continue
-    }
-    if (w.startsWith('-') && w !== '-') {
-      j++
-      mayBeValue = true
-      continue
-    }
-    if (base === 'timeout' && /^[\d.]+[smhd]?$/.test(w)) {
-      j++
-      continue
-    }
-    const nb = baseWord(w)
-    if (LEAD_WRAPPERS.has(nb)) {
-      base = nb
-      j++
-      mayBeValue = false
-      continue
-    }
-    break
-  }
-
-  const anchors = [j]
-  let k = j
-  for (;;) {
-    const dyn = dynamicWord(words[k]!)
-    if (!dyn && !mayBeValue) break
-    let k2 = k + 1
-    while (k2 < words.length && words[k2]!.startsWith('-') && words[k2] !== '-') k2++
-    if (k2 >= words.length) break
-    anchors.push(k2)
-    if (dyn) break
-    if (anchors.length >= MAX_COMMAND_ANCHORS) {
-      // claude-factory-p43v.27: the loop above stops at a set number of candidates. Many
-      // unknown flags in a row can use up that number before the loop finds the actual dynamic
-      // word.
-      //
-      // After the cap, check the remaining words one by one for the first dynamic word. Add
-      // that word, and the non-flag word after it, as two more candidates. The function cost
-      // stays O(n).
-      for (let m = k2; m < words.length; m++) {
-        if (!dynamicWord(words[m]!)) continue
-        anchors.push(m)
-        let m2 = m + 1
-        while (m2 < words.length && words[m2]!.startsWith('-') && words[m2] !== '-') m2++
-        if (m2 < words.length) anchors.push(m2)
-        break
       }
       break
     }
-    k = k2
+
+    anchors.push(j)
+    let k = j
+    for (;;) {
+      // claude-factory-p43v.29: this chase reads a word as if it names the real command (the git
+      // or gh binary, or a kubectl/ko/helm tool word). `dynamicCommandWord` reads `{}` as not
+      // dynamic here; see the comment above that function.
+      const dyn = dynamicCommandWord(words[k]!)
+      if (!dyn && !mayBeValue) break
+      let k2 = k + 1
+      while (k2 < words.length && words[k2]!.startsWith('-') && words[k2] !== '-') k2++
+      if (k2 >= words.length) break
+      // claude-factory-p43v.32: `k2` can itself be a known wrapper's own name (see the comment
+      // above the outer loop). Restart the flag walk there, in place of adding it as a flat
+      // candidate.
+      const nb2 = baseWord(words[k2]!)
+      if (LEAD_WRAPPERS.has(nb2)) {
+        anchors.push(k2)
+        // claude-factory-p43v.32: a long run of `-Z v env -Z v env ...` restarts this chase once
+        // per repeat. With no cap here, `anchors` grows by 2 for each repeat, with no bound. The
+        // caller then re-slices `words` once per anchor. Many such slices, each over the same
+        // long `words` array, cost O(n) each, so an unbounded `anchors` array costs O(n^2)
+        // overall. Cap it the same way the plain branch below does, with the same scan for one
+        // more pair past the cap.
+        if (anchors.length >= MAX_COMMAND_ANCHORS) {
+          scanForFirstDynamicPair(words, k2 + 1, anchors)
+          return anchors
+        }
+        base = nb2
+        j = k2 + 1
+        mayBeValue = false
+        timeoutDurationPending = nb2 === 'timeout'
+        continue outer
+      }
+      anchors.push(k2)
+      if (dyn) break
+      if (anchors.length >= MAX_COMMAND_ANCHORS) {
+        // claude-factory-p43v.27/.32: the loop above stops at a set number of candidates. Many
+        // unknown flags in a row can use up that number before the loop finds the actual
+        // dynamic word. After the cap, `scanForFirstDynamicPair` finds one more pair, past `k2`.
+        scanForFirstDynamicPair(words, k2, anchors)
+        return anchors
+      }
+      k = k2
+    }
+    return anchors
   }
-  return anchors
 }
 
 // claude-factory-8pc.24: bd fills a bead's created_by field from the BEADS_ACTOR variable.
@@ -2132,20 +2210,39 @@ const REFSPEC_UNSAFE = /[$`*?[\]{}]/
 // directory, before it runs the word as a command. A matched word hides the real verb this
 // guard must read.
 //
-// claude-factory-p43v.28: the exact word `{}` is not dynamic. No shell expands a bare `{}`.
-// Brace expansion needs a comma or a range inside the braces, for example `{a,b}` or `{1..5}`.
+// claude-factory-p43v.28/.29: the word `{}` is dynamic. `find -exec` and `xargs -I {}` fill it in
+// at run time. Example: `find push -maxdepth 0 -exec git {} origin main ;` runs
+// `git push origin main`. `dynamicWord` must read `{}` as dynamic. Then `gitReason`, `ghReason`
+// and the AC7 scan in `anyDynamicCommandReason` deny a `{}` word at the git or gh verb slot.
 //
-// `xargs -I {}` reads each `{}` word and puts the input line there. xargs does this itself; the
-// shell does not change `{}`.
+// claude-factory-p43v.28 made `dynamicWord('{}')` give `false` to stop an incorrect deny of
+// `xargs -I {} cp {} dest`. That command names no `git` or `gh` word. `commandAnchors` read the
+// first `{}`, the value of the `-I` flag, as a command-slot candidate. The guard then read the
+// next word, `cp`, as the actual command. `cp` matched a `kubectl` mutating verb, so
+// `anyDynamicLiveApplyReason` denied the command incorrectly.
 //
-// Before this change, `dynamicWord('{}')` gave `true`. A command such as `xargs -I {} cp {} dest`
-// then read `{}` as a dynamic command word before `cp`. The guard denied it.
+// The `false` result stopped that one incorrect deny. It also let all git or gh verb-slot commands
+// go through without a deny.
 //
-// A brace word with text inside it, for example `{push,}`, still matches REFSPEC_UNSAFE. It
-// stays dynamic.
+// claude-factory-p43v.29 is the correct change: `dynamicCommandWord`, which is right below. Three
+// sites use `dynamicCommandWord`, not `dynamicWord`. They are `commandAnchors`, and the `cmd[0]`
+// check in `anyDynamicCommandReason` and in `anyDynamicLiveApplyReason`. All other uses keep
+// `dynamicWord`, where `{}` stays dynamic.
+//
+// A word with text between `{` and `}`, for example `{push,}`, continues to match
+// `REFSPEC_UNSAFE`. It stays dynamic in the two functions.
 function dynamicWord(w: string): boolean {
-  if (w === '{}') return false
   return REFSPEC_UNSAFE.test(w) || w.startsWith('~')
+}
+
+// claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
+// `{}` as not dynamic. Three sites use it, not `dynamicWord`: `commandAnchors`, and the `cmd[0]`
+// check in `anyDynamicCommandReason` and in `anyDynamicLiveApplyReason`. Each site reads a word as
+// the actual command. That command is the git or gh binary, or a kubectl, ko or helm tool word.
+// A `{}` word there is usually a wrapper's placeholder value, such as `xargs -I {}`, not a tool
+// name. This exemption lets `xargs -I {} cp {} dest` and `xargs -I {} delete {}` run.
+function dynamicCommandWord(w: string): boolean {
+  return w !== '{}' && dynamicWord(w)
 }
 
 /**
@@ -3281,7 +3378,9 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
   for (const a of commandAnchors(words)) {
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
-    if (cmd.length > 0 && dynamicWord(cmd[0]!)) {
+    // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
+    // binary). `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
+    if (cmd.length > 0 && dynamicCommandWord(cmd[0]!)) {
       let k = 1
       while (k < cmd.length) {
         const w = cmd[k]!
@@ -3399,9 +3498,11 @@ function anyToolLiveApplyDenied(tail: string[], personOnly: string[]): boolean {
 function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): string | undefined {
   // claude-factory-p43v.21: `commandAnchors` can name an index behind a wrapper flag this hook
   // does not know by name, where `realCommand(words)[0]` alone finds the wrong word.
+  // claude-factory-p43v.29: this reads `cmd[0]` as if it names a kubectl, ko or helm tool word.
+  // `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
   for (const a of commandAnchors(words)) {
     const cmd = words.slice(a)
-    if (cmd.length && dynamicWord(cmd[0]!) && anyToolLiveApplyDenied(cmd.slice(1), personOnly)) {
+    if (cmd.length && dynamicCommandWord(cmd[0]!) && anyToolLiveApplyDenied(cmd.slice(1), personOnly)) {
       return DYNAMIC_VERB_REASON
     }
   }
