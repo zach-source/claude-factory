@@ -2326,6 +2326,48 @@ test.each(DENY_SEND_PACK_UNSAFE_VALUE_FLAG_THEN_DRY_RUN_WORD)(
   },
 )
 
+// claude-factory-zs39: git reads every word after the first `--` as an operand, never as a flag.
+// The old parsers skipped the `--` word and then read later words as flags. A `-n` after `--` hid
+// a real push to `main` as a dry run, and `--repo` or `-o` swallowed the refspec as a value.
+// Real git 2.54 confirmed each row below moves `main`.
+const ZS39_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const DENY_WORDS_AFTER_DOUBLE_DASH = [
+  'git push -- origin main -n',
+  'git push origin main -- --dry-run',
+  'git push -- origin --repo main',
+  'git push -- origin -o main',
+  'git push -- origin main --all',
+  'git send-pack -- ../r.git main -n',
+  'git send-pack ../r.git -- main --dry-run',
+]
+
+test.each(DENY_WORDS_AFTER_DOUBLE_DASH)(
+  'denyReason denies %j (claude-factory-zs39, words after -- are operands)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+// Real git 2.54 reads `-n` and `--all` after `--` as ref names that match nothing, so `main` stays.
+const ALLOW_WORDS_AFTER_DOUBLE_DASH = [
+  'git push -n -- origin main',
+  'git push -- origin factory/x',
+  'git send-pack -n -- ../r.git main',
+  'git push -- origin -n',
+  'git push -- origin --all',
+]
+
+test.each(ALLOW_WORDS_AFTER_DOUBLE_DASH)(
+  'denyReason allows %j (claude-factory-zs39, a real flag before -- or a flag-like ref name stays allowed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
+  },
+)
+
+test('denyReason still denies git push --repo -- origin main (claude-factory-zs39, the value flag eats --)', () => {
+  expect(denyReason('git push --repo -- origin main', undefined, undefined, ZS39_GATE)).toBe(PUSH_REASON)
+})
+
 // claude-factory-zl5.41: review-r2 found 3 siblings of the zl5.21/zl5.28/zl5.34 config-write
 // guard: `remote.*.mirror` (acts like `--mirror` on every later push to that remote),
 // `include.path`/`includeIf.*.path` (loads another config file this guard cannot read), and the
@@ -2678,6 +2720,9 @@ const DENY_BRANCH_CHANGE_THEN_HEAD_PUSH = [
   'git checkout main; git send-pack -n --no-dry-run o HEAD',
   'git checkout main; git send-pack --dry-run --no-dr o HEAD',
   'git checkout main; git send-pack --remote -n o HEAD',
+  // claude-factory-zs39: words after `--` are operands.
+  'git checkout main; git push -- o HEAD -n',
+  'git checkout main; git send-pack -- o HEAD -n',
 ]
 
 test.each(DENY_BRANCH_CHANGE_THEN_HEAD_PUSH)(

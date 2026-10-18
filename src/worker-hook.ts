@@ -1899,7 +1899,11 @@ function pushOperands(tail: string[]): {
   let noDryRun = false
   for (let i = 0; i < tail.length; i++) {
     const w = tail[i]!
-    if (w === '--') continue
+    // claude-factory-zs39: git reads every word after the first `--` as an operand, never a flag.
+    if (w === '--') {
+      operands.push(...tail.slice(i + 1))
+      break
+    }
     if (w.startsWith('-') && w !== '-') {
       if (w.includes('=')) continue
       if (GIT_PUSH_VALUE_FLAGS.has(w)) {
@@ -2204,7 +2208,11 @@ function sendPackOperands(tail: string[]): {
   let unsafeValueFlag = false
   for (let i = 0; i < tail.length; i++) {
     const w = tail[i]!
-    if (w === '--') continue
+    // claude-factory-zs39: git reads every word after the first `--` as an operand, never a flag.
+    if (w === '--') {
+      operands.push(...tail.slice(i + 1))
+      break
+    }
     if (w.startsWith('-') && w !== '-') {
       if (SEND_PACK_VALUE_FLAGS.has(w)) {
         i++
