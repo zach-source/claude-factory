@@ -3088,7 +3088,7 @@ const DENY_QUOTED_GIT_WORD = [
   'printf x >> ~/.gitconfig; "gi"t push',
   'printf x >> ~/.gitconfig; g\\it push',
   `printf x >> ~/.gitconfig; sh -c '"gi"t push'`,
-  `cd ~/.config/git && "gi"t status`,
+  `cd ~/.config && "gi"t status`,
 ]
 
 test.each(DENY_QUOTED_GIT_WORD)('denyReason denies %j (claude-factory-ty8y.5)', cmd => {

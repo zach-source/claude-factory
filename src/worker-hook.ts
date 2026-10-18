@@ -314,14 +314,17 @@ export interface HookGate {
  * `branchChange` or `gitAdminPath` is true. This is the same rule as above. It now covers this
  * new, verb-free write path too.
  *
- * claude-factory-ty8y: `globalGitConfig` adds a fourth fact. A shell redirect, or another file
- * tool, can write the global git config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`,
+ * claude-factory-ty8y: two more facts, `globalGitConfig` and `gitWord`. A shell redirect, or another
+ * file tool, can write the global git config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`,
  * `/etc/gitconfig`) with no `git` word. That file can set `remote.<n>.push`, `push.default` or an
- * alias that pushes. `denyAt` sets `globalGitConfig` when a segment's raw words name such a path.
- * `scanReason` denies with `PUSH_REASON` when `globalGitConfig` is true and the command holds any
- * git word. It does this before the `headPush` check: an alias call, such as `git p`, sets no
- * `headPush`. This is the same rule as `hasDangerousConfigEnv`.
- * Residual, not fixed: a path built from shell variables or globs, and a Write or Edit tool write.
+ * alias that pushes. `globalGitConfigUse` classifies each segment. A `write` (a redirect target, an
+ * `of=` target, a glob that can name the file, or an operand of a command that is not a reader)
+ * denies at once with `GLOBAL_GIT_CONFIG_REASON`. A git segment and a reader segment skip their
+ * operands. A `mention` (a `.config` directory word) sets `globalGitConfig`. `scanReason` denies
+ * when `globalGitConfig` is true and `gitWord` is true. `gitWord` comes from the dequoted segment
+ * words, so `"gi"t` counts. `hasDangerousConfigEnv` reads it too.
+ * Residual, not fixed: a path built from a shell variable (`F=~/.gitconfig; echo x >> $F`), a
+ * Write or Edit tool write (claude-factory-ak7), and a `.git/config` write alone (claude-factory-cpn).
  */
 interface ScanState {
   branchChange: boolean
