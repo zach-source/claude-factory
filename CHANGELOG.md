@@ -6,6 +6,12 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- `worker-hook`: fail closed when one command changes the branch (`checkout`,
+  `switch`, `branch -m`/`-M`, `symbolic-ref HEAD`, `rebase <upstream> <branch>`,
+  `rebase --root <branch>`, `stash branch`, `bisect reset <ref>`, `update-ref --stdin`,
+  or a git-flag abbreviation of one of these) and then pushes `HEAD` to a protected
+  branch in the same command. (claude-factory-c63)
+
 ## 0.13.0 (2026-10-18)
 
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
