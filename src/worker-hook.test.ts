@@ -2539,6 +2539,60 @@ test('denyReason allows env with no -S/--split-string flag (claude-factory-zl5.4
   expect(denyReason('env -i git status')).toBeUndefined()
 })
 
+// claude-factory-s1fj: env -S puts its split words into argv, and env keeps parsing the words
+// after the value. So a shell word in the value runs the -c script that follows it.
+const DENY_ENV_SPLIT_SHELL: Array<[string, string | undefined]> = [
+  ["env -S 'sh' -c 'git push origin main'", undefined],
+  ["env -S 'bash' -c 'git push origin main'", undefined],
+  ["env -S 'sh' -c 'cd /other/repo && git push origin HEAD'", undefined],
+  ["env -S 'zsh' -c 'git push origin main'", undefined],
+  ["env -S'sh' -c 'git push origin main'", undefined],
+  ["env --split-string=sh -c 'git push origin main'", undefined],
+  ["env -S 'sh -x' -c 'git push origin main'", undefined],
+  ["env -S 'sh -c' 'git push origin main'", undefined],
+  ["env -S '-i sh' -c 'git push origin main'", undefined],
+  ["env -u FOO -S 'sh' -c 'git push origin main'", undefined],
+  ["env -vS 'sh' -c 'git push origin main'", undefined],
+  ["env -S 'sh' -c 'gh pr merge 5'", 'MERGE_REASON'],
+  ["env -S 'bash -e' -c 'gh pr merge 5'", 'MERGE_REASON'],
+  ["env -S 'git -C /other/repo' push origin HEAD", undefined],
+  ["env -S 'eval' 'git push origin main'", undefined],
+  ["env -S 'nice sh' -c 'git push origin main'", undefined],
+  ["env -S 'env' sh -c 'git push origin main'", undefined],
+  ["env -S 'gh pr #x' merge 5", 'MERGE_REASON'],
+  ["env -S 'gh pr # c' merge 5", 'MERGE_REASON'],
+  ["env -S '-u \"a #\" sh' -c 'git push origin main'", undefined],
+  ["env -S \"-u 'a #' sh\" -c 'git push origin main'", undefined],
+  ['env -S \'-u "a #" gh pr\' merge 5', 'MERGE_REASON'],
+  ["env -S 'FOO= #x sh' -c 'git push origin main'", undefined],
+  ["env -S 'FOO= #x gh pr' merge 5", 'MERGE_REASON'],
+]
+test.each(DENY_ENV_SPLIT_SHELL)(
+  'denyReason denies %j (claude-factory-s1fj, env -S shell word runs the later -c script)',
+  (cmd, reasonName) => {
+    const r = denyReason(cmd)
+    expect(r).toBeDefined()
+    if (reasonName) expect(r).toBe(ENV_SPLIT_STRING_REASON[reasonName])
+  },
+)
+
+test.each([
+  "env -S 'sh' -c 'echo x'",
+  "env -S 'bash -x' -c 'echo x'",
+  "env -S 'echo hi' there",
+  "env -S 'git status'",
+  "env -S 'sh' -c 'echo it'\\''s'",
+])('denyReason allows %j (claude-factory-s1fj)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test('denyReason bounds a long env -S chain that ends in a push (claude-factory-s1fj)', () => {
+  const cmd = 'env -S env '.repeat(40) + "-S sh -c 'git push origin main'"
+  const t0 = Date.now()
+  expect(denyReason(cmd)).toBeDefined()
+  expect(Date.now() - t0).toBeLessThan(1000)
+}, 30_000)
+
 // claude-factory-vco: GNU env and macOS /usr/bin/env split an env -S value at each \_ and at
 // each real newline, quoted or not. denyAt's tokenizer does not split there, so a value such
 // as 'git\_push\_origin\_main' stays one word and never matches the push check. Each row below

@@ -4412,6 +4412,23 @@ function envChdirPresent(words: string[], j: number): boolean {
   return wordsCarryChdir(words, j + 1)
 }
 
+// claude-factory-s1fj: env reads a word that starts with # in an -S value as a comment to the end
+// of the value. It keeps the words after the value. Cut the value there, as env does.
+// A # inside single or double quotes is part of a word, so track quote state.
+function envSplitCommentCut(val: string): string {
+  let quote = ''
+  for (let i = 0; i < val.length; i++) {
+    const c = val[i]!
+    if (quote) {
+      if (c === quote) quote = ''
+      else if (c === '\\' && quote === '"') i++
+    } else if (c === "'" || c === '"') quote = c
+    else if (c === '\\') i++
+    else if (c === '#' && (i === 0 || /[ \t\n\v\f\r]/.test(val[i - 1]!))) return val.slice(0, i)
+  }
+  return val
+}
+
 // claude-factory-68gn: `movedBefore` is the same fail-closed state `denyAt` already tracks
 // (`movedSoFar`) for a `cd`, `pushd` or `popd` word in an earlier segment of the whole command.
 // `moved` starts there, and turns true for good at the first `cd`, `pushd` or `popd` word in this
@@ -4463,7 +4480,22 @@ function anyShellReason(
       if (val.includes('$')) return ENV_SPLIT_VAR_REASON
       const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
       if (r) return r
-      break
+      // claude-factory-s1fj: env inserts the split words into argv and keeps parsing the words
+      // after the value. Rebuild that argv and scan it, so a shell word in the value reaches
+      // the sh -c scan with the script that follows it. The shape matches envOptionScan.
+      const span = envSplitStringScan(words, j)!
+      const sWord = words[span.sIndex]!
+      const prefix =
+        sWord.startsWith('-') && !sWord.startsWith('--') ? sWord.slice(1, sWord.indexOf('S')) : ''
+      const argv = [
+        'env',
+        ...words.slice(j + 1, span.sIndex),
+        ...(prefix ? ['-' + prefix] : []),
+        ...segments(envSplitCommentCut(val)).flat(),
+        ...words.slice(span.end),
+      ]
+      const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
+      return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
     }
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
       if (nc < j) {
