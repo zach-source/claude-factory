@@ -143,6 +143,14 @@ export const ENV_SPLIT_ESCAPE_REASON =
   'real command. Write the command words plainly, without env -S. Do not retry this exact ' +
   'command.'
 
+// claude-factory-s1fj: GNU env 9.11 and macOS env read a word that starts with # in the value as
+// a comment to the end of the value. env still runs the argv words after the value.
+export const ENV_SPLIT_COMMENT_REASON =
+  'The factory denies this command: an env -S or env --split-string value holds a word that ' +
+  'starts with #. env reads that word as a comment and still runs the words after the value, ' +
+  'so this guard cannot read the real command. Write the command words plainly, without ' +
+  'env -S. Do not retry this exact command.'
+
 // claude-factory-z1p: the env -S and --split-string flags change a ${NAME} word in the value
 // into one command word when env runs. denyAt reads only the typed text, so it cannot see the
 // changed command (GNU env 9.11 and macOS /usr/bin/env both do this).
@@ -2776,13 +2784,13 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
  * closed past MAX_SHELL_DEPTH levels instead of recursing without a bound.
  *
  * claude-factory-zl5.42: `env -S STRING` (GNU and BSD) splits `STRING` into words at run time and
- * runs it, the same shape of hazard as `eval`. `envSplitStringValue` reads `STRING` off the `env`
+ * runs it, the same shape of hazard as `eval`. `envSplitStringScan` reads `STRING` off the `env`
  * word's own flags: the plain `-S`/`--split-string` form with the value as a separate word, the
  * attached form (`-S'git push origin main'`, tokenized with the quote stripped as one word
  * `-Sgit push origin main`), a short-flag cluster (`-vS`), and `--split-string=...`.
  *
  * claude-factory-dgf: `env` has more value flags. These are `-u`/`--unset`, `-C`/`--chdir`, `-P`
- * and `--argv0`/`-a`. `envSplitStringValue` now reads past each flag's own value word. A value
+ * and `--argv0`/`-a`. `envSplitStringScan` now reads past each flag's own value word. A value
  * word does not stop the scan before a later `-S`. The function also reads a prefix of a long
  * flag name, such as `--spl` for `--split-string`. GNU `getopt_long` reads a prefix this way.
  *
@@ -2877,15 +2885,6 @@ function envSplitStringScan(
     return undefined
   }
   return undefined
-}
-
-/**
- * Reads the value that the `env -S`/`env --split-string` word at `words[j]` splits and runs.
- * Returns undefined when no such flag is present. A thin wrapper over `envSplitStringScan`: see
- * that function for the scan rules.
- */
-function envSplitStringValue(words: string[], j: number): string | undefined {
-  return envSplitStringScan(words, j)?.value
 }
 
 // claude-factory-68gn.12: GNU `getopt_long` accepts a unique prefix of a long option name, which a whole-word match misses.
@@ -3028,6 +3027,9 @@ function anyShellReason(
       // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
       // or gh verb; env expands it to one command word at run time, past this guard's sight.
       if (val.includes('$')) return ENV_SPLIT_VAR_REASON
+      // claude-factory-s1fj: env reads a word that starts with # as a comment to the end of the
+      // value, but runs the tail. denyAt reads # as a comment to the end of the whole text.
+      if (/(^|\s)#/.test(val)) return ENV_SPLIT_COMMENT_REASON
       // claude-factory-s1fj: env runs the split words PLUS every later argv word as one command.
       // Scan them together. Single quotes keep each later word one literal word in denyAt, and
       // each quote inside a word becomes '\'' so segments() reads it back as a literal quote.

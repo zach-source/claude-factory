@@ -8,6 +8,7 @@ import {
   DEEP_COMMAND_REASON,
   denyReason,
   ENV_SPLIT_ESCAPE_REASON,
+  ENV_SPLIT_COMMENT_REASON,
   ENV_SPLIT_VAR_REASON,
   type HookGate,
   LIVE_REASON,
@@ -2429,7 +2430,7 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   // `PUSH_DIR_REASON`, not `PUSH_REASON`.
   // - `wordsCarryChdir` (the scan in `envChdirPresent`) fails closed on any
   //   `-S`/`--split-string` word alone. It does not read what the word holds.
-  // - These rows use the fix from `claude-factory-dgf` for `envSplitStringValue`. That scan reads
+  // - These rows use the fix from `claude-factory-dgf` for `envSplitStringScan`. That scan reads
   //   what the `-S` value holds, so the guard can still recurse into it.
   // - A value flag ahead of `-S` must not hide it.
   ["env -vS 'git push origin main'", 'PUSH_DIR_REASON'],
@@ -2505,6 +2506,18 @@ test.each(DENY_ENV_SPLIT_TAIL)(
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(ENV_SPLIT_STRING_REASON[reasonName])
   },
 )
+
+// A word that starts with # in the env -S value is a comment for env, which still runs the tail.
+test.each([
+  "env -S 'git #' push origin main",
+  "env -S 'gh pr #' merge 5",
+  "env -S 'git #x' push origin main",
+  "env --split-string='git #' push origin main",
+  "env -S '-i' -S 'git #' push origin main",
+])('denyReason denies %j (claude-factory-s1fj, # comment in env -S value)', cmd => {
+  const gate = { headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(ENV_SPLIT_COMMENT_REASON)
+})
 
 test('denyReason allows harmless argv after an env -S value (claude-factory-s1fj)', () => {
   const gate = { headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main') }
@@ -3202,7 +3215,7 @@ test.each(DENY_PUSH_AFTER_ENV_VALUE_FLAG_HIDES_CHDIR)(
   },
 )
 
-// claude-factory-68gn.11: the same miss, but for envSplitStringValue's own scan: a push straight
+// claude-factory-68gn.11: the same miss, but for envSplitStringScan's own scan: a push straight
 // to main, with no cd at all, hidden behind -a/-iu ahead of -S.
 //
 // claude-factory-68gn.13/.14 (review round 3): these deny with PUSH_DIR_REASON, not PUSH_REASON,
