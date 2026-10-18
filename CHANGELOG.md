@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- The worker hook now denies a dynamic word in the option slot of a `sh`, `bash`, `zsh` or `dash` call, and a brace list word (`{sh,-c}`, `{a..c}`) at a command anchor. The shell can expand such a word to `-c` and a script that the guard cannot read. Before, `C=-c; sh $C 'git push origin main'` and `{sh,-c} 'git push origin main'` were allowed. The new `SH_DYNAMIC_FLAG_REASON` names the first case. A dynamic word after a literal operand now reads like a `-c` flag, and the `bd` scan fails closed on the same shapes. The hook also denies harmless uses such as `bash "$f"`. Literal forms such as `sh script.sh` and `xargs -I {} cp {} dest` stay allowed (claude-factory-38jm).
+
 - Added regression tests for a bug. A shell variable word before the `git` verb hides a protected push. Three example commands: `git $X push origin main`, `git "$X" push origin HEAD`, and `git -C sub $X push origin main`. The `DYNAMIC_VERB_REASON` fix from claude-factory-p43v already denies them on `main`. The new rows set `gate.gitAliases` and `gate.ghAliases`, the gate shape `main()` uses in production. The existing `P43V_GATE` rows leave both unset (claude-factory-bjp0).
 
 - Fixed: a nested `env -S` or `env -i eval` command made the worker hook scan take about 2x longer for each level. A 219-character command took 82 s, past the 10 s hook timeout, so the hook failed open and the command ran unchecked. The scan now reads each `env -S` span and each `eval` word once. A work budget (`MAX_SCAN_WORK`) also stops any scan that grows too large and denies with `SCAN_BUDGET_REASON`. No other verdict changes (claude-factory-cbai).

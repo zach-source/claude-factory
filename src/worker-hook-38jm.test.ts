@@ -63,7 +63,13 @@ test.each(AC2)('38JM AC2 denies %s', cmd => {
 })
 
 // AC3: the bd scan fails closed on the same shapes.
-const AC3 = ["C=c; env -i sh -$C 'bd create x'", "C=-c; env -i sh $C 'bd create x'"]
+const AC3 = [
+  "env -i sh {-c,'bd create x'}",
+  "C='-c'; env -i bash $C",
+  'C=-c; env -i bash $C',
+  "C=c; env -i sh -$C 'bd create x'",
+  "C=-c; env -i sh $C 'bd create x'",
+]
 test.each(AC3)('38JM AC3 denies %s', cmd => {
   expect(run(cmd)).toBe(BEADS_ACTOR_REASON)
 })
