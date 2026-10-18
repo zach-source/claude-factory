@@ -1019,6 +1019,12 @@ test('denyReason denies git send-pack --dry-run --no-dry-run o main (claude-fact
   expect(denyReason('git send-pack --dry-run --no-dry-run o main')).toBe(PUSH_REASON)
 })
 
+// claude-factory-ctae.7: the push side has both an exact and an abbreviated `--no-dry-run` row
+// (`DENY_PUSH_NO_DRY_RUN` above). This row gives send-pack the same abbreviated-form coverage.
+test('denyReason denies git send-pack --dry-run --no-dr o main (claude-factory-ctae.7, abbreviated --no-dry-run)', () => {
+  expect(denyReason('git send-pack --dry-run --no-dr o main')).toBe(PUSH_REASON)
+})
+
 // claude-factory-ctae.5: these flags already deny through the existing refspec check. Each row
 // pins that result so a future change to the flag scan cannot silently stop denying it.
 const DENY_PUSH_DELETE_OR_FORCE_WITH_LEASE = [
@@ -1811,6 +1817,9 @@ const DENY_SEND_PACK_VALUE_FLAG = [
   'git send-pack --receive-pack x ../remote.git',
   'git send-pack --exec x ../remote.git',
   'git send-pack --rece x ../remote.git refs/heads/factory/x',
+  // claude-factory-ctae.6: `--push-option` is a 3rd member of `SEND_PACK_VALUE_FLAGS`, with no
+  // row of its own until now. An abbreviation still takes a value word this guard cannot read.
+  'git send-pack --push-o x ../remote.git',
 ]
 
 test.each(DENY_SEND_PACK_VALUE_FLAG)(
@@ -1830,6 +1839,15 @@ test('denyReason allows the exact send-pack value flag, which skips its own valu
       undefined,
       gate,
     ),
+  ).toBeUndefined()
+})
+
+// claude-factory-ctae.6: the exact `--push-option` word also skips its own value word, the same
+// as `--receive-pack` above. Only the abbreviated form denies.
+test('denyReason allows the exact send-pack --push-option, which skips its own value word (claude-factory-ctae.6)', () => {
+  const gate = { headOf: () => 'factory/x' }
+  expect(
+    denyReason('git send-pack --push-option x ../remote.git refs/heads/factory/x', undefined, undefined, gate),
   ).toBeUndefined()
 })
 
