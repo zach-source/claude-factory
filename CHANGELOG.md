@@ -6,6 +6,22 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: `gitReason` (`src/worker-hook.ts`) read a `git push`'s dir from
+  `flagValue(tail, {-C}) ?? root`, where `root` is the worktree root. A
+  relative `-C <dir>` value stayed unresolved text; the real `headOf`
+  wiring in `main()` then spawned `git -C <that text>`, which resolves
+  against the hook process's own filesystem cwd, not the tool call's own
+  cwd. A prior Bash call's `cd` into a second repo made a later
+  `git push origin HEAD` or bare `git push` there read the wrong repo's
+  branch, or the wrong dir inside it. (claude-factory-3f2z)
+  - Fix: `HookGate` adds `cwd`, the tool call's own cwd (`input.cwd`).
+    `gitReason` now folds every `-C` before the push verb onto
+    `gate.cwd ?? root`, in order, through a new `gitChdir` helper: an
+    absolute value replaces the dir, a relative value joins onto it, and
+    an empty value changes nothing.
+  - Fix: `main()` sets `gate.cwd = i.cwd || root`, the same fallback
+    `readFile` already uses for a `gh api` file argument.
+
 ## 0.13.0 (2026-10-18)
 
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,

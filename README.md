@@ -437,9 +437,16 @@ The `env -S` fix above has a related gap. The hook still did not see `-S`. A val
   `getopt_long` accepts any prefix of a long option name that names only one option. The
   prefix works the same as `--unset` or `--split-string` in full.
 
-The hook reads `origin/HEAD` and the worktree's current branch live, with a 2 s cap on each
-read. When either read fails (a timeout, a detached `HEAD`, or no `origin` remote), the hook
-denies the push outright: it has no branch name, or no `origin/HEAD` name, to check.
+The hook reads `origin/HEAD` live, with a 2 s cap, and it reads the current branch live in
+the directory where the push runs. That directory is the tool call's own cwd (`input.cwd`), not
+the worktree root, because a prior Bash call's `cd` can leave the two apart. If the push's own
+command line has a `-C <path>` flag, the hook applies it to that cwd, in the order the command
+gives it. An absolute path replaces the directory, and a relative path joins onto it. When the
+tool call has no cwd of its own, the hook uses the worktree root as the directory.
+
+If either read fails, the hook denies the push outright. A read can fail with a timeout, a
+detached `HEAD`, or no `origin` remote. The hook then has no branch name, or no `origin/HEAD`
+name, to check.
 
 This rule applies whatever the list holds. Only a person can merge a pull request or push the default branch. A worker pushes its own run branch and opens a pull request.
 
