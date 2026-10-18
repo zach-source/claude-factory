@@ -1804,24 +1804,30 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
 // claude-factory-68gn.6: these GNU and BSD `env` flags take the next word as their own value.
 // They do not take the next word as `env`'s own command. `-u name`/`--unset name` removes a
 // variable. BSD `env` also reads a value after `-P` (alternate PATH), `-L` (login class) and
-// `-U` (login). A scan that stops at the first word not starting with `-` reads this value as
-// `env`'s own command by mistake. The scan then misses a `-C`/`--chdir`/`-S`/`--split-string`
-// flag that comes after it. Checked on macOS: `env -u FOO -C /usr pwd` prints `/usr`, not the
-// worktree root. claude-factory-68gn.11: GNU `env` also reads a value after `-a`/`--argv0` (the
-// zeroth argument of the command it runs). Checked on this host (GNU coreutils 9.11):
+// `-U` (login).
+//
+// A scan that stops at the first word not starting with `-` reads this value as `env`'s own
+// command by mistake. The scan then misses a `-C`/`--chdir`/`-S`/`--split-string` flag that
+// comes after it. Checked on macOS: `env -u FOO -C /usr pwd` prints `/usr`, not the worktree
+// root.
+//
+// claude-factory-68gn.11: GNU `env` also reads a value after `-a`/`--argv0` (the zeroth
+// argument of the command it runs). Checked on this host (GNU coreutils 9.11):
 // `env -a foo -C /usr pwd` prints `/usr`.
 const ENV_VALUE_FLAG_WORDS = new Set(['-u', '--unset', '-P', '-L', '-U', '-a', '--argv0'])
 
 // claude-factory-68gn.11: `-i` (`--ignore-environment`), `-0` (`--null`) and `-v` (`--debug`)
-// take no value of their own. So a short-flag cluster that mixes one or more of them with
-// exactly one value-taking flag still ends in that one value letter: `a` (`--argv0`), `u`
-// (`--unset`), or, on BSD `env`, `P`, `L` or `U`. `ENV_VALUE_FLAG_WORDS` matches only a whole
-// word. So it misses a cluster such as `-iu`, `-va` or `-0u`. Checked on this host: `env -iu FOO
-// -C /usr pwd` and `env -va x -C /usr pwd` both print `/usr`. A plain `-u FOO -C /usr pwd`
-// prints the same thing. A value letter with more text right after it in the same word
-// (`-iuFOO`) is the attached form of its own value. The word already carries the value, so no
-// next word needs skipping. This pattern does not match that shape: its `$` anchor requires the
-// value letter to be the word's last character.
+// take no value of their own. A short-flag cluster can mix one or more of them with exactly one
+// value-taking flag. That cluster still ends in the one value letter: `a` (`--argv0`), `u`
+// (`--unset`), or, on BSD `env`, `P`, `L` or `U`.
+//
+// `ENV_VALUE_FLAG_WORDS` matches only a whole word. So it misses a cluster such as `-iu`, `-va`
+// or `-0u`. Checked on this host: `env -iu FOO -C /usr pwd` and `env -va x -C /usr pwd` both
+// print `/usr`, the same as a plain `-u FOO -C /usr pwd`.
+//
+// A value letter with more text right after it in the same word (`-iuFOO`) carries its value
+// attached. That word needs no next-word skip. This pattern does not match that shape: its `$`
+// anchor needs the value letter to be the word's last character.
 const ENV_CLUSTER_VALUE_FLAG = /^-[iv0]*[auPLU]$/
 
 /** True when `w` is an `env` flag whose own value is a separate word right after it. */
