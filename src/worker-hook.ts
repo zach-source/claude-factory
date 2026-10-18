@@ -1367,7 +1367,8 @@ function shellReadsStdin(words: string[], k: number): boolean {
         afterDashDash = true
         continue
       }
-      if (w === '(') return true
+      if (w === '(' || w === ')') return true
+      if (w === '=' && words[i + 1] === '(') return true
       if (SHELL_VALUE_LONG_FLAGS.has(w)) {
         i++
         continue
@@ -1386,6 +1387,16 @@ function shellReadsStdin(words: string[], k: number): boolean {
   return true
 }
 
+const SOURCE_WORDS = new Set(['source', '.'])
+
+/**
+ * claude-factory-l43b.5: true when `w` names a shell. A redirect can stick to the word
+ * (`sh<<<P`, `sh<f`), so this drops everything from the first < or > before it reads the name.
+ */
+function isShellWord(w: string): boolean {
+  return SHELL_NAMES.has(baseWord(w.replace(/[<>][\s\S]*$/, '')).toLowerCase())
+}
+
 /**
  * claude-factory-l43b: a shell word with no -c script, in a command that a pipe, a redirect or a
  * coproc can feed. Covers a literal shell word and a dynamic command word. Returns the reason.
@@ -1393,21 +1404,26 @@ function shellReadsStdin(words: string[], k: number): boolean {
 function shellStdinReason(words: string[], state: ScanState): string | undefined {
   if (!state.stdinFed) return undefined
   for (let j = 0; j < words.length; j++) {
-    if (SHELL_NAMES.has(baseWord(words[j]!).toLowerCase()) && shellReadsStdin(words, j)) {
-      return SHELL_STDIN_REASON
-    }
+    if (isShellWord(words[j]!) && shellReadsStdin(words, j)) return SHELL_STDIN_REASON
   }
   const lead = leadingRedirects(words)
   const rest = lead ? words.slice(lead) : words
   for (const a of commandAnchors(rest)) {
     if (dynamicCommandWord(rest[a]!) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
+    // claude-factory-l43b.9: `source` and `.` run the file they read like a shell script.
+    if (SOURCE_WORDS.has(baseWord(rest[a]!)) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
   }
   return undefined
 }
 
+const XARGS_REPLACE_FLAG = /^-[^-]*[IiJ]|^--replace(=|$)/
+
 const XARGS_VALUE_FLAGS = new Set([
   '-I',
   '-i',
+  '-J',
+  '-R',
+  '-S',
   '-n',
   '-L',
   '-l',
@@ -1437,8 +1453,11 @@ function xargsRunsShell(words: string[]): boolean {
     if (baseWord(words[i]!) !== 'xargs') continue
     const cands: number[] = []
     for (let j = i + 1; j < words.length; j++) {
-      if (SHELL_NAMES.has(baseWord(words[j]!).toLowerCase())) cands.push(j)
+      if (isShellWord(words[j]!)) cands.push(j)
     }
+    // claude-factory-l43b.8: with a replace flag, xargs swaps the replace string in a literal
+    // script word for its stdin text. The script word then is not the text this guard can read.
+    if (cands.length && words.slice(i + 1).some(w => XARGS_REPLACE_FLAG.test(w))) return true
     let j = i + 1
     while (j < words.length) {
       const w = words[j]!
@@ -4997,7 +5016,7 @@ export function scanReason(
     branchChange: false,
     headPush: false,
     gitAdminPath: false,
-    stdinFed: /[|<]|\bcoproc\b/.test(command),
+    stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     work: budget,
   }
   const g = memoGate(gate ?? {})
