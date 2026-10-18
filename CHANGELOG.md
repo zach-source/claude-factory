@@ -104,6 +104,36 @@ minor release may change the factory format, the CLI or the run state.
     `-u`'s value and `-C` moves the command. Before this fix, this
     shape allowed too. (claude-factory-68gn.14)
 
+- `worker-hook` checks the verb slot of a command.
+  A dynamic word there now fails the check.
+  A dynamic word can be a shell variable.
+  It can also be a command substitution.
+  It can also be a glob word.
+
+  The old hook read that word as the literal verb. It let two commands through. Both allowed. One example is `V=push; git $V origin main`. A second example is `V=checkout; git $V main; git push origin HEAD`.
+
+  The new reason code is `DYNAMIC_VERB_REASON`. It denies each case in the table below.
+
+  | Case | Example | Bead |
+  |---|---|---|
+  | Dynamic word at the `git` verb slot | `git-$V, eval, sh -c` | claude-factory-p43v.1, claude-factory-p43v.2 |
+  | Dynamic word at the `gh` verb slot, or at the `pr, repo, alias` subcommand slot | - | claude-factory-p43v.3 |
+  | Dynamic `git config` key | - | claude-factory-p43v.4 |
+  | Dynamic word before a guarded verb | `$G push origin main` | claude-factory-p43v.5 |
+  | Substitution opener | `$(which git) push origin main` | claude-factory-p43v.5 |
+  | Dynamic word at the `kubectl, ko, helm` verb slot, or at the `kubectl rollout, auth, certificate` subcommand slot | - | claude-factory-p43v.6 |
+
+  A dynamic `git` branch-change argument also marks the branch as changed.
+  The table below lists each verb, the push rule, and the loop rule.
+
+  | Case | Example | Note |
+  |---|---|---|
+  | Branch-change verb `stash` | `git stash $V main` | marks the branch changed |
+  | Branch-change verb `branch` | `git branch $F main` | marks the branch changed |
+  | Branch-change verbs `bisect, rebase, symbolic-ref, update-ref` | same rule | marks the branch changed |
+  | Push after a branch change | `git push origin HEAD` in the same command | denies with `PUSH_REASON` |
+  | Loop, not a verb slot | `for f in a b; do git add $f; done` | still allows (claude-factory-p43v) |
+
 ## 0.13.0 (2026-10-18)
 
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
