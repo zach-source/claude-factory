@@ -2993,6 +2993,81 @@ test('denyReason allows the write alone, and denies a later, separate HEAD push 
   expect(denyReason('git push o HEAD', undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
 })
 
+// claude-factory-ty8y: a write to the global git config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`,
+// `/etc/gitconfig`) has no git verb. It can set `remote.<n>.push`, `push.default` or an alias that
+// pushes. Any later git word in the same command then pushes with no check. The guard denies when
+// a global-config path word and any git word stand in one command, in any order.
+const GLOBAL_GIT_CONFIG_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  cwd: '/r/acme/widget',
+  gitAliases: () => new Map<string, string>(),
+}
+
+const DENY_GLOBAL_GIT_CONFIG_WRITE = [
+  `printf '[remote "origin"] push = HEAD:refs/heads/main' >> ~/.gitconfig; git push`,
+  'printf x > ~/.gitconfig; git push',
+  'printf x >> $HOME/.gitconfig && git push origin',
+  'printf x >> "${HOME}/.gitconfig"; git push',
+  'printf x >> ~acme/.gitconfig; git push',
+  'printf x >> "$XDG_CONFIG_HOME/git/config"; git push',
+  'printf x >> ~/.config/git/config; git push',
+  'printf x >> /etc/gitconfig; git push',
+  'echo x | tee -a ~/.gitconfig; git push',
+  "sed -i '' 's/a/b/' ~/.gitconfig; git push",
+  'cp f ~/.gitconfig; git push',
+  'mv f ~/.config/git/config; git push',
+  'ln -sf f ~/.gitconfig; git push',
+  'install f ~/.gitconfig; git push',
+  'dd of=$HOME/.gitconfig if=f; git push',
+  `python3 -c "open('/Users/acme/.gitconfig','a').write('x')"; git push`,
+  'printf x >> ~/.git\\\nconfig; git push',
+  'bash -c "printf x >> ~/.gitconfig"; git push',
+  'cd ~ && printf x >> .gitconfig && cd - && git push',
+  'cd ~/.config/git && printf x >> config; cd /r/acme/widget; git push',
+  // AC2: order and nesting do not matter.
+  'git push; printf x >> ~/.gitconfig',
+  "printf x >> ~/.gitconfig; bash -c 'git push'",
+  'eval "printf x >> ~/.gitconfig" && git push',
+  'env -S "printf x >> ~/.gitconfig" && git push',
+  // AC3: any git word denies, not only push.
+  `printf '[alias] p = push o HEAD:main' >> ~/.gitconfig; git p`,
+  `printf '[include] path = /r/x' >> ~/.gitconfig; git push`,
+  'printf x >> ~/.gitconfig; git push origin factory/x',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE)(
+  'denyReason denies %j (claude-factory-ty8y: a global git config path then a git word fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+const ALLOW_GLOBAL_GIT_CONFIG = [
+  'cat ~/.gitconfig',
+  'printf x >> ~/.gitconfig',
+  'git push',
+  'git push origin factory/x',
+  'git config --global user.name',
+  'cat vite.config.ts && git push',
+  'cat .gitignore && git push',
+  'git push https://github.com/acme/widget.git HEAD',
+  'ls ~/.config/gh',
+]
+
+test.each(ALLOW_GLOBAL_GIT_CONFIG)(
+  'denyReason allows %j (claude-factory-ty8y: no global git config path with a git word)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+  },
+)
+
+// AC5: accepted false positive. A read of the global config next to a git call denies, because
+// the guard cannot tell a read from a write. The worker runs the read and the git call as 2 Bash calls.
+test('denyReason denies a read of the global git config next to a git word (claude-factory-ty8y, accepted false positive)', () => {
+  expect(denyReason('cat ~/.gitconfig; git status', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(PUSH_REASON)
+})
+
 // claude-factory-68gn: `gitReason` read the current branch with `gate.headOf(root)`.
 // `root` never moves, but an earlier `cd`, `pushd` or `popd` word in one command can move the real
 // push to another repository. A `HEAD` alias push (`HEAD`, `@`, or no refspec at all) then reads
