@@ -128,6 +128,28 @@ minor release may change the factory format, the CLI or the run state.
     `-u`'s value and `-C` moves the command. Before this fix, this
     shape allowed too. (claude-factory-68gn.14)
 
+- Fix: an existing `git` or `gh` alias cannot hide a denied verb.
+  `gitReason` and `ghReason` now resolve a non-builtin verb first. They read the
+  verb through `git config --get-regexp ^alias\.` (per directory) and `gh alias
+  list`. They scan the alias text again as the real command. They deny with the
+  new `ALIAS_USE_REASON` when they cannot do this safely.
+
+  Each of these cases denies with `ALIAS_USE_REASON`:
+
+  - The alias table cannot be read.
+  - The alias is a `!` shell alias.
+  - The alias chain is more than 10 levels deep.
+  - An earlier change by `cd`, `pushd`, `popd`, `chdir`, `env -C`, `--git-dir`,
+    `GH_CONFIG_DIR`, `XDG_CONFIG_HOME` or `HOME` occurs.
+
+  Each of those changes hides which directory's alias table applies.
+
+  Before this fix, a host with `alias.co=checkout` set let `git co main && git
+  push o HEAD` push a protected branch unseen. A host with `alias.br=branch` set
+  let `git br -M main && git push o HEAD` do the same. A host's default `gh`
+  alias `co` for `pr checkout` let `gh co 5 && git push` do the same.
+  (claude-factory-bemr)
+
 ## 0.13.0 (2026-10-18)
 
 - Sweeps now move out of `factories/lifecycle.ts`. They run in their own factory,
