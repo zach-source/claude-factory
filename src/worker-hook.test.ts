@@ -4449,6 +4449,11 @@ const DENY_DQ_SUBST: [string, string][] = [
   ['echo "$(echo $\\\n{x//)/}; git push origin main)"', PUSH_REASON],
   ['echo "$(true; c\\\nase a in a) git push origin main;; esac)"', PUSH_REASON],
   ['echo "$(cat <\\\n<\'EOF\'\n)\nEOF\ngit push origin main\n)"', PUSH_REASON],
+  // a hash after a close paren or inside a brace is not a comment
+  ['echo "$(echo $(true)#; git push origin main)"', PUSH_REASON],
+  ['echo "$(echo $((1))#; git push origin main)"', PUSH_REASON],
+  ['echo "$(cat <(true)#; git push origin main)"', PUSH_REASON],
+  ['echo "$(echo ${x:- #}; git push origin main)"', PUSH_REASON],
   // a substitution after an empty segment still counts in order: the body moves HEAD before the push
   ['; echo "$(git checkout main)"; git push', PUSH_REASON],
 ]
@@ -4466,6 +4471,7 @@ const ALLOW_DQ_SUBST = [
   'git commit -m "$(cat <<-\'EOF\'\n\tgit push origin main\n\tEOF\n)"',
   'git commit -m "$(date) fix"',
   'echo "$((1+2))"',
+  'echo "$(date # don\'t panic\n)"',
   'gh pr create --title t --body "$(cat .scratch/body.md)"',
 ]
 

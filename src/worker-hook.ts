@@ -505,7 +505,8 @@ function parenEnd(cmd: string, from: number, nest: number): number {
 /**
  * claude-factory-2pdm: a quote char inside a comment or a here-document line is not a quote, but
  * segments() reads it as one and hides the commands after it. This returns the body with each
- * comment cut to the end of its line, and each quote char in a here-document line made a space.
+ * quote char and backtick in a comment, and each quote char in a here-document line, made a space.
+ * It never drops comment text: the word-start test can be wrong after a close paren or in a brace.
  * It keeps every newline, and keeps the other here-document text, because a shell can read it.
  * A nested `$(` span inside double quotes stays as it is: scanning that span cleans it again.
  */
@@ -550,7 +551,10 @@ function cleanSubstitutionBody(body: string): string {
       out += body.slice(i, e + 1)
       i = e
     } else if (c === '#' && wordStart) {
-      while (i + 1 < body.length && body[i + 1] !== '\n') i++
+      let e = i
+      while (e + 1 < body.length && body[e + 1] !== '\n') e++
+      out += body.slice(i, e + 1).replace(/['"`]/g, ' ')
+      i = e
     } else if (c === '<' && body[i + 1] === '<' && body[i + 2] !== '<') {
       const m = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()'"]+))/.exec(body.slice(i, i + 300))
       if (!m) {
