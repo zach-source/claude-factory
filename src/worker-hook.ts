@@ -2672,10 +2672,51 @@ function gitReason(
   gate: HookGate,
   state: ScanState,
   moved: boolean,
+  aliasDepth = 0,
 ): string | undefined {
   const tail = cmd.slice(1)
   if (gitDashCPushDenied(tail)) return PUSH_REASON
   const { index: vi, uncertain } = firstVerbIndex(tail, GIT_VALUE_FLAGS)
+  // See claude-factory-68gn. A --git-dir flag moves the command, the same as a cd word.
+  // The effectiveMoved value includes this flag. The dir value does not include this flag.
+  //
+  // If effectiveMoved is true, this function must not trust the -C value.
+  // A relative -C path resolves against the directory where this hook started.
+  // It must not resolve against a directory that an earlier cd moved the command to.
+  const effectiveMoved = moved || flagValue(tail, new Set(['--git-dir'])) !== undefined
+  const dir = flagValue(tail, new Set(['-C'])) ?? root
+  const verb = vi >= 0 ? tail[vi] : undefined
+  //
+  // See claude-factory-bemr. This part of the function finds a git alias for the verb.
+  // It does not run this part when the verb position is not sure.
+  // It also does not run this part when verb is a builtin command.
+  // Git uses a builtin command before an alias with the same name. This function does the same.
+  //
+  // This part denies the command with ALIAS_USE_REASON under three conditions.
+  // The first condition is effectiveMoved equal to true.
+  // An earlier cd, pushd, popd or --git-dir word makes the alias table unknown for that
+  // directory.
+  //
+  // The second condition is an alias chain deeper than MAX_ALIAS_DEPTH levels.
+  // This limit stops a cycle of aliases. A cycle of aliases can stop the hook from completing.
+  // The third condition is an alias table that is unset or undefined.
+  // The hook cannot read the table. It then denies the command instead of a guess.
+  if (!uncertain && verb !== undefined && !GIT_BUILTIN_VERBS.has(verb)) {
+    if (effectiveMoved) return ALIAS_USE_REASON
+    if (aliasDepth > MAX_ALIAS_DEPTH) return ALIAS_USE_REASON
+    const table = gate.gitAliases?.(dir)
+    if (!table) return ALIAS_USE_REASON
+    const text = table.get(verb.toLowerCase())
+    if (text !== undefined) {
+      if (text.startsWith('!')) return ALIAS_USE_REASON
+      const expansion = splitCmdline(text)
+      if (!expansion) return ALIAS_USE_REASON
+      const expanded = ['git', ...tail.slice(0, vi), ...expansion, ...tail.slice(vi + 1)]
+      return gitReason(expanded, root, gate, state, moved, aliasDepth + 1)
+    }
+    // no entry for this word: an external git-<verb> or unrecognized word, fall through to the
+    // checks below unchanged, the same as before this guard existed.
+  }
   if (vi >= 0 && gitChangesBranch(tail[vi]!, tail.slice(vi + 1))) {
     state.branchChange = true
   } else if (uncertain && hasMutatingWordBeforeDashDash(tail, BRANCH_CHANGE_UNCERTAIN_VERBS)) {
@@ -2704,11 +2745,6 @@ function gitReason(
   }
   if (!pushTail) return undefined
   if (pushReadsCurrentBranch(pushTail, isSendPack)) state.headPush = true
-  // claude-factory-68gn: a --git-dir flag moves the push the same way a cd does, so it folds into
-  // `moved` here instead of into `dir`. Once `moved`, a -C value is not trusted either: a relative
-  // -C resolves against the directory this hook started in, not the one a cd already moved to.
-  const effectiveMoved = moved || flagValue(tail, new Set(['--git-dir'])) !== undefined
-  const dir = effectiveMoved ? undefined : (flagValue(tail, new Set(['-C'])) ?? root)
   const currentBranch = effectiveMoved ? undefined : gate.headOf?.(dir)
   const reason = effectiveMoved ? PUSH_DIR_REASON : PUSH_REASON
   if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? reason : undefined
@@ -3220,6 +3256,37 @@ function memoGate(gate: HookGate): HookGate {
       return result
     }
   }
+  // claude-factory-bemr: ghAliases spawns gh at most one time for one denyReason call.
+  // The memo keeps the result, including an undefined result.
+  if (gate.ghAliases) {
+    const real = gate.ghAliases
+    let called = false
+    let result: Map<string, string> | undefined
+    memo.ghAliases = () => {
+      if (!called) {
+        called = true
+        const remaining = deadline - Date.now()
+        if (remaining > 0) result = real(Math.min(2000, remaining))
+      }
+      return result
+    }
+  }
+  // claude-factory-bemr: gitAliases keeps one cached result for each separate dir, the same
+  // rule headOf uses. MAX_HEAD_DIRS caps the number of separate dirs, so a command with many
+  // segments cannot force many git config spawns.
+  if (gate.gitAliases) {
+    const real = gate.gitAliases
+    const cache = new Map<string | undefined, Map<string, string> | undefined>()
+    memo.gitAliases = dir => {
+      if (cache.has(dir)) return cache.get(dir)
+      if (cache.size >= MAX_HEAD_DIRS) return undefined
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return undefined
+      const result = real(dir, Math.min(2000, remaining))
+      cache.set(dir, result)
+      return result
+    }
+  }
   return memo
 }
 
@@ -3438,6 +3505,55 @@ function readSmallFile(path: string, cwd: string): string | undefined {
   }
 }
 
+//
+// claude-factory-bemr: this function reads every alias entry from git config, for gate.gitAliases.
+// dir is the directory to read config for. gitReason already picked that directory.
+// An exit code of 1 means git found no alias entry. The function then gives an empty map.
+// Any other exit code, or an error, gives undefined. gitReason then denies the command, the
+// same answer it gives for an unset gate.gitAliases.
+function gitConfigAliases(dir: string, timeoutMs = 2000): Map<string, string> | undefined {
+  try {
+    const p = Bun.spawnSync(['git', '-C', dir, 'config', '-z', '--get-regexp', '^alias\\.'], {
+      timeout: timeoutMs,
+    })
+    if (p.exitCode === 1) return new Map()
+    if (p.exitCode !== 0) return undefined
+    const map = new Map<string, string>()
+    for (const rec of p.stdout.toString().split('\0')) {
+      if (!rec) continue
+      const nl = rec.indexOf('\n')
+      if (nl < 0) continue
+      const key = rec.slice(0, nl)
+      if (!key.toLowerCase().startsWith('alias.')) continue
+      map.set(key.slice('alias.'.length).toLowerCase(), rec.slice(nl + 1))
+    }
+    return map
+  } catch {
+    return undefined
+  }
+}
+
+//
+// claude-factory-bemr: this function reads every entry of gh alias list, for gate.ghAliases.
+// A non-zero exit code, or a spawn error, gives undefined.
+// ghReason then denies the command, the same answer it gives for an unset gate.ghAliases.
+function ghAliasList(timeoutMs = 2000): Map<string, string> | undefined {
+  try {
+    const p = Bun.spawnSync(['gh', 'alias', 'list'], { timeout: timeoutMs })
+    if (p.exitCode !== 0) return undefined
+    const map = new Map<string, string>()
+    for (const line of p.stdout.toString().split('\n')) {
+      if (!line) continue
+      const sep = line.indexOf(': ')
+      if (sep < 0) continue
+      map.set(line.slice(0, sep), line.slice(sep + 2))
+    }
+    return map
+  } catch {
+    return undefined
+  }
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -3470,6 +3586,8 @@ async function main() {
     // claude-factory-zl5.8: this resolves against the tool call's own cwd, not `root`.
     // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`.
     readFile: path => readSmallFile(path, i.cwd || root),
+    gitAliases: (dir, timeoutMs) => gitConfigAliases(dir ?? root, timeoutMs),
+    ghAliases: timeoutMs => ghAliasList(timeoutMs),
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
   if (!reason) return
