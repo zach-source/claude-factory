@@ -291,6 +291,7 @@ A worker's PreToolUse hook denies these commands:
   - `git rebase --root <branch>`
   - `git stash branch <name>`
   - `git bisect reset <commit>`
+  - `git update-ref --stdin`
   - `gh pr checkout`
 
   Run the branch change and the push as 2 separate commands.
