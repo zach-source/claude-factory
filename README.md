@@ -310,8 +310,10 @@ A worker's PreToolUse hook denies these commands:
   uses no `git` word at all (claude-factory-9zd5). The write is one of these:
   - a write to `.git`, to `.git/HEAD`, to a linked worktree's `.git/worktrees/<name>/HEAD`, or
     to `.git/config`
-  - a redirect, or a `dd`, `mv` or `ln` operand, named `HEAD`
-  - a redirect, or a `dd`, `mv` or `ln` operand, named by a glob that matches `HEAD`
+  - a redirect target, or any other plain word, named `HEAD`, in a segment whose own command
+    is not `git`, a dashed `git-<verb>` binary, or `gh` (for example, `echo HEAD`, a `dd`, `mv`
+    or `ln` operand, or a bare `*` after `git push o HEAD`)
+  - the same, named by a glob that matches `HEAD`
   - a `--git-dir`, `--absolute-git-dir`, `--git-path` or `--git-common-dir` flag
   - a `GIT_DIR` or `GIT_COMMON_DIR` name
 

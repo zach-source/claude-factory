@@ -6,11 +6,15 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
-- `worker-hook`: fail closed when one command writes a git administrative path (`.git`,
-  `.git/HEAD`, a linked worktree's `.git/worktrees/<name>/HEAD`, or `.git/config`), names a
-  `--git-dir`/`--absolute-git-dir`/`--git-path`/`--git-common-dir` flag or a `GIT_DIR`/
-  `GIT_COMMON_DIR` name, or runs from a cwd already inside a `.git`-named directory, and then
-  pushes `HEAD` to a protected branch in the same command. (claude-factory-9zd5)
+- `worker-hook`: fail closed when one command does one of these, then pushes `HEAD` to a
+  protected branch in the same command (claude-factory-9zd5):
+  - writes a git administrative path (`.git`, `.git/HEAD`, a linked worktree's
+    `.git/worktrees/<name>/HEAD`, or `.git/config`)
+  - names a `--git-dir`/`--absolute-git-dir`/`--git-path`/`--git-common-dir` flag, or a
+    `GIT_DIR`/`GIT_COMMON_DIR` name
+  - writes a plain word or glob named `HEAD` outside `git`/`gh` argv (a redirect target, or a
+    `dd`, `mv` or `ln` operand), with no `.git` path needed at all
+  - runs from a cwd already inside a `.git`-named directory
 
 - `worker-hook`: fail closed when one command changes the branch (`checkout`,
   `switch`, `branch -m`/`-M`, `symbolic-ref HEAD`, `rebase <upstream> <branch>`,
