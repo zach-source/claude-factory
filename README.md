@@ -76,11 +76,17 @@ shrink the card.
 
 ![The Backlog tab: the bead tree of each rig](docs/images/console-backlog.png)
 
-The Backlog shows the beads of each rig as a tree. Each rig has one rule with its busy count and
-the counts of queued and waiting beads. A parent bead shows `[done/total]` for its children.
-Press `▸` to show the children and `▾` to hide them. The `⛔` mark shows a bead that an open bead
-holds back, with the id of the blocker. Use the type buttons to filter the beads. Press `queue` to
-queue a bead. Press `start now` to start a run on it.
+The Backlog shows the beads of each rig as a tree. Each rig has one rule. The rule shows the busy
+count and the counts of queued and waiting beads. A parent bead shows `[done/total]` for its children.
+
+Press `▸` to show the children. Press `▾` to hide them. The `⛔` mark shows a bead that an open bead
+blocks. The mark shows the id of the blocker.
+
+Use the type buttons to filter the beads. Press `queue` to queue a bead. Press `start now` to start
+a run on it.
+
+A sweep pass labels each bead that it files with `sweep:<name>`. The Backlog groups these beads
+under a `sweep:<name> (n)` heading. The heading is separate from the priority tiers.
 
 ### Mail (key 3)
 
@@ -213,7 +219,8 @@ the config (`/*`, `!/.gitignore`, `!/rigs.json`), and an `origin`. Every 10 minu
 and pushes it, and pushes the memory to the `memory` branch, so the factory can be rebuilt from the repo.
 
 A rig is a repo the factory works, by name. Its ready beads labeled `factory` start as runs,
-it keeps its sweeps running, and it has its own cap on busy runs under the factory's
+`factory tick` starts one of its sweeps on each sweep's own cadence (see
+[Sweeps](#sweeps)), and it has its own cap on busy runs under the factory's
 `FACTORY_MAX_RUNS`. A goal is the person's standing direction for the rig: while the rig has
 room, the manager's heartbeat patrol carries it and gives the rig the next work toward it,
 using the pm's plan when it is fresh (see [The manager drives](#the-manager-drives)).
@@ -221,9 +228,9 @@ The goal also reaches every worker's brief, under "## Rig goal", so a step it re
 the person binds every station, not only the manager.
 
 ```sh
-factory rig add web ~/repos/web --max 4                     # all of lifecycle's sweeps
+factory rig add web ~/repos/web --max 4                     # all of factories/sweeps.ts's sweeps
 factory rig add app ~/repos/app --max 3 --sweeps none --goal finish the v2 features
-factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor
+factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor --slo "kubectl get pods -n infra | grep -v Running"
 factory rig add docs ~/repos/docs review-loop --sweeps none
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig rm docs                                         # nothing new starts; its runs carry on
@@ -392,30 +399,49 @@ these forms:
   These environment variables replace git's own config lookup outright. No value stays on the
   command line for the hook to check.
 
-A later review found 4 more disguised forms. The hook now denies these too:
+A later review found 6 more disguised forms. The hook now denies these too:
 
-- `env -S '<command>'` or `env --split-string='<command>'`. This also covers a short-flag
-  cluster, for example `-vS`, and the attached form `-S'<command>'`. BSD and GNU `env` split
-  `<command>` into words and run it. This is the same hazard as `eval`. The hook reads that
-  value off the command line. It checks the value the same way it checks an `eval` or `sh -c`
-  argument.
-- any `<command>` value above that holds a dollar sign, for example `git ${FOO} origin main`.
-  `env` changes a `${NAME}` word into one command word when it runs. A check on the typed text
-  alone would miss the real, changed command.
-- a dashed git-core binary name, for example `git-push` or `git-send-pack`. A real shell finds
-  one of these on `PATH` or under `git --exec-path`. It runs the same code as `git push` or
-  `git send-pack`. No `git` word appears anywhere in the command line. The hook now reads a
-  `git-<verb>` basename as `git <verb>`.
-- a `nice -n 5`, `command -p` or `stdbuf -o0` wrapper ahead of `git push`, paired with one of
-  the `GIT_CONFIG_*` environment variables above. The same pairing also applies behind an
-  `eval` or `bash -c` argument, or a separate `export` statement. The check for this pairing
-  used to read only one segment's own first word, past wrapper-stripping. It now reads a `git`
-  word anywhere in the full raw command text.
-- `HOME=<dir>` or `XDG_CONFIG_HOME=<dir>`, paired with a `git` word. Git reads
-  `$HOME/.gitconfig` as its own global config. Git reads `$XDG_CONFIG_HOME/git/config` the same
-  way. Each one is the same unreadable-file hazard as `GIT_CONFIG_GLOBAL`. `GIT_DIR=<dir>` and
-  `GIT_COMMON_DIR=<dir>` point git at a different repository. That repository's config file
-  denies the same way.
+- `env -S '<command>'` or `env --split-string='<command>'` has the same risk as `eval`.
+  BSD and GNU `env` split `<command>` into words.
+  BSD and GNU `env` then run the words as a command.
+  The rule also covers the short flag cluster `-vS`.
+  The rule also covers the attached form `-S'<command>'`.
+  The hook checks the value the same way it checks an `eval` or `sh -c` argument.
+
+- An `env -S` or `--split-string` value can hold a backslash.
+  One example is `env -S 'git\_push acme/widget main'`.
+  BSD and GNU `env` read `\_` or a newline character as a break between words.
+  BSD and GNU `env` read `\t` as a tab inside one word.
+  A different backslash use stops `env`, with exit status 1.
+  The hook's own check does not break a value such as `git\_push\_origin\_main` at a
+  backslash, so it denies the whole value.
+
+- An `env -S` or `--split-string` value can hold a dollar sign.
+  One example is `env -S 'git ${FOO} origin main'`.
+  `env` changes a `${NAME}` word into one command word when it runs.
+  A check on the typed text alone misses the real, changed command.
+  The hook denies any dollar sign in such a value for this reason.
+
+- A dash can hide a git-core binary name.
+  Two examples are `git-push` and `git-send-pack`.
+  A shell finds this name on `PATH` or under `git --exec-path`.
+  The shell runs the same code as `git push` or `git send-pack`.
+  No `git` word is in the command line.
+  The hook reads a `git-<verb>` name as `git <verb>`.
+
+- A command can start with `nice -n 5`, `command -p` or `stdbuf -o0`.
+  This command can then run `git push`.
+  This command can also set a `GIT_CONFIG_*` environment variable.
+  This combination can sit inside an `eval` or `bash -c` argument.
+  This combination can sit next to a separate `export` statement.
+  The hook reads a `git` word anywhere in the full command text.
+
+- A command can set `HOME=<dir>` or `XDG_CONFIG_HOME=<dir>` next to a `git` word.
+  Git reads `$HOME/.gitconfig` as its own global config.
+  Git reads `$XDG_CONFIG_HOME/git/config` the same way.
+  Each one has the same risk as `GIT_CONFIG_GLOBAL`, a file the hook cannot read.
+  `GIT_DIR=<dir>` and `GIT_COMMON_DIR=<dir>` point git at a different repository.
+  The hook denies that repository's config file the same way.
 
 The `env -S` fix above has a related gap. The hook still did not see `-S`. A value word of an
 `env` flag stood in front of it. The hook now denies these forms too:
@@ -487,28 +513,49 @@ factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egr
 | refactor                      | characterize (pin behavior) → plan → implement ⇄ verify → … → soak                                 |
 | operate                       | soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem                    |
 | incident                      | incident → rollback or plan → … → postmortem, which files the action items                         |
-| sweeps                        | monitor (every 30 min), maintain (daily), improve (daily, rotating refactor, performance, cost)    |
 
-Sweeps never end: each pass files what it finds as runs of its own (`lifecycle@incident`,
-`@plan`, `@baseline`, `@characterize`), skipping duplicates. `factory loop` ticks with no
-console open and keeps one run of each of a rig's sweeps: abort a sweep to stop it, `rm`
-it to let the loop start it again. **Your merge is the gate**: release marks the pull
-request ready, and deploy parks on it until you merge it on GitHub, then deploys and watches
-the rollout. It never merges itself. Request changes on the pull request to send the run back
-to implement; close it to end the run with its bead deferred.
-Models follow the tiers: Sonnet executes, Opus plans and reviews, Fable reviews security.
+The lifecycle factory has no sweep stations. For the monitor, maintain and improve sweeps, see [Sweeps](#sweeps).
 
-Triage picks `small` for a change that is docs-only, test-only, or tiny. A tiny change has
-about 50 changed lines or fewer, in 3 files or fewer, with no new dependency, migration, or
-public API change. Triage does not pick `small` when the change is security-sensitive or
-touches a factory definition.
+**Your merge is the gate.** Release marks the pull request ready. Deploy waits for your merge on GitHub. After your merge, deploy starts and monitors the rollout. Deploy does not merge the pull request.
 
-The `small` loop skips the Opus plan step. It pays for security only when `check` flags
-the change. Deploy reports `published`, with no soak, for a docs-only or test-only change.
-This is the same as for a library or a change to `.factory/` only.
-`factories/lifecycle.test.ts` walks every loop through the machine.
+If you request changes on the pull request, the run goes back to implement. If you close the pull request, the run ends and the factory defers its bead.
+
+Sonnet does the implement work. Opus does the plan work and the review work. Fable does the security review.
+
+Triage selects `small` for a change that is docs-only, test-only, or tiny. A tiny change has about 50 changed lines or fewer. It changes 3 files or fewer. It has no new dependency, no migration, and no public API change. Triage does not select `small` when the change is security-sensitive or when it changes a factory definition.
+
+The `small` loop skips the Opus plan step. It adds the security station only when `check` flags the change. Deploy reports `published`, with no soak, for a docs-only or test-only change. The same applies to a library or to a change to `.factory/` only. The test `factories/lifecycle.test.ts` walks every loop through the machine.
 
 `bin/factory help` lists every command; the manager model uses the same CLI.
+
+## Sweeps
+
+[`factories/sweeps.ts`](factories/sweeps.ts) holds the standing sweeps, apart from lifecycle:
+
+| Sweep    | Cadence       | What it needs                         |
+| -------- | ------------- | -------------------------------------- |
+| monitor  | every 30 min  | a rig's `--slo '<read-only command>'` |
+| maintain | daily         | nothing extra                          |
+| improve  | daily, rotating refactor, performance, cost and factory-health lens | nothing extra |
+
+`factory tick` starts one run per due `(rig, sweep)` pass, at most every `FACTORY_SWEEP_MS`
+(default 300000ms); `FACTORY_SWEEPS=0` turns this off. Each pass goes straight to `done`: it
+files what it finds as beads, not as a standing run. `rig add --sweeps a,b|none` picks which
+sweeps a rig runs; the default is all of them. `monitor` reads the rig's `--slo` command on the
+laptop (never on a VM worker), hashes its output, and starts a run only when the hash changed
+since the last pass; the unchanged output never reaches a model. Start a pass by hand with
+`factory start sweeps@maintain <rig> 'sweep: maintain'`.
+
+**Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
+`sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A later bead
+that day still gets filed, but it waits for a person instead of starting on its own. A kept
+bead keeps the `factory` label, and starts on its own, only when it also carries
+`sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every
+other kept bead loses the `factory` label too and waits for a person, the same as a later
+bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
+
+A pinned run from before this design (`claude-factory-8pc`) still loads its own copy of the
+sweep stations from `factories/lifecycle.ts`, if its `factory.json` holds one.
 
 ## The factory improves itself
 
@@ -729,7 +776,7 @@ silent failure. `validate` refuses `onTimeout` on a gate, and refuses `onTimeout
 under `timeoutMin`.
 Per factory: `agent`, `rules` (house rules in every brief), `backoffSec` (30, doubling),
 `maxSteps` (20 worker launches before the run is held for the manager; every timed
-edge refills it, so a sweep loops forever), `maxContextK` (200: the context, in thousands of
+edge refills it, so soak's `unsure` self-loop does not run out), `maxContextK` (200: the context, in thousands of
 tokens, past which a Claude worker hands off to a fresh one). Edits apply at the next tick.
 
 A factory can also be data: `.json`, `.yaml`/`.yml` or `.toml`, the same shape. And it can
