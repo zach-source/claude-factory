@@ -173,11 +173,23 @@ export interface HookGate {
   station?: string
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
-  /** the tool call's own cwd (`i.cwd`), not the worktree root. Claude Code keeps one Bash cwd
-   * across calls and reports that cwd here. The cwd can differ from `root` after an earlier `cd`
-   * (claude-factory-3f2z). `gitReason` resolves a `git push` dir against this field. `readFile`
-   * already resolves a `gh api` file argument the same way. A caller that skips this field (a
-   * library call or a test) leaves it undefined; `gitReason` then falls back to `root`. */
+  /** This field holds the tool call's own cwd (`i.cwd`). It is not the worktree root.
+   * Claude Code keeps one Bash cwd across calls.
+   * After an earlier `cd`, the cwd can differ from `root` (claude-factory-3f2z).
+   *
+   * `main()` sets this field from `i.cwd` alone. It has no fallback to `root`.
+   * If the hook input has no cwd, this field stays undefined.
+   *
+   * `gitReason` resolves a `git push` dir against `gate.cwd ?? root`.
+   * So an undefined value falls back to `root` at that call site.
+   * `readFile` resolves a `gh api` file argument with a similar fallback.
+   * It uses its own `i.cwd || root` expression.
+   *
+   * `cwdInsideGitDir` (claude-factory-9zd5) reads this field directly.
+   * It reads the field through `scanReason`'s R4 check.
+   * On undefined, it reports false.
+   * It does not know where the command runs.
+   * So it denies nothing on that fact alone. */
   cwd?: string
   /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
    * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
@@ -188,10 +200,6 @@ export interface HookGate {
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
-  /** claude-factory-9zd5: the tool call's own cwd, from `input.cwd`. `main()` sets this field from
-   * `i.cwd`, with no fallback to `root`. The field stays undefined when the hook input carries no
-   * cwd. `cwdInsideGitDir` then reports false: it does not know where the command runs. */
-  cwd?: string
 }
 
 /**
@@ -3367,12 +3375,6 @@ async function main() {
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
     protectedBranches,
-    // claude-factory-3f2z.2: this is the tool call's own cwd, not `root`. `gitReason`'s push-dir
-    // fold (`gitChdir`) uses this value.
-    //
-    // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`, the same as
-    // `readFile` below.
-    cwd: i.cwd || root,
     headOf: (dir, timeoutMs) =>
       gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD'], timeoutMs),
     originHead: timeoutMs =>
@@ -3383,8 +3385,9 @@ async function main() {
     // claude-factory-zl5.8: this resolves against the tool call's own cwd, not `root`.
     // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`.
     readFile: path => readSmallFile(path, i.cwd || root),
-    // claude-factory-9zd5: the tool call's own cwd, with no fallback to `root`. `cwdInsideGitDir`
-    // reads this field directly, through `scanReason`'s R4 check.
+    // claude-factory-3f2z.2 / claude-factory-9zd5: the tool call's own cwd, with no fallback to
+    // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
+    // read this field; `gitReason` falls back to `root` itself at its own call site.
     cwd: i.cwd,
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
