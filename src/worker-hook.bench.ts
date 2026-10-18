@@ -94,6 +94,16 @@ function findRun(n: number): string {
   return 'find . ' + '-exec '.repeat(n)
 }
 
+// claude-factory-cbai: n nested env -S words and n stacked env -i eval words. Both took about
+// 2^n work before the fix. Use small n (20, 30, 40) for these shapes.
+function envSRun(n: number): string {
+  return "env -S '" + 'env -S '.repeat(n - 1) + "git push origin main'"
+}
+
+function evalIRun(n: number): string {
+  return 'env -i ' + 'eval '.repeat(n) + 'git push origin main'
+}
+
 function dynamicRun(n: number): string {
   return '$A push '.repeat(n).trimEnd()
 }
@@ -114,7 +124,7 @@ function fmtBytes(n: number): string {
 
 async function main() {
   const args = process.argv.slice(2)
-  const shapes = new Set(['find', 'shell', 'dynamic', 'wrapper-lead'])
+  const shapes = new Set(['find', 'shell', 'dynamic', 'wrapper-lead', 'envs', 'evali'])
   const shape = shapes.has(args[0] ?? '') ? args[0]! : 'shell'
   const sizeArg = shapes.has(args[0] ?? '') ? args[1] : args[0]
   const buildRun =
@@ -124,9 +134,17 @@ async function main() {
         ? dynamicRun
         : shape === 'wrapper-lead'
           ? wrapperLeadRun
-          : shellRun
+          : shape === 'envs'
+            ? envSRun
+            : shape === 'evali'
+              ? evalIRun
+              : shellRun
   const defaultSizes =
-    shape === 'dynamic' || shape === 'wrapper-lead' ? [1024] : [2500, 5000, 10000, 20000, 40000]
+    shape === 'dynamic' || shape === 'wrapper-lead'
+      ? [1024]
+      : shape === 'envs' || shape === 'evali'
+        ? [10, 20, 30, 40]
+        : [2500, 5000, 10000, 20000, 40000]
   const sizes = Number(sizeArg ?? 0) > 0 ? [Number(sizeArg)] : defaultSizes
   console.log(
     `node ${process.version ?? ''} bun ${process.versions?.bun ?? ''} pid ${process.pid} shape ${shape}`,

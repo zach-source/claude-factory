@@ -328,6 +328,28 @@ interface ScanState {
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
+  // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
+  // reads. Below zero, the scan stops and denies (fail closed).
+  work: number
+}
+
+// claude-factory-cbai: this reason is for a command whose scan reads more than the work budget.
+export const SCAN_BUDGET_REASON =
+  'The factory denies this command: the factory cannot check it in the time it has, because the ' +
+  'command nests too many wrapper words. Run the inner command directly. Do not retry this exact command.'
+
+// claude-factory-cbai: the default work budget of one scanReason call, in characters read. A
+// nested env -S or eval command can make a scan cost 2^n. A hook that passes its 10 s timeout
+// lets the command run (fail open). The budget is a fail-closed bound on any such growth.
+// Calibration: the largest work of any test in worker-hook.test.ts is 3,600,054 characters (the
+// 1.8 MB uncapped scanReason rows). 16,000,000 is more than 4x that. An 8192-character stacked
+// env -i eval command spends it in about 0.7 s.
+export const MAX_SCAN_WORK = 16_000_000
+
+/** Subtracts n from the work left. Returns true when the budget is spent. */
+function spendWork(state: ScanState, n: number): boolean {
+  state.work -= n
+  return state.work < 0
 }
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
@@ -357,6 +379,7 @@ function baseWord(w: string): string {
 /**
  * Splits a command string into segments (shell words).
  * It splits on &&, ||, ;, |, &, a newline, ( ), $( and a backtick.
+ * It keeps a ( and ) marker word for a paren in argument position, such as a zsh glob group or <( and >(.
  * It keeps a single-quoted span literal.
  * It reads a backslash escape (\\ \" \$ \`) inside a double-quoted span.
  * It reads a backslash escape outside quotes too.
@@ -377,6 +400,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
   let word = ''
   let hasWord = false
   let quote: '"' | "'" | null = null
+  const parens: boolean[] = []
   // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
   let inBacktick = false
   const endWord = () => {
@@ -389,8 +413,12 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
     segs.push(cur)
     cur = []
   }
+  let redirPrev = false
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
+    // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
+    const afterRedir = redirPrev
+    redirPrev = false
     if (quote === "'") {
       if (c === "'") quote = null
       else word += c
@@ -429,6 +457,32 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
       i++
       continue
     }
+    if (c === '(' || c === ')') {
+      // claude-factory-cu5m: in zsh a `(` in argument position starts a glob group, such as
+      // `(-)-all`. Keep a marker word, so the push parsers see it. A subshell and `$(`
+      // add no marker, and neither does the `)` that closes them. `<(` and `>(` keep one, because a word after them must stay in the push tail.
+      const prev = cmd[i - 1] ?? ''
+      if (c === '(') {
+        const arg = (hasWord || cur.length > 0) && prev !== '$'
+        parens.push(arg)
+        if (arg) {
+          endWord()
+          cur.push('(')
+        }
+      } else if (parens.pop()) {
+        endWord()
+        cur.push(')')
+      }
+      endSeg()
+      continue
+    }
+    if ((c === '&' || c === '|') && afterRedir) {
+      // claude-factory-cu5m.12: a `&` or `|` right after `<` or `>` is part of a redirect
+      // (`>&`, `<&`, `>|`, `>>|`) in zsh, bash and sh. It is not a separator.
+      word += c
+      hasWord = true
+      continue
+    }
     // claude-factory-p43v: an opening backtick starts a command substitution. This guard cannot
     // read it, so it ends the segment here. It keeps a backtick mark in the word it ends, so a
     // later scan can see that this word is unsafe. A closing backtick only ends the segment.
@@ -441,7 +495,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
       endSeg()
       continue
     }
-    if (';|&\n()'.includes(c)) {
+    if (';|&\n'.includes(c)) {
       endSeg()
       continue
     }
@@ -459,6 +513,7 @@ function segments(cmd: string, info?: { dollarQuote: boolean }): string[][] {
     }
     word += c
     hasWord = true
+    redirPrev = c === '<' || c === '>'
   }
   endSeg()
   return segs.filter(s => s.length > 0)
@@ -1022,16 +1077,21 @@ function shCScriptValue(words: string[], start: number): string | undefined {
 // claude-factory-igj.8: the scan reads every word after start, not only words[start]. A wrapper
 // word (env, nice, nohup, sudo, and so on) can sit between start and the sh/bash/zsh/dash or
 // eval word. This scan still finds that later word.
-function segmentRunsBdCommand(words: string[], start: number, depth: number): boolean {
+function segmentRunsBdCommand(words: string[], start: number, depth: number, state: ScanState): boolean {
+  // claude-factory-cbai: the first eval word's recursion reads every later word of the segment
+  // (rest holds them all, later eval words too). A later eval word then needs no recursion of its
+  // own. Without this skip, n stacked eval words cost about 2^n work.
+  let evalScanned = false
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
       const script = shCScriptValue(words, k)
-      if (script !== undefined && stringNamesBdCommand(script, depth + 1)) return true
-    } else if (bw === 'eval') {
+      if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
+    } else if (bw === 'eval' && !evalScanned) {
+      evalScanned = true
       const rest = words.slice(k + 1).join(' ')
-      if (rest && stringNamesBdCommand(rest, depth + 1)) return true
+      if (rest && stringNamesBdCommand(rest, state, depth + 1)) return true
     }
   }
   return false
@@ -1040,10 +1100,10 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number): bo
 // claude-factory-igj: true when a bd word sits anywhere inside s, read as shell words, or
 // inside a sh/bash/zsh/dash -c script or an eval word nested in s. depth bounds the recursion
 // the same way MAX_SHELL_DEPTH bounds anyShellReason's eval/sh -c recursion.
-function stringNamesBdCommand(s: string, depth = 0): boolean {
-  if (depth > MAX_SHELL_DEPTH) return true
+function stringNamesBdCommand(s: string, state: ScanState, depth = 0): boolean {
+  if (depth > MAX_SHELL_DEPTH || spendWork(state, s.length)) return true
   for (const seg of segments(s)) {
-    if (segmentRunsBdCommand(seg, 0, depth)) return true
+    if (segmentRunsBdCommand(seg, 0, depth, state)) return true
   }
   return false
 }
@@ -1084,6 +1144,8 @@ function envOptionScan(
   words: string[],
   envIndex: number,
   depth: number,
+  state: ScanState,
+  spanScanned: { done: boolean },
 ): { cmdStart: number; clearsAll: boolean } | true {
   const span = envSplitStringScan(words, envIndex)
   let clearsAll = false
@@ -1099,14 +1161,21 @@ function envOptionScan(
       const sWord = words[j]!
       const prefix =
         sWord.startsWith('-') && !sWord.startsWith('--') ? sWord.slice(1, sWord.indexOf('S')) : ''
-      const recombined = [
-        'env',
-        ...words.slice(envIndex + 1, j),
-        ...(prefix ? ['-' + prefix] : []),
-        ...segments(span.value).flat(),
-        ...words.slice(span.end),
-      ]
-      if (touchesBeadsActor(recombined, depth + 1)) return true
+      // claude-factory-cbai: the first env -S span of a segment recurses on a rebuilt line that
+      // holds every later word. Each later env word's span sits in that line with the same
+      // prefix, value and suffix, so the recursion reads it there. A later span then needs no
+      // recursion of its own. Without this skip, n nested spans cost about 2^n work.
+      if (!spanScanned.done) {
+        spanScanned.done = true
+        const recombined = [
+          'env',
+          ...words.slice(envIndex + 1, j),
+          ...(prefix ? ['-' + prefix] : []),
+          ...segments(span.value).flat(),
+          ...words.slice(span.end),
+        ]
+        if (touchesBeadsActor(recombined, state, depth + 1)) return true
+      }
       j = span.end - 1 // skip the flag and its own value word; it already ran above
       continue
     }
@@ -1181,8 +1250,12 @@ function envOptionScan(
  * A plain, whole-word scan of `words` would not find that word.
  * For example, in `env -i sh -c 'bd create x'`, the word `bd` is inside the script text.
  */
-function touchesBeadsActor(words: string[], depth = 0): boolean {
+function touchesBeadsActor(words: string[], state: ScanState, depth = 0): boolean {
   if (depth > MAX_SHELL_DEPTH) return true
+  let chars = 0
+  for (const w of words) chars += w.length + 1
+  if (spendWork(state, chars)) return true
+  const spanScanned = { done: false }
   let envClearsAll = false
   let runsBd = false
   for (let i = 0; i < words.length; i++) {
@@ -1201,7 +1274,7 @@ function touchesBeadsActor(words: string[], depth = 0): boolean {
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {
-      const scan = envOptionScan(words, i, depth)
+      const scan = envOptionScan(words, i, depth, state, spanScanned)
       if (scan === true) return true
       if (scan.clearsAll) {
         envClearsAll = true
@@ -1209,7 +1282,7 @@ function touchesBeadsActor(words: string[], depth = 0): boolean {
         // claude-factory-igj.8: scan every word from cmdStart to the end of this segment, not
         // only words[cmdStart]. A wrapper word (env, nice, nohup, sudo, and so on) can sit
         // between env's own options and the real sh/bash/zsh/dash or eval word.
-        if (cmdStart < words.length && segmentRunsBdCommand(words, cmdStart, depth + 1)) {
+        if (cmdStart < words.length && segmentRunsBdCommand(words, cmdStart, depth + 1, state)) {
           runsBd = true
         }
       }
@@ -1465,6 +1538,23 @@ function namesGitAdminPath(words: string[], isGitOrGhSegment: boolean): boolean 
 function cwdInsideGitDir(cwd: string | undefined): boolean {
   if (!cwd) return false
   return cwd.split('/').some(part => part.toLowerCase().endsWith('.git'))
+}
+
+// claude-factory-cu5m: `segments()` ends a segment at a backtick and drops it. So the output of a
+// backtick command is not a word of the `git push` segment, and the push parsers cannot see it.
+// That output can be `--all`. This scan reads the raw text: a backtick, a git word and a push or
+// send-pack word together. It over-denies a backtick that sits in an unrelated quoted argument.
+// This is fail closed.
+// claude-factory-cu5m.13: the same scan covers `&>` (also `&>>`, `&>|`, `&>!`). zsh and bash read it
+// as a redirect, but `segments()` splits at its `&` (dash reads `&` then `>`), so the words after it
+// leave the push tail. It over-denies `git push origin feature &>/dev/null`.
+function backtickBesidePush(command: string): boolean {
+  if (!/`|&>/.test(command)) return false
+  const words = segments(command).flat().map(baseWord)
+  return (
+    words.some(b => b === 'git' || /^git-/.test(b)) &&
+    words.some(b => b === 'push' || b === 'send-pack' || b === 'git-push' || b === 'git-send-pack')
+  )
 }
 
 /**
@@ -2509,6 +2599,9 @@ const PUSH_BROAD_FLAGS = ['--all', '--branches', '--mirror', '--prune']
 // This guard cannot resolve any of these before git does. It treats the refspec as unknown and
 // fails closed. It denies the push.
 const REFSPEC_UNSAFE = /[$`*?[\]{}]/
+// claude-factory-cu5m: a word the shell can expand to a flag before git runs. It adds a zsh named
+// directory (`~name`, for example after `hash -d name=--all`) to REFSPEC_UNSAFE. `~/path` stays safe.
+const dynamicPushWord = (w: string): boolean => REFSPEC_UNSAFE.test(w) || /[()]/.test(w) || /^~[^/]/.test(w)
 
 // claude-factory-p43v: dynamicWord checks a command or subcommand word, in place of a push
 // refspec. It uses the same character set as REFSPEC_UNSAFE.
@@ -2668,7 +2761,11 @@ function pushOperands(tail: string[]): {
   unreadableValueFlag: boolean
   tags: boolean
   dryRun: boolean
+  dynamicWord: boolean
 } {
+  // claude-factory-cu5m: the shell expands or splits a dynamic word before git runs. The word
+  // can become `--all`, `--mirror` or `--`. This guard cannot read it, so it tests every word.
+  const dynamicWord = tail.some(dynamicPushWord)
   const operands: string[] = []
   let broad = false
   let unreadableValueFlag = false
@@ -2702,7 +2799,7 @@ function pushOperands(tail: string[]): {
     }
     operands.push(w)
   }
-  return { operands, broad, unreadableValueFlag, tags, dryRun: dryRun && !noDryRun }
+  return { operands, broad, unreadableValueFlag, tags, dryRun: dryRun && !noDryRun, dynamicWord }
 }
 
 /**
@@ -2742,11 +2839,13 @@ function protectedBranchSet(gate: HookGate): { branches: Set<string>; unresolved
  * For these, this guard reads `currentBranch`.
  */
 function gitPushDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
-  const { operands, broad, unreadableValueFlag, tags, dryRun } = pushOperands(tail)
+  const { operands, broad, unreadableValueFlag, tags, dryRun, dynamicWord } = pushOperands(tail)
   // claude-factory-ctae.12: this check must come before the dryRun check. A word that looks
   // like `-n` or `--dry-run`, right after an abbreviated value flag or an `-o` short-flag
   // cluster, is really that flag's own value word. It is not a real dry-run flag.
   if (unreadableValueFlag) return true
+  // claude-factory-cu5m: deny a dynamic word before the dryRun check. The word can hide a flag.
+  if (dynamicWord) return true
   if (dryRun) return false
   if (broad) return true
   const refspecs = operands.slice(1)
@@ -3098,7 +3197,10 @@ function sendPackOperands(tail: string[]): {
   stdin: boolean
   dryRun: boolean
   unsafeValueFlag: boolean
+  dynamicWord: boolean
 } {
+  // claude-factory-cu5m: same rule as `pushOperands`. Test every word of `tail`.
+  const dynamicWord = tail.some(dynamicPushWord)
   const operands: string[] = []
   let broad = false
   let dryRun = false
@@ -3127,15 +3229,17 @@ function sendPackOperands(tail: string[]): {
     }
     operands.push(w)
   }
-  return { operands, broad, stdin, dryRun: dryRun && !noDryRun, unsafeValueFlag }
+  return { operands, broad, stdin, dryRun: dryRun && !noDryRun, unsafeValueFlag, dynamicWord }
 }
 
 function sendPackDenied(tail: string[], currentBranch: string | undefined, gate: HookGate): boolean {
-  const { operands, broad, stdin, dryRun, unsafeValueFlag } = sendPackOperands(tail)
+  const { operands, broad, stdin, dryRun, unsafeValueFlag, dynamicWord } = sendPackOperands(tail)
   // claude-factory-ctae.12: this check must come before the dryRun check, the same order
   // `gitPushDenied` uses. A word that looks like `-n` or `--dry-run`, right after an
   // abbreviated value flag, is really that flag's own value word. It is not a real dry-run flag.
   if (unsafeValueFlag) return true
+  // claude-factory-cu5m: deny a dynamic word before the dryRun check. The word can hide a flag.
+  if (dynamicWord) return true
   if (dryRun) return false
   if (broad || stdin) return true
   const refspecs = operands.slice(1)
@@ -3394,11 +3498,15 @@ function isHeadAliasRefspec(spec: string): boolean {
  */
 function pushReadsCurrentBranch(tail: string[], isSendPack: boolean): boolean {
   if (isSendPack) {
-    const { operands, dryRun } = sendPackOperands(tail)
+    const { operands, dryRun, dynamicWord } = sendPackOperands(tail)
+    // claude-factory-cu5m: keep parser parity with `sendPackDenied`.
+    if (dynamicWord) return true
     if (dryRun) return false
     return operands.slice(1).some(isHeadAliasRefspec)
   }
-  const { operands, tags, dryRun } = pushOperands(tail)
+  const { operands, tags, dryRun, dynamicWord } = pushOperands(tail)
+  // claude-factory-cu5m: keep parser parity with `gitPushDenied`.
+  if (dynamicWord) return true
   if (dryRun) return false
   const refspecs = operands.slice(1)
   const specs = refspecs.length ? refspecs : tags ? [] : ['HEAD']
@@ -3885,6 +3993,9 @@ function gitReason(
   // This guard does not trust `pushTail`, so it cannot parse it.
   // It denies the push directly. It does not get to `gitPushDenied` or `sendPackDenied`.
   if (uncertainChdirUnsafe) return PUSH_DIR_REASON
+  // claude-factory-cu5m.6: a dynamic word before the verb can expand to `-c remote.X.push=...` or
+  // to a pair that `gitDashCPushDenied` cannot read. This guard denies it before any dry-run check.
+  if (tail.slice(0, verbIndex).some(dynamicPushWord)) return PUSH_REASON
   if (pushReadsCurrentBranch(pushTail, isSendPack)) state.headPush = true
   // claude-factory-68gn: a --git-dir flag moves the push the same way a cd does, so it folds into
   // `moved` here instead of into `dir`. Once `moved`, a -C value is not trusted either: a relative
@@ -4722,8 +4833,9 @@ export function scanReason(
   root?: string,
   personOnly?: string[],
   gate?: HookGate,
+  budget: number = MAX_SCAN_WORK,
 ): string | undefined {
-  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false }
+  const state: ScanState = { branchChange: false, headPush: false, gitAdminPath: false, work: budget }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
@@ -4766,6 +4878,7 @@ function denyAt(
   ghConfigMovedBefore: boolean,
 ): string | undefined {
   if (!command) return undefined
+  if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
   // claude-factory-epz: a deep command denies here, with no personOnly check at all. The
   // MAX_COMMAND_LENGTH cap (claude-factory-25z.20) now runs once, in denyReason, before this
   // function ever runs (claude-factory-dts). denyAt itself checks no length at all.
@@ -4792,7 +4905,9 @@ function denyAt(
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
-    if (touchesBeadsActor(words)) return BEADS_ACTOR_REASON
+    if (touchesBeadsActor(words, state)) {
+      return state.work < 0 ? SCAN_BUDGET_REASON : BEADS_ACTOR_REASON
+    }
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
@@ -4873,6 +4988,7 @@ function denyAt(
     if (hasGhConfigEnvWord(words)) ghConfigMovedSoFar = true
   }
   if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
+  if (backtickBesidePush(command)) return PUSH_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
