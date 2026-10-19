@@ -75,9 +75,11 @@ export function parseEgress(spec: string): Egress {
 
 export type Launch = {
   name: string
-  /** an https remote the VM clones, and the run's branch, already pushed */
-  repo: string
-  branch: string
+  /** an https remote the VM clones, and the run's branch, already pushed; a manager task has neither */
+  repo?: string
+  branch?: string
+  /** what the task runs; a worker's `factory worker serve [--model m]` when absent */
+  command?: string[]
   image: string
   /** the brief in the task's env; without it, the laptop sends brief.md once the task runs */
   brief?: string
@@ -109,17 +111,19 @@ export function manifest(l: Launch) {
     metadata,
     spec: {
       image: l.image,
-      command: ['factory', 'worker', 'serve', ...(l.model ? ['--model', l.model] : [])],
+      command: l.command ?? ['factory', 'worker', 'serve', ...(l.model ? ['--model', l.model] : [])],
       env: Object.entries({
         ...l.env,
-        FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
-        FACTORY_REPO: l.repo,
-        FACTORY_BRANCH: l.branch,
-        // AX v0.3.1's Workspace has no files: a short brief rides in the env
-        ...(l.brief !== undefined && { FACTORY_BRIEF: l.brief }),
-        FACTORY_HARNESS: l.harness ?? 'claude',
-        ...(l.provider && { FACTORY_PROVIDER: l.provider }),
-        ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+        ...(!l.command && {
+          FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
+          FACTORY_REPO: l.repo,
+          FACTORY_BRANCH: l.branch,
+          // AX v0.3.1's Workspace has no files: a short brief rides in the env
+          ...(l.brief !== undefined && { FACTORY_BRIEF: l.brief }),
+          FACTORY_HARNESS: l.harness ?? 'claude',
+          ...(l.provider && { FACTORY_PROVIDER: l.provider }),
+          ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+        }),
       }).map(([name, value]) => ({
         name,
         value,
@@ -514,6 +518,65 @@ export function remoteManager(): string | undefined {
   return undefined
 }
 
+/** the laptop's knobs the manager task needs to launch its own workers */
+const MANAGER_PASS = [
+  'FACTORY_MAX_RUNS',
+  'FACTORY_AX_FRESH',
+  'FACTORY_AX_IMAGE',
+  'FACTORY_AX_VAULT',
+  'FACTORY_AX_ATESPACE',
+]
+
+/** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
+export function managerEnv(env: Record<string, string | undefined> = process.env) {
+  return {
+    FACTORY_IN_AX: '1',
+    FACTORY_HOME: `${WS}/home`,
+    // its Claude sessions on the volume, so `--resume` finds them after a restart
+    CLAUDE_CONFIG_DIR: `${WS}/claude`,
+    ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
+  }
+}
+
+/**
+ * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
+ * and the AX server, which its ax runner talks to. ponytail: AX_SERVER only; a rig's hosts stay with the workers
+ */
+export function managerEgress(axServer = process.env.AX_SERVER): Egress[] {
+  const u = (() => {
+    try {
+      return axServer ? new URL(axServer) : null
+    } catch {
+      return null
+    }
+  })()
+  return [
+    { hosts: ['claude.ai'] },
+    ...(u?.hostname
+      ? [
+          {
+            hosts: [u.hostname],
+            ...(u.port ? { port: Number(u.port) } : u.protocol === 'http:' && { port: 80 }),
+          },
+        ]
+      : []),
+  ]
+}
+
+/**
+ * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
+ * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
+ */
+export async function launchManager(image: string, args: string[], { tries = 24, waitMs = 5000 } = {}) {
+  const name = managerTask()
+  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
+  for (let i = 0; i < tries; i++) {
+    if (createPolicy(name, managerEgress())) return { name, policy: true }
+    await Bun.sleep(waitMs)
+  }
+  return { name, policy: false }
+}
+
 /** a command in the manager's VM, as the worker user when the task drops to it (same rule as the worker's) */
 const managerCmd = (argv: string[]) => ['ssh', managerTask(), '--', ...asWorker(argv)]
 
@@ -530,5 +593,42 @@ export const say = (text: string) =>
       'sh',
       '-c',
       `herdr pane send-text ${MANAGER_PANE()} "$(echo ${Buffer.from(text, 'utf8').toString('base64')} | base64 -d)" && herdr pane send-keys ${MANAGER_PANE()} Enter`,
+    ]),
+  )
+
+/** the manager task's factory home: `managerEnv` sets FACTORY_HOME to it */
+export const MANAGER_HOME = `${WS}/home`
+/** the manager's working dir in the task (the task command and its herdr panes start there) */
+export const MANAGER_CWD = WS
+/** the manager Claude's project dir in the task: CLAUDE_CONFIG_DIR, then the slug of MANAGER_CWD */
+export const MANAGER_PROJECT = `${WS}/claude/projects/${MANAGER_CWD.replace(/[^A-Za-z0-9]/g, '-')}`
+
+/**
+ * whether the manager's FACTORY_HOME already holds a factory (rigs.json, runs or the .migrated marker), so a
+ * migration refuses to write over it. A command in the VM, as the worker user
+ */
+export const managerHomeUsed = () =>
+  must(
+    managerCmd([
+      'sh',
+      '-c',
+      `cd ${MANAGER_HOME} 2>/dev/null && { [ -e rigs.json ] || [ -e runs ] || [ -e .migrated ]; } && echo used || echo empty`,
+    ]),
+  ).trim() === 'used'
+
+/**
+ * unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home, then
+ * write .migrated: `factory manager host` waits for that marker before it starts the manager
+ */
+export const unpackMigration = (name: string) =>
+  must(
+    managerCmd([
+      'sh',
+      '-c',
+      // the manager's Claude memory and transcripts (migrate.CLAUDE_STAGE) go to its project dir before the marker
+      `set -e; mkdir -p ${MANAGER_HOME}; tar -xzf ${OWN}/${name} -C ${MANAGER_HOME}; ` +
+        `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
+        `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
+        `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
     ]),
   )
