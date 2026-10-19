@@ -1509,9 +1509,9 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
     if (shellSlotWord(words[k]!)) {
       // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
       // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
-      if (SHELL_NAMES.has(bw) && k >= slotEnd) {
+      if (k >= slotEnd) {
         const walk = shOptionSlotWalk(words, k)
-        if (walk.dynamic) return true
+        if (walk.dynamic && SHELL_NAMES.has(bw)) return true
         slotEnd = walk.end
       }
       const script = shCScriptValue(words, k)
@@ -5356,14 +5356,17 @@ function anyShellReason(
     if (shellSlotWord(words[j]!)) {
       // claude-factory-38jm: a shell word below slotEnd is a value word of an earlier walk. Its
       // walk is a suffix of that one, so it ends the same way. Skipping it keeps the scan O(n).
-      if (SHELL_NAMES.has(bw) && j >= slotEnd) {
+      if (j >= slotEnd) {
         const walk = shOptionSlotWalk(words, j)
-        if (walk.dynamic) return SH_DYNAMIC_FLAG_REASON
+        if (walk.dynamic && SHELL_NAMES.has(bw)) return SH_DYNAMIC_FLAG_REASON
         slotEnd = walk.end
       }
       if (nc < j) {
         nc = j
-        while (nc < words.length && !possibleShCCluster(words[nc]!)) nc++
+        // A dynamic shell word is no literal shell name, so a dynamic word after it is no flag.
+        // That keeps nc fixed over a run of such words and the script memo O(n).
+        const isClusterAt = SHELL_NAMES.has(bw) ? possibleShCCluster : isShCCluster
+        while (nc < words.length && !isClusterAt(words[nc]!)) nc++
       }
       if (nd < j) {
         nd = j
