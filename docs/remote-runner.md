@@ -194,9 +194,11 @@ Seen 2026-10-13 02:11Z and twice on 2026-10-14 (14:21Z, 14:35Z); a 2026-10-14 15
 The manager runs as a long-lived AX task. It needs more tools than a worker. `Dockerfile.worker` has a second target, `manager`. This target builds on the worker image, so the two images share their layers. The `manager` target adds these items:
 
 - `herdr` and `dolt` from the pinned nixpkgs (`NIXPKGS_REV`). `bd` uses `dolt` in server mode.
-- The `ax` CLI, built from `./cmd/ax` at the same `AX_COMMIT` as `ax-task-runner`.
+- The `ax` CLI, built from `./cmd/ax`. By default it builds from `google/ax` at `v0.3.1`. To use a fork with the `AX_ROUTER` patch, set `AX_CLI_REPO` and `AX_CLI_COMMIT` when you run `hack/push-worker.sh`.
 - The mod, in `/opt/factory/mod`. The manager's Claude loads it as a plugin dir.
 - `FACTORY_IN_AX=1` in the image env.
+
+The manager task env, not the image, sets `AX_ROUTER` and `AX_SERVER`. They hold the in-cluster `atenet-router` and `ax-server` service addresses. When `AX_ROUTER` is set, a fork with the `AX_ROUTER` patch makes `ax ssh` dial the router directly. It does not dial the worker IP or open a port-forward. The VM needs an egress `http` rule to the router.
 
 `ax-task-runner` stays PID 1. A build with no `--target` makes the worker image, as before. To build and push the manager image:
 

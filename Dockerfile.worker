@@ -14,7 +14,11 @@ WORKDIR /ax
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /ax-task-runner ./cmd/ax-task-runner
 
 # the ax CLI, for the manager image only: its own stage, so the worker image does not build it
-FROM runner AS axcli
+FROM golang:1.27-bookworm AS axcli
+ARG AX_CLI_REPO=https://github.com/google/ax
+ARG AX_CLI_COMMIT=v0.3.1
+RUN git clone ${AX_CLI_REPO} /ax && git -C /ax checkout ${AX_CLI_COMMIT}
+WORKDIR /ax
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /ax-cli ./cmd/ax
 
 FROM oven/bun:1.3.13-debian AS bun
