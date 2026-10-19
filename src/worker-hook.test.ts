@@ -3144,7 +3144,6 @@ const DENY_FUNCTION_DEF = [
   `echo \\$() { sh x; }`,
   `a\\=() { sh x; }; a= -c 'git push origin main'`,
   `\\<() { sh x; }; \\< -c 'git push origin main'`,
-  `f() { rm "$@"; }; f -rf /tmp/x`,
   `eval 'f() { sh x; }'; f -c 'git push origin main'`,
   `sh -c 'f() { sh x; }; f -c "git push origin main"'`,
   `bash -c 'f() { sh x; }; f -c "git push origin main"'`,
@@ -3219,6 +3218,8 @@ test('denyReason keeps the older reason for definitions with another deny (claud
   expect(run('git-x() { git "$@"; }; git-x push origin main')).toBe(DYNAMIC_VERB_REASON)
   expect(run(`() { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
   expect(run(`function { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  // fmeu: the brace group body now reaches the rm check first
+  expect(run(`f() { rm "$@"; }; f -rf /tmp/x`)).toBe(REASON)
 })
 
 const ALLOW_FUNCTION_DEF_LOOKALIKE = [
