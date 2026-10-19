@@ -1196,6 +1196,12 @@ const STRICT_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*\+?=/
 function hasAmbiguousAssignmentPrefix(words: string[]): boolean {
   for (let i = 0; i < words.length - 1; i++) {
     const w = words[i]!
+    // claude-factory-mmc9.17: only the unquoted keyword `time` reads NAME=v as an assignment.
+    // /usr/bin/time and a quoted time run the word as the command. Deny any such word fail-closed.
+    if (baseWord(w) === 'time') {
+      const rest = skipWrapperFlags('time', words.slice(i + 1))
+      if (rest.length >= 2 && ASSIGNMENT_WORD_RE.test(rest[0]!)) return true
+    }
     if (RESERVED_LEADING_WORDS.has(w) || w === 'time') continue
     if (!ASSIGNMENT_WORD_RE.test(w)) return false
     if (!STRICT_ASSIGNMENT_RE.test(w)) return true

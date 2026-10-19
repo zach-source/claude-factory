@@ -7010,7 +7010,7 @@ const MMC9_SUBSCRIPT_FLAG = [
 ]
 
 test.each(MMC9_SUBSCRIPT_FLAG)('denyReason denies %j (claude-factory-mmc9.6, subscript flag)', cmd => {
-  expect(denyReason(cmd)).toBeDefined()
+  expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
 })
 
 test('denyReason allows ls A[(r)x] (claude-factory-mmc9.6)', () => {
@@ -7030,7 +7030,7 @@ test('denyReason keeps its verdict on A+=x gh and git forms (claude-factory-mmc9
 test.each(['$G=x $V o main', '$G+=x $V o main', '${A}+=x $G $V o main'])(
   'denyReason keeps denying the dynamic head %j (claude-factory-mmc9)',
   cmd => {
-    expect(denyReason(cmd)).toBeDefined()
+    expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
   },
 )
 
@@ -7077,7 +7077,6 @@ test.each(
 test.each([
   'A=1/rm -r ./d',
   'A+=x ls',
-  'time A=1/rm -r ./d',
   'env A+=1/rm -r ./d',
   'sudo A+=1/rm -r ./d',
   'é=x',
@@ -7106,6 +7105,17 @@ test.each([
   'é=x ls',
   'A[k]=x ls',
   'time A[k]=x ls',
+  'time A=1/rm -r ./d',
+  'time -p é=1/rm -r ./d',
+  'time -- é=1/rm -r ./d',
+  'time -p Ⓐ=1/rm -r ./d',
+  'time -p A[k]=1/rm -r ./d',
+  '/usr/bin/time A+=1/rm -r ./d',
+  '/usr/bin/time é=1/rm -r ./d',
+  '/usr/bin/time A=1/rm -r ./d',
+  '\\time A=1/rm -r ./d',
+  '"time" A=1/rm -r ./d',
+  'tim""e A+=1/rm -r ./d',
   'B[1]=2 /abs/bin/factory gc',
   'C[k]+=3 /abs/bin/factory gc',
   'B[1]=/x gp origin main',
