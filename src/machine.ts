@@ -335,7 +335,13 @@ export const isParked = (c: Ctx, node: string) => {
 
 /** the kind of failure a reason names when retrying it unchanged is unlikely to help: the worker went silent */
 export const failClass = (reason: string) =>
-  /^no report within/.test(reason) ? 'timeout' : /^stalled/.test(reason) ? 'stalled' : null
+  /^no report within/.test(reason)
+    ? 'timeout'
+    : /^stalled/.test(reason)
+      ? 'stalled'
+      : /^(the )?worker never started/.test(reason)
+        ? 'unstarted'
+        : null
 
 /** whether a failure repeats the station's previous attempt's: the same silent kind, so another attempt would spend itself the same way */
 export const isRepeatFail = (c: Ctx, node: string, reason: string) => {

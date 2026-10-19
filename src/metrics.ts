@@ -44,11 +44,13 @@ export function fate(r: RunRecord) {
 export const failKind = (summary: string) =>
   /^no report within/.test(summary)
     ? 'timeout'
-    : /stopped without reporting|gone/.test(summary)
-      ? 'worker lost'
-      : /block|waiting|operator decision|owner/i.test(summary)
-        ? 'blocked'
-        : 'other'
+    : /^(the )?worker never started/.test(summary)
+      ? 'not started'
+      : /stopped without reporting|gone/.test(summary)
+        ? 'worker lost'
+        : /block|waiting|operator decision|owner/i.test(summary)
+          ? 'blocked'
+          : 'other'
 
 // claude-factory-6as.4: matches a triage reject summary that says the work already shipped
 // (through another PR, another bead, or on its own) before triage saw it. The dispatch
