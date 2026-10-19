@@ -7429,3 +7429,68 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
 })
+
+// claude-factory-clcc: a glob char in a command word hides the real command (bash and zsh expand it)
+const CLCC_DYNAMIC = [
+  '/bin/[r]m -rf /',
+  '/bin/r? -rf /',
+  '/bin/r* -rf /',
+  'r?m -rf /',
+  '[r]m -rf /',
+  'r[m] -rf /',
+  '/bin/r[m] x',
+  'sudo /bin/r? -rf /',
+  'sudo -u root /bin/r? -rf /',
+  'env /bin/r? -rf /',
+  'A=1 /bin/r? -rf /',
+  'nice -n 5 /bin/r? -rf /',
+  'time /bin/r? -rf /',
+  'time -p /bin/r? -rf /',
+  'nohup /bin/r? -rf /',
+  'timeout 5 /bin/r? -rf /',
+  'exec /bin/r? -rf /',
+  'command /bin/r? -rf /',
+  'find . -exec /bin/r? -rf / ;',
+  'find . -execdir /bin/r* -rf / ;',
+  'find . -ok /bin/r? -rf / ;',
+  'find . -okdir /bin/r? -rf / ;',
+  'find . -exec /bin/r? -rf {} +',
+]
+const CLCC_ANY = [
+  '(/bin/r? -rf /)',
+  'x=$(/bin/r? -rf /)',
+  'echo a | /bin/r? -rf /',
+  'cd /tmp; /bin/r* -rf /',
+  'eval "/bin/r? -rf /"',
+  'sh -c "/bin/r? -rf /"',
+]
+const CLCC_ALLOW = [
+  'ls *.md',
+  'echo [x]',
+  'echo "?"',
+  '[ -f x ]',
+  '[[ -f x ]]',
+  '! [ -f x ]',
+  'builtin [ -f x ]',
+  'if [ -f x ]; then ls; fi',
+  'for f in *.md; do echo $f; done',
+  'bun test src/*.test.ts',
+  'ls [ab]*.md',
+  'grep "a.*b" x',
+  'git log -- "*.md"',
+  'find . -name "*.md" -exec ls {} +',
+  'xargs -I {} cp {} dest',
+  'rm -f a.tmp',
+]
+
+test.each(CLCC_DYNAMIC)('denyReason denies a glob command word %j (claude-factory-clcc)', cmd => {
+  expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test.each(CLCC_ANY)('denyReason denies a nested glob command word %j (claude-factory-clcc)', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+test.each(CLCC_ALLOW)('denyReason allows %j (claude-factory-clcc: glob in an operand)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
