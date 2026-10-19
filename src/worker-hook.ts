@@ -229,12 +229,20 @@ export const XARGS_REASON =
   'Run the git or gh command directly, with every argument in the command line itself. ' +
   'Do not retry this exact command.'
 
+// claude-factory-38jm: reason for a dynamic word in the option slot of a shell call.
+export const SH_DYNAMIC_FLAG_REASON =
+  'The factory denies this command: a word in the option slot of a sh, bash, zsh or dash call ' +
+  'holds a shell expansion ($, a backtick, a glob, a brace or a paren). The shell can expand it ' +
+  'to -c and a script that the guard cannot read. Write the shell flags and the script plainly. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-p43v: a command or subcommand word can hold a dollar sign, a backtick, a glob
 // character, a brace, or a leading tilde. The shell has not expanded that word yet. This guard
 // reads the typed text. It does not read the shell's own expansion of that text.
 //
 // A check for one literal verb, such as push, cannot match an unexpanded word. Every check after
 // it then reads the wrong verb, or no verb at all.
+
 export const DYNAMIC_VERB_REASON =
   'The factory denies this command: a word at the command or subcommand slot holds a shell ' +
   'expansion ($, a backtick, a glob, a brace, or a leading ~). The shell expands this word at ' +
@@ -1441,11 +1449,11 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
 }
 
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
-// way anyShellReason finds it: the first flag cluster that holds c, then the first word after it
+// way anyShellReason finds it: the first flag cluster that holds c (or a dynamic word), then the first word after it
 // that is not itself a flag, or the word right after a literal --.
 function shCScriptValue(words: string[], start: number): string | undefined {
   let nc = start
-  while (nc < words.length && words[nc] !== '--' && !isShCCluster(words[nc]!)) nc++
+  while (nc < words.length && words[nc] !== '--' && !possibleShCCluster(words[nc]!)) nc++
   if (nc >= words.length || words[nc] === '--') return undefined
   for (let k = nc + 1; k < words.length; k++) {
     const w = words[k]!
@@ -1469,10 +1477,18 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   // (rest holds them all, later eval words too). A later eval word then needs no recursion of its
   // own. Without this skip, n stacked eval words cost about 2^n work.
   let evalScanned = false
+  let slotEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+      // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
+      // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
+      if (k >= slotEnd) {
+        const walk = shOptionSlotWalk(words, k)
+        if (walk.dynamic) return true
+        slotEnd = walk.end
+      }
       const script = shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
     } else if (bw === 'eval' && !evalScanned) {
@@ -2398,6 +2414,46 @@ function firstVerbIndex(
     return { index: i, uncertain }
   }
   return { index: -1, uncertain }
+}
+
+/**
+ * claude-factory-38jm: true when `w` is a `-c` cluster, or a dynamic word that the shell can
+ * expand to one. The `-c` scans use this test, so a dynamic word after a literal operand
+ * (`sh script.sh $X 'git push origin main'`) reads like `sh script.sh -c '...'`.
+ */
+function possibleShCCluster(w: string): boolean {
+  return isShCCluster(w) || (w !== '--' && dynamicPushWord(w))
+}
+
+/**
+ * claude-factory-38jm: reads the option slot of the sh/bash/zsh/dash word at `words[j]`.
+ * The walk starts at `words[j + 1]`. It returns `dynamic: true` when a word in that slot holds a
+ * shell expansion (`dynamicPushWord`). The shell can expand such a word to `-c` and a script.
+ *
+ * The walk stops with `dynamic: false` at a literal `--`, at a literal `-c` cluster (the `-c`
+ * scan reads the script then), or at the first literal operand (a word that does not start with
+ * `-` or `+`). It skips a lone `-` and each literal flag word. After a short flag word that
+ * holds `o` or `O`, and after `--rcfile`, `--init-file` or `--emulate`, the next word is the flag value. The
+ * walk skips a literal value, and returns true for a dynamic one.
+ *
+ * `end` is the index of the word that stopped the walk, or `words.length`. The walk from a later
+ * shell word below `end` reads a suffix of this walk and ends the same way.
+ */
+function shOptionSlotWalk(words: string[], j: number): { dynamic: boolean; end: number } {
+  for (let i = j + 1; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--' || isShCCluster(w)) return { dynamic: false, end: i }
+    if (dynamicPushWord(w)) return { dynamic: true, end: i }
+    if (w === '-') continue
+    if (!w.startsWith('-') && !w.startsWith('+')) return { dynamic: false, end: i }
+    const takesValue =
+      w === '--rcfile' || w === '--init-file' || w === '--emulate' || (!w.startsWith('--') && /[oO]/.test(w))
+    if (takesValue) {
+      i++
+      if (i < words.length && dynamicPushWord(words[i]!)) return { dynamic: true, end: i }
+    }
+  }
+  return { dynamic: false, end: words.length }
 }
 
 /**
@@ -4741,6 +4797,9 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
   'api',
 ])
 
+// claude-factory-38jm: a brace word with a comma or a `..` range.
+const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
+
 /**
  * The function returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real
  * command (claude-factory-p43v.5). No wrapper that this hook knows by name names the command.
@@ -4793,6 +4852,10 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
   for (const a of commandAnchors(words)) {
+    // claude-factory-38jm: bash expands `{sh,-c}` into two words before it runs the command. A
+    // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
+    // no comma and no `..`, so it stays allowed.
+    if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
@@ -4980,7 +5043,7 @@ function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): strin
  * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
  * pointers that only move up.
  *
- * `nc` holds the next index at or after the current `j` whose word passes `isShCCluster`.
+ * `nc` holds the next index at or after the current `j` whose word passes `possibleShCCluster`.
  * `nd` holds the next index at or after `j` whose word is a literal `--`.
  *
  * Each pointer keeps its old value until `j` moves past it. Then the code scans forward from `j`
@@ -5220,6 +5283,7 @@ function anyShellReason(
 ): string | undefined {
   let nc = -1
   let nd = -1
+  let slotEnd = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -5262,9 +5326,16 @@ function anyShellReason(
       return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
     }
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+      // claude-factory-38jm: a shell word below slotEnd is a value word of an earlier walk. Its
+      // walk is a suffix of that one, so it ends the same way. Skipping it keeps the scan O(n).
+      if (j >= slotEnd) {
+        const walk = shOptionSlotWalk(words, j)
+        if (walk.dynamic) return SH_DYNAMIC_FLAG_REASON
+        slotEnd = walk.end
+      }
       if (nc < j) {
         nc = j
-        while (nc < words.length && !isShCCluster(words[nc]!)) nc++
+        while (nc < words.length && !possibleShCCluster(words[nc]!)) nc++
       }
       if (nd < j) {
         nd = j
