@@ -5992,8 +5992,18 @@ function denyAt(
   // a real command wins over them.
   const late: { reason?: string } = {}
   return (
-    denyAtScan(command, root, personOnly, gate, depth, state, movedBefore, ghConfigMovedBefore, late) ??
-    late.reason
+    denyAtScan(
+      command,
+      root,
+      personOnly,
+      gate,
+      depth,
+      state,
+      movedBefore,
+      ghConfigMovedBefore,
+      late,
+      aliasStack,
+    ) ?? late.reason
   )
 }
 
@@ -6007,6 +6017,7 @@ function denyAtScan(
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
   late: { reason?: string },
+  aliasStack: readonly string[],
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
