@@ -1526,7 +1526,8 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
 // guard reads the -c script after it. The script is denied only when the script itself is denied.
 const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash'])
 function shellSlotWord(w: string): boolean {
-  return SHELL_NAMES.has(baseWord(w)) || /[$`*?[\]{}]/.test(w) || w.startsWith('~')
+  // claude-factory-jsy0: zsh EQUALS expands a leading =cmd to the command path.
+  return SHELL_NAMES.has(baseWord(w)) || /[$`*?[\]{}]/.test(w) || w.startsWith('~') || /^=[^=]/.test(w)
 }
 
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
@@ -3649,7 +3650,8 @@ const dynamicPushWord = (w: string): boolean => REFSPEC_UNSAFE.test(w) || /[()]/
 // A word with text between `{` and `}`, for example `{push,}`, continues to match
 // `REFSPEC_UNSAFE`. It stays dynamic in the two functions.
 function dynamicWord(w: string): boolean {
-  return REFSPEC_UNSAFE.test(w) || w.startsWith('~')
+  // claude-factory-jsy0: zsh EQUALS expands a leading =cmd to the command path.
+  return REFSPEC_UNSAFE.test(w) || w.startsWith('~') || /^=[^=]/.test(w)
 }
 
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
