@@ -1032,7 +1032,7 @@ function wrapperAssignmentOperand(w: string): boolean {
 // and quotes. The greedy match can skip more than the shell does. Then the hook reads later words
 // as the command and denies more, never less.
 function shellAssignmentWord(w: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*(?:\[[\s\S]*\])?\+?=/.test(w)
+  return /^[\p{L}_][\p{L}\p{N}_]*(?:\[[\s\S]*\])?\+?=/u.test(w)
 }
 
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
@@ -4797,6 +4797,12 @@ const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
   for (const a of commandAnchors(words)) {
+    // claude-factory-mmc9.6: segments() ends a word at `(`, so `A[(r)x]=x cmd` leaves the word `A[` at
+    // the anchor. zsh runs that as an assignment with a subscript flag. Deny a name-and-bracket
+    // anchor word that is not a whole assignment word.
+    if (/^[\p{L}_][\p{L}\p{N}_]*\[/u.test(words[a]!) && !shellAssignmentWord(words[a]!)) {
+      return DYNAMIC_VERB_REASON
+    }
     // claude-factory-38jm: bash expands `{sh,-c}` into two words before it runs the command. A
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
     // no comma and no `..`, so it stays allowed.

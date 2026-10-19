@@ -6281,6 +6281,10 @@ const MMC9_DENY = [
   'sudo A+=x rm -rf /',
   'env A+=x rm -rf /',
   'env a.b=1 rm -rf /',
+  'é=x rm -rf /',
+  'Aé+=x rm -rf /',
+  'é[1]=x rm -rf /',
+  'Ａ=x rm -rf /',
 ]
 
 test.each(MMC9_DENY)('denyReason denies %j (claude-factory-mmc9, assignment forms)', cmd => {
@@ -6296,6 +6300,21 @@ const MMC9_DYNAMIC = [
 
 test.each(MMC9_DYNAMIC)('denyReason denies %j as a dynamic verb (claude-factory-mmc9)', cmd => {
   expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+})
+
+const MMC9_SUBSCRIPT_FLAG = [
+  'A[(r)x]=x rm -rf /',
+  'A[(r)x]+=x rm -rf /',
+  'A[(x]=x rm -rf /',
+  'typeset -a A; A[(r)x]=x rm -rf /',
+]
+
+test.each(MMC9_SUBSCRIPT_FLAG)('denyReason denies %j (claude-factory-mmc9.6, subscript flag)', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+test('denyReason allows ls A[(r)x] (claude-factory-mmc9.6)', () => {
+  expect(denyReason('ls A[(r)x]')).toBeUndefined()
 })
 
 test('denyReason denies A+=x $K apply with personOnly acme (claude-factory-mmc9)', () => {
