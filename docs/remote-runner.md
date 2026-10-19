@@ -189,6 +189,23 @@ Seen 2026-10-13 02:11Z and twice on 2026-10-14 (14:21Z, 14:35Z); a 2026-10-14 15
 - **What the runner does about it** (so one outage does not cost a station its attempt): `egressFailure()` in `src/worker.ts` recognizes only this exact Envoy text in a finished turn's output — never a generic 5xx, rate-limit, or 529 overloaded refusal, which Claude already retries itself, so matching those here would mask a real API failure instead of the gateway's. When a turn ends on it, `serveTurns` (`src/worker.ts`) retries in place: the same session once there is one, with `EGRESS_RETRY_PROMPT` ("The last turn failed on the egress gateway refusing a new connection to the model API (see above). Try again."), or the brief again with no session yet. A prompt file queued for the turn is deleted only after the turn, so a retry never loses or reorders it. Backoff doubles from `FACTORY_EGRESS_WAIT_MS` (default 30 s), capped at 10× that (5 min at the default), for up to `FACTORY_EGRESS_BUDGET_MS` (default 30 min); each retry appends one `serve.log` line ("egress failure, retry N: ..."). A turn that gets through clears the outage. While it is ongoing, `state.json`'s `egress: {since, tries, last}` rides `worker.poll()` → `ax.Poll` → `WorkerInfo` back to the laptop. `reconcile` (`src/cli.ts`) mails the manager once per outage (deduped by `since` in `<run>/egress-paged-<node>.json`, keyed per run and node since the gateway is shared and a single outage hits every concurrent AX worker at once) and spends no idle nudge while serve is still retrying. As soon as the worker goes `idle` or `done` with the outage still set — meaning serve already spent its own retry budget and gave up, not once this station's own nudges are spent — `reconcile` fails that tick, named, instead of the generic "worker stopped without reporting": `egress gateway: model API unreachable since <ISO> (<n> retries): <last>`.
 - **Env knobs**: `FACTORY_EGRESS_WAIT_MS` (base backoff, ms; default 30000) and `FACTORY_EGRESS_BUDGET_MS` (total retry budget, ms; default 1800000 = 30 min). Setting the budget to `0` turns retrying off without a code change. Both are read only by the VM half (`src/worker.ts`), so set them through `FACTORY_AX_ENV`.
 
+### Manager image
+
+The manager runs as a long-lived AX task. It needs more tools than a worker. `Dockerfile.worker` has a second target, `manager`. This target builds on the worker image, so the two images share their layers. The `manager` target adds these items:
+
+- `herdr` and `dolt` from the pinned nixpkgs (`NIXPKGS_REV`). `bd` uses `dolt` in server mode.
+- The `ax` CLI, built from `./cmd/ax` at the same `AX_COMMIT` as `ax-task-runner`.
+- The mod, in `/opt/factory/mod`. The manager's Claude loads it as a plugin dir.
+- `FACTORY_IN_AX=1` in the image env.
+
+`ax-task-runner` stays PID 1. A build with no `--target` makes the worker image, as before. To build and push the manager image:
+
+```sh
+TARGET=manager REG=<registry>/<org> BUILDER=<builder> hack/push-worker.sh    # prints image@digest
+```
+
+The script tags the image `<registry>/<org>/factory-manager:<sha>`.
+
 ### Turning it on
 
 ```sh
