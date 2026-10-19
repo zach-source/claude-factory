@@ -1429,14 +1429,20 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
 // `[[ 1 ]] {`, `} always {`). Index 0 is the job of RESERVED_LEADING_WORDS. Each result is the
 // words of one brace body. zsh also opens the group when the command word touches the brace
 // (`repeat 1 {rm -rf / }`), so a word that starts with `{` (not `{}`) opens one too, and its
-// text after the braces is the first body word. This reading only denies: a false match such as
-// `echo {a,b}` gives a harmless body.
+// text after the braces is the first body word. A word with a `}` or a space is not an opener.
+// This reading only denies: a false match gives a harmless body.
 const MAX_BRACE_BODIES = 16
+// A glued opener has no closing brace and no space in its word. `{a,b}` is brace expansion
+// and a quoted argument such as '{ rm }' is text: neither opens a group.
+function braceOpensGroup(w: string): boolean {
+  if (w === '{') return true
+  return w.startsWith('{') && !/[}\s]/.test(w)
+}
 function braceBodies(words: string[]): string[][] {
   const out: string[][] = []
   for (let k = 1; k < words.length; k++) {
     const w = words[k]!
-    if (!w.startsWith('{') || w === '{}') continue
+    if (!braceOpensGroup(w)) continue
     const head = w.replace(/^\{+/, '')
     out.push(head ? [head, ...words.slice(k + 1)] : words.slice(k + 1))
   }
@@ -6421,7 +6427,7 @@ function denyAtScan(
     // claude-factory-4iod.5: a glued first word (`{git push`) hides from every word scan, so
     // the first glued body runs the full guard. Its own later glued bodies are suffixes of it:
     // the recursion reads them, so one call per level keeps the cost linear.
-    const glued = words.findIndex((w, k) => k >= 1 && w.startsWith('{') && w !== '{' && w !== '{}')
+    const glued = words.findIndex((w, k) => k >= 1 && w !== '{' && braceOpensGroup(w))
     if (glued > 0) {
       const head = words[glued]!.replace(/^\{+/, '')
       const text = (head ? [head, ...words.slice(glued + 1)] : words.slice(glued + 1)).join(' ')

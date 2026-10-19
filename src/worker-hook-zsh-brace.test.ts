@@ -88,12 +88,24 @@ test('4IOD glued brace dynamic pair denies', () => {
   expect(run('repeat 1 {$G $V o main }')).toBe(DYNAMIC_VERB_REASON)
 })
 test('4IOD glued brace push denies', () => {
-  expect(run('repeat 1 {git push origin main }')).toBeDefined()
+  expect(run('repeat 1 {git push origin main }')).toBe(DYNAMIC_VERB_REASON)
 })
 test('4IOD glued brace eval denies', () => {
-  expect(run('repeat 1 {eval "$X" }')).toBeDefined()
+  expect(run('repeat 1 {eval "$X" }')).toBe(DYNAMIC_VERB_REASON)
 })
-test.each(["awk '{print $1}' acme.txt", "jq '{a: .b}' acme.json", 'repeat 1 {echo hi }'])(
+test.each([
+  "awk '{print $1}' acme.txt",
+  "jq '{a: .b}' acme.json",
+  'repeat 1 {echo hi }',
+  'echo {a,b} {c,d}',
+  'printf {a,b} {c,d}',
+  'echo {1..3} {4..6}',
+  'mkdir -p {acme,widget}/{src,test}',
+  "jq -n '{a: 1}' '{b: 2}'",
+  "echo '{ git push origin main }'",
+  "git commit -m '{ gh pr merge 1 }'",
+  "bd create -d '{ rm -rf / }'",
+])(
   '4IOD glued reading keeps the allow for %s',
   cmd => {
     expect(run(cmd)).toBeUndefined()
@@ -107,4 +119,12 @@ test('4IOD long brace shapes stay fast', () => {
     run(cmd)
     expect(performance.now() - t).toBeLessThan(2000)
   }
+}, 30_000)
+
+test('4IOD eval with glued words stays bounded', () => {
+  const tail = 'y '.repeat(4000)
+  const t = performance.now()
+  expect(run('eval {x '.repeat(8) + tail)).toBeUndefined()
+  expect(run('eval {x '.repeat(14) + tail)).toBe(SCAN_BUDGET_REASON)
+  expect(performance.now() - t).toBeLessThan(15_000)
 }, 30_000)
