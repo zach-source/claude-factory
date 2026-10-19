@@ -1349,15 +1349,25 @@ function wrapperReadingsDeny(words: string[], root: string | undefined): { deny:
       return
     }
     if (b === 'xargs') {
-      let j = i + 1
-      while (j < n && words[j]!.startsWith('-')) j++
-      const k = j
-      work.push(() => head(k))
+      work.push(() => xargsFlags(i + 1))
       return
     }
     const r = rmFindReading(words.slice(i), root)
     if (r.deny) found = true
     if (r.rm) rm = true
+  }
+  const xargsFlags = (j: number): void => {
+    const key = 'xargs:' + j
+    if (seenFlag.has(key)) return
+    seenFlag.add(key)
+    const w = words[j]
+    if (w === undefined) return
+    if (!w.startsWith('-')) {
+      work.push(() => head(j))
+      return
+    }
+    work.push(() => xargsFlags(j + 1))
+    work.push(() => xargsFlags(j + 2))
   }
   const flags = (name: string, j: number): void => {
     const key = name + ':' + j
@@ -1365,6 +1375,15 @@ function wrapperReadingsDeny(words: string[], root: string | undefined): { deny:
     seenFlag.add(key)
     const w = words[j]
     if (w === undefined) return
+    if (name === 'command' && /^-[pvV]*[vV][pvV]*$/.test(w)) return
+    if (name === 'env' && w === '-') {
+      work.push(() => flags(name, j + 1))
+      return
+    }
+    if ((name === 'env' || name === 'sudo') && wrapperAssignmentOperand(w)) {
+      work.push(() => flags(name, j + 1))
+      return
+    }
     if (w === '-' || !w.startsWith('-')) {
       after(name, j)
       return
