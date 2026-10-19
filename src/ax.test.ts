@@ -1420,7 +1420,7 @@ test('remoteManager skips AX with no cluster and refuses a running manager', () 
 test('attach reads the manager pane and say sends its text base64, so ax flags in it survive', () => {
   writeFileSync(join(dir, 'ssh'), 'pane text')
   expect(ax.attachRead()).toBe('pane text')
-  expect(logged()[0]).toMatch(/ssh f-manager -- .*herdr pane read 1 --lines 60/)
+  expect(logged()[0]).toMatch(/ssh f-manager -- .*herdr pane read w1:p1 --lines 60/)
   const text = 'do it --context x -a evil "$(id)" \'q\''
   ax.say(text)
   const line = logged()[1]!

@@ -490,7 +490,7 @@ export function remove(task: string) {
 
 /** the AX task the manager runs in; it is the one-manager lease (docs/remote-runner.md, Attach to the AX manager) */
 export const managerTask = () => process.env.FACTORY_AX_MANAGER ?? 'f-manager'
-const MANAGER_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? '1'
+const MANAGER_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? 'w1:p1'
 
 /** why this process must not run a manager or tick: the manager task lives, and this is not inside it */
 export function managerRefusal(phase: string | null, env: Record<string, string | undefined>, task: string) {
@@ -529,6 +529,6 @@ export const say = (text: string) =>
     managerCmd([
       'sh',
       '-c',
-      `herdr pane send-text ${MANAGER_PANE()} -- "$(echo ${Buffer.from(text, 'utf8').toString('base64')} | base64 -d)" && herdr pane send-keys ${MANAGER_PANE()} Enter`,
+      `herdr pane send-text ${MANAGER_PANE()} "$(echo ${Buffer.from(text, 'utf8').toString('base64')} | base64 -d)" && herdr pane send-keys ${MANAGER_PANE()} Enter`,
     ]),
   )
