@@ -1216,13 +1216,16 @@ function realCommand(words: string[]): string[] {
   // position: the segment start, after a reserved word, or after the `time` keyword. `sudo` and
   // `env` read any non-dash `NAME=v` word as their own operand. Every other wrapper (nice, nohup,
   // exec, command, builtin, timeout, xargs) runs such a word as the command.
-  let pos: 'shell' | 'operand' | 'none' = 'shell'
+  // claude-factory-mmc9.19: sudo reads an env var only when the word has `=` and starts with
+  // neither `/` nor `=`, and reads none after `--` (sudo parse_args.c, is_envar). Else sudo runs it.
+  let pos: 'shell' | 'operand' | 'sudo' | 'none' = 'shell'
   for (;;) {
     if (!w.length) return w
     const head = w[0]!
     if (
       (pos === 'shell' && shellAssignmentWord(head)) ||
-      (pos === 'operand' && wrapperAssignmentOperand(head))
+      (pos === 'operand' && wrapperAssignmentOperand(head)) ||
+      (pos === 'sudo' && wrapperAssignmentOperand(head) && head[0] !== '/')
     ) {
       w = w.slice(1)
       continue
@@ -1234,8 +1237,20 @@ function realCommand(words: string[]): string[] {
     }
     const b = baseWord(head)
     if (WRAPPERS.has(b)) {
-      w = skipWrapperFlags(b, w.slice(1))
-      pos = b === 'sudo' || b === 'env' ? 'operand' : b === 'time' && pos === 'shell' ? 'shell' : 'none'
+      const after = w.slice(1)
+      w = skipWrapperFlags(b, after)
+      const endOfFlags =
+        b === 'sudo' && after.length > w.length && after[after.length - w.length - 1] === '--'
+      pos =
+        b === 'sudo'
+          ? endOfFlags
+            ? 'none'
+            : 'sudo'
+          : b === 'env'
+            ? 'operand'
+            : b === 'time' && pos === 'shell'
+              ? 'shell'
+              : 'none'
       continue
     }
     if (b === 'timeout') {

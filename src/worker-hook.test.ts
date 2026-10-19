@@ -7067,6 +7067,28 @@ test.each([
   expect(denyReason(cmd)).toBe(REASON)
 })
 
+test.each([
+  'sudo /tmp/d=1/rm -r ./d',
+  'sudo /tmp/d=1/rm -rf /',
+  'sudo -u root /tmp/d=1/rm -r ./d',
+  'sudo A=1 /tmp/d=1/rm -r ./d',
+  'sudo -- ./d=1/rm -r ./d',
+  'sudo -u root -- ./d=1/rm -r ./d',
+  'sudo -- /tmp/d=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.19, sudo runs this word as the command)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each([
+  'sudo ./d=1/rm -r ./d',
+  'sudo A=1 ls',
+  'sudo /tmp/d=1/ls -la',
+  'env /tmp/d=1/rm -r ./d',
+  'env -- ./d=1/rm -r ./d',
+])('denyReason allows %j (claude-factory-mmc9.19, the word is an assignment, not the command)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
 const MMC9_13_WRAPPERS = ['nice', 'nohup', 'exec', 'command', 'builtin', 'timeout 5', 'xargs']
 test.each(
   MMC9_13_WRAPPERS.flatMap(w => ['A=1/rm -r ./d', 'A+=1/rm -r ./d', 'é=1/rm -r ./d'].map(c => `${w} ${c}`)),
