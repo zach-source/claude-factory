@@ -1263,9 +1263,19 @@ function wrapperAssignmentOperand(w: string): boolean {
 
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
+  return realCommandInfo(words).cmd
+}
+
+// claude-factory-dtr2: zsh runs `repeat N cmd` as `cmd`, N times, in the same segment.
+// This walk removes `repeat` and the count word. It reads the rest as the command.
+// `dynamicRepeatCount` is true if the count word is dynamic. The caller must deny that case.
+// `segments()` can split one quoted `$(...)` count into several words.
+// Then the removed word is only a part of the count.
+function realCommandInfo(words: string[]): { cmd: string[]; dynamicRepeatCount: boolean } {
   let w = words
+  let dynamicRepeatCount = false
   for (;;) {
-    if (!w.length) return w
+    if (!w.length) return { cmd: w, dynamicRepeatCount }
     const head = w[0]!
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
       w = w.slice(1)
@@ -1276,6 +1286,11 @@ function realCommand(words: string[]): string[] {
       continue
     }
     const b = baseWord(head)
+    if (b === 'repeat') {
+      if (w.length > 1 && dynamicWord(w[1]!)) dynamicRepeatCount = true
+      w = w.slice(2)
+      continue
+    }
     if (WRAPPERS.has(b)) {
       w = skipWrapperFlags(b, w.slice(1))
       continue
@@ -1290,7 +1305,7 @@ function realCommand(words: string[]): string[] {
       while (w.length && w[0]!.startsWith('-')) w = w.slice(1)
       continue
     }
-    return w
+    return { cmd: w, dynamicRepeatCount }
   }
 }
 
@@ -1568,6 +1583,10 @@ function commandAnchors(words: string[]): number[] {
     }
     if (RESERVED_LEADING_WORDS.has(w)) {
       i++
+      continue
+    }
+    if (baseWord(w) === 'repeat') {
+      i += 2
       continue
     }
     break
@@ -6415,7 +6434,9 @@ function denyAtScan(
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
-    const cmd = realCommand(words)
+    const info = realCommandInfo(words)
+    if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
+    const cmd = info.cmd
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
