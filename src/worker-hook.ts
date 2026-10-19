@@ -5265,10 +5265,14 @@ function globCommandWord(w: string, next?: string): boolean {
   return true
 }
 
+const ROOT_BIN_DIRS = new Set(['/bin', '/usr/bin', '/sbin', '/usr/sbin'])
+
 function globMatchesShellName(g: string): boolean {
   const slash = g.lastIndexOf('/')
   const dir = slash < 0 ? '.' : g.slice(0, slash) || '/'
-  if (/[*?[\]]/.test(dir) || dir.startsWith('~')) return false
+  // claude-factory-clcc.10: only a fixed root-owned dir. A relative glob depends on a cwd that an
+  // earlier cd can change, and a writable dir can change between this check and the run.
+  if (!ROOT_BIN_DIRS.has(dir)) return false
   const leaf = g.slice(slash + 1)
   let re = ''
   for (let i = 0; i < leaf.length; i++) {
@@ -5290,6 +5294,14 @@ function globMatchesShellName(g: string): boolean {
   } catch {
     return false
   }
+}
+
+const BARE_CASE_RE = /(?:^|[;&|\n({]\s*)case\s/
+
+/** True when the raw text has `w` in a case pattern slot: after `in` or `;;`, closed by `)`. */
+function casePatternSlot(command: string, w: string): boolean {
+  const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp('(?:\\bin|;;&?|;&)\\s*\\(?\\s*' + esc + '\\s*\\)').test(command)
 }
 
 /** True when a glob command word sits at any command anchor of `words`. */
@@ -6384,8 +6396,13 @@ function denyAtScan(
     // claude-factory-clcc: deferred, so a more specific reason (a shell that reads stdin) wins.
     // claude-factory-clcc.5: inside case ... esac, a segment of one word (or a word and `)`) is a
     // case pattern, not a command.
-    if (words[0] === 'case' && words.includes('in')) caseDepth++
-    const casePattern = caseDepth > 0 && (words.length === 1 || (words.length === 2 && words[1] === ')'))
+    // claude-factory-clcc.9: only a bare, unquoted `case` counts, and only the pattern slot is
+    // skipped: a word that follows `in`, `;;`, `;&` or `;;&` and that the raw text closes with `)`.
+    if (words[0] === 'case' && words.includes('in') && BARE_CASE_RE.test(command)) caseDepth++
+    const casePattern =
+      caseDepth > 0 &&
+      (words.length === 1 || (words.length === 2 && words[1] === ')')) &&
+      casePatternSlot(command, words[0]!)
     if (words[0] === 'esac' && caseDepth > 0) caseDepth--
     if (!casePattern && anyGlobCommandWord(words)) state.globDeferred = true
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag

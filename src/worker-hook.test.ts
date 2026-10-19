@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -7476,6 +7476,11 @@ const CLCC_ANY = [
   'eval "/bin/r? -rf /"',
   'sh -c "/bin/r? -rf /"',
   'case x in x) /bin/r? -rf /;; esac',
+  'case x in x) /bin/r*;; esac',
+  'case x in x) echo a; /bin/r*;; esac',
+  'case x in\nx)\n/bin/r*\n;;\nesac',
+  '"case" x in; /bin/r*',
+  '\\case x in; /bin/r*',
 ]
 const CLCC_ALLOW = [
   'ls *.md',
@@ -7509,6 +7514,22 @@ test.each(CLCC_ANY)('denyReason denies a nested glob command word %j (claude-fac
 test.each(CLCC_ALLOW)('denyReason allows %j (claude-factory-clcc: glob in an operand)', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
+
+test.each(['[rs][mh] -c ../x', 'cd /bin; [rs][mh] -c ../x', 'cd /bin && [rs][mh] -c ../x'])(
+  'denyReason denies %j when the cwd holds only a file named sh (claude-factory-clcc.10)',
+  cmd => {
+    const old = process.cwd()
+    const dir = mkdtempSync(join(tmpdir(), 'clcc10-'))
+    writeFileSync(join(dir, 'sh'), '')
+    process.chdir(dir)
+    try {
+      expect(denyReason(cmd)).toBeDefined()
+    } finally {
+      process.chdir(old)
+      rmSync(dir, { recursive: true })
+    }
+  },
+)
 
 test.each(['/bin/r? -c x', '/bin/[r]m -c -rf /', 'B[1]=2 /bin/r? -rf /'])(
   'denyReason denies %j (claude-factory-clcc: -c and assignment exemptions stay narrow)',
