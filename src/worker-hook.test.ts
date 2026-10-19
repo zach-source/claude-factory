@@ -2639,6 +2639,18 @@ const DENY_REDIR_RM = [
   'cd /x; >f rm -f y',
   '>f cd /x; rm -f y',
   '{x}>f rm -rf /',
+  '>&| f rm -rf /',
+  '>&! f rm -rf /',
+  '>>&| f rm -rf /',
+  '>>&! f rm -rf /',
+  '>&|f rm -rf /',
+  '1>&| f rm -rf /',
+  'sudo >&! f rm -rf /',
+  'find / -exec >&! f rm -rf {} \\;',
+  '>! f rm -rf /',
+  '>>| f rm -rf /',
+  '{a[0]}>f rm -rf /',
+  '{a[x+1]}>f rm -rf /',
 ]
 
 test.each(DENY_REDIR_RM)('denyReason denies %j (claude-factory-7xmz, redirect word before rm)', cmd => {
@@ -2653,6 +2665,10 @@ const ALLOW_REDIR_RM = [
   'rm acme',
   "echo '>x' rm -rf /",
   '>/dev/null echo rm -rf /',
+  'ls >&2 | wc -l',
+  'cmd 2>&1 | grep x',
+  'echo x >&2',
+  'echo {a,b} {c,d}',
 ]
 
 test.each(ALLOW_REDIR_RM)('denyReason allows %j (claude-factory-7xmz, redirect word)', cmd => {

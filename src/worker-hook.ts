@@ -1009,6 +1009,15 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
         }
       }
     }
+    if (c === '|' && !quote && />&$/.test(word)) {
+      // claude-factory-7xmz.4: zsh reads `>&|` as one redirect. The split pass ends the segment
+      // here. The joined pass keeps the `|` in the word, so the words after it stay with the command.
+      sawAmpGt = true
+      if (ampJoin) {
+        word += c
+        continue
+      }
+    }
     if (';|&\n'.includes(c)) {
       endSeg()
       continue
@@ -3434,7 +3443,12 @@ function ghAliasExpansion(text: string): string[] | undefined {
 function dropRedirectWords(words: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < words.length; i++) {
-    const m = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s.exec(words[i]!)
+    // claude-factory-7xmz.4: zsh also reads `>&|`, `>&!`, `>>&|`, `>>&!`, `>|`, `>!`. 7xmz.5: bash
+    // reads a `{a[0]}` fd name with a subscript.
+    const m =
+      /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\})(?:&>>?|>>?|<<<|<<-?|<>|<)(?:&[|!]?|[|!])?(.*)$/s.exec(
+        words[i]!,
+      )
     if (!m) {
       out.push(words[i]!)
       continue
