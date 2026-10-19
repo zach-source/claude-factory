@@ -2805,6 +2805,22 @@ test('denyReason scans blank words in a stacked eval and a deep alias chain fast
   expect(performance.now() - t).toBeLessThan(5000)
 })
 
+// claude-factory-t1xo.5: the blank pass must not multiply the alias recursion.
+test('denyReason walks a lone - alias chain with redirects fast (claude-factory-t1xo.5)', () => {
+  const entries: [string, string][] = Array.from({ length: 10 }, (_, i) => [`b${i}`, `b${i + 1} - >f`])
+  const gate: HookGate = { ghAliases: () => new Map(entries), gitAliases: () => new Map() }
+  const t = performance.now()
+  denyReason('gh b0 - 5 >f', '/root/repo', undefined, gate)
+  denyReason(`${'eval '.repeat(32)}gh b0 - 5 >f; gh pr merge 5`, '/root/repo', undefined, gate)
+  expect(performance.now() - t).toBeLessThan(1000)
+})
+
+test('denyReason denies a quoted alias chain with ALIAS_USE_REASON (claude-factory-t1xo.5)', () => {
+  const entries: [string, string][] = Array.from({ length: 3 }, (_, i) => [`b${i}`, `b${i + 1} ''`])
+  const gate: HookGate = { ghAliases: () => new Map(entries), gitAliases: () => new Map() }
+  expect(denyReason('gh b0 5', '/root/repo', undefined, gate)).toBe(ALIAS_USE_REASON)
+})
+
 // claude-factory-59pp.14: git and kubectl take the verb from the same slot.
 test.each([
   'git >/dev/null push origin main',

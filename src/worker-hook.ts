@@ -3518,6 +3518,7 @@ function ghReasonOn(
   aliasDepth: number,
   skipBlank = false,
 ): string | undefined {
+  if (spendWork(state, tail.join(' ').length + 1)) return SCAN_BUDGET_REASON
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS, undefined, skipBlank)
   const verb = vi >= 0 ? tail[vi] : undefined
   // claude-factory-zsj0: a flag after `pr` or `repo` must not become the sub word.
@@ -3547,7 +3548,10 @@ function ghReasonOn(
   // Skip this when the verb search itself is uncertain.
   // `firstVerbIndex` then does not know if `verb` is the real word.
   // The uncertain-fallback word scans below still cover that case, the same as before.
-  if (!uncertain && verb !== undefined && !GH_BUILTIN_VERBS.has(verb)) {
+  // claude-factory-t1xo.5: the blank-skipping pass resolves the alias only when it skipped a blank
+  // before the verb. Otherwise pass 1 already resolved it, and its recursion ran both passes.
+  const aliasAlreadyDone = skipBlank && !tail.slice(0, Math.max(vi, 0)).some(isBlankWord)
+  if (!uncertain && verb !== undefined && !GH_BUILTIN_VERBS.has(verb) && !aliasAlreadyDone) {
     if (ghConfigMoved) return ALIAS_USE_REASON
     if (aliasDepth > MAX_ALIAS_DEPTH) return ALIAS_USE_REASON
     const table = gate.ghAliases?.()
