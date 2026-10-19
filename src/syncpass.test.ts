@@ -45,7 +45,8 @@ function setup(names: string[], marks: Record<string, Record<string, string>> = 
       `echo "$PWD $*" >> ${log}`,
       'case "$1" in',
       "  ready) if [ -e .beads/ready.json ]; then cat .beads/ready.json; else printf '%s' '[]'; fi;;",
-      "  children|list) printf '%s' '[]';;",
+      '  children) if [ -e ".beads/children-$2.json" ]; then cat ".beads/children-$2.json"; else printf \'%s\' \'[]\'; fi;;',
+      "  list) printf '%s' '[]';;",
       '  dolt) echo origin;;',
       '  sync)',
       '    if [ -e .beads/hang ]; then exec sleep 600; fi',
@@ -156,4 +157,52 @@ test('a rig in its backoff gets no sync call; the next failure doubles the wait;
   factory(['beads'])
   const row = dispatchJson().find(x => x.id === 'rig:acme-a')
   expect(row?.error).toMatch(/^bd sync: sync failed: remote is down \(sync failed 2x, next try \d\d:\d\d\)$/)
+})
+
+const oneRig = (marks: Record<string, string>, maxRuns: number) => {
+  const [a] = setup(['acme-a'], { 'acme-a': marks })
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'acme-a', repo: a, factory: 'lifecycle', maxRuns }]),
+  )
+}
+
+test('dispatch.json names why each ready bead did not start; tick drops those rows (AC6)', () => {
+  const ready = JSON.stringify([
+    { id: 'kid', title: 't', labels: ['factory'], parent: 'acme-e' },
+    { id: 'asg', title: 't', labels: ['factory'], assignee: 'bob' },
+    { id: 'par', title: 't', labels: ['factory'] },
+    { id: 's1', title: 't', labels: ['factory'] },
+    { id: 's2', title: 't', labels: ['factory'] },
+  ])
+  oneRig(
+    {
+      'ready.json': ready,
+      'children-par.json': JSON.stringify([{ id: 'par.1', title: 'c', status: 'open' }]),
+    },
+    1,
+  )
+  factory(['beads'])
+  const rows = dispatchJson().filter(x => x.skip)
+  const skip = Object.fromEntries(rows.map(x => [x.id, x.skip]))
+  expect(skip).toEqual({
+    kid: 'child of acme-e',
+    asg: 'assigned to bob',
+    par: 'open children',
+    s2: 'rig full 1/1',
+  })
+  expect(rows.every(x => x.rig === 'acme-a')).toBe(true)
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(1)
+  const t = JSON.parse(factory(['tick']).out) as { runs: Record<string, unknown>[] }
+  expect(t.runs.some(r => r.skip)).toBe(false)
+  expect(t.runs.some(r => ['kid', 'asg', 'par', 's2'].includes(String(r.id)))).toBe(false)
+})
+
+test('a full rig gets one row and no bd ready call (AC6)', () => {
+  oneRig({ 'ready.json': bead }, 0)
+  factory(['beads'])
+  expect(dispatchJson().filter(x => x.skip)).toEqual([
+    { id: 'rig:acme-a', rig: 'acme-a', skip: 'rig full 0/0' },
+  ])
+  expect(existsSync(log) ? readFileSync(log, 'utf8') : '').not.toContain(' ready')
 })

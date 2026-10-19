@@ -270,6 +270,8 @@ export type Row = {
   mailedAt?: number
   /** a rig row, not a run: the rig has room and nothing to start */
   idle?: string
+  /** dispatch.json only: why dispatch did not start this ready bead (or a full rig); tick drops these rows */
+  skip?: string
   /** minutes its current worker has run */
   inMin?: number
   /** minutes since its worker's tail or branch head last changed */
@@ -3743,7 +3745,8 @@ async function tick(isPatrol = false) {
     out.manager.push(...skillMail(now))
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
-    out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
+    // skip rows are for people reading dispatch.json; the board, sidebar and reap() see only the rest
+    out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()).filter(r => !r.skip) : []))
     out.runs.push(
       ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
     )
@@ -4584,6 +4587,16 @@ const syncFile = () => join(HOME, 'sync.json')
  * labels never reach this file, so they cannot forge the mark the way `sweep:<station>` can. */
 const sweepGuardFile = () => join(HOME, 'sweep-guard.json')
 
+/** why a rig takes no more runs: the town's cap, or its own */
+const fullText = (
+  rig: Pick<Rig, 'name' | 'maxRuns'>,
+  busy: (string | undefined)[],
+  held: (string | undefined)[],
+) =>
+  MAX_BUSY - busy.length <= 0
+    ? `town full ${busy.length}/${MAX_BUSY}`
+    : `rig full ${busy.filter(b => b === rig.name).length + held.filter(h => h === rig.name).length}/${rig.maxRuns}`
+
 /** a rig with room that dispatch has nothing to start for and no goal to steer the manager by sits unnoticed unless the board says so */
 export const idle = (rig: Pick<Rig, 'goal'>, ready: number) => !rig.goal && ready === 0
 
@@ -4790,13 +4803,22 @@ async function dispatch() {
   // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
   const openIds: Record<string, Set<string>> = {}
   for (const rig of rigs()) {
+    // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
+    const skips = new Map<string, string>()
+    const started = new Set<string>()
+    let readyIds: string[] = []
+    let roomText = ''
+    let rigError = ''
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
       const b = beads(rig.repo, 'factory')
       // the sync runs in its own pass (syncPass): dispatch only shows how the last one went
       const syncError = syncText(synced[rig.repo])
       if (syncError) errors.push({ id: `rig:${rig.name}`, error: syncError }) // dispatch goes on: local beads are still true
-      if (room(rig, busy, undefined, held) <= 0) continue // full: no more bd calls
+      if (room(rig, busy, undefined, held) <= 0) {
+        errors.push({ id: `rig:${rig.name}`, rig: rig.name, skip: fullText(rig, busy, held) })
+        continue // full: no more bd calls
+      }
       if (linearRigs.has(rig.name)) {
         // an open Linear baseline: a pull may have labeled a bead here that the listing never confirmed
         // (claude-factory-b6c.16); hold back every ready bead until the retry resolves it
@@ -4886,11 +4908,17 @@ async function dispatch() {
       // bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and no
       // allowlist check. Drop it here too, the same as any other unmarked sweep-filed bead: a
       // bead this fresh cannot already carry a sweep-guard mark from an earlier pass.
-      const ready = b.ready().filter(x => {
-        if (excluded.has(x.id)) return false
-        const station = sweepFiler(x)
-        if (!station) return true // not a sweep-filed bead: not this guard's concern
-        return guardHandled(guardState, rig.name, x.id) // only a mark from an earlier pass lets it start
+      const everyReady = b.ready()
+      readyIds = everyReady.map(x => x.id)
+      const ready = everyReady.filter(x => {
+        const isKept = (() => {
+          if (excluded.has(x.id)) return false
+          const station = sweepFiler(x)
+          if (!station) return true // not a sweep-filed bead: not this guard's concern
+          return guardHandled(guardState, rig.name, x.id) // only a mark from an earlier pass lets it start
+        })()
+        if (!isKept) skips.set(x.id, 'sweep flood guard')
+        return isKept
       })
       // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
       // lost its own claim on the bead, to a reaper, say). `dispatchable` below drops this bead from
@@ -4922,9 +4950,35 @@ async function dispatch() {
         }
       }
       // children are looked up only for the candidates, until the rig is full
-      const eligible = dispatchable(ready, new Set(linked.keys()), Infinity).filter(
-        x => !isOwned(x) && !openChildren(b, x.id).length && !linearIds.has(x.id),
-      )
+      const startable = dispatchable(ready, new Set(linked.keys()), Infinity)
+      const startableIds = new Set(startable.map(x => x.id))
+      for (const x of ready) {
+        if (startableIds.has(x.id)) continue
+        const parent = parentOf(x)
+        skips.set(
+          x.id,
+          x.parent
+            ? `child of ${x.parent}`
+            : x.assignee
+              ? `assigned to ${x.assignee}`
+              : linked.has(x.id)
+                ? `live run ${linked.get(x.id)} works it`
+                : parent
+                  ? `child of ${parent}`
+                  : 'not startable',
+        )
+      }
+      const eligible = startable.filter(x => {
+        const why = isOwned(x)
+          ? 'owner decisions pending'
+          : openChildren(b, x.id).length
+            ? 'open children'
+            : linearIds.has(x.id)
+              ? 'Linear id unconfirmed'
+              : ''
+        if (why) skips.set(x.id, why)
+        return !why
+      })
       // a fresh plan's order wins inside each priority band; a stale or missing plan changes
       // nothing (claude-factory-dun.3). `rigPlanOf` looks up the rig safely: a plain
       // `freshPlan.rigs[rig.name]` would resolve a rig named, for example, `constructor` to an
@@ -4933,7 +4987,10 @@ async function dispatch() {
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
-        if (room(rig, busy, undefined, held) <= 0) break
+        if (room(rig, busy, undefined, held) <= 0) {
+          roomText = fullText(rig, busy, held)
+          break
+        }
         // claude-factory-wnm: a `factory:<name>` label on the bead picks a different factory to
         // compile this run from, in place of the rig's own `rig.factory`. A `station:<name>` label
         // picks where in it to start. A bad label must defer only this bead, never throw:
@@ -4942,6 +4999,7 @@ async function dispatch() {
         // - a station the named factory lacks (claude-factory-wnm.15)
         // A throw here hits the rig-level catch below, which skips every later candidate too.
         const deferCandidate = (msg: string) => {
+          skips.set(bead.id, `deferred: ${msg}`)
           errors.push({ id: bead.id, error: msg })
           try {
             b.defer(bead.id, msg)
@@ -5003,12 +5061,18 @@ async function dispatch() {
           errors.push({ id: bead.id, error })
           ghFailed = true
         }
-        if (skip) continue
+        if (skip) {
+          skips.set(bead.id, 'pre-check: already done')
+          continue
+        }
         let run, def
         try {
           ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id))
         } catch (err) {
-          if (/already claimed/.test((err as Error).message)) continue // lost the race to another worker
+          if (/already claimed/.test((err as Error).message)) {
+            skips.set(bead.id, 'claimed elsewhere')
+            continue // lost the race to another worker
+          }
           throw err
         }
         // claude-factory-wnm.13: this run is the one the pre-check's `requeued_from` exemption
@@ -5022,9 +5086,20 @@ async function dispatch() {
         }
         if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
         busy.push(rig.name)
+        started.add(bead.id)
       }
     } catch (err) {
-      errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
+      rigError = (err as Error).message
+      errors.push({ id: `rig:${rig.name}`, error: rigError })
+    } finally {
+      for (const id of readyIds)
+        if (!started.has(id))
+          errors.push({
+            id,
+            rig: rig.name,
+            skip:
+              skips.get(id) ?? (rigError ? `rig error: ${clip(rigError, 200)}` : roomText || 'not started'),
+          })
     }
   }
   writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
