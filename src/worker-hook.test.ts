@@ -32,6 +32,7 @@ import {
   scanReason,
   SHELL_ALIAS_READ_REASON,
   SHELL_ALIAS_REASON,
+  SHORT_FORM_REASON,
   shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
@@ -7429,3 +7430,87 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
 })
+
+// claude-factory-ieqm: zsh runs a command that follows `]]` in the same segment (short form).
+const SHORT_GATE: HookGate = {
+  ...AMP_GATE,
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
+const shortDeny = (c: string) => denyReason(c, '/Users/acme/widget', ['kubectl'], SHORT_GATE)
+
+test.each([
+  'if [[ 1 ]] rm -rf /',
+  'while [[ 1 ]] rm -rf /',
+  'until [[ 1 ]] rm -rf /',
+  'elif [[ 1 ]] rm -rf /',
+  'if [[ 1 ]] && [[ 1 ]] rm -rf /',
+  'if [[ 1 ]] env rm -rf /',
+  'if [[ 1 ]] sudo rm -rf /',
+  'if [[ 1 ]] x=1 rm -rf /',
+  'if [[ 1 ]] ! rm -rf /',
+  'if [[ 1 ]] time rm -rf /',
+  'if [[ 1 ]] if [[ 1 ]] rm -rf /',
+  'if [[ 1 ]] find . -exec rm -rf {} +',
+  'sh -c "if [[ 1 ]] rm -rf /"',
+  'cd / ; if [[ 1 ]] rm acme',
+  'if [[ 1 ]] cd / ; rm acme',
+])('denyReason denies %j (claude-factory-ieqm, short form after ]])', cmd => {
+  expect(shortDeny(cmd)).toBeDefined()
+})
+
+test.each([
+  'if [[ 1 ]] git push origin main',
+  'if [[ 1 ]] gh pr merge 1',
+  'if [[ 1 ]] kubectl apply -f x',
+  'if [[ 1 ]] eval rm -rf /',
+  'if [[ 1 ]] sh -c "rm -rf /"',
+])('denyReason keeps denying %j (claude-factory-ieqm)', cmd => {
+  expect(shortDeny(cmd)).toBeDefined()
+})
+
+test.each([
+  '[[ -f acme ]]',
+  'test -f acme',
+  'if [[ -f acme ]]; then echo ok; fi',
+  'if [[ -f acme ]] echo ok',
+  'if [[ -f acme ]] rm acme',
+  'echo a ]] b',
+  '[[ -f acme ]] && rm acme',
+])('denyReason allows %j (claude-factory-ieqm)', cmd => {
+  expect(shortDeny(cmd)).toBeUndefined()
+})
+
+const SHORT_PARITY = [
+  'rm -rf /',
+  'git push origin main',
+  'gh pr merge 1',
+  'sh -c "rm -rf /"',
+  'eval rm -rf /',
+  'kubectl apply -f x',
+  'rm -r foo',
+  'sudo rm -rf foo',
+  'find . -exec rm -rf {} +',
+  'ls | xargs rm -rf',
+  'BEADS_ACTOR=x bd create y',
+  'git push --force origin x',
+]
+
+test.each(SHORT_PARITY)('denyReason denies if/while [[ 1 ]] before %j (claude-factory-ieqm)', r => {
+  expect(shortDeny(r)).toBeDefined()
+  expect(shortDeny(`if [[ 1 ]] ${r}`)).toBeDefined()
+  expect(shortDeny(`while [[ 1 ]] ${r}`)).toBeDefined()
+})
+
+test('denyReason fails closed on an unquotable word after ]] (claude-factory-ieqm)', () => {
+  expect(shortDeny('if [[ 1 ]] echo "$a b"')).toBe(SHORT_FORM_REASON)
+})
+
+test.each(['rm -rf /', 'echo ok'])(
+  'denyReason bounds the cost of many ]] words, tail %j (claude-factory-ieqm)',
+  t => {
+    const start = Date.now()
+    shortDeny('x ]] '.repeat(1500) + t)
+    expect(Date.now() - start).toBeLessThan(2000)
+  },
+)

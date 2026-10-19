@@ -448,6 +448,9 @@ function spendWork(state: ScanState, n: number): boolean {
 // limit. A command with many stacked eval words can make this guard's own scan too slow. The scan
 // can then miss the 10 s PreToolUse hook timeout. A hook that times out lets the command run (fail
 // open). denyAt gives this reason instead, past MAX_SHELL_DEPTH recursion levels (fail closed).
+export const SHORT_FORM_REASON =
+  'Blocked: the zsh short form after ]] hides the command that follows it. Write if [[ ... ]]; then cmd; fi.'
+
 export const DEEP_COMMAND_REASON =
   'The factory denies this command: it nests more than 32 eval or sh -c levels, and the factory ' +
   'cannot check a command this deep in time. Run the inner command directly. Do not retry this exact command.'
