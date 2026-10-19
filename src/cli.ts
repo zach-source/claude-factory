@@ -312,7 +312,7 @@ async function launchAxManager(args: string[]) {
     fail('FACTORY_AX_MANAGER_IMAGE is not set: name the manager image (Dockerfile.worker, target manager)')
   const m = ax.remoteManager()
   if (m) fail(m)
-  const { name, policy } = await ax.launchManager(image!, args)
+  const { name, policy } = await ax.launchManager(image!, args, { rigs: rawRigs() })
   console.log(
     `the manager runs in AX task ${name}${policy ? '' : ' (its egress policy is NOT created: the task has no egress; check the AX controller)'}`,
   )
@@ -4605,7 +4605,7 @@ async function migrateToAx(args: string[]) {
     if (!r.ok) fail(`part ${i + 1} of ${parts} did not arrive: ${r.err}`)
     if ((i + 1) % 50 === 0) console.log(`sent ${i + 1} of ${parts}`)
   }
-  ax.unpackMigration('migrate.tgz')
+  ax.unpackMigration('migrate.tgz', HOME)
   rmSafe(dir, { recursive: true, force: true })
   console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
 }

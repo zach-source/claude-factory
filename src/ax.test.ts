@@ -1529,3 +1529,57 @@ test('routerAddress gives host:port of the router URL, port 80 by default, and n
   expect(ax.routerAddress('r.example.svc:80')).toBeUndefined()
   expect(ax.routerAddress(undefined)).toBeUndefined()
 })
+
+test('rewriteHomeCmd rewrites the laptop home in run state files only, with the path escaped for sed', () => {
+  const cmd = ax.rewriteHomeCmd('/home/u/factory.d/')
+  expect(cmd).toContain('-name run.json -o -name track.json -o -name state.json -o -name inbox.jsonl')
+  expect(cmd).toContain("'s/\\/home\\/u\\/factory\\.d\\([^A-Za-z0-9_.-]\\|$\\)/\\/workspace\\/w\\/home\\1/g'")
+  expect(cmd).not.toContain('prompts')
+  expect(ax.rewriteHomeCmd('')).toBe(':')
+  // run it for real on a fixture
+  const d = mkdtempSync(join(tmpdir(), 'rw-'))
+  mkdirSync(join(d, 'runs', 'r1', 'prompts'), { recursive: true })
+  const run = join(d, 'runs', 'r1', 'run.json')
+  writeFileSync(run, '{"a":"/home/u/factory.d/runs/r1/x","b":"/home/u/factoryXd/y","c":"/home/u/factory.d"}')
+  const brief = join(d, 'runs', 'r1', 'prompts', 'p.md')
+  writeFileSync(brief, '/home/u/factory.d/runs')
+  const r = Bun.spawnSync(['sh', '-c', ax.rewriteHomeCmd('/home/u/factory.d', d)])
+  expect(r.exitCode).toBe(0)
+  expect(readFileSync(run, 'utf8')).toBe(`{"a":"${d}/runs/r1/x","b":"/home/u/factoryXd/y","c":"${d}"}`)
+  expect(readFileSync(brief, 'utf8')).toBe('/home/u/factory.d/runs')
+})
+
+test('managerEgress adds the rig egress entry for a beads remote host once, and no other rig host', () => {
+  const dolt = {
+    hosts: ['dolt.example.svc'],
+    port: 3307,
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+  }
+  const other = { hosts: ['other.example.svc'] }
+  const rigs = [
+    { egress: [dolt, other], beadsRemote: { url: 'http://dolt.example.svc:3307/db' } },
+    { egress: [dolt], beadsRemote: { url: 'http://dolt.example.svc:3307/db2' } },
+    { egress: [other] },
+  ]
+  const out = ax.managerEgress({}, rigs)
+  expect(out).toEqual([{ hosts: ['claude.ai'] }, dolt])
+  const rule = ax.egressPolicy('v1', out).rules.at(-1)
+  expect(rule).toEqual({
+    https: {
+      hostnames: ['dolt.example.svc'],
+      ports: { numbers: [3307] },
+      effects: {
+        replaceHeaders: [
+          {
+            header: 'Authorization',
+            prefix: 'Basic ',
+            credentialUri: 'ate-secret://agent-vault/v1/DOLT_BASIC',
+          },
+        ],
+      },
+    },
+  })
+  expect(ax.managerEgress({}, [{ beadsRemote: { url: 'not a url' } }])).toEqual([{ hosts: ['claude.ai'] }])
+})

@@ -1,5 +1,6 @@
-import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { MANAGER_CWD, MANAGER_HOME, WS } from './ax'
 import { sq } from './harness'
 import * as worker from './worker'
 
@@ -90,11 +91,62 @@ function startManager(args: string[], session?: string) {
   herdr('pane', 'send-keys', HOST_PANE(), 'Enter')
 }
 
+type Json = Record<string, unknown>
+const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
+
+/**
+ * The `.claude.json` that lets a new CLAUDE_CONFIG_DIR skip first-start onboarding. Onboarding checks the
+ * network, and the egress gateway blocks that check. The result keeps every other key and keeps a theme that is set.
+ */
+export function seedClaudeJson(cur: Json, dirs: string[] = [MANAGER_CWD, MANAGER_HOME]): Json {
+  const projects = obj(cur.projects)
+  const seeded = Object.fromEntries(
+    dirs.map(d => [
+      d,
+      { ...obj(projects[d]), hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
+    ]),
+  )
+  return {
+    ...cur,
+    hasCompletedOnboarding: true,
+    theme: cur.theme ?? 'dark',
+    bypassPermissionsModeAccepted: true,
+    projects: { ...projects, ...seeded },
+  }
+}
+
+/** the settings.json that skips the Bypass Permissions dialog; Claude Code reads it from the user settings */
+export const seedSettings = (cur: Json): Json => ({ ...cur, skipDangerousModePermissionPrompt: true })
+
+/** merge `seed` into the JSON file `path`; a missing file starts empty. A file that is not an object is not changed. */
+function seedFile(path: string, seed: (cur: Json) => Json) {
+  let cur: Json = {}
+  if (existsSync(path)) {
+    const v: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error(`${path} is not a JSON object`)
+    cur = v as Json
+  }
+  writeFileSync(path, JSON.stringify(seed(cur), null, 2))
+}
+
+/** seed the manager Claude's config dir (CLAUDE_CONFIG_DIR, else `${WS}/claude`) before the manager starts */
+function seedClaudeConfig(log: (m: string) => void) {
+  const dir = process.env.CLAUDE_CONFIG_DIR || `${WS}/claude`
+  try {
+    mkdirSync(dir, { recursive: true })
+    seedFile(join(dir, '.claude.json'), seedClaudeJson)
+    seedFile(join(dir, 'settings.json'), seedSettings)
+  } catch (e) {
+    log(`claude config seed failed: ${(e as Error).message}`)
+  }
+}
+
 /** start herdr and the manager in its first pane; the manager resumes `session` when there is one */
 async function bringUp(args: string[], home: string, log: (m: string) => void, session?: string) {
   startHerdr(join(home, 'herdr.log'))
   // `herdr pane list` answering is the signal that the server and its first pane exist
   if (!(await waitFor(() => paneCount() > 0, 60_000))) throw new Error('herdr did not answer in 60 s')
+  seedClaudeConfig(log)
   startManager(args, session)
   log(`manager started in ${HOST_PANE()}${session ? ` (resume ${session})` : ''}`)
 }

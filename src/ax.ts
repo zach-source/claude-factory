@@ -3,6 +3,7 @@
 // queues what the worker's `factory report|mail|memory add` would have done in an outbox, which the
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
+import { sq } from './harness'
 import { WORKER_USER } from './worker'
 
 const AX = () => process.env.FACTORY_AX ?? 'ax'
@@ -616,9 +617,14 @@ export function routerAddress(url?: string) {
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
- * A value that is not a URL adds no rule. ponytail: a rig's hosts stay with the workers
+ * A value that is not a URL adds no rule. A rig's egress entry joins them when its host is the host of a
+ * rig's `beadsRemote.url`: `bd bootstrap` in the task needs the rig's Dolt server. Other rig hosts stay with the workers.
  */
-export function managerEgress(env: Record<string, string | undefined> = process.env): Egress[] {
+export type EgressRig = { egress?: Egress[]; beadsRemote?: { url: string } }
+export function managerEgress(
+  env: Record<string, string | undefined> = process.env,
+  rigs: EgressRig[] = [],
+): Egress[] {
   const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap(k => {
     try {
       const u = env[k] ? new URL(env[k]!) : null
@@ -627,18 +633,43 @@ export function managerEgress(env: Record<string, string | undefined> = process.
       return []
     }
   })
-  return [{ hosts: ['claude.ai'] }, ...rules]
+  return [{ hosts: ['claude.ai'] }, ...rules, ...beadsEgress(rigs)]
+}
+
+/** the rigs' egress entries for the hosts of their beads remotes, one per host and port */
+export function beadsEgress(rigs: EgressRig[]): Egress[] {
+  const hostOf = (url: string) => {
+    try {
+      return new URL(url).hostname
+    } catch {
+      return ''
+    }
+  }
+  const beadsHosts = new Set(rigs.flatMap(r => (r.beadsRemote ? [hostOf(r.beadsRemote.url)] : [])))
+  const seen = new Set<string>()
+  return rigs
+    .flatMap(r => r.egress ?? [])
+    .filter(e => {
+      const id = `${e.hosts.join(',')}:${e.port ?? ''}`
+      if (!e.hosts.some(h => beadsHosts.has(h)) || seen.has(id)) return false
+      seen.add(id)
+      return true
+    })
 }
 
 /**
  * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
  * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
  */
-export async function launchManager(image: string, args: string[], { tries = 24, waitMs = 5000 } = {}) {
+export async function launchManager(
+  image: string,
+  args: string[],
+  { tries = 24, waitMs = 5000, rigs = [] }: { tries?: number; waitMs?: number; rigs?: EgressRig[] } = {},
+) {
   const name = managerTask()
   launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
   for (let i = 0; i < tries; i++) {
-    if (createPolicy(name, managerEgress())) return { name, policy: true }
+    if (createPolicy(name, managerEgress(process.env, rigs))) return { name, policy: true }
     await Bun.sleep(waitMs)
   }
   return { name, policy: false }
@@ -683,11 +714,31 @@ export const managerHomeUsed = () =>
     ]),
   ).trim() === 'used'
 
+/** escape `s` as a literal in a sed pattern or replacement; `/` is the delimiter */
+const sedLit = (s: string, pattern: boolean) => s.replace(pattern ? /[\\/.[\]*^$]/g : /[\\/&]/g, '\\$&')
+
+/**
+ * The shell command that changes the laptop's factory home `from` to the task's home. It edits only the run
+ * state files: run.json, track.json, state.json and inbox.jsonl. It does not edit prompts or briefs.
+ * A match must end at a character that cannot continue a path name. So `/h/f` does not match `/h/f2`.
+ */
+export function rewriteHomeCmd(from: string, to = MANAGER_HOME) {
+  const src = from.replace(/\/+$/, '')
+  if (!src) return ':'
+  const expr = `s/${sedLit(src, true)}\\([^A-Za-z0-9_.-]\\|$\\)/${sedLit(to, false)}\\1/g`
+  return (
+    `if [ -d ${to}/runs ]; then find ${to}/runs -maxdepth 2 -type f ` +
+    `\\( -name run.json -o -name track.json -o -name state.json -o -name inbox.jsonl \\) ` +
+    `-exec sed -i -e ${sq(expr)} {} +; fi`
+  )
+}
+
 /**
  * unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home, then
- * write .migrated: `factory manager host` waits for that marker before it starts the manager
+ * write .migrated: `factory manager host` waits for that marker before it starts the manager.
+ * `laptopHome` is the laptop's factory home: run state holds it in absolute paths, and the unpack rewrites it.
  */
-export const unpackMigration = (name: string) =>
+export const unpackMigration = (name: string, laptopHome = '') =>
   must(
     managerCmd([
       'sh',
@@ -696,6 +747,7 @@ export const unpackMigration = (name: string) =>
       `set -e; mkdir -p ${MANAGER_HOME}; tar -xzf ${OWN}/${name} -C ${MANAGER_HOME}; ` +
         `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
         `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
+        `${rewriteHomeCmd(laptopHome)}; ` +
         `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
     ]),
   )
