@@ -5911,6 +5911,20 @@ test('denyReason denies 16 eval levels around many = words and rm targets, then 
   expect(ms).toBeLessThan(2000)
 }, 60000)
 
+for (const [name, body] of [
+  ['a=/rm x600 then x words', 'a=/rm '.repeat(600) + 'x '.repeat(4000)],
+  ['a=/rm -- x4000', 'a=/rm -- '.repeat(4000)],
+] as const) {
+  test(`denyReason denies 32 eval levels around ${name} in under 2 s (claude-factory-mmc9.27)`, () => {
+    const cmd = ('eval '.repeat(32) + body).slice(0, 8192 - '; rm -rf /'.length) + '; rm -rf /'
+    const t0 = performance.now()
+    const reason = denyReason(cmd, process.cwd(), ['acme'], { ...CBAI_GATE, gitAliases: () => new Map() })
+    const ms = performance.now() - t0
+    expect([REASON, SCAN_BUDGET_REASON]).toContain(reason!)
+    expect(ms).toBeLessThan(2000)
+  }, 60000)
+}
+
 test('denyReason gives env -i with 30 stacked eval words and echo the n=2 verdict in under 1 s (claude-factory-cbai)', () => {
   const { reason, ms } = cbaiTimed(cbaiEvalI(CBAI_N, 'echo hi'))
   expect(ms).toBeLessThan(1000)

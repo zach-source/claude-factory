@@ -1382,10 +1382,20 @@ function realCommandStart(words: string[], from: number, memo: Map<number, numbe
   return out
 }
 
-function rmFindDeny(cmd: string[], root?: string): boolean {
+function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolean>): boolean {
   if (!cmd.length) return false
   const b = baseWord(cmd[0]!)
-  if (b === 'rm') return isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))
+  if (b === 'rm') {
+    return (
+      isRecursiveRm(cmd) ||
+      rmTargets(cmd).some(t => {
+        if (!riskyMemo) return riskyTarget(t, root)
+        let r = riskyMemo.get(t)
+        if (r === undefined) riskyMemo.set(t, (r = riskyTarget(t, root)))
+        return r
+      })
+    )
+  }
   if (b === 'find') {
     for (let i = 0; i < cmd.length; i++) {
       if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
@@ -1398,17 +1408,22 @@ function rmFindDeny(cmd: string[], root?: string): boolean {
 // claude-factory-mmc9.22: deny-only second readings for every non-dash word with =.
 // The word can be the command (bash runs a non-ASCII or path name) or an assignment.
 // This check returns true when rm or find -exec rm runs under either reading.
-function assignmentReadingsDeny(words: string[], root?: string): boolean {
+function assignmentReadingsDeny(words: string[], root: string | undefined, state: ScanState): boolean {
   const memo = new Map<number, number>()
   // claude-factory-mmc9.26: read each start index once. Many words with = share one command
   // start. A repeated read costs O(words * targets) and can pass the hook timeout.
   const read = new Map<number, boolean>()
+  const riskyMemo = new Map<string, boolean>()
   const denyAt = (s: number): boolean => {
     if (s >= words.length) return false
     let v = read.get(s)
     if (v === undefined) {
       const b = baseWord(words[s]!)
-      v = (b === 'rm' || b === 'find') && rmFindDeny(words.slice(s), root)
+      if (b === 'rm' || b === 'find') {
+        // claude-factory-mmc9.27: charge each uncached read. Many starts (a=/rm) cost O(words) each.
+        if (spendWork(state, words.length - s)) return true
+        v = rmFindDeny(words.slice(s), root, riskyMemo)
+      } else v = false
       read.set(s, v)
     }
     return v
@@ -6396,7 +6411,7 @@ function denyAtScan(
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
-    if (assignmentReadingsDeny(words, root)) return REASON
+    if (assignmentReadingsDeny(words, root, state)) return state.work < 0 ? SCAN_BUDGET_REASON : REASON
     // claude-factory-mmc9.25: realCommand skips only an ASCII NAME=. For each word with =, read
     // the word and the command after it. This sets hasRm and hasCd for the rm and cd pair check.
     {
