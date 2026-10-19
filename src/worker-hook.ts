@@ -5910,6 +5910,28 @@ export function denyReason(
  * claude-factory-bemr: the second `false` is the `ghConfigMovedBefore` seed. No `GH_CONFIG_DIR`,
  * `XDG_CONFIG_HOME`, or `HOME` assignment has run yet either.
  */
+/**
+ * claude-factory-mozp: returns true when a comment line ends in a backslash and more text follows.
+ * A comment starts at a `#` that begins a word. The shell keeps the backslash, so the next line
+ * runs as a command. segments() joins the two lines. The check reads the raw text, one test for
+ * each line, so the cost is linear. A `#` after a space inside quotes also counts. That is a
+ * deny that is not needed, which is safe.
+ */
+function commentLineContinues(cmd: string): boolean {
+  let k = cmd.indexOf('#')
+  while (k !== -1) {
+    if (k === 0 || /[\s;&|()<>`]/.test(cmd[k - 1]!)) {
+      const e = cmd.indexOf('\n', k)
+      if (e === -1) return false
+      if (cmd[e - 1] === '\\' && /\S/.test(cmd.slice(e + 1))) return true
+      k = cmd.indexOf('#', e)
+    } else {
+      k = cmd.indexOf('#', k + 1)
+    }
+  }
+  return false
+}
+
 export function scanReason(
   command: string,
   root?: string,
@@ -5931,6 +5953,7 @@ export function scanReason(
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
+  if (commentLineContinues(command)) return COMMENT_CONTINUATION_REASON
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON

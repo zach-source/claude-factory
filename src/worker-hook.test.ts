@@ -5433,9 +5433,12 @@ const DENY_COMMENT_CONTINUATION: [string, string][] = [
   [`x="$(true # a ${BS}${NL}git push origin main${NL})"`, PUSH_REASON],
 ]
 
-test.each(DENY_COMMENT_CONTINUATION)('denyReason denies %j (comment line ends in a backslash)', (cmd, reason) => {
-  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
-})
+test.each(DENY_COMMENT_CONTINUATION)(
+  'denyReason denies %j (comment line ends in a backslash)',
+  (cmd, reason) => {
+    expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
+  },
+)
 
 const ALLOW_COMMENT_CONTINUATION = [
   `echo x#y${BS}${NL}git status`,
