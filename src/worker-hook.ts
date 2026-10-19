@@ -458,8 +458,21 @@ export const DEEP_COMMAND_REASON =
 // 31 ms deny, far inside the 10 s hook timeout.
 const MAX_SHELL_DEPTH = 32
 
-// wrapper commands whose own name we skip to find the command they run
-const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
+// wrapper commands whose own name we skip to find the command they run. `noglob` and `nocorrect`
+// are zsh precommand modifiers: the next word is the command, and they take no flags
+// (claude-factory-563n).
+const WRAPPERS = new Set([
+  'sudo',
+  'command',
+  'builtin',
+  'exec',
+  'env',
+  'nice',
+  'nohup',
+  'time',
+  'noglob',
+  'nocorrect',
+])
 
 /**
  * the lowercase basename of a command word: drops a leading backslash (`\rm`) and any path
