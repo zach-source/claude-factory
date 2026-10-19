@@ -452,10 +452,12 @@ export const DEEP_COMMAND_REASON =
   'The factory denies this command: it nests more than 32 eval or sh -c levels, and the factory ' +
   'cannot check a command this deep in time. Run the inner command directly. Do not retry this exact command.'
 
-// claude-factory-ieqm: denyAt gives this reason when a word after \`]]\` cannot be quoted for a rescan.
+// claude-factory-ieqm: cost bound. A zsh short form can chain ]] words. Each one adds a rescan.
+// More than SHORT_CHAIN_MAX ]] words after the first one deny (fail closed).
 const SHORT_CHAIN_MAX = 8
-export const SHORT_CHAIN_REASON =
-  'The factory denies this command: it has more than 8 ]] words after a zsh short form, and the factory cannot check a chain this long in time. Split the command. Do not retry this exact command.'
+export const SHORT_CHAIN_REASON = `The factory denies this command: it has more than ${SHORT_CHAIN_MAX} ]] words after a zsh short form, and the factory cannot check a chain this long in time. Split the command. Do not retry this exact command.`
+
+// claude-factory-ieqm: denyAt gives this reason when a word after ]] cannot be quoted for a rescan.
 export const SHORT_FORM_REASON =
   'The factory denies this command: a word after ]] has a quote or expansion that the factory cannot read, so it cannot check the command that follows. Write the command plainly, or use if [[ ... ]]; then cmd; fi. Do not retry this exact command.'
 

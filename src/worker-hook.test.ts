@@ -7521,6 +7521,6 @@ test.each(['rm -rf /', 'echo ok'])(
     const start = Date.now()
     const r = shortDeny('x ]] '.repeat(1500) + t)
     expect(Date.now() - start).toBeLessThan(2000)
-    if (t === 'rm -rf /') expect(r).toBeDefined()
+    expect(r).toBe(SHORT_CHAIN_REASON)
   },
 )
