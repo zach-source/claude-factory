@@ -1440,19 +1440,20 @@ function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | u
     // definition. definesFunction denies it with its own reason.
     if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
     // The head can expand to a wrapper with value flags or operands (`-u root`, `-n 5`, `5`). So
-    // scan forward to the first rm word. A find word can be a flag value, so do not stop there. One pass for each anchor: O(n).
-    let k = a + 1
-    while (k < words.length) {
-      const kb = baseWord(words[k]!)
-      if (kb === 'rm') break
-      k++
+    // scan forward over every rm word. An rm word can be a flag value, so the real rm can come
+    // later. The first rm word gets the full rule. Each later rm word gets the recursive-flag rule.
+    // One pass for each anchor: O(n).
+    let first = true
+    for (let k = a + 1; k < words.length; k++) {
+      if (baseWord(words[k]!) !== 'rm') continue
+      if (isRecursiveRm(words, k)) return 'deny'
+      if (!first) continue
+      first = false
+      const rest = realCommand(words.slice(k))
+      if (!rest.length || baseWord(rest[0]!) !== 'rm') continue
+      if (isRecursiveRm(rest) || rmTargets(rest).some(t => riskyTarget(t, root))) return 'deny'
+      result = 'rm'
     }
-    if (k >= words.length) continue
-    const rest = realCommand(words.slice(k))
-    if (!rest.length) continue
-    if (baseWord(rest[0]!) !== 'rm') continue
-    if (isRecursiveRm(rest) || rmTargets(rest).some(t => riskyTarget(t, root))) return 'deny'
-    result = 'rm'
   }
   return result
 }
