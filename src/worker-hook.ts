@@ -1425,6 +1425,34 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
   if (firstSingle >= 0) anchors.push(firstSingle)
 }
 
+/**
+ * claude-factory-2a3i: reads the word after each dynamic command word as a possible rm or find.
+ * Returns 'deny' for a recursive or risky rm, or a find -exec/-execdir rm. Returns 'rm' for an
+ * allowed rm (the caller then applies the rm + cd rule). Returns undefined otherwise.
+ * One slice for each anchor. commandAnchors caps the anchors.
+ */
+function dynamicHeadRmReading(words: string[], root: string): 'deny' | 'rm' | undefined {
+  let result: 'rm' | undefined
+  for (const a of commandAnchors(words)) {
+    if (!dynamicCommandWord(words[a]!)) continue
+    let k = a + 1
+    while (k < words.length && words[k]!.length > 1 && words[k]!.startsWith('-')) k++
+    const rest = realCommand(words.slice(k))
+    if (!rest.length) continue
+    const rb = baseWord(rest[0]!)
+    if (rb === 'rm') {
+      if (isRecursiveRm(rest) || rmTargets(rest).some(t => riskyTarget(t, root))) return 'deny'
+      result = 'rm'
+    } else if (rb === 'find') {
+      for (let i = 0; i < rest.length; i++) {
+        if (rest[i] !== '-exec' && rest[i] !== '-execdir') continue
+        if (i + 1 < rest.length && baseWord(rest[i + 1]!) === 'rm' && isRecursiveRm(rest, i + 1)) return 'deny'
+      }
+    }
+  }
+  return result
+}
+
 function commandAnchors(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
@@ -6352,6 +6380,11 @@ function denyAtScan(
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
+    // claude-factory-2a3i: a dynamic command word can expand to `command`, `sudo` or `env`, so the
+    // word after it can be the real rm or find. Deny-only: cmd, b and operandSkip stay unchanged.
+    const dynRm = dynamicHeadRmReading(words, root)
+    if (dynRm === 'deny') return REASON
+    if (dynRm === 'rm') hasRm = true
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
