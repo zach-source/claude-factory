@@ -5431,6 +5431,15 @@ const DENY_COMMENT_CONTINUATION: [string, string][] = [
   [`bash -c 'true #a${BS}'"${NL}git push origin main"`, COMMENT_CONTINUATION_REASON],
   [`eval 'true #a${BS}'"${NL}"'git push origin main'`, COMMENT_CONTINUATION_REASON],
   [`echo $(sh -c 'true #a${BS}'"${NL}"'git push origin main')`, COMMENT_CONTINUATION_REASON],
+  // every character that can start a word before the comment hash
+  [`true|#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true&&#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true&#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`(true)#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`(#a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo $(#a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`true\t#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
   // the rows from the bead, with a space before the backslash: the push word is already visible
   [`true # a ${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
   [`echo $(true # a ${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
@@ -5451,6 +5460,7 @@ const ALLOW_COMMENT_CONTINUATION = [
   `echo "#"${BS}${NL}git status`,
   `echo a #b${NL}git status`,
   `git status # note${BS}`,
+  `git status # note${BS}${NL}  `,
 ]
 
 test.each(ALLOW_COMMENT_CONTINUATION)('denyReason allows %j (no comment continuation)', cmd => {
