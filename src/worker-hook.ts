@@ -6333,18 +6333,6 @@ function denyAtScan(
       if (inner === 'rm') hasRm = true
       if (inner === 'cd') hasCd = true
     }
-    // claude-factory-4iod.5: a glued first word (`{git push`) hides from every word scan, so
-    // the first glued body runs the full guard. Its own later glued bodies are suffixes of it:
-    // the recursion reads them, so one call per level keeps the cost linear.
-    const glued = words.findIndex((w, k) => k >= 1 && w.startsWith('{') && w !== '{' && w !== '{}')
-    if (glued > 0) {
-      const head = words[glued]!.replace(/^\{+/, '')
-      const text = (head ? [head, ...words.slice(glued + 1)] : words.slice(glued + 1)).join(' ')
-      if (text) {
-        const r = denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
-        if (r) return r
-      }
-    }
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
@@ -6410,6 +6398,18 @@ function denyAtScan(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
+    // claude-factory-4iod.5: a glued first word (`{git push`) hides from every word scan, so
+    // the first glued body runs the full guard. Its own later glued bodies are suffixes of it:
+    // the recursion reads them, so one call per level keeps the cost linear.
+    const glued = words.findIndex((w, k) => k >= 1 && w.startsWith('{') && w !== '{' && w !== '{}')
+    if (glued > 0) {
+      const head = words[glued]!.replace(/^\{+/, '')
+      const text = (head ? [head, ...words.slice(glued + 1)] : words.slice(glued + 1)).join(' ')
+      if (text) {
+        const r = denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+        if (r) return r
+      }
+    }
     // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
     const stdinShell = shellStdinReason(words, state)
     if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true
