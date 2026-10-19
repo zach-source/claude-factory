@@ -1390,6 +1390,7 @@ function wrapperReadingsDeny(words: string[], root: string | undefined): { deny:
     }
     if (w === '--') {
       let k = j + 1
+      if (name === 'env' && words[k] === '-') k++
       if (name === 'env' || name === 'sudo') while (k < n && wrapperAssignmentOperand(words[k]!)) k++
       after(name, k)
       return

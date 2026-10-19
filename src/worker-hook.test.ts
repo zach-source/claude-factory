@@ -7480,6 +7480,10 @@ const DENY_21UX: string[] = [
   'env -i -- a.b=1 rm -rf /',
   'env -u X -- 1A=x rm -rf /',
   'sudo -- 1A=x rm -rf /',
+  'env -- - rm -rf /',
+  'env -i -- - rm -rf /',
+  'env -iu X -- - rm -rf /',
+  'env -- - a.b=1 rm -rf /',
 ]
 test.each(DENY_21UX)('denyReason denies %j (claude-factory-21ux)', cmd => {
   expect(denyReason(cmd)).toBe(REASON)
@@ -7503,6 +7507,7 @@ const ALLOW_21UX: string[] = [
   'cd x; command -V rm',
   'env FOO=1 ls',
   'env a.b=1 ls',
+  'env -- - ls',
   'xargs -n 1 echo',
 ]
 // Accepted over-deny: 'time -l echo rm -rf /' denies. The flag can take echo as its value.
