@@ -228,6 +228,15 @@ export const HEREDOC_REASON =
   "Use a quoted delimiter such as <<'EOF', or write the text to a file. Do not retry this exact " +
   'command.'
 
+// claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
+// guard denies every shell function definition.
+export const FUNCTION_DEF_REASON =
+  'The factory denies this command: it defines a shell function. A function name can hide a git, ' +
+  'gh, sh, eval, kubectl or rm word from this guard, and the guard cannot follow the call. Write ' +
+  'the commands plainly, or write the function to a .scratch script file with the Write tool and ' +
+  'run it with bash or zsh. A heredoc write of the function is also denied. Do not retry this ' +
+  'exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -425,13 +434,28 @@ const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', '
  * run the real binaries, so every guard must see them as `git`, `gh` and `sh`. APFS also folds
  * U+017F (long s) to `s`, so the fold goes through upper case: `toLowerCase` alone keeps it.
  */
-function baseWord(w: string): string {
+function baseWordUncached(w: string): string {
   const s = w.replace(/^\\/, '')
   const i = s.lastIndexOf('/')
   const b = i >= 0 ? s.slice(i + 1) : s
   // ASCII fast path: the upper-then-lower fold is slow on huge scans
   return /[^\x00-\x7f]/.test(b) ? b.toUpperCase().toLowerCase() : b.toLowerCase()
 }
+
+// claude-factory-4i60.14: a scan reads the same few words many times. The cache key is the exact
+// word and the value is the uncached result, so no verdict changes. It clears at the size bound.
+const BASE_WORD_CACHE_MAX = 4096
+const baseWordCache = new Map<string, string>()
+export function baseWord(w: string): string {
+  let r = baseWordCache.get(w)
+  if (r === undefined) {
+    r = baseWordUncached(w)
+    if (baseWordCache.size >= BASE_WORD_CACHE_MAX) baseWordCache.clear()
+    baseWordCache.set(w, r)
+  }
+  return r
+}
+export { baseWordUncached as baseWordForTest }
 
 /** a command substitution found inside a double-quoted span: its body, and the count of segments before it */
 interface DqSubstitution {
@@ -816,6 +840,7 @@ type SegInfo = {
   deep?: boolean
   // claude-factory-wmsr: a # that may start a comment holds a quote in its line
   comment?: boolean
+  funcDef?: boolean
   // claude-factory-wmsr: a here-document that segments() cannot read with certainty
   heredoc?: boolean
 }
@@ -881,8 +906,13 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     heredocOff = true
     pending.length = 0
   }
+  // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
+  // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
+  let exemptPrev: boolean = false
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
+    const wasExempt: boolean = exemptPrev
+    exemptPrev = false
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir: boolean = redirPrev
     redirPrev = false
@@ -937,6 +967,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
         redirPrev = afterRedir
         i++
         lastSig = prevSig
+        exemptPrev = wasExempt
         continue
       }
       word += cmd[++i]
@@ -981,6 +1012,16 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       // add no marker, and neither does the `)` that closes them. `<(` and `>(` keep one, because a word after them must stay in the push tail.
       const prev = cmd[i - 1] ?? ''
       if (c === '(') {
+        // claude-factory-4i60: an empty `()` pair after a word is a function definition.
+        if (info && !wasExempt) {
+          let j = i + 1
+          while (j < cmd.length) {
+            if (cmd[j] === ' ' || cmd[j] === '\t' || cmd[j] === '\n') j++
+            else if (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+            else break
+          }
+          if (cmd[j] === ')') info.funcDef = true
+        }
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
         const pair = prevSig === '('
@@ -1104,9 +1145,54 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
+    exemptPrev = c === '$' || c === '<' || c === '>' || c === '='
   }
   endSeg()
   return segs.filter(s => s.length > 0)
+}
+
+// claude-factory-4i60: words that can come before a `function` keyword in a command position.
+const FUNCTION_PREFIX_WORDS = new Set([
+  '{',
+  '!',
+  'time',
+  '-p',
+  'then',
+  'do',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+])
+
+const FUNCTION_TABLE_WORD = /^(dis_)?functions(\[|\+?=|$)/
+const FUNCTION_IMPORT_VALUE = /^[^=]*=\(\) \{/
+
+/**
+ * claude-factory-4i60: true when this segment defines a shell function with the `function`
+ * keyword. The lexer already drops quotes and escapes, so `\function` matches too.
+ */
+function namesFunctionDefinition(words: string[]): boolean {
+  // claude-factory-4i60.15: every check below needs one of these strings in a word
+  if (!/function|BASH_FUNC_|=\(\) \{/.test(joinedWords(words))) return false
+  let k = 0
+  while (k < words.length && FUNCTION_PREFIX_WORDS.has(words[k]!)) k++
+  if (words[k] === 'function') return true
+  // claude-factory-4i60.5: a command position also follows `{` and the like inside
+  // the segment (zsh `repeat 1 {`, `if [[ 1 ]] {`, `} always {`), `repeat <word>`, and `time --`.
+  for (let j = 1; j < words.length; j++) {
+    if (words[j] !== 'function') continue
+    const prev = words[j - 1]!
+    if (FUNCTION_PREFIX_WORDS.has(prev) && prev !== '-p' && prev !== 'time') return true
+    if (prev === ']]') return true
+    if (words[j - 2] === 'repeat') return true
+    if (prev === '--' && (words[j - 2] === 'time' || words[j - 2] === '-p')) return true
+  }
+  // the zsh functions table, a bash BASH_FUNC_ import, and a bash function-import value
+  return words.some(
+    w => FUNCTION_TABLE_WORD.test(w) || w.includes('BASH_FUNC_') || FUNCTION_IMPORT_VALUE.test(w),
+  )
 }
 
 /** true when `w` is a short-flag cluster (e.g. `-rf`) or a long flag (`--recursive`) that means recursive */
@@ -5836,6 +5922,7 @@ function denyAtScan(
   const subs: DqSubstitution[] = []
   const quoteInfo: SegInfo = {
     dollarQuote: false,
+    funcDef: false,
     state,
   }
   const segs = segments(command, quoteInfo, subs)
@@ -5843,6 +5930,7 @@ function denyAtScan(
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   if (quoteInfo.heredoc) return HEREDOC_REASON
   if (quoteInfo.comment) return COMMENT_REASON
+  let definesFunction = quoteInfo.funcDef
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
@@ -5870,6 +5958,7 @@ function denyAtScan(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
+    if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
@@ -5982,6 +6071,7 @@ function denyAtScan(
   if (tailReason) return tailReason
   if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
+  if (definesFunction) return FUNCTION_DEF_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
