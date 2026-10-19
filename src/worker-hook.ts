@@ -1374,7 +1374,7 @@ function realCommandStart(words: string[], from: number, memo: Map<number, numbe
   return out
 }
 
-function rmFindDeny(cmd: string[], root: string): boolean {
+function rmFindDeny(cmd: string[], root?: string): boolean {
   if (!cmd.length) return false
   const b = baseWord(cmd[0]!)
   if (b === 'rm') return isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))
@@ -1388,7 +1388,7 @@ function rmFindDeny(cmd: string[], root: string): boolean {
 }
 
 // plan3 prototype: deny-only second readings for every non-dash word with =.
-function assignmentReadingsDeny(words: string[], root: string): boolean {
+function assignmentReadingsDeny(words: string[], root?: string): boolean {
   const memo = new Map<number, number>()
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
