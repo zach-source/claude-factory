@@ -765,6 +765,8 @@ type SegInfo = {
   funcDef?: boolean
   // claude-factory-wmsr: a here-document that segments() cannot read with certainty
   heredoc?: boolean
+  // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
+  gluedRedir?: boolean
 }
 
 const HAZARD_RE = /['"`\\]/
@@ -851,7 +853,14 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz): void {
  * The split reading (dash) comes first. The joined reading (bash, zsh) follows it and keeps &> in
  * its own word, so the words after the redirect stay with the command.
  */
-function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin = false): string[][] {
+const FD_PREFIX_RE = /^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\})$/
+function segments(
+  cmd: string,
+  info?: SegInfo,
+  subs?: DqSubstitution[],
+  ampJoin = false,
+  cutRedir = false,
+): string[][] {
   const segs: string[][] = []
   let sawAmpGt = false
   let cur: string[] = []
@@ -1025,6 +1034,12 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
+    // claude-factory-4a4o: bash and zsh start a redirect at an unquoted < or > inside a word, so
+    // `rm>f -rf /` runs rm. The default reading keeps one word. The cut reading ends the word here.
+    if ((c === '<' || c === '>') && hasWord && !/[<>]/.test(word) && !FD_PREFIX_RE.test(word)) {
+      if (info) info.gluedRedir = true
+      if (cutRedir) endWord()
+    }
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
@@ -1033,7 +1048,15 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
   endSeg()
   const out = segs.filter(s => s.length > 0)
   if (sawAmpGt && !ampJoin)
-    out.push(...segments(cmd, { dollarQuote: false, state: info?.state, deep: info?.deep }, undefined, true))
+    out.push(
+      ...segments(
+        cmd,
+        { dollarQuote: false, state: info?.state, deep: info?.deep },
+        undefined,
+        true,
+        cutRedir,
+      ),
+    )
   return out
 }
 
@@ -6221,6 +6244,11 @@ function denyAtScan(
     state,
   }
   const segs = segments(command, quoteInfo, subs)
+  // claude-factory-4a4o: a redirect glued to a word is a second reading. It only adds segments.
+  if (quoteInfo.gluedRedir && !quoteInfo.deep)
+    segs.push(
+      ...segments(command, { dollarQuote: false, state, deep: quoteInfo.deep }, undefined, false, true),
+    )
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
