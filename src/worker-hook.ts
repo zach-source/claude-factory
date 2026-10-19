@@ -64,7 +64,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join as joinPath, resolve as resolvePath } from 'node:path'
+import { join as joinPath, posix, resolve as resolvePath } from 'node:path'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -241,6 +241,15 @@ export const XARGS_REASON =
   'Run the git or gh command directly, with every argument in the command line itself. ' +
   'Do not retry this exact command.'
 
+// claude-factory-l43b: a shell word with no -c script reads its script from stdin, a here-string
+// or a here-document. The text that feeds it is not in this word list, so this guard cannot read
+// the script. xargs before a shell word hides its script in the same way.
+export const SHELL_STDIN_REASON =
+  'The factory denies this command: a shell word (sh, bash, zsh, dash or a dynamic word) can read ' +
+  'its script from a pipe, a redirect or a here-string, or xargs runs a shell. This guard cannot ' +
+  'read that script. Run the commands directly, or run a script file with a literal name. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-38jm: reason for a dynamic word in the option slot of a shell call.
 export const SH_DYNAMIC_FLAG_REASON =
   'The factory denies this command: a word in the option slot of a sh, bash, zsh or dash call ' +
@@ -384,6 +393,11 @@ interface ScanState {
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
+  // claude-factory-l43b: true when the raw command holds a pipe, a < character or a coproc word.
+  // Then a shell word can read its script from stdin. Set once in scanReason, never reset.
+  stdinFed: boolean
+  /** claude-factory-l43b: set when a shell reads stdin. denyReason returns SHELL_STDIN_REASON last, so a more specific reason from the same command wins. */
+  stdinDeferred: boolean
   globalGitConfig: boolean
   gitWord: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
@@ -1482,6 +1496,14 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
   return v !== undefined && v.includes('BEADS_ACTOR')
 }
 
+// claude-factory-sft4: true for a word that is, or can expand at run time to, sh, bash, zsh or
+// dash. A variable, a glob, a brace group or a tilde in this slot hides the shell name, so the
+// guard reads the -c script after it. The script is denied only when the script itself is denied.
+const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash'])
+function shellSlotWord(w: string): boolean {
+  return SHELL_NAMES.has(baseWord(w)) || /[$`*?[\]{}]/.test(w) || w.startsWith('~')
+}
+
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
 // way anyShellReason finds it: the first flag cluster that holds c (or a dynamic word), then the first word after it
 // that is not itself a flag, or the word right after a literal --.
@@ -1515,15 +1537,17 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
-    if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+    if (shellSlotWord(words[k]!)) {
       // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
       // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
       if (k >= slotEnd) {
         const walk = shOptionSlotWalk(words, k)
-        if (walk.dynamic) return true
+        if (walk.dynamic && SHELL_NAMES.has(bw)) return true
         slotEnd = walk.end
       }
-      const script = shCScriptValue(words, k)
+      // A brace list word is denied as a dynamic verb before this scan matters. Reading its script
+      // here would change that reason to the BEADS_ACTOR one (claude-factory-38jm AC4).
+      const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true
@@ -1746,11 +1770,198 @@ function touchesBeadsActor(words: string[], state: ScanState, depth = 0): boolea
  */
 function xargsHidesOperand(words: string[]): boolean {
   for (let i = 0; i < words.length; i++) {
-    if (baseWord(words[i]!) !== 'xargs') continue
+    if (baseWord(words[i]!.replace(/[<>][\s\S]*$/, '')).toLowerCase() !== 'xargs') continue
     for (let j = i + 1; j < words.length; j++) {
       const b = baseWord(words[j]!)
       if (b === 'git' || b === 'gh') return true
     }
+  }
+  return false
+}
+
+// claude-factory-l43b: a redirect word starts with an optional fd number, then < or >.
+const REDIRECT_WORD = /^\d*[<>]/
+const REDIRECT_OPERATOR = /^\d*(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
+
+/** Returns how many leading redirect words (and their targets) `words` has. */
+function leadingRedirects(words: string[]): number {
+  let i = 0
+  while (i < words.length && REDIRECT_WORD.test(words[i]!)) {
+    i += REDIRECT_OPERATOR.test(words[i]!) ? 2 : 1
+  }
+  return Math.min(i, words.length)
+}
+
+const SHELL_VALUE_LONG_FLAGS = new Set(['--rcfile', '--init-file'])
+
+const SHELL_SAFE_LONG_FLAGS = new Set([
+  '--norc',
+  '--noprofile',
+  '--posix',
+  '--login',
+  '--verbose',
+  '--restricted',
+  '--noediting',
+  '--debugger',
+])
+
+/**
+ * claude-factory-l43b.10/.14: true when a shell operand names stdin. It folds //, ./ and .. so
+ * `//dev/stdin` matches. It matches by tail, because the working directory is unknown.
+ */
+function stdinPathOperand(word: string): boolean {
+  const n = posix.normalize(word)
+  return /(^|\/)stdin$/.test(n) || /(^|\/)fd\/\d+$/.test(n) || /^\d+$/.test(n)
+}
+
+/**
+ * claude-factory-l43b.16: true only for a plain script path. Any quote, $, glob, redirect,
+ * comment, space or other shell syntax in the word fails the charset, so the guard denies it.
+ */
+function plainScriptOperand(w: string): boolean {
+  return /^[A-Za-z0-9_.\/@+,-]+$/.test(w) && !w.startsWith('-') && !stdinPathOperand(w)
+}
+
+/**
+ * claude-factory-l43b: true when the shell word at `words[k]` can read its script from stdin.
+ * This is a strict parse. It gives false only for a -c script before the operand, or for a plain
+ * script path as the first operand. Every other word shape gives true.
+ */
+function shellReadsStdin(words: string[], k: number): boolean {
+  for (let i = k + 1; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--') {
+      const next = words[i + 1]
+      return next === undefined || !plainScriptOperand(next)
+    }
+    if (isShCCluster(w)) return false
+    if (SHELL_VALUE_LONG_FLAGS.has(w)) {
+      // claude-factory-l43b.21: bash -i reads the rcfile, so a non-plain value can name stdin.
+      i++
+      if (!plainScriptOperand(words[i] ?? '')) return true
+      continue
+    }
+    if (SHELL_SAFE_LONG_FLAGS.has(w)) continue
+    if (/^[-+][A-Za-z]+$/.test(w)) {
+      const flags = w.slice(1)
+      if (flags.includes('s')) return true
+      for (const _ of flags.match(/[oO]/g) ?? []) {
+        i++
+        if (!/^[A-Za-z_]+$/.test(words[i] ?? '')) return true
+      }
+      continue
+    }
+    return !plainScriptOperand(w)
+  }
+  return true
+}
+
+const SOURCE_WORDS = new Set(['source', '.'])
+
+/**
+ * claude-factory-l43b.5: true when `w` names a shell. A redirect can stick to the word
+ * (`sh<<<P`, `sh<f`), so this drops everything from the first < or > before it reads the name.
+ */
+function isShellWord(w: string): boolean {
+  return SHELL_NAMES.has(baseWord(w.replace(/[<>][\s\S]*$/, '')).toLowerCase())
+}
+
+/**
+ * claude-factory-l43b: a shell word with no -c script, in a command that a pipe, a redirect or a
+ * coproc can feed. Covers a literal shell word and a dynamic command word. Returns the reason.
+ */
+function shellStdinReason(words: string[], state: ScanState): string | undefined {
+  if (!state.stdinFed) return undefined
+  for (let j = 0; j < words.length; j++) {
+    if (isShellWord(words[j]!) && shellReadsStdin(words, j)) return SHELL_STDIN_REASON
+  }
+  const lead = leadingRedirects(words)
+  const rest = lead ? words.slice(lead) : words
+  for (const a of commandAnchors(rest)) {
+    if (dynamicCommandWord(rest[a]!) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
+    // claude-factory-l43b.20: a dynamic anchor can be xargs, so a shell word after it denies.
+    if (dynamicCommandWord(rest[a]!) && rest.slice(a + 1).some(isShellWord)) return SHELL_STDIN_REASON
+    // claude-factory-l43b.9: `source` and `.` run the file they read like a shell script.
+    if (SOURCE_WORDS.has(baseWord(rest[a]!)) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
+  }
+  return undefined
+}
+
+const XARGS_REPLACE_FLAG = /^-[^-]*[IiJ]|^--replace(=|$)/
+
+const XARGS_VALUE_FLAGS = new Set([
+  '-I',
+  '-i',
+  '-J',
+  '-R',
+  '-S',
+  '-n',
+  '-L',
+  '-l',
+  '-P',
+  '-s',
+  '-E',
+  '-e',
+  '-d',
+  '-a',
+  '--max-args',
+  '--max-procs',
+  '--max-lines',
+  '--max-chars',
+  '--delimiter',
+  '--arg-file',
+  '--eof',
+  '--replace',
+])
+
+/**
+ * claude-factory-l43b: true when `words` has an `xargs` word with a shell word after it, or a
+ * dynamic word in the command slot. `xargs sh -c` takes its script from words that xargs can
+ * add from its own stdin, so this guard cannot read the script.
+ */
+function xargsRunsShell(words: string[]): boolean {
+  for (let i = 0; i < words.length; i++) {
+    if (baseWord(words[i]!.replace(/[<>][\s\S]*$/, '')).toLowerCase() !== 'xargs') continue
+    const cands: number[] = []
+    for (let j = i + 1; j < words.length; j++) {
+      if (isShellWord(words[j]!)) return true
+    }
+    let j = i + 1
+    while (j < words.length) {
+      const w = words[j]!
+      if (w === '--') {
+        j++
+        continue
+      }
+      if (!w.startsWith('-') || w === '-') break
+      if (XARGS_VALUE_FLAGS.has(w)) {
+        j += 2
+        continue
+      }
+      if (j + 1 < words.length && dynamicCommandWord(words[j + 1]!)) cands.push(j + 1)
+      j++
+    }
+    if (j < words.length && dynamicCommandWord(words[j]!)) cands.push(j)
+    // claude-factory-l43b.16: xargs adds words from its stdin to the shell argv, so any shell
+    // word after xargs denies.
+    // A dynamic command word with a literal -c script is scanned by anyShellReason. A replace flag
+    // or a # word makes that script word unreadable, so those deny.
+    const replaced = words.slice(i + 1).some(w => XARGS_REPLACE_FLAG.test(w))
+    for (const c of cands) if (replaced || !hasLiteralCScript(words, c)) return true
+  }
+  return false
+}
+
+/** True when a -c cluster after `words[k]` has a plain, non-flag script word after it. */
+function hasLiteralCScript(words: string[], k: number): boolean {
+  for (let i = k + 1; i < words.length; i++) {
+    if (!isShCCluster(words[i]!)) continue
+    for (let m = i + 1; m < words.length; m++) {
+      if (words[m] === '--') continue
+      if (words[m]!.startsWith('-')) continue
+      return !dynamicWord(words[m]!) && !words[m]!.startsWith('#')
+    }
+    return false
   }
   return false
 }
@@ -5317,6 +5528,9 @@ function anyShellReason(
 ): string | undefined {
   let nc = -1
   let nd = -1
+  let scriptNc = -1
+  let scriptK = 0
+  let scriptMoved = false
   let slotEnd = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
@@ -5359,23 +5573,31 @@ function anyShellReason(
       const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
       return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
     }
-    if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+    if (shellSlotWord(words[j]!)) {
       // claude-factory-38jm: a shell word below slotEnd is a value word of an earlier walk. Its
       // walk is a suffix of that one, so it ends the same way. Skipping it keeps the scan O(n).
       if (j >= slotEnd) {
         const walk = shOptionSlotWalk(words, j)
-        if (walk.dynamic) return SH_DYNAMIC_FLAG_REASON
+        if (walk.dynamic && SHELL_NAMES.has(bw)) return SH_DYNAMIC_FLAG_REASON
         slotEnd = walk.end
       }
       if (nc < j) {
         nc = j
-        while (nc < words.length && !possibleShCCluster(words[nc]!)) nc++
+        // A dynamic shell word is no literal shell name, so a dynamic word after it is no flag.
+        // That keeps nc fixed over a run of such words and the script memo O(n).
+        const isClusterAt = SHELL_NAMES.has(bw) ? possibleShCCluster : isShCCluster
+        while (nc < words.length && !isClusterAt(words[nc]!)) nc++
       }
       if (nd < j) {
         nd = j
         while (nd < words.length && words[nd] !== '--') nd++
       }
       if (nc >= nd) continue
+      const literal = SHELL_NAMES.has(baseWord(words[j]!))
+      if (scriptNc === nc && scriptMoved === moved) {
+        if (literal) j = scriptK
+        continue
+      }
       let k = nc + 1
       let found: string | undefined
       for (; k < words.length; k++) {
@@ -5391,7 +5613,10 @@ function anyShellReason(
         if (found) break
       }
       if (found) return found
-      j = k
+      scriptNc = nc
+      scriptK = k
+      scriptMoved = moved
+      if (literal) j = k
       continue
     }
     if (bw === 'eval') {
@@ -5595,6 +5820,8 @@ export function scanReason(
     branchChange: false,
     headPush: false,
     gitAdminPath: false,
+    stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
+    stdinDeferred: false,
     globalGitConfig: false,
     gitWord: false,
     substFallbacks: 0,
@@ -5606,12 +5833,13 @@ export function scanReason(
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
-  if (!state.headPush) return undefined
+  if (!state.headPush) return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
   // inside a .git-named path. cwdInsideGitDir reads gate.cwd, not the command text, so it also
   // denies a write this guard's own word scan cannot read, such as a shell-variable target.
-  return state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd) ? PUSH_REASON : undefined
+  if (state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd)) return PUSH_REASON
+  return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
 }
 
 // claude-factory-1zr5: the most alias expansions one word can chain through. A longer chain denies.
@@ -5874,6 +6102,9 @@ function denyAt(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
+    // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
+    const stdinShell = shellStdinReason(words, state)
+    if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true
     if (
       configUse === 'write' ||
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))

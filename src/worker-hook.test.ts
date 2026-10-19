@@ -427,6 +427,12 @@ test('scanReason denies a 40000-word sh -- scan, fast, no personOnly (claude-fac
   expect(scanReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
 
+test('scanReason denies a 40000-word dynamic-shell-word scan, fast (claude-factory-sft4)', () => {
+  expect(scanReason('echo ' + '$S '.repeat(SCAN_N) + '-c ' + '-x '.repeat(SCAN_N) + '; rm -rf x')).toBe(
+    REASON,
+  )
+}, 500)
+
 test('scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
   expect(scanReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
@@ -5049,6 +5055,90 @@ test('a single slow headOf call that spends the whole gate budget also skips the
     dateSpy.mockRestore()
   }
 })
+
+// claude-factory-sft4: a dynamic word in the shell slot (a variable, a glob, a brace or a tilde)
+// expands to sh, bash, zsh or dash at run time. The guard must still read the -c script.
+const SFT4_GATE = {
+  headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main'),
+  originHead: () => 'main',
+}
+const SFT4_PUSH = "'git push origin main'"
+const SFT4_DENY = [
+  `SH=sh; $SH -c ${SFT4_PUSH}`,
+  `/bin/s? -c ${SFT4_PUSH}`,
+  `s{h,} -c ${SFT4_PUSH}`,
+  `SH=sh; \${SH} -c ${SFT4_PUSH}`,
+  `SH=sh; "$SH" -c ${SFT4_PUSH}`,
+  `SH=sh; $SH -lc ${SFT4_PUSH}`,
+  `SH=sh; $SH -e -c ${SFT4_PUSH}`,
+  `/bin/[s]h -c ${SFT4_PUSH}`,
+  `/bin/sh* -c ${SFT4_PUSH}`,
+  `s{h..h} -c ${SFT4_PUSH}`,
+  `~/s? -c ${SFT4_PUSH}`,
+  `~x -c ${SFT4_PUSH}`,
+  `s[h -c ${SFT4_PUSH}`,
+  `s]h -c ${SFT4_PUSH}`,
+  `s{h -c ${SFT4_PUSH}`,
+  `s}h -c ${SFT4_PUSH}`,
+  `env /bin/s? -c ${SFT4_PUSH}`,
+  `SH=sh; env $SH -c ${SFT4_PUSH}`,
+  `SH=sh; nice $SH -c ${SFT4_PUSH}`,
+  `SH=sh; sudo -u x $SH -c ${SFT4_PUSH}`,
+  `SH=sh; timeout 5 $SH -c ${SFT4_PUSH}`,
+  'SH=sh; $SH -c "git push origin main"',
+  "SH=sh; $SH -c 'rm -rf /'",
+  `$E eval "git push origin main; echo" -c x`,
+  `$E eval 'git push origin main;' -c x`,
+  `$E env -S 'git push origin main' -c x`,
+  `nice $N eval 'git push origin main' -c x`,
+  `env -S '/bin/s?' -c ${SFT4_PUSH}`,
+  `env -S "/bin/s? -c 'git push origin main'"`,
+  `"\`echo sh\`" -c ${SFT4_PUSH}`,
+  `"\`echo /bin/sh\`" -c ${SFT4_PUSH}`,
+  `"\`echo sh\`" -c 'rm -rf x'`,
+  `"\`echo sh\`" -c 'gh pr merge 1'`,
+  `$X env -C /tmp/other sh -c 'git push'`,
+  `$X env -C /tmp/other sh -c 'git push origin'`,
+  `$X env -C /tmp/other sh -c 'git push origin HEAD'`,
+  `$X env -C /tmp/other sh -c 'git send-pack origin HEAD'`,
+  `$X env --chdir /tmp/other bash -c 'git push'`,
+  `$X env -C /tmp/other zsh -lc 'git push'`,
+  `$X env -C /tmp/other sh -c -- 'git push'`,
+  `"$X" env -C /tmp/other sh -c 'git push'`,
+  `\${X} env -C /tmp/other dash -c 'git push'`,
+]
+
+test.each(SFT4_DENY)('denyReason denies a dynamic shell word: %s (claude-factory-sft4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+test('denyReason denies a bd command behind a dynamic shell word (claude-factory-sft4)', () => {
+  expect(denyReason("SH=sh; env -i $SH -c 'bd create x'")).toBe(BEADS_ACTOR_REASON)
+  expect(denyReason("env -u BEADS_ACTOR $SH -c 'bd create x'")).toBe(BEADS_ACTOR_REASON)
+  expect(denyReason('env -i "`echo sh`" -c \'bd create x\'')).toBe(BEADS_ACTOR_REASON)
+})
+
+const SFT4_ALLOW = [
+  "env -S 'sh' -c 'echo x'",
+  'for f in *.ts; do echo $f; done',
+  "SH=sh; $SH -c 'echo x'",
+  "/bin/s? -c 'echo x'",
+  '$EDITOR file.txt',
+  '$CC -c foo.c',
+  'cc -c *.c',
+  `"$PYTHON" -c 'print(1)'`,
+  'ls *.ts -c',
+  "$X sh -c 'git push'",
+  "env -C /tmp/other sh -c 'git push origin feature'",
+]
+
+test.each(SFT4_ALLOW)('denyReason allows a harmless dynamic word: %s (claude-factory-sft4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test('scanReason denies a 40000-word run of $SH words, fast (claude-factory-sft4)', () => {
+  expect(scanReason('echo ' + '$SH '.repeat(SCAN_N) + "-c 'rm -rf x'")).toBe(REASON)
+}, 500)
 
 // claude-factory-2pdm: a command substitution inside double quotes runs in the shell. Every guard
 // must see its body, as it sees the same text outside quotes.
