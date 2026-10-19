@@ -60,6 +60,7 @@ import {
   isOwned,
   LABEL,
   linearSourced,
+  byId,
   parentOf,
   stationOf,
   type Bead,
@@ -4950,7 +4951,7 @@ async function dispatch() {
         }
       }
       // children are looked up only for the candidates, until the rig is full
-      const startable = dispatchable(ready, new Set(linked.keys()), Infinity)
+      const startable = dispatchable(ready, new Set(linked.keys()), Infinity, byId(all))
       const startableIds = new Set(startable.map(x => x.id))
       for (const x of ready) {
         if (startableIds.has(x.id)) continue
@@ -5192,7 +5193,7 @@ function rigFacts(
   // an id still owed an unstripped-label check is held back on its own (claude-factory-dun.13).
   const candidates = linear.rigs.has(rig.name)
     ? []
-    : dispatchable(ready, linked, Infinity)
+    : dispatchable(ready, linked, Infinity, byId(every))
         .filter(x => !isOwned(x) && !openChildrenOf(x.id).length && !linear.ids.has(x.id))
         .slice(0, 40)
         .map(c => ({

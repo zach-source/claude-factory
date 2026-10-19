@@ -46,7 +46,7 @@ function setup(names: string[], marks: Record<string, Record<string, string>> = 
       'case "$1" in',
       "  ready) if [ -e .beads/ready.json ]; then cat .beads/ready.json; else printf '%s' '[]'; fi;;",
       '  children) if [ -e ".beads/children-$2.json" ]; then cat ".beads/children-$2.json"; else printf \'%s\' \'[]\'; fi;;',
-      "  list) printf '%s' '[]';;",
+      "  list) if [ -e .beads/list.json ]; then cat .beads/list.json; else printf '%s' '[]'; fi;;",
       '  dolt) echo origin;;',
       '  sync)',
       '    if [ -e .beads/hang ]; then exec sleep 600; fi',
@@ -205,4 +205,19 @@ test('a full rig gets one row and no bd ready call (AC6)', () => {
     { id: 'rig:acme-a', rig: 'acme-a', skip: 'rig full 0/0' },
   ])
   expect(existsSync(log) ? readFileSync(log, 'utf8') : '').not.toContain(' ready')
+})
+
+test('a factory child of an unlabeled parent starts; of a factory parent it does not (AC7)', () => {
+  const kid = { id: 'kid', title: 't', labels: ['factory'], parent: 'acme-e' }
+  const listing = (epicLabels: string[]) =>
+    JSON.stringify([{ id: 'acme-e', title: 'epic', labels: epicLabels, status: 'open' }, kid])
+  oneRig({ 'ready.json': JSON.stringify([kid]), 'list.json': listing([]) }, 5)
+  factory(['beads'])
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(1)
+  expect(dispatchJson().filter(x => x.skip)).toEqual([])
+
+  oneRig({ 'ready.json': JSON.stringify([kid]), 'list.json': listing(['factory']) }, 5)
+  factory(['beads'])
+  expect(existsSync(join(home, 'runs'))).toBe(false)
+  expect(dispatchJson().filter(x => x.skip)).toEqual([{ id: 'kid', rig: 'acme-a', skip: 'child of acme-e' }])
 })

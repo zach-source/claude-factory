@@ -144,7 +144,7 @@ export function backlogOf(
   const waiting = blocked.filter(
     x => !x.assignee && (x.status === undefined || ['open', 'blocked'].includes(x.status)),
   )
-  const heads = new Set(dispatchable(ready, new Set(), 50).map(x => x.id))
+  const heads = new Set(dispatchable(ready, new Set(), 50, byId(all)).map(x => x.id))
   const queuedWaiting = waiting.filter(x => !x.parent && x.labels?.includes(LABEL))
   for (const x of queuedWaiting) heads.add(x.id)
   // a queued bead's children ride in its run: listed under it, never started on their own
@@ -159,9 +159,24 @@ export function backlogOf(
   }
 }
 
-/** unowned top-level work only: a child is a task of some run's plan (children inherit the label) */
-export const dispatchable = (ready: Bead[], linked: Set<string>, room: number) =>
-  ready.filter(b => !b.parent && !b.assignee && !linked.has(b.id)).slice(0, Math.max(0, room))
+/**
+ * unowned top-level work only: a child is a task of some run's plan (children inherit the label). With
+ * `parents` (the rig's beads by id), a labeled child also starts when its parent has no `factory` label and
+ * no live run: no run carries it, so it would else wait for ever (claude-factory-2rik).
+ */
+export const dispatchable = (ready: Bead[], linked: Set<string>, room: number, parents?: Map<string, Bead>) =>
+  ready
+    .filter(b => !b.assignee && !linked.has(b.id) && (!b.parent || isOrphanChild(b, linked, parents)))
+    .slice(0, Math.max(0, room))
+
+/** a `factory` child whose parent is in the listing, is no `factory` bead, and has no live run */
+const isOrphanChild = (b: Bead, linked: Set<string>, parents?: Map<string, Bead>) => {
+  const parent = b.parent ? parents?.get(b.parent) : undefined
+  return !!parent && !!b.labels?.includes(LABEL) && !parent.labels?.includes(LABEL) && !linked.has(parent.id)
+}
+
+/** the listing by id, for `dispatchable`'s child rule */
+export const byId = (all: Bead[]) => new Map(all.map(b => [b.id, b]))
 
 function bd(repo: string, actor: string, ...args: string[]) {
   const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo, env: process.env })
