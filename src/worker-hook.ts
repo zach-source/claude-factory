@@ -1427,11 +1427,19 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
 
 // claude-factory-4iod: zsh opens a brace group at a `{` word inside a segment (`repeat 1 {`,
 // `[[ 1 ]] {`, `} always {`). Index 0 is the job of RESERVED_LEADING_WORDS. Each result is the
-// index of the first word of a brace body.
+// words of one brace body. zsh also opens the group when the command word touches the brace
+// (`repeat 1 {rm -rf / }`), so a word that starts with `{` (not `{}`) opens one too, and its
+// text after the braces is the first body word. This reading only denies: a false match such as
+// `echo {a,b}` gives a harmless body.
 const MAX_BRACE_BODIES = 16
-function braceBodyStarts(words: string[]): number[] {
-  const out: number[] = []
-  for (let k = 1; k < words.length; k++) if (words[k] === '{') out.push(k + 1)
+function braceBodies(words: string[]): string[][] {
+  const out: string[][] = []
+  for (let k = 1; k < words.length; k++) {
+    const w = words[k]!
+    if (!w.startsWith('{') || w === '{}') continue
+    const head = w.replace(/^\{+/, '')
+    out.push(head ? [head, ...words.slice(k + 1)] : words.slice(k + 1))
+  }
   return out
 }
 
@@ -1454,13 +1462,7 @@ function rmFindReading(cmd: string[], root: string | undefined): 'deny' | 'rm' |
   return undefined
 }
 
-function commandAnchors(words: string[], braces = true): number[] {
-  if (braces) {
-    const base = commandAnchors(words, false)
-    for (const s of braceBodyStarts(words).slice(0, MAX_BRACE_BODIES))
-      base.push(...commandAnchors(words.slice(s), false).map(a => a + s))
-    return base
-  }
+function commandAnchors(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
     const w = words[i]!
@@ -2026,6 +2028,15 @@ function isShellWord(w: string): boolean {
  * coproc can feed. Covers a literal shell word and a dynamic command word. Returns the reason.
  */
 function shellStdinReason(words: string[], state: ScanState): string | undefined {
+  const own = shellStdinReason1(words, state)
+  if (own) return own
+  for (const body of braceBodies(words).slice(0, MAX_BRACE_BODIES)) {
+    const r = shellStdinReason1(body, state)
+    if (r) return r
+  }
+  return undefined
+}
+function shellStdinReason1(words: string[], state: ScanState): string | undefined {
   if (!state.stdinFed) return undefined
   for (let j = 0; j < words.length; j++) {
     if (isShellWord(words[j]!) && shellReadsStdin(words, j)) return SHELL_STDIN_REASON
@@ -5318,6 +5329,15 @@ const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
  * starts at the command slot.
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
+  const own = anyDynamicCommandReason1(words)
+  if (own) return own
+  for (const body of braceBodies(words).slice(0, MAX_BRACE_BODIES)) {
+    const r = anyDynamicCommandReason1(body)
+    if (r) return r
+  }
+  return undefined
+}
+function anyDynamicCommandReason1(words: string[]): string | undefined {
   for (const a of commandAnchors(words)) {
     // claude-factory-38jm: bash expands `{sh,-c}` into two words before it runs the command. A
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
@@ -5444,6 +5464,15 @@ function anyToolLiveApplyDenied(tail: string[], personOnly: string[]): boolean {
  * word sits at the command slot.
  */
 function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): string | undefined {
+  const own = anyDynamicLiveApplyReason1(words, personOnly)
+  if (own) return own
+  for (const body of braceBodies(words).slice(0, MAX_BRACE_BODIES)) {
+    const r = anyDynamicLiveApplyReason1(body, personOnly)
+    if (r) return r
+  }
+  return undefined
+}
+function anyDynamicLiveApplyReason1(words: string[], personOnly: string[]): string | undefined {
   // claude-factory-p43v.21: `commandAnchors` can name an index behind a wrapper flag this hook
   // does not know by name, where `realCommand(words)[0]` alone finds the wrong word.
   // claude-factory-p43v.29: this reads `cmd[0]` as if it names a kubectl, ko or helm tool word.
@@ -6296,13 +6325,25 @@ function denyAtScan(
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
     // claude-factory-4iod: deny-only second reading of each inner brace body. It never feeds a
     // relaxing input such as operandSkip or configUse.
-    const bodies = braceBodyStarts(words)
+    const bodies = braceBodies(words)
     if (bodies.length > MAX_BRACE_BODIES) return SCAN_BUDGET_REASON
-    for (const s of bodies) {
-      const inner = rmFindReading(realCommand(words.slice(s)), root)
+    for (const body of bodies) {
+      const inner = rmFindReading(realCommand(body), root)
       if (inner === 'deny') return REASON
       if (inner === 'rm') hasRm = true
       if (inner === 'cd') hasCd = true
+    }
+    // claude-factory-4iod.5: a glued first word (`{git push`) hides from every word scan, so
+    // the first glued body runs the full guard. Its own later glued bodies are suffixes of it:
+    // the recursion reads them, so one call per level keeps the cost linear.
+    const glued = words.findIndex((w, k) => k >= 1 && w.startsWith('{') && w !== '{' && w !== '{}')
+    if (glued > 0) {
+      const head = words[glued]!.replace(/^\{+/, '')
+      const text = (head ? [head, ...words.slice(glued + 1)] : words.slice(glued + 1)).join(' ')
+      if (text) {
+        const r = denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+        if (r) return r
+      }
     }
     const cmd = realCommand(words)
     if (!cmd.length) continue

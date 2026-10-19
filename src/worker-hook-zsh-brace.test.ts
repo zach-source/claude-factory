@@ -69,6 +69,37 @@ test.each(ALLOW)('4IOD keeps the allow for %s', cmd => {
   expect(run(cmd)).toBeUndefined()
 })
 
+// claude-factory-4iod.5: zsh opens the group when the command word touches the brace.
+const GLUED_REASON = [
+  'repeat 1 {rm -rf / }',
+  'repeat 1 {rm -rf /; }',
+  'while [[ 1 ]] {rm -rf /; break }',
+  '{ true } always {rm -rf / }',
+  'repeat 1 {sudo rm -rf / }',
+  'repeat 1 {cd / } ; rm x',
+  'repeat 1 {{rm -rf / }}',
+  'repeat 1 {=rm -rf / }',
+  'repeat 1 {A=1 rm -rf / }',
+]
+test.each(GLUED_REASON)('4IOD glued brace denies REASON for %s', cmd => {
+  expect(run(cmd)).toBe(REASON)
+})
+test('4IOD glued brace dynamic pair denies', () => {
+  expect(run('repeat 1 {$G $V o main }')).toBe(DYNAMIC_VERB_REASON)
+})
+test('4IOD glued brace push keeps PUSH_REASON', () => {
+  expect(run('repeat 1 {git push origin main }')).toBe(PUSH_REASON)
+})
+test('4IOD glued brace eval denies', () => {
+  expect(run('repeat 1 {eval "$X" }')).toBeDefined()
+})
+test.each(["awk '{print $1}' acme.txt", "jq '{a: .b}' acme.json", 'repeat 1 {echo hi }'])(
+  '4IOD glued reading keeps the allow for %s',
+  cmd => {
+    expect(run(cmd)).toBeUndefined()
+  },
+)
+
 test('4IOD long brace shapes stay fast', () => {
   const body = 'repeat 1 { '.repeat(744).slice(0, 8192)
   for (const cmd of [body, 'eval '.repeat(16) + body]) {
