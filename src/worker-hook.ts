@@ -1393,12 +1393,24 @@ function rmFindDeny(cmd: string[], root?: string): boolean {
 // This check returns true when rm or find -exec rm runs under either reading.
 function assignmentReadingsDeny(words: string[], root?: string): boolean {
   const memo = new Map<number, number>()
+  // claude-factory-mmc9.26: read each start index once. Many words with = share one command
+  // start. A repeated read costs O(words * targets) and can pass the hook timeout.
+  const read = new Map<number, boolean>()
+  const denyAt = (s: number): boolean => {
+    if (s >= words.length) return false
+    let v = read.get(s)
+    if (v === undefined) {
+      const b = baseWord(words[s]!)
+      v = (b === 'rm' || b === 'find') && rmFindDeny(words.slice(s), root)
+      read.set(s, v)
+    }
+    return v
+  }
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     if (w[0] === '-' || w.indexOf('=') < 0) continue
-    if (rmFindDeny(words.slice(i), root)) return true
-    const s = realCommandStart(words, i + 1, memo)
-    if (s < words.length && rmFindDeny(words.slice(s), root)) return true
+    if (denyAt(i)) return true
+    if (denyAt(realCommandStart(words, i + 1, memo))) return true
   }
   return false
 }
