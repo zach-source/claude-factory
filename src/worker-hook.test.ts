@@ -7626,3 +7626,60 @@ test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repe
   },
   30_000,
 )
+
+// claude-factory-pwy0: a command word that expands to rm at run time runs rm.
+const DENY_PWY0: string[] = [
+  '${RM:-rm} -rf /',
+  '${RM-rm} -rf /',
+  '${RM:=rm} -rf /',
+  '${RM=rm} -rf /',
+  'r${x}m -rf /',
+  'rm$x -rf /',
+  '${x}rm -rf /',
+  '${x:-r}m -rf /',
+  '${RM:-/bin/rm} -rf /',
+  '${RM:-${Y:-rm}} -rf /',
+  '${RM:+rm} -rf /',
+  '${RM+rm} -rf /',
+  '"${RM:-rm}" -rf /',
+  'r"${x}"m -rf /',
+  'sudo ${RM:-rm} -rf /',
+  'env ${RM:-rm} -rf /',
+  'FOO=1 r${x}m -rf /',
+  'time -l ${RM:-rm} -rf /',
+  '>f ${RM:-rm} -rf /',
+  '> f ${RM:-rm} -rf /',
+  '2>/dev/null r${x}m -rf /',
+  'cd / ; ${RM:-rm} acme.txt',
+  '${F:-find} . -exec rm -rf {} +',
+  'find . -exec ${RM:-rm} -rf {} +',
+]
+test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+const ALLOW_PWY0: string[] = [
+  '$EDITOR acme.txt',
+  'echo $x rm',
+  '$x ls',
+  '${EDITOR:-vi} acme.txt',
+  'r$xm acme.txt',
+  '${RM:-rm} acme.txt',
+  'echo ${RM:-rm} -rf /',
+  'ls ${x}rm',
+]
+test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
+test(
+  'denyReason bounds a long nested default-value head word (claude-factory-pwy0)',
+  () => {
+    const n = 200_000 / 5
+    const cmd = '${a:-'.repeat(n) + '}'.repeat(n) + ' -rf /'
+    const t0 = Date.now()
+    denyReason(cmd, '/Users/acme/widget')
+    expect(Date.now() - t0).toBeLessThan(1000)
+  },
+  30_000,
+)
