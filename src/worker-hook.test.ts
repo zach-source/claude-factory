@@ -2777,12 +2777,16 @@ test.each([
   expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
 })
 
-test.each(["gh pr '' view 1", 'gh pr -R o/r view 1', 'gh pr -R o/r list', 'gh pr - view 1'])(
-  'denyReason allows %j (claude-factory-t1xo)',
-  cmd => {
-    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
-  },
-)
+test.each([
+  "gh pr '' view 1",
+  'gh pr -R - view merge',
+  "gh pr -R '' view merge",
+  'gh pr -R o/r view 1',
+  'gh pr -R o/r list',
+  'gh pr - view 1',
+])('denyReason allows %j (claude-factory-t1xo)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
 
 test.each(["git '' push o main", 'git - push o main'])(
   'denyReason leaves %j alone: real git rejects it (claude-factory-t1xo)',
