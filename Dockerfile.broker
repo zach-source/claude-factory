@@ -2,9 +2,9 @@
 # kubectl-ate, which it runs in the cluster. Build from this repo's root:
 #   docker buildx build --platform linux/amd64 -f Dockerfile.broker -t factory-broker .
 
-# kubectl-ate at the Substrate commit AX builds against (ax/go.mod)
+# kubectl-ate at a Substrate commit with `create egress-policy` (upstream #1659); the commit in ax/go.mod is older and lacks it
 FROM golang:1.27-bookworm AS ate
-ARG SUBSTRATE_COMMIT=944abe3278b8
+ARG SUBSTRATE_COMMIT=fd17a2fb16b8569c8a3d2a58345a5643d529dd02
 RUN git clone https://github.com/agent-substrate/substrate /substrate && git -C /substrate checkout ${SUBSTRATE_COMMIT}
 WORKDIR /substrate
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /kubectl-ate ./cmd/kubectl-ate
