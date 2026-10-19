@@ -7445,6 +7445,8 @@ const J1KI_REASON_ROWS = [
   'rm${=IFS}-rf${=IFS}/',
   'rm$=IFS-rf$=IFS/',
   'rm${X}-rf${X}/',
+  'rm$1-rf$1/',
+  'rm$@-rf$@/',
   'rm${IFS}../x',
   'rm$(echo " ")-rf$(echo " ")/',
   'sudo rm${IFS}-rf${IFS}/',
