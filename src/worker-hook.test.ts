@@ -7053,6 +7053,13 @@ test.each([
   expect(denyReason(cmd)).toBeUndefined()
 })
 
+test.each(['nice A=1 $G $V origin main', 'nohup -- A=1 $G $V origin main', 'env A=1 $G $V origin main'])(
+  'denyReason keeps denying %j (claude-factory-mmc9.15, commandAnchors skips the operand fail-closed)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
 test.each([
   'é=1/rm -r ./d',
   'Ⓐ=1/rm -r ./d',
