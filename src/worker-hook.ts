@@ -6155,41 +6155,53 @@ function splitGluedExpansions(words: string[]): string[] | undefined {
 // $NAME ends when a quote or a backslash follows it. This reads the raw text instead.
 const GLUED_BARE_NAME_RE = /\$[A-Za-z_][A-Za-z0-9_]*(?=["'\\])/g
 
-// claude-factory-j1ki.10: returns `command` with each outer $( ) that sits glued to other text
-// read as a space. The close paren is found by depth, and quotes and backslashes in the body are
-// skipped. A body with no close paren runs to the end of the text (fail closed).
+// claude-factory-j1ki.10: returns the index after the close paren of the "$(" at `from`. The close
+// paren is found by depth, and quotes and backslashes in the body are skipped. A body with no
+// close paren runs to the end of the text (fail closed).
+function substitutionEnd(command: string, from: number): number {
+  let depth = 0
+  let q = ''
+  for (let k = from + 1; k < command.length; k++) {
+    const c = command[k]!
+    if (q) {
+      if (c === '\\' && q === '"') k++
+      else if (c === q) q = ''
+      continue
+    }
+    if (c === '\\') k++
+    else if (c === "'" || c === '"') q = c
+    else if (c === '(') depth++
+    else if (c === ')' && --depth === 0) return k + 1
+  }
+  return command.length
+}
+
+// claude-factory-j1ki.10/.14/.15: returns `command` with each $( ) that sits glued to other text
+// read as a space. A double quote next to the $( ) counts as glue, so "rm"$(x)"-r" is read. A $( )
+// with a space or paren on both sides is a whole word and stays, but the scan goes into its body.
+// The body of a glued $( ) is read again and added as an extra line, so a glued $( ) inside it is
+// read too.
 function replaceGluedSubstitutions(command: string): string {
   let out = ''
   let last = 0
+  const extra: string[] = []
   let from = command.indexOf('$(')
   while (from !== -1) {
-    let depth = 0
-    let q = ''
-    let end = command.length
-    for (let k = from + 1; k < command.length; k++) {
-      const c = command[k]!
-      if (q) {
-        if (c === '\\' && q === '"') k++
-        else if (c === q) q = ''
-        continue
-      }
-      if (c === '\\') k++
-      else if (c === "'" || c === '"') q = c
-      else if (c === '(') depth++
-      else if (c === ')' && --depth === 0) {
-        end = k + 1
-        break
-      }
-    }
+    const end = substitutionEnd(command, from)
     const before = from > 0 ? command[from - 1]! : ' '
     const after = end < command.length ? command[end]! : ' '
-    if (!/[\s("]/.test(before) || !/[\s)"]/.test(after)) {
-      out += command.slice(last, from) + ' '
-      last = end
+    if (/[\s(]/.test(before) && /[\s)]/.test(after)) {
+      from = command.indexOf('$(', from + 2)
+      continue
     }
+    out += command.slice(last, from) + ' '
+    last = end
+    const body = command.slice(from + 2, command[end - 1] === ')' ? end - 1 : end)
+    const inner = body.includes('$(') ? replaceGluedSubstitutions(body) : body
+    if (inner !== body) extra.push(inner)
     from = command.indexOf('$(', end)
   }
-  return out + command.slice(last)
+  return out + command.slice(last) + extra.map(e => '\n' + e).join('')
 }
 
 function quoteWord(w: string): string {
@@ -6371,7 +6383,8 @@ function denyAtScan(
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
-    if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
+    if (setsDangerousGitConfigEnv(words) || (splitWords && setsDangerousGitConfigEnv(splitWords)))
+      hasDangerousConfigEnv = true
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
@@ -6467,6 +6480,11 @@ function denyAtScan(
     // `moved` accumulator reads those, and this segment's own cd/pushd/popd/chdir word, through
     // their own forward scan). This check runs after the checks above, so it affects only a
     // later segment's push, never this one.
+    if (splitWords) {
+      const splitBase = baseWord(realCommand(splitWords)[0] ?? '')
+      if (splitBase === 'rm') hasRm = true
+      else if (splitBase === 'cd') hasCd = true
+    }
     if (hasDirChangeWord(words) || (splitWords && hasDirChangeWord(splitWords))) movedSoFar = true
     // claude-factory-bemr: the same rule, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
     // assignment anywhere in this segment. It carries into every later segment's gh alias

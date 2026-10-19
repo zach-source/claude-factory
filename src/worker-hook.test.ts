@@ -7474,6 +7474,47 @@ const J1KI_ALIAS_ROWS = [
   'export${IFS}HOME=/x; gh co 5',
 ]
 const J1KI_MOVE_ROWS = ['cd${IFS}/x; git push', 'cd$IFS/x && git push origin HEAD', 'pushd${IFS}/x; git push']
+// claude-factory-j1ki.12 to .15: security review rows.
+const J1KI_REASON_ROWS2 = [
+  'cd${IFS}/x; rm ./f',
+  'cd /x; rm${IFS}./f',
+  'cd${IFS}/x; rm${IFS}./f',
+  'rm${IFS}./f; cd${IFS}/x',
+  "echo $(rm$(printf ' ')-r ./d)",
+  "x=$(rm$(printf ' ')-r ./d)",
+  "echo $(:; rm$(printf ' ')-r ./d)",
+  "x=$(echo $(rm$(printf ' ')-r ./d))",
+  '"rm"$(printf \' \')"-r" ./d',
+  '"rm"$(printf \' \')"-r"$(printf \' \')"./d"',
+]
+const J1KI_PUSH_ROWS2 = [
+  'export${IFS}GIT_CONFIG_GLOBAL=/x; git push origin HEAD',
+  'export${IFS}GIT_CONFIG_GLOBAL=/x && git push origin HEAD',
+  'export${IFS}GIT_CONFIG_GLOBAL=/x\ngit push origin HEAD',
+  'export${IFS}GIT_CONFIG_SYSTEM=/x; git push origin HEAD',
+  "export${IFS}GIT_CONFIG_PARAMETERS='x'; git push origin HEAD",
+  'export${IFS}HOME=/x; git push origin HEAD',
+  'declare${IFS}-x${IFS}GIT_CONFIG_GLOBAL=/x; git push origin HEAD',
+  "x=$(git$(printf ' ')push$(printf ' ')origin$(printf ' ')main)",
+  '"git"$(printf \' \')"push"$(printf \' \')"origin"$(printf \' \')"main"',
+]
+test.each(J1KI_REASON_ROWS2)('claude-factory-j1ki.12-15: %s denies with REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(J1KI_PUSH_ROWS2)('claude-factory-j1ki.12-15: %s denies with PUSH_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+test.each([
+  'export${IFS}PATH=/x; git status',
+  'cd /x && ls',
+  'rm ./f',
+  'echo $(date)',
+  'echo "$(date)"',
+  'git commit -m "a$(date)b"',
+  'echo "a"$(date) "b"',
+])('claude-factory-j1ki.12-15: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
 const J1KI_ALLOW_ROWS = [
   'ls ${IFS}',
   'echo a${X}b',
