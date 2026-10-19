@@ -136,7 +136,17 @@ bd dolt pull     # only pull
 bd dolt push     # only push
 ```
 
-The factory runs `bd sync` for each rig that has a Dolt remote every 5 minutes, so beads and claims from other machines reach dispatch, and the factory's writes reach them. A remote that has never been pushed to, or a conflict that `bd sync` cannot settle, shows as the rig's error on the board.
+The factory runs `bd sync` for each rig that has a Dolt remote. Beads and claims from other machines reach dispatch this way, and the factory's writes reach them.
+
+The sync is its own pass (`factory sync`). The pass runs the due rigs in parallel. Dispatch does not wait for it. A rig whose sync fails or hangs still starts its ready beads from the local store. The factory stops each sync call after `FACTORY_SYNC_TIMEOUT_MS` (default 120000).
+
+A rig syncs every 5 minutes. If the sync fails with the same error again, the wait doubles: 5, 10, 20, 40, then 60 minutes. A different error, or a success, resets the wait. `$FACTORY_HOME/sync.json` keeps each rig's `at`, `error`, `failures`, `nextAt` and `ms`.
+
+Two cases show as the rig's error on the board: a remote that nobody has pushed to, and a conflict that `bd sync` cannot settle. The row also shows the count of failures and the time of the next try.
+
+`$FACTORY_HOME/dispatch.json` has one row `{ id, rig, skip }` for each ready bead that the last dispatch pass did not start. `skip` is the reason, for example `child of <parent>`, `assigned to <name>`, `open children`, `rig full 1/1` or `town full 16/16`. A full rig has one row with the id `rig:<name>`. The board does not show these rows.
+
+A `factory` child whose parent has no `factory` label and no live run starts on its own run. A child of a `factory` parent rides in the parent's run.
 
 `node_id` matters only for `bd reclaim`: bd keeps a claim's lease on the machine that granted it, and with `node_id` set, a reaper on another machine skips it. Machines that use one Dolt server are one replica and share one `node_id`, or leave it unset.
 

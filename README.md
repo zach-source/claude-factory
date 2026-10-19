@@ -803,7 +803,9 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 - **Sweeps file to the backlog**: incidents and security fixes labeled `factory` start on
   their own; everything else is filed unlabeled for you to prioritize by adding the label.
 - **Sync**: every 5 minutes each rig with a Dolt remote runs `bd sync` (pull, repair, push), so
-  beads and claims from other machines reach dispatch and the factory's reach them. A remote
+  beads and claims from other machines reach dispatch and the factory's reach them. It runs in
+  its own parallel `factory sync` pass, never inside dispatch, and a failing rig backs off up to
+  an hour (`FACTORY_SYNC_TIMEOUT_MS` caps each call). A remote
   nobody has pushed to yet, or a conflict sync won't settle, shows as the rig's error in the
   console; seed a new remote once with `bd dolt push`. The `beads-remote` plugin (below) sets a
   rig's remote up on any git host.
