@@ -687,8 +687,20 @@ const HEREDOC_TEXT_COMMANDS = new Set([
   'bun',
   'ruby',
   'perl',
-  'psql',
-  'sqlite3',
+])
+
+const COMPOUND_WORDS = new Set([
+  '{',
+  'do',
+  'then',
+  'else',
+  'elif',
+  'while',
+  'until',
+  'for',
+  'if',
+  'case',
+  'select',
 ])
 
 interface HeredocEntry {
@@ -774,8 +786,10 @@ function readHeredocBody(
 /**
  * claude-factory-wmsr: the text of each `$( )` and backtick substitution in an unquoted
  * here-document body, one per line. The shell runs these. It prints the rest of the body.
+ * It returns undefined when a substitution is unclear: a paren stays open, a backtick stays open,
+ * or the text holds a `case` word, whose `)` this paren count cannot read.
  */
-function heredocSubstitutions(body: string): string {
+function heredocSubstitutions(body: string): string | undefined {
   let out = ''
   for (let i = 0; i < body.length; i++) {
     const c = body[i]!
@@ -789,11 +803,15 @@ function heredocSubstitutions(body: string): string {
         else if (body[j] === '(') depth++
         else if (body[j] === ')') depth--
       }
-      out += body.slice(i + 2, depth === 0 ? j - 1 : j) + '\n'
+      if (depth !== 0) return undefined
+      const text = body.slice(i + 2, j - 1)
+      if (/\bcase\b/.test(text)) return undefined
+      out += text + '\n'
       i = j - 1
     } else if (c === '`') {
       let j = i + 1
       for (; j < body.length && body[j] !== '`'; j++) if (body[j] === '\\') j++
+      if (j >= body.length) return undefined
       out += body.slice(i + 1, j) + '\n'
       i = j
     }
@@ -858,6 +876,8 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
   // `braceDepth` counts open unquoted `${`. `arith` counts open parens of a `((` or `$((` pair.
   // A `&` or `|` in a redirect (`>&`) opens a word, so a # after it is never at a word start.
   let lastSig: string = '\n'
+  // claude-factory-wmsr: the last char read that is not a blank, a comment or a continuation
+  let lastOp: string = '\n'
   let braceDepth = 0
   let arith = 0
   const arithStack: boolean[] = []
@@ -878,6 +898,8 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     redirPrev = false
     const prevSig: string = lastSig
     lastSig = c
+    const prevOp: string = lastOp
+    if (c !== ' ' && c !== '\t') lastOp = c
     if (c === '\n' && quote && pending.length > 0) heredocUnclear()
     if (quote === "'") {
       if (c === "'") quote = null
@@ -927,6 +949,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
         redirPrev = afterRedir
         i++
         lastSig = prevSig
+        lastOp = prevOp
         continue
       }
       word += cmd[++i]
@@ -950,6 +973,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
           prevSig === '|')
       if (clear) {
         while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+        lastOp = prevOp
         continue
       }
       if (info) {
@@ -1015,11 +1039,20 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       endSeg()
       if (c === '\n' && pending.length > 0) {
         // claude-factory-wmsr: the bodies of the here-documents on the line that just ended
-        const textOnly = segs
-          .slice(lineStart)
-          .every(
-            s => s.length === 0 || HEREDOC_TEXT_COMMANDS.has(baseWord(s.find(w => !/^\w+=/.test(w)) ?? '')),
-          )
+        // A body is text only when no pipe, paren, backtick or compound command can feed it to a
+        // later command: the header line must not end in `|` or `&`, and nothing may stay open.
+        const compound = segs.some(s => COMPOUND_WORDS.has(baseWord(s.find(w => !/^\w+=/.test(w)) ?? '')))
+        const textOnly =
+          prevOp !== '|' &&
+          prevOp !== '&' &&
+          parens.length === 0 &&
+          !inBacktick &&
+          !compound &&
+          segs
+            .slice(lineStart)
+            .every(
+              s => s.length === 0 || HEREDOC_TEXT_COMMANDS.has(baseWord(s.find(w => !/^\w+=/.test(w)) ?? '')),
+            )
         let pos = i + 1
         const bodies: { body: string; entry: HeredocEntry }[] = []
         let unclear = false
@@ -1040,8 +1073,11 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
             if (textOnly && risky && entry.quoted) continue
             if (textOnly && risky && !hasSub) continue
             if (risky) heredocUnclear()
-            else if (textOnly && hasSub && !entry.quoted) read.push(heredocSubstitutions(body))
-            else read.push(body)
+            else if (textOnly && hasSub && !entry.quoted) {
+              const subs = heredocSubstitutions(body)
+              if (subs === undefined) heredocUnclear()
+              else read.push(subs)
+            } else read.push(body)
           }
           for (const text of read) segs.push(...segments(text, info))
           i = Math.max(pos - 1, i)

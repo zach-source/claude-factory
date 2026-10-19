@@ -4755,7 +4755,7 @@ test.each(ALLOW_WMSR_COMMENT)('denyReason allows %j (comment text, wmsr)', cmd =
 const WB = '`'
 const DENY_WMSR_HEREDOC: [string, string][] = [
   [`cat <<EOF\ndon't\nEOF\n${WM}`, PUSH_REASON],
-  [`echo $(cat <<EOF\ndon't\nEOF\n${WM}\n)`, PUSH_REASON],
+  [`echo $(cat <<EOF\ndon't\nEOF\n${WM}\n)`, HEREDOC_REASON],
   [`cat <<'EOF'\ndon't\nEOF\n${WM}`, PUSH_REASON],
   [`cat <<"EOF"\ndon't\nEOF\n${WM}`, PUSH_REASON],
   [`cat <<\\EOF\ndon't\nEOF\n${WM}`, PUSH_REASON],
@@ -4783,6 +4783,27 @@ test.each(DENY_WMSR_HEREDOC)('denyReason denies %j (here-document, wmsr)', (cmd,
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBe(reason)
 })
 
+// claude-factory-wmsr.4-.6: a body can feed a later command, so it is read as commands there.
+const DENY_WMSR_HEREDOC_FEED = [
+  `cat <<EOF |\n# x\n${WM}\nEOF\nsh`,
+  `cat <<EOF |&\n# x\n${WM}\nEOF\nsh`,
+  `cat <<EOF | # c\n# x\n${WM}\nEOF\nsh`,
+  `cat <<EOF \\\n|\n# x\n${WM}\nEOF\nsh`,
+  `cat <<'EOF' |\n# x\n${WM}\nEOF\nsh`,
+  `(cat <<EOF\n# x\n${WM}\nEOF\n) | sh`,
+  `bash < <(\ncat <<EOF\n# x\n${WM}\nEOF\n)`,
+  `{ cat <<EOF\n# x\n${WM}\nEOF\n} | sh`,
+  `while read l; do echo $l; done <<EOF\n# x\n${WM}\nEOF`,
+  `psql <<EOF\n# x\n\\! ${WM}\nEOF`,
+  `sqlite3 <<EOF\n# x\n.shell ${WM}\nEOF`,
+  `cat <<EOF\n# x $(case x in x) ${WM};; esac)\nEOF`,
+  `cat <<EOF\n# x $(date\nEOF`,
+  `cat <<EOF\n# x ${WB}date\nEOF`,
+]
+test.each(DENY_WMSR_HEREDOC_FEED)('denyReason denies %j (body feeds a command, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
 test('denyReason denies a shift row with a later push (wmsr)', () => {
   expect(denyReason(`echo $((1<<2))\n${WM}\n2`, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
@@ -4794,6 +4815,7 @@ const ALLOW_WMSR_HEREDOC = [
   `git commit -F - <<'EOF'\nFix: don't git push origin main\nEOF`,
   `cat <<<"it's"`,
   'cat <<EOF\n$(date)\nEOF',
+  "cat <<'EOF' | grep x\ndon't\nEOF",
 ]
 test.each(ALLOW_WMSR_HEREDOC)('denyReason allows %j (here-document, wmsr)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
