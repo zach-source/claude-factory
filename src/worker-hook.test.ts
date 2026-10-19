@@ -2629,6 +2629,45 @@ test.each(['gh pr view 1 &>/dev/null', 'gh api x > f', 'gh pr list 2>/dev/null']
   },
 )
 
+// claude-factory-59pp.12: here-string, here-doc and read-write redirects have a target word too.
+test.each([
+  'gh <<< x pr merge 1',
+  'gh pr <<< x merge 1',
+  'gh <> f pr merge 1',
+  'gh pr <> f merge 1',
+  'gh << x pr merge 1',
+])('denyReason denies %j (claude-factory-59pp.12)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+// claude-factory-59pp.13: segments() strips quotes, so a quoted word like a redirect must not hide the verb.
+test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () => {
+  expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+// claude-factory-59pp.14: git and kubectl take the verb from the same slot.
+test.each([
+  'git >/dev/null push origin main',
+  'git 2>/dev/null push origin main',
+  'git <<< x push origin main',
+])('denyReason denies %j (claude-factory-59pp.14)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(PUSH_REASON)
+})
+
+test.each(['git push origin feature >/dev/null', 'git log >f'])(
+  'denyReason allows %j (claude-factory-59pp.14)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+  },
+)
+
+test.each([
+  'kubectl >/dev/null apply -f x --context acme',
+  'kubectl 2>/dev/null delete pod x --context acme',
+])('denyReason denies %j with personOnly acme (claude-factory-59pp.14)', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+})
+
 const DENY_AMP_XARGS = [
   'xargs &>/dev/null gh pr view 1',
   'xargs&>/dev/null gh pr view 1',

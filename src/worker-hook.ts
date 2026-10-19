@@ -2454,6 +2454,13 @@ function contextDenied(ctx: string | undefined, personOnly: string[]): boolean {
  * takes a value word. An unknown flag must not hide a mutating verb that follows it.
  */
 function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
+  return (
+    liveApplyDeniedOn(cmd, personOnly) ||
+    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly)) === true
+  )
+}
+
+function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
   const b = baseWord(cmd[0]!)
   const tail = cmd.slice(1)
   if (b === 'kubectl') {
@@ -3016,7 +3023,7 @@ function ghAliasExpansion(text: string): string[] | undefined {
 function dropRedirectWords(words: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < words.length; i++) {
-    const m = /^[0-9]*(?:&>>?|>>?|<)[|!&]?(.*)$/s.exec(words[i]!)
+    const m = /^[0-9]*(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s.exec(words[i]!)
     if (!m) {
       out.push(words[i]!)
       continue
@@ -3055,7 +3062,34 @@ function ghReason(
   ghConfigMoved = false,
   aliasDepth = 0,
 ): string | undefined {
-  const tail = dropRedirectWords(cmd.slice(1))
+  return (
+    ghReasonOn(cmd.slice(1), gate, state, ghConfigMoved, aliasDepth) ??
+    scanWithoutRedirects(cmd, dropped => ghReasonOn(dropped, gate, state, ghConfigMoved, aliasDepth))
+  )
+}
+
+/**
+ * claude-factory-59pp.13, .14: segments() strips quotes. A quoted word such as `'>x'` then looks
+ * like a redirect. So a guard scans a command as given, and again with the redirect words removed.
+ * It denies if either scan denies. `scan` gets the tail without redirect words, and only when
+ * that tail differs from the given tail.
+ */
+function scanWithoutRedirects<T>(
+  cmd: string[],
+  scan: (droppedTail: string[]) => T | undefined,
+): T | undefined {
+  const tail = cmd.slice(1)
+  const dropped = dropRedirectWords(tail)
+  return dropped.length === tail.length ? undefined : scan(dropped)
+}
+
+function ghReasonOn(
+  tail: string[],
+  gate: HookGate,
+  state: ScanState,
+  ghConfigMoved: boolean,
+  aliasDepth: number,
+): string | undefined {
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
   const verb = vi >= 0 ? tail[vi] : undefined
   const sub = vi >= 0 ? tail[vi + 1] : undefined
@@ -4492,7 +4526,20 @@ function gitReason(
   moved: boolean,
   aliasDepth = 0,
 ): string | undefined {
-  const tail = cmd.slice(1)
+  return (
+    gitReasonOn(cmd.slice(1), root, gate, state, moved, aliasDepth) ??
+    scanWithoutRedirects(cmd, dropped => gitReasonOn(dropped, root, gate, state, moved, aliasDepth))
+  )
+}
+
+function gitReasonOn(
+  tail: string[],
+  root: string | undefined,
+  gate: HookGate,
+  state: ScanState,
+  moved: boolean,
+  aliasDepth: number,
+): string | undefined {
   // claude-factory-p43v.9: a dynamic -c or --config-env key fails closed before
   // gitDashCPushDenied reads it against a fixed list of names.
   if (gitDashCKeyDynamic(tail)) return DYNAMIC_VERB_REASON
