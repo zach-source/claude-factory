@@ -142,6 +142,7 @@ import {
   type PrState,
   type RunMeta,
 } from './prs'
+import { nextSyncEntry, runBounded, syncDue, syncTimeoutMs, timedOutText, type SyncEntry } from './sync'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -517,12 +518,34 @@ function syncRigBeads(
   return p
 }
 
-/** dispatch's sync for a rig whose remote needs its user: `bd sync` would pull and push as the server's own */
-function syncAsRemoteUser(rig: Rig) {
+/** `syncRigBeads`, async, every call killed after the sync cap (FACTORY_SYNC_TIMEOUT_MS) */
+async function syncRigBeadsBounded(
+  run: Pick<Run, 'repo' | 'worktree'>,
+  way: 'push' | 'pull',
+  r: Rig['beadsRemote'],
+) {
+  const timeoutMs = syncTimeoutMs()
+  const show = r ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
+  if (show?.timedOut)
+    return { code: null, out: '', err: timedOutText(`beads ${way}`, timeoutMs), timedOut: true }
+  const conn = show?.code === 0 ? (JSON.parse(show.out) as DoltConn) : undefined
+  const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
+  const p = await runBounded(rigBeadsSync(r, way, conn), { cwd: run.worktree, env, timeoutMs })
+  if (p.timedOut) return { ...p, err: timedOutText(`beads ${way}`, timeoutMs) }
+  if (r && way === 'pull' && p.code === 0)
+    for (const { id, text } of overwritten(p.out))
+      try {
+        beads(run.repo, 'factory').comment(id, text)
+      } catch {} // the issue the VM deleted: nothing to comment on
+  return p
+}
+
+/** the sync for a rig whose remote needs its user: `bd sync` would pull and push as the server's own */
+async function syncAsRemoteUser(rig: Rig) {
   for (const way of ['pull', 'push'] as const) {
-    const p = syncRigBeads({ repo: rig.repo, worktree: rig.repo }, way, rig.beadsRemote)
-    if (p.exitCode !== 0)
-      throw new Error(`beads ${way}: ${`${p.stderr}`.trim().split('\n').at(-1) || 'failed'}`)
+    const p = await syncRigBeadsBounded({ repo: rig.repo, worktree: rig.repo }, way, rig.beadsRemote)
+    if (p.timedOut) throw new Error(p.err)
+    if (p.code !== 0) throw new Error(`beads ${way}: ${p.err.trim().split('\n').at(-1) || 'failed'}`)
   }
 }
 
@@ -4724,8 +4747,8 @@ async function dispatch() {
       if (existsSync(join(rig.repo, '.beads')) && Date.now() - (synced[rig.repo]?.at ?? 0) > SYNC_MS) {
         synced[rig.repo] = { at: Date.now() } // a failing sync retries next interval, not every pass
         try {
-          if (rig.beadsRemote) syncAsRemoteUser(rig)
-          else b.sync()
+          if (rig.beadsRemote) await syncAsRemoteUser(rig)
+          else await b.sync()
         } catch (err) {
           synced[rig.repo]!.error = (err as Error).message
         }

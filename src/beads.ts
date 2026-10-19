@@ -4,6 +4,7 @@
 // become runs. Claiming decides who owns work; everything else is best-effort bookkeeping.
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { runBounded, syncTimeoutMs, timedOutText } from './sync'
 
 export type Bead = {
   id: string
@@ -506,15 +507,24 @@ export const beads = (repo: string, actor: string) => ({
    * claims reach dispatch and ours reach them; false with no remote. Bounded: a hung remote must not
    * hold the pass that heartbeats every claim.
    */
-  sync: () => {
-    if (/No remotes configured/.test(bd(repo, actor, 'dolt', 'remote', 'list').out)) return false
-    const p = Bun.spawnSync(['bd', 'sync', '--actor', actor], { cwd: repo, timeout: 120_000 })
-    const out = `${p.stdout}\n${p.stderr}`.trim()
+  sync: async () => {
+    const timeoutMs = syncTimeoutMs()
+    const env = process.env
+    const list = await runBounded(['bd', 'dolt', 'remote', 'list', '--actor', actor], {
+      cwd: repo,
+      env,
+      timeoutMs,
+    })
+    if (list.timedOut) throw new Error(timedOutText('bd sync', timeoutMs))
+    if (/No remotes configured/.test(list.out || list.err)) return false
+    const p = await runBounded(['bd', 'sync', '--actor', actor], { cwd: repo, env, timeoutMs })
+    if (p.timedOut) throw new Error(timedOutText('bd sync', timeoutMs))
+    const out = `${p.out}\n${p.err}`.trim()
     // a remote nobody pushed to yet: seeding it publishes the repo's beads, so that is the person's call
     if (/not found on remote/.test(out))
       throw new Error('bd sync: the remote holds no beads yet; seed it once with bd dolt push')
-    if (p.exitCode !== 0 || /sync failed/.test(out))
-      throw new Error(`bd sync: ${out.split('\n').at(-1) || 'timed out'}`)
+    if (p.code !== 0 || /sync failed/.test(out))
+      throw new Error(`bd sync: ${out.split('\n').at(-1) || 'failed'}`)
     return true
   },
 })

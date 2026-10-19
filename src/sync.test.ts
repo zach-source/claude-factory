@@ -1,5 +1,9 @@
-import { expect, test } from 'bun:test'
-import { nextSyncEntry, syncDue, SYNC_BASE_MS, SYNC_MAX_MS } from './sync'
+import { afterEach, expect, test } from 'bun:test'
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { beads } from './beads'
+import { nextSyncEntry, runBounded, syncDue, SYNC_BASE_MS, SYNC_MAX_MS } from './sync'
 
 const MIN = 60_000
 
@@ -46,4 +50,54 @@ test('an old {at, error} entry is due at + 5 min, and counts as one failure', ()
 test('nextAt wins over at when set', () => {
   expect(syncDue({ at: 0, error: 'x', failures: 3, nextAt: 20 * MIN }, 19 * MIN)).toBe(false)
   expect(syncDue({ at: 0, error: 'x', failures: 3, nextAt: 20 * MIN }, 20 * MIN)).toBe(true)
+})
+
+const dir = join(tmpdir(), `sync-unit-${process.pid}`)
+const path = process.env.PATH
+afterEach(() => {
+  process.env.PATH = path
+  delete process.env.FACTORY_SYNC_TIMEOUT_MS
+  rmSync(dir, { recursive: true, force: true })
+})
+const fakeBd = (script: string) => {
+  mkdirSync(join(dir, 'bin'), { recursive: true })
+  writeFileSync(
+    join(dir, 'bin', 'bd'),
+    `#!/bin/sh
+${script}
+`,
+  )
+  chmodSync(join(dir, 'bin', 'bd'), 0o755)
+  process.env.PATH = `${join(dir, 'bin')}:${path}`
+}
+
+test('b.sync kills a hung bd sync at the cap and says so', async () => {
+  fakeBd('case "$1" in dolt) echo ok;; sync) exec sleep 600;; esac')
+  process.env.FACTORY_SYNC_TIMEOUT_MS = '1500'
+  const t0 = Date.now()
+  await expect(beads(dir, 'factory').sync()).rejects.toThrow('bd sync: timed out after 2 s')
+  expect(Date.now() - t0).toBeLessThan(10_000)
+})
+
+test('b.sync kills a hung dolt remote list too', async () => {
+  fakeBd('case "$1" in dolt) exec sleep 600;; esac')
+  process.env.FACTORY_SYNC_TIMEOUT_MS = '1000'
+  await expect(beads(dir, 'factory').sync()).rejects.toThrow('timed out after 1 s')
+})
+
+test('b.sync: no remote is false; a clean sync is true; a failure keeps its last line', async () => {
+  fakeBd('case "$1" in dolt) echo "No remotes configured";; esac')
+  expect(await beads(dir, 'factory').sync()).toBe(false)
+  fakeBd('case "$1" in dolt) echo ok;; sync) echo fine;; esac')
+  expect(await beads(dir, 'factory').sync()).toBe(true)
+  fakeBd('case "$1" in dolt) echo ok;; sync) echo boom >&2; exit 1;; esac')
+  await expect(beads(dir, 'factory').sync()).rejects.toThrow('bd sync: boom')
+})
+
+test('runBounded returns once the killed process exits, though a child holds the pipe', async () => {
+  mkdirSync(dir, { recursive: true })
+  const t0 = Date.now()
+  const r = await runBounded(['sh', '-c', 'sleep 30 & exec sleep 600'], { cwd: dir, timeoutMs: 500 })
+  expect(r.timedOut).toBe(true)
+  expect(Date.now() - t0).toBeLessThan(5000)
 })

@@ -24,3 +24,41 @@ export function nextSyncEntry(
   const wait = Math.min(SYNC_BASE_MS * 2 ** (failures - 1), SYNC_MAX_MS)
   return { at: now, error: result.error, failures, nextAt: now + wait, ...(ms !== undefined && { ms }) }
 }
+
+/** the kill cap of one sync call; FACTORY_SYNC_TIMEOUT_MS sets it */
+export const syncTimeoutMs = () => Number(process.env.FACTORY_SYNC_TIMEOUT_MS) || 120_000
+
+export type Ran = { code: number | null; out: string; err: string; timedOut: boolean }
+
+/**
+ * `argv` run in `cwd`, killed after `timeoutMs`. It waits for the process to exit, not for the pipes to
+ * close: a child of a killed process can hold them open. A killed call reads no output.
+ */
+export async function runBounded(
+  argv: string[],
+  opts: { cwd: string; env?: Record<string, string | undefined>; timeoutMs: number },
+): Promise<Ran> {
+  const proc = Bun.spawn(argv, { cwd: opts.cwd, env: opts.env, stdout: 'pipe', stderr: 'pipe' })
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    try {
+      proc.kill(9)
+    } catch {
+      // already gone
+    }
+  }, opts.timeoutMs)
+  try {
+    const out = new Response(proc.stdout).text()
+    const err = new Response(proc.stderr).text()
+    const code = await proc.exited
+    if (timedOut) return { code, out: '', err: '', timedOut }
+    return { code, out: await out, err: await err, timedOut }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** the error text of a call that hit the kill cap */
+export const timedOutText = (what: string, timeoutMs: number) =>
+  `${what}: timed out after ${Math.round(timeoutMs / 1000)} s`
