@@ -5201,7 +5201,27 @@ test.each(DENY_WMSR_HEREDOC_DQSUB)('denyReason denies %j (nested substitution, w
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
+// claude-factory-wmsr.20-.21: a header closed on its own line, and a quote or comment in a substitution.
+const DENY_WMSR_HEREDOC_CLOSE = [
+  `x=$(cat <<EOF)\necho 'x\nEOF\n'; ${WM}`,
+  `x=$(cat <<'EOF')\necho 'x\nEOF\n'; ${WM}`,
+  `echo $(cat <<EOF)\necho 'x\nEOF\n'; ${WM}`,
+  `x=$(cat <<EOF); true\necho 'x\nEOF\n'; ${WM}`,
+  `x=\`cat <<EOF\`\necho 'x\nEOF\n'; ${WM}`,
+  `cat <<EOF\ndon't $(echo ")"; ${WM})\nEOF`,
+  `cat <<EOF\ndon't $(echo ')'; ${WM})\nEOF`,
+  '(cat <<EOF)\nhi\nEOF',
+  `cat <<EOF\ndon't $(echo # )\n${WM}\n)\nEOF`,
+]
+test.each(DENY_WMSR_HEREDOC_CLOSE)(
+  'denyReason denies %j (header close or quoted substitution, wmsr)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+  },
+)
+
 const ALLOW_WMSR_HEREDOC_OPTS = [
+  "cat <<EOF\nit's $(date +%Y)\nEOF",
   "sort <<'EOF'\ndon't\nEOF",
   "gh pr create -f -d --body-file - <<'EOF'\nit's\nEOF",
   "git commit --file - --no-edit <<'EOF'\ndon't\nEOF",

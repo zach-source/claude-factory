@@ -695,6 +695,8 @@ interface HeredocEntry {
   delim: string
   dash: boolean
   quoted: boolean
+  // paren depth where the header sits
+  depth: number
 }
 
 /**
@@ -702,7 +704,7 @@ interface HeredocEntry {
  * It returns undefined when the delimiter is unclear: it is empty, it holds `$` or a backtick or a
  * backslash-newline, or a quote stays open.
  */
-function readHeredocHeader(cmd: string, from: number): HeredocEntry | undefined {
+function readHeredocHeader(cmd: string, from: number, depth: number): HeredocEntry | undefined {
   let j = from
   const dash = cmd[j] === '-'
   if (dash) j++
@@ -741,7 +743,7 @@ function readHeredocHeader(cmd: string, from: number): HeredocEntry | undefined 
     }
   }
   if (delim === '') return undefined
-  return { delim, dash, quoted }
+  return { delim, dash, quoted, depth }
 }
 
 /**
@@ -793,7 +795,7 @@ function heredocSubstitutions(body: string): string | undefined {
       }
       if (depth !== 0) return undefined
       const text = body.slice(i + 2, j - 1)
-      if (/\bcase\b/.test(text)) return undefined
+      if (/\bcase\b/.test(text) || /['"#`]/.test(text)) return undefined
       out += text + '\n'
       i = j - 1
     } else if (c === '`') {
@@ -989,7 +991,10 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
         }
       } else {
         if (arithStack.pop()) arith--
-        if (parens.pop()) {
+        const wasArg = parens.pop()
+        // a paren that closes before the header newline hides the body start from this guard
+        if (pending.some(e => e.depth > parens.length)) heredocUnclear()
+        if (wasArg) {
           endWord()
           cur.push(')')
         }
@@ -1008,6 +1013,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     // read it, so it ends the segment here. It keeps a backtick mark in the word it ends, so a
     // later scan can see that this word is unsafe. A closing backtick only ends the segment.
     if (c === '`') {
+      if (pending.length > 0) heredocUnclear()
       if (!inBacktick) {
         word += c
         hasWord = true
@@ -1071,7 +1077,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<' && prevSig !== '<' && !heredocOff) {
       // claude-factory-wmsr: an unquoted `<<` starts a here-document. Inside `(( ))` or `${ }` it can
       // be a shift, so this guard cannot tell.
-      const entry = arith > 0 || braceDepth > 0 ? undefined : readHeredocHeader(cmd, i + 2)
+      const entry = arith > 0 || braceDepth > 0 ? undefined : readHeredocHeader(cmd, i + 2, parens.length)
       if (entry) pending.push(entry)
       else heredocUnclear()
     }
