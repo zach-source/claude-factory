@@ -2120,18 +2120,11 @@ const READER_COMMANDS = new Set([
 // claude-factory-ty8y.12: commands whose operands are text (a search word, a title, a comment body).
 const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
 
-function globNamesGlobalGitConfig(word: string): boolean {
+function globNamesGlobalGitConfig(word: string, state?: ScanState): boolean {
   const w = word.replace(/^["']+|["']+$/g, '')
   if (!/[*?[]/.test(w)) return false
-  // claude-factory-ty8y.24: star runs collapse; more than 4 stars fail closed, since a backtracking match could outlast the hook timeout.
-  const collapsed = w.replace(/\*+/g, '*')
-  if (collapsed.split('*').length - 1 > 4) return true
-  try {
-    const re = globToRegExp(collapsed)
-    return GLOBAL_GIT_CONFIG_SAMPLES.some(s => re.test(s))
-  } catch {
-    return false
-  }
+  // claude-factory-ty8y.24, 267o: globCanMatch collapses star runs and fails closed over the star cap.
+  return globCanMatch(w, GLOBAL_GIT_CONFIG_SAMPLES, state)
 }
 
 type OperandSkip = 'none' | 'reader' | 'operands'
@@ -2258,6 +2251,7 @@ function globalGitConfigUse(
   words: string[],
   skip: OperandSkip,
   isCd = false,
+  state?: ScanState,
 ): 'write' | 'mention' | undefined {
   // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
   // the text config or XDG, a glob character, a brace, or a redirect operator.
@@ -2295,7 +2289,8 @@ function globalGitConfigUse(
       if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
       continue
     }
-    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate)) return 'write'
+    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate, state))
+      return 'write'
     if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
   }
   return use
@@ -2363,6 +2358,27 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${out}$`, 'i')
 }
 
+const MAX_GLOB_STARS = 4
+
+/**
+ * claude-factory-267o: returns `true` if the glob can match one of the samples.
+ * Star runs collapse to one star. A glob with more than `MAX_GLOB_STARS` stars fails closed
+ * (returns `true`), because a backtracking match can outlast the hook timeout.
+ * With a `state`, each test spends scan work. An empty budget also fails closed.
+ * A glob that is not a valid pattern matches nothing.
+ */
+function globCanMatch(glob: string, samples: readonly string[], state?: ScanState): boolean {
+  const collapsed = glob.replace(/\*+/g, '*')
+  if (collapsed.split('*').length - 1 > MAX_GLOB_STARS) return true
+  if (state && spendWork(state, collapsed.length * samples.length)) return true
+  try {
+    const re = globToRegExp(collapsed)
+    return samples.some(s => re.test(s))
+  } catch {
+    return false
+  }
+}
+
 /**
  * claude-factory-9zd5: returns `true` if the last path component of `candidate` names `HEAD`.
  * The last component is the text after the final `/`.
@@ -2374,15 +2390,9 @@ function globToRegExp(glob: string): RegExp {
  * If the last component has a glob character (`*`, `?` or `[`), the function tests the glob instead.
  * It checks whether the glob, read as a shell pattern, can match the literal name `HEAD`.
  */
-function wordNamesHead(candidate: string): boolean {
+function wordNamesHead(candidate: string, state?: ScanState): boolean {
   const last = candidate.split('/').pop() ?? candidate
-  if (/[*?[]/.test(last)) {
-    try {
-      return globToRegExp(last).test('HEAD')
-    } catch {
-      return false
-    }
-  }
+  if (/[*?[]/.test(last)) return globCanMatch(last, ['HEAD'], state)
   return last.toLowerCase() === 'head'
 }
 
@@ -2416,7 +2426,7 @@ function wordNamesHead(candidate: string): boolean {
  * R2 never skips a redirect-form word.
  * A write is a write, even inside a `git` segment's own redirect, such as `git log > HEAD`.
  */
-function namesGitAdminPath(words: string[], isGitOrGhSegment: boolean): boolean {
+function namesGitAdminPath(words: string[], isGitOrGhSegment: boolean, state?: ScanState): boolean {
   let pendingRedirectTarget = false
   for (const word of words) {
     if (GIT_NAME_RE.test(word)) return true
@@ -2446,7 +2456,7 @@ function namesGitAdminPath(words: string[], isGitOrGhSegment: boolean): boolean 
       if (isGitOrGhSegment) continue
       if (REMOTE_TRACKING_HEAD_RE.test(candidate)) continue
     }
-    if (wordNamesHead(candidate)) return true
+    if (wordNamesHead(candidate, state)) return true
   }
   return false
 }
@@ -6137,7 +6147,7 @@ function denyAt(
     // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
     const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
-    if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
+    if (namesGitAdminPath(words, isGitOrGhSegment, state)) state.gitAdminPath = true
     const mayTouch = segmentMayTouchGit(words)
     if (mayTouch && hasGitWordIn(words)) state.gitWord = true
     const isGitSegment = b === 'git' || /^git-/.test(b)
@@ -6153,7 +6163,12 @@ function denyAt(
         ? 'operands'
         : 'none'
     const configUse = mayTouch
-      ? globalGitConfigUse(words, operandSkip, b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir')
+      ? globalGitConfigUse(
+          words,
+          operandSkip,
+          b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+          state,
+        )
       : undefined
     if (configUse === 'mention') state.globalGitConfig = true
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
