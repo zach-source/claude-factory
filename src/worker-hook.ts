@@ -1293,6 +1293,106 @@ function realCommand(words: string[]): string[] {
   }
 }
 
+/**
+ * claude-factory-21ux: true when an rm or find-exec-rm rule denies the command that starts at `cmd[0]`.
+ * `rm` is true when `cmd[0]` is an rm word that the rule did not deny.
+ */
+function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+  const b = baseWord(cmd[0]!)
+  if (b === 'rm') {
+    if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
+    return { deny: false, rm: true }
+  }
+  if (b === 'find') {
+    for (let i = 0; i < cmd.length; i++) {
+      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) {
+        return { deny: true, rm: false }
+      }
+    }
+  }
+  return { deny: false, rm: false }
+}
+
+/**
+ * claude-factory-21ux: realCommand stops at a wrapper flag that it does not know.
+ * In `/usr/bin/time -l rm -rf /`, the command word then looks like `-l`, and rm is hidden.
+ * This function walks the same prefix as realCommand.
+ * It reads each unknown wrapper flag two ways: as a bare flag (skip one word),
+ * and as a flag with a value word (skip two words).
+ * It reads the `timeout` duration two ways: one word of any shape, or no word.
+ * Each command word that a reading reaches gets the rm and find rule.
+ * This function never changes `cmd`, so no operandSkip rule relaxes.
+ *
+ * It can only add a denial. `rm` is true when a reading reaches an rm word that the rule allows.
+ * The caller then sets hasRm, for the cd + rm rule.
+ * Each (index, wrapper) state runs once, so the walk has O(n) states.
+ */
+function wrapperReadingsDeny(words: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+  const n = words.length
+  const seenHead = new Set<number>()
+  const seenFlag = new Set<string>()
+  const work: Array<() => void> = []
+  let rm = false
+  let found = false
+  const head = (i: number): void => {
+    if (i >= n || seenHead.has(i)) return
+    seenHead.add(i)
+    const w = words[i]!
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || RESERVED_LEADING_WORDS.has(w)) {
+      work.push(() => head(i + 1))
+      return
+    }
+    const b = baseWord(w)
+    if (WRAPPERS.has(b) || b === 'timeout') {
+      work.push(() => flags(b, i + 1))
+      return
+    }
+    if (b === 'xargs') {
+      let j = i + 1
+      while (j < n && words[j]!.startsWith('-')) j++
+      const k = j
+      work.push(() => head(k))
+      return
+    }
+    const r = rmFindReading(words.slice(i), root)
+    if (r.deny) found = true
+    if (r.rm) rm = true
+  }
+  const flags = (name: string, j: number): void => {
+    const key = name + ':' + j
+    if (seenFlag.has(key)) return
+    seenFlag.add(key)
+    const w = words[j]
+    if (w === undefined) return
+    if (w === '-' || !w.startsWith('-')) {
+      after(name, j)
+      return
+    }
+    if (w === '--') {
+      after(name, j + 1)
+      return
+    }
+    if (WRAPPER_VALUE_FLAGS[name]?.has(w)) {
+      work.push(() => flags(name, j + 2))
+      return
+    }
+    if (WRAPPER_BARE_FLAGS[name]?.has(w)) {
+      work.push(() => flags(name, j + 1))
+      return
+    }
+    work.push(() => flags(name, j + 1))
+    work.push(() => flags(name, j + 2))
+  }
+  const after = (name: string, j: number): void => {
+    work.push(() => head(j))
+    if (name === 'timeout' && j < n && !words[j]!.startsWith('-')) work.push(() => head(j + 1))
+  }
+  head(0)
+  while (work.length && !found) work.pop()!()
+  return { deny: found, rm }
+}
+
 // claude-factory-p43v.21: This list contains `WRAPPERS`, plus `timeout` and `xargs`.
 // `commandAnchors` reads the flags of each wrapper, as `realCommand` does.
 // It uses the same `WRAPPER_VALUE_FLAGS` and `WRAPPER_BARE_FLAGS` maps.
@@ -6348,6 +6448,10 @@ function denyAtScan(
         if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
       }
     }
+    // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
+    const readings = wrapperReadingsDeny(words, root)
+    if (readings.deny) return REASON
+    if (readings.rm) hasRm = true
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
     // flag, which only moves the one command it wraps: anyGitReason's and anyShellReason's own

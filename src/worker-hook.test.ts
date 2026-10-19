@@ -7432,8 +7432,8 @@ const ALLOW_21UX: string[] = [
   'time -l rm a',
   'time -l',
   'command -v rm',
-  'time -l echo rm -rf /',
 ]
+// Accepted over-deny: 'time -l echo rm -rf /' denies. The flag can take echo as its value.
 test.each(ALLOW_21UX)('denyReason allows %j (claude-factory-21ux)', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
