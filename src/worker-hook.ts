@@ -468,7 +468,14 @@ const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', '
  * U+017F (long s) to `s`, so the fold goes through upper case: `toLowerCase` alone keeps it.
  */
 function baseWordUncached(w: string): string {
-  const s = w.replace(/^\\/, '')
+  let s = w
+  // claude-factory-6sz8: zsh EQUALS expands =X to the path of X in any word position.
+  // Read =rm as rm, =\rm as rm and keep ==x as it is.
+  if (s.charCodeAt(0) === 92) s = s.slice(1)
+  if (s.length > 1 && s.charCodeAt(0) === 61 && s.charCodeAt(1) !== 61) {
+    s = s.slice(1)
+    if (s.charCodeAt(0) === 92) s = s.slice(1)
+  }
   const i = s.lastIndexOf('/')
   const b = i >= 0 ? s.slice(i + 1) : s
   // ASCII fast path: the upper-then-lower fold is slow on huge scans

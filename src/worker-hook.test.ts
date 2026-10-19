@@ -5335,6 +5335,73 @@ test.each(JSY0_ALLOW)('denyReason allows a harmless = word: %s (claude-factory-j
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
+// claude-factory-6sz8: zsh expands =X to the path of X in every word position. A guard must read
+// =rm as rm, =sudo as sudo and so on.
+const SZ8_DENY = [
+  '=rm -rf /',
+  'sudo =rm -rf /',
+  'env =rm -rf /',
+  'nice =rm -rf /',
+  'nice -n 5 =rm -rf /',
+  'command =rm -rf /',
+  'exec =rm -rf /',
+  'time =rm -rf /',
+  'timeout 5 =rm -rf /',
+  'A=1 =rm -rf /',
+  '=rm -r x',
+  '=rm x/../../etc',
+  '=rm /etc/passwd',
+  '=sudo rm -rf /',
+  '=env rm -rf /',
+  '=nice rm -rf /',
+  '=command rm -rf /',
+  '=timeout 5 rm -rf /',
+  '=xargs rm -rf < f',
+  '=find / -exec rm -rf {} +',
+  'find / -exec =rm -rf {} +',
+  '=rm x; cd ..',
+  'cd ..; =rm x',
+  '=RM -rf /',
+  '=\\rm -rf /',
+  "=r''m -rf /",
+  "'=rm' -rf /",
+  'if true; then =rm -rf /; fi',
+  'echo x | =rm -rf /',
+]
+
+test.each(SZ8_DENY)('denyReason denies an = command word: %s (claude-factory-6sz8)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+const SZ8_ALLOW = [
+  '== x',
+  'a=b ls',
+  'echo =rm',
+  '=ls',
+  '=rm x',
+  'ls =rm',
+  '==rm -rf /',
+  'echo a==b',
+  'echo == push',
+]
+
+test.each(SZ8_ALLOW)('denyReason allows a harmless = word: %s (claude-factory-6sz8)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test.each([
+  ['=rm', 'rm'],
+  ['=RM', 'rm'],
+  ['=/bin/rm', 'rm'],
+  ['=\\rm', 'rm'],
+  ['\\=rm', 'rm'],
+  ['==rm', '==rm'],
+  ['=', '='],
+  ['a=b', 'a=b'],
+])('baseWord reads %s as %s (claude-factory-6sz8)', (w, want) => {
+  expect(baseWordForTest(w)).toBe(want)
+})
+
 // claude-factory-2pdm: a command substitution inside double quotes runs in the shell. Every guard
 // must see its body, as it sees the same text outside quotes.
 const DQ_GATE: HookGate = {
