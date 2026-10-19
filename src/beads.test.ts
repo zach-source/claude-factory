@@ -26,6 +26,28 @@ test('only top-level beads no run holds are dispatched, up to the room left', ()
   expect(dispatchable(ready, new Set(), -3)).toEqual([])
 })
 
+test('a factory child of a parent that is not a factory bead starts on its own (claude-factory-2rik)', () => {
+  const epic = bead('fx-9', { labels: [] })
+  const kid = bead('fx-9.1', { parent: 'fx-9', labels: ['factory'] })
+  const parents = (...all: Bead[]) => new Map(all.map(b => [b.id, b]))
+  const ids = (ready: Bead[], linked: string[], map?: Map<string, Bead>) =>
+    dispatchable(ready, new Set(linked), 5, map).map(b => b.id)
+  expect(ids([kid], [], parents(epic, kid))).toEqual(['fx-9.1'])
+  // no map: the old rule holds
+  expect(ids([kid], [])).toEqual([])
+  // the parent is a factory bead: its run carries the child
+  const owned = bead('fx-9', { labels: ['factory'] })
+  expect(ids([kid], [], parents(owned, kid))).toEqual([])
+  // the parent has a live run
+  expect(ids([kid], ['fx-9'], parents(epic, kid))).toEqual([])
+  // the parent is not in the listing
+  expect(ids([kid], [], parents(kid))).toEqual([])
+  // the child itself must carry the label
+  expect(ids([bead('fx-9.2', { parent: 'fx-9' })], [], parents(epic))).toEqual([])
+  // an assigned child stays out
+  expect(ids([{ ...kid, assignee: 'zach' }], [], parents(epic, kid))).toEqual([])
+})
+
 test("the backlog counts each parent's closed children and marks open blockers, from the three listings", () => {
   const all = [
     bead('ap-1', { status: 'open' }),
