@@ -41,6 +41,14 @@ export function lastSession(json: string): string | undefined {
   }
 }
 
+/**
+ * whether the host starts the manager now. The .migrated marker or FACTORY_AX_FRESH=1 (a new factory) says yes. A
+ * home with rigs.json and no marker is a hand-made one: yes, unless a migration archive is on the volume, since
+ * its unpack writes rigs.json before it ends. An empty home waits for `factory migrate-to-ax`
+ */
+export const homeReady = (f: { migrated: boolean; fresh: boolean; hasRigs: boolean; archive: boolean }) =>
+  f.migrated || f.fresh || (f.hasRigs && !f.archive)
+
 export const HOST_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? 'w1:p1'
 
 const herdr = (...a: string[]) => Bun.spawnSync(['herdr', ...a], { stdin: 'ignore', timeout: 10_000 })
@@ -87,7 +95,10 @@ async function bringUp(args: string[], home: string, log: (m: string) => void, s
   log(`manager started in ${HOST_PANE()}${session ? ` (resume ${session})` : ''}`)
 }
 
-export async function host(args: string[], { everyMs = 30_000 } = {}) {
+export async function host(
+  args: string[],
+  { everyMs = 30_000, prepare }: { everyMs?: number; prepare?: () => string[] } = {},
+) {
   if (process.env.FACTORY_IN_AX !== '1') throw new Error('factory manager host runs only inside the AX task')
   const home = process.env.FACTORY_HOME
   if (!home) throw new Error('FACTORY_HOME is not set')
@@ -101,6 +112,19 @@ export async function host(args: string[], { everyMs = 30_000 } = {}) {
     const f = join(home, 'manager-sessions.json')
     return existsSync(f) ? lastSession(readFileSync(f, 'utf8')) : undefined
   }
+  const ready = () =>
+    homeReady({
+      migrated: existsSync(join(home, '.migrated')),
+      fresh: process.env.FACTORY_AX_FRESH === '1',
+      hasRigs: existsSync(join(home, 'rigs.json')),
+      archive:
+        existsSync(join(worker.own(), 'migrate.tgz')) || existsSync(join(worker.own(), 'put', 'migrate.tgz')),
+    })
+  if (!ready()) log('waiting for `factory migrate-to-ax` (or FACTORY_AX_FRESH=1) before the manager starts')
+  // ponytail: no timeout: an empty home waits until the laptop migrates it
+  while (!ready()) await Bun.sleep(everyMs)
+  // the rig repos and their beads stores, before the manager reads them; a failure is logged, and the manager still starts
+  for (const problem of prepare?.() ?? []) log(`repos sync: ${problem}`)
   await bringUp(args, home, log, session())
   // ponytail: polls every 30 s with no backoff. A manager that exits inside a live herdr is not restarted
   // (superviseManager restarts its Claude); a herdr that keeps dying restarts every 30 s
