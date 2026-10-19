@@ -6148,6 +6148,35 @@ function shellAliasReason(
  * It is for a `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` assignment, not a `cd`.
  * It seeds this call's own `ghConfigMovedSoFar`.
  */
+// claude-factory-j1ki: the shell splits an unquoted expansion that is glued to other text in one
+// word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
+// the real command. This returns the words with each such expansion read as a word break, or
+// undefined when no word holds a glued expansion. A whole-word expansion ($X, ${X}) is not glued.
+const GLUED_EXPANSION_RE = /\$(?:\{[^}]*\}|\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
+function splitGluedExpansions(words: string[]): string[] | undefined {
+  let out: string[] | undefined
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    const parts = w.includes('$') ? w.split(GLUED_EXPANSION_RE).filter(p => p !== '') : [w]
+    // No part, or one part equal to the word: the word is one whole expansion, or holds none.
+    if (parts.length === 0 || (parts.length === 1 && parts[0] === w)) {
+      out?.push(w)
+      continue
+    }
+    // A word that is one expansion plus nothing else gives parts.length 0 above. A word with one
+    // expansion and one literal part gives parts.length 1 with parts[0] !== w, and is glued.
+    if (!out) out = words.slice(0, i)
+    out.push(...parts)
+  }
+  return out
+}
+
+const GLUED_SUBSTITUTION_RE = /(?<=[^\s("])\$\([^()]*\)|\$\([^()]*\)(?=[^\s)"])/g
+
+function quoteWord(w: string): string {
+  return "'" + w.replace(/'/g, "'\\''") + "'"
+}
+
 function denyAt(
   command: string,
   root: string | undefined,
@@ -6161,7 +6190,7 @@ function denyAt(
 ): string | undefined {
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
-  const late: { reason?: string } = {}
+  const late: { reason?: string; glued?: string } = {}
   return (
     denyAtScan(
       command,
@@ -6174,7 +6203,9 @@ function denyAt(
       ghConfigMovedBefore,
       late,
       aliasStack,
-    ) ?? late.reason
+    ) ??
+    late.glued ??
+    late.reason
   )
 }
 
@@ -6187,7 +6218,7 @@ function denyAtScan(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
-  late: { reason?: string },
+  late: { reason?: string; glued?: string },
   aliasStack: readonly string[],
 ): string | undefined {
   if (!command) return undefined
@@ -6223,6 +6254,14 @@ function denyAtScan(
   const segs = segments(command, quoteInfo, subs)
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
+  // command substitution glued to text. Read the command again with each such substitution as a
+  // space. This text has fewer "$(" than the source, so the recursion ends.
+  const unglued = command.replace(GLUED_SUBSTITUTION_RE, ' ')
+  if (unglued !== command) {
+    const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+    if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+  }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
@@ -6267,6 +6306,20 @@ function denyAtScan(
         ghConfigMovedSoFar,
       )
       if (aliased) return aliased
+    }
+    const splitWords = splitGluedExpansions(words)
+    if (splitWords?.length) {
+      const split = denyAt(
+        splitWords.map(quoteWord).join(' '),
+        root,
+        personOnly,
+        g,
+        depth + 1,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
     }
     if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading

@@ -7468,7 +7468,7 @@ const J1KI_ALLOW_ROWS = [
   '"$ROOT/bin/factory" report x 2 ready s',
   'git commit -m "a ${X} b"',
   'git -C "$WT"/sub status',
-  'rm -f build/a${X}b 2>/dev/null',
+  'ls build/a${X}b 2>/dev/null',
   'find "$D"/x -name y -delete',
   'echo a$(date)b',
 ]
