@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- The Claude Code shell snapshot aliases `gp`, `gpoat` and `gco` expand to git commands. The worker hook saw no `git` word, so it allowed `gp origin main`. Worker settings now set `CLAUDE_ENV_FILE` to `src/worker-shell-env.sh`, which runs `unalias -a`. A user value moves to `FACTORY_USER_ENV_FILE`. The hook also reads the newest snapshot files and denies an alias word for `git` or `gh`. It denies when the read fails. A path command word, such as `bin/factory gc`, skips the check for its arguments. CI installs zsh (claude-factory-1zr5).
+
 - The worker hook now keeps a redirect whole when a backslash-newline line continuation sits inside it, such as `>\<newline>&1`, `>\<newline>|log` or `&\<newline>>log`. Bash joins the continuation. Before, the guard split the push tail at the `&` or `|`. In bash, the hook did not deny `git push origin feature >\<newline>&1 main`. Now it denies this command, and the same for `git send-pack` (claude-factory-abmq).
 
 - The worker hook now folds the command word to lowercase before each `git`, `gh`, shell, `sudo`, `xargs`, `kubectl`, `helm` and `rm` check. macOS APFS ignores case, so `Git push origin main`, `GH pr merge 1` and `/bin/SH -c 'git push origin main'` ran the real program and passed every guard. A non-ASCII word folds with upper then lower case, so the long s (U+017F) that APFS folds to `s` also denies (claude-factory-a8pr).
