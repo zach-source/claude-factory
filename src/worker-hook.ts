@@ -1542,10 +1542,12 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
       if (k >= slotEnd) {
         const walk = shOptionSlotWalk(words, k)
-        if (walk.dynamic && (SHELL_NAMES.has(bw) || BRACE_LIST_WORD.test(words[k]!))) return true
+        if (walk.dynamic && SHELL_NAMES.has(bw)) return true
         slotEnd = walk.end
       }
-      const script = shCScriptValue(words, k)
+      // A brace list word is denied as a dynamic verb before this scan matters. Reading its script
+      // here would change that reason to the BEADS_ACTOR one (claude-factory-38jm AC4).
+      const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true
@@ -1776,8 +1778,6 @@ function xargsHidesOperand(words: string[]): boolean {
   }
   return false
 }
-
-const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash'])
 
 // claude-factory-l43b: a redirect word starts with an optional fd number, then < or >.
 const REDIRECT_WORD = /^\d*[<>]/
