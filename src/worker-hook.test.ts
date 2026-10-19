@@ -2574,6 +2574,87 @@ test.each(ALLOW_REDIRECT_CONT)(
   },
 )
 
+// claude-factory-59pp: bash and zsh read `&>` as one redirect, dash reads a separator. segments()
+// returns both readings, so the words after the redirect stay with the command word.
+const AMP_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const BSNL = '\\\n'
+
+const DENY_AMP_RM = [
+  'rm &>/dev/null -rf /',
+  'rm &>>f -rf /',
+  'rm &>|f -rf /',
+  'rm &>!f -rf /',
+  'rm&>f -rf /',
+  `rm &${BSNL}>f -rf /`,
+  `rm &${BSNL}${BSNL}>>f -rf /`,
+  'sh -c "rm &>/dev/null -rf /"',
+]
+
+test.each(DENY_AMP_RM)('denyReason denies %j (claude-factory-59pp, rm after &>)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeDefined()
+})
+
+const DENY_AMP_GH = ['gh &>/dev/null pr merge 1', 'gh&>/dev/null pr merge 1', 'gh &>>f pr merge 1']
+
+test.each(DENY_AMP_GH)('denyReason denies %j (claude-factory-59pp, gh after &>)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeDefined()
+})
+
+const DENY_AMP_XARGS = [
+  'xargs &>/dev/null gh pr view 1',
+  'xargs&>/dev/null gh pr view 1',
+  'xargs -n1 &>>f gh pr view 1',
+  'XARGS &>/dev/null gh pr view 1',
+  `xargs &${BSNL}>/dev/null gh pr view 1`,
+  'xargs &>/dev/null git log',
+]
+
+test.each(DENY_AMP_XARGS)('denyReason denies %j (claude-factory-59pp, xargs after &>)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBe(XARGS_REASON)
+})
+
+test('denyReason still reads the dash split after &> (claude-factory-59pp)', () => {
+  expect(denyReason('true &>/dev/null gh pr merge 1', '/root/repo', undefined, AMP_GATE)).toBeDefined()
+})
+
+const ALLOW_AMP = [
+  'sleep 1 & echo hi',
+  'a & b',
+  'a && b',
+  'echo hi &',
+  'echo hi & > f',
+  'ls &>/dev/null',
+  'ls &>/dev/null && echo ok',
+  'bun test &>log; echo done',
+  'gh pr view 1 &>/dev/null',
+  'git log &>/dev/null',
+  'echo "a &>b" rm -rf /',
+  "echo 'gh &>x pr merge 1'",
+]
+
+test.each(ALLOW_AMP)('denyReason allows %j (claude-factory-59pp)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeUndefined()
+})
+
+const AMP_SHELL_ROWS = [
+  `echo "'git push origin main'" | xargs &>/dev/null sh -c`,
+  'xargs&>/dev/null sh -c',
+  'xargs &>>f bash -c',
+  'XARGS &>/dev/null sh -c',
+  'xargs -n1 &>/dev/null sh -c',
+  `xargs &${BSNL}>/dev/null sh -c`,
+]
+
+test.each(AMP_SHELL_ROWS)(
+  'denyReason gives the same verdict with and without &> for %j (claude-factory-59pp)',
+  cmd => {
+    const bare = cmd.replace(/&(\\\n)*>>?\S*/, '')
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBe(
+      denyReason(bare, '/root/repo', undefined, AMP_GATE),
+    )
+  },
+)
+
 // claude-factory-cu5m.14: oracle = git as a shell function that writes its args to a file; zsh 5.9
 // and bash run each row. A DENY op is one where the shell passes main to git. The test spawns no shell.
 const SHELL_OPERATOR_DENY = [
