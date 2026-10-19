@@ -5220,6 +5220,29 @@ test.each(DENY_WMSR_HEREDOC_CLOSE)(
   },
 )
 
+// claude-factory-wmsr.23-.26: a comment skip past a backtick, $[ ] arithmetic, a brace in a nested
+// substitution, and a backslash-newline between the two < of a here-document.
+const DENY_WMSR_ROUND7 = [
+  `echo \`true # x\`; ${WM}`,
+  `echo \`true # \`; ${WM}`,
+  `x=\`echo a # b\`; ${WM}`,
+  `echo $(echo \`true # x\`); ${WM}`,
+  `x=1; echo $[ #x ] ' \n'; ${WM}`,
+  `echo $[ 1<<2 ]\necho 'a\n2\n' ; ${WM}`,
+  `echo \${x:-\`echo } \` #y}; ${WM}`,
+  `echo \${x:-$(echo } ) #y}; ${WM}`,
+  `cat <\\\n<EOF\ndon't\nEOF\n${WM}`,
+  `cat <\\\n<'EOF'\ndon't\nEOF\n${WM}`,
+  `cat <\\\n<-EOF\ndon't\nEOF\n${WM}`,
+]
+test.each(DENY_WMSR_ROUND7)('denyReason denies %j (round 7, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+test.each(['echo `echo a` # x', "cat <<'EOF'\ndon't\nEOF"])('denyReason allows %j (round 7, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
 const ALLOW_WMSR_HEREDOC_OPTS = [
   "cat <<EOF\nit's $(date +%Y)\nEOF",
   "sort <<'EOF'\ndon't\nEOF",

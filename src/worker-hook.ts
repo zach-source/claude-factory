@@ -863,10 +863,13 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
   }
   let redirPrev = false
   // claude-factory-wmsr: `lastSig` is the last char read. A backslash-newline pair does not count.
-  // `braceDepth` counts open unquoted `${`. `arith` counts open parens of a `((` or `$((` pair.
+  // `arith` counts open parens of a `((` or `$((` pair.
   // A `&` or `|` in a redirect (`>&`) opens a word, so a # after it is never at a word start.
   let lastSig: string = '\n'
-  let braceDepth = 0
+  // `braceStack` holds, for each open `${` or bare `{` in it, the paren and backtick level where it opened.
+  // `bracket` counts open `$[` arithmetic.
+  const braceStack: number[] = []
+  let bracket = 0
   let arith = 0
   const arithStack: boolean[] = []
   // claude-factory-wmsr: here-documents read on this line, whose bodies start after its newline.
@@ -947,8 +950,10 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       // Any other word-start # can be a comment too. This guard reads its text as words.
       // If a quote is in its line, this guard sets info.comment.
       const clear =
-        braceDepth === 0 &&
+        !inBacktick &&
+        braceStack.length === 0 &&
         arith === 0 &&
+        bracket === 0 &&
         (prevSig === '\n' ||
           prevSig === ' ' ||
           prevSig === '\t' ||
@@ -1074,15 +1079,28 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
+    if (c === '<' && cmd[i + 1] === '\\' && cmd[i + 2] === '\n' && prevSig !== '<' && !heredocOff) {
+      // a backslash-newline between the two < joins them into <<
+      let j = i + 1
+      while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+      if (cmd[j] === '<' && cmd[j + 1] !== '<') heredocUnclear()
+    }
     if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<' && prevSig !== '<' && !heredocOff) {
       // claude-factory-wmsr: an unquoted `<<` starts a here-document. Inside `(( ))` or `${ }` it can
       // be a shift, so this guard cannot tell.
-      const entry = arith > 0 || braceDepth > 0 ? undefined : readHeredocHeader(cmd, i + 2, parens.length)
+      const entry =
+        arith > 0 || bracket > 0 || braceStack.length > 0
+          ? undefined
+          : readHeredocHeader(cmd, i + 2, parens.length)
       if (entry) pending.push(entry)
       else heredocUnclear()
     }
-    if (c === '{' && (prevSig === '$' || braceDepth > 0)) braceDepth++
-    else if (c === '}' && braceDepth > 0) braceDepth--
+    const level = parens.length * 2 + (inBacktick ? 1 : 0)
+    if (c === '{' && (prevSig === '$' || braceStack.length > 0)) braceStack.push(level)
+    else if (c === '}' && braceStack.length > 0 && braceStack[braceStack.length - 1] === level)
+      braceStack.pop()
+    if (c === '[' && (prevSig === '$' || bracket > 0)) bracket++
+    else if (c === ']' && bracket > 0) bracket--
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
