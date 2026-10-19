@@ -110,3 +110,26 @@ test('runBounded returns near the cap after a normal exit, though a child holds 
   expect(r.out).toBe('hi\n')
   expect(Date.now() - t0).toBeLessThan(5000)
 })
+
+test('runBounded: a normal exit is not timed out, though the cap fires in the pipe grace', async () => {
+  mkdirSync(dir, { recursive: true })
+  const r = await runBounded(['sh', '-c', 'sleep 8 & echo hi; exit 0'], { cwd: dir, timeoutMs: 500 })
+  expect(r.code).toBe(0)
+  expect(r.timedOut).toBe(false)
+})
+
+test('runBounded: a process that leaves a child on the pipe still exits soon', async () => {
+  mkdirSync(dir, { recursive: true })
+  const script = join(dir, 'probe.ts')
+  writeFileSync(
+    script,
+    `import { runBounded } from ${JSON.stringify(join(import.meta.dir, 'sync.ts'))}
+await runBounded(['sh', '-c', 'sleep 30 & echo hi; exit 0'], { cwd: ${JSON.stringify(dir)}, timeoutMs: 5000 })
+await runBounded(['sh', '-c', 'sleep 30 & exec sleep 60'], { cwd: ${JSON.stringify(dir)}, timeoutMs: 300 })
+`,
+  )
+  const t0 = Date.now()
+  const p = Bun.spawn(['bun', script], { stdout: 'ignore', stderr: 'ignore' })
+  await p.exited
+  expect(Date.now() - t0).toBeLessThan(6000)
+})

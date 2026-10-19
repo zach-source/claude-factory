@@ -42,14 +42,21 @@ const PIPE_GRACE_MS = 1000
 function drain(stream: ReadableStream<Uint8Array>) {
   const dec = new TextDecoder()
   let s = ''
+  const reader = stream.getReader()
   const done = (async () => {
     try {
-      for await (const chunk of stream) s += dec.decode(chunk, { stream: true })
+      for (;;) {
+        const { done: end, value } = await reader.read()
+        if (end) break
+        s += dec.decode(value, { stream: true })
+      }
     } catch {
       // the stream broke: keep what came
     }
   })()
-  return { done, text: () => s }
+  // stop reading, so a child that holds the pipe cannot keep this process alive
+  const cancel = () => Promise.race([reader.cancel().catch(() => {}), new Promise(r => setTimeout(r, 200))])
+  return { done, text: () => s, cancel }
 }
 
 export type Ran = { code: number | null; out: string; err: string; timedOut: boolean }
@@ -76,9 +83,14 @@ export async function runBounded(
     const out = drain(proc.stdout)
     const err = drain(proc.stderr)
     const code = await proc.exited
-    if (timedOut) return { code, out: '', err: '', timedOut }
+    clearTimeout(timer)
+    if (timedOut) {
+      await Promise.all([out.cancel(), err.cancel()])
+      return { code, out: '', err: '', timedOut }
+    }
     // a child that outlives the process can hold a pipe open: wait for the end of the output only a moment
     await Promise.race([Promise.all([out.done, err.done]), new Promise(r => setTimeout(r, PIPE_GRACE_MS))])
+    await Promise.all([out.cancel(), err.cancel()])
     return { code, out: out.text(), err: err.text(), timedOut }
   } finally {
     clearTimeout(timer)
