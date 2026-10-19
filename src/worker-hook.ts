@@ -5890,27 +5890,6 @@ export function denyReason(
 }
 
 /**
- * The scan `denyReason` runs, with no length cap (claude-factory-dts). `denyReason` is the only
- * public entry point that checks `MAX_COMMAND_LENGTH`. A recursive call (through `anyShellReason`,
- * for `eval` or `sh -c`) reads a substring of a command that `denyReason` already capped. So this
- * inner scan does not need a cap of its own.
- *
- * `memoGate` wraps `gate` once here, so every recursion level (`denyAt`, `anyShellReason`)
- * through this one call shares one memoized `headOf`/`originHead`, in place of one real git spawn
- * for every push segment (claude-factory-dts).
- *
- * claude-factory-c63: after `denyAt` allows every segment on its own, this function still denies
- * with `PUSH_REASON`. It does so when the whole command holds both a branch-change word and a
- * HEAD-reading push. See `ScanState` above `denyAt`. `denyAt` would compare the push with a
- * branch name read before the change. An allow there does not prove that the real, later target
- * is safe.
- *
- * claude-factory-68gn: `false` is the `movedBefore` seed for this command (see `denyAt` below). No
- * `cd`, `pushd` or `popd` word has run yet at the top of a fresh `scanReason` call.
- * claude-factory-bemr: the second `false` is the `ghConfigMovedBefore` seed. No `GH_CONFIG_DIR`,
- * `XDG_CONFIG_HOME`, or `HOME` assignment has run yet either.
- */
-/**
  * claude-factory-mozp: returns true when a comment line ends in a backslash and more text follows.
  * A comment starts at a `#` that begins a word. The shell keeps the backslash, so the next line
  * runs as a command. segments() joins the two lines. The check reads the raw text, one test for
@@ -5932,6 +5911,27 @@ function commentLineContinues(cmd: string): boolean {
   return false
 }
 
+/**
+ * The scan `denyReason` runs, with no length cap (claude-factory-dts). `denyReason` is the only
+ * public entry point that checks `MAX_COMMAND_LENGTH`. A recursive call (through `anyShellReason`,
+ * for `eval` or `sh -c`) reads a substring of a command that `denyReason` already capped. So this
+ * inner scan does not need a cap of its own.
+ *
+ * `memoGate` wraps `gate` once here, so every recursion level (`denyAt`, `anyShellReason`)
+ * through this one call shares one memoized `headOf`/`originHead`, in place of one real git spawn
+ * for every push segment (claude-factory-dts).
+ *
+ * claude-factory-c63: after `denyAt` allows every segment on its own, this function still denies
+ * with `PUSH_REASON`. It does so when the whole command holds both a branch-change word and a
+ * HEAD-reading push. See `ScanState` above `denyAt`. `denyAt` would compare the push with a
+ * branch name read before the change. An allow there does not prove that the real, later target
+ * is safe.
+ *
+ * claude-factory-68gn: `false` is the `movedBefore` seed for this command (see `denyAt` below). No
+ * `cd`, `pushd` or `popd` word has run yet at the top of a fresh `scanReason` call.
+ * claude-factory-bemr: the second `false` is the `ghConfigMovedBefore` seed. No `GH_CONFIG_DIR`,
+ * `XDG_CONFIG_HOME`, or `HOME` assignment has run yet either.
+ */
 export function scanReason(
   command: string,
   root?: string,
@@ -5953,7 +5953,6 @@ export function scanReason(
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
-  if (commentLineContinues(command)) return COMMENT_CONTINUATION_REASON
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
@@ -6078,6 +6077,8 @@ function denyAt(
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
+  // claude-factory-mozp: every decoded script (sh -c, eval, alias, substitution) passes here too.
+  if (commentLineContinues(command)) return COMMENT_CONTINUATION_REASON
   // claude-factory-1zr5: a table the hook cannot read denies every command (fail closed).
   const aliasTable = gate.shellAliases?.()
   if (gate.shellAliases && !aliasTable) return SHELL_ALIAS_READ_REASON

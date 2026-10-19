@@ -5432,10 +5432,10 @@ const DENY_COMMENT_CONTINUATION: [string, string][] = [
   [`eval 'true #a${BS}'"${NL}"'git push origin main'`, COMMENT_CONTINUATION_REASON],
   [`echo $(sh -c 'true #a${BS}'"${NL}"'git push origin main')`, COMMENT_CONTINUATION_REASON],
   // the rows from the bead, with a space before the backslash: the push word is already visible
-  [`true # a ${BS}${NL}git push origin main`, PUSH_REASON],
-  [`echo $(true # a ${BS}${NL}git push origin main${NL})`, PUSH_REASON],
-  [`echo "$(true # a ${BS}${NL}git push origin main${NL})"`, PUSH_REASON],
-  [`x="$(true # a ${BS}${NL}git push origin main${NL})"`, PUSH_REASON],
+  [`true # a ${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`echo $(true # a ${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo "$(true # a ${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`x="$(true # a ${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
 ]
 
 test.each(DENY_COMMENT_CONTINUATION)(
