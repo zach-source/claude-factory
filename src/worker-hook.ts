@@ -5296,14 +5296,6 @@ function globMatchesShellName(g: string): boolean {
   }
 }
 
-const BARE_CASE_RE = /(?:^|[;&|\n({]\s*)case\s/
-
-/** True when the raw text has `w` in a case pattern slot: after `in` or `;;`, closed by `)`. */
-function casePatternSlot(command: string, w: string): boolean {
-  const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp('(?:\\bin|;;&?|;&)\\s*\\(?\\s*' + esc + '\\s*\\)').test(command)
-}
-
 /** True when a glob command word sits at any command anchor of `words`. */
 function anyGlobCommandWord(words: string[]): boolean {
   return commandAnchors(words).some(a => globCommandWord(words[a]!, words[a + 1]))
@@ -6289,7 +6281,6 @@ function denyAtScan(
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
   let subIdx = 0
-  let caseDepth = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
   const scanSubs = (upTo: number): string | undefined => {
@@ -6394,17 +6385,9 @@ function denyAtScan(
     const dynamicCmdFound = anyDynamicCommandReason(words)
     if (dynamicCmdFound) return dynamicCmdFound
     // claude-factory-clcc: deferred, so a more specific reason (a shell that reads stdin) wins.
-    // claude-factory-clcc.5: inside case ... esac, a segment of one word (or a word and `)`) is a
-    // case pattern, not a command.
-    // claude-factory-clcc.9: only a bare, unquoted `case` counts, and only the pattern slot is
-    // skipped: a word that follows `in`, `;;`, `;&` or `;;&` and that the raw text closes with `)`.
-    if (words[0] === 'case' && words.includes('in') && BARE_CASE_RE.test(command)) caseDepth++
-    const casePattern =
-      caseDepth > 0 &&
-      (words.length === 1 || (words.length === 2 && words[1] === ')')) &&
-      casePatternSlot(command, words[0]!)
-    if (words[0] === 'esac' && caseDepth > 0) caseDepth--
-    if (!casePattern && anyGlobCommandWord(words)) state.globDeferred = true
+    // claude-factory-clcc.11: no case-pattern skip. A glob case pattern denies (accepted over-deny),
+    // because a body command can repeat a pattern word.
+    if (anyGlobCommandWord(words)) state.globDeferred = true
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.

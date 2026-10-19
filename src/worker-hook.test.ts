@@ -7481,6 +7481,14 @@ const CLCC_ANY = [
   'case x in\nx)\n/bin/r*\n;;\nesac',
   '"case" x in; /bin/r*',
   '\\case x in; /bin/r*',
+  'case $x in a*) echo y;; [bc]) echo z;; esac',
+  'case $x in (a*) echo y;; esac',
+  'case x in x) echo a; /bin/r*;; /bin/r*) ;; esac',
+  'case /bin/rm in /bin/r*) /bin/r*;; esac',
+  'case x in x) (/bin/r*);; /bin/r*) ;; esac',
+  'case x in (x) echo a; /bin/r*;; (/bin/r*) ;; esac',
+  'case x in x) echo a; /bin/r*;& /bin/r*) ;; esac',
+  'case x in\nx)\necho a\n/bin/r*\n;;\n/bin/r*)\n;;\nesac',
 ]
 const CLCC_ALLOW = [
   'ls *.md',
@@ -7499,8 +7507,6 @@ const CLCC_ALLOW = [
   'find . -name "*.md" -exec ls {} +',
   'xargs -I {} cp {} dest',
   'rm -f a.tmp',
-  'case $x in a*) echo y;; [bc]) echo z;; esac',
-  'case $x in (a*) echo y;; esac',
 ]
 
 test.each(CLCC_DYNAMIC)('denyReason denies a glob command word %j (claude-factory-clcc)', cmd => {
