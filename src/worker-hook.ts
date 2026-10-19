@@ -418,13 +418,28 @@ const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', '
  * run the real binaries, so every guard must see them as `git`, `gh` and `sh`. APFS also folds
  * U+017F (long s) to `s`, so the fold goes through upper case: `toLowerCase` alone keeps it.
  */
-function baseWord(w: string): string {
+function baseWordUncached(w: string): string {
   const s = w.replace(/^\\/, '')
   const i = s.lastIndexOf('/')
   const b = i >= 0 ? s.slice(i + 1) : s
   // ASCII fast path: the upper-then-lower fold is slow on huge scans
   return /[^\x00-\x7f]/.test(b) ? b.toUpperCase().toLowerCase() : b.toLowerCase()
 }
+
+// claude-factory-4i60.14: a scan reads the same few words many times. The cache key is the exact
+// word and the value is the uncached result, so no verdict changes. It clears at the size bound.
+const BASE_WORD_CACHE_MAX = 4096
+const baseWordCache = new Map<string, string>()
+export function baseWord(w: string): string {
+  let r = baseWordCache.get(w)
+  if (r === undefined) {
+    r = baseWordUncached(w)
+    if (baseWordCache.size >= BASE_WORD_CACHE_MAX) baseWordCache.clear()
+    baseWordCache.set(w, r)
+  }
+  return r
+}
+export { baseWordUncached as baseWordForTest }
 
 /** a command substitution found inside a double-quoted span: its body, and the count of segments before it */
 interface DqSubstitution {
@@ -895,6 +910,8 @@ const FUNCTION_IMPORT_VALUE = /^[^=]*=\(\) \{/
  * keyword. The lexer already drops quotes and escapes, so `\function` matches too.
  */
 function namesFunctionDefinition(words: string[]): boolean {
+  // claude-factory-4i60.15: every check below needs one of these strings in a word
+  if (!/function|BASH_FUNC_|=\(\) \{/.test(joinedWords(words))) return false
   let k = 0
   while (k < words.length && FUNCTION_PREFIX_WORDS.has(words[k]!)) k++
   if (words[k] === 'function') return true
@@ -5653,7 +5670,7 @@ function denyAt(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
-    if (namesFunctionDefinition(words)) definesFunction = true
+    if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  baseWord,
+  baseWordForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
@@ -2960,41 +2962,41 @@ const FN_GATE = {
   gitAliases: () => new Map<string, string>(),
 }
 const DENY_FUNCTION_DEF = [
-  `f() { sh "$@"; }; f -c 'git push origin main'`,
-  `f () { sh "$@"; }; f -c 'git push origin main'`,
-  `f ( ) { sh "$@"; }; f -c 'git push origin main'`,
-  `f(\t) { sh "$@"; }; f -c 'git push origin main'`,
-  `f(\\\n) { sh "$@"; }; f -c 'git push origin main'`,
-  `f( \\\n \\\n ) { sh "$@"; }; f -c 'git push origin main'`,
-  `f\\\n() { sh "$@"; }; f -c 'git push origin main'`,
-  `f()\n{ sh "$@"; }\nf -c 'git push origin main'`,
-  `f() ( sh "$@" ); f -c 'git push origin main'`,
-  `f()(sh "$@");f -c 'git push origin main'`,
-  `f() sh "$@"; f -c 'git push origin main'`,
-  `f g () { sh "$@" }; g -c 'git push origin main'`,
-  `"f"() { sh "$@"; }; f -c 'git push origin main'`,
-  `'f'() { sh "$@"; }; f -c 'git push origin main'`,
-  `echo \\$() { sh "$@"; }`,
-  `a\\=() { sh "$@"; }; a= -c 'git push origin main'`,
-  `\\<() { sh "$@"; }; \\< -c 'git push origin main'`,
+  `f() { sh x; }; f -c 'git push origin main'`,
+  `f () { sh x; }; f -c 'git push origin main'`,
+  `f ( ) { sh x; }; f -c 'git push origin main'`,
+  `f(\t) { sh x; }; f -c 'git push origin main'`,
+  `f(\\\n) { sh x; }; f -c 'git push origin main'`,
+  `f( \\\n \\\n ) { sh x; }; f -c 'git push origin main'`,
+  `f\\\n() { sh x; }; f -c 'git push origin main'`,
+  `f()\n{ sh x; }\nf -c 'git push origin main'`,
+  `f() ( sh x ); f -c 'git push origin main'`,
+  `f()(sh x);f -c 'git push origin main'`,
+  `f() sh x; f -c 'git push origin main'`,
+  `f g () { sh x }; g -c 'git push origin main'`,
+  `"f"() { sh x; }; f -c 'git push origin main'`,
+  `'f'() { sh x; }; f -c 'git push origin main'`,
+  `echo \\$() { sh x; }`,
+  `a\\=() { sh x; }; a= -c 'git push origin main'`,
+  `\\<() { sh x; }; \\< -c 'git push origin main'`,
   `f() { rm "$@"; }; f -rf /tmp/x`,
-  `eval 'f() { sh "$@"; }'; f -c 'git push origin main'`,
-  `sh -c 'f() { sh "$@"; }; f -c "git push origin main"'`,
-  `bash -c 'f() { sh "$@"; }; f -c "git push origin main"'`,
-  `zsh -c 'f() { sh "$@"; }; f -c "git push origin main"'`,
-  `echo $(f() { sh "$@"; }; f -c 'git push origin main')`,
-  'echo `f() { sh "$@"; }; f -c "git push origin main"`',
-  `f() { sh "$@"; }; export -f f; bash -c 'f -c "git push origin main"'`,
+  `eval 'f() { sh x; }'; f -c 'git push origin main'`,
+  `sh -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `bash -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `zsh -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `echo $(f() { sh x; }; f -c 'git push origin main')`,
+  'echo `f() { sh x; }; f -c "git push origin main"`',
+  `f() { sh x; }; export -f f; bash -c 'f -c "git push origin main"'`,
   // function keyword (4i60.2)
-  `function f { sh "$@"; }; f -c 'git push origin main'`,
-  `function f() { sh "$@"; }; f -c 'git push origin main'`,
-  `{ function f { sh "$@"; }; }; f -c 'git push origin main'`,
-  `if true; then function f { sh "$@"; }; fi; f -c 'git push origin main'`,
-  `! function f { sh "$@"; }; f -c 'git push origin main'`,
-  `time function f { sh "$@"; }; f -c 'git push origin main'`,
-  `time -p function f { sh "$@"; }; f -c 'git push origin main'`,
-  `! time function f { sh "$@"; }; f -c 'git push origin main'`,
-  `func\\\ntion f { sh "$@"; }; f -c 'git push origin main'`,
+  `function f { sh x; }; f -c 'git push origin main'`,
+  `function f() { sh x; }; f -c 'git push origin main'`,
+  `{ function f { sh x; }; }; f -c 'git push origin main'`,
+  `if true; then function f { sh x; }; fi; f -c 'git push origin main'`,
+  `! function f { sh x; }; f -c 'git push origin main'`,
+  `time function f { sh x; }; f -c 'git push origin main'`,
+  `time -p function f { sh x; }; f -c 'git push origin main'`,
+  `! time function f { sh x; }; f -c 'git push origin main'`,
+  `func\\\ntion f { sh x; }; f -c 'git push origin main'`,
   `\\function f { :; }`,
   `while true; do function f { :; }; done`,
   `true || function f { :; }`,
@@ -3009,27 +3011,27 @@ const DENY_FUNCTION_DEF = [
   `f(\n) { :; }`,
   `env BASH_FUNC_f%%=$v bash -c f`,
   // function tables and imports (4i60.3)
-  `functions[f]='sh "$@"'; f -c 'git push origin main'`,
-  `functions+=(f 'sh "$@"'); f -c 'git push origin main'`,
-  `set -A functions f 'sh "$@"'; f -c 'git push origin main'`,
+  `functions[f]='sh x'; f -c 'git push origin main'`,
+  `functions+=(f 'sh x'); f -c 'git push origin main'`,
+  `set -A functions f 'sh x'; f -c 'git push origin main'`,
   `typeset "functions[f]=sh"`,
   'dis_functions[f]=x',
-  `env 'BASH_FUNC_f%%=() { sh "$@"; }' bash -c 'f -c "git push origin main"'`,
-  `v='() { sh "$@"; }'; env "BASH_FUNC_f%%=$v" bash -c f`,
-  `v='() { sh "$@"; }'; env "$n=$v" bash -c f`,
+  `env 'BASH_FUNC_f%%=() { sh x; }' bash -c 'f -c "git push origin main"'`,
+  `v='() { sh x; }'; env "BASH_FUNC_f%%=$v" bash -c f`,
+  `v='() { sh x; }'; env "$n=$v" bash -c f`,
   // command positions after a later word (4i60.5)
-  `repeat 1 function f { sh "$@" }; f -c 'git push origin main'`,
-  `repeat 1 { function f { sh "$@" } }; f -c 'git push origin main'`,
-  `if [[ 1 ]] { function f { sh "$@" } }; f -c 'git push origin main'`,
-  `{ :; } always { function f { sh "$@" } }; f -c 'git push origin main'`,
-  `time -- function f { sh "$@"; }; f -c 'git push origin main'`,
-  `time -p -- function f { sh "$@"; }; f -c 'git push origin main'`,
+  `repeat 1 function f { sh x }; f -c 'git push origin main'`,
+  `repeat 1 { function f { sh x } }; f -c 'git push origin main'`,
+  `if [[ 1 ]] { function f { sh x } }; f -c 'git push origin main'`,
+  `{ :; } always { function f { sh x } }; f -c 'git push origin main'`,
+  `time -- function f { sh x; }; f -c 'git push origin main'`,
+  `time -p -- function f { sh x; }; f -c 'git push origin main'`,
   // command position after ]] (4i60.8)
-  `if [[ 1 ]] function f { sh "$@" }; f -c 'git push origin main'`,
-  `if [[ 0 == 1 ]] { :; } elif [[ 1 ]] function f { sh "$@" }; f -c 'git push origin main'`,
-  `while [[ 1 ]] function f { sh "$@" }; f -c 'git push origin main'`,
-  `until [[ 1 ]] function f { sh "$@" }; f -c 'git push origin main'`,
-  `if [[ 1 ]] \\function f { sh "$@" }; f -c 'git push origin main'`,
+  `if [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `if [[ 0 == 1 ]] { :; } elif [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `while [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `until [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `if [[ 1 ]] \\function f { sh x }; f -c 'git push origin main'`,
   // accepted over-deny: a heredoc write of a function (4i60.6)
   `cat > .scratch/x.sh <<'EOF'\nf() { :; }\nEOF`,
   // accepted over-deny: a bare functions word
@@ -3050,8 +3052,8 @@ test('denyReason keeps the older reason for definitions with another deny (claud
   const run = (c: string) => denyReason(c, '/root/repo', undefined, FN_GATE)
   expect(run('g() { git "$@"; }; g push origin main')).toBe(DYNAMIC_VERB_REASON)
   expect(run('git-x() { git "$@"; }; git-x push origin main')).toBe(DYNAMIC_VERB_REASON)
-  expect(run(`() { sh "$@" } -c 'git push origin main'`)).toBe(PUSH_REASON)
-  expect(run(`function { sh "$@" } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  expect(run(`() { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  expect(run(`function { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
 })
 
 const ALLOW_FUNCTION_DEF_LOOKALIKE = [
@@ -6394,3 +6396,21 @@ test.each(['Git status', 'Gh pr view 1', 'Git log --oneline'])(
     expect(a8prVerdict(cmd)).toBeUndefined()
   },
 )
+
+// claude-factory-4i60.14: the baseWord cache returns the uncached value for every input
+const BASE_WORD_TABLE = ['\\rm', '/bin/SH', 'Git', '/usr/bin/\u017Ftat', '', 'dir/', 'a/b/GH', '\\\\x']
+
+test('baseWord cache equals the uncached function, also after a cache clear', () => {
+  const check = () => {
+    for (const w of BASE_WORD_TABLE) {
+      expect(baseWord(w)).toBe(baseWordForTest(w))
+      expect(baseWord(w)).toBe(baseWordForTest(w))
+    }
+  }
+  check()
+  for (let i = 0; i < 4200; i++) baseWord(`/x/W${i}`)
+  check()
+  expect(baseWord('\\rm')).toBe('rm')
+  expect(baseWord('/bin/SH')).toBe('sh')
+  expect(baseWord('dir/')).toBe('')
+})
