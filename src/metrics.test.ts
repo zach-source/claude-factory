@@ -456,3 +456,17 @@ test('render prints one small-runs line with its time to ship', () => {
   const out = render(m, 'title')
   expect(out).toContain('small runs 1, to ship 2.0h median / 2.0h p90')
 })
+
+test('a routed outcome (attempt 0, no worker) is not a deploy session or station visit', () => {
+  const routed = { node: 'deploy', attempt: 0, outcome: 'changes', summary: 'x', at: 2 * H }
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      log: [e('deploy', 'blocked', 1), routed, e('deploy', 'deployed', 3)],
+    },
+  ])
+  expect(m.deploySessionsPerShippedRun).toBe(2)
+  expect(m.stations.deploy?.visits).toBe(2)
+})
