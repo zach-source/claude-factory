@@ -5484,6 +5484,18 @@ const DYN_RM_DENY = [
   '$X -C rm rm -r src',
   '$X -u rm sudo rm -r src',
   '$X -u rm find src -exec rm -r {} +',
+  'find . -exec $X rm -rf / {} \\;',
+  'find . -exec $X rm -r src {} \\;',
+  'find . -exec ${X} rm -rf {} +',
+  'find . -exec "$X" rm -rf {} +',
+  'find . -execdir $X rm -rf {} +',
+  'find . -exec $X -u rm rm -r src {} +',
+  'find . -exec $X -u + rm -rf / {} \\;',
+  'sudo find . -exec $X rm -rf {} +',
+  'find . -name x -exec $X rm -rf / {} \\;',
+  'find . -exec $X rm -rf / {} \\; -print',
+  'find . \\( -exec $X rm -rf / {} \\; \\)',
+  'X=env; find . -exec $X rm -rf / {} \\;',
 ]
 
 test.each(DYN_RM_DENY)(
@@ -5502,6 +5514,8 @@ const DYN_RM_KEEP = [
   '"$PY" -c "print(1)"',
   '$X ls -d /',
   'echo rm -rf /',
+  'find . -exec $X ls {} +',
+  'find . -exec $X rm {} +',
 ]
 
 test.each(DYN_RM_KEEP)('denyReason keeps allowing a harmless dynamic word: %s (claude-factory-2a3i)', cmd => {

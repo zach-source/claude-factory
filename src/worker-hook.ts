@@ -1433,7 +1433,16 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
  */
 function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | undefined {
   let result: 'rm' | undefined
-  for (const a of commandAnchors(words)) {
+  const anchors = commandAnchors(words).slice()
+  // A find -exec, -execdir, -ok or -okdir slot is a command slot too. The scan is monotone in the
+  // start index, so the smallest dynamic slot gives the result of all of them. No cap needed.
+  for (let i = 0; i + 1 < words.length; i++) {
+    if (!/^-(exec|execdir|ok|okdir)$/.test(words[i]!)) continue
+    if (!dynamicCommandWord(words[i + 1]!)) continue
+    anchors.push(i + 1)
+    break
+  }
+  for (const a of anchors) {
     const head = words[a]!
     if (!dynamicCommandWord(head)) continue
     // A `{` or `}` word is a group marker, and realCommand strips it. A `name()` word is a function
