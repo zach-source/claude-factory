@@ -750,13 +750,19 @@ function isCatHeredoc(body: string): boolean {
  *
  * When `subs` is set, segments() pushes the body of each command substitution found inside a
  * double-quoted span. The caller must scan each body. The word keeps its raw text.
+ *
+ * claude-factory-59pp: when an unquoted & comes right before a >, the result holds both readings.
+ * The split reading (dash) comes first. The joined reading (bash, zsh) follows it and keeps &> in
+ * its own word, so the words after the redirect stay with the command.
  */
 function segments(
   cmd: string,
   info?: { dollarQuote: boolean; funcDef?: boolean; state?: ScanState; deep?: boolean },
   subs?: DqSubstitution[],
+  ampJoin = false,
 ): string[][] {
   const segs: string[][] = []
+  let sawAmpGt = false
   let cur: string[] = []
   let word = ''
   let hasWord = false
@@ -893,6 +899,22 @@ function segments(
       endSeg()
       continue
     }
+    if (c === '&') {
+      // claude-factory-59pp: bash and zsh read `&>` and `&>>` as one redirect. dash reads a
+      // separator and then `>`. The split pass is the dash reading. The ampJoin pass is the bash
+      // reading: it starts a new word with the `&`, so the words after the redirect stay with the command.
+      let j = i + 1
+      while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+      if (cmd[j] === '>') {
+        sawAmpGt = true
+        if (ampJoin) {
+          endWord()
+          word = '&'
+          hasWord = true
+          continue
+        }
+      }
+    }
     if (';|&\n'.includes(c)) {
       endSeg()
       continue
@@ -915,7 +937,10 @@ function segments(
     exemptPrev = c === '$' || c === '<' || c === '>' || c === '='
   }
   endSeg()
-  return segs.filter(s => s.length > 0)
+  const out = segs.filter(s => s.length > 0)
+  if (sawAmpGt && !ampJoin)
+    out.push(...segments(cmd, { dollarQuote: false, state: info?.state, deep: info?.deep }, undefined, true))
+  return out
 }
 
 // claude-factory-4i60: words that can come before a `function` keyword in a command position.
@@ -2443,8 +2468,8 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
 // send-pack word together. It over-denies a backtick that sits in an unrelated quoted argument.
 // This is fail closed.
 // claude-factory-cu5m.13: the same scan covers `&>` (also `&>>`, `&>|`, `&>!`). zsh and bash read it
-// as a redirect, but `segments()` splits at its `&` (dash reads `&` then `>`), so the words after it
-// leave the push tail. It over-denies `git push origin feature &>/dev/null`.
+// as a redirect. `segments()` now scans both readings (claude-factory-59pp). This check stays as a
+// fail closed backstop. It over-denies `git push origin feature &>/dev/null`.
 // claude-factory-abmq: bash joins `&BSNL>` into `&>`, so the scan allows backslash-newline pairs
 // between the `&` and the `>`. It also denies `git push origin feature &BSNL>/dev/null`.
 function backtickBesidePush(command: string): boolean {
@@ -2742,6 +2767,13 @@ function contextDenied(ctx: string | undefined, personOnly: string[]): boolean {
  * takes a value word. An unknown flag must not hide a mutating verb that follows it.
  */
 function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
+  return (
+    liveApplyDeniedOn(cmd, personOnly) ||
+    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly)) === true
+  )
+}
+
+function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
   const b = baseWord(cmd[0]!)
   const tail = cmd.slice(1)
   if (b === 'kubectl') {
@@ -3296,6 +3328,25 @@ function ghAliasExpansion(text: string): string[] | undefined {
 }
 
 /**
+ * claude-factory-59pp.10: remove redirect words from `words`. A redirect word (`&>f`, `>f`,
+ * `2>/dev/null`, `<f`) is not an argument of the command. If the word is a bare operator (`&>`,
+ * `>`), its target is the next word, and this function removes that word too.
+ * Without this, the redirect word reads as the gh verb or the gh sub word and hides the real one.
+ */
+function dropRedirectWords(words: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    const m = /^[0-9]*(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s.exec(words[i]!)
+    if (!m) {
+      out.push(words[i]!)
+      continue
+    }
+    if (m[1] === '') i++
+  }
+  return out
+}
+
+/**
  * The reason to deny `cmd`, a command that starts with a `gh` word, or undefined to allow it.
  * claude-factory-zl5.1: `gh pr merge` and `gh repo sync` always deny. A GraphQL or REST call that
  * merges a pull request or a branch, found through `ghApiMergeDenied`, denies the same way.
@@ -3324,7 +3375,34 @@ function ghReason(
   ghConfigMoved = false,
   aliasDepth = 0,
 ): string | undefined {
+  return (
+    ghReasonOn(cmd.slice(1), gate, state, ghConfigMoved, aliasDepth) ??
+    scanWithoutRedirects(cmd, dropped => ghReasonOn(dropped, gate, state, ghConfigMoved, aliasDepth))
+  )
+}
+
+/**
+ * claude-factory-59pp.13, .14: segments() strips quotes. A quoted word such as `'>x'` then looks
+ * like a redirect. So a guard scans a command as given, and again with the redirect words removed.
+ * It denies if either scan denies. `scan` gets the tail without redirect words, and only when
+ * that tail differs from the given tail.
+ */
+function scanWithoutRedirects<T>(
+  cmd: string[],
+  scan: (droppedTail: string[]) => T | undefined,
+): T | undefined {
   const tail = cmd.slice(1)
+  const dropped = dropRedirectWords(tail)
+  return dropped.length === tail.length ? undefined : scan(dropped)
+}
+
+function ghReasonOn(
+  tail: string[],
+  gate: HookGate,
+  state: ScanState,
+  ghConfigMoved: boolean,
+  aliasDepth: number,
+): string | undefined {
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
   const verb = vi >= 0 ? tail[vi] : undefined
   const sub = vi >= 0 ? tail[vi + 1] : undefined
@@ -4761,7 +4839,20 @@ function gitReason(
   moved: boolean,
   aliasDepth = 0,
 ): string | undefined {
-  const tail = cmd.slice(1)
+  return (
+    gitReasonOn(cmd.slice(1), root, gate, state, moved, aliasDepth) ??
+    scanWithoutRedirects(cmd, dropped => gitReasonOn(dropped, root, gate, state, moved, aliasDepth))
+  )
+}
+
+function gitReasonOn(
+  tail: string[],
+  root: string | undefined,
+  gate: HookGate,
+  state: ScanState,
+  moved: boolean,
+  aliasDepth: number,
+): string | undefined {
   // claude-factory-p43v.9: a dynamic -c or --config-env key fails closed before
   // gitDashCPushDenied reads it against a fixed list of names.
   if (gitDashCKeyDynamic(tail)) return DYNAMIC_VERB_REASON

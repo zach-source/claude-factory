@@ -2586,6 +2586,159 @@ test.each(ALLOW_REDIRECT_CONT)(
   },
 )
 
+// claude-factory-59pp: bash and zsh read `&>` as one redirect, dash reads a separator. segments()
+// returns both readings, so the words after the redirect stay with the command word.
+const AMP_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const BSNL = '\\\n'
+
+const DENY_AMP_RM = [
+  'rm &>/dev/null -rf /',
+  'rm &>>f -rf /',
+  'rm &>|f -rf /',
+  'rm &>!f -rf /',
+  'rm&>f -rf /',
+  `rm &${BSNL}>f -rf /`,
+  `rm &${BSNL}${BSNL}>>f -rf /`,
+  'sh -c "rm &>/dev/null -rf /"',
+]
+
+test.each(DENY_AMP_RM)('denyReason denies %j (claude-factory-59pp, rm after &>)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeDefined()
+})
+
+// claude-factory-59pp.10: the live gate sets ghAliases and gitAliases. With them, a redirect word at
+// the gh verb slot must not hide the real verb.
+const AMP_LIVE_GATE = {
+  ...AMP_GATE,
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
+
+const DENY_AMP_GH_MERGE = [
+  'gh &>/dev/null pr merge 1',
+  'gh&>/dev/null pr merge 1',
+  'gh &>>f pr merge 1',
+  'gh &> /dev/null pr merge 1',
+  'gh pr &>/dev/null merge 1',
+  'gh >/dev/null pr merge 1',
+  'gh 2>/dev/null pr merge 1',
+  'gh > f pr merge 1',
+  'gh repo &>/dev/null sync',
+]
+
+test.each(DENY_AMP_GH_MERGE)('denyReason denies %j (claude-factory-59pp.10, gh merge)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+test('denyReason denies gh pr ready after &> (claude-factory-59pp.10)', () => {
+  expect(denyReason('gh &>/dev/null pr ready 1', '/root/repo', undefined, AMP_LIVE_GATE)).toBe(READY_REASON)
+})
+
+test.each(['gh pr view 1 &>/dev/null', 'gh api x > f', 'gh pr list 2>/dev/null'])(
+  'denyReason allows %j with live aliases (claude-factory-59pp.10)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-59pp.12: here-string, here-doc and read-write redirects have a target word too.
+test.each([
+  'gh <<< x pr merge 1',
+  'gh pr <<< x merge 1',
+  'gh <> f pr merge 1',
+  'gh pr <> f merge 1',
+  'gh << x pr merge 1',
+])('denyReason denies %j (claude-factory-59pp.12)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+// claude-factory-59pp.13: segments() strips quotes, so a quoted word like a redirect must not hide the verb.
+test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () => {
+  expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+// claude-factory-59pp.14: git and kubectl take the verb from the same slot.
+test.each([
+  'git >/dev/null push origin main',
+  'git 2>/dev/null push origin main',
+  'git <<< x push origin main',
+])('denyReason denies %j (claude-factory-59pp.14)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(PUSH_REASON)
+})
+
+test.each(['git push origin feature >/dev/null', 'git log >f'])(
+  'denyReason allows %j (claude-factory-59pp.14)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+  },
+)
+
+test.each([
+  'kubectl >/dev/null apply -f x --context acme',
+  'kubectl 2>/dev/null delete pod x --context acme',
+])('denyReason denies %j with personOnly acme (claude-factory-59pp.14)', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+})
+
+const DENY_AMP_XARGS = [
+  'xargs &>/dev/null gh pr view 1',
+  'xargs&>/dev/null gh pr view 1',
+  'xargs -n1 &>>f gh pr view 1',
+  'XARGS &>/dev/null gh pr view 1',
+  `xargs &${BSNL}>/dev/null gh pr view 1`,
+  'xargs &>/dev/null git log',
+]
+
+test.each(DENY_AMP_XARGS)('denyReason denies %j (claude-factory-59pp, xargs after &>)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBe(XARGS_REASON)
+})
+
+// This test pins the verdict only. No row separates the dash reading from the joined reading until
+// claude-factory-4a4o (a leading redirect word hides rm) is fixed, so the joined-only mutant survives.
+test('denyReason denies a command after &> in both readings (claude-factory-59pp)', () => {
+  expect(denyReason('true &>/dev/null gh pr merge 1', '/root/repo', undefined, AMP_LIVE_GATE)).toBe(
+    MERGE_REASON,
+  )
+})
+
+const ALLOW_AMP = [
+  'sleep 1 & echo hi',
+  'a & b',
+  'a && b',
+  'echo hi &',
+  'echo hi & > f',
+  'ls &>/dev/null',
+  'ls &>/dev/null && echo ok',
+  'bun test &>log; echo done',
+  'gh pr view 1 &>/dev/null',
+  'git log &>/dev/null',
+  'echo "a &>b" rm -rf /',
+  "echo 'gh &>x pr merge 1'",
+]
+
+test.each(ALLOW_AMP)('denyReason allows %j (claude-factory-59pp)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeUndefined()
+})
+
+const AMP_SHELL_ROWS = [
+  `echo "'git push origin main'" | xargs &>/dev/null sh -c`,
+  'xargs&>/dev/null sh -c',
+  'xargs &>>f bash -c',
+  'XARGS &>/dev/null sh -c',
+  'xargs -n1 &>/dev/null sh -c',
+  `xargs &${BSNL}>/dev/null sh -c`,
+]
+
+test.each(AMP_SHELL_ROWS)(
+  'denyReason gives the same verdict with and without &> for %j (claude-factory-59pp)',
+  cmd => {
+    const bare = cmd.replace(/&(\\\n)*>>?\S*/, '')
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBe(
+      denyReason(bare, '/root/repo', undefined, AMP_GATE),
+    )
+  },
+)
+
 // claude-factory-cu5m.14: oracle = git as a shell function that writes its args to a file; zsh 5.9
 // and bash run each row. A DENY op is one where the shell passes main to git. The test spawns no shell.
 const SHELL_OPERATOR_DENY = [
