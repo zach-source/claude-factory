@@ -301,6 +301,11 @@ function writeJson(path: string, value: unknown) {
   durable(`${path}.tmp`, JSON.stringify(value, null, 2), 'w')
   renameSync(`${path}.tmp`, path) // atomic: a reader never sees half a snapshot
 }
+/** refuse to run a manager or a tick here while the AX manager task lives (claude-factory-192.6) */
+const lease = () => {
+  const m = ax.remoteManager()
+  if (m) fail(m)
+}
 const fail = (msg: string): never => {
   throw new Error(msg)
 }
@@ -6626,6 +6631,9 @@ const usage = `factory — herdr software factories on xstate
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
+  attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
+                                     (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
+  say <text...>                      type text and Enter into the AX manager's pane
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
@@ -6768,6 +6776,7 @@ if (import.meta.main && !outboxCmd)
         await fork(args[0], args[1], args.slice(2).join(' '))
         break
       case 'tick':
+        lease()
         console.log(JSON.stringify(await tick(true)))
         break
       case 'beads':
@@ -6780,10 +6789,26 @@ if (import.meta.main && !outboxCmd)
         await syncPass()
         break
       case 'manager':
+        lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
       case 'home':
         console.log(HOME)
+        break
+      case 'attach': {
+        const follow = args[0] === '--follow'
+        if (args.length > (follow ? 1 : 0)) fail('usage: factory attach [--follow]')
+        for (;;) {
+          const pane = ax.attachRead()
+          console.log(follow ? `\x1b[2J\x1b[H${pane}` : pane)
+          if (!follow) break
+          await new Promise(r => setTimeout(r, 3000))
+        }
+        break
+      }
+      case 'say':
+        if (!args.length) fail('usage: factory say <text...>')
+        ax.say(args.join(' '))
         break
       case 'stop': {
         if (halted()) fail(`already ${halted()!.state}`)
@@ -7025,6 +7050,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'loop': {
+        lease()
         const ms = args[0] === '--interval' ? Number(args[1]) : 5000
         if (!(ms >= 1000)) fail('usage: factory loop [--interval ms], at least 1000')
         await loop(ms)

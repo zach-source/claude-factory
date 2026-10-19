@@ -215,3 +215,13 @@ Only that rig's new workers become AX tasks, and only at stations without a `run
 Before a new AX launch or explicit `factory retry`, the laptop reads `ax-system/ax-controller` with `kubectl` in `FACTORY_AX_CONTEXT`. It must have ready and available replicas at its current observed generation. An unavailable controller, unreadable status, or failed observation holds the launch and refuses the retry before it resets the attempt budget. The query has a five-second request timeout and a six-second process timeout. The laptop identity needs permission to read this Deployment.
 
 Existing pending workers are retained while that check fails; their station deadlines do not produce another failed attempt during the outage. The manager receives the reason once per run and reason. Running-worker collection and cleanup continue. When readiness returns, normal station deadlines and retry policy apply; this does not extend an attempt's deadline.
+
+### Attach to the AX manager
+
+The manager runs in the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another name). That task is the lease. While it is Running, Pending or Suspended, `factory manager`, `factory tick` and `factory loop` on the laptop stop and print how to attach. Inside the task, `FACTORY_IN_AX=1` turns the check off. The check runs only when `FACTORY_AX_CONTEXT` is set. If AX does not answer, the laptop prints a warning and runs. A laptop with no cluster must keep working.
+
+- `factory attach` prints the manager pane once. `factory attach --follow` prints it again every 3 seconds. Press Ctrl-C to stop. The manager keeps running.
+- `factory say <text...>` types the text and Enter into the manager pane. The text travels as base64, because `ax` reads `-a`, `-n`, `--server` and `--context` anywhere on its command line.
+- `FACTORY_AX_MANAGER_PANE` sets the pane id (default `1`). Use the id that `herdr pane list` shows in the task.
+
+`ax ssh` has no stdin and no PTY. So `factory attach` shows a snapshot and does not give you a keyboard. A real `herdr attach` waits for stdin and a PTY in `ax ssh`.

@@ -197,10 +197,10 @@ export type Poll = {
   egress?: { since: number; tries: number; last: string }
 }
 
-function ax(args: string[], stdin?: string) {
+function ax(args: string[], stdin?: string, timeout = 30_000) {
   const p = Bun.spawnSync([AX(), ...context(), '-a', ATESPACE(), ...args], {
     stdin: stdin ? Buffer.from(stdin) : undefined,
-    timeout: 30_000, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
+    timeout, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
   })
   return {
     ok: p.exitCode === 0,
@@ -487,3 +487,48 @@ export function remove(task: string) {
   ax(['delete', 'task', task])
   ax(['delete', 'workspace', task])
 }
+
+/** the AX task the manager runs in; it is the one-manager lease (docs/remote-runner.md, Attach to the AX manager) */
+export const managerTask = () => process.env.FACTORY_AX_MANAGER ?? 'f-manager'
+const MANAGER_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? '1'
+
+/** why this process must not run a manager or tick: the manager task lives, and this is not inside it */
+export function managerRefusal(phase: string | null, env: Record<string, string | undefined>, task: string) {
+  if (env.FACTORY_IN_AX === '1' || !['Running', 'Pending', 'Suspended'].includes(phase ?? ''))
+    return undefined
+  return `the factory manager runs in AX task ${task} (${phase}): attach with \`factory attach\`, steer with \`factory say <text>\``
+}
+
+/**
+ * ponytail: the task is the lease, one `ax get task` with a 5 s timeout. Only with a cluster configured
+ * (FACTORY_AX_CONTEXT), and an unreachable AX does not block: a laptop with no cluster must still work. The
+ * ceiling: AX down while the manager runs lets the laptop start a second one; a lease record would close it
+ */
+export function remoteManager(): string | undefined {
+  if (process.env.FACTORY_IN_AX === '1' || !process.env.FACTORY_AX_CONTEXT) return undefined
+  const task = managerTask()
+  const r = ax(['get', 'task', task], undefined, 5_000)
+  if (r.ok) return managerRefusal(phaseOf(r.out), process.env, task)
+  if (!/not ?found/i.test(r.err))
+    console.error(`warning: AX unreachable, manager lease not checked: ${r.err}`)
+  return undefined
+}
+
+/** a command in the manager's VM, as the worker user when the task drops to it (same rule as the worker's) */
+const managerCmd = (argv: string[]) => ['ssh', managerTask(), '--', ...asWorker(argv)]
+
+/** the manager pane's recent text; `ax ssh` has no TTY or stdin, so this is a snapshot, not herdr attach */
+export const attachRead = () => must(managerCmd(['herdr', 'pane', 'read', MANAGER_PANE(), '--lines', '60']))
+
+/**
+ * type `text` and Enter into the manager pane. The text travels base64 and the VM decodes it: ax parses -a, -n,
+ * --server and --context anywhere on its line, and base64 has no quote, so no shell string is built from the text
+ */
+export const say = (text: string) =>
+  must(
+    managerCmd([
+      'sh',
+      '-c',
+      `herdr pane send-text ${MANAGER_PANE()} -- "$(echo ${Buffer.from(text, 'utf8').toString('base64')} | base64 -d)" && herdr pane send-keys ${MANAGER_PANE()} Enter`,
+    ]),
+  )

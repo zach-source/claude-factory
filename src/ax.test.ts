@@ -1387,3 +1387,43 @@ test('a GitLab rig gets placeholders and a second extraHeader; a GitHub rig keep
     delete process.env.FACTORY_AX_VAULT
   }
 })
+
+test('the manager lease refuses only a live manager task, and never inside it', () => {
+  const t = 'f-manager'
+  for (const p of ['Running', 'Pending', 'Suspended'])
+    expect(ax.managerRefusal(p, {}, t)).toMatch(/f-manager.*factory attach.*factory say <text>/)
+  for (const p of ['Failed', 'Terminating', null]) expect(ax.managerRefusal(p, {}, t)).toBeUndefined()
+  expect(ax.managerRefusal('Running', { FACTORY_IN_AX: '1' }, t)).toBeUndefined()
+})
+
+test('remoteManager skips AX with no cluster and refuses a running manager', () => {
+  const saved = { ...process.env }
+  try {
+    delete process.env.FACTORY_IN_AX
+    delete process.env.FACTORY_AX_CONTEXT
+    expect(ax.remoteManager()).toBeUndefined()
+    process.env.FACTORY_AX_CONTEXT = 'c'
+    // the fake ax reads its subcommand at $3: drop the --context pair
+    const noctx = join(dir, 'ax-noctx')
+    writeFileSync(noctx, `#!/bin/sh\nshift 2\nexec ${fake} \"$@\"\n`)
+    chmodSync(noctx, 0o755)
+    process.env.FACTORY_AX = noctx
+    writeFileSync(join(dir, 'get'), 'status:\n  phase: Running\n')
+    expect(ax.remoteManager()).toMatch(/factory attach/)
+    rmSync(join(dir, 'get'))
+    expect(ax.remoteManager()).toBeUndefined() // not found: no manager task
+  } finally {
+    process.env = saved
+  }
+})
+
+test('attach reads the manager pane and say sends its text base64, so ax flags in it survive', () => {
+  writeFileSync(join(dir, 'ssh'), 'pane text')
+  expect(ax.attachRead()).toBe('pane text')
+  expect(logged()[0]).toMatch(/ssh f-manager -- .*herdr pane read 1 --lines 60/)
+  const text = 'do it --context x -a evil "$(id)" \'q\''
+  ax.say(text)
+  const line = logged()[1]!
+  expect(line).not.toContain('--context x')
+  expect(line).toContain(Buffer.from(text).toString('base64'))
+})
