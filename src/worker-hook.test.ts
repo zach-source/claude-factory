@@ -33,6 +33,7 @@ import {
   SHELL_ALIAS_READ_REASON,
   SHELL_ALIAS_REASON,
   SHORT_FORM_REASON,
+  SHORT_CHAIN_REASON,
   shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
@@ -7507,6 +7508,11 @@ test.each(SHORT_PARITY)('denyReason denies if/while [[ 1 ]] before %j (claude-fa
 
 test('denyReason fails closed on an unquotable word after ]] (claude-factory-ieqm)', () => {
   expect(shortDeny('if [[ 1 ]] echo "$a b"')).toBe(SHORT_FORM_REASON)
+})
+
+test('denyReason denies a chain of more than 8 ]] words after a short form (claude-factory-ieqm)', () => {
+  expect(shortDeny('if [[ 1 ]] ' + 'x ]] '.repeat(9) + 'echo ok')).toBe(SHORT_CHAIN_REASON)
+  expect(shortDeny('if [[ 1 ]] ' + 'x ]] '.repeat(8) + 'echo ok')).toBeUndefined()
 })
 
 test.each(['rm -rf /', 'echo ok'])(

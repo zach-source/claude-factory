@@ -448,12 +448,16 @@ function spendWork(state: ScanState, n: number): boolean {
 // limit. A command with many stacked eval words can make this guard's own scan too slow. The scan
 // can then miss the 10 s PreToolUse hook timeout. A hook that times out lets the command run (fail
 // open). denyAt gives this reason instead, past MAX_SHELL_DEPTH recursion levels (fail closed).
-export const SHORT_FORM_REASON =
-  'Blocked: the zsh short form after ]] hides the command that follows it. Write if [[ ... ]]; then cmd; fi.'
-
 export const DEEP_COMMAND_REASON =
   'The factory denies this command: it nests more than 32 eval or sh -c levels, and the factory ' +
   'cannot check a command this deep in time. Run the inner command directly. Do not retry this exact command.'
+
+// claude-factory-ieqm: denyAt gives this reason when a word after \`]]\` cannot be quoted for a rescan.
+const SHORT_CHAIN_MAX = 8
+export const SHORT_CHAIN_REASON =
+  'The factory denies this command: it has more than 8 ]] words after a zsh short form, and the factory cannot check a chain this long in time. Split the command. Do not retry this exact command.'
+export const SHORT_FORM_REASON =
+  'The factory denies this command: a word after ]] has a quote or expansion that the factory cannot read, so it cannot check the command that follows. Write the command plainly, or use if [[ ... ]]; then cmd; fi. Do not retry this exact command.'
 
 // claude-factory-epz: the recursion limit for denyAt's eval/sh -c levels. 16 is too low: the
 // claude-factory-25z.17 STACKED_EVAL tests use 24 levels, and need their old REASON or
@@ -1106,6 +1110,8 @@ function isRecursiveRm(words: string[], start = 0): boolean {
   for (let k = start + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '--') return false
+    // claude-factory-ieqm: zsh passes a `]]` word as a plain argument, and GNU rm moves a later flag to the front.
+    if (w === ']]') continue
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
       continue
@@ -6181,6 +6187,16 @@ function denyAt(
   )
 }
 
+// Reads the rm or cd command of a segment: REASON for a risky rm, else 'rm', 'cd' or null.
+function rmCdBookkeeping(cmd: string[], root: string | undefined): string | null {
+  const base = cmd.length ? baseWord(cmd[0]!) : ''
+  if (base === 'rm') {
+    if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
+    return 'rm'
+  }
+  return base === 'cd' ? 'cd' : null
+}
+
 function denyAtScan(
   command: string,
   root: string | undefined,
@@ -6348,15 +6364,13 @@ function denyAtScan(
     )
     if (shellReason) return shellReason
     // claude-factory-ieqm: zsh runs a command that follows a `]]` word in the same segment
-    // (`if [[ 1 ]] rm -rf /`), but realCommand reads `[[` as the command. Scan the words after
-    // each `]]`, up to the next `]]`, as a new command. Pieces do not overlap, so cost stays
-    // linear and no piece nests a scan of the next one.
-    for (let k = words.indexOf(']]', 1); k > 0 && k + 1 < words.length;) {
-      let end = words.indexOf(']]', k + 1)
-      if (end < 0) end = words.length
-      const piece = words.slice(k + 1, end)
-      k = end
-      if (!piece.length) continue
+    // (`if [[ 1 ]] rm -rf /`), but realCommand reads `[[` as the command. Scan every word after the
+    // first `]]` as a new command. A later `]]` is a plain argument in zsh, so the tail keeps it.
+    // The recursive denyAt reads a later `]]` the same way. MAX_SHELL_DEPTH denies a long chain.
+    const shortAt = words.indexOf(']]', 1)
+    if (shortAt > 0 && shortAt + 1 < words.length) {
+      const piece = words.slice(shortAt + 1)
+      if (piece.filter(w => w === ']]').length > SHORT_CHAIN_MAX) return SHORT_CHAIN_REASON
       const quoted = piece.map(aliasWordText)
       if (quoted.some(w => w === null)) return SHORT_FORM_REASON
       const tailReason = denyAt(
@@ -6371,14 +6385,10 @@ function denyAtScan(
       )
       if (tailReason === HEREDOC_REASON || tailReason === COMMENT_REASON) late.reason ??= tailReason
       else if (tailReason) return tailReason
-      const tc = realCommand(piece)
-      const tb = tc.length ? baseWord(tc[0]!) : ''
-      if (tb === 'rm') {
-        if (isRecursiveRm(tc) || rmTargets(tc).some(t => riskyTarget(t, root))) return REASON
-        hasRm = true
-      } else if (tb === 'cd') {
-        hasCd = true
-      }
+      const rmCd = rmCdBookkeeping(realCommand(piece), root)
+      if (rmCd === REASON) return REASON
+      if (rmCd === 'rm') hasRm = true
+      else if (rmCd === 'cd') hasCd = true
     }
     // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
     const stdinShell = shellStdinReason(words, state)
@@ -6388,12 +6398,11 @@ function denyAtScan(
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
-    if (b === 'rm') {
-      if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
-      hasRm = true
-    } else if (b === 'cd') {
-      hasCd = true
-    } else if (b === 'find') {
+    const rmCdMain = rmCdBookkeeping(cmd, root)
+    if (rmCdMain === REASON) return REASON
+    if (rmCdMain === 'rm') hasRm = true
+    else if (rmCdMain === 'cd') hasCd = true
+    else if (b === 'find') {
       // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
       // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
       // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a
