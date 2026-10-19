@@ -1528,7 +1528,7 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
       if (k >= slotEnd) {
         const walk = shOptionSlotWalk(words, k)
-        if (walk.dynamic && SHELL_NAMES.has(bw)) return true
+        if (walk.dynamic && (SHELL_NAMES.has(bw) || BRACE_LIST_WORD.test(words[k]!))) return true
         slotEnd = walk.end
       }
       const script = shCScriptValue(words, k)
