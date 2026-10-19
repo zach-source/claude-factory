@@ -106,6 +106,8 @@ import {
 } from './linear'
 import * as worker from './worker'
 import * as managerhost from './managerhost'
+import * as migrate from './migrate'
+import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -480,7 +482,10 @@ type DoltConn = { host: string; port: number; database: string; user: string; tl
  * `bd sql`: bd drops the connection after 10 s, mid-fetch on a large store, and the merge never happens
  */
 export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?: DoltConn) {
-  if (!r) return ['bd', 'dolt', way]
+  // ponytail: in the AX task bd holds an embedded store and no Dolt server, so there is no SQL path to the remote's user:
+  // plain `bd dolt push|pull` runs with DOLT_REMOTE_USER from env.json (axrepos). A pull conflict stops with bd's own
+  // error, where the laptop's pullResolving keeps the VM's row; the manager reports it and a person resolves it
+  if (!r || inAx()) return ['bd', 'dolt', way]
   if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
   if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
   const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
@@ -534,11 +539,11 @@ function syncRigBeads(
   way: 'push' | 'pull',
   r = rigOf(run.repo)?.beadsRemote,
 ) {
-  const show = r ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
+  const show = r && !inAx() ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
   // the server's own user; its password, if it has one, as bd takes it
   const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
-  const p = Bun.spawnSync(rigBeadsSync(r, way, conn), { cwd: run.worktree, env })
+  const p = Bun.spawnSync(rigBeadsSync(r, way, conn), { cwd: run.worktree, env: bdEnv(run.repo, env) })
   // ponytail: only the issues table's conflicts are said on the issue; labels and the rest just take the VM's
   if (r && way === 'pull' && p.exitCode === 0)
     for (const { id, text } of overwritten(p.stdout.toString()))
@@ -555,12 +560,17 @@ async function syncRigBeadsBounded(
   r: Rig['beadsRemote'],
 ) {
   const timeoutMs = syncTimeoutMs()
-  const show = r ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
+  const show =
+    r && !inAx() ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
   if (show?.timedOut)
     return { code: null, out: '', err: timedOutText(`beads ${way}`, timeoutMs), timedOut: true }
   const conn = show?.code === 0 ? (JSON.parse(show.out) as DoltConn) : undefined
   const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
-  const p = await runBounded(rigBeadsSync(r, way, conn), { cwd: run.worktree, env, timeoutMs })
+  const p = await runBounded(rigBeadsSync(r, way, conn), {
+    cwd: run.worktree,
+    env: bdEnv(run.repo, env),
+    timeoutMs,
+  })
   if (p.timedOut) return { ...p, err: timedOutText(`beads ${way}`, timeoutMs) }
   if (r && way === 'pull' && p.code === 0)
     for (const { id, text } of overwritten(p.out))
@@ -873,7 +883,10 @@ const runIds = () =>
     : []
 function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
-  return existsSync(file) ? readJson(file) : fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
+  if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
+  const run: Run = readJson(file)
+  // a run the laptop made names the laptop's repo path: in the AX task it is the rig's clone
+  return inAx() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
 }
 /** complete lines only: a writer may be mid-append */
 const inboxLines = (id: string) => {
@@ -1201,7 +1214,7 @@ function launchPane({ run, def, node, c, session, file }: Job) {
 }
 
 /** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
-export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
+export { httpsRemote }
 
 /**
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
@@ -3980,7 +3993,7 @@ function linearLabeled(repo: string): { id: string }[] {
       '-n',
       '0',
     ],
-    { cwd: repo, env: process.env, timeout: 60_000 },
+    { cwd: repo, env: bdEnv(repo), timeout: 60_000 },
   )
   if (p.exitCode !== 0) throw new Error(`bd list: ${p.stderr.toString().trim().split('\n')[0] || 'failed'}`)
   const out = p.stdout.toString().trim()
@@ -4012,7 +4025,7 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
   for (const id of ids) {
     const p = Bun.spawnSync(['bd', 'label', 'remove', id, 'factory'], {
       cwd: repo,
-      env: process.env,
+      env: bdEnv(repo),
       timeout: 30_000,
     })
     if (p.exitCode === 0) stripped++
@@ -4092,7 +4105,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
         if (!since || Date.parse(issue.updatedAt) > since) mine.push(issue.ref)
       } else if (dest === undefined) unrouted++
     }
-    const env = syncEnv(apiKey, rig.linear!.team)
+    const env = bdEnv(rig.repo, syncEnv(apiKey, rig.linear!.team))
     const needsCheck = mine.length > 0 || retry.length > 0 || !!baseline
     const beforeIds = baseline ?? (needsCheck ? linearLabeled(rig.repo).map(b => b.id) : [])
     const before = new Set(beforeIds)
@@ -4406,6 +4419,8 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
 export type Rig = {
   name: string
   repo: string
+  /** https clone URL; in the AX task `factory repos sync` clones it to the rig's repo there (src/axrepos.ts) */
+  remote?: string
   factory: string
   maxRuns?: number
   sweeps?: string[]
@@ -4542,7 +4557,62 @@ function linearMail(now: number): (Mail & { run: string })[] {
   if (changed) writeJson(linearToldFile(), told)
   return mail
 }
-const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+/** `factory repos sync`: clone or fetch each rig's repo in the AX task and bootstrap its beads store; the problems, one per line */
+const reposSync = (): string[] => {
+  if (!inAx()) fail('factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1)')
+  return syncRepos(rawRigs(), HOME)
+}
+
+const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** `factory migrate-to-ax [--dry-run] [--force] [--keep N]`: see docs/remote-runner.md, Move the factory to AX */
+async function migrateToAx(args: string[]) {
+  if (inAx()) fail('factory migrate-to-ax runs on the laptop')
+  const dry = args.includes('--dry-run')
+  const force = args.includes('--force')
+  const k = args.indexOf('--keep')
+  const keep = k >= 0 ? Number(args[k + 1]) : 50
+  if (!Number.isInteger(keep) || keep < 0)
+    fail('usage: factory migrate-to-ax [--dry-run] [--force] [--keep N]')
+  const origin = (repo: string) => {
+    const r = Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin'], { stderr: 'ignore' })
+    return r.exitCode === 0 ? r.stdout.toString().trim() : undefined
+  }
+  const p = migrate.plan(HOME, keep, origin)
+  console.log(migrate.describe(p))
+  if (p.refusal) fail(p.refusal)
+  if (p.rigsError) fail(p.rigsError)
+  if (dry) return console.log('dry run: nothing written, nothing sent')
+  const task = ax.managerTask()
+  const phase = ax.phase(task)
+  if (phase !== 'Running')
+    fail(`the manager task ${task} is ${phase ?? 'not there'}: run factory manager --ax first`)
+  if (!force && ax.managerHomeUsed())
+    fail(`the manager's home in ${task} already holds a factory: use --force to write over it`)
+  const dir = mkdtempSync(join(tmpdir(), 'factory-migrate-'))
+  const out = join(dir, 'migrate.tgz')
+  console.log(`packed ${migrate.mb(migrate.pack(HOME, p, out))}; sending to ${task}`)
+  const b64 = readFileSync(out).toString('base64')
+  const parts = Math.ceil(b64.length / ax.PUT_PART)
+  for (let i = 0; i < parts; i++) {
+    const chunk = b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)
+    let r = ax.put(task, 'migrate.tgz', i, parts, chunk)
+    for (let t = 0; !r.ok && t < 3; t++) {
+      await sleepMs(2000)
+      r = ax.put(task, 'migrate.tgz', i, parts, chunk)
+    }
+    if (!r.ok) fail(`part ${i + 1} of ${parts} did not arrive: ${r.err}`)
+    if ((i + 1) % 50 === 0) console.log(`sent ${i + 1} of ${parts}`)
+  }
+  ax.unpackMigration('migrate.tgz')
+  rmSafe(dir, { recursive: true, force: true })
+  console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
+}
+
+/** rigs.json as written: on the laptop, the repo paths are the laptop's */
+const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+/** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
+const rigs = (): Rig[] => mapRigs(rawRigs())
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
 /** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
@@ -6804,7 +6874,7 @@ if (import.meta.main && !outboxCmd)
         break
       case 'manager':
         if (args[0] === 'host') {
-          await managerhost.host(args.slice(1))
+          await managerhost.host(args.slice(1), { prepare: reposSync })
           break
         }
         if (args[0] === '--ax') {
@@ -6816,6 +6886,16 @@ if (import.meta.main && !outboxCmd)
         process.exit(await superviseManager(args))
       case 'home':
         console.log(HOME)
+        break
+      case 'repos': {
+        if (args[0] !== 'sync') fail('usage: factory repos sync')
+        const problems = reposSync()
+        if (problems.length) fail(problems.join('\n'))
+        console.log(`repos in place under ${process.env.FACTORY_REPOS ?? '/workspace/w/repos'}`)
+        break
+      }
+      case 'migrate-to-ax':
+        await migrateToAx(args)
         break
       case 'attach': {
         const follow = args[0] === '--follow'
@@ -7407,7 +7487,7 @@ if (import.meta.main && !outboxCmd)
             fail(
               `${rig.repo} is already rig ${taken.name}: redefine it under that name, or rig rm ${taken.name} first`,
             )
-          writeJson(rigsFile(), [...rigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
+          writeJson(rigsFile(), [...rawRigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
           console.log(
             `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}${rig.runner ? `, workers run by ${rig.runner}` : ''}`,
           )
@@ -7422,7 +7502,7 @@ if (import.meta.main && !outboxCmd)
             )
           writeJson(
             rigsFile(),
-            rigs().filter(r => r.name !== name),
+            rawRigs().filter(r => r.name !== name),
           )
           console.log(`removed rig ${name}: nothing new starts there; its runs carry on`)
         } else if (sub === 'list') {

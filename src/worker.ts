@@ -125,6 +125,38 @@ async function sentFile(name: string, { waitMs = 2000, tries = 300 } = {}) {
 const bdEnv = () => ({ ...process.env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' })
 
 /**
+ * a bd store in `dir`, bootstrapped once: from a Dolt `remote` (written as the store's sync.remote), else from the
+ * refs/dolt of the git `origin`. It is the worker's store, and the AX manager's, one per rig (src/axrepos.ts)
+ */
+export function bootstrapBeads(
+  dir: string,
+  remote: string | undefined,
+  origin: string,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  if (existsSync(join(dir, '.beads', 'embeddeddolt'))) return
+  rmSafe(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  // a rig's shared Dolt remote (FACTORY_BEADS_REMOTE), else the repo's GitHub origin
+  if (remote) {
+    mkdirSync(join(dir, '.beads'), { recursive: true })
+    writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(remote)}\n`)
+  }
+  for (const cmd of [
+    ['git', 'init', '-q', '.'],
+    ...(remote ? [] : [['git', 'remote', 'add', 'origin', origin]]),
+    [process.env.FACTORY_BD ?? 'bd', 'bootstrap', '-y'],
+  ]) {
+    const p = Bun.spawnSync(cmd, {
+      cwd: dir,
+      env: { ...env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' },
+      stderr: 'pipe',
+    })
+    if (p.exitCode !== 0) throw new Error(`beads in the VM: ${cmd.join(' ')}: ${p.stderr.toString().trim()}`)
+  }
+}
+
+/**
  * the rig's beads in the VM, when the run has some (FACTORY_BEADS): a clone of the store the laptop syncs to
  * the repo's GitHub origin (refs/dolt/data), in a directory of its own, since the repo's .beads config names
  * the laptop's server; the agent's bd finds it through BEADS_DIR. A resumed task keeps it
@@ -136,24 +168,7 @@ export function setupBeads() {
   // Dolt sends its user and password as an Authorization header, which the egress gateway replaces with the
   // vault's: the VM holds only this placeholder (DOLT_REMOTE_USER comes in the rig's env)
   if (remote) process.env.DOLT_REMOTE_PASSWORD ??= 'placeholder'
-  if (!existsSync(join(dir, '.beads', 'embeddeddolt'))) {
-    rmSafe(dir, { recursive: true, force: true })
-    mkdirSync(dir, { recursive: true })
-    // a rig's shared Dolt remote (FACTORY_BEADS_REMOTE), else the repo's GitHub origin
-    if (remote) {
-      mkdirSync(join(dir, '.beads'), { recursive: true })
-      writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(remote)}\n`)
-    }
-    for (const cmd of [
-      ['git', 'init', '-q', '.'],
-      ...(remote ? [] : [['git', 'remote', 'add', 'origin', process.env.FACTORY_REPO!]]),
-      [process.env.FACTORY_BD ?? 'bd', 'bootstrap', '-y'],
-    ]) {
-      const p = Bun.spawnSync(cmd, { cwd: dir, env: bdEnv(), stderr: 'pipe' })
-      if (p.exitCode !== 0)
-        throw new Error(`beads in the VM: ${cmd.join(' ')}: ${p.stderr.toString().trim()}`)
-    }
-  }
+  bootstrapBeads(dir, remote, process.env.FACTORY_REPO!)
   Object.assign(process.env, { ...bdEnv(), BEADS_DIR: join(dir, '.beads') })
 }
 
