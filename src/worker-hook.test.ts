@@ -7494,3 +7494,10 @@ test.each(CLCC_ANY)('denyReason denies a nested glob command word %j (claude-fac
 test.each(CLCC_ALLOW)('denyReason allows %j (claude-factory-clcc: glob in an operand)', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
+
+test.each(['/bin/r? -c x', '/bin/[r]m -c -rf /', 'B[1]=2 /bin/r? -rf /'])(
+  'denyReason denies %j (claude-factory-clcc: -c and assignment exemptions stay narrow)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+  },
+)

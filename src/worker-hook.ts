@@ -416,6 +416,8 @@ interface ScanState {
   stdinFed: boolean
   /** claude-factory-l43b: set when a shell reads stdin. denyReason returns SHELL_STDIN_REASON last, so a more specific reason from the same command wins. */
   stdinDeferred: boolean
+  /** claude-factory-clcc: set when a glob char sits in a command word. denyReason returns DYNAMIC_VERB_REASON after SHELL_STDIN_REASON. */
+  globDeferred: boolean
   globalGitConfig: boolean
   gitWord: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
@@ -5249,13 +5251,48 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
   'api',
 ])
 
-// claude-factory-38jm: a brace word with a comma or a `..` range.
-/** True when a command word holds `*`, `?` or a `[..]` pair. A lone `[` or `[[` is not a glob. */
-function globCommandWord(w: string): boolean {
-  return /[*?]/.test(w) || /\[[\s\S]*\]/.test(w)
+/**
+ * claude-factory-clcc: bash and zsh expand a glob in the command word, so `/bin/[r]m -rf /` runs
+ * rm. A word is a glob command word when it holds `*`, `?` or a `[..]` pair. A lone `[` or `[[`
+ * is not a glob. An array assignment (`A[1]=x`) is not a command word. A glob that can match a
+ * shell name and is followed by `-c` stays allowed: the shell scan reads that script.
+ */
+function globCommandWord(w: string, next?: string): boolean {
+  if (!/[*?]/.test(w) && !/\[[\s\S]*\]/.test(w)) return false
+  if (/^[A-Za-z_][A-Za-z0-9_]*\[[\s\S]*\]\+?=/.test(w)) return false
+  if (next === '-c' && globMatchesShellName(baseWord(w))) return false
+  return true
 }
 
-const BRACE_LIST_WORD =/\{[^{}]*(,|\.\.)[^{}]*\}/
+function globMatchesShellName(g: string): boolean {
+  let re = ''
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i]!
+    if (c === '*') re += '.*'
+    else if (c === '?') re += '.'
+    else if (c === '[') {
+      const j = g.indexOf(']', i + 1)
+      if (j < 0) return false
+      re += g.slice(i, j + 1).replace(/^\[!/, '[^')
+      i = j
+    } else re += c.replace(/[.+^${}()|\\]/g, '\\$&')
+  }
+  try {
+    const r = new RegExp('^' + re + '$')
+    return [...SHELL_NAMES].some(n => r.test(n))
+  } catch {
+    return false
+  }
+}
+
+/** True when a glob command word sits at any command anchor of `words`. */
+function anyGlobCommandWord(words: string[]): boolean {
+  return commandAnchors(words).some(a => globCommandWord(words[a]!, words[a + 1]))
+}
+
+// claude-factory-38jm: a brace word with a comma or a `..` range.
+
+const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
 
 /**
  * The function returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real
@@ -5313,8 +5350,6 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
     // no comma and no `..`, so it stays allowed.
     if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
-    // claude-factory-clcc: bash and zsh expand a glob in the command word, so `/bin/[r]m` runs rm.
-    if (globCommandWord(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
@@ -6036,6 +6071,7 @@ export function scanReason(
     gitAdminPath: false,
     stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     stdinDeferred: false,
+    globDeferred: false,
     globalGitConfig: false,
     gitWord: false,
     substFallbacks: 0,
@@ -6047,13 +6083,14 @@ export function scanReason(
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
-  if (!state.headPush) return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+  if (!state.headPush)
+    return state.stdinDeferred ? SHELL_STDIN_REASON : state.globDeferred ? DYNAMIC_VERB_REASON : undefined
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
   // inside a .git-named path. cwdInsideGitDir reads gate.cwd, not the command text, so it also
   // denies a write this guard's own word scan cannot read, such as a shell-variable target.
   if (state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd)) return PUSH_REASON
-  return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+  return state.stdinDeferred ? SHELL_STDIN_REASON : state.globDeferred ? DYNAMIC_VERB_REASON : undefined
 }
 
 // claude-factory-1zr5: the most alias expansions one word can chain through. A longer chain denies.
@@ -6337,6 +6374,8 @@ function denyAtScan(
     // literal git or gh word ever starts this segment.
     const dynamicCmdFound = anyDynamicCommandReason(words)
     if (dynamicCmdFound) return dynamicCmdFound
+    // claude-factory-clcc: deferred, so a more specific reason (a shell that reads stdin) wins.
+    if (anyGlobCommandWord(words)) state.globDeferred = true
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
@@ -6372,7 +6411,7 @@ function denyAtScan(
       // O(n), not O(n^2).
       for (let i = 0; i < cmd.length; i++) {
         if (cmd[i] === '-exec' || cmd[i] === '-execdir' || cmd[i] === '-ok' || cmd[i] === '-okdir') {
-          if (i + 1 < cmd.length && globCommandWord(cmd[i + 1]!)) return DYNAMIC_VERB_REASON
+          if (i + 1 < cmd.length && globCommandWord(cmd[i + 1]!, cmd[i + 2])) return DYNAMIC_VERB_REASON
         }
         if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
         if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
