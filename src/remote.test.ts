@@ -1475,7 +1475,7 @@ describe('an AX worker that never started', () => {
 
   test('a task still in phase Pending past the deadline fails naming the phase, with no TIME_UP mail', () => {
     const id = 'nostart-phase'
-    launchedAfterFail(id, 'old failure', 120)
+    launchedAfterFail(id, 'old failure', 50)
     cluster('Pending', { status: 'idle', lines: [] })
     factory(['tick'])
     expect(lastFail(id)).toBe('worker never started on AX after 45 min: task phase Pending')
