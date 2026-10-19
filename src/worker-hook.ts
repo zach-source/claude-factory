@@ -5255,31 +5255,38 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
  * claude-factory-clcc: bash and zsh expand a glob in the command word, so `/bin/[r]m -rf /` runs
  * rm. A word is a glob command word when it holds `*`, `?` or a `[..]` pair. A lone `[` or `[[`
  * is not a glob. An array assignment (`A[1]=x`) is not a command word. A glob that can match a
- * shell name and is followed by `-c` stays allowed: the shell scan reads that script.
+ * shell name and is followed by `-c` stays allowed only when every file it matches is a shell:
+ * the shell scan then reads that script. The shell runs the first match.
  */
 function globCommandWord(w: string, next?: string): boolean {
   if (!/[*?]/.test(w) && !/\[[\s\S]*\]/.test(w)) return false
   if (/^[A-Za-z_][A-Za-z0-9_]*\[[\s\S]*\]\+?=/.test(w)) return false
-  if (next === '-c' && globMatchesShellName(baseWord(w))) return false
+  if (next === '-c' && globMatchesShellName(w)) return false
   return true
 }
 
 function globMatchesShellName(g: string): boolean {
+  const slash = g.lastIndexOf('/')
+  const dir = slash < 0 ? '.' : g.slice(0, slash) || '/'
+  if (/[*?[\]]/.test(dir) || dir.startsWith('~')) return false
+  const leaf = g.slice(slash + 1)
   let re = ''
-  for (let i = 0; i < g.length; i++) {
-    const c = g[i]!
+  for (let i = 0; i < leaf.length; i++) {
+    const c = leaf[i]!
     if (c === '*') re += '.*'
     else if (c === '?') re += '.'
     else if (c === '[') {
-      const j = g.indexOf(']', i + 1)
+      const j = leaf.indexOf(']', i + 1)
       if (j < 0) return false
-      re += g.slice(i, j + 1).replace(/^\[!/, '[^')
+      re += leaf.slice(i, j + 1).replace(/^\[!/, '[^')
       i = j
     } else re += c.replace(/[.+^${}()|\\]/g, '\\$&')
   }
   try {
     const r = new RegExp('^' + re + '$')
-    return [...SHELL_NAMES].some(n => r.test(n))
+    // The shell runs the first match, so every match must be a shell.
+    const hits = readdirSync(dir).filter(n => r.test(n) && (leaf.startsWith('.') || !n.startsWith('.')))
+    return hits.length > 0 && hits.every(n => SHELL_NAMES.has(n))
   } catch {
     return false
   }
@@ -5291,7 +5298,6 @@ function anyGlobCommandWord(words: string[]): boolean {
 }
 
 // claude-factory-38jm: a brace word with a comma or a `..` range.
-
 const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
 
 /**
@@ -6271,6 +6277,7 @@ function denyAtScan(
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
   let subIdx = 0
+  let caseDepth = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
   const scanSubs = (upTo: number): string | undefined => {
@@ -6375,7 +6382,12 @@ function denyAtScan(
     const dynamicCmdFound = anyDynamicCommandReason(words)
     if (dynamicCmdFound) return dynamicCmdFound
     // claude-factory-clcc: deferred, so a more specific reason (a shell that reads stdin) wins.
-    if (anyGlobCommandWord(words)) state.globDeferred = true
+    // claude-factory-clcc.5: inside case ... esac, a segment of one word (or a word and `)`) is a
+    // case pattern, not a command.
+    if (words[0] === 'case' && words.includes('in')) caseDepth++
+    const casePattern = caseDepth > 0 && (words.length === 1 || (words.length === 2 && words[1] === ')'))
+    if (words[0] === 'esac' && caseDepth > 0) caseDepth--
+    if (!casePattern && anyGlobCommandWord(words)) state.globDeferred = true
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.

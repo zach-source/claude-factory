@@ -7450,6 +7450,18 @@ const CLCC_DYNAMIC = [
   'timeout 5 /bin/r? -rf /',
   'exec /bin/r? -rf /',
   'command /bin/r? -rf /',
+  'if /bin/r? -rf /; then ls; fi',
+  'while /bin/r? -rf /; do ls; done',
+  '! /bin/r? -rf /',
+  'coproc /bin/r? -rf /',
+  'exec -a x /bin/r? -rf /',
+  'command -p /bin/r? -rf /',
+  'env -i /bin/r? -rf /',
+  'sudo -- /bin/r? -rf /',
+  'X=a* /bin/r? -rf /',
+  'true && /bin/r? -rf /',
+  '/bin/[rs][mh] -c ../x',
+  '/bin/[ms]* -c x',
   'find . -exec /bin/r? -rf / ;',
   'find . -execdir /bin/r* -rf / ;',
   'find . -ok /bin/r? -rf / ;',
@@ -7463,6 +7475,7 @@ const CLCC_ANY = [
   'cd /tmp; /bin/r* -rf /',
   'eval "/bin/r? -rf /"',
   'sh -c "/bin/r? -rf /"',
+  'case x in x) /bin/r? -rf /;; esac',
 ]
 const CLCC_ALLOW = [
   'ls *.md',
@@ -7481,6 +7494,8 @@ const CLCC_ALLOW = [
   'find . -name "*.md" -exec ls {} +',
   'xargs -I {} cp {} dest',
   'rm -f a.tmp',
+  'case $x in a*) echo y;; [bc]) echo z;; esac',
+  'case $x in (a*) echo y;; esac',
 ]
 
 test.each(CLCC_DYNAMIC)('denyReason denies a glob command word %j (claude-factory-clcc)', cmd => {
