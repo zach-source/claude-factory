@@ -1745,3 +1745,28 @@ test('memory add --supersedes on a duplicate hit logs confirmed only and does no
   const confirmed = lines.find(l => l.confirmed === 1)
   expect(confirmed?.by).toBe('run2/verify')
 }, 30_000)
+
+// claude-factory-1zr5: a worker's Bash runs a script that clears the shell-snapshot aliases
+test("workerSettings sets CLAUDE_ENV_FILE to the factory's script and keeps the user's value for it to source", () => {
+  const script = join(import.meta.dir, 'worker-shell-env.sh')
+  expect(workerSettings({}, 200).env.CLAUDE_ENV_FILE).toBe(script)
+  const w = workerSettings({ env: { CLAUDE_ENV_FILE: '/u/acme.sh' } }, 200)
+  expect(w.env.CLAUDE_ENV_FILE).toBe(script)
+  expect((w.env as Record<string, string>).FACTORY_USER_ENV_FILE).toBe('/u/acme.sh')
+})
+
+test('worker-shell-env.sh leaves no alias in zsh and bash, runs the user file first, and ignores a missing one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wse-'))
+  const user = join(dir, 'user.sh')
+  writeFileSync(user, "export ACME_WIDGET=1\nalias widget='echo w'\n")
+  const script = join(import.meta.dir, 'worker-shell-env.sh')
+  for (const sh of ['zsh', 'bash']) {
+    for (const f of [user, join(dir, 'missing.sh'), '']) {
+      const code = `alias gp='git push'; . '${script}'; echo "rc=$? W=\${ACME_WIDGET:-} N=$(alias | wc -l | tr -d ' ')"`
+      const r = Bun.spawnSync([sh, '-c', code], { env: { ...process.env, FACTORY_USER_ENV_FILE: f } })
+      expect(r.stderr.toString()).toBe('')
+      expect(r.stdout.toString().trim()).toBe(`rc=0 W=${f === user ? '1' : ''} N=0`)
+    }
+  }
+  rmSync(dir, { recursive: true })
+})

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -28,6 +28,9 @@ import {
   REASON,
   SCAN_BUDGET_REASON,
   scanReason,
+  SHELL_ALIAS_READ_REASON,
+  SHELL_ALIAS_REASON,
+  shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
 
@@ -6428,6 +6431,281 @@ test('denyReason denies git -C sub $X push origin main (claude-factory-bjp0 AC3:
 test('denyReason allows git push origin factory/x (claude-factory-bjp0 AC4: control, a literal push to the current branch stays allowed)', () => {
   expect(denyReason('git push origin factory/x', '/w', undefined, BJP0_GATE_FACTORYX)).toBeUndefined()
 })
+
+// claude-factory-1zr5: a Claude Code shell-snapshot alias (gp, gco) runs git, but the hook sees no git word.
+const SNAP_ALIASES = new Map<string, string | null>([
+  ['gp', 'git push'],
+  ['gpoat', 'git push origin --all && git push origin --tags'],
+  ['gpf', 'git push --force-with-lease --force-if-includes'],
+  ['gco', 'git checkout'],
+  ['g', 'git'],
+  ['k', 'kubectl'],
+  ['rmrf', 'rm -rf'],
+  ['rm', 'rm -i'],
+  ['gh', 'op plugin run -- gh'],
+  ['bad', null],
+  ['loop1', 'loop2'],
+  ['loop2', 'loop1'],
+])
+const snapGate = (shellAliases?: HookGate['shellAliases']): HookGate => ({
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+  shellAliases,
+})
+const SNAP_GATE = snapGate(() => SNAP_ALIASES)
+
+const SNAP_DENY_ALIAS = [
+  'gp origin main',
+  'gp',
+  'gp origin',
+  'gp --force origin factory/x',
+  'gpoat',
+  'gp --all origin',
+  'gpf origin main',
+  'gco main',
+  'g push origin main',
+  'echo x && gp origin main',
+  'sudo gp origin main',
+  'FOO=1 gp origin main',
+  'bad x',
+  'A+=/x gp origin main',
+  'B[1]=/x gp origin main',
+  'A+=/x gco main',
+  'C[k]+=/x gp origin main',
+  'a=/x gp origin main',
+  'A[a]b]=/x gp origin main',
+  '>/tmp/x gp origin main',
+  '2>/dev/null gp origin main',
+  '</dev/null gp origin main',
+  '>/tmp/x gco main',
+  '>|/tmp/x gp origin main',
+  '&>/tmp/x gp origin main',
+  'A=1 >/tmp/x gp origin main',
+  '3>/tmp/x gp origin main',
+  '>>/tmp/x gp origin main',
+]
+test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (claude-factory-1zr5)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
+})
+
+const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
+test.each([
+  'bin/factory gc --dry-run',
+  'FACTORY_HOME=/t /abs/bin/factory gc',
+  'A+=1 /abs/bin/factory gc',
+  'B[1]=2 /abs/bin/factory gc',
+  'C[k]+=3 /abs/bin/factory gc',
+])(
+  'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
+  cmd => {
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => SLASH_ALIASES),
+      ),
+    ).toBeUndefined()
+  },
+)
+test.each(['sudo gc', 'FOO=1 gc', 'echo x && gc', 'gc'])(
+  'denyReason still denies %j with gc as an alias at command position or after a bare word (claude-factory-1zr5)',
+  cmd => {
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => SLASH_ALIASES),
+      ),
+    ).toBe(SHELL_ALIAS_REASON)
+  },
+)
+
+test('denyReason rescans an alias that does not run git: kubectl, rm -rf, a gh wrapper (claude-factory-1zr5)', () => {
+  expect(denyReason('k --context acme apply -f x', '/w', ['acme'], SNAP_GATE)).toBe(LIVE_REASON)
+  expect(denyReason('rmrf build', '/w', undefined, SNAP_GATE)).toBe(REASON)
+  expect(denyReason('gh pr merge 5', '/w', undefined, SNAP_GATE)).toBe(MERGE_REASON)
+})
+
+test.each(['git push origin feature', 'git status', 'ls -la', 'rm -i notes.txt', 'gh pr view 5'])(
+  'denyReason allows %j with the snapshot table set (claude-factory-1zr5)',
+  cmd => {
+    expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBeUndefined()
+  },
+)
+
+test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x'))(
+  'denyReason allows %j when shellAliases is unset or empty, as before (claude-factory-1zr5)',
+  cmd => {
+    const pre = denyReason(cmd, '/w', undefined, snapGate())
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => new Map()),
+      ),
+    ).toBe(pre)
+    expect(pre).toBeUndefined()
+  },
+)
+
+test('denyReason denies an alias chain past the depth cap but ends on an alias cycle, as zsh does (claude-factory-1zr5)', () => {
+  expect(denyReason('loop1 x', '/w', undefined, SNAP_GATE)).toBeUndefined()
+  const long = new Map<string, string | null>()
+  for (let i = 0; i < 20; i++) long.set(`c${i}`, `c${i + 1}`)
+  expect(
+    denyReason(
+      'c0 x',
+      '/w',
+      undefined,
+      snapGate(() => long),
+    ),
+  ).toBe(SHELL_ALIAS_REASON)
+  const short = new Map<string, string | null>([
+    ['c0', 'c1'],
+    ['c1', 'echo'],
+  ])
+  expect(
+    denyReason(
+      'c0 x',
+      '/w',
+      undefined,
+      snapGate(() => short),
+    ),
+  ).toBeUndefined()
+})
+
+test('denyReason denies every command when the snapshot table cannot be read, and reads it once (claude-factory-1zr5)', () => {
+  let calls = 0
+  const gate = snapGate(() => {
+    calls++
+    return undefined
+  })
+  expect(denyReason('git status', '/w', undefined, gate)).toBe(SHELL_ALIAS_READ_REASON)
+  expect(calls).toBe(1)
+  let n = 0
+  const many = snapGate(() => (n++, new Map()))
+  expect(denyReason('ls && ls && ls ; echo a b c', '/w', undefined, many)).toBeUndefined()
+  expect(n).toBe(1)
+})
+
+test('denyReason keeps a dynamic alias word dynamic when it rescans the expansion (claude-factory-1zr5)', () => {
+  const t = new Map<string, string | null>([
+    ['kk', 'kubectl'],
+    ['q', 'echo'],
+  ])
+  expect(
+    denyReason(
+      'kk $V apply -f x',
+      '/w',
+      ['acme'],
+      snapGate(() => t),
+    ),
+  ).toBeDefined()
+  expect(
+    denyReason(
+      "q 'a;b' c",
+      '/w',
+      undefined,
+      snapGate(() => t),
+    ),
+  ).toBeUndefined()
+})
+
+// claude-factory-1zr5: a fake snapshot folder; the values are fake and use acme/widget names
+function snapDir(files: Record<string, string>, ageSec: Record<string, number> = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'snap-'))
+  for (const [name, text] of Object.entries(files)) {
+    writeFileSync(join(dir, name), text)
+    const t = new Date(Date.now() - (ageSec[name] ?? 0) * 1000)
+    utimesSync(join(dir, name), t, t)
+  }
+  return dir
+}
+
+test('shellSnapshotAliases parses bare, quoted, joined and multi-line values and maps the rest to null (claude-factory-1zr5)', () => {
+  const dir = snapDir({
+    'snapshot-zsh-1.sh': [
+      'f() { :; }',
+      'alias -- acme=widget',
+      "alias -- gp='git push'",
+      "alias -- q='echo '\\''a b'\\'' c'",
+      "alias -- multi='echo one",
+      "two'",
+      "alias -- dollar=$'a\\nb'",
+      'alias -- amp=a&b',
+      "alias -- after='x'",
+      '',
+    ].join('\n'),
+  })
+  const t = shellSnapshotAliases(dir)!
+  expect(t.get('acme')).toBe('widget')
+  expect(t.get('gp')).toBe('git push')
+  expect(t.get('q')).toBe("echo 'a b' c")
+  expect(t.get('multi')).toBe('echo one\ntwo')
+  expect(t.get('dollar')).toBeNull()
+  expect(t.get('amp')).toBeNull()
+  expect(t.get('after')).toBe('x')
+  expect(t.has('f')).toBe(false)
+})
+
+test('shellSnapshotAliases reads the newest 3 files and lets a newer file win (claude-factory-1zr5)', () => {
+  const dir = snapDir(
+    {
+      'snapshot-zsh-a.sh': "alias -- old='x'\n",
+      'snapshot-zsh-b.sh': "alias -- gp='echo b'\nalias -- mid='y'\n",
+      'snapshot-zsh-c.sh': "alias -- gp='echo c'\n",
+      'snapshot-zsh-d.sh': "alias -- gp='git push'\n",
+      'notes.txt': "alias -- other='z'\n",
+    },
+    { 'snapshot-zsh-a.sh': 40, 'snapshot-zsh-b.sh': 30, 'snapshot-zsh-c.sh': 20, 'snapshot-zsh-d.sh': 10 },
+  )
+  const t = shellSnapshotAliases(dir)!
+  expect(t.get('gp')).toBe('git push')
+  expect(t.get('mid')).toBe('y')
+  expect(t.has('old')).toBe(false)
+  expect(t.has('other')).toBe(false)
+})
+
+test('shellSnapshotAliases gives an empty Map for a missing folder and undefined for a read error (claude-factory-1zr5)', () => {
+  expect(shellSnapshotAliases(join(tmpdir(), 'snap-missing-acme'))?.size).toBe(0)
+  expect(shellSnapshotAliases(snapDir({}))?.size).toBe(0)
+  const big = snapDir({ 'snapshot-zsh-1.sh': 'x'.repeat(4 * 1024 * 1024 + 1) })
+  expect(shellSnapshotAliases(big)).toBeUndefined()
+  const notDir = snapDir({ 'file.txt': '' })
+  expect(shellSnapshotAliases(join(notDir, 'file.txt'))).toBeUndefined()
+  const bad = snapDir({})
+  mkdirSync(join(bad, 'snapshot-zsh-1.sh'))
+  expect(shellSnapshotAliases(bad)).toBeUndefined()
+})
+
+// claude-factory-1zr5: the spawned hook reads the folder that CLAUDE_CONFIG_DIR names
+const spawnEnv = (configDir: string) => ({
+  ...process.env,
+  FACTORY_OUTBOX: undefined,
+  FACTORY_FROM: undefined,
+  FACTORY_SELF_UPDATE: '0',
+  CLAUDE_CONFIG_DIR: configDir,
+})
+test('the spawned hook denies a snapshot alias word and allows git status with an empty folder (claude-factory-1zr5)', async () => {
+  const withAlias = mkdtempSync(join(tmpdir(), 'cfg-'))
+  mkdirSync(join(withAlias, 'shell-snapshots'))
+  writeFileSync(join(withAlias, 'shell-snapshots', 'snapshot-zsh-1.sh'), "alias -- gp='git push'\n")
+  const empty = mkdtempSync(join(tmpdir(), 'cfg-'))
+  mkdirSync(join(empty, 'shell-snapshots'))
+  const cmd = (command: string) => JSON.stringify({ tool_name: 'Bash', tool_input: { command } })
+  const denied = await run(cmd('gp origin main'), spawnEnv(withAlias))
+  expect(JSON.parse(denied.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
+  expect((await run(cmd('git status'), spawnEnv(empty))).out).toBe('')
+  const unreadable = mkdtempSync(join(tmpdir(), 'cfg-'))
+  writeFileSync(join(unreadable, 'shell-snapshots'), '')
+  const blocked = await run(cmd('git status'), spawnEnv(unreadable))
+  expect(JSON.parse(blocked.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_READ_REASON)
+}, 30_000)
 
 // claude-factory-a8pr: macOS APFS resolves Git, GH, SH to the real binaries, so a capitalized
 // command word must get the same verdict as its lowercase twin.

@@ -84,7 +84,10 @@
  * The default `n=1024` builds a `sudo` command with 1024 `-Z v` pairs, then `$G $V o main`. Run
  * `bun run src/worker-hook.bench.ts wrapper-lead` to see this row alone.
  */
-import { scanReason } from './worker-hook'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { denyReason, scanReason, shellSnapshotAliases } from './worker-hook'
 
 function shellRun(n: number): string {
   return 'sh '.repeat(n) + '; rm -rf x'
@@ -122,7 +125,25 @@ function fmtBytes(n: number): string {
   return n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} B`
 }
 
+// claude-factory-1zr5 AC12: one denyReason call reads 3 snapshot files of 330 KiB each and must take under 50 ms.
+// Run `bun run src/worker-hook.bench.ts snapshot`. It prints one line and exits 1 over the limit.
+function snapshotBench(): void {
+  const dir = mkdtempSync(join(tmpdir(), 'snapbench-'))
+  const filler = 'acme_widget_fn () {\n  echo widget\n}\n'.repeat(8000)
+  const aliases = Array.from({ length: 340 }, (_, i) => `alias -- a${i}='echo acme widget ${i}'`).join('\n')
+  for (const n of [1, 2, 3]) {
+    const text = `${filler}\n${aliases}\n`.slice(0, 330 * 1024)
+    writeFileSync(join(dir, `snapshot-zsh-${n}.sh`), text.endsWith('\n') ? text : text + '\n')
+  }
+  const t0 = performance.now()
+  const reason = denyReason('git status', '/w', undefined, { shellAliases: () => shellSnapshotAliases(dir) })
+  const ms = performance.now() - t0
+  console.log(`snapshot 3 x 330 KiB\t${ms.toFixed(1)} ms\treason=${reason ?? 'none'}`)
+  if (ms >= 50 || reason) process.exit(1)
+}
+
 async function main() {
+  if (process.argv[2] === 'snapshot') return snapshotBench()
   const args = process.argv.slice(2)
   const shapes = new Set(['find', 'shell', 'dynamic', 'wrapper-lead', 'envs', 'evali'])
   const shape = shapes.has(args[0] ?? '') ? args[0]! : 'shell'
