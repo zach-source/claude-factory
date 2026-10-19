@@ -1425,7 +1425,42 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
   if (firstSingle >= 0) anchors.push(firstSingle)
 }
 
-function commandAnchors(words: string[]): number[] {
+// claude-factory-4iod: zsh opens a brace group at a `{` word inside a segment (`repeat 1 {`,
+// `[[ 1 ]] {`, `} always {`). Index 0 is the job of RESERVED_LEADING_WORDS. Each result is the
+// index of the first word of a brace body.
+const MAX_BRACE_BODIES = 16
+function braceBodyStarts(words: string[]): number[] {
+  const out: number[] = []
+  for (let k = 1; k < words.length; k++) if (words[k] === '{') out.push(k + 1)
+  return out
+}
+
+// claude-factory-4iod: the rm, find and cd reading of one command. 'deny' means REASON.
+function rmFindReading(cmd: string[], root: string | undefined): 'deny' | 'rm' | 'cd' | undefined {
+  if (!cmd.length) return undefined
+  const b = baseWord(cmd[0]!)
+  if (b === 'rm') {
+    if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return 'deny'
+    return 'rm'
+  }
+  if (b === 'cd') return 'cd'
+  if (b === 'find') {
+    // claude-factory-lbn: this loop reads `cmd` by index, so it costs O(n), not O(n^2).
+    for (let i = 0; i < cmd.length; i++) {
+      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return 'deny'
+    }
+  }
+  return undefined
+}
+
+function commandAnchors(words: string[], braces = true): number[] {
+  if (braces) {
+    const base = commandAnchors(words, false)
+    for (const s of braceBodyStarts(words).slice(0, MAX_BRACE_BODIES))
+      base.push(...commandAnchors(words.slice(s), false).map(a => a + s))
+    return base
+  }
   let i = 0
   while (i < words.length) {
     const w = words[i]!
@@ -6259,6 +6294,16 @@ function denyAtScan(
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
+    // claude-factory-4iod: deny-only second reading of each inner brace body. It never feeds a
+    // relaxing input such as operandSkip or configUse.
+    const bodies = braceBodyStarts(words)
+    if (bodies.length > MAX_BRACE_BODIES) return SCAN_BUDGET_REASON
+    for (const s of bodies) {
+      const inner = rmFindReading(realCommand(words.slice(s)), root)
+      if (inner === 'deny') return REASON
+      if (inner === 'rm') hasRm = true
+      if (inner === 'cd') hasCd = true
+    }
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
@@ -6332,22 +6377,10 @@ function denyAtScan(
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
-    if (b === 'rm') {
-      if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
-      hasRm = true
-    } else if (b === 'cd') {
-      hasCd = true
-    } else if (b === 'find') {
-      // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
-      // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
-      // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a
-      // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
-      // O(n), not O(n^2).
-      for (let i = 0; i < cmd.length; i++) {
-        if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-        if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
-      }
-    }
+    const outer = rmFindReading(cmd, root)
+    if (outer === 'deny') return REASON
+    if (outer === 'rm') hasRm = true
+    if (outer === 'cd') hasCd = true
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
     // flag, which only moves the one command it wraps: anyGitReason's and anyShellReason's own
