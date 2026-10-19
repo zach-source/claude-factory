@@ -5387,6 +5387,70 @@ test.each(SZ8_ALLOW)('denyReason allows a harmless = word: %s (claude-factory-6s
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
+// zsh `repeat N cmd` runs cmd N times in the same segment. Bash prints "command not found".
+const DTR2_DENY = [
+  'repeat 1 rm -rf /',
+  'repeat 1 =rm -rf /',
+  'repeat 1+1 rm -rf /',
+  'repeat x=2 rm -rf /',
+  'repeat 1 sudo rm -rf /',
+  'repeat 1 repeat 1 rm -rf /',
+  'repeat 1 A=1 rm -rf /',
+  'repeat 1 do rm -rf /; done',
+  'if true; then repeat 1 rm -rf /; fi',
+  'time repeat 1 rm -rf /',
+  '! repeat 1 rm -rf /',
+  'echo x | repeat 1 rm -rf /',
+  'repeat 1 xargs rm -rf < f',
+  'repeat 1 timeout 5 rm -rf /',
+  'repeat 1 $G $V origin main',
+  'echo x | repeat 1 $SH',
+  'repeat $N echo hi',
+  'repeat ${N} ls',
+  'repeat `n` ls',
+  'repeat ~ ls',
+  'repeat $N rm -rf /',
+  'repeat "$(cat f)" rm -rf /',
+]
+
+test.each(DTR2_DENY)('denyReason denies a zsh repeat command: %s (claude-factory-dtr2)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+test.each(['repeat $N echo hi', 'repeat ${N} ls', 'repeat ~ ls'])(
+  'denyReason names a dynamic repeat count: %s (claude-factory-dtr2)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+const DTR2_PIN = [
+  'repeat 2 git push origin main',
+  'repeat 1 eval "rm -rf /"',
+  'repeat 1 sh -c "rm -rf /"',
+  'repeat 1 git checkout main && git push o HEAD',
+  'repeat 1 BEADS_ACTOR=x bd create t',
+]
+
+test.each(DTR2_PIN)('denyReason keeps denying: %s (claude-factory-dtr2)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+const DTR2_ALLOW = [
+  'echo repeat 1',
+  'repeat 1 ls',
+  'repeat 3 echo hi',
+  'repeat 1 git status',
+  'repeat',
+  'repeat 1',
+  'ls repeat 1 rm',
+  'repeat 1 rm x',
+]
+
+test.each(DTR2_ALLOW)('denyReason allows a harmless repeat word: %s (claude-factory-dtr2)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
 test.each([
   ['=rm', 'rm'],
   ['=RM', 'rm'],
