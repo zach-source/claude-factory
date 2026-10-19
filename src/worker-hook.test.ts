@@ -4983,7 +4983,7 @@ test('denyReason denies a bd command behind a dynamic shell word (claude-factory
 
 const SFT4_ALLOW = [
   "env -S 'sh' -c 'echo x'",
-  'for f in *; do echo $f; done',
+  'for f in *.ts; do echo $f; done',
   "SH=sh; $SH -c 'echo x'",
   "/bin/s? -c 'echo x'",
   '$EDITOR file.txt',
