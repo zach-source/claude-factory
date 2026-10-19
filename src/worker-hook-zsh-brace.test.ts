@@ -105,12 +105,9 @@ test.each([
   "echo '{ git push origin main }'",
   "git commit -m '{ gh pr merge 1 }'",
   "bd create -d '{ rm -rf / }'",
-])(
-  '4IOD glued reading keeps the allow for %s',
-  cmd => {
-    expect(run(cmd)).toBeUndefined()
-  },
-)
+])('4IOD glued reading keeps the allow for %s', cmd => {
+  expect(run(cmd)).toBeUndefined()
+})
 
 test('4IOD long brace shapes stay fast', () => {
   const body = 'repeat 1 { '.repeat(744).slice(0, 8192)
