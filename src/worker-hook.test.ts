@@ -2659,6 +2659,60 @@ test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () 
   expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
 })
 
+// claude-factory-zsj0: a flag between `pr` or `repo` and the sub word must not hide the sub word.
+test.each([
+  'gh pr -R o/r merge 1',
+  'gh pr --repo=o/r merge 1',
+  'gh pr --repo o/r merge 1',
+  'gh pr -Ro/r merge 1',
+  'gh pr -R o/r -R o/r merge 1',
+  'gh -R o/r pr -R o/r merge 1',
+  'gh pr -R o/r >f merge 1',
+  'gh pr --bogus x merge 1',
+  'gh pr --bogus merge 1',
+  'gh repo --bogus x sync',
+  'gh repo -R o/r sync',
+])('denyReason denies %j with MERGE_REASON (claude-factory-zsj0)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+test.each(['gh pr -R o/r ready 1', 'gh pr --bogus x ready 1'])(
+  'denyReason denies %j at implement, allows at release (claude-factory-zsj0)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(READY_REASON)
+    expect(denyReason(cmd, '/root/repo', undefined, { ...AMP_LIVE_GATE, station: 'release' })).toBeUndefined()
+  },
+)
+
+test('denyReason allows gh pr -R o/r ready --undo 1 (claude-factory-zsj0)', () => {
+  expect(denyReason('gh pr -R o/r ready --undo 1', '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
+
+test.each(['gh pr -R o/r $X 1', 'gh repo --repo=o/r $X'])(
+  'denyReason denies dynamic sub word %j (claude-factory-zsj0)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test.each(['gh pr -R o/r checkout 5 && git push o HEAD', 'gh pr --bogus x checkout 5 && git push o HEAD'])(
+  'denyReason denies %j (claude-factory-zsj0)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+test.each([
+  'gh pr -R o/r view 1',
+  'gh pr --repo=o/r view 1',
+  'gh pr -Ro/r view 1',
+  'gh pr -R merge view 1',
+  'gh pr --repo merge view 1',
+  'gh pr -R o/r list',
+])('denyReason allows %j (claude-factory-zsj0)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
+
 // claude-factory-59pp.14: git and kubectl take the verb from the same slot.
 test.each([
   'git >/dev/null push origin main',
@@ -7422,9 +7476,13 @@ const DENY_21UX: string[] = [
   'xargs -n 1 rm -rf /',
   'xargs -I {} rm -rf {}',
   'xargs -L 1 rm -rf /',
+  'env -- a.b=1 rm -rf /',
+  'env -i -- a.b=1 rm -rf /',
+  'env -u X -- 1A=x rm -rf /',
+  'sudo -- 1A=x rm -rf /',
 ]
 test.each(DENY_21UX)('denyReason denies %j (claude-factory-21ux)', cmd => {
-  expect(denyReason(cmd)).toBeDefined()
+  expect(denyReason(cmd)).toBe(REASON)
 })
 
 const ALLOW_21UX: string[] = [

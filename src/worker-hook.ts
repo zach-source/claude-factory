@@ -1389,7 +1389,9 @@ function wrapperReadingsDeny(words: string[], root: string | undefined): { deny:
       return
     }
     if (w === '--') {
-      after(name, j + 1)
+      let k = j + 1
+      if (name === 'env' || name === 'sudo') while (k < n && wrapperAssignmentOperand(words[k]!)) k++
+      after(name, k)
       return
     }
     if (WRAPPER_VALUE_FLAGS[name]?.has(w)) {
@@ -3051,6 +3053,9 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
 // claude-factory-zl5: gh's own global flags that take a value word. The verb search steps past
 // them. This matters when they come before the verb (`gh -R o/r pr merge 5`).
 const GH_VALUE_FLAGS = new Set(['-R', '--repo', '--hostname'])
+// claude-factory-zsj0: the persistent value flags of `gh pr` and `gh repo`. Cobra finds the sub
+// word past them. pflag has no long-flag prefix match, so the names are exact.
+const GH_SUB_VALUE_FLAGS = new Set(['-R', '--repo'])
 // `gh api` flags that take a value word. The endpoint search steps past them.
 // claude-factory-zl5.15: `-p` and `--preview` also take a value word. That value is a
 // comma-separated preview name list. Without this, the endpoint search read the value word as the
@@ -3619,7 +3624,14 @@ function ghReasonOn(
 ): string | undefined {
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
   const verb = vi >= 0 ? tail[vi] : undefined
-  const sub = vi >= 0 ? tail[vi + 1] : undefined
+  // claude-factory-zsj0: a flag after `pr` or `repo` must not become the sub word.
+  const rest = vi >= 0 ? tail.slice(vi + 1) : []
+  const subScan =
+    verb === 'pr' || verb === 'repo'
+      ? firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+      : { index: -1, uncertain: false }
+  const sub =
+    verb === 'pr' || verb === 'repo' ? (subScan.index >= 0 ? rest[subScan.index] : undefined) : rest[0]
   // claude-factory-p43v: a dynamic verb word can hide the real gh command. The same risk applies
   // at the git verb slot, where dynamicWord denies it. A dynamic sub word under pr, repo or alias
   // can hide the real merge, sync, ready, checkout or alias-set call, and this guard denies both
@@ -3681,6 +3693,16 @@ function ghReasonOn(
     return undefined
   }
   if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
+  // claude-factory-zsj0: an unknown flag before the sub word can hide it. Scan the words, fail closed.
+  // This does not depend on the top-level `uncertain`: an extra flag must not switch it off.
+  if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
+    if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'sync']))) return MERGE_REASON
+    if (verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['ready']))) {
+      if (hasMutatingWordBeforeDashDash(rest, new Set(['--undo']))) return undefined
+      return gate.station === 'release' ? undefined : READY_REASON
+    }
+    if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
+  }
   if (uncertain) {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
     if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
