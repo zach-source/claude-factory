@@ -60,6 +60,7 @@ import {
   isOwned,
   LABEL,
   linearSourced,
+  byId,
   parentOf,
   stationOf,
   type Bead,
@@ -142,6 +143,15 @@ import {
   type PrState,
   type RunMeta,
 } from './prs'
+import {
+  nextSyncEntry,
+  runBounded,
+  syncDue,
+  syncText,
+  syncTimeoutMs,
+  timedOutText,
+  type SyncEntry,
+} from './sync'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -159,7 +169,6 @@ const CLI = join(ROOT, 'bin', 'factory')
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
-const SYNC_MS = 5 * 60_000 // how often each rig's beads sync with its Dolt remote
 const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below
 // ponytail: pr-merger's default label names; make them a rig setting when a repo uses others
 const CLOSE_LABEL = 'close'
@@ -262,6 +271,8 @@ export type Row = {
   mailedAt?: number
   /** a rig row, not a run: the rig has room and nothing to start */
   idle?: string
+  /** dispatch.json only: why dispatch did not start this ready bead (or a full rig); tick drops these rows */
+  skip?: string
   /** minutes its current worker has run */
   inMin?: number
   /** minutes since its worker's tail or branch head last changed */
@@ -517,12 +528,34 @@ function syncRigBeads(
   return p
 }
 
-/** dispatch's sync for a rig whose remote needs its user: `bd sync` would pull and push as the server's own */
-function syncAsRemoteUser(rig: Rig) {
+/** `syncRigBeads`, async, every call killed after the sync cap (FACTORY_SYNC_TIMEOUT_MS) */
+async function syncRigBeadsBounded(
+  run: Pick<Run, 'repo' | 'worktree'>,
+  way: 'push' | 'pull',
+  r: Rig['beadsRemote'],
+) {
+  const timeoutMs = syncTimeoutMs()
+  const show = r ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
+  if (show?.timedOut)
+    return { code: null, out: '', err: timedOutText(`beads ${way}`, timeoutMs), timedOut: true }
+  const conn = show?.code === 0 ? (JSON.parse(show.out) as DoltConn) : undefined
+  const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
+  const p = await runBounded(rigBeadsSync(r, way, conn), { cwd: run.worktree, env, timeoutMs })
+  if (p.timedOut) return { ...p, err: timedOutText(`beads ${way}`, timeoutMs) }
+  if (r && way === 'pull' && p.code === 0)
+    for (const { id, text } of overwritten(p.out))
+      try {
+        beads(run.repo, 'factory').comment(id, text)
+      } catch {} // the issue the VM deleted: nothing to comment on
+  return p
+}
+
+/** the sync for a rig whose remote needs its user: `bd sync` would pull and push as the server's own */
+async function syncAsRemoteUser(rig: Rig) {
   for (const way of ['pull', 'push'] as const) {
-    const p = syncRigBeads({ repo: rig.repo, worktree: rig.repo }, way, rig.beadsRemote)
-    if (p.exitCode !== 0)
-      throw new Error(`beads ${way}: ${`${p.stderr}`.trim().split('\n').at(-1) || 'failed'}`)
+    const p = await syncRigBeadsBounded({ repo: rig.repo, worktree: rig.repo }, way, rig.beadsRemote)
+    if (p.timedOut) throw new Error(p.err)
+    if (p.code !== 0) throw new Error(`beads ${way}: ${p.err.trim().split('\n').at(-1) || 'failed'}`)
   }
 }
 
@@ -1152,6 +1185,8 @@ export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/
  * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
  */
 function launchTask({ run, def, node, c, brief: text }: Job) {
+  const unavailable = ax.unavailable()
+  if (unavailable) fail(unavailable)
   const image =
     process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the worker image for AX tasks')
   const rig = rigOf(run.repo)
@@ -1828,6 +1863,14 @@ export function isTrusted(repo: string, configDir = process.env.CLAUDE_CONFIG_DI
   }
 }
 
+function holdUnavailableAx(c: Ctx, send: (e: Input) => void) {
+  const reason = ax.unavailable()
+  if (!reason) return false
+  if (!(c.mail.manager ?? []).some(m => m.from === 'factory' && m.text === reason))
+    send({ type: 'MAIL', from: 'factory', to: 'manager', text: reason })
+  return true
+}
+
 /** level-triggered: make the world match the current state, report what happened as events */
 function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input) => void, now: number) {
   const n = def.nodes[node]!
@@ -1847,6 +1890,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // only a harness herdr knows (claude, codex, pi) shows it an agent; a script or a fake worker never would
   const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   if (!c.pane) {
+    if (runnerOfStation(run, def, node).name === 'ax' && holdUnavailableAx(c, send))
+      return 'AX executor unavailable'
     // a Claude in an untrusted repo sits at its trust dialog until the station times out, every attempt
     if (isClaude && runnerOfStation(run, def, node).local && !isTrusted(run.repo)) {
       const paged = join(HOME, 'untrusted.json')
@@ -1866,6 +1911,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   }
   const runner = runnerOf(c.pane)
   const info = runner.info(run, c.pane)
+  if (runner.name === 'ax' && info?.status === 'pending' && holdUnavailableAx(c, send))
+    return 'AX executor unavailable'
   // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
@@ -2812,6 +2859,18 @@ const kickWatch = () => {
   }).unref()
 }
 
+/** a sync pass when none runs and the last one is older than a dispatch interval */
+const kickSync = () => {
+  const stamp = join(HOME, 'sync.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (isHeld('sync.lock') || age < DISPATCH_MS) return
+  spawnChild(CLI, ['sync'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 /** once a day, or sooner when the inbox fills; the dream itself skips when nothing is new */
 const kickDream = () => {
   const stamp = join(HOME, 'dream.stamp')
@@ -3710,7 +3769,8 @@ async function tick(isPatrol = false) {
     out.manager.push(...skillMail(now))
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
-    out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()) : []))
+    // skip rows are for people reading dispatch.json; the board, sidebar and reap() see only the rest
+    out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()).filter(r => !r.skip) : []))
     out.runs.push(
       ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
     )
@@ -3726,6 +3786,7 @@ async function tick(isPatrol = false) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
       if (!halted()) kickWatch()
+      if (!halted()) kickSync()
       kickDevenv()
       kickConfigSync()
       kickSelfUpdate()
@@ -4510,6 +4571,38 @@ export const room = (
       : rig.maxRuns - busy.filter(b => b === rig.name).length - held.filter(h => h === rig.name).length,
   )
 
+/**
+ * the rigs' beads sync with their Dolt remotes, apart from dispatch: a slow or hung remote must not hold
+ * a start. The due rigs sync in parallel, each killed at the sync cap; a rig that fails the same way again
+ * waits longer (src/sync.ts).
+ */
+async function syncPass() {
+  const release = hold('sync.lock')
+  if (!release) return
+  try {
+    if (halted()) return
+    writeFileSync(join(HOME, 'sync.stamp'), '')
+    const synced = existsSync(syncFile()) ? readJson<Record<string, SyncEntry>>(syncFile()) : {}
+    const due = rigs().filter(r => existsSync(join(r.repo, '.beads')) && syncDue(synced[r.repo], Date.now()))
+    await Promise.all(
+      due.map(async rig => {
+        const t0 = Date.now()
+        let error: string | undefined
+        try {
+          if (rig.beadsRemote) await syncAsRemoteUser(rig)
+          else await beads(rig.repo, 'factory').sync()
+        } catch (err) {
+          error = clip((err as Error).message || 'sync failed', 300)
+        }
+        synced[rig.repo] = nextSyncEntry(synced[rig.repo], { error, ms: Date.now() - t0 }, Date.now())
+        writeJson(syncFile(), synced)
+      }),
+    )
+  } finally {
+    release()
+  }
+}
+
 /** the rigs' ready `factory` beads become runs while each rig, and the factory, has room */
 /** what the last dispatch could not do, per rig: the board shows it as rows */
 const dispatchFile = () => join(HOME, 'dispatch.json')
@@ -4517,6 +4610,16 @@ const syncFile = () => join(HOME, 'sync.json')
 /** the flood guard's own "already handled" marks (claude-factory-8pc.18): a sweep worker's bd
  * labels never reach this file, so they cannot forge the mark the way `sweep:<station>` can. */
 const sweepGuardFile = () => join(HOME, 'sweep-guard.json')
+
+/** why a rig takes no more runs: the town's cap, or its own */
+const fullText = (
+  rig: Pick<Rig, 'name' | 'maxRuns'>,
+  busy: (string | undefined)[],
+  held: (string | undefined)[],
+) =>
+  MAX_BUSY - busy.length <= 0
+    ? `town full ${busy.length}/${MAX_BUSY}`
+    : `rig full ${busy.filter(b => b === rig.name).length + held.filter(h => h === rig.name).length}/${rig.maxRuns}`
 
 /** a rig with room that dispatch has nothing to start for and no goal to steer the manager by sits unnoticed unless the board says so */
 export const idle = (rig: Pick<Rig, 'goal'>, ready: number) => !rig.goal && ready === 0
@@ -4712,9 +4815,7 @@ async function dispatch() {
   // the pm's plan, read once per pass: a stale or missing plan changes nothing (claude-factory-dun.3)
   const freshPlan = freshPlanOrUndefined()
   // a sync's error stands until the next sync: dispatch passes every 30 s would clear it
-  const synced = existsSync(syncFile())
-    ? readJson<Record<string, { at: number; error?: string }>>(syncFile())
-    : {}
+  const synced = existsSync(syncFile()) ? readJson<Record<string, SyncEntry>>(syncFile()) : {}
   // The flood guard's own "already handled" marks (claude-factory-8pc.18). Dispatch reads this
   // once per pass, and writes it back once at the end. A sweep worker's bd labels never reach
   // this file.
@@ -4726,23 +4827,22 @@ async function dispatch() {
   // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
   const openIds: Record<string, Set<string>> = {}
   for (const rig of rigs()) {
+    // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
+    const skips = new Map<string, string>()
+    const started = new Set<string>()
+    let readyIds: string[] = []
+    let roomText = ''
+    let rigError = ''
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
       const b = beads(rig.repo, 'factory')
-      // full or not: our claims and closes reach other machines either way
-      if (existsSync(join(rig.repo, '.beads')) && Date.now() - (synced[rig.repo]?.at ?? 0) > SYNC_MS) {
-        synced[rig.repo] = { at: Date.now() } // a failing sync retries next interval, not every pass
-        try {
-          if (rig.beadsRemote) syncAsRemoteUser(rig)
-          else b.sync()
-        } catch (err) {
-          synced[rig.repo]!.error = (err as Error).message
-        }
-        writeJson(syncFile(), synced)
-      }
-      const syncError = synced[rig.repo]?.error
+      // the sync runs in its own pass (syncPass): dispatch only shows how the last one went
+      const syncError = syncText(synced[rig.repo])
       if (syncError) errors.push({ id: `rig:${rig.name}`, error: syncError }) // dispatch goes on: local beads are still true
-      if (room(rig, busy, undefined, held) <= 0) continue // full: no more bd calls
+      if (room(rig, busy, undefined, held) <= 0) {
+        errors.push({ id: `rig:${rig.name}`, rig: rig.name, skip: fullText(rig, busy, held) })
+        continue // full: no more bd calls
+      }
       if (linearRigs.has(rig.name)) {
         // an open Linear baseline: a pull may have labeled a bead here that the listing never confirmed
         // (claude-factory-b6c.16); hold back every ready bead until the retry resolves it
@@ -4832,11 +4932,17 @@ async function dispatch() {
       // bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and no
       // allowlist check. Drop it here too, the same as any other unmarked sweep-filed bead: a
       // bead this fresh cannot already carry a sweep-guard mark from an earlier pass.
-      const ready = b.ready().filter(x => {
-        if (excluded.has(x.id)) return false
-        const station = sweepFiler(x)
-        if (!station) return true // not a sweep-filed bead: not this guard's concern
-        return guardHandled(guardState, rig.name, x.id) // only a mark from an earlier pass lets it start
+      const everyReady = b.ready()
+      readyIds = everyReady.map(x => x.id)
+      const ready = everyReady.filter(x => {
+        const isKept = (() => {
+          if (excluded.has(x.id)) return false
+          const station = sweepFiler(x)
+          if (!station) return true // not a sweep-filed bead: not this guard's concern
+          return guardHandled(guardState, rig.name, x.id) // only a mark from an earlier pass lets it start
+        })()
+        if (!isKept) skips.set(x.id, 'sweep flood guard')
+        return isKept
       })
       // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
       // lost its own claim on the bead, to a reaper, say). `dispatchable` below drops this bead from
@@ -4868,9 +4974,35 @@ async function dispatch() {
         }
       }
       // children are looked up only for the candidates, until the rig is full
-      const eligible = dispatchable(ready, new Set(linked.keys()), Infinity).filter(
-        x => !isOwned(x) && !openChildren(b, x.id).length && !linearIds.has(x.id),
-      )
+      const startable = dispatchable(ready, new Set(linked.keys()), Infinity, byId(all))
+      const startableIds = new Set(startable.map(x => x.id))
+      for (const x of ready) {
+        if (startableIds.has(x.id)) continue
+        const parent = parentOf(x)
+        skips.set(
+          x.id,
+          x.parent
+            ? `child of ${x.parent}`
+            : x.assignee
+              ? `assigned to ${x.assignee}`
+              : linked.has(x.id)
+                ? `live run ${linked.get(x.id)} works it`
+                : parent
+                  ? `child of ${parent}`
+                  : 'not startable',
+        )
+      }
+      const eligible = startable.filter(x => {
+        const why = isOwned(x)
+          ? 'owner decisions pending'
+          : openChildren(b, x.id).length
+            ? 'open children'
+            : linearIds.has(x.id)
+              ? 'Linear id unconfirmed'
+              : ''
+        if (why) skips.set(x.id, why)
+        return !why
+      })
       // a fresh plan's order wins inside each priority band; a stale or missing plan changes
       // nothing (claude-factory-dun.3). `rigPlanOf` looks up the rig safely: a plain
       // `freshPlan.rigs[rig.name]` would resolve a rig named, for example, `constructor` to an
@@ -4879,7 +5011,10 @@ async function dispatch() {
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
-        if (room(rig, busy, undefined, held) <= 0) break
+        if (room(rig, busy, undefined, held) <= 0) {
+          roomText = fullText(rig, busy, held)
+          break
+        }
         // claude-factory-wnm: a `factory:<name>` label on the bead picks a different factory to
         // compile this run from, in place of the rig's own `rig.factory`. A `station:<name>` label
         // picks where in it to start. A bad label must defer only this bead, never throw:
@@ -4888,6 +5023,7 @@ async function dispatch() {
         // - a station the named factory lacks (claude-factory-wnm.15)
         // A throw here hits the rig-level catch below, which skips every later candidate too.
         const deferCandidate = (msg: string) => {
+          skips.set(bead.id, `deferred: ${msg}`)
           errors.push({ id: bead.id, error: msg })
           try {
             b.defer(bead.id, msg)
@@ -4949,12 +5085,18 @@ async function dispatch() {
           errors.push({ id: bead.id, error })
           ghFailed = true
         }
-        if (skip) continue
+        if (skip) {
+          skips.set(bead.id, 'pre-check: already done')
+          continue
+        }
         let run, def
         try {
           ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id))
         } catch (err) {
-          if (/already claimed/.test((err as Error).message)) continue // lost the race to another worker
+          if (/already claimed/.test((err as Error).message)) {
+            skips.set(bead.id, 'claimed elsewhere')
+            continue // lost the race to another worker
+          }
           throw err
         }
         // claude-factory-wnm.13: this run is the one the pre-check's `requeued_from` exemption
@@ -4968,9 +5110,20 @@ async function dispatch() {
         }
         if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
         busy.push(rig.name)
+        started.add(bead.id)
       }
     } catch (err) {
-      errors.push({ id: `rig:${rig.name}`, error: (err as Error).message })
+      rigError = (err as Error).message
+      errors.push({ id: `rig:${rig.name}`, error: rigError })
+    } finally {
+      for (const id of readyIds)
+        if (!started.has(id))
+          errors.push({
+            id,
+            rig: rig.name,
+            skip:
+              skips.get(id) ?? (rigError ? `rig error: ${clip(rigError, 200)}` : roomText || 'not started'),
+          })
     }
   }
   writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
@@ -5063,7 +5216,7 @@ function rigFacts(
   // an id still owed an unstripped-label check is held back on its own (claude-factory-dun.13).
   const candidates = linear.rigs.has(rig.name)
     ? []
-    : dispatchable(ready, linked, Infinity)
+    : dispatchable(ready, linked, Infinity, byId(every))
         .filter(x => !isOwned(x) && !openChildrenOf(x.id).length && !linear.ids.has(x.id))
         .slice(0, 40)
         .map(c => ({
@@ -6611,6 +6764,9 @@ if (import.meta.main && !outboxCmd)
       case 'watch':
         await watchPass()
         break
+      case 'sync':
+        await syncPass()
+        break
       case 'manager':
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
@@ -7074,9 +7230,15 @@ if (import.meta.main && !outboxCmd)
         console.log(`poked ${node} of ${run.id}`)
         break
       }
-      case 'retry':
-        post(loadRun(args[0]).id, { type: 'RETRY' })
+      case 'retry': {
+        const { run, value, c } = current(args[0])
+        const [node] = where(value)
+        const runner = c.pane ? runnerOf(c.pane) : runnerOfStation(run, await loadFactory(run.factory), node)
+        const unavailable = runner.name === 'ax' ? ax.unavailable() : undefined
+        if (unavailable) fail(unavailable)
+        post(run.id, { type: 'RETRY' })
         break
+      }
       case 'goto': {
         const run = loadRun(args[0])
         const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')
