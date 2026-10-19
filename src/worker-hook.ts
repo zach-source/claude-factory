@@ -1768,8 +1768,11 @@ const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
 function globNamesGlobalGitConfig(word: string): boolean {
   const w = word.replace(/^["']+|["']+$/g, '')
   if (!/[*?[]/.test(w)) return false
+  // claude-factory-ty8y.24: star runs collapse; more than 4 stars fail closed, since a backtracking match could outlast the hook timeout.
+  const collapsed = w.replace(/\*+/g, '*')
+  if (collapsed.split('*').length - 1 > 4) return true
   try {
-    const re = globToRegExp(w)
+    const re = globToRegExp(collapsed)
     return GLOBAL_GIT_CONFIG_SAMPLES.some(s => re.test(s))
   } catch {
     return false

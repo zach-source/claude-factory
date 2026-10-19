@@ -3407,6 +3407,19 @@ test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE)('denyReason denies %j alone (claud
   expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
 })
 
+test('denyReason scans a many-star glob fast and denies it (claude-factory-ty8y.24)', () => {
+  const cmd = `touch ~/.c${'*'.repeat(24)}x; printf x >> ~/.gitconfig; git push`
+  const t = performance.now()
+  const r = denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)
+  expect(performance.now() - t).toBeLessThan(1000)
+  expect(r).toBe(GLOBAL_GIT_CONFIG_REASON)
+  const t2 = performance.now()
+  expect(denyReason(`tee ~/.c${'*a'.repeat(24)}x`, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+  expect(performance.now() - t2).toBeLessThan(1000)
+})
+
 // ty8y.9-11: a git segment that writes through its operands, a directory operand, the <> redirect.
 const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2 = [
   'git --work-tree=$HOME checkout HEAD -- .gitconfig',
