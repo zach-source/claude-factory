@@ -218,7 +218,9 @@ export function pack(home: string, p: Plan, out: string) {
       ...p.runs.map(id => `runs/${id}`),
     ].map(n => `./${n}`)
     const fromTmp = ['rigs.json', 'manager-sessions.json', ...(p.claude.length ? [CLAUDE_STAGE] : [])]
+    // COPYFILE_DISABLE: macOS tar adds an AppleDouble ._ file for each file with extended attributes
     const r = Bun.spawnSync(['tar', '-czf', out, '-C', home, ...names, '-C', tmp, ...fromTmp], {
+      env: { ...process.env, COPYFILE_DISABLE: '1' },
       stderr: 'pipe',
     })
     if (r.exitCode !== 0) throw new Error(`tar: ${r.stderr.toString().trim().split('\n').at(-1)}`)
