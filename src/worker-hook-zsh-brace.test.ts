@@ -87,6 +87,12 @@ test.each(GLUED_REASON)('4IOD glued brace denies REASON for %s', cmd => {
 test('4IOD glued brace dynamic pair denies', () => {
   expect(run('repeat 1 {$G $V o main }')).toBe(DYNAMIC_VERB_REASON)
 })
+test.each(['repeat 1 {${X:-rm} -rf / }', 'repeat 1 {r${X:-m} -rf / }', 'repeat 1 {${X:-${Y:-rm}} -rf / }'])(
+  '4IOD glued parameter expansion head denies for %s',
+  cmd => {
+    expect(run(cmd)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
 test('4IOD glued brace push denies', () => {
   expect(run('repeat 1 {git push origin main }')).toBe(DYNAMIC_VERB_REASON)
 })

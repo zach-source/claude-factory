@@ -1429,14 +1429,18 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
 // `[[ 1 ]] {`, `} always {`). Index 0 is the job of RESERVED_LEADING_WORDS. Each result is the
 // words of one brace body. zsh also opens the group when the command word touches the brace
 // (`repeat 1 {rm -rf / }`), so a word that starts with `{` (not `{}`) opens one too, and its
-// text after the braces is the first body word. A word with a `}` or a space is not an opener.
+// text after the braces is the first body word. A word with a space is not an opener. A word with
+// a `}` is not an opener unless it holds a `$` or a backtick: `{${X:-rm} -rf / }` has a `}` inside
+// a parameter expansion.
 // This reading only denies: a false match gives a harmless body.
 const MAX_BRACE_BODIES = 16
-// A glued opener has no closing brace and no space in its word. `{a,b}` is brace expansion
+// A glued opener has no space, and no closing brace unless it holds `$` or a backtick.
+// `{a,b}` is brace expansion
 // and a quoted argument such as '{ rm }' is text: neither opens a group.
 function braceOpensGroup(w: string): boolean {
   if (w === '{') return true
-  return w.startsWith('{') && !/[}\s]/.test(w)
+  if (!w.startsWith('{') || /\s/.test(w)) return false
+  return !w.includes('}') || /[$`]/.test(w)
 }
 function braceBodies(words: string[]): string[][] {
   const out: string[][] = []
@@ -6430,6 +6434,9 @@ function denyAtScan(
     const glued = words.findIndex((w, k) => k >= 1 && w !== '{' && braceOpensGroup(w))
     if (glued > 0) {
       const head = words[glued]!.replace(/^\{+/, '')
+      // claude-factory-4iod.10: a head with an expansion (`{${X:-rm} -rf / }`) names no command
+      // the guard can read, so it denies at once.
+      if (/[$`]/.test(head)) return DYNAMIC_VERB_REASON
       const text = (head ? [head, ...words.slice(glued + 1)] : words.slice(glued + 1)).join(' ')
       if (text) {
         const r = denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
