@@ -5154,14 +5154,14 @@ test('denyReason keeps a gh api graphql file query in double quotes denied', () 
 // must not hide the next command from segments().
 const WM = 'git push origin main'
 const DENY_WMSR_COMMENT: [string, string][] = [
-  [`true # don't\n${WM}`, PUSH_REASON],
-  [`true;# it's\n${WM}`, PUSH_REASON],
-  [`true |# it's\n${WM}`, PUSH_REASON],
-  [`true &# it's\n${WM}`, PUSH_REASON],
-  [`true &&# it's\n${WM}`, PUSH_REASON],
-  [`# don't\n${WM}`, PUSH_REASON],
-  [`true # a\\\n${WM}`, PUSH_REASON],
-  [`echo $(true # a\\\n${WM}\n)`, PUSH_REASON],
+  [`true # don't\n${WM}`, COMMENT_REASON],
+  [`true;# it's\n${WM}`, COMMENT_REASON],
+  [`true |# it's\n${WM}`, COMMENT_REASON],
+  [`true &# it's\n${WM}`, COMMENT_REASON],
+  [`true &&# it's\n${WM}`, COMMENT_REASON],
+  [`# don't\n${WM}`, COMMENT_REASON],
+  [`true # a\\\n${WM}`, COMMENT_REASON],
+  [`echo $(true # a\\\n${WM}\n)`, COMMENT_REASON],
   [`echo $(true)#' \n${WM}\n'`, COMMENT_REASON],
 ]
 test.each(DENY_WMSR_COMMENT)('denyReason denies %j (comment text, wmsr)', (cmd, reason) => {
@@ -5178,7 +5178,6 @@ test.each(DENY_WMSR_COMMENT_ANY)('denyReason denies %j (hash that is no comment,
 })
 
 const ALLOW_WMSR_COMMENT = [
-  "true # don't\necho hi",
   'echo a#b',
   'echo $((1+2))',
   "gh pr view 1 # it's ok",
@@ -5190,31 +5189,31 @@ test.each(ALLOW_WMSR_COMMENT)('denyReason allows %j (comment text, wmsr)', cmd =
 
 const WB = '`'
 const DENY_WMSR_HEREDOC: [string, string][] = [
-  [`cat <<EOF\ndon't\nEOF\n${WM}`, PUSH_REASON],
-  [`echo $(cat <<EOF\ndon't\nEOF\n${WM}\n)`, PUSH_REASON],
-  [`cat <<'EOF'\ndon't\nEOF\n${WM}`, PUSH_REASON],
-  [`cat <<"EOF"\ndon't\nEOF\n${WM}`, PUSH_REASON],
-  [`cat <<\\EOF\ndon't\nEOF\n${WM}`, PUSH_REASON],
-  [`cat <<-EOF\n\tdon't\n\tEOF\n${WM}`, PUSH_REASON],
+  [`cat <<EOF\ndon't\nEOF\n${WM}`, HEREDOC_REASON],
+  [`echo $(cat <<EOF\ndon't\nEOF\n${WM}\n)`, HEREDOC_REASON],
+  [`cat <<'EOF'\ndon't\nEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<"EOF"\ndon't\nEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<\\EOF\ndon't\nEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<-EOF\n\tdon't\n\tEOF\n${WM}`, HEREDOC_REASON],
   [`cat <<A <<B\ndon't\nA\nit's\nB\n${WM}`, PUSH_REASON],
-  [`cat <<EOF # it's\nx\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<EOF # it's\nx\nEOF\n${WM}`, COMMENT_REASON],
   [`cat <<EOF\n$(${WM})\nEOF`, DYNAMIC_VERB_REASON],
   [`cat <<EOF\n${WB}${WM}${WB}\nEOF`, DYNAMIC_VERB_REASON],
   ['cat <<EOF\n$(date)\nEOF', DYNAMIC_VERB_REASON],
-  [`cat <<EOF\ndon't $(${WM})\nEOF`, PUSH_REASON],
+  [`cat <<EOF\ndon't $(${WM})\nEOF`, HEREDOC_REASON],
   [`cat <<EOF\nx`, HEREDOC_REASON],
-  [`cat <<EOF\nx\nEOF \n${WM}`, HEREDOC_REASON],
-  [`cat <<EOF\nx\nEOF)\n${WM}`, HEREDOC_REASON],
-  [`cat <<EOF\nx\nEOF\r\n${WM}`, HEREDOC_REASON],
-  [`cat <<$X\nx\n$X\n${WM}`, HEREDOC_REASON],
-  [`cat <<\nx\n\n${WM}`, HEREDOC_REASON],
-  [`cat <<\n\n${WM}`, HEREDOC_REASON],
+  [`cat <<EOF\nx\nEOF \n${WM}`, PUSH_REASON],
+  [`cat <<EOF\nx\nEOF)\n${WM}`, PUSH_REASON],
+  [`cat <<EOF\nx\nEOF\r\n${WM}`, PUSH_REASON],
+  [`cat <<$X\nx\n$X\n${WM}`, PUSH_REASON],
+  [`cat <<\nx\n\n${WM}`, PUSH_REASON],
+  [`cat <<\n\n${WM}`, PUSH_REASON],
   [`cat <<EOF\nx\n`, HEREDOC_REASON],
-  [`cat <<EOF\nEOFx\nEOF\n${WM}`, HEREDOC_REASON],
-  [`cat <<EOF\nx\n EOF\nEOF\n${WM}`, HEREDOC_REASON],
-  [`cat <<EOF "a\nb"\nx\nEOF\n${WM}`, HEREDOC_REASON],
-  [`echo $((1<<2))\n${WM}\n2`, HEREDOC_REASON],
-  [`echo \${x:-<<2}\n${WM}\n2`, HEREDOC_REASON],
+  [`cat <<EOF\nEOFx\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<EOF\nx\n EOF\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<EOF "a\nb"\nx\nEOF\n${WM}`, PUSH_REASON],
+  [`echo $((1<<2))\n${WM}\n2`, PUSH_REASON],
+  [`echo \${x:-<<2}\n${WM}\n2`, PUSH_REASON],
 ]
 test.each(DENY_WMSR_HEREDOC)('denyReason denies %j (here-document, wmsr)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBe(reason)
@@ -5237,7 +5236,6 @@ const DENY_WMSR_HEREDOC_FEED = [
   `psql <<EOF\n# x\n\\! ${WM}\nEOF`,
   `sqlite3 <<EOF\n# x\n.shell ${WM}\nEOF`,
   `cat <<EOF\n# x $(case x in x) ${WM};; esac)\nEOF`,
-  `cat <<EOF\n# x $(date\nEOF`,
   `cat <<EOF\n# x ${WB}date\nEOF`,
 ]
 test.each(DENY_WMSR_HEREDOC_FEED)('denyReason denies %j (body feeds a command, wmsr)', cmd => {
@@ -5347,7 +5345,6 @@ const DENY_WMSR_HEREDOC_CLOSE = [
   `x=\`cat <<EOF\`\necho 'x\nEOF\n'; ${WM}`,
   `cat <<EOF\ndon't $(echo ")"; ${WM})\nEOF`,
   `cat <<EOF\ndon't $(echo ')'; ${WM})\nEOF`,
-  '(cat <<EOF)\nhi\nEOF',
   `cat <<EOF\ndon't $(echo # )\n${WM}\n)\nEOF`,
 ]
 test.each(DENY_WMSR_HEREDOC_CLOSE)(
@@ -5381,7 +5378,6 @@ test.each(['echo `echo a` # x', "cat <<'EOF'\ndon't\nEOF"])('denyReason allows %
 })
 
 const ALLOW_WMSR_HEREDOC_OPTS = [
-  "cat <<EOF\nit's $(date +%Y)\nEOF",
   "sort <<'EOF'\ndon't\nEOF",
   "gh pr create -f -d --body-file - <<'EOF'\nit's\nEOF",
   "git commit --file - --no-edit <<'EOF'\ndon't\nEOF",
@@ -5432,7 +5428,22 @@ test.each(DENY_WMSR_CAPPED)('denyReason denies %j (capped, wmsr)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
+// Accepted false denies (claude-factory-3sgg): a hazard char and more text follow, so the guard
+// cannot tell a comment or a body from a command.
+const DENY_WMSR_FALSE_DENY = [
+  "true # don't\necho hi",
+  "cat <<EOF\nit's $(date +%Y)\nEOF",
+  "cat <<'EOF' > f\nit's\nEOF\ngit add f",
+  "cat <<EOF\n# it's\nEOF\necho hi",
+]
+test.each(DENY_WMSR_FALSE_DENY)('denyReason denies %j (accepted false deny, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
 const ALLOW_WMSR_CAPPED = [
+  // no hazard char and no command in the body (checked in bash 5.3 and zsh 5.9: no push)
+  '(cat <<EOF)\nhi\nEOF',
+  'cat <<EOF\n# x $(date\nEOF',
   `git commit -m "$(cat <<'EOF'\nFix: don't break\nEOF\n)"`,
   `git commit -m "$(cat <<'EOF'\nFix: don't break\nEOF\n)" && git push origin factory/x`,
   `gh pr create --title t --body "$(cat <<'EOF'\nIt's a fix\nEOF\n)"`,

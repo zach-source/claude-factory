@@ -224,21 +224,23 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
-// claude-factory-wmsr: segments() skips a clear word-start comment. A hash that is not clearly a
-// comment can still be one in the shell, and a quote in its line can hide the next command.
+// claude-factory-wmsr: a quote, a backtick or a backslash in a comment can hide a later command
+// from segments(). It reads the text as words. segments() only flags the hazard. It never changes
+// the words it returns.
 export const COMMENT_REASON =
-  'The factory denies this command: it holds a # that this guard cannot read as a comment or as ' +
-  'part of a word, and its line holds a quote or a backtick. The shell can read the text after ' +
-  'the # as a comment, so this guard cannot find the real command words. Remove the # text, or ' +
-  'put it on a line of its own after a newline. Do not retry this exact command.'
+  'The factory denies this command: it holds a # whose line has a quote, a backtick or a ' +
+  'backslash, and more text follows. The shell can read that text as a comment, so a quote there ' +
+  'can hide a later command from this guard. Remove the # text, or run the later commands in a ' +
+  'separate Bash call. Do not retry this exact command.'
 
-// claude-factory-wmsr: segments() reads each here-document body as its own command text. It denies
-// a here-document when it cannot tell where the body ends.
+// claude-factory-wmsr: the same hazard for a here-document body. The shell reads the body as raw
+// lines, but this guard reads it as shell text.
 export const HEREDOC_REASON =
-  'The factory denies this command: it holds a here-document that this guard cannot read. The ' +
-  'delimiter, the end line or the body is unclear. ' +
-  "Use a quoted delimiter such as <<'EOF', or write the text to a file. Do not retry this exact " +
-  'command.'
+  'The factory denies this command: it holds a here-document with a quote, a backtick or a ' +
+  'backslash, and more text follows it. A quote in the body can hide a later command from this ' +
+  "guard. Use a quoted delimiter such as <<'EOF' in a commit message form, run the later " +
+  'commands in a separate Bash call, or write the text with the Write tool. Do not retry this ' +
+  'exact command.'
 
 // claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
 // guard denies every shell function definition.
@@ -732,124 +734,6 @@ function isCatHeredoc(body: string): boolean {
   return false
 }
 
-interface HeredocEntry {
-  delim: string
-  dash: boolean
-  quoted: boolean
-  // paren depth where the header sits
-  depth: number
-}
-
-/**
- * claude-factory-wmsr: reads the header of a here-document. `from` is the index after `<<`.
- * It returns undefined when the delimiter is unclear: it is empty, it holds `$` or a backtick or a
- * backslash-newline, or a quote stays open.
- */
-function readHeredocHeader(cmd: string, from: number, depth: number): HeredocEntry | undefined {
-  let j = from
-  const dash = cmd[j] === '-'
-  if (dash) j++
-  while (cmd[j] === ' ' || cmd[j] === '\t') j++
-  let delim = ''
-  let quoted = false
-  for (; j < cmd.length; j++) {
-    const c = cmd[j]!
-    if (c === "'") {
-      const e = cmd.indexOf("'", j + 1)
-      if (e < 0) return undefined
-      delim += cmd.slice(j + 1, e)
-      quoted = true
-      j = e
-    } else if (c === '"') {
-      quoted = true
-      for (j++; j < cmd.length && cmd[j] !== '"'; j++) {
-        if (cmd[j] === '$' || cmd[j] === '`') return undefined
-        if (cmd[j] === '\\') {
-          if (cmd[j + 1] === '\n') return undefined
-          if ('"\\$`'.includes(cmd[j + 1] ?? '')) j++
-        }
-        delim += cmd[j]
-      }
-      if (j >= cmd.length) return undefined
-    } else if (c === '\\') {
-      if (j + 1 >= cmd.length || cmd[j + 1] === '\n') return undefined
-      quoted = true
-      delim += cmd[++j]
-    } else if (c === '$' || c === '`') {
-      return undefined
-    } else if (' \t\n;&|<>()'.includes(c)) {
-      break
-    } else {
-      delim += c
-    }
-  }
-  if (delim === '') return undefined
-  return { delim, dash, quoted, depth }
-}
-
-/**
- * claude-factory-wmsr: reads the lines of one here-document body, from index `pos`.
- * It returns the body, the index after the terminator line, and `unclear`. `unclear` is true when
- * a line looks like a near match for the terminator, or when the command ends before the
- * terminator.
- */
-function readHeredocBody(
-  cmd: string,
-  pos: number,
-  entry: HeredocEntry,
-): { body: string; next: number; unclear: boolean } {
-  const lines: string[] = []
-  let unclear = false
-  while (pos <= cmd.length) {
-    if (pos === cmd.length) return { body: lines.join('\n'), next: pos, unclear: true }
-    let e = cmd.indexOf('\n', pos)
-    if (e < 0) e = cmd.length
-    const line = cmd.slice(pos, e)
-    const test = entry.dash ? line.replace(/^\t+/, '') : line
-    if (test === entry.delim) return { body: lines.join('\n'), next: Math.min(e + 1, cmd.length), unclear }
-    if (test.startsWith(entry.delim) || test.trim() === entry.delim) unclear = true
-    lines.push(line)
-    pos = e + 1
-  }
-  return { body: lines.join('\n'), next: cmd.length, unclear: true }
-}
-
-/**
- * claude-factory-wmsr: the text of each `$( )` and backtick substitution in an unquoted
- * here-document body, one per line. The shell runs these. It prints the rest of the body.
- * It returns undefined when a substitution is unclear: a paren stays open, a backtick stays open,
- * or the text holds a `case` word, whose `)` this paren count cannot read.
- */
-function heredocSubstitutions(body: string): string | undefined {
-  let out = ''
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i]!
-    if (c === '\\') {
-      i++
-    } else if (c === '$' && body[i + 1] === '(') {
-      let depth = 1
-      let j = i + 2
-      for (; j < body.length && depth > 0; j++) {
-        if (body[j] === '\\') j++
-        else if (body[j] === '(') depth++
-        else if (body[j] === ')') depth--
-      }
-      if (depth !== 0) return undefined
-      const text = body.slice(i + 2, j - 1)
-      if (/\bcase\b/.test(text) || /['"#`]/.test(text)) return undefined
-      out += text + '\n'
-      i = j - 1
-    } else if (c === '`') {
-      let j = i + 1
-      for (; j < body.length && body[j] !== '`'; j++) if (body[j] === '\\') j++
-      if (j >= body.length) return undefined
-      out += body.slice(i + 1, j) + '\n'
-      i = j
-    }
-  }
-  return out
-}
-
 /** What segments() reports to its caller. A set flag makes denyAt deny the command. */
 type SegInfo = {
   dollarQuote: boolean
@@ -860,6 +744,65 @@ type SegInfo = {
   funcDef?: boolean
   // claude-factory-wmsr: a here-document that segments() cannot read with certainty
   heredoc?: boolean
+}
+
+const HAZARD_RE = /['"`\\]/
+function lastHazard(cmd: string): number {
+  for (let k = cmd.length - 1; k >= 0; k--) if (HAZARD_RE.test(cmd[k]!)) return k
+  return -1
+}
+type Hz = { clearTo: number; checks: number; last: number }
+function prevRaw(cmd: string, i: number): string {
+  let k = i - 1
+  while (k >= 1 && cmd[k] === '\n' && cmd[k - 1] === '\\') k -= 2
+  return k < 0 ? '\n' : cmd[k]!
+}
+function commentHazard(cmd: string, i: number, hasWord: boolean, info: SegInfo, hz: Hz): void {
+  if (info.comment || i < hz.clearTo) return
+  if (hasWord && !'{}<>'.includes(prevRaw(cmd, i))) return
+  let e = cmd.indexOf('\n', i)
+  if (e < 0) e = cmd.length
+  const line = cmd.slice(i, e)
+  if (HAZARD_RE.test(line) && (line.includes('`') || /\S/.test(cmd.slice(e + 1)))) info.comment = true
+  else hz.clearTo = e
+}
+function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz): void {
+  if (info.heredoc || prevRaw(cmd, i) === '<') return
+  let j = i + 1
+  while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+  if (cmd[j] !== '<') return
+  j++
+  while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+  if (cmd[j] === '<') return
+  const nl = cmd.indexOf('\n', j)
+  if (nl < 0 || !/\S/.test(cmd.slice(nl + 1))) return
+  if (++hz.checks > 32) {
+    info.heredoc = true
+    return
+  }
+  const m = /^(-?)[ \t]*(?:'(\w+)'|"(\w+)"|\\(\w+)|(\w+))(?=[ \t;&|<>()\n])/.exec(cmd.slice(j, nl + 1))
+  if (!m) {
+    info.heredoc = true
+    return
+  }
+  if (hz.last === -2) hz.last = lastHazard(cmd)
+  const hazard = hz.last > nl
+  const dash = m[1] === '-'
+  const quoted = m[5] === undefined
+  const delim = m[2] ?? m[3] ?? m[4] ?? m[5]!
+  let p = nl + 1
+  while (p <= cmd.length) {
+    let e = cmd.indexOf('\n', p)
+    if (e < 0) e = cmd.length
+    const line = cmd.slice(p, e)
+    if (line === delim || (dash && line.replace(/^\t+/, '') === delim)) {
+      const body = cmd.slice(nl + 1, p)
+      if (hazard && (/\S/.test(cmd.slice(e + 1)) || (!quoted && /\$\(|`/.test(body)))) info.heredoc = true
+      return
+    }
+    p = e + 1
+  }
+  info.heredoc = true
 }
 
 /**
@@ -904,28 +847,10 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     cur = []
   }
   let redirPrev = false
-  // claude-factory-wmsr: `lastSig` is the last char read. A backslash-newline pair does not count.
-  // `arith` counts open parens of a `((` or `$((` pair.
-  // A `&` or `|` in a redirect (`>&`) opens a word, so a # after it is never at a word start.
-  let lastSig: string = '\n'
-  // `braceStack` holds, for each open `${` or bare `{` in it, the paren and backtick level where it opened.
-  // `bracket` counts open `$[` arithmetic.
-  const braceStack: number[] = []
-  let bracket = 0
-  let arith = 0
-  const arithStack: boolean[] = []
-  // claude-factory-wmsr: here-documents read on this line, whose bodies start after its newline.
-  // When this guard cannot read one with certainty, it sets info.heredoc and stops reading them.
-  const pending: HeredocEntry[] = []
-  let heredocOff = false
-  const heredocUnclear = () => {
-    if (info) info.heredoc = true
-    heredocOff = true
-    pending.length = 0
-  }
   // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
   // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
   let exemptPrev: boolean = false
+  const hz: Hz = { clearTo: -1, checks: 0, last: -2 }
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
     const wasExempt: boolean = exemptPrev
@@ -933,9 +858,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir: boolean = redirPrev
     redirPrev = false
-    const prevSig: string = lastSig
-    lastSig = c
-    if (c === '\n' && quote && pending.length > 0) heredocUnclear()
     if (quote === "'") {
       if (c === "'") quote = null
       else word += c
@@ -983,7 +905,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
         // claude-factory-abmq: a continuation is not a char, so `>BSNL&1` stays one redirect.
         redirPrev = afterRedir
         i++
-        lastSig = prevSig
         exemptPrev = wasExempt
         continue
       }
@@ -991,33 +912,8 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       hasWord = true
       continue
     }
-    if (c === '#' && !hasWord) {
-      // claude-factory-wmsr: bash and zsh read a word-start # as a comment. The last char must be
-      // a start, a blank, a newline or a separator, and the # must be outside `${ }` and `(( ))`.
-      // A backslash in a comment is literal, so the next raw newline ends it.
-      // Any other word-start # can be a comment too. This guard reads its text as words.
-      // If a quote is in its line, this guard sets info.comment.
-      const clear =
-        !inBacktick &&
-        braceStack.length === 0 &&
-        arith === 0 &&
-        bracket === 0 &&
-        (prevSig === '\n' ||
-          prevSig === ' ' ||
-          prevSig === '\t' ||
-          prevSig === ';' ||
-          prevSig === '&' ||
-          prevSig === '|')
-      if (clear) {
-        while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
-        continue
-      }
-      if (info) {
-        let e = cmd.indexOf('\n', i)
-        if (e < 0) e = cmd.length
-        if (/['"`]/.test(cmd.slice(i, e))) info.comment = true
-      }
-    }
+    if (info && c === '#') commentHazard(cmd, i, hasWord, info, hz)
+    if (info && c === '<') heredocHazard(cmd, i, info, hz)
     if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) {
       endSeg()
       i++
@@ -1041,26 +937,13 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
         }
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
-        const pair = prevSig === '('
-        if (pair && !arithStack[arithStack.length - 1]) {
-          arithStack[arithStack.length - 1] = true
-          arith++
-        }
-        arithStack.push(pair)
-        if (pair) arith++
         if (arg) {
           endWord()
           cur.push('(')
         }
-      } else {
-        if (arithStack.pop()) arith--
-        const wasArg = parens.pop()
-        // a paren that closes before the header newline hides the body start from this guard
-        if (pending.some(e => e.depth > parens.length)) heredocUnclear()
-        if (wasArg) {
-          endWord()
-          cur.push(')')
-        }
+      } else if (parens.pop()) {
+        endWord()
+        cur.push(')')
       }
       endSeg()
       continue
@@ -1076,7 +959,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     // read it, so it ends the segment here. It keeps a backtick mark in the word it ends, so a
     // later scan can see that this word is unsafe. A closing backtick only ends the segment.
     if (c === '`') {
-      if (pending.length > 0) heredocUnclear()
       if (!inBacktick) {
         word += c
         hasWord = true
@@ -1087,42 +969,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     }
     if (';|&\n'.includes(c)) {
       endSeg()
-      if (c === '\n' && pending.length > 0) {
-        // claude-factory-wmsr: the bodies of the here-documents on the line that ended. The
-        // shell reads each body as raw lines, so this guard scans each body as its own command text.
-        let pos = i + 1
-        const bodies: { body: string; entry: HeredocEntry }[] = []
-        let unclear = false
-        for (const entry of pending) {
-          const r = readHeredocBody(cmd, pos, entry)
-          bodies.push({ body: r.body, entry })
-          unclear ||= r.unclear
-          pos = r.next
-        }
-        pending.length = 0
-        if (unclear) {
-          heredocUnclear()
-        } else {
-          const read: string[] = []
-          for (const { body, entry } of bodies) {
-            read.push(body)
-            if (!entry.quoted && (body.includes('$(') || body.includes('`'))) {
-              const found = heredocSubstitutions(body)
-              if (found === undefined) heredocUnclear()
-              else read.push(found)
-            }
-          }
-          for (const text of read) {
-            const inner: DqSubstitution[] = []
-            const base = segs.length
-            segs.push(...segments(text, info, inner))
-            for (const s of inner) subs?.push({ body: s.body, at: base + s.at })
-          }
-          i = Math.max(pos - 1, i)
-          lastSig = '\n'
-          continue
-        }
-      }
       continue
     }
     if (/\s/.test(c)) {
@@ -1137,28 +983,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
-    if (c === '<' && cmd[i + 1] === '\\' && cmd[i + 2] === '\n' && prevSig !== '<' && !heredocOff) {
-      // a backslash-newline between the two < joins them into <<
-      let j = i + 1
-      while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
-      if (cmd[j] === '<' && cmd[j + 1] !== '<') heredocUnclear()
-    }
-    if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<' && prevSig !== '<' && !heredocOff) {
-      // claude-factory-wmsr: an unquoted `<<` starts a here-document. Inside `(( ))` or `${ }` it can
-      // be a shift, so this guard cannot tell.
-      const entry =
-        arith > 0 || bracket > 0 || braceStack.length > 0
-          ? undefined
-          : readHeredocHeader(cmd, i + 2, parens.length)
-      if (entry) pending.push(entry)
-      else heredocUnclear()
-    }
-    const level = parens.length * 2 + (inBacktick ? 1 : 0)
-    if (c === '{' && (prevSig === '$' || braceStack.length > 0)) braceStack.push(level)
-    else if (c === '}' && braceStack.length > 0 && braceStack[braceStack.length - 1] === level)
-      braceStack.pop()
-    if (c === '[' && (prevSig === '$' || bracket > 0)) bracket++
-    else if (c === ']' && bracket > 0) bracket--
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
@@ -6052,8 +5876,8 @@ function denyAtScan(
   const segs = segments(command, quoteInfo, subs)
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
-  if (quoteInfo.heredoc) return HEREDOC_REASON
-  if (quoteInfo.comment) return COMMENT_REASON
+  if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
+  if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
