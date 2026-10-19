@@ -1153,7 +1153,18 @@ function riskyTarget(t: string, root?: string): boolean {
 // claude-factory-fmeu: a brace group `{ cmd; }` runs cmd in the same shell.
 // The `{` word is a shell prefix, so realCommand skips it and finds cmd.
 // The closing `}` is a separate word. No check acts on it.
-const RESERVED_LEADING_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', 'coproc', '{'])
+const RESERVED_LEADING_WORDS = new Set([
+  'do',
+  'then',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+  '!',
+  'coproc',
+  '{',
+])
 
 // claude-factory-p43v.19: this map lists the flags that take a separate value word.
 // It covers each wrapper above and `timeout`.
