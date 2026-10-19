@@ -7463,3 +7463,102 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
 })
+
+// claude-factory-21ux: a wrapper flag that realCommand does not know must not hide an rm or a
+// find -exec rm. Each flag word reads as a bare flag or as a flag with a value word.
+const DENY_21UX: string[] = [
+  '/usr/bin/time -l rm -rf /',
+  '/usr/bin/time -v rm -rf /',
+  'time -v rm -rf /',
+  '/usr/bin/time -a -o f rm -rf /',
+  'time -al rm -rf /',
+  'time -of rm -rf /',
+  'time --output f rm -rf /',
+  'time --output=f rm -rf /',
+  'time --verbose rm -rf /',
+  'time -q rm -rf /',
+  'nice -5 rm -rf /',
+  'nice -10 rm -rf /',
+  'nice -n5 rm -rf /',
+  'nice --adjustment=5 rm -rf /',
+  'nice --adjustment 5 rm -rf /',
+  'env -v rm -rf /',
+  'env -iv rm -rf /',
+  'env --ignore-environment rm -rf /',
+  'env --unset X rm -rf /',
+  'env --chdir /x rm -rf /',
+  'timeout --foreground 5 rm -rf /',
+  'timeout -v 5 rm -rf /',
+  'timeout --signal=KILL 5 rm -rf /',
+  'timeout --signal KILL 5 rm -rf /',
+  'timeout -sKILL 5 rm -rf /',
+  'timeout --kill-after 1 5 rm -rf /',
+  'timeout --preserve-status 5 rm -rf /',
+  'timeout 1e1 rm -rf /',
+  'timeout inf rm -rf /',
+  'exec -cl rm -rf /',
+  'sudo -E rm -rf /',
+  'nice -5 time -l rm -rf /',
+  'env -v timeout -v 5 rm -rf /',
+  'time -l find . -exec rm -r {} +',
+  'cd /x; time -l rm a',
+  'env - rm -rf /',
+  'time -l env - rm -rf /',
+  'env a.b=1 rm -rf /',
+  'sudo 1A=x rm -rf /',
+  'env -i a.b=1 rm -rf /',
+  'xargs -n 1 rm -rf /',
+  'xargs -I {} rm -rf {}',
+  'xargs -L 1 rm -rf /',
+  'env -- a.b=1 rm -rf /',
+  'env -i -- a.b=1 rm -rf /',
+  'env -u X -- 1A=x rm -rf /',
+  'sudo -- 1A=x rm -rf /',
+  'env -- - rm -rf /',
+  'env -i -- - rm -rf /',
+  'env -iu X -- - rm -rf /',
+  'env -- - a.b=1 rm -rf /',
+]
+test.each(DENY_21UX)('denyReason denies %j (claude-factory-21ux)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+const ALLOW_21UX: string[] = [
+  'time ls',
+  'time -p ls',
+  '/usr/bin/time -l ls',
+  '/usr/bin/time -v make',
+  'nice -5 ls',
+  'env -v ls',
+  'timeout --foreground 5 bun test',
+  'timeout -v 5 ls',
+  'timeout 5 rm a',
+  'time -l rm a',
+  'time -l',
+  'command -v rm',
+  'cd x && command -v rm',
+  'cd x; command -v rm',
+  'cd x; command -V rm',
+  'env FOO=1 ls',
+  'env a.b=1 ls',
+  'env -- - ls',
+  'xargs -n 1 echo',
+]
+// Accepted over-deny: 'time -l echo rm -rf /' denies. The flag can take echo as its value.
+test.each(ALLOW_21UX)('denyReason allows %j (claude-factory-21ux)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test('denyReason keeps the push reason behind time -l (claude-factory-21ux)', () => {
+  expect(denyReason('time -l git push origin main')).toBe(denyReason('git push origin main'))
+})
+
+test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repeat(1300) + 'a']])(
+  'denyReason bounds a long unknown-flag chain (claude-factory-21ux)',
+  cmd => {
+    const t0 = Date.now()
+    denyReason(cmd)
+    expect(Date.now() - t0).toBeLessThan(1000)
+  },
+  30_000,
+)
