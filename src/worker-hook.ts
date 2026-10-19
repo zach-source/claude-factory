@@ -2762,6 +2762,7 @@ function firstVerbIndex(
   words: string[],
   valueFlags: Set<string>,
   noValueFlags?: Set<string>,
+  skipBlank = false,
 ): { index: number; uncertain: boolean } {
   let uncertain = false
   for (let i = 0; i < words.length; i++) {
@@ -2776,9 +2777,18 @@ function firstVerbIndex(
       uncertain = true
       continue
     }
+    // claude-factory-t1xo: cobra stripFlags skips an empty word and a lone `-` when it looks for a
+    // sub command. A value flag above already took its value word, so this skip runs at the
+    // word slot only. Only the cobra tools (gh, kubectl, ko, helm) ask for it.
+    if (skipBlank && isBlankWord(w)) continue
     return { index: i, uncertain }
   }
   return { index: -1, uncertain }
+}
+
+/** claude-factory-t1xo: true for an empty word or a lone `-`, which cobra skips at a sub command slot. */
+function isBlankWord(w: string): boolean {
+  return w === '' || w === '-'
 }
 
 /**
@@ -2862,19 +2872,22 @@ function contextDenied(ctx: string | undefined, personOnly: string[]): boolean {
  * takes a value word. An unknown flag must not hide a mutating verb that follows it.
  */
 function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
-  return (
-    liveApplyDeniedOn(cmd, personOnly) ||
-    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly)) === true
-  )
+  const scan = (skipBlank: boolean): boolean =>
+    liveApplyDeniedOn(cmd, personOnly, skipBlank) ||
+    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly, skipBlank)) ===
+      true
+  // claude-factory-t1xo: the second pass skips a blank word at the verb and sub slots, like cobra.
+  return scan(false) || (cmd.slice(1).some(isBlankWord) && scan(true))
 }
 
-function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
+function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = false): boolean {
   const b = baseWord(cmd[0]!)
   const tail = cmd.slice(1)
   if (b === 'kubectl') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS, undefined, skipBlank)
     const verb = vi >= 0 ? tail[vi]! : undefined
-    const sub = vi >= 0 ? tail[vi + 1] : undefined
+    const subRest = vi >= 0 ? tail.slice(vi + 1) : []
+    const sub = skipBlank ? subRest.find(w => !isBlankWord(w)) : subRest[0]
     // claude-factory-p43v.6: a dynamic verb hides the real kubectl command. A dynamic sub word
     // hides the real rollout, auth or certificate action. This guard fails closed on either one,
     // the same way it fails closed on a listed verb or sub name.
@@ -2909,7 +2922,7 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
     return cluster !== undefined && (unknownFlagValue(cluster) || personOnly.includes(cluster))
   }
   if (b === 'ko') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS, undefined, skipBlank)
     // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
     let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || KO_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, KO_MUTATING_VERBS)
@@ -2918,7 +2931,7 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
     return contextDenied(ctx, personOnly)
   }
   if (b === 'helm') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS, undefined, skipBlank)
     // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
     let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || HELM_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, HELM_MUTATING_VERBS)
@@ -3473,10 +3486,13 @@ function ghReason(
   ghConfigMoved = false,
   aliasDepth = 0,
 ): string | undefined {
-  return (
-    ghReasonOn(cmd.slice(1), gate, state, ghConfigMoved, aliasDepth) ??
-    scanWithoutRedirects(cmd, dropped => ghReasonOn(dropped, gate, state, ghConfigMoved, aliasDepth))
-  )
+  const pass = (skipBlank: boolean): string | undefined =>
+    ghReasonOn(cmd.slice(1), gate, state, ghConfigMoved, aliasDepth, skipBlank) ??
+    scanWithoutRedirects(cmd, dropped =>
+      ghReasonOn(dropped, gate, state, ghConfigMoved, aliasDepth, skipBlank),
+    )
+  // claude-factory-t1xo: the second pass skips a blank word at the verb and sub slots, like cobra.
+  return pass(false) ?? (cmd.slice(1).some(isBlankWord) ? pass(true) : undefined)
 }
 
 /**
@@ -3500,17 +3516,24 @@ function ghReasonOn(
   state: ScanState,
   ghConfigMoved: boolean,
   aliasDepth: number,
+  skipBlank = false,
 ): string | undefined {
-  const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
+  const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS, undefined, skipBlank)
   const verb = vi >= 0 ? tail[vi] : undefined
   // claude-factory-zsj0: a flag after `pr` or `repo` must not become the sub word.
   const rest = vi >= 0 ? tail.slice(vi + 1) : []
   const subScan =
     verb === 'pr' || verb === 'repo'
-      ? firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+      ? firstVerbIndex(rest, GH_SUB_VALUE_FLAGS, undefined, skipBlank)
       : { index: -1, uncertain: false }
   const sub =
-    verb === 'pr' || verb === 'repo' ? (subScan.index >= 0 ? rest[subScan.index] : undefined) : rest[0]
+    verb === 'pr' || verb === 'repo'
+      ? subScan.index >= 0
+        ? rest[subScan.index]
+        : undefined
+      : skipBlank
+        ? rest.find(w => !isBlankWord(w))
+        : rest[0]
   // claude-factory-p43v: a dynamic verb word can hide the real gh command. The same risk applies
   // at the git verb slot, where dynamicWord denies it. A dynamic sub word under pr, repo or alias
   // can hide the real merge, sync, ready, checkout or alias-set call, and this guard denies both
@@ -3571,7 +3594,10 @@ function ghReasonOn(
     }
     return undefined
   }
-  if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
+  if (verb === 'alias') {
+    const first = rest.findIndex(w => !isBlankWord(w))
+    return ghAliasDenied(skipBlank && first > 0 ? rest.slice(first) : rest)
+  }
   // claude-factory-zsj0: an unknown flag before the sub word can hide it. Scan the words, fail closed.
   // This does not depend on the top-level `uncertain`: an extra flag must not switch it off.
   if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
