@@ -1,15 +1,18 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  baseWord,
+  baseWordForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
+  FUNCTION_DEF_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   GH_BUILTIN_VERBS,
@@ -25,6 +28,9 @@ import {
   REASON,
   SCAN_BUDGET_REASON,
   scanReason,
+  SHELL_ALIAS_READ_REASON,
+  SHELL_ALIAS_REASON,
+  shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
 
@@ -2643,7 +2649,6 @@ const ALLOW_DYNAMIC_PUSH_WORD = [
   '(git push origin feature)',
   'echo "$(git rev-parse HEAD)"',
   'echo $(git push origin feature)',
-  'f() { git push origin feature; }',
 ]
 
 test.each(ALLOW_DYNAMIC_PUSH_WORD)('denyReason allows %j (claude-factory-cu5m, no dynamic word)', cmd => {
@@ -2949,6 +2954,138 @@ test('denyReason allows a $ that does not start a $-quote (claude-factory-hewq)'
     "echo $\\\n\\'x\\'",
   ]) {
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+  }
+})
+
+// claude-factory-4i60: a call word can hide a git, sh or rm word in a function body.
+// The guard cannot follow the call. It denies every function definition.
+const FN_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+}
+const DENY_FUNCTION_DEF = [
+  `f() { sh x; }; f -c 'git push origin main'`,
+  `f () { sh x; }; f -c 'git push origin main'`,
+  `f ( ) { sh x; }; f -c 'git push origin main'`,
+  `f(\t) { sh x; }; f -c 'git push origin main'`,
+  `f(\\\n) { sh x; }; f -c 'git push origin main'`,
+  `f( \\\n \\\n ) { sh x; }; f -c 'git push origin main'`,
+  `f\\\n() { sh x; }; f -c 'git push origin main'`,
+  `f()\n{ sh x; }\nf -c 'git push origin main'`,
+  `f() ( sh x ); f -c 'git push origin main'`,
+  `f()(sh x);f -c 'git push origin main'`,
+  `f() sh x; f -c 'git push origin main'`,
+  `f g () { sh x }; g -c 'git push origin main'`,
+  `"f"() { sh x; }; f -c 'git push origin main'`,
+  `'f'() { sh x; }; f -c 'git push origin main'`,
+  `echo \\$() { sh x; }`,
+  `a\\=() { sh x; }; a= -c 'git push origin main'`,
+  `\\<() { sh x; }; \\< -c 'git push origin main'`,
+  `f() { rm "$@"; }; f -rf /tmp/x`,
+  `eval 'f() { sh x; }'; f -c 'git push origin main'`,
+  `sh -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `bash -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `zsh -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `echo $(f() { sh x; }; f -c 'git push origin main')`,
+  'echo `f() { sh x; }; f -c "git push origin main"`',
+  `f() { sh x; }; export -f f; bash -c 'f -c "git push origin main"'`,
+  // function keyword (4i60.2)
+  `function f { sh x; }; f -c 'git push origin main'`,
+  `function f() { sh x; }; f -c 'git push origin main'`,
+  `{ function f { sh x; }; }; f -c 'git push origin main'`,
+  `if true; then function f { sh x; }; fi; f -c 'git push origin main'`,
+  `! function f { sh x; }; f -c 'git push origin main'`,
+  `time function f { sh x; }; f -c 'git push origin main'`,
+  `time -p function f { sh x; }; f -c 'git push origin main'`,
+  `! time function f { sh x; }; f -c 'git push origin main'`,
+  `func\\\ntion f { sh x; }; f -c 'git push origin main'`,
+  `\\function f { :; }`,
+  `while true; do function f { :; }; done`,
+  `true || function f { :; }`,
+  // each prefix word alone, and a newline inside the pair
+  `if false; then :; else function f { :; }; fi`,
+  `if false; then :; elif true; then function f { :; }; fi`,
+  `if false; then :; elif function f { :; }; then :; fi`,
+  `while function f { :; }; do :; done`,
+  `until function f { :; }; do :; done`,
+  `for x in a; do function f { :; }; done`,
+  `time -p function f { :; }`,
+  `f(\n) { :; }`,
+  `env BASH_FUNC_f%%=$v bash -c f`,
+  // function tables and imports (4i60.3)
+  `functions[f]='sh x'; f -c 'git push origin main'`,
+  `functions+=(f 'sh x'); f -c 'git push origin main'`,
+  `set -A functions f 'sh x'; f -c 'git push origin main'`,
+  `typeset "functions[f]=sh"`,
+  'dis_functions[f]=x',
+  `env 'BASH_FUNC_f%%=() { sh x; }' bash -c 'f -c "git push origin main"'`,
+  `v='() { sh x; }'; env "BASH_FUNC_f%%=$v" bash -c f`,
+  `v='() { sh x; }'; env "$n=$v" bash -c f`,
+  // command positions after a later word (4i60.5)
+  `repeat 1 function f { sh x }; f -c 'git push origin main'`,
+  `repeat 1 { function f { sh x } }; f -c 'git push origin main'`,
+  `if [[ 1 ]] { function f { sh x } }; f -c 'git push origin main'`,
+  `{ :; } always { function f { sh x } }; f -c 'git push origin main'`,
+  `time -- function f { sh x; }; f -c 'git push origin main'`,
+  `time -p -- function f { sh x; }; f -c 'git push origin main'`,
+  // command position after ]] (4i60.8)
+  `if [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `if [[ 0 == 1 ]] { :; } elif [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `while [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `until [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `if [[ 1 ]] \\function f { sh x }; f -c 'git push origin main'`,
+  // accepted over-deny: a heredoc write of a function (4i60.6)
+  `cat > .scratch/x.sh <<'EOF'\nf() { :; }\nEOF`,
+  // accepted over-deny: a bare functions word
+  'grep -n functions src/x.ts',
+  // moved from ALLOW_DYNAMIC_PUSH_WORD: the guard now denies every definition
+  'f() { git push origin feature; }',
+  // accepted over-denies: an empty pair is a definition shape
+  '(( ))',
+  'ls *()',
+]
+
+test.each(DENY_FUNCTION_DEF)('denyReason denies %j (claude-factory-4i60, function definition)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, FN_GATE)).toBe(FUNCTION_DEF_REASON)
+})
+
+// These rows had another deny reason before 4i60. The more specific reason still wins.
+test('denyReason keeps the older reason for definitions with another deny (claude-factory-4i60)', () => {
+  const run = (c: string) => denyReason(c, '/root/repo', undefined, FN_GATE)
+  expect(run('g() { git "$@"; }; g push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(run('git-x() { git "$@"; }; git-x push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(run(`() { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  expect(run(`function { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+})
+
+const ALLOW_FUNCTION_DEF_LOOKALIKE = [
+  'a=(); echo hi',
+  'a+=(); echo hi',
+  'x=$(); echo hi',
+  'x=$( ); echo hi',
+  'x=$\\\n(); echo hi',
+  'diff <() >()',
+  'cat =()',
+  'diff <(sort a) <(sort b)',
+  'grep -n function src/x.ts',
+  'echo function',
+  'git log --grep=function',
+  'git commit -m "fix f() { x }"',
+  `echo 'f() { sh "$@"; }'`,
+  'bash .scratch/x.sh',
+  'ls functions.txt',
+]
+
+test.each(ALLOW_FUNCTION_DEF_LOOKALIKE)('denyReason allows %j (claude-factory-4i60, no definition)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, FN_GATE)).toBeUndefined()
+})
+
+test('denyReason scans a long function-like input fast (claude-factory-4i60)', () => {
+  for (const cmd of ['( '.repeat(4000), 'f'.repeat(8000) + '()', 'x=$('.repeat(2000)]) {
+    const t = Date.now()
+    denyReason(cmd, '/root/repo', undefined, FN_GATE)
+    expect(Date.now() - t).toBeLessThan(1000)
   }
 })
 
@@ -6205,6 +6342,281 @@ test('denyReason allows git push origin factory/x (claude-factory-bjp0 AC4: cont
   expect(denyReason('git push origin factory/x', '/w', undefined, BJP0_GATE_FACTORYX)).toBeUndefined()
 })
 
+// claude-factory-1zr5: a Claude Code shell-snapshot alias (gp, gco) runs git, but the hook sees no git word.
+const SNAP_ALIASES = new Map<string, string | null>([
+  ['gp', 'git push'],
+  ['gpoat', 'git push origin --all && git push origin --tags'],
+  ['gpf', 'git push --force-with-lease --force-if-includes'],
+  ['gco', 'git checkout'],
+  ['g', 'git'],
+  ['k', 'kubectl'],
+  ['rmrf', 'rm -rf'],
+  ['rm', 'rm -i'],
+  ['gh', 'op plugin run -- gh'],
+  ['bad', null],
+  ['loop1', 'loop2'],
+  ['loop2', 'loop1'],
+])
+const snapGate = (shellAliases?: HookGate['shellAliases']): HookGate => ({
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+  shellAliases,
+})
+const SNAP_GATE = snapGate(() => SNAP_ALIASES)
+
+const SNAP_DENY_ALIAS = [
+  'gp origin main',
+  'gp',
+  'gp origin',
+  'gp --force origin factory/x',
+  'gpoat',
+  'gp --all origin',
+  'gpf origin main',
+  'gco main',
+  'g push origin main',
+  'echo x && gp origin main',
+  'sudo gp origin main',
+  'FOO=1 gp origin main',
+  'bad x',
+  'A+=/x gp origin main',
+  'B[1]=/x gp origin main',
+  'A+=/x gco main',
+  'C[k]+=/x gp origin main',
+  'a=/x gp origin main',
+  'A[a]b]=/x gp origin main',
+  '>/tmp/x gp origin main',
+  '2>/dev/null gp origin main',
+  '</dev/null gp origin main',
+  '>/tmp/x gco main',
+  '>|/tmp/x gp origin main',
+  '&>/tmp/x gp origin main',
+  'A=1 >/tmp/x gp origin main',
+  '3>/tmp/x gp origin main',
+  '>>/tmp/x gp origin main',
+]
+test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (claude-factory-1zr5)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
+})
+
+const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
+test.each([
+  'bin/factory gc --dry-run',
+  'FACTORY_HOME=/t /abs/bin/factory gc',
+  'A+=1 /abs/bin/factory gc',
+  'B[1]=2 /abs/bin/factory gc',
+  'C[k]+=3 /abs/bin/factory gc',
+])(
+  'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
+  cmd => {
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => SLASH_ALIASES),
+      ),
+    ).toBeUndefined()
+  },
+)
+test.each(['sudo gc', 'FOO=1 gc', 'echo x && gc', 'gc'])(
+  'denyReason still denies %j with gc as an alias at command position or after a bare word (claude-factory-1zr5)',
+  cmd => {
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => SLASH_ALIASES),
+      ),
+    ).toBe(SHELL_ALIAS_REASON)
+  },
+)
+
+test('denyReason rescans an alias that does not run git: kubectl, rm -rf, a gh wrapper (claude-factory-1zr5)', () => {
+  expect(denyReason('k --context acme apply -f x', '/w', ['acme'], SNAP_GATE)).toBe(LIVE_REASON)
+  expect(denyReason('rmrf build', '/w', undefined, SNAP_GATE)).toBe(REASON)
+  expect(denyReason('gh pr merge 5', '/w', undefined, SNAP_GATE)).toBe(MERGE_REASON)
+})
+
+test.each(['git push origin feature', 'git status', 'ls -la', 'rm -i notes.txt', 'gh pr view 5'])(
+  'denyReason allows %j with the snapshot table set (claude-factory-1zr5)',
+  cmd => {
+    expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBeUndefined()
+  },
+)
+
+test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x'))(
+  'denyReason allows %j when shellAliases is unset or empty, as before (claude-factory-1zr5)',
+  cmd => {
+    const pre = denyReason(cmd, '/w', undefined, snapGate())
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => new Map()),
+      ),
+    ).toBe(pre)
+    expect(pre).toBeUndefined()
+  },
+)
+
+test('denyReason denies an alias chain past the depth cap but ends on an alias cycle, as zsh does (claude-factory-1zr5)', () => {
+  expect(denyReason('loop1 x', '/w', undefined, SNAP_GATE)).toBeUndefined()
+  const long = new Map<string, string | null>()
+  for (let i = 0; i < 20; i++) long.set(`c${i}`, `c${i + 1}`)
+  expect(
+    denyReason(
+      'c0 x',
+      '/w',
+      undefined,
+      snapGate(() => long),
+    ),
+  ).toBe(SHELL_ALIAS_REASON)
+  const short = new Map<string, string | null>([
+    ['c0', 'c1'],
+    ['c1', 'echo'],
+  ])
+  expect(
+    denyReason(
+      'c0 x',
+      '/w',
+      undefined,
+      snapGate(() => short),
+    ),
+  ).toBeUndefined()
+})
+
+test('denyReason denies every command when the snapshot table cannot be read, and reads it once (claude-factory-1zr5)', () => {
+  let calls = 0
+  const gate = snapGate(() => {
+    calls++
+    return undefined
+  })
+  expect(denyReason('git status', '/w', undefined, gate)).toBe(SHELL_ALIAS_READ_REASON)
+  expect(calls).toBe(1)
+  let n = 0
+  const many = snapGate(() => (n++, new Map()))
+  expect(denyReason('ls && ls && ls ; echo a b c', '/w', undefined, many)).toBeUndefined()
+  expect(n).toBe(1)
+})
+
+test('denyReason keeps a dynamic alias word dynamic when it rescans the expansion (claude-factory-1zr5)', () => {
+  const t = new Map<string, string | null>([
+    ['kk', 'kubectl'],
+    ['q', 'echo'],
+  ])
+  expect(
+    denyReason(
+      'kk $V apply -f x',
+      '/w',
+      ['acme'],
+      snapGate(() => t),
+    ),
+  ).toBeDefined()
+  expect(
+    denyReason(
+      "q 'a;b' c",
+      '/w',
+      undefined,
+      snapGate(() => t),
+    ),
+  ).toBeUndefined()
+})
+
+// claude-factory-1zr5: a fake snapshot folder; the values are fake and use acme/widget names
+function snapDir(files: Record<string, string>, ageSec: Record<string, number> = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'snap-'))
+  for (const [name, text] of Object.entries(files)) {
+    writeFileSync(join(dir, name), text)
+    const t = new Date(Date.now() - (ageSec[name] ?? 0) * 1000)
+    utimesSync(join(dir, name), t, t)
+  }
+  return dir
+}
+
+test('shellSnapshotAliases parses bare, quoted, joined and multi-line values and maps the rest to null (claude-factory-1zr5)', () => {
+  const dir = snapDir({
+    'snapshot-zsh-1.sh': [
+      'f() { :; }',
+      'alias -- acme=widget',
+      "alias -- gp='git push'",
+      "alias -- q='echo '\\''a b'\\'' c'",
+      "alias -- multi='echo one",
+      "two'",
+      "alias -- dollar=$'a\\nb'",
+      'alias -- amp=a&b',
+      "alias -- after='x'",
+      '',
+    ].join('\n'),
+  })
+  const t = shellSnapshotAliases(dir)!
+  expect(t.get('acme')).toBe('widget')
+  expect(t.get('gp')).toBe('git push')
+  expect(t.get('q')).toBe("echo 'a b' c")
+  expect(t.get('multi')).toBe('echo one\ntwo')
+  expect(t.get('dollar')).toBeNull()
+  expect(t.get('amp')).toBeNull()
+  expect(t.get('after')).toBe('x')
+  expect(t.has('f')).toBe(false)
+})
+
+test('shellSnapshotAliases reads the newest 3 files and lets a newer file win (claude-factory-1zr5)', () => {
+  const dir = snapDir(
+    {
+      'snapshot-zsh-a.sh': "alias -- old='x'\n",
+      'snapshot-zsh-b.sh': "alias -- gp='echo b'\nalias -- mid='y'\n",
+      'snapshot-zsh-c.sh': "alias -- gp='echo c'\n",
+      'snapshot-zsh-d.sh': "alias -- gp='git push'\n",
+      'notes.txt': "alias -- other='z'\n",
+    },
+    { 'snapshot-zsh-a.sh': 40, 'snapshot-zsh-b.sh': 30, 'snapshot-zsh-c.sh': 20, 'snapshot-zsh-d.sh': 10 },
+  )
+  const t = shellSnapshotAliases(dir)!
+  expect(t.get('gp')).toBe('git push')
+  expect(t.get('mid')).toBe('y')
+  expect(t.has('old')).toBe(false)
+  expect(t.has('other')).toBe(false)
+})
+
+test('shellSnapshotAliases gives an empty Map for a missing folder and undefined for a read error (claude-factory-1zr5)', () => {
+  expect(shellSnapshotAliases(join(tmpdir(), 'snap-missing-acme'))?.size).toBe(0)
+  expect(shellSnapshotAliases(snapDir({}))?.size).toBe(0)
+  const big = snapDir({ 'snapshot-zsh-1.sh': 'x'.repeat(4 * 1024 * 1024 + 1) })
+  expect(shellSnapshotAliases(big)).toBeUndefined()
+  const notDir = snapDir({ 'file.txt': '' })
+  expect(shellSnapshotAliases(join(notDir, 'file.txt'))).toBeUndefined()
+  const bad = snapDir({})
+  mkdirSync(join(bad, 'snapshot-zsh-1.sh'))
+  expect(shellSnapshotAliases(bad)).toBeUndefined()
+})
+
+// claude-factory-1zr5: the spawned hook reads the folder that CLAUDE_CONFIG_DIR names
+const spawnEnv = (configDir: string) => ({
+  ...process.env,
+  FACTORY_OUTBOX: undefined,
+  FACTORY_FROM: undefined,
+  FACTORY_SELF_UPDATE: '0',
+  CLAUDE_CONFIG_DIR: configDir,
+})
+test('the spawned hook denies a snapshot alias word and allows git status with an empty folder (claude-factory-1zr5)', async () => {
+  const withAlias = mkdtempSync(join(tmpdir(), 'cfg-'))
+  mkdirSync(join(withAlias, 'shell-snapshots'))
+  writeFileSync(join(withAlias, 'shell-snapshots', 'snapshot-zsh-1.sh'), "alias -- gp='git push'\n")
+  const empty = mkdtempSync(join(tmpdir(), 'cfg-'))
+  mkdirSync(join(empty, 'shell-snapshots'))
+  const cmd = (command: string) => JSON.stringify({ tool_name: 'Bash', tool_input: { command } })
+  const denied = await run(cmd('gp origin main'), spawnEnv(withAlias))
+  expect(JSON.parse(denied.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
+  expect((await run(cmd('git status'), spawnEnv(empty))).out).toBe('')
+  const unreadable = mkdtempSync(join(tmpdir(), 'cfg-'))
+  writeFileSync(join(unreadable, 'shell-snapshots'), '')
+  const blocked = await run(cmd('git status'), spawnEnv(unreadable))
+  expect(JSON.parse(blocked.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_READ_REASON)
+}, 30_000)
+
 // claude-factory-a8pr: macOS APFS resolves Git, GH, SH to the real binaries, so a capitalized
 // command word must get the same verdict as its lowercase twin.
 const A8PR_GATE = {
@@ -6288,6 +6700,13 @@ const MMC9_DENY = [
   'Aा=x rm -rf /',
   'Aิ=x rm -rf /',
   'Ⅰ=x rm -rf /',
+  '٣=x rm -rf /',
+  'Ⓐ=x rm -rf /',
+  'AⒶ=x rm -rf /',
+  '\u{1F130}=x rm -rf /',
+  'ा=x rm -rf /',
+  'ͅ=x rm -rf /',
+  '٣[1]=x rm -rf /',
 ]
 
 test.each(MMC9_DENY)('denyReason denies %j (claude-factory-mmc9, assignment forms)', cmd => {
@@ -6309,6 +6728,8 @@ const MMC9_SUBSCRIPT_FLAG = [
   'A[(r)x]=x rm -rf /',
   'A[(r)x]+=x rm -rf /',
   'A[(x]=x rm -rf /',
+  'Ⓐ[(r)x]=x rm -rf /',
+  '٣[(r)x]=x rm -rf /',
   'typeset -a A; A[(r)x]=x rm -rf /',
 ]
 
@@ -6350,4 +6771,22 @@ test.each([
   'env -i A[k]=x bd create t',
 ])('denyReason denies %j (claude-factory-mmc9, env assignment forms)', cmd => {
   expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+// claude-factory-4i60.14: the baseWord cache returns the uncached value for every input
+const BASE_WORD_TABLE = ['\\rm', '/bin/SH', 'Git', '/usr/bin/\u017Ftat', '', 'dir/', 'a/b/GH', '\\\\x']
+
+test('baseWord cache equals the uncached function, also after a cache clear', () => {
+  const check = () => {
+    for (const w of BASE_WORD_TABLE) {
+      expect(baseWord(w)).toBe(baseWordForTest(w))
+      expect(baseWord(w)).toBe(baseWordForTest(w))
+    }
+  }
+  check()
+  for (let i = 0; i < 4200; i++) baseWord(`/x/W${i}`)
+  check()
+  expect(baseWord('\\rm')).toBe('rm')
+  expect(baseWord('/bin/SH')).toBe('sh')
+  expect(baseWord('dir/')).toBe('')
 })
