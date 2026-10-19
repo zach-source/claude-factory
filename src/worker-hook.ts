@@ -3008,6 +3008,25 @@ function ghAliasExpansion(text: string): string[] | undefined {
 }
 
 /**
+ * claude-factory-59pp.10: remove redirect words from `words`. A redirect word (`&>f`, `>f`,
+ * `2>/dev/null`, `<f`) is not an argument of the command. If the word is a bare operator (`&>`,
+ * `>`), its target is the next word, and this function removes that word too.
+ * Without this, the redirect word reads as the gh verb or the gh sub word and hides the real one.
+ */
+function dropRedirectWords(words: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    const m = /^[0-9]*(?:&>>?|>>?|<)[|!&]?(.*)$/s.exec(words[i]!)
+    if (!m) {
+      out.push(words[i]!)
+      continue
+    }
+    if (m[1] === '') i++
+  }
+  return out
+}
+
+/**
  * The reason to deny `cmd`, a command that starts with a `gh` word, or undefined to allow it.
  * claude-factory-zl5.1: `gh pr merge` and `gh repo sync` always deny. A GraphQL or REST call that
  * merges a pull request or a branch, found through `ghApiMergeDenied`, denies the same way.
@@ -3036,7 +3055,7 @@ function ghReason(
   ghConfigMoved = false,
   aliasDepth = 0,
 ): string | undefined {
-  const tail = cmd.slice(1)
+  const tail = dropRedirectWords(cmd.slice(1))
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
   const verb = vi >= 0 ? tail[vi] : undefined
   const sub = vi >= 0 ? tail[vi + 1] : undefined

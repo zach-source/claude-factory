@@ -2594,11 +2594,40 @@ test.each(DENY_AMP_RM)('denyReason denies %j (claude-factory-59pp, rm after &>)'
   expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeDefined()
 })
 
-const DENY_AMP_GH = ['gh &>/dev/null pr merge 1', 'gh&>/dev/null pr merge 1', 'gh &>>f pr merge 1']
+// claude-factory-59pp.10: the live gate sets ghAliases and gitAliases. With them, a redirect word at
+// the gh verb slot must not hide the real verb.
+const AMP_LIVE_GATE = {
+  ...AMP_GATE,
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
 
-test.each(DENY_AMP_GH)('denyReason denies %j (claude-factory-59pp, gh after &>)', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeDefined()
+const DENY_AMP_GH_MERGE = [
+  'gh &>/dev/null pr merge 1',
+  'gh&>/dev/null pr merge 1',
+  'gh &>>f pr merge 1',
+  'gh &> /dev/null pr merge 1',
+  'gh pr &>/dev/null merge 1',
+  'gh >/dev/null pr merge 1',
+  'gh 2>/dev/null pr merge 1',
+  'gh > f pr merge 1',
+  'gh repo &>/dev/null sync',
+]
+
+test.each(DENY_AMP_GH_MERGE)('denyReason denies %j (claude-factory-59pp.10, gh merge)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
 })
+
+test('denyReason denies gh pr ready after &> (claude-factory-59pp.10)', () => {
+  expect(denyReason('gh &>/dev/null pr ready 1', '/root/repo', undefined, AMP_LIVE_GATE)).toBe(READY_REASON)
+})
+
+test.each(['gh pr view 1 &>/dev/null', 'gh api x > f', 'gh pr list 2>/dev/null'])(
+  'denyReason allows %j with live aliases (claude-factory-59pp.10)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+  },
+)
 
 const DENY_AMP_XARGS = [
   'xargs &>/dev/null gh pr view 1',
@@ -2616,7 +2645,9 @@ test.each(DENY_AMP_XARGS)('denyReason denies %j (claude-factory-59pp, xargs afte
 // This test pins the verdict only. No row separates the dash reading from the joined reading until
 // claude-factory-4a4o (a leading redirect word hides rm) is fixed, so the joined-only mutant survives.
 test('denyReason denies a command after &> in both readings (claude-factory-59pp)', () => {
-  expect(denyReason('true &>/dev/null gh pr merge 1', '/root/repo', undefined, AMP_GATE)).toBeDefined()
+  expect(denyReason('true &>/dev/null gh pr merge 1', '/root/repo', undefined, AMP_LIVE_GATE)).toBe(
+    MERGE_REASON,
+  )
 })
 
 const ALLOW_AMP = [
