@@ -1032,7 +1032,7 @@ function wrapperAssignmentOperand(w: string): boolean {
 // and quotes. The greedy match can skip more than the shell does. Then the hook reads later words
 // as the command and denies more, never less.
 function shellAssignmentWord(w: string): boolean {
-  return /^[\p{L}_][\p{L}\p{N}_]*(?:\[[\s\S]*\])?\+?=/u.test(w)
+  return /^[\p{L}\p{Nl}_][\p{L}\p{M}\p{N}_]*(?:\[[\s\S]*\])?\+?=/u.test(w)
 }
 
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
@@ -4800,7 +4800,7 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
     // claude-factory-mmc9.6: segments() ends a word at `(`, so `A[(r)x]=x cmd` leaves the word `A[` at
     // the anchor. zsh runs that as an assignment with a subscript flag. Deny a name-and-bracket
     // anchor word that is not a whole assignment word.
-    if (/^[\p{L}_][\p{L}\p{N}_]*\[/u.test(words[a]!) && !shellAssignmentWord(words[a]!)) {
+    if (/^[\p{L}\p{Nl}_][\p{L}\p{M}\p{N}_]*\[/u.test(words[a]!) && !shellAssignmentWord(words[a]!)) {
       return DYNAMIC_VERB_REASON
     }
     // claude-factory-38jm: bash expands `{sh,-c}` into two words before it runs the command. A
