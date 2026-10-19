@@ -5083,7 +5083,7 @@ test.each(DENY_WMSR_HEREDOC)('denyReason denies %j (here-document, wmsr)', (cmd,
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBe(reason)
 })
 
-// claude-factory-wmsr.4-.6: a body can feed a later command, so it is read as commands there.
+// claude-factory-wmsr.4-.6: a body can feed a later command; the guard scans it as commands.
 const DENY_WMSR_HEREDOC_FEED = [
   `cat <<EOF |\n# x\n${WM}\nEOF\nsh`,
   `cat <<EOF |&\n# x\n${WM}\nEOF\nsh`,
@@ -5107,7 +5107,7 @@ test.each(DENY_WMSR_HEREDOC_FEED)('denyReason denies %j (body feeds a command, w
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
-// claude-factory-wmsr.8-.9: an earlier line can rebind the text consumer or its stdout.
+// claude-factory-wmsr.8-.9: a rebound consumer or stdout; the guard scans the body as commands.
 const DENY_WMSR_HEREDOC_REBIND = [
   `exec 3> >(sh)\ncat <<EOF >&3\n# x\n${WM}\nEOF`,
   `exec > >(sh)\ncat <<EOF\n# x\n${WM}\nEOF`,
@@ -5126,7 +5126,7 @@ test.each(DENY_WMSR_HEREDOC_REBIND)('denyReason denies %j (rebound consumer, wms
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
-// claude-factory-wmsr.10-.11: a text consumer can hand its stdin to a shell.
+// claude-factory-wmsr.10-.11: a consumer can hand stdin to a shell; the body is scanned as commands.
 const WB10 = `\n# x\n${WM}\nEOF`
 const DENY_WMSR_HEREDOC_STDIN = [
   `perl -e 'system("sh")' <<EOF${WB10}`,
@@ -5185,6 +5185,19 @@ const DENY_WMSR_HEREDOC_OPTS = [
   `bash <<'EOF'\ndon't\nx' ; ${WM}\nEOF`,
 ]
 test.each(DENY_WMSR_HEREDOC_OPTS)('denyReason denies %j (body scanned as commands, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+// claude-factory-wmsr.17-.18: a double-quoted substitution in a body, and a bare brace in `${ }`.
+const DENY_WMSR_HEREDOC_DQSUB = [
+  `bash <<'EOF'\necho "$(${WM})"\nEOF`,
+  `sh <<'EOF'\necho "$(${WM})"\nEOF`,
+  `cat <<'EOF' | sh\necho "$(${WM})"\nEOF`,
+  `bash <<'EOF'\necho "${WB}${WM}${WB}"\nEOF`,
+  `echo $(bash <<'EOF'\necho "$(${WM})"\nEOF\n)`,
+  `echo \${x:-{a} #y}; ${WM}`,
+]
+test.each(DENY_WMSR_HEREDOC_DQSUB)('denyReason denies %j (nested substitution, wmsr)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 

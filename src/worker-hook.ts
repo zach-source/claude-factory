@@ -871,7 +871,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
   // When this guard cannot read one with certainty, it sets info.heredoc and stops reading them.
   const pending: HeredocEntry[] = []
   let heredocOff = false
-  let lineStart = 0
   const heredocUnclear = () => {
     if (info) info.heredoc = true
     heredocOff = true
@@ -1020,9 +1019,8 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     if (';|&\n'.includes(c)) {
       endSeg()
       if (c === '\n' && pending.length > 0) {
-        // claude-factory-wmsr: the bodies of the here-documents on the line that just ended
-        // A body is text only when no pipe, paren, backtick or compound command can feed it to a
-        // later command: the header line must not end in `|` or `&`, and nothing may stay open.
+        // claude-factory-wmsr: the bodies of the here-documents on the line that ended. The
+        // shell reads each body as raw lines, so this guard scans each body as its own command text.
         let pos = i + 1
         const bodies: { body: string; entry: HeredocEntry }[] = []
         let unclear = false
@@ -1040,19 +1038,22 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
           for (const { body, entry } of bodies) {
             read.push(body)
             if (!entry.quoted && (body.includes('$(') || body.includes('`'))) {
-              const subs = heredocSubstitutions(body)
-              if (subs === undefined) heredocUnclear()
-              else read.push(subs)
+              const found = heredocSubstitutions(body)
+              if (found === undefined) heredocUnclear()
+              else read.push(found)
             }
           }
-          for (const text of read) segs.push(...segments(text, info))
+          for (const text of read) {
+            const inner: DqSubstitution[] = []
+            const base = segs.length
+            segs.push(...segments(text, info, inner))
+            for (const s of inner) subs?.push({ body: s.body, at: base + s.at })
+          }
           i = Math.max(pos - 1, i)
           lastSig = '\n'
-          lineStart = segs.length
           continue
         }
       }
-      if (c === '\n') lineStart = segs.length
       continue
     }
     if (/\s/.test(c)) {
@@ -1074,7 +1075,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
       if (entry) pending.push(entry)
       else heredocUnclear()
     }
-    if (c === '{' && prevSig === '$') braceDepth++
+    if (c === '{' && (prevSig === '$' || braceDepth > 0)) braceDepth++
     else if (c === '}' && braceDepth > 0) braceDepth--
     word += c
     hasWord = true
