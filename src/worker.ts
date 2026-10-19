@@ -18,6 +18,7 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { rmSafe } from './home-guard'
 
 const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -98,7 +99,7 @@ export function put(name: string, part: number, parts: number, base64: string) {
   if (have < parts) return
   const all = Array.from({ length: parts }, (_, i) => readFileSync(join(dir, String(i)), 'utf8')).join('')
   writeFileSync(join(own(), name), Buffer.from(all, 'base64'))
-  rmSync(dir, { recursive: true, force: true })
+  rmSafe(dir, { recursive: true, force: true })
 }
 
 /** the real kube-apiserver where envtest's setup put it (KUBEBUILDER_ASSETS) or its default directory */
@@ -136,7 +137,7 @@ export function setupBeads() {
   // vault's: the VM holds only this placeholder (DOLT_REMOTE_USER comes in the rig's env)
   if (remote) process.env.DOLT_REMOTE_PASSWORD ??= 'placeholder'
   if (!existsSync(join(dir, '.beads', 'embeddeddolt'))) {
-    rmSync(dir, { recursive: true, force: true })
+    rmSafe(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
     // a rig's shared Dolt remote (FACTORY_BEADS_REMOTE), else the repo's GitHub origin
     if (remote) {
@@ -942,7 +943,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   if (!remote || existsSync(join(repo(), '.git'))) return
   let err = ''
   for (let i = 0; i < tries; i++) {
-    rmSync(repo(), { recursive: true, force: true })
+    rmSafe(repo(), { recursive: true, force: true })
     const r = sh(['git', 'clone', '--branch', process.env.FACTORY_BRANCH ?? 'main', remote, repo()])
     if (r.ok) {
       excludeScratch(repo())

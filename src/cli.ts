@@ -152,6 +152,7 @@ import {
   timedOutText,
   type SyncEntry,
 } from './sync'
+import { rmSafe } from './home-guard'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -2377,14 +2378,14 @@ function hold(name: string): (() => void) | null {
       if (pid ? isAlive(pid) : Date.now() - statSync(dir).mtimeMs < 120_000) return null
       // ponytail: two takers of a dead holder's lock can race, and a reused pid looks alive; holders
       // rarely die, flock if either bites
-      rmSync(dir, { recursive: true, force: true })
+      rmSafe(dir, { recursive: true, force: true })
       mkdirSync(dir)
     } catch {
       return null // the holder let go meanwhile, or another taker won: the next try gets it
     }
   }
   writeFileSync(join(dir, 'pid'), String(process.pid))
-  return () => rmSync(dir, { recursive: true, force: true })
+  return () => rmSafe(dir, { recursive: true, force: true })
 }
 
 const trackOf = (id: string, saved?: Saved): Track => {
@@ -3203,7 +3204,7 @@ function gcPass(days: number, dryRun: boolean) {
       writeJson(listFile, [...new Set([...old, ...current])])
     }
     appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(r.id)) + '\n')
-    for (const p of r.paths) rmSync(join(runDir(r.id), p), { recursive: true, force: true })
+    for (const p of r.paths) rmSafe(join(runDir(r.id), p), { recursive: true, force: true })
   }
   for (const pane of plan.launch) rmSync(join(launchDir(), `${pane}.sh`), { force: true })
 }
@@ -3540,7 +3541,7 @@ function snapshotWorktree(path: string, runId: string): string {
     git(path, 'update-ref', `refs/factory-gc/${runId}`, commit)
     return commit
   } finally {
-    rmSync(indexDir, { recursive: true, force: true })
+    rmSafe(indexDir, { recursive: true, force: true })
   }
 }
 
@@ -4263,7 +4264,7 @@ async function createRun(
     writeJson(pinned, def)
   } catch (err) {
     herdr('worktree', 'remove', '--workspace', ws, '--force') // fresh, nothing in it yet
-    rmSync(runDir(id), { recursive: true, force: true })
+    rmSafe(runDir(id), { recursive: true, force: true })
     throw new Error(
       `${relative(worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
     )
@@ -7427,7 +7428,7 @@ if (import.meta.main && !outboxCmd)
         else if (existsSync(run.worktree)) git(run.repo, 'worktree', 'remove', run.worktree)
         // its record outlives it: metrics count removed runs too
         appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
-        rmSync(runDir(run.id), { recursive: true })
+        rmSafe(runDir(run.id), { recursive: true })
         console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
         break
       }

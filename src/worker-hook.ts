@@ -65,6 +65,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join as joinPath, posix, resolve as resolvePath } from 'node:path'
+import { homeReason } from './home-guard'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -5992,6 +5993,9 @@ export function denyReason(
   gate?: HookGate,
 ): string | undefined {
   if (command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
+  // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
+  const home = homeReason(command, gate?.readFile)
+  if (home) return home
   return scanReason(command, root, personOnly, gate)
 }
 
