@@ -5428,6 +5428,23 @@ test.each(DENY_WMSR_CAPPED)('denyReason denies %j (capped, wmsr)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
+// A # right after a brace or a redirect char can start a comment in a shell.
+const DENY_WMSR_COMMENT_PREV = [
+  `echo a >#it's\n${WM}`,
+  `echo a <#it's\n${WM}`,
+  `{ true; }#it's\n${WM}`,
+  `true {#it's\n${WM}`,
+]
+test.each(DENY_WMSR_COMMENT_PREV)('denyReason denies %j (comment after brace or redirect, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+test('denyReason denies more than 32 here-documents in one command (wmsr)', () => {
+  const one = 'cat <<EOF\nx\nEOF\n'
+  expect(denyReason(one.repeat(33) + 'echo hi', '/root/repo', undefined, ZS39_GATE)).toBe(HEREDOC_REASON)
+  expect(denyReason(one.repeat(5) + 'echo hi', '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
 // Accepted false denies (claude-factory-3sgg): a hazard char and more text follow, so the guard
 // cannot tell a comment or a body from a command.
 const DENY_WMSR_FALSE_DENY = [
@@ -5444,6 +5461,8 @@ const ALLOW_WMSR_CAPPED = [
   // no hazard char and no command in the body (checked in bash 5.3 and zsh 5.9: no push)
   '(cat <<EOF)\nhi\nEOF',
   'cat <<EOF\n# x $(date\nEOF',
+  // a backslash-newline between the second and third < makes a here-string, not a here-document
+  'cat <<\\\n<x\necho hi',
   `git commit -m "$(cat <<'EOF'\nFix: don't break\nEOF\n)"`,
   `git commit -m "$(cat <<'EOF'\nFix: don't break\nEOF\n)" && git push origin factory/x`,
   `gh pr create --title t --body "$(cat <<'EOF'\nIt's a fix\nEOF\n)"`,
