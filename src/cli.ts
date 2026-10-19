@@ -1185,6 +1185,8 @@ export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/
  * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
  */
 function launchTask({ run, def, node, c, brief: text }: Job) {
+  const unavailable = ax.unavailable()
+  if (unavailable) fail(unavailable)
   const image =
     process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the worker image for AX tasks')
   const rig = rigOf(run.repo)
@@ -1861,6 +1863,14 @@ export function isTrusted(repo: string, configDir = process.env.CLAUDE_CONFIG_DI
   }
 }
 
+function holdUnavailableAx(c: Ctx, send: (e: Input) => void) {
+  const reason = ax.unavailable()
+  if (!reason) return false
+  if (!(c.mail.manager ?? []).some(m => m.from === 'factory' && m.text === reason))
+    send({ type: 'MAIL', from: 'factory', to: 'manager', text: reason })
+  return true
+}
+
 /** level-triggered: make the world match the current state, report what happened as events */
 function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input) => void, now: number) {
   const n = def.nodes[node]!
@@ -1880,6 +1890,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // only a harness herdr knows (claude, codex, pi) shows it an agent; a script or a fake worker never would
   const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   if (!c.pane) {
+    if (runnerOfStation(run, def, node).name === 'ax' && holdUnavailableAx(c, send))
+      return 'AX executor unavailable'
     // a Claude in an untrusted repo sits at its trust dialog until the station times out, every attempt
     if (isClaude && runnerOfStation(run, def, node).local && !isTrusted(run.repo)) {
       const paged = join(HOME, 'untrusted.json')
@@ -1899,6 +1911,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   }
   const runner = runnerOf(c.pane)
   const info = runner.info(run, c.pane)
+  if (runner.name === 'ax' && info?.status === 'pending' && holdUnavailableAx(c, send))
+    return 'AX executor unavailable'
   // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
@@ -7216,9 +7230,15 @@ if (import.meta.main && !outboxCmd)
         console.log(`poked ${node} of ${run.id}`)
         break
       }
-      case 'retry':
-        post(loadRun(args[0]).id, { type: 'RETRY' })
+      case 'retry': {
+        const { run, value, c } = current(args[0])
+        const [node] = where(value)
+        const runner = c.pane ? runnerOf(c.pane) : runnerOfStation(run, await loadFactory(run.factory), node)
+        const unavailable = runner.name === 'ax' ? ax.unavailable() : undefined
+        if (unavailable) fail(unavailable)
+        post(run.id, { type: 'RETRY' })
         break
+      }
       case 'goto': {
         const run = loadRun(args[0])
         const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')
