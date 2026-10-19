@@ -1488,6 +1488,77 @@ test('managerEgress adds an http rule for each in-cluster address that is a URL'
   ])
 })
 
+test('FACTORY_AX_GITHUB_KEYS maps owners to vault keys, and a bad entry is an error', () => {
+  expect(ax.parseGithubKeys(undefined)).toEqual({})
+  expect(ax.parseGithubKeys('other-owner=GITHUB_OO,third=GITHUB_T')).toEqual({
+    'other-owner': 'GITHUB_OO',
+    third: 'GITHUB_T',
+  })
+  expect(ax.githubKeyOf('Other-Owner', 'other-owner=GITHUB_OO')).toBe('GITHUB_OO')
+  expect(ax.githubKeyOf('acme', 'other-owner=GITHUB_OO')).toBeUndefined()
+  for (const bad of ['other-owner', 'bad owner=K', '-x=K', 'a=lower', 'a=K=K', 'a/b=K'])
+    expect(() => ax.parseGithubKeys(bad)).toThrow('FACTORY_AX_GITHUB_KEYS')
+})
+
+test("a worker's GitHub rules use the owner's keys on all paths, and unmapped stay the same", () => {
+  const rules = ax.egressPolicy('factory', [], undefined, undefined, 'GITHUB_OO').rules as {
+    https: {
+      hostnames: string[]
+      pathPrefixes?: string[]
+      effects: { replaceHeaders: { credentialUri: string }[] }
+    }
+  }[]
+  expect(rules[1]!.https.hostnames).toEqual(['api.github.com', 'uploads.github.com'])
+  expect(rules[1]!.https.effects.replaceHeaders[0]!.credentialUri).toBe(
+    'ate-secret://agent-vault/factory/GITHUB_OO',
+  )
+  expect(rules[2]!.https.effects.replaceHeaders[0]!.credentialUri).toBe(
+    'ate-secret://agent-vault/factory/GITHUB_OO_BASIC',
+  )
+  expect(rules.some(r => r.https.pathPrefixes)).toBe(false)
+  expect(ax.egressPolicy('factory', [], undefined, undefined, undefined)).toEqual(ax.egressPolicy('factory'))
+})
+
+test("the manager's policy adds path-prefixed GitHub rules for each mapped owner", () => {
+  const extra = ax.managerEgress({ FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO' })
+  expect(extra.slice(1)).toEqual([
+    {
+      hosts: ['github.com'],
+      key: 'GITHUB_OO_BASIC',
+      header: 'Authorization',
+      prefix: 'Basic ',
+      pathPrefixes: ['/other-owner/'],
+    },
+    {
+      hosts: ['api.github.com'],
+      key: 'GITHUB_OO',
+      header: 'Authorization',
+      prefix: 'Bearer ',
+      pathPrefixes: ['/repos/other-owner/'],
+    },
+  ])
+  const rules = ax.egressPolicy('factory', extra).rules
+  expect(rules[1]).toEqual(ax.egressPolicy('factory').rules[1]) // the default rules stay
+  expect(rules as unknown[]).toContainEqual({
+    https: {
+      hostnames: ['api.github.com'],
+      pathPrefixes: ['/repos/other-owner/'],
+      effects: {
+        replaceHeaders: [
+          {
+            header: 'Authorization',
+            prefix: 'Bearer ',
+            credentialUri: 'ate-secret://agent-vault/factory/GITHUB_OO',
+          },
+        ],
+      },
+    },
+  })
+  expect(ax.managerEnv({ FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO' })).toMatchObject({
+    FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO',
+  })
+})
+
 // a fake curl: records the call and the body, answers by path
 const curl = join(dir, 'curl')
 writeFileSync(

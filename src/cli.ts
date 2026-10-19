@@ -414,6 +414,8 @@ type TaskSide = {
   egress?: ax.Egress[]
   /** the rig origin's host when it is GitLab, for the egress policy's rule */
   gitlabHost?: string
+  /** the vault key of the rig owner's GitHub token (FACTORY_AX_GITHUB_KEYS) */
+  githubKey?: string
   policy: boolean
   put?: string[]
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
@@ -620,7 +622,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
-    if (!ax.createPolicy(task, side.egress, side.gitlabHost))
+    if (!ax.createPolicy(task, side.egress, side.gitlabHost, side.githubKey))
       return { status: 'pending', agent: 'ax', pending: 'egress policy not created' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
@@ -1272,6 +1274,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const name = ax.taskName(run.id, c.seq)
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
+  const githubKey = origin?.forge === 'github' ? ax.githubKeyOf(origin.owner) : undefined
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
     `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
@@ -1336,7 +1339,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     seq: c.seq,
     egress: rig?.egress,
     ...(gitlabHost && { gitlabHost }),
-    policy: ax.createPolicy(name, rig?.egress, gitlabHost),
+    ...(githubKey && { githubKey }),
+    policy: ax.createPolicy(name, rig?.egress, gitlabHost, githubKey),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }

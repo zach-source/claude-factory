@@ -61,7 +61,31 @@ export type Egress = {
   prefix?: string
   port?: number
   http?: boolean
+  /** only requests whose path starts with one of these; the gateway's most specific prefix wins */
+  pathPrefixes?: string[]
 }
+
+const OWNER = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$/i
+/**
+ * `FACTORY_AX_GITHUB_KEYS=<owner>=<KEY>[,<owner>=<KEY>...]`: for a GitHub owner, the vault holds a token `<KEY>`
+ * (Bearer) and a git header `<KEY>_BASIC` (Basic) from that owner's App installation. A bad entry is an error.
+ */
+export function parseGithubKeys(spec = process.env.FACTORY_AX_GITHUB_KEYS): Record<string, string> {
+  const keys: Record<string, string> = {}
+  for (const entry of (spec ?? '').split(',').filter(Boolean)) {
+    const [owner = '', key = '', ...rest] = entry.split('=')
+    if (rest.length || !OWNER.test(owner))
+      throw new Error(`FACTORY_AX_GITHUB_KEYS entry "${entry}" is <owner>=<KEY> (other-owner=GITHUB_OO)`)
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key))
+      throw new Error(`FACTORY_AX_GITHUB_KEYS key "${key}" is SCREAMING_SNAKE_CASE, as agent-vault names it`)
+    keys[owner] = key
+  }
+  return keys
+}
+
+/** the vault key of a GitHub owner's token, when FACTORY_AX_GITHUB_KEYS names one (owner names ignore case) */
+export const githubKeyOf = (owner: string, spec = process.env.FACTORY_AX_GITHUB_KEYS) =>
+  Object.entries(parseGithubKeys(spec)).find(([o]) => o.toLowerCase() === owner.toLowerCase())?.[1]
 
 const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i
 /**
@@ -336,6 +360,7 @@ const gitlabRule = (host: string, uri?: (key: string) => string) => ({
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
  * Basic auth). A rig on GitLab host H gets H the same way, with `GITLAB` (an access token) and `GITLAB_BASIC`
  * (base64 of `<user>:<token>`, git's Basic auth). agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
+ * With `githubKey` (a rig's owner, see parseGithubKeys), the GitHub rules use `<githubKey>` and `<githubKey>_BASIC` on all paths.
  *
  * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
  * before), the gate's own host is added and every REGISTRY_HOSTS host is stripped from the rig's extra rules
@@ -347,30 +372,42 @@ export function egressPolicy(
   extra: Egress[] = [],
   gate = process.env.FACTORY_AX_PKG_GATE,
   gitlabHost?: string,
+  githubKey?: string,
 ) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
-  const rule = (hostnames: string[], header: string, prefix: string, key: string, port?: number) => ({
+  const rule = (
+    hostnames: string[],
+    header: string,
+    prefix: string,
+    key: string,
+    port?: number,
+    pathPrefixes?: string[],
+  ) => ({
     https: {
       hostnames,
       ...(port && { ports: { numbers: [port] } }),
+      ...(pathPrefixes && { pathPrefixes }),
       ...(vault && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
     },
   })
   return {
     rules: [
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
-      rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'GITHUB'),
-      rule(['github.com'], 'Authorization', 'Basic ', 'GITHUB_BASIC'),
+      rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', githubKey ?? 'GITHUB'),
+      rule(['github.com'], 'Authorization', 'Basic ', `${githubKey ?? 'GITHUB'}_BASIC`),
       ...(gitlabHost ? [gitlabRule(gitlabHost, vault ? uri : undefined)] : []),
       // the binary caches the image's Nix installs tools and a repo's devenv from; their packages are signed. And
       // Nix's global flake registry, which the worker user has no cached copy of: turning it off in nix.conf would
       // change every devenv's derivation, and so miss the rig's cached devenv
       { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } },
       ...(gate ? [gateRule(gate)] : []),
-      ...(gate ? stripRegistryHosts(extra) : extra).map(({ hosts, key, header, prefix, port, http }) =>
-        key
-          ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port)
-          : { [http ? 'http' : 'https']: { hostnames: hosts, ...(port && { ports: { numbers: [port] } }) } },
+      ...(gate ? stripRegistryHosts(extra) : extra).map(
+        ({ hosts, key, header, prefix, port, http, pathPrefixes }) =>
+          key
+            ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port, pathPrefixes)
+            : {
+                [http ? 'http' : 'https']: { hostnames: hosts, ...(port && { ports: { numbers: [port] } }) },
+              },
       ),
     ],
   }
@@ -380,18 +417,18 @@ export function egressPolicy(
  * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
  * One try: the tick that launched the task does not wait, the next ones try again.
  */
-export function createPolicy(task: string, extra: Egress[] = [], gitlabHost?: string) {
+export function createPolicy(task: string, extra: Egress[] = [], gitlabHost?: string, githubKey?: string) {
   if (BROKER())
     return broker(
       'PUT',
       `/policy/${ATESPACE()}/${task}`,
-      JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost)),
+      JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost, githubKey)),
     ).ok
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(
     [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
     {
-      stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost))),
+      stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost, githubKey))),
       timeout: 30_000,
     },
   )
@@ -566,6 +603,7 @@ const MANAGER_PASS = [
   'FACTORY_AX_IMAGE',
   'FACTORY_AX_VAULT',
   'FACTORY_AX_ATESPACE',
+  'FACTORY_AX_GITHUB_KEYS',
 ]
 
 /**
@@ -609,6 +647,8 @@ export function routerAddress(url?: string) {
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
  * A value that is not a URL adds no rule. A rig's egress entry joins them when its host is the host of a
  * rig's `beadsRemote.url`: `bd bootstrap` in the task needs the rig's Dolt server. Other rig hosts stay with the workers.
+ * For each owner in FACTORY_AX_GITHUB_KEYS, two rules swap in that owner's keys for the owner's paths only: the default
+ * GitHub rules stay for all other paths.
  */
 export type EgressRig = { egress?: Egress[]; beadsRemote?: { url: string } }
 export function managerEgress(
@@ -623,7 +663,23 @@ export function managerEgress(
       return []
     }
   })
-  return [{ hosts: ['claude.ai'] }, ...rules, ...beadsEgress(rigs)]
+  const owners = Object.entries(parseGithubKeys(env.FACTORY_AX_GITHUB_KEYS)).flatMap(([owner, key]) => [
+    {
+      hosts: ['github.com'],
+      key: `${key}_BASIC`,
+      header: 'Authorization',
+      prefix: 'Basic ',
+      pathPrefixes: [`/${owner}/`],
+    },
+    {
+      hosts: ['api.github.com'],
+      key,
+      header: 'Authorization',
+      prefix: 'Bearer ',
+      pathPrefixes: [`/repos/${owner}/`],
+    },
+  ])
+  return [{ hosts: ['claude.ai'] }, ...rules, ...owners, ...beadsEgress(rigs)]
 }
 
 /** the rigs' egress entries for the hosts of their beads remotes, one per host and port */
