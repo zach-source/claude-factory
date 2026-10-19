@@ -48,6 +48,7 @@ import {
   type Factory,
   type Mail,
 } from './machine'
+import { ghNotes, watchDecide, type Seen, type WatchedPr } from './watch'
 import {
   actorOf,
   backlogOf,
@@ -126,6 +127,7 @@ import {
   forgeNote,
   forgeOf,
   gitlabForge,
+  gitlabWatchNotes,
   mrsIn,
   parseGitlabLabeled,
   parseMergedPrs,
@@ -5481,41 +5483,14 @@ async function labelPass() {
 }
 
 /**
- * tells whether a station parked on pull requests must wake now. Two cases wake it: a pull request
- * changed after the park (a merge or a close also updates it), or no linked pull request stays open, so
- * none will change. In the second case the station wakes on the timer it would have had with no links.
- *
- * `isPreLaunch` marks a station's awaitsPr park: no worker ran before this park (claude-factory-960). Here
- * a pull request already merged or closed, even before the park, wakes the station at once. The station
- * does not wait out `plainMin`, since no worker ever spent that wait.
- */
-export function watchWake(
-  prs: { url: string; state: string; updatedAt: string }[],
-  parkedAt: number,
-  now: number,
-  plainMin: number,
-  isPreLaunch = false,
-) {
-  const changed = prs.find(p => Date.parse(p.updatedAt) > parkedAt)
-  if (changed)
-    return `[factory] ${changed.url} changed since you parked: it is ${changed.state.toLowerCase()}, updated ${changed.updatedAt}. Check where it stands now.`
-  if (
-    prs.length &&
-    !prs.some(p => p.state === 'OPEN') &&
-    (isPreLaunch || now - parkedAt >= plainMin * 60_000)
-  )
-    return `[factory] None of the pull requests you linked is open, so they will not change: check again whether what you wait on is done.`
-}
-
-/** one pull or merge request as `watchPass` last viewed it in this pass, or null when gh/glab could
- * not say (down, or the request gone): the park's own timer still wakes that station */
-type WatchedPr = { url: string; state: string; updatedAt: string }
-
-/**
- * a station parked on pull requests (its blocked report, or an awaitsPr arrival, links them) is woken by
- * mail when one changes after it parked: merged, closed, reviewed, commented on or pushed to. Every run
- * parked on the same pull request shares one gh/glab view this pass (claude-factory-960), so a popular
- * pull request costs one call, not one per parked run.
+ * a station parked on pull requests (its blocked report, or an awaitsPr arrival, links them) is watched
+ * once a minute. It wakes by mail for a real change after it parked: a new head commit, a merge, a close,
+ * or a review or comment by a person. Bot comments, CI statuses and labels change only `updatedAt` and
+ * wake nothing (claude-factory-5wav). Two cases need no worker: a close with no merge routes the station's
+ * `hold` outcome, and a person's change request routes `changes`. Near the park's timer, a park whose pull
+ * requests are all open and unchanged parks again (REPARK). Every run parked on the same pull request
+ * shares one gh/glab view this pass (claude-factory-960), so a popular pull request costs one call.
+ * `watch-seen.json` keeps the head commits at the first view after each park.
  */
 async function watchPass() {
   const release = hold('watch.lock')
@@ -5525,26 +5500,77 @@ async function watchPass() {
   const cache = new Map<string, WatchedPr | null>()
   let errors = 0
   const woke: { run: string; node: string; url: string; state: string; at: number }[] = []
+  const routed: { run: string; node: string; url: string; outcome: string; at: number }[] = []
+  const reparked: { run: string; node: string; wakeAt: number }[] = []
+  const seenFile = join(HOME, 'watch-seen.json')
+  let store: Record<string, Seen> = {}
+  const live = new Set<string>()
   try {
+    try {
+      if (existsSync(seenFile)) store = readJson(seenFile)
+    } catch {
+      // an unreadable baseline file starts empty; the pass writes a new one
+    }
     // cwd only sets where gh/glab spawns from; the first parked run naming a URL this pass picks it,
     // and every later run that names the same URL reuses the one answer, with no second call
     const viewGh = async (url: string, cwd: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
-      const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state,updatedAt'], {
-        cwd,
-        timeout: 60_000,
-      })
-      const v: WatchedPr | null = p.exitCode === 0 ? { url, ...JSON.parse(p.stdout.toString()) } : null
-      if (p.exitCode !== 0) errors++
+      let v: WatchedPr | null = null
+      try {
+        const p = Bun.spawnSync(
+          [
+            'gh',
+            'pr',
+            'view',
+            url,
+            '--json',
+            'state,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments',
+          ],
+          { cwd, timeout: 60_000 },
+        )
+        if (p.exitCode === 0) {
+          const j = JSON.parse(p.stdout.toString())
+          v = {
+            url,
+            state: j.state,
+            updatedAt: j.updatedAt,
+            headRefOid: j.headRefOid,
+            mergedAt: j.mergedAt,
+            closedAt: j.closedAt,
+            notes: ghNotes(j),
+          }
+        }
+      } catch {
+        // a missing binary or unreadable output counts as a failed view
+      }
+      if (!v) errors++
       cache.set(url, v)
       return v
     }
     const viewMr = async (url: string, cwd: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
-      const r = await gitlabForge(spawnGlab).view(url, cwd)
+      let r: Awaited<ReturnType<ReturnType<typeof gitlabForge>['view']>> | null = null
+      let notes: Awaited<ReturnType<typeof gitlabWatchNotes>> = null
+      try {
+        r = await gitlabForge(spawnGlab).view(url, cwd)
+        notes = 'viewed' in r ? await gitlabWatchNotes(spawnGlab, url, cwd) : null
+      } catch {
+        // a missing glab binary counts as a failed view
+      }
       const v: WatchedPr | null =
-        'viewed' in r ? { url, state: r.viewed.state, updatedAt: r.viewed.updatedAt } : null
-      if (!('viewed' in r)) errors++
+        r && 'viewed' in r && notes
+          ? {
+              url,
+              state: r.viewed.state,
+              updatedAt: r.viewed.updatedAt,
+              headRefOid: r.viewed.headSha,
+              mergedAt: r.viewed.mergedAt,
+              closedAt: r.viewed.closedAt,
+              notes,
+              changesRequested: r.viewed.reviewDecision === 'CHANGES_REQUESTED',
+            }
+          : null
+      if (!v) errors++
       cache.set(url, v)
       return v
     }
@@ -5554,31 +5580,96 @@ async function watchPass() {
         const [node, sub] = where(value)
         if (sub !== 'waiting' || !isParked(c, node)) continue
         const parked = c.log.at(-1)!
-        const ghPrs = (await Promise.all(prsIn(parked.summary).map(url => viewGh(url, run.repo)))).filter(
-          v => v !== null,
-        )
-        const mrs = (await Promise.all(mrsIn(parked.summary).map(url => viewMr(url, run.repo)))).filter(
-          v => v !== null,
-        )
-        const prs = [...ghPrs, ...mrs]
+        const urls = prsIn(parked.summary)
+        const mrUrls = mrsIn(parked.summary)
+        if (!urls.length && !mrUrls.length) continue
+        const views = await Promise.all([
+          ...urls.map(url => viewGh(url, run.repo)),
+          ...mrUrls.map(url => viewMr(url, run.repo)),
+        ])
+        const prs = views.filter(v => v !== null)
+        const failed = prs.length < views.length
+        const def = await loadFactory(run.factory)
         // the plain park this report would have had, had it linked nothing
-        const plainMin = parkDelayMin(
-          { ...c, log: c.log.slice(0, -1) },
-          node,
-          (await loadFactory(run.factory)).nodes[node]?.parkMin ?? 60,
-        )
-        const text = watchWake(prs, parked.at, Date.now(), plainMin, isPrWait(parked))
-        if (!text) continue
-        post(id, { type: 'MAIL', from: 'factory', to: node, text })
-        console.log(`${new Date().toISOString()} ${id}: waking ${node}: ${text}`)
-        const trigger = prs.find(p => Date.parse(p.updatedAt) > parked.at) ?? prs[0]
-        if (trigger) woke.push({ run: id, node, url: trigger.url, state: trigger.state, at: Date.now() })
+        const plainMin = parkDelayMin({ ...c, log: c.log.slice(0, -1) }, node, def.nodes[node]?.parkMin ?? 60)
+        const key = `${id}:${parked.at}`
+        live.add(key)
+        const seen = store[key]
+        if (!seen)
+          store[key] = {
+            heads: Object.fromEntries(prs.flatMap(p => (p.headRefOid ? [[p.url, p.headRefOid]] : []))),
+            changes: Object.fromEntries(prs.map(p => [p.url, !!p.changesRequested])),
+          }
+        else
+          // a URL whose first view failed gets its baseline at its first good view
+          for (const p of prs) {
+            if (p.headRefOid && !(p.url in seen.heads)) seen.heads[p.url] = p.headRefOid
+            if (seen.changes && !(p.url in seen.changes)) seen.changes[p.url] = !!p.changesRequested
+          }
+        const now = Date.now()
+        const d = watchDecide({
+          prs,
+          failed,
+          parkedAt: parked.at,
+          now,
+          wakeAt: c.wakeAt,
+          plainMin,
+          isPreLaunch: isPrWait(parked),
+          seen,
+          canHold: !!def.nodes[node]?.next.hold,
+          canChange: !!def.nodes[node]?.next.changes,
+        })
+        if (!d) continue
+        const iso = new Date(now).toISOString()
+        if (d.kind === 'wake') {
+          post(id, { type: 'MAIL', from: 'factory', to: node, text: d.text })
+          console.log(`${iso} ${id}: waking ${node}: ${d.text}`)
+          const trigger = prs.find(p => p.url === d.url) ?? prs[0]
+          if (trigger) woke.push({ run: id, node, url: trigger.url, state: trigger.state, at: now })
+        } else if (d.kind === 'repark') {
+          post(id, { type: 'REPARK', node, wakeAt: d.wakeAt })
+          store[key]!.reparkedUntil = d.wakeAt
+          console.log(`${iso} ${id}: reparking ${node} until ${new Date(d.wakeAt).toISOString()}`)
+          reparked.push({ run: id, node, wakeAt: d.wakeAt })
+        } else {
+          const outcome = d.kind
+          post(id, { type: 'ROUTE', node, outcome, summary: d.text })
+          store[key]!.routed = true
+          console.log(`${iso} ${id}: routing ${node} -> ${outcome}: ${d.text.split('\n')[0]}`)
+          routed.push({ run: id, node, url: d.url, outcome, at: now })
+          if (d.kind === 'changes' && run.bead && hasBeads(run.repo)) {
+            const b = beads(run.repo, actorOf(id))
+            for (const body of d.bodies)
+              try {
+                const first = body.split('\n', 1)[0]!.slice(0, 80)
+                b.create(
+                  `PR change request: ${first}`,
+                  `${d.url}\n\n${body}`,
+                  '--parent',
+                  run.bead,
+                  '-t',
+                  'task',
+                )
+              } catch (err) {
+                console.log(`${iso} ${id}: no task filed for a change request: ${(err as Error).message}`)
+              }
+          }
+        }
       } catch {
         // removed mid-pass
       }
     }
   } finally {
-    writeJson(join(HOME, 'watch.json'), { at: Date.now(), viewed: cache.size, errors, woke })
+    for (const k of Object.keys(store)) if (!live.has(k)) delete store[k]
+    writeJson(seenFile, store)
+    writeJson(join(HOME, 'watch.json'), {
+      at: Date.now(),
+      viewed: cache.size,
+      errors,
+      woke,
+      routed,
+      reparked,
+    })
     release()
   }
 }

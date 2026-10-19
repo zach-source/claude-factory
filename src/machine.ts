@@ -225,6 +225,10 @@ export type Ev = At &
     | { type: 'BLOCKED'; seq: number; reason: string }
     | { type: 'MAIL'; from: string; to: string; text: string }
     | { type: 'READ'; box: string; seen: number }
+    /** the runner's watch took a parked station's outcome from its pull request, with no worker (claude-factory-5wav) */
+    | { type: 'ROUTE'; node: string; outcome: string; summary: string }
+    /** the runner's watch found a parked station's pull requests unchanged: park again until a later wakeAt */
+    | { type: 'REPARK'; node: string; wakeAt: number }
     | { type: 'RETRY' }
     | { type: 'GOTO'; node: string }
     | { type: 'ABORT'; reason?: string }
@@ -445,6 +449,9 @@ export const WATCHED_PARK_MIN = 480
  * this visit ran, so it holds its own attempt-0 slot in the log instead of a real worker's blocked report */
 export const isPrWait = (e?: Entry) => e?.outcome === 'blocked' && e?.attempt === 0
 
+/** an entry no worker made: a pre-launch park, or an outcome the watch routed from a pull request (ROUTE) */
+export const isNoWorker = (e?: Entry) => e?.attempt === 0
+
 /** the log entry an awaitsPr park's arrival gets, instead of a worker ever starting */
 export const prWaitSummary = (urls: string[]) =>
   `no worker yet: waiting for ${urls.join(', ')} to merge, close or change`
@@ -474,6 +481,68 @@ export function compile(def: Factory) {
         log: [...context.log, { node: id, attempt: context.attempt, outcome: 'fail', summary, at: event.at }],
       }
     })
+    // the edge a node's outcome takes: its log entry, mail, repeat check and the arrival's park or delay.
+    // `attempt` is the worker's attempt, or 0 for a route made with no worker (ROUTE).
+    const takeEdge = (
+      context: Ctx,
+      outcome: string,
+      edge: Edge,
+      summary: string,
+      at: number,
+      attempt: number,
+    ) => {
+      const log = [...context.log, { node: id, attempt, outcome, summary, at }]
+      const toId = edgeTo(edge)
+      const to = toId === 'done' ? 'manager' : toId
+      let mail = post(context.mail, to, { from: id, text: summary, at })
+      // a repeated miss on the same acceptance criterion (claude-factory-qgz AC6): mail the
+      // manager from 'factory', never from `id` (cli.ts's isAsking keys on from === node)
+      if (node.repeatMail === outcome) {
+        const prev = prevReport(context.log, id, node.next)
+        // a re-plan between the two reports renumbers acceptance criteria, so a shared
+        // id across it is coincidence, not a real repeat (claude-factory-qgz finding .9).
+        // a manager `goto` to a re-plan target writes no entry itself, only that
+        // target's later report, so check both the `replan` flag and the target's own
+        // node id (claude-factory-qgz, review round 2 finding .11)
+        const targets = replanTargets(def)
+        const replanned = !!prev && context.log.some(e => e.at > prev.at && (e.replan || targets.has(e.node)))
+        if (prev?.outcome === outcome && !replanned) {
+          const shared = failingAcIds(summary).filter(x => failingAcIds(prev.summary).includes(x))
+          if (shared.length)
+            mail = post(mail, 'manager', {
+              from: 'factory',
+              text: repeatMailText(id, outcome, shared, prev.at, at),
+              at,
+            })
+        }
+      }
+      const delay = delayOf(edge)
+      // an awaitsPr station holds its worker back when the report names a pull or merge
+      // request. It parks like a worker's own blocked report. It spends no attempt.
+      const urls = !delay && def.nodes[toId]?.awaitsPr ? [...prsIn(summary), ...mrsIn(summary)] : []
+      if (urls.length) {
+        const reason = prWaitSummary(urls)
+        const wakeAt = at + WATCHED_PARK_MIN * 60_000
+        const text = `${toId} is parked, waiting on: ${reason}. It checks again when one of its pull requests changes, at the latest ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
+        return {
+          log: [...log, { node: toId, attempt: 0, outcome: 'blocked', summary: reason, at }],
+          mail: post(mail, 'manager', { from: toId, text, at }),
+          pane: null,
+          wakeAt,
+        }
+      }
+      // the wait already bounds the rate, so a cadence loop refills its budget instead of being held
+      // the worker has reported: its pane goes now, not when a timed wait ends
+      return delay
+        ? {
+            log,
+            mail,
+            pane: null,
+            wakeAt: at + delay * 60_000,
+            budget: context.seq + (def.maxSteps ?? 20),
+          }
+        : { log, mail, pane: null }
+    }
     return {
       initial: 'waiting',
       entry: assign({ attempt: 1 }),
@@ -496,6 +565,32 @@ export function compile(def: Factory) {
               },
               { actions: assign(withMail) },
             ],
+            // the watch decided a parked station's outcome from its pull request: no worker runs. A fail,
+            // blocked or handoff outcome, or one the station lacks, is refused.
+            ROUTE: Object.entries(node.next)
+              .filter(([outcome]) => !WORKER_OUTCOMES.includes(outcome))
+              .map(([outcome, edge]) => ({
+                guard: ({ context, event }: { context: Ctx; event: Ev }) =>
+                  event.type === 'ROUTE' &&
+                  event.node === id &&
+                  event.outcome === outcome &&
+                  isParked(context, id),
+                target: `#factory.${edgeTo(edge)}`,
+                reenter: true,
+                actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
+                  const { summary, at } = event as Extract<Ev, { type: 'ROUTE' }>
+                  return { wakeAt: 0, ...takeEdge(context, outcome, edge, summary, at, 0) }
+                }),
+              })),
+            // a later wakeAt only: a re-park never makes the station wake sooner
+            REPARK: {
+              guard: ({ context, event }: { context: Ctx; event: Ev }) =>
+                event.type === 'REPARK' &&
+                event.node === id &&
+                isParked(context, id) &&
+                event.wakeAt > context.wakeAt,
+              actions: assign(({ event }) => ({ wakeAt: (event as Extract<Ev, { type: 'REPARK' }>).wakeAt })),
+            },
             TICK: {
               guard: ({ context, event }: { context: Ctx; event: Ev }) => event.at >= context.wakeAt,
               target: 'working',
@@ -629,59 +724,7 @@ export function compile(def: Factory) {
                 reenter: true, // a self-loop (iterate -> iterate) starts a fresh worker
                 actions: assign(({ context, event }: { context: Ctx; event: Ev }) => {
                   const { summary, at } = event as Extract<Ev, { type: 'DONE' }>
-                  const log = [...context.log, { node: id, attempt: context.attempt, outcome, summary, at }]
-                  const toId = edgeTo(edge)
-                  const to = toId === 'done' ? 'manager' : toId
-                  let mail = post(context.mail, to, { from: id, text: summary, at })
-                  // a repeated miss on the same acceptance criterion (claude-factory-qgz AC6): mail the
-                  // manager from 'factory', never from `id` (cli.ts's isAsking keys on from === node)
-                  if (node.repeatMail === outcome) {
-                    const prev = prevReport(context.log, id, node.next)
-                    // a re-plan between the two reports renumbers acceptance criteria, so a shared
-                    // id across it is coincidence, not a real repeat (claude-factory-qgz finding .9).
-                    // a manager `goto` to a re-plan target writes no entry itself, only that
-                    // target's later report, so check both the `replan` flag and the target's own
-                    // node id (claude-factory-qgz, review round 2 finding .11)
-                    const targets = replanTargets(def)
-                    const replanned =
-                      !!prev && context.log.some(e => e.at > prev.at && (e.replan || targets.has(e.node)))
-                    if (prev?.outcome === outcome && !replanned) {
-                      const shared = failingAcIds(summary).filter(x => failingAcIds(prev.summary).includes(x))
-                      if (shared.length)
-                        mail = post(mail, 'manager', {
-                          from: 'factory',
-                          text: repeatMailText(id, outcome, shared, prev.at, at),
-                          at,
-                        })
-                    }
-                  }
-                  const delay = delayOf(edge)
-                  // an awaitsPr station holds its worker back when the report names a pull or merge
-                  // request. It parks like a worker's own blocked report. It spends no attempt.
-                  const urls =
-                    !delay && def.nodes[toId]?.awaitsPr ? [...prsIn(summary), ...mrsIn(summary)] : []
-                  if (urls.length) {
-                    const reason = prWaitSummary(urls)
-                    const wakeAt = at + WATCHED_PARK_MIN * 60_000
-                    const text = `${toId} is parked, waiting on: ${reason}. It checks again when one of its pull requests changes, at the latest ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
-                    return {
-                      log: [...log, { node: toId, attempt: 0, outcome: 'blocked', summary: reason, at }],
-                      mail: post(mail, 'manager', { from: toId, text, at }),
-                      pane: null,
-                      wakeAt,
-                    }
-                  }
-                  // the wait already bounds the rate, so a cadence loop refills its budget instead of being held
-                  // the worker has reported: its pane goes now, not when a timed wait ends
-                  return delay
-                    ? {
-                        log,
-                        mail,
-                        pane: null,
-                        wakeAt: at + delay * 60_000,
-                        budget: context.seq + (def.maxSteps ?? 20),
-                      }
-                    : { log, mail, pane: null }
+                  return takeEdge(context, outcome, edge, summary, at, context.attempt)
                 }),
               })),
             ],
