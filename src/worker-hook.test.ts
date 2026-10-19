@@ -10,6 +10,7 @@ import {
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  COMMENT_CONTINUATION_REASON,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
   FUNCTION_DEF_REASON,
@@ -5406,6 +5407,46 @@ const DENY_DQ_SUBST: [string, string][] = [
 
 test.each(DENY_DQ_SUBST)('denyReason denies %j (double-quoted substitution)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
+})
+
+// claude-factory-mozp: a backslash at the end of a comment line is literal in a shell, so the next
+// line runs as a command. segments() joins the lines, so the guard must deny the comment line.
+const BS = '\\'
+const NL = '\n'
+const DENY_COMMENT_CONTINUATION: [string, string][] = [
+  [`true #${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true #a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true;#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # it's${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}git${BS}${NL} push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}gh pr merge 5`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}rm -rf /`, COMMENT_CONTINUATION_REASON],
+  [`echo $(true # a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo "$(true # a${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`x="$(true # a${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`echo DQ"$(true # a${BS}${NL}git push origin main${NL})"DQ`, COMMENT_CONTINUATION_REASON],
+  // the rows from the bead, with a space before the backslash: the push word is already visible
+  [`true # a ${BS}${NL}git push origin main`, PUSH_REASON],
+  [`echo $(true # a ${BS}${NL}git push origin main${NL})`, PUSH_REASON],
+  [`echo "$(true # a ${BS}${NL}git push origin main${NL})"`, PUSH_REASON],
+  [`x="$(true # a ${BS}${NL}git push origin main${NL})"`, PUSH_REASON],
+]
+
+test.each(DENY_COMMENT_CONTINUATION)('denyReason denies %j (comment line ends in a backslash)', (cmd, reason) => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
+})
+
+const ALLOW_COMMENT_CONTINUATION = [
+  `echo x#y${BS}${NL}git status`,
+  `echo '#'${BS}${NL}git status`,
+  `echo "#"${BS}${NL}git status`,
+  `echo a #b${NL}git status`,
+  `git status # note${BS}`,
+]
+
+test.each(ALLOW_COMMENT_CONTINUATION)('denyReason allows %j (no comment continuation)', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeUndefined()
 })
 
 const ALLOW_DQ_SUBST = [

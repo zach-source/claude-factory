@@ -224,6 +224,14 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-mozp: in a comment the shell keeps a backslash, so a backslash-newline does not
+// join the lines. segments() joins them, so the guard denies the comment line itself.
+export const COMMENT_CONTINUATION_REASON =
+  'The factory denies this command: a # comment line ends with a backslash and more text follows. ' +
+  'In a comment the shell keeps the backslash, so the next line runs as a command that this guard ' +
+  'reads as comment words. Remove the backslash, or run the next command in a separate Bash call. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
 // guard denies every shell function definition.
 export const FUNCTION_DEF_REASON =
