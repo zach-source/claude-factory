@@ -224,6 +224,24 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-wmsr: a quote, a backtick or a backslash in a comment can hide a later command
+// from segments(). It reads the text as words. segments() only flags the hazard. It never changes
+// the words it returns.
+export const COMMENT_REASON =
+  'The factory denies this command: it holds a # whose line has a quote, a backtick or a ' +
+  'backslash, and more text follows. The shell can read that text as a comment, so a quote there ' +
+  'can hide a later command from this guard. Remove the # text, or run the later commands in a ' +
+  'separate Bash call. Do not retry this exact command.'
+
+// claude-factory-wmsr: the same hazard for a here-document body. The shell reads the body as raw
+// lines, but this guard reads it as shell text.
+export const HEREDOC_REASON =
+  'The factory denies this command: it holds a here-document with a quote, a backtick or a ' +
+  'backslash, and more text follows it. A quote in the body can hide a later command from this ' +
+  "guard. Use a quoted delimiter such as <<'EOF' in a commit message form, run the later " +
+  'commands in a separate Bash call, or write the text with the Write tool. Do not retry this ' +
+  'exact command.'
+
 // claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
 // guard denies every shell function definition.
 export const FUNCTION_DEF_REASON =
@@ -730,6 +748,77 @@ function isCatHeredoc(body: string): boolean {
   return false
 }
 
+/** What segments() reports to its caller. A set flag makes denyAt deny the command. */
+type SegInfo = {
+  dollarQuote: boolean
+  state?: ScanState
+  deep?: boolean
+  // claude-factory-wmsr: a # that may start a comment holds a quote in its line
+  comment?: boolean
+  funcDef?: boolean
+  // claude-factory-wmsr: a here-document that segments() cannot read with certainty
+  heredoc?: boolean
+}
+
+const HAZARD_RE = /['"`\\]/
+function lastHazard(cmd: string): number {
+  for (let k = cmd.length - 1; k >= 0; k--) if (HAZARD_RE.test(cmd[k]!)) return k
+  return -1
+}
+type Hz = { clearTo: number; checks: number; last: number }
+function prevRaw(cmd: string, i: number): string {
+  let k = i - 1
+  while (k >= 1 && cmd[k] === '\n' && cmd[k - 1] === '\\') k -= 2
+  return k < 0 ? '\n' : cmd[k]!
+}
+function commentHazard(cmd: string, i: number, hasWord: boolean, info: SegInfo, hz: Hz): void {
+  if (info.comment || i < hz.clearTo) return
+  if (hasWord && !'{}<>'.includes(prevRaw(cmd, i))) return
+  let e = cmd.indexOf('\n', i)
+  if (e < 0) e = cmd.length
+  const line = cmd.slice(i, e)
+  if (HAZARD_RE.test(line) && (line.includes('`') || /\S/.test(cmd.slice(e + 1)))) info.comment = true
+  else hz.clearTo = e
+}
+function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz): void {
+  if (info.heredoc || prevRaw(cmd, i) === '<') return
+  let j = i + 1
+  while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+  if (cmd[j] !== '<') return
+  j++
+  while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+  if (cmd[j] === '<') return
+  const nl = cmd.indexOf('\n', j)
+  if (nl < 0 || !/\S/.test(cmd.slice(nl + 1))) return
+  if (++hz.checks > 32) {
+    info.heredoc = true
+    return
+  }
+  const m = /^(-?)[ \t]*(?:'(\w+)'|"(\w+)"|\\(\w+)|(\w+))(?=[ \t;&|<>()\n])/.exec(cmd.slice(j, nl + 1))
+  if (!m) {
+    info.heredoc = true
+    return
+  }
+  if (hz.last === -2) hz.last = lastHazard(cmd)
+  const hazard = hz.last > nl
+  const dash = m[1] === '-'
+  const quoted = m[5] === undefined
+  const delim = m[2] ?? m[3] ?? m[4] ?? m[5]!
+  let p = nl + 1
+  while (p <= cmd.length) {
+    let e = cmd.indexOf('\n', p)
+    if (e < 0) e = cmd.length
+    const line = cmd.slice(p, e)
+    if (line === delim || (dash && line.replace(/^\t+/, '') === delim)) {
+      const body = cmd.slice(nl + 1, p)
+      if (hazard && (/\S/.test(cmd.slice(e + 1)) || (!quoted && /\$\(|`/.test(body)))) info.heredoc = true
+      return
+    }
+    p = e + 1
+  }
+  info.heredoc = true
+}
+
 /**
  * Splits a command string into segments (shell words).
  * It splits on &&, ||, ;, |, &, a newline, ( ), $( and a backtick.
@@ -755,12 +844,7 @@ function isCatHeredoc(body: string): boolean {
  * The split reading (dash) comes first. The joined reading (bash, zsh) follows it and keeps &> in
  * its own word, so the words after the redirect stay with the command.
  */
-function segments(
-  cmd: string,
-  info?: { dollarQuote: boolean; funcDef?: boolean; state?: ScanState; deep?: boolean },
-  subs?: DqSubstitution[],
-  ampJoin = false,
-): string[][] {
+function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin = false): string[][] {
   const segs: string[][] = []
   let sawAmpGt = false
   let cur: string[] = []
@@ -785,6 +869,7 @@ function segments(
   // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
   // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
   let exemptPrev: boolean = false
+  const hz: Hz = { clearTo: -1, checks: 0, last: -2 }
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
     const wasExempt: boolean = exemptPrev
@@ -846,6 +931,8 @@ function segments(
       hasWord = true
       continue
     }
+    if (info && c === '#') commentHazard(cmd, i, hasWord, info, hz)
+    if (info && c === '<') heredocHazard(cmd, i, info, hz)
     if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) {
       endSeg()
       i++
@@ -6055,6 +6142,37 @@ function denyAt(
   ghConfigMovedBefore: boolean,
   aliasStack: readonly string[] = [],
 ): string | undefined {
+  // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
+  // a real command wins over them.
+  const late: { reason?: string } = {}
+  return (
+    denyAtScan(
+      command,
+      root,
+      personOnly,
+      gate,
+      depth,
+      state,
+      movedBefore,
+      ghConfigMovedBefore,
+      late,
+      aliasStack,
+    ) ?? late.reason
+  )
+}
+
+function denyAtScan(
+  command: string,
+  root: string | undefined,
+  personOnly: string[] | undefined,
+  gate: HookGate,
+  depth: number,
+  state: ScanState,
+  movedBefore: boolean,
+  ghConfigMovedBefore: boolean,
+  late: { reason?: string },
+  aliasStack: readonly string[],
+): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
   // claude-factory-1zr5: a table the hook cannot read denies every command (fail closed).
@@ -6080,7 +6198,7 @@ function denyAt(
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
   const subs: DqSubstitution[] = []
-  const quoteInfo: { dollarQuote: boolean; funcDef: boolean; state: ScanState; deep?: boolean } = {
+  const quoteInfo: SegInfo = {
     dollarQuote: false,
     funcDef: false,
     state,
@@ -6088,6 +6206,8 @@ function denyAt(
   const segs = segments(command, quoteInfo, subs)
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
+  if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
@@ -6106,7 +6226,9 @@ function denyAt(
         movedSoFar,
         ghConfigMovedSoFar,
       )
-      if (r) return r
+      // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
+      if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
+      else if (r) return r
     }
     return undefined
   }

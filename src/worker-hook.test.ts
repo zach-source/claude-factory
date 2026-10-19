@@ -8,6 +8,7 @@ import {
   baseWordForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
+  COMMENT_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
   DOLLAR_QUOTE_REASON,
@@ -18,6 +19,7 @@ import {
   GH_BUILTIN_VERBS,
   GIT_BUILTIN_VERBS,
   type HookGate,
+  HEREDOC_REASON,
   LIVE_REASON,
   LONG_COMMAND_REASON,
   MERGE_REASON,
@@ -5461,6 +5463,339 @@ test.each(ALLOW_DQ_SUBST)('denyReason allows %j (double-quoted text)', cmd => {
 
 test('denyReason keeps a gh api graphql file query in double quotes denied', () => {
   expect(denyReason('gh api graphql -f query="$(cat f)"', '/root/repo', ['acme'], DQ_GATE)).toBe(MERGE_REASON)
+})
+
+// claude-factory-wmsr: a word-start comment and a here-document body are text. A quote char in them
+// must not hide the next command from segments().
+const WM = 'git push origin main'
+const DENY_WMSR_COMMENT: [string, string][] = [
+  [`true # don't\n${WM}`, COMMENT_REASON],
+  [`true;# it's\n${WM}`, COMMENT_REASON],
+  [`true |# it's\n${WM}`, COMMENT_REASON],
+  [`true &# it's\n${WM}`, COMMENT_REASON],
+  [`true &&# it's\n${WM}`, COMMENT_REASON],
+  [`# don't\n${WM}`, COMMENT_REASON],
+  [`true # a\\\n${WM}`, COMMENT_REASON],
+  [`echo $(true # a\\\n${WM}\n)`, COMMENT_REASON],
+  [`echo $(true)#' \n${WM}\n'`, COMMENT_REASON],
+]
+test.each(DENY_WMSR_COMMENT)('denyReason denies %j (comment text, wmsr)', (cmd, reason) => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBe(reason)
+})
+
+const DENY_WMSR_COMMENT_ANY = [
+  `echo $(true)#x ; 'g'it push origin main`,
+  `x=ab; echo $(( #x )); ${WM}`,
+  `echo \${x:- #}; ${WM}`,
+]
+test.each(DENY_WMSR_COMMENT_ANY)('denyReason denies %j (hash that is no comment, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_COMMENT = [
+  'echo a#b',
+  'echo $((1+2))',
+  "gh pr view 1 # it's ok",
+  "git push origin factory/x # don't",
+]
+test.each(ALLOW_WMSR_COMMENT)('denyReason allows %j (comment text, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
+const WB = '`'
+const DENY_WMSR_HEREDOC: [string, string][] = [
+  [`cat <<EOF\ndon't\nEOF\n${WM}`, HEREDOC_REASON],
+  [`echo $(cat <<EOF\ndon't\nEOF\n${WM}\n)`, HEREDOC_REASON],
+  [`cat <<'EOF'\ndon't\nEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<"EOF"\ndon't\nEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<\\EOF\ndon't\nEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<-EOF\n\tdon't\n\tEOF\n${WM}`, HEREDOC_REASON],
+  [`cat <<A <<B\ndon't\nA\nit's\nB\n${WM}`, PUSH_REASON],
+  [`cat <<EOF # it's\nx\nEOF\n${WM}`, COMMENT_REASON],
+  [`cat <<EOF\n$(${WM})\nEOF`, DYNAMIC_VERB_REASON],
+  [`cat <<EOF\n${WB}${WM}${WB}\nEOF`, DYNAMIC_VERB_REASON],
+  ['cat <<EOF\n$(date)\nEOF', DYNAMIC_VERB_REASON],
+  [`cat <<EOF\ndon't $(${WM})\nEOF`, HEREDOC_REASON],
+  [`cat <<EOF\nx`, HEREDOC_REASON],
+  [`cat <<EOF\nx\nEOF \n${WM}`, PUSH_REASON],
+  [`cat <<EOF\nx\nEOF)\n${WM}`, PUSH_REASON],
+  [`cat <<EOF\nx\nEOF\r\n${WM}`, PUSH_REASON],
+  [`cat <<$X\nx\n$X\n${WM}`, PUSH_REASON],
+  [`cat <<\nx\n\n${WM}`, PUSH_REASON],
+  [`cat <<\n\n${WM}`, PUSH_REASON],
+  [`cat <<EOF\nx\n`, HEREDOC_REASON],
+  [`cat <<EOF\nEOFx\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<EOF\nx\n EOF\nEOF\n${WM}`, PUSH_REASON],
+  [`cat <<EOF "a\nb"\nx\nEOF\n${WM}`, PUSH_REASON],
+  [`echo $((1<<2))\n${WM}\n2`, PUSH_REASON],
+  [`echo \${x:-<<2}\n${WM}\n2`, PUSH_REASON],
+]
+test.each(DENY_WMSR_HEREDOC)('denyReason denies %j (here-document, wmsr)', (cmd, reason) => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBe(reason)
+})
+
+// claude-factory-wmsr.4-.6: a body can feed a later command; the guard scans it as commands.
+const DENY_WMSR_HEREDOC_FEED = [
+  `cat <<EOF |\n# x\n${WM}\nEOF\nsh`,
+  `cat <<EOF |&\n# x\n${WM}\nEOF\nsh`,
+  `cat <<EOF | # c\n# x\n${WM}\nEOF\nsh`,
+  `cat <<EOF \\\n|\n# x\n${WM}\nEOF\nsh`,
+  `cat <<'EOF' |\n# x\n${WM}\nEOF\nsh`,
+  `(cat <<EOF\n# x\n${WM}\nEOF\n) | sh`,
+  `bash < <(\ncat <<EOF\n# x\n${WM}\nEOF\n)`,
+  `{ cat <<EOF\n# x\n${WM}\nEOF\n} | sh`,
+  `{\ncat <<EOF\n# x\n${WM}\nEOF\n} | sh`,
+  `echo ${WB}cat <<EOF\n# x\n${WM}\nEOF\n${WB} | sh`,
+  `if true; then\ncat <<EOF\n# x\n${WM}\nEOF\nfi | sh`,
+  `while read l; do echo $l; done <<EOF\n# x\n${WM}\nEOF`,
+  `psql <<EOF\n# x\n\\! ${WM}\nEOF`,
+  `sqlite3 <<EOF\n# x\n.shell ${WM}\nEOF`,
+  `cat <<EOF\n# x $(case x in x) ${WM};; esac)\nEOF`,
+  `cat <<EOF\n# x ${WB}date\nEOF`,
+]
+test.each(DENY_WMSR_HEREDOC_FEED)('denyReason denies %j (body feeds a command, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+// claude-factory-wmsr.8-.9: a rebound consumer or stdout; the guard scans the body as commands.
+const DENY_WMSR_HEREDOC_REBIND = [
+  `exec 3> >(sh)\ncat <<EOF >&3\n# x\n${WM}\nEOF`,
+  `exec > >(sh)\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `exec 1> >(sh)\ngit commit -F - <<EOF\n# x\n${WM}\nEOF`,
+  `mkfifo f; sh <f &\ncat <<EOF >f\n# x\n${WM}\nEOF`,
+  `cat() ( sh )\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `function cat { sh; }\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `eval 'cat() ( sh )'\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `shopt -s expand_aliases; alias cat=sh\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `hash -p /bin/sh cat\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `command hash -p /bin/sh cat\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `builtin hash -p /bin/sh cat\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `hash cat=/bin/sh\ncat <<EOF\n# x\n${WM}\nEOF`,
+]
+test.each(DENY_WMSR_HEREDOC_REBIND)('denyReason denies %j (rebound consumer, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+// claude-factory-wmsr.10-.11: a consumer can hand stdin to a shell; the body is scanned as commands.
+const WB10 = `\n# x\n${WM}\nEOF`
+const DENY_WMSR_HEREDOC_STDIN = [
+  `perl -e 'system("sh")' <<EOF${WB10}`,
+  `perl -pe 'BEGIN{open STDOUT,"|sh"}' <<EOF${WB10}`,
+  `python3 -c 'import os; os.system("sh")' <<EOF${WB10}`,
+  `python3 x.py <<EOF${WB10}`,
+  `node -e 'require("child_process").execSync("sh",{stdio:"inherit"})' <<EOF${WB10}`,
+  `bun -e 'x' <<EOF${WB10}`,
+  `ruby -e 'system("sh")' <<EOF${WB10}`,
+  `GIT_EDITOR='sh -s' git commit --allow-empty -e <<EOF${WB10}`,
+  `git -c core.editor='sh -s' commit -e <<EOF${WB10}`,
+  `git config core.editor 'sh -s'\ngit commit --allow-empty <<EOF${WB10}`,
+  `git -c sequence.editor='sh -s' rebase -i <<EOF${WB10}`,
+  `GIT_SEQUENCE_EDITOR='sh -s' git commit -F - <<EOF${WB10}`,
+  `EDITOR='sh -s' git commit -F - <<EOF${WB10}`,
+  `git commit --edit -F - <<EOF${WB10}`,
+  `git -c core.editor='sh -s' commit -F - <<EOF${WB10}`,
+  `gh pr create --editor --body-file - <<EOF${WB10}`,
+  `gh issue create -e -F - <<EOF${WB10}`,
+  `git commit -e <<EOF${WB10}`,
+  `git commit --allow-empty <<EOF${WB10}`,
+  `GH_EDITOR='sh -s' gh pr create <<EOF${WB10}`,
+  `gh config set editor 'sh -s'\ngh pr create <<EOF${WB10}`,
+  `gh alias set x '!sh'\ngh x <<EOF${WB10}`,
+  `X=1 cat <<EOF${WB10}`,
+]
+test.each(DENY_WMSR_HEREDOC_STDIN)('denyReason denies %j (stdin reaches a shell, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_HEREDOC_STDIN = [
+  "python3 <<'EOF'\nprint(\"don't\")\nEOF",
+  "python3 - <<'EOF'\nprint(\"don't\")\nEOF",
+  "git commit -F - <<'EOF'\ndon't\nEOF",
+  "git commit --file=- <<'EOF'\ndon't\nEOF",
+  "git commit --file - <<'EOF'\ndon't\nEOF",
+  "gh pr create --body-file - <<'EOF'\ndon't\nEOF",
+]
+test.each(ALLOW_WMSR_HEREDOC_STDIN)('denyReason allows %j (text stdin, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
+// claude-factory-wmsr.14: a body is scanned as its own command text, so no reader can hide it.
+const DENY_WMSR_HEREDOC_OPTS = [
+  `sort -S 1k --compress-program=sh <<EOF${WB10}`,
+  `sort -S 1k --compress-prog sh <<EOF${WB10}`,
+  `/usr/bin/sort -S 1k --compress-program=sh <<EOF${WB10}`,
+  `bd edit x <<EOF\n:!sh${WB10}`,
+  `gh pr create -fe <<EOF${WB10}`,
+  `gh pr create -de <<EOF${WB10}`,
+  `git commit -p -F - <<EOF${WB10}`,
+  `git commit --patch -F - <<EOF${WB10}`,
+  `git commit -i -F - <<EOF${WB10}`,
+  `git commit --interactive -F - <<EOF${WB10}`,
+  `bash <<'EOF'\ndon't\nEOF\n${WM}`,
+  `bash <<'EOF'\ndon't\nx' ; ${WM}\nEOF`,
+]
+test.each(DENY_WMSR_HEREDOC_OPTS)('denyReason denies %j (body scanned as commands, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+// claude-factory-wmsr.17-.18: a double-quoted substitution in a body, and a bare brace in `${ }`.
+const DENY_WMSR_HEREDOC_DQSUB = [
+  `bash <<'EOF'\necho "$(${WM})"\nEOF`,
+  `sh <<'EOF'\necho "$(${WM})"\nEOF`,
+  `cat <<'EOF' | sh\necho "$(${WM})"\nEOF`,
+  `bash <<'EOF'\necho "${WB}${WM}${WB}"\nEOF`,
+  `echo $(bash <<'EOF'\necho "$(${WM})"\nEOF\n)`,
+  `echo \${x:-{a} #y}; ${WM}`,
+]
+test.each(DENY_WMSR_HEREDOC_DQSUB)('denyReason denies %j (nested substitution, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+// claude-factory-wmsr.20-.21: a header closed on its own line, and a quote or comment in a substitution.
+const DENY_WMSR_HEREDOC_CLOSE = [
+  `x=$(cat <<EOF)\necho 'x\nEOF\n'; ${WM}`,
+  `x=$(cat <<'EOF')\necho 'x\nEOF\n'; ${WM}`,
+  `echo $(cat <<EOF)\necho 'x\nEOF\n'; ${WM}`,
+  `x=$(cat <<EOF); true\necho 'x\nEOF\n'; ${WM}`,
+  `x=\`cat <<EOF\`\necho 'x\nEOF\n'; ${WM}`,
+  `cat <<EOF\ndon't $(echo ")"; ${WM})\nEOF`,
+  `cat <<EOF\ndon't $(echo ')'; ${WM})\nEOF`,
+  `cat <<EOF\ndon't $(echo # )\n${WM}\n)\nEOF`,
+]
+test.each(DENY_WMSR_HEREDOC_CLOSE)(
+  'denyReason denies %j (header close or quoted substitution, wmsr)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+  },
+)
+
+// claude-factory-wmsr.23-.26: a comment skip past a backtick, $[ ] arithmetic, a brace in a nested
+// substitution, and a backslash-newline between the two < of a here-document.
+const DENY_WMSR_ROUND7 = [
+  `echo \`true # x\`; ${WM}`,
+  `echo \`true # \`; ${WM}`,
+  `x=\`echo a # b\`; ${WM}`,
+  `echo $(echo \`true # x\`); ${WM}`,
+  `x=1; echo $[ #x ] ' \n'; ${WM}`,
+  `echo $[ 1<<2 ]\necho 'a\n2\n' ; ${WM}`,
+  `echo \${x:-\`echo } \` #y}; ${WM}`,
+  `echo \${x:-$(echo } ) #y}; ${WM}`,
+  `cat <\\\n<EOF\ndon't\nEOF\n${WM}`,
+  `cat <\\\n<'EOF'\ndon't\nEOF\n${WM}`,
+  `cat <\\\n<-EOF\ndon't\nEOF\n${WM}`,
+]
+test.each(DENY_WMSR_ROUND7)('denyReason denies %j (round 7, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+test.each(['echo `echo a` # x', "cat <<'EOF'\ndon't\nEOF"])('denyReason allows %j (round 7, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
+const ALLOW_WMSR_HEREDOC_OPTS = [
+  "sort <<'EOF'\ndon't\nEOF",
+  "gh pr create -f -d --body-file - <<'EOF'\nit's\nEOF",
+  "git commit --file - --no-edit <<'EOF'\ndon't\nEOF",
+]
+test.each(ALLOW_WMSR_HEREDOC_OPTS)('denyReason allows %j (isolated body, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
+test('denyReason denies a shift row with a later push (wmsr)', () => {
+  expect(denyReason(`echo $((1<<2))\n${WM}\n2`, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_HEREDOC = [
+  "cat <<'EOF'\ndon't\nEOF",
+  `git commit -F - <<'EOF'\nFix: don't git push origin main\nEOF`,
+  `cat <<<"it's"`,
+  "cat <<'EOF' | grep x\ndon't\nEOF",
+  "cd x && git commit -F - <<'EOF'\ndon't\nEOF",
+  "cat > notes.md <<'EOF'\ndon't\nEOF",
+]
+test.each(ALLOW_WMSR_HEREDOC)('denyReason allows %j (here-document, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
+// origin/main (l43b) denies these three too, with SHELL_STDIN_REASON. The hazard flags add no allow.
+test.each([
+  "cat <<EOF\nit's $HOME\nEOF",
+  "cat <<'EOF'\ndon't $(date)\nEOF",
+  "bash <<'EOF'\necho \"don't\"\nEOF",
+])('denyReason denies %j like origin/main (wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+// claude-factory-wmsr (capped): rows where a shell runs the push and the round-8 reading allowed it.
+const DENY_WMSR_CAPPED = [
+  "x=1; echo $[ $(echo ]) #x ] '\n'; git push origin main",
+  "x=1; echo $[ `echo ]` #x ] '\n'; git push origin main",
+  "x=1; echo $[ ${x:-]} #x ] '\n'; git push origin main",
+  "echo $[ $(echo ]) 1<<2 ]\necho 'a\n2\n'; git push origin main",
+  "cat <<EOF ${x:-\nEOF\n}\n'\nEOF\ngit push origin main",
+  "cat <<EOF ${x:-\nEOF\n}\ndon't\nEOF\ngit push origin main",
+  "cat <<EOF $(\nEOF\n)\ndon't\nEOF\ngit push origin main",
+  "cat <<EOF $(echo\nEOF\n)\ndon't\nEOF\ngit push origin main",
+  "cat <<EOF $[\nEOF\n]\ndon't\nEOF\ngit push origin main",
+  "cat <<EOF $((\nEOF\n))\ndon't\nEOF\ngit push origin main",
+  "x=1; echo $[ $(true ]) #x ] '\n'; git push origin main",
+  "x=1; echo $[ `true ]` #x ] '\n'; git push origin main",
+  "x=1; echo $[ ${y+]} #x ] '\n'; git push origin main",
+  "echo $[ $(true ]) 1<<2 ]\necho 'a\n2\n'; git push origin main",
+  "echo $[ `true ]` 1<<2 ]\necho 'a\n2\n'; git push origin main",
+  "echo $[ ${y+]} 1<<2 ]\necho 'a\n2\n'; git push origin main",
+]
+test.each(DENY_WMSR_CAPPED)('denyReason denies %j (capped, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+// A # right after a brace or a redirect char can start a comment in a shell.
+const DENY_WMSR_COMMENT_PREV = [
+  `echo a >#it's\n${WM}`,
+  `echo a <#it's\n${WM}`,
+  `{ true; }#it's\n${WM}`,
+  `true {#it's\n${WM}`,
+]
+test.each(DENY_WMSR_COMMENT_PREV)('denyReason denies %j (comment after brace or redirect, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+test('denyReason denies more than 32 here-documents in one command (wmsr)', () => {
+  const one = 'cat <<EOF\nx\nEOF\n'
+  expect(denyReason(one.repeat(33) + 'echo hi', '/root/repo', undefined, ZS39_GATE)).toBe(HEREDOC_REASON)
+  expect(denyReason(one.repeat(5) + 'echo hi', '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
+// Accepted false denies (claude-factory-3sgg): a hazard char and more text follow, so the guard
+// cannot tell a comment or a body from a command.
+const DENY_WMSR_FALSE_DENY = [
+  "true # don't\necho hi",
+  "cat <<EOF\nit's $(date +%Y)\nEOF",
+  "cat <<'EOF' > f\nit's\nEOF\ngit add f",
+  "cat <<EOF\n# it's\nEOF\necho hi",
+]
+test.each(DENY_WMSR_FALSE_DENY)('denyReason denies %j (accepted false deny, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_CAPPED = [
+  // no hazard char and no command in the body (checked in bash 5.3 and zsh 5.9: no push)
+  '(cat <<EOF)\nhi\nEOF',
+  'cat <<EOF\n# x $(date\nEOF',
+  // a backslash-newline between the second and third < makes a here-string, not a here-document
+  'cat <<\\\n<x\necho hi',
+  `git commit -m "$(cat <<'EOF'\nFix: don't break\nEOF\n)"`,
+  `git commit -m "$(cat <<'EOF'\nFix: don't break\nEOF\n)" && git push origin factory/x`,
+  `gh pr create --title t --body "$(cat <<'EOF'\nIt's a fix\nEOF\n)"`,
+  `git commit -F - <<'EOF'\nFix: don't break\nEOF`,
+  "cat > notes.md <<'EOF'\n# Title\ndon't\nEOF",
+  "cat <<'EOF' | grep x\ndon't\nEOF",
+  "true # don't push",
+  "git commit -m x # it's",
+  "echo $[ 1 ] # it's fine",
+]
+test.each(ALLOW_WMSR_CAPPED)('denyReason allows %j (capped, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
 })
 
 test('denyReason denies a deep double-quoted substitution nest', () => {
