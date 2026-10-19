@@ -420,6 +420,8 @@ interface ScanState {
   gitWord: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
   substFallbacks: number
+  /** claude-factory-4iod.11: dequoted words that began with an unquoted `{`. Only these can open a zsh brace group. */
+  braceWords: Set<string>
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
   // reads. Below zero, the scan stops and denies (fail closed).
   work: number
@@ -862,8 +864,15 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
   const parens: boolean[] = []
   // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
   let inBacktick = false
+  // claude-factory-4iod.11: true when the word began with an unquoted `{`. The set is side data
+  // for the brace reading in denyAt. The segments() output does not change.
+  let wordBrace = false
   const endWord = () => {
-    if (hasWord) cur.push(word)
+    if (hasWord) {
+      cur.push(word)
+      if (wordBrace) info?.state?.braceWords.add(word)
+    }
+    wordBrace = false
     word = ''
     hasWord = false
   }
@@ -1025,6 +1034,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
+    if (c === '{' && !hasWord) wordBrace = true
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
@@ -1428,26 +1438,61 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
 // claude-factory-4iod: zsh opens a brace group at a `{` word inside a segment (`repeat 1 {`,
 // `[[ 1 ]] {`, `} always {`). Index 0 is the job of RESERVED_LEADING_WORDS. Each result is the
 // words of one brace body. zsh also opens the group when the command word touches the brace
-// (`repeat 1 {rm -rf / }`), so a word that starts with `{` (not `{}`) opens one too, and its
-// text after the braces is the first body word. A word with a space is not an opener. A word with
-// a `}` is not an opener unless it holds a `$` or a backtick: `{${X:-rm} -rf / }` has a `}` inside
-// a parameter expansion.
+// (`repeat 1 {rm -rf / }`, `repeat 1 {sh}`, `repeat 1 {rm{,} -rf / }`), so an unquoted word that
+// starts with `{` opens one too, and its text after the braces is the first body word.
+// claude-factory-4iod.11: the only no-space brace words that do not open a group are the words
+// made wholly of brace lists (`{a,b}`, `{1..3}`, `{acme,widget}/{src,test}`): brace expansion.
+// claude-factory-4iod.12: a word that began inside quotes (`'{print$1}'`) is text and never
+// opens a group. segments() records the unquoted ones in ScanState.braceWords.
 // This reading only denies: a false match gives a harmless body.
 const MAX_BRACE_BODIES = 16
-// A glued opener has no space, and no closing brace unless it holds `$` or a backtick.
-// `{a,b}` is brace expansion
-// and a quoted argument such as '{ rm }' is text: neither opens a group.
-function braceOpensGroup(w: string): boolean {
-  if (w === '{') return true
-  if (!w.startsWith('{') || /\s/.test(w)) return false
-  return !w.includes('}') || /[$`]/.test(w)
+// True when every top-level brace group of `w` closes and holds a top-level comma or `..`.
+function isBraceList(w: string): boolean {
+  let i = 0
+  while (i < w.length) {
+    if (w[i] !== '{') {
+      i++
+      continue
+    }
+    let depth = 0
+    let list = false
+    let j = i
+    for (; j < w.length; j++) {
+      const c = w[j]
+      if (c === '{') depth++
+      else if (c === '}') {
+        depth--
+        if (depth === 0) break
+      } else if (depth === 1 && (c === ',' || (c === '.' && w[j + 1] === '.'))) list = true
+    }
+    if (depth !== 0 || !list) return false
+    i = j + 1
+  }
+  return true
 }
-function braceBodies(words: string[]): string[][] {
+function braceOpensGroup(w: string, braceWords: Set<string>): boolean {
+  if (w === '{') return true
+  if (w === '{}' || !w.startsWith('{') || /\s/.test(w)) return false
+  return braceWords.has(w) && !isBraceList(w)
+}
+// The first word of a glued body: the text after the leading braces, less the closing braces
+// that match no opening brace in it (`{sh}` gives `sh`).
+function braceHead(w: string): string {
+  let head = w.replace(/^\{+/, '')
+  let depth = 0
+  for (const c of head) depth += c === '{' ? 1 : c === '}' ? -1 : 0
+  while (depth < 0 && head.endsWith('}')) {
+    head = head.slice(0, -1)
+    depth++
+  }
+  return head
+}
+function braceBodies(words: string[], braceWords: Set<string>): string[][] {
   const out: string[][] = []
   for (let k = 1; k < words.length; k++) {
     const w = words[k]!
-    if (!braceOpensGroup(w)) continue
-    const head = w.replace(/^\{+/, '')
+    if (!braceOpensGroup(w, braceWords)) continue
+    const head = braceHead(w)
     out.push(head ? [head, ...words.slice(k + 1)] : words.slice(k + 1))
   }
   return out
@@ -2040,7 +2085,7 @@ function isShellWord(w: string): boolean {
 function shellStdinReason(words: string[], state: ScanState): string | undefined {
   const own = shellStdinReason1(words, state)
   if (own) return own
-  for (const body of braceBodies(words).slice(0, MAX_BRACE_BODIES)) {
+  for (const body of braceBodies(words, state.braceWords).slice(0, MAX_BRACE_BODIES)) {
     const r = shellStdinReason1(body, state)
     if (r) return r
   }
@@ -5358,10 +5403,10 @@ const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
  * Neither `cp` nor the script word of `"$PY" -c` is the second dynamic word in a pair that
  * starts at the command slot.
  */
-function anyDynamicCommandReason(words: string[]): string | undefined {
+function anyDynamicCommandReason(words: string[], braceWords: Set<string>): string | undefined {
   const own = anyDynamicCommandReason1(words)
   if (own) return own
-  for (const body of braceBodies(words).slice(0, MAX_BRACE_BODIES)) {
+  for (const body of braceBodies(words, braceWords).slice(0, MAX_BRACE_BODIES)) {
     const r = anyDynamicCommandReason1(body)
     if (r) return r
   }
@@ -5493,10 +5538,14 @@ function anyToolLiveApplyDenied(tail: string[], personOnly: string[]): boolean {
  * (claude-factory-p43v.17). `DYNAMIC_VERB_REASON` names the real cause instead. An unreadable
  * word sits at the command slot.
  */
-function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): string | undefined {
+function anyDynamicLiveApplyReason(
+  words: string[],
+  personOnly: string[],
+  braceWords: Set<string>,
+): string | undefined {
   const own = anyDynamicLiveApplyReason1(words, personOnly)
   if (own) return own
-  for (const body of braceBodies(words).slice(0, MAX_BRACE_BODIES)) {
+  for (const body of braceBodies(words, braceWords).slice(0, MAX_BRACE_BODIES)) {
     const r = anyDynamicLiveApplyReason1(body, personOnly)
     if (r) return r
   }
@@ -6106,6 +6155,7 @@ export function scanReason(
     globalGitConfig: false,
     gitWord: false,
     substFallbacks: 0,
+    braceWords: new Set(),
     work: budget,
   }
   const g = memoGate(gate ?? {})
@@ -6355,7 +6405,7 @@ function denyAtScan(
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
     // claude-factory-4iod: deny-only second reading of each inner brace body. It never feeds a
     // relaxing input such as operandSkip or configUse.
-    const bodies = braceBodies(words)
+    const bodies = braceBodies(words, state.braceWords)
     if (bodies.length > MAX_BRACE_BODIES) return SCAN_BUDGET_REASON
     for (const body of bodies) {
       const inner = rmFindReading(realCommand(body), root)
@@ -6397,7 +6447,7 @@ function denyAtScan(
     // DYNAMIC_VERB_REASON, not LIVE_REASON.
     if (personOnly?.length) {
       if (anyLiveApplyWord(words, personOnly)) return LIVE_REASON
-      const dynamicLiveApply = anyDynamicLiveApplyReason(words, personOnly)
+      const dynamicLiveApply = anyDynamicLiveApplyReason(words, personOnly, state.braceWords)
       if (dynamicLiveApply) return dynamicLiveApply
     }
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
@@ -6412,7 +6462,7 @@ function denyAtScan(
     // claude-factory-p43v.5: a dynamic word, with no git or gh word of its own before it, can
     // still hide a verb or subcommand that anyGitReason and anyGhReason never see, because no
     // literal git or gh word ever starts this segment.
-    const dynamicCmdFound = anyDynamicCommandReason(words)
+    const dynamicCmdFound = anyDynamicCommandReason(words, state.braceWords)
     if (dynamicCmdFound) return dynamicCmdFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
@@ -6431,9 +6481,9 @@ function denyAtScan(
     // claude-factory-4iod.5: a glued first word (`{git push`) hides from every word scan, so
     // the first glued body runs the full guard. Its own later glued bodies are suffixes of it:
     // the recursion reads them, so one call per level keeps the cost linear.
-    const glued = words.findIndex((w, k) => k >= 1 && w !== '{' && braceOpensGroup(w))
+    const glued = words.findIndex((w, k) => k >= 1 && w !== '{' && braceOpensGroup(w, state.braceWords))
     if (glued > 0) {
-      const head = words[glued]!.replace(/^\{+/, '')
+      const head = braceHead(words[glued]!)
       // claude-factory-4iod.10: a head with an expansion (`{${X:-rm} -rf / }`) names no command
       // the guard can read, so it denies at once.
       if (/[$`]/.test(head)) return DYNAMIC_VERB_REASON
