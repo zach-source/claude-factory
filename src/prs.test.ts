@@ -1197,6 +1197,9 @@ test('buildPrs: an exhausted overall deadline stops spending new gh calls past i
 import {
   forgeNote,
   forgeOf,
+  gitlabForge,
+  gitlabNotes,
+  gitlabWatchNotes,
   mrsIn,
   parseGitlabLabeled,
   parseGitlabList,
@@ -1413,4 +1416,105 @@ test('forgeNote tells a GitLab worker the glab equivalents, and a GitHub worker 
   for (const gl of ['glab mr create', 'glab mr note', 'glab mr approve', 'glab ci status', 'glab api'])
     expect(note).toContain(gl)
   expect(forgeNote()).toEqual([])
+})
+
+test('parseGitlabView reads the head sha, merge and close times for the park watch (5wav AC10)', () => {
+  const v = parseGitlabView(
+    JSON.stringify({
+      ...MR,
+      sha: 'abc1234',
+      merged_at: '2026-10-12T11:00:00Z',
+      closed_at: '2026-10-12T12:00:00Z',
+    }),
+  )!
+  expect(v).toMatchObject({
+    headSha: 'abc1234',
+    mergedAt: '2026-10-12T11:00:00Z',
+    closedAt: '2026-10-12T12:00:00Z',
+  })
+})
+
+const noteList = JSON.stringify([
+  {
+    created_at: '2026-10-12T10:00:00Z',
+    body: '/changes rename it',
+    system: false,
+    author: { username: 'zach', id: 7 },
+  },
+  {
+    created_at: '2026-10-12T10:01:00Z',
+    body: 'pushed 1 commit',
+    system: true,
+    author: { username: 'zach', id: 7 },
+  },
+  {
+    created_at: '2026-10-12T10:02:00Z',
+    body: 'bot',
+    system: false,
+    author: { username: 'project_9_bot_x', id: 7 },
+  },
+  {
+    created_at: '2026-10-12T10:03:00Z',
+    body: 'bot',
+    system: false,
+    author: { username: 'ci', id: 7, bot: true },
+  },
+  {
+    created_at: '2026-10-12T10:04:00Z',
+    body: '/changes me',
+    system: false,
+    author: { username: 'stranger', id: 9 },
+  },
+  { created_at: 'garbage', body: 'x', system: false, author: { username: 'zach', id: 7 } },
+])
+
+test('gitlabNotes: only a project member who is no bot, with a human note, is a person (5wav.7)', () => {
+  const notes = gitlabNotes(noteList, new Set([7]))
+  expect(notes.map(n => n.person)).toEqual([true, false, false, false, false])
+  expect(notes[0]).toMatchObject({ body: '/changes rename it', changesRequested: false })
+  expect(gitlabNotes(noteList).some(n => n.person)).toBe(false)
+})
+
+/** a fake glab that answers the notes call and a members call by user id, and logs every path */
+function glabFake(members: Record<number, GhResult>) {
+  const paths: string[] = []
+  const glab: Gh = async argv => {
+    const path = argv.at(-1)!
+    paths.push(path)
+    if (path.includes('/notes?')) return { code: 0, out: noteList, err: '' }
+    const id = Number(path.split('/members/all/')[1])
+    return members[id] ?? { code: 1, out: '', err: '404 Not Found' }
+  }
+  return { glab, paths }
+}
+
+test('gitlabWatchNotes asks the project for each human author and trusts access level 30 or above (5wav.7)', async () => {
+  const { glab, paths } = glabFake({
+    7: { code: 0, out: '{"access_level":30}', err: '' },
+    9: { code: 0, out: '{"access_level":10}', err: '' },
+  })
+  const notes = await gitlabWatchNotes(glab, MR_URL, '/tmp')
+  expect(notes!.map(n => n.person)).toEqual([true, false, false, false, false])
+  expect(paths.filter(p => p.includes('/members/all/')).sort()).toEqual([
+    'projects/group%2Fsub%2Fproject/members/all/7',
+    'projects/group%2Fsub%2Fproject/members/all/9',
+  ])
+})
+
+test('gitlabWatchNotes: a 404 is no member, any other failure gives null (5wav.7)', async () => {
+  expect((await gitlabWatchNotes(glabFake({}).glab, MR_URL, '/tmp'))!.some(n => n.person)).toBe(false)
+  const boom = glabFake({ 7: { code: 1, out: '', err: 'timeout' } })
+  expect(await gitlabWatchNotes(boom.glab, MR_URL, '/tmp')).toBeNull()
+})
+
+test('gitlabForge.view never fetches notes, so the PR panel pays no extra call (5wav.9)', async () => {
+  const paths: string[] = []
+  const glab: Gh = async argv => {
+    paths.push(argv.at(-1)!)
+    return { code: 0, out: JSON.stringify(MR), err: '' }
+  }
+  const res = await gitlabForge(glab).view(MR_URL, '/tmp')
+  expect('viewed' in res).toBe(true)
+  expect(paths.some(p => p.includes('/notes'))).toBe(false)
+  expect(paths).toHaveLength(2)
 })

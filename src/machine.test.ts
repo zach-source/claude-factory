@@ -7,6 +7,7 @@ import {
   compile,
   failClass,
   failingAcIds,
+  isNoWorker,
   isPrWait,
   mrsIn,
   parkDelayMin,
@@ -877,4 +878,86 @@ test('parkDelayMin skips the pre-launch (attempt 0) park entries awaitsPr adds, 
       60,
     ),
   ).toBe(60)
+})
+
+// claude-factory-5wav: the watch routes a parked station's outcome from its pull request, with no worker
+const routeGraph: Factory = {
+  name: 'ship',
+  start: 'release',
+  nodes: {
+    release: { prompt: 'ship it', next: { ready: 'deploy' } },
+    implement: { prompt: 'rework it', next: { ready: 'deploy' } },
+    deploy: {
+      prompt: 'deploy it',
+      awaitsPr: true,
+      next: { deployed: 'done', hold: 'done', changes: 'implement' },
+    },
+  },
+}
+
+function parkedDeploy() {
+  const r = run(routeGraph)
+  r.send({ type: 'DONE', seq: 1, outcome: 'ready', summary: `ready ${PR}`, at: 1000 })
+  return r
+}
+
+test('ROUTE hold from a parked deploy ends the run with an attempt-0 entry and no worker', () => {
+  const { send } = parkedDeploy()
+  const s = send({ type: 'ROUTE', node: 'deploy', outcome: 'hold', summary: `${PR} closed`, at: 2000 })
+  expect(s.value).toBe('done')
+  expect(s.context.seq).toBe(1) // no worker launch
+  const last = s.context.log.at(-1)!
+  expect(last).toMatchObject({ node: 'deploy', attempt: 0, outcome: 'hold', summary: `${PR} closed` })
+  expect(isNoWorker(last)).toBe(true)
+  expect(s.context.mail.manager?.at(-1)).toMatchObject({ from: 'deploy', text: `${PR} closed` })
+})
+
+test('ROUTE changes from a parked deploy goes to implement with the comments as mail from deploy', () => {
+  const { send } = parkedDeploy()
+  const s = send({ type: 'ROUTE', node: 'deploy', outcome: 'changes', summary: 'fix the typo', at: 2000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context.wakeAt).toBe(0)
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'deploy', attempt: 0, outcome: 'changes' })
+  expect(s.context.mail.implement?.at(-1)).toMatchObject({ from: 'deploy', text: 'fix the typo' })
+})
+
+test('ROUTE is ignored when the station is working, is another node, or has no such outcome', () => {
+  const r = run(routeGraph)
+  let s = r.send({ type: 'ROUTE', node: 'release', outcome: 'ready', summary: 'x', at: 10 })
+  expect(where(s.value)).toEqual(['release', 'working']) // not parked
+  r.send({ type: 'DONE', seq: 1, outcome: 'ready', summary: `ready ${PR}`, at: 1000 })
+  for (const [node, outcome] of [
+    ['release', 'hold'],
+    ['deploy', 'unknown'],
+    ['deploy', 'blocked'],
+    ['deploy', 'fail'],
+    ['deploy', 'handoff'],
+  ] as const) {
+    s = r.send({ type: 'ROUTE', node, outcome, summary: 'x', at: 2000 })
+    expect(where(s.value)).toEqual(['deploy', 'waiting'])
+    expect(s.context.log.length).toBe(2)
+  }
+})
+
+test('REPARK moves wakeAt later: the old timer no longer starts a worker', () => {
+  const { send } = parkedDeploy()
+  const old = 1000 + WATCHED_PARK_MIN * 60_000
+  const later = old + 480 * 60_000
+  let s = send({ type: 'REPARK', node: 'deploy', wakeAt: later, at: old - 1000 })
+  expect(s.context.wakeAt).toBe(later)
+  expect(s.context.log.length).toBe(2) // no new entry, no manager mail
+  expect(s.context.mail.manager?.length).toBe(1)
+  s = send({ type: 'TICK', at: old })
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  s = send({ type: 'TICK', at: later })
+  expect(where(s.value)).toEqual(['deploy', 'working'])
+})
+
+test('REPARK never moves wakeAt earlier, and ignores another node', () => {
+  const { send } = parkedDeploy()
+  const old = 1000 + WATCHED_PARK_MIN * 60_000
+  let s = send({ type: 'REPARK', node: 'deploy', wakeAt: old - 1, at: 2000 })
+  expect(s.context.wakeAt).toBe(old)
+  s = send({ type: 'REPARK', node: 'release', wakeAt: old + 5, at: 2000 })
+  expect(s.context.wakeAt).toBe(old)
 })
