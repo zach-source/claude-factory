@@ -6128,26 +6128,6 @@ function shellAliasReason(
   return undefined
 }
 
-/**
- * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
- * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
- * `depth + 1` at each of its 4 recursion sites: one for `env -S`, two for `sh`/`bash`/`zsh`/
- * `dash -c` (one for the `--` form, one for the plain form), and one for `eval`.
- *
- * `state` is the claude-factory-c63 scan state. It is one object that `denyReason` makes one time.
- * This function passes `state` down unchanged to every recursive call that it makes.
- * That includes each call that `anyShellReason` makes into a nested shell, `eval`, or `env -S` script.
- *
- * claude-factory-68gn: `movedBefore` is true when a `cd`, `pushd` or `popd` word already ran
- * before `command`, either in an outer command's earlier segment or in the script `command`
- * itself sat inside (an eval/sh -c/env -S argument, or an env -S split string). It seeds this
- * call's own `movedSoFar`, the same accumulator that a `cd`/`pushd`/`popd` word in one of
- * `command`'s own segments extends for every segment after it.
- *
- * claude-factory-bemr: `ghConfigMovedBefore` is the same kind of seed.
- * It is for a `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` assignment, not a `cd`.
- * It seeds this call's own `ghConfigMovedSoFar`.
- */
 // claude-factory-j1ki: the shell splits an unquoted expansion that is glued to other text in one
 // word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
 // the real command. This returns the words with each such expansion read as a word break, or
@@ -6177,6 +6157,26 @@ function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
 }
 
+/**
+ * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
+ * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
+ * `depth + 1` at each of its 4 recursion sites: one for `env -S`, two for `sh`/`bash`/`zsh`/
+ * `dash -c` (one for the `--` form, one for the plain form), and one for `eval`.
+ *
+ * `state` is the claude-factory-c63 scan state. It is one object that `denyReason` makes one time.
+ * This function passes `state` down unchanged to every recursive call that it makes.
+ * That includes each call that `anyShellReason` makes into a nested shell, `eval`, or `env -S` script.
+ *
+ * claude-factory-68gn: `movedBefore` is true when a `cd`, `pushd` or `popd` word already ran
+ * before `command`, either in an outer command's earlier segment or in the script `command`
+ * itself sat inside (an eval/sh -c/env -S argument, or an env -S split string). It seeds this
+ * call's own `movedSoFar`, the same accumulator that a `cd`/`pushd`/`popd` word in one of
+ * `command`'s own segments extends for every segment after it.
+ *
+ * claude-factory-bemr: `ghConfigMovedBefore` is the same kind of seed.
+ * It is for a `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` assignment, not a `cd`.
+ * It seeds this call's own `ghConfigMovedSoFar`.
+ */
 function denyAt(
   command: string,
   root: string | undefined,
@@ -6257,7 +6257,7 @@ function denyAtScan(
   // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
   // command substitution glued to text. Read the command again with each such substitution as a
   // space. This text has fewer "$(" than the source, so the recursion ends.
-  const unglued = command.replace(GLUED_SUBSTITUTION_RE, ' ')
+  const unglued = command.includes('$(') ? command.replace(GLUED_SUBSTITUTION_RE, ' ') : command
   if (unglued !== command) {
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
@@ -6427,11 +6427,11 @@ function denyAtScan(
     // `moved` accumulator reads those, and this segment's own cd/pushd/popd/chdir word, through
     // their own forward scan). This check runs after the checks above, so it affects only a
     // later segment's push, never this one.
-    if (hasDirChangeWord(words)) movedSoFar = true
+    if (hasDirChangeWord(words) || (splitWords && hasDirChangeWord(splitWords))) movedSoFar = true
     // claude-factory-bemr: the same rule, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
     // assignment anywhere in this segment. It carries into every later segment's gh alias
     // lookup, the same way movedSoFar does above for a git alias lookup.
-    if (hasGhConfigEnvWord(words)) ghConfigMovedSoFar = true
+    if (hasGhConfigEnvWord(words) || (splitWords && hasGhConfigEnvWord(splitWords))) ghConfigMovedSoFar = true
   }
   const tailReason = scanSubs(Infinity)
   if (tailReason) return tailReason

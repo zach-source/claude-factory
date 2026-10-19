@@ -7454,13 +7454,12 @@ const J1KI_REASON_ROWS = [
   'X=1 rm${IFS}-rf${IFS}/',
   'cd /x; rm${IFS}-rf${IFS}/',
   'true && rm${IFS}-rf${IFS}/',
-]
-const J1KI_DENY_ROWS = [
-  'git${IFS}push${IFS}origin${IFS}main',
-  'gh${IFS}pr${IFS}merge${IFS}1',
   'find . -exec rm${IFS}-rf {} +',
   'find${IFS}.${IFS}-exec${IFS}rm${IFS}-rf${IFS}{}${IFS}+',
 ]
+const J1KI_PUSH_ROWS = ['git${IFS}push${IFS}origin${IFS}main']
+const J1KI_MERGE_ROWS = ['gh${IFS}pr${IFS}merge${IFS}1']
+const J1KI_MOVE_ROWS = ['cd${IFS}/x; git push', 'cd$IFS/x && git push origin HEAD', 'pushd${IFS}/x; git push']
 const J1KI_ALLOW_ROWS = [
   'ls ${IFS}',
   'echo a${X}b',
@@ -7477,15 +7476,22 @@ const J1KI_ALLOW_ROWS = [
 test.each(J1KI_REASON_ROWS)('claude-factory-j1ki: %s denies with REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })
-test.each(J1KI_DENY_ROWS)('claude-factory-j1ki: %s denies', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeTruthy()
+test.each(J1KI_PUSH_ROWS)('claude-factory-j1ki: %s denies with PUSH_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+test.each(J1KI_MERGE_ROWS)('claude-factory-j1ki: %s denies with MERGE_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(MERGE_REASON)
+})
+test.each(J1KI_MOVE_ROWS)('claude-factory-j1ki: %s denies with PUSH_DIR_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_DIR_REASON)
 })
 test.each(J1KI_ALLOW_ROWS)('claude-factory-j1ki: %s stays allowed', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
 })
-test('claude-factory-j1ki: a 5000-word segment of glued words returns fast', () => {
-  const cmd = 'echo ' + Array.from({ length: 5000 }, () => 'a${X}b').join(' ')
+test('claude-factory-j1ki: a 1000-word segment of glued words returns fast', () => {
+  const cmd = 'echo ' + Array.from({ length: 1000 }, () => 'a${X}b').join(' ')
+  expect(cmd.length).toBeLessThan(8192)
   const t = Date.now()
-  denyReason(cmd, '/root/repo', undefined, J1KI_GATE)
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
   expect(Date.now() - t).toBeLessThan(1000)
 })
