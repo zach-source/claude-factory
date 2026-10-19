@@ -161,6 +161,10 @@ test("a run's id carries its creation time", () => {
   const t = 1791286012157
   expect(createdAt(`lifecycle-${t.toString(36)}x9`)).toBe(t)
   expect(failKind('worker stopped without reporting')).toBe('worker lost')
+  expect(failKind('worker never started on AX after 60 min: task phase Pending')).toBe('not started')
+  expect(failKind('the worker never started in pane w1:p1 (no Claude after 3 relaunches)')).toBe(
+    'not started',
+  )
 })
 
 test("a session's tokens count each turn once, and its station comes from the brief's report line", () => {
