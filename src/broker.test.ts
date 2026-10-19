@@ -89,6 +89,33 @@ test('GET /ca returns the bundle, GET /healthz answers ok, and a manager policy 
   expect((await handle(req('GET', '/ca'), setup(() => ({ code: 1, err: 'denied' })).c)).status).toBe(502)
 })
 
+test('GET /ax-ready answers 200 when the controller is ready and 503 with the reason when not', async () => {
+  const dep = (readyReplicas: number) =>
+    JSON.stringify({
+      metadata: { generation: 2 },
+      spec: { replicas: 1 },
+      status: { observedGeneration: 2, readyReplicas, availableReplicas: readyReplicas },
+    })
+  const ready = setup(() => ({ code: 0, out: dep(1) }))
+  const ok = await handle(req('GET', '/ax-ready'), ready.c)
+  expect([ok.status, await ok.text()]).toEqual([200, 'ready\n'])
+  expect(ready.calls[0]!.argv.slice(0, 7)).toEqual([
+    'kubectl',
+    'get',
+    'deployment',
+    'ax-controller',
+    '-n',
+    'ax-system',
+    '-o',
+  ])
+  const down = await handle(req('GET', '/ax-ready'), setup(() => ({ code: 0, out: dep(0) })).c)
+  expect(down.status).toBe(503)
+  expect(await down.text()).toContain('is not ready at its current generation')
+  const gone = await handle(req('GET', '/ax-ready'), setup(() => ({ code: 1, err: 'forbidden' })).c)
+  expect(gone.status).toBe(503)
+  expect(await gone.text()).toContain('could not be observed')
+})
+
 test('the atespaces and the manager come from the environment', () => {
   const c = configFrom({ FACTORY_BROKER_ATESPACES: 'a,b', FACTORY_AX_MANAGER: 'mgr' })
   expect(route('PUT', '/policy/b/x', c)).toMatchObject({ op: 'put' })

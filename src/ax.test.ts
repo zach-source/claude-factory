@@ -51,7 +51,7 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller'])
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'ready'])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
@@ -1497,6 +1497,7 @@ printf 'curl %s\\n' "$*" >> ${calls}
 case "$*" in
   *PUT*) cat > ${dir}/policy; printf 'created\\n201' ;;
   */ca*) printf 'CA-FROM-BROKER\\n200' ;;
+  */ax-ready*) cat ${dir}/ready ;;
   *) printf 'no\\n502' ;;
 esac
 `,
@@ -1518,6 +1519,28 @@ test('with FACTORY_POLICY_BROKER set, the policy and the CA go to the broker and
     expect(ax.createPolicy('f-r1-1')).toBe(false)
     expect(() => ax.egressCA()).toThrow('the egress gateway')
   } finally {
+    delete process.env.FACTORY_CURL
+    delete process.env.FACTORY_POLICY_BROKER
+  }
+})
+
+test('with FACTORY_POLICY_BROKER set, unavailable asks GET /ax-ready and does not run kubectl', () => {
+  process.env.FACTORY_CURL = curl
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+  try {
+    writeFileSync(join(dir, 'ready'), 'ready\n\n200')
+    expect(ax.unavailable()).toBeUndefined()
+    expect(logged()).toEqual([
+      'curl -sS -m 6 -X GET -w \\n%{http_code} http://broker.example.svc:8080/ax-ready',
+    ])
+    writeFileSync(join(dir, 'ready'), 'AX executor unavailable: not ready\n\n503')
+    expect(ax.unavailable()).toBe('AX executor unavailable: not ready')
+    writeFileSync(join(dir, 'ready'), 'oops\n500')
+    expect(ax.unavailable()).toContain('could not be observed')
+    process.env.FACTORY_CURL = 'false'
+    expect(ax.unavailable()).toContain('could not be observed')
+  } finally {
+    rmSync(join(dir, 'ready'), { force: true })
     delete process.env.FACTORY_CURL
     delete process.env.FACTORY_POLICY_BROKER
   }
