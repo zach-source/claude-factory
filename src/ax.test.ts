@@ -38,6 +38,9 @@ writeFileSync(
   kubectl,
   `#!/bin/sh
 echo "kubectl $*" >> ${calls}
+case "$*" in
+  *"get deployment ax-controller"*) cat ${dir}/controller; exit $? ;;
+esac
 case "$1" in
   get) printf 'CA-PEM' ;;
   ate) cat > ${dir}/policy; [ -f ${dir}/actor ] || { touch ${dir}/actor; echo 'actor not found' >&2; exit 1; } ;;
@@ -48,10 +51,48 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor'])
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller'])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
+
+test('controller readiness requires current observed generation and available replicas', () => {
+  const ready = {
+    metadata: { generation: 3 },
+    spec: { replicas: 1 },
+    status: { observedGeneration: 3, readyReplicas: 1, availableReplicas: 1 },
+  }
+  for (const value of [
+    'not json',
+    'null',
+    '{}',
+    JSON.stringify({ ...ready, status: { ...ready.status, observedGeneration: 2 } }),
+    JSON.stringify({ ...ready, status: { ...ready.status, readyReplicas: 0 } }),
+    JSON.stringify({ ...ready, status: { ...ready.status, availableReplicas: 0 } }),
+    JSON.stringify({ ...ready, spec: { replicas: 0 } }),
+    JSON.stringify({ ...ready, spec: { replicas: '1' } }),
+    JSON.stringify({ ...ready, status: { ...ready.status, readyReplicas: true } }),
+    JSON.stringify({ ...ready, status: { ...ready.status, availableReplicas: '1' } }),
+    JSON.stringify({ ...ready, metadata: { ...ready.metadata, deletionTimestamp: '2026-10-18T00:00:00Z' } }),
+  ]) {
+    writeFileSync(join(dir, 'controller'), value)
+    expect(ax.unavailable()).toContain('AX executor unavailable')
+  }
+  rmSync(join(dir, 'controller'))
+  expect(ax.unavailable()).toContain('could not be observed')
+  writeFileSync(join(dir, 'controller'), JSON.stringify(ready))
+  const previous = process.env.FACTORY_AX_CONTEXT
+  process.env.FACTORY_AX_CONTEXT = 'test-cluster'
+  try {
+    expect(ax.unavailable()).toBeUndefined()
+    expect(logged().at(-1)).toBe(
+      'kubectl --context test-cluster get deployment ax-controller -n ax-system -o json --request-timeout=5s',
+    )
+  } finally {
+    if (previous === undefined) delete process.env.FACTORY_AX_CONTEXT
+    else process.env.FACTORY_AX_CONTEXT = previous
+  }
+})
 
 test('task names are RFC 1123 labels that keep the seq', () => {
   expect(ax.taskName('fx-12_Add.health', 3)).toBe('f-fx-12-add-health-3')

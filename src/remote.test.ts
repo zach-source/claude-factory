@@ -30,7 +30,14 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
     // would refuse and mail the manager a new "branch is ..., not main" reason, landing in
     // `home` on a later tick and inflating manager-mail assertions (claude-factory-5h9.8)
-    env: { ...laptop, FACTORY_HOME: home, FACTORY_AX: join(dir, 'ax'), FACTORY_SELF_UPDATE: '0', ...env },
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      FACTORY_AX: join(dir, 'ax'),
+      FACTORY_KUBECTL: readyController(),
+      FACTORY_SELF_UPDATE: '0',
+      ...env,
+    },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
@@ -255,6 +262,20 @@ esac
   chmodSync(join(dir, 'ax'), 0o755)
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
+function readyController() {
+  const path = join(dir, 'ready-controller')
+  writeFileSync(
+    path,
+    `#!/bin/sh
+case "$*" in
+  *"get deployment ax-controller"*) echo '{"metadata":{"generation":1},"spec":{"replicas":1},"status":{"observedGeneration":1,"readyReplicas":1,"availableReplicas":1}}' ;;
+  *) echo CA ;;
+esac
+`,
+  )
+  chmodSync(path, 0o755)
+  return path
+}
 // the default FACTORY_AX_CAPABILITIES (SETUID,SETGID,CHOWN): every `ax ssh` command runs as the worker user
 const AS_WORKER = 'setpriv --reuid=worker --regid=worker --init-groups env HOME=/home/worker USER=worker'
 const inbox = (id: string) => readFileSync(join(home, 'runs', id, 'inbox.jsonl'), 'utf8')
@@ -320,19 +341,23 @@ const seenOf = (id: string, task = 't') =>
   }
 const seenTotal = (id: string, task = 't') => Object.values(seenOf(id, task).seen).reduce((a, b) => a + b, 0)
 
-test("a tick replays an AX worker's report from its outbox, and the task goes when the station ends", () => {
+test("a tick replays an AX worker's report from its outbox, and cleans up even when the controller is unavailable", () => {
   const seq = launched('r1')
   const report = JSON.stringify({ argv: ['report', 'r1', String(seq), 'ready', 'built a'], from: 'a', at: 1 })
   cluster('Running', { status: 'idle', session: 's1', lines: [report] })
 
-  const first = factory(['tick'])
+  const kubectl = join(dir, 'down-controller')
+  writeFileSync(kubectl, '#!/bin/sh\nexit 1\n')
+  chmodSync(kubectl, 0o755)
+  const env = { FACTORY_KUBECTL: kubectl }
+  const first = factory(['tick'], env)
   expect(first.code).toBe(0)
   expect(JSON.parse(first.out).runs[0]).toMatchObject({ id: 'r1', node: 'a', agent: 'idle', pane: 'ax://t' })
   expect(seenTotal('r1')).toBe(1)
   expect(inbox('r1')).toContain('"outcome":"ready"')
   expect(called()).toContain(`-a factory ssh t -- ${AS_WORKER} factory worker poll 0`)
 
-  const second = factory(['tick'])
+  const second = factory(['tick'], env)
   expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1', node: 'done' })
   expect(called()).toContain('-a factory delete task t')
   expect(called()).toContain('-a factory delete workspace t')
@@ -620,7 +645,10 @@ test('a task gone because serve exited fails the attempt with serve\'s log, not 
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
   launched('r4', false)
   const kubectl = join(dir, 'kubectl')
-  writeFileSync(kubectl, `#!/bin/sh\necho "kubectl $*" >> ${calls}\n[ -f ${dir}/actor ]\n`)
+  writeFileSync(
+    kubectl,
+    `#!/bin/sh\ncase "$*" in *"get deployment ax-controller"*) exec ${readyController()} "$@" ;; esac\necho "kubectl $*" >> ${calls}\n[ -f ${dir}/actor ]\n`,
+  )
   chmodSync(kubectl, 0o755)
   cluster('Running', { status: 'working', lines: [] })
   const first = factory(['tick'], { FACTORY_KUBECTL: kubectl })
@@ -1328,10 +1356,7 @@ test("a launch starts from a gone worker's pushed commits instead of pushing the
     JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
   )
   cluster('Running', { status: 'idle', lines: [] })
-  writeFileSync(join(dir, 'kubectl'), '#!/bin/sh\necho CA\n')
-  chmodSync(join(dir, 'kubectl'), 0o755)
-
-  const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img', FACTORY_KUBECTL: join(dir, 'kubectl') }).out
+  const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img', FACTORY_KUBECTL: readyController() }).out
   const row = JSON.parse(out).runs.find((r: { id: string }) => r.id === 'r4')
   expect(row.error).toBeNull()
   expect(sh(worktree, 'git', 'log', '--format=%s')).toBe('work\nplan\nbase') // its plan once, as the VM wrote it
@@ -1360,4 +1385,68 @@ test("a pull that kept the VM's version of an issue says on it what the laptop h
     },
   ])
   expect(overwritten('{}\n{"rows": [{"status":"0"}]}')).toEqual([])
+})
+
+// A controller outage must not spend station attempts on workers that cannot exist.
+test('unavailable AX holds an expired Pending task and refuses retry without changing its budget', () => {
+  const id = 'ax-unavailable'
+  const seq = launchedAfterFail(id, 'old failure', 120)
+  cluster('Pending', { status: 'idle', lines: [] })
+  const kubectl = join(dir, 'unavailable-kubectl')
+  writeFileSync(
+    kubectl,
+    `#!/bin/sh\nprintf '%s' '{"metadata":{"generation":3},"spec":{"replicas":1},"status":{"observedGeneration":3,"readyReplicas":0,"availableReplicas":0}}'\n`,
+  )
+  chmodSync(kubectl, 0o755)
+  const env = { FACTORY_KUBECTL: kubectl }
+  const state = () => JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')).snapshot.context
+  const before = state()
+  const first = JSON.parse(factory(['tick'], env).out)
+  const row = first.runs.find((r: { id: string }) => r.id === id)
+  expect(row.agent).toBe('AX executor unavailable')
+  expect(state()).toMatchObject({ seq, attempt: before.attempt, budget: before.budget, pane: 'ax://t' })
+  expect(state().log).toEqual(before.log)
+  expect(first.manager.filter((m: { run: string }) => m.run === id)).toHaveLength(1)
+  const second = JSON.parse(factory(['tick'], env).out)
+  expect(second.manager.filter((m: { run: string }) => m.run === id)).toHaveLength(0)
+  const retry = factory(['retry', id], env)
+  expect(retry.code).toBe(1)
+  expect(retry.err).toContain('AX executor unavailable')
+  expect(existsSync(join(home, 'runs', id, 'inbox.jsonl'))).toBe(false)
+  expect(called()).not.toContain('delete')
+  expect(called()).not.toContain('apply')
+  cluster('Running', { status: 'idle', lines: [] })
+  const recovered = factory(['retry', id], { FACTORY_KUBECTL: readyController() })
+  expect(recovered.code).toBe(0)
+  expect(inbox(id)).toContain('"type":"RETRY"')
+  rmSync(join(home, 'runs', id), { recursive: true })
+})
+
+test('unavailable AX prevents a fresh launch before git, Beads sync or AX apply', () => {
+  const id = 'ax-no-launch'
+  launched(id)
+  const path = join(home, 'runs', id, 'state.json')
+  const saved = JSON.parse(readFileSync(path, 'utf8'))
+  saved.snapshot.context.pane = null
+  writeFileSync(path, JSON.stringify(saved))
+  writeFileSync(
+    join(home, 'runs', id, 'factory.ts'),
+    `export default ${JSON.stringify({ ...def, nodes: { a: { ...def.nodes.a, runner: 'ax' } } })}`,
+  )
+  const kubectl = join(dir, 'unknown-controller')
+  writeFileSync(kubectl, '#!/bin/sh\nexit 1\n')
+  chmodSync(kubectl, 0o755)
+  cluster('Pending', {})
+  const output = JSON.parse(factory(['tick'], { FACTORY_KUBECTL: kubectl }).out)
+  expect(output.runs.find((r: { id: string }) => r.id === id).agent).toBe('AX executor unavailable')
+  const context = JSON.parse(readFileSync(path, 'utf8')).snapshot.context
+  expect(context).toMatchObject({
+    pane: null,
+    seq: saved.snapshot.context.seq,
+    budget: saved.snapshot.context.budget,
+  })
+  expect(existsSync(join(home, 'runs', id, 'prompts'))).toBe(false)
+  expect(called()).not.toContain('apply')
+  expect(called()).not.toContain('delete')
+  rmSync(join(home, 'runs', id), { recursive: true })
 })
