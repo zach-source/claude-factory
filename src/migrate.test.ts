@@ -3,7 +3,17 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { homeReady } from './managerhost'
-import { localLiveRuns, migratedRigs, pack, plan, runsToMove, selectTop } from './migrate'
+import {
+  claudeFiles,
+  describe,
+  localLiveRuns,
+  migratedRigs,
+  pack,
+  plan,
+  projectSlug,
+  runsToMove,
+  selectTop,
+} from './migrate'
 
 const state = (value: string, pane: string | null) =>
   JSON.stringify({ cursor: 0, snapshot: { value, context: { pane, log: [] } } })
@@ -104,4 +114,32 @@ test('pack makes a tar.gz with the migrated rigs.json and without the laptop-onl
   expect(names).not.toContain('tick.lock')
   const rigs = Bun.spawnSync(['tar', '-xzOf', out, 'rigs.json']).stdout.toString()
   expect(JSON.parse(rigs)[0].remote).toBe('https://github.com/example/alpha.git')
+})
+
+test("pack carries the manager's Claude memory and session transcripts, with each session's cwd set to the task's", () => {
+  const home = fixture({})
+  const cwd = '/home/u/factory'
+  writeFileSync(join(home, 'manager-sessions.json'), JSON.stringify([{ session: 's1', cwd }]))
+  const config = mkdtempSync(join(tmpdir(), 'migrate-claude-'))
+  const project = join(config, 'projects', projectSlug(cwd))
+  mkdirSync(join(project, 'memory'), { recursive: true })
+  writeFileSync(join(project, 'memory', 'MEMORY.md'), '- a note')
+  writeFileSync(join(project, 's1.jsonl'), '{}')
+  writeFileSync(join(project, 'other.jsonl'), '{}')
+  expect(projectSlug(cwd)).toBe('-home-u-factory')
+  expect(claudeFiles([{ session: 's1', cwd }], config).map(f => f.slice(project.length))).toEqual([
+    '/memory',
+    '/s1.jsonl',
+  ])
+  const p = plan(home, 0, origin, config)
+  expect(describe(p)).toContain("the manager's Claude: memory, s1.jsonl")
+  const out = join(mkdtempSync(join(tmpdir(), 'migrate-out-')), 'm.tgz')
+  pack(home, p, out)
+  const names = Bun.spawnSync(['tar', '-tzf', out]).stdout.toString()
+  expect(names).toContain('claude-project/memory/MEMORY.md')
+  expect(names).toContain('claude-project/s1.jsonl')
+  expect(names).not.toContain('other.jsonl')
+  expect(names.match(/manager-sessions\.json/g)).toHaveLength(1)
+  const sessions = Bun.spawnSync(['tar', '-xzOf', out, 'manager-sessions.json']).stdout.toString()
+  expect(JSON.parse(sessions)).toEqual([{ session: 's1', cwd: '/workspace/w' }])
 })

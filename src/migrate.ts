@@ -1,7 +1,9 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
+import { MANAGER_CWD } from './ax'
 import { httpsRemote } from './axrepos'
+import { rmSafe } from './home-guard'
 import { where } from './machine'
 
 /**
@@ -97,8 +99,36 @@ export function migratedRigs<R extends RigRow>(rigs: R[], originOf: (repo: strin
   }
 }
 
+/** Claude Code's project dir name for a cwd: each character that is not a letter or a digit becomes `-` */
+export const projectSlug = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, '-')
+/** the archive dir whose contents the unpack moves to the manager's Claude project dir (ax.unpackMigration) */
+export const CLAUDE_STAGE = 'claude-project'
+
+type Session = { session: string; cwd: string }
+
+/**
+ * what the manager's Claude keeps outside the factory home: its auto-memory and the transcripts of the sessions in
+ * manager-sessions.json, under `<config>/projects/<slug of the session's cwd>`. Without the transcript, the host's
+ * `--resume` of the last session fails in the task, and without the memory the manager forgets what it learned
+ */
+export function claudeFiles(sessions: Session[], config: string) {
+  const projects = [...new Set(sessions.map(s => join(config, 'projects', projectSlug(s.cwd))))]
+  return [
+    ...projects.map(p => join(p, 'memory')),
+    ...sessions.map(s => join(config, 'projects', projectSlug(s.cwd), `${s.session}.jsonl`)),
+  ].filter(f => existsSync(f))
+}
+
+const readSessions = (home: string): Session[] => {
+  const f = join(home, 'manager-sessions.json')
+  const v = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : []
+  return Array.isArray(v) ? v : []
+}
+
 export type Plan = {
   top: string[]
+  /** the manager's Claude memory and session transcripts (claudeFiles) */
+  claude: string[]
   skipped: string[]
   runs: string[]
   left: number
@@ -114,7 +144,12 @@ const sizeOf = (path: string): number => {
 }
 
 /** read the home and decide what moves. Writes nothing */
-export function plan(home: string, keep: number, originOf: (repo: string) => string | undefined): Plan {
+export function plan(
+  home: string,
+  keep: number,
+  originOf: (repo: string) => string | undefined,
+  config = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+): Plan {
   const entries = readdirSync(home, { withFileTypes: true }).map(d => ({
     name: d.name,
     dir: d.isDirectory(),
@@ -134,12 +169,15 @@ export function plan(home: string, keep: number, originOf: (repo: string) => str
   const move = runsToMove(runs, keep)
   const rigsFile = join(home, 'rigs.json')
   const m = migratedRigs(existsSync(rigsFile) ? JSON.parse(readFileSync(rigsFile, 'utf8')) : [], originOf)
+  const claude = claudeFiles(readSessions(home), config)
   const bytes =
     take.reduce((n, f) => n + sizeOf(join(home, f)), 0) +
+    claude.reduce((n, f) => n + sizeOf(f), 0) +
     move.reduce((n, id) => n + sizeOf(join(runsDir, id)), 0) +
     statSync(rigsFile).size
   return {
     top: take,
+    claude,
     skipped,
     runs: move,
     left: runs.length - move.length,
@@ -156,22 +194,36 @@ export const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`
 export const describe = (p: Plan) =>
   [
     `moves: ${p.top.join(', ')}, and ${p.runs.length} run dirs (${p.left} finished runs stay behind)`,
+    `the manager's Claude: ${p.claude.length ? p.claude.map(f => basename(f)).join(', ') : 'nothing found (no memory or transcript)'}`,
     ...(p.skipped.length ? [`left behind (big or laptop-only): ${p.skipped.join(', ')}`] : []),
     `size before compression: ${mb(p.bytes)}`,
   ].join('\n')
 
 /**
- * pack the plan into `out` (a tar.gz): the files by name, the live runs' dirs, and the migrated rigs.json from a
- * temp dir. `tar -C` before each group keeps every name relative to the factory home
+ * pack the plan into `out` (a tar.gz): the files by name, the live runs' dirs, and from a temp dir the migrated
+ * rigs.json, manager-sessions.json with each cwd set to the task's, and the manager's Claude files under
+ * CLAUDE_STAGE. `tar -C` before each group keeps every name relative to the factory home
  */
 export function pack(home: string, p: Plan, out: string) {
   const tmp = mkdtempSync(join(tmpdir(), 'factory-migrate-'))
-  writeFileSync(join(tmp, 'rigs.json'), JSON.stringify(p.rigs, null, 2) + '\n')
-  // ponytail: names go on the command line (a few hundred at most), not -T: bsdtar reads a -T list after the last -C
-  const names = [...p.top, ...p.runs.map(id => `runs/${id}`)].map(n => `./${n}`)
-  const r = Bun.spawnSync(['tar', '-czf', out, '-C', home, ...names, '-C', tmp, 'rigs.json'], {
-    stderr: 'pipe',
-  })
-  if (r.exitCode !== 0) throw new Error(`tar: ${r.stderr.toString().trim().split('\n').at(-1)}`)
-  return statSync(out).size
+  try {
+    writeFileSync(join(tmp, 'rigs.json'), JSON.stringify(p.rigs, null, 2) + '\n')
+    const sessions = readSessions(home).map(s => ({ ...s, cwd: MANAGER_CWD }))
+    writeFileSync(join(tmp, 'manager-sessions.json'), JSON.stringify(sessions, null, 2) + '\n')
+    // ponytail: memory dirs of several cwds merge into one; the manager has had one cwd so far
+    for (const f of p.claude) cpSync(f, join(tmp, CLAUDE_STAGE, basename(f)), { recursive: true })
+    // ponytail: names go on the command line (a few hundred at most), not -T: bsdtar reads a -T list after the last -C
+    const names = [
+      ...p.top.filter(n => n !== 'manager-sessions.json'),
+      ...p.runs.map(id => `runs/${id}`),
+    ].map(n => `./${n}`)
+    const fromTmp = ['rigs.json', 'manager-sessions.json', ...(p.claude.length ? [CLAUDE_STAGE] : [])]
+    const r = Bun.spawnSync(['tar', '-czf', out, '-C', home, ...names, '-C', tmp, ...fromTmp], {
+      stderr: 'pipe',
+    })
+    if (r.exitCode !== 0) throw new Error(`tar: ${r.stderr.toString().trim().split('\n').at(-1)}`)
+    return statSync(out).size
+  } finally {
+    rmSafe(tmp, { recursive: true, force: true })
+  }
 }
