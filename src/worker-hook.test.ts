@@ -5471,6 +5471,11 @@ const DYN_RM_DENY = [
   '$X 5 rm -rf /',
   '$X -k 5 5 rm -rf /',
   '$X -u root $Y rm -rf /',
+  '$X -u find rm -rf /',
+  'X=env; $X -u find rm -rf /',
+  '$X -C find rm -rf /',
+  '$X -u find /bin/rm -rf /',
+  '$X find rm -rf /',
 ]
 
 test.each(DYN_RM_DENY)(
