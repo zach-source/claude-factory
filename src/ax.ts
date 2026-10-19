@@ -590,6 +590,19 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
     ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
     ...(env[MANAGER_BROKER] && { FACTORY_POLICY_BROKER: env[MANAGER_BROKER] }),
+    // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make
+    ...(routerAddress(env[MANAGER_ROUTER]) && { AX_ROUTER: routerAddress(env[MANAGER_ROUTER])! }),
+  }
+}
+
+/** `host:port` of the router URL (port 80 when it names none); undefined when the value is not a URL */
+export function routerAddress(url?: string) {
+  if (!url) return undefined
+  try {
+    const u = new URL(url)
+    return /^https?:$/.test(u.protocol) && u.hostname ? `${u.hostname}:${u.port || 80}` : undefined
+  } catch {
+    return undefined
   }
 }
 

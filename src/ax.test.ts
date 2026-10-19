@@ -1463,6 +1463,7 @@ test('launchManager applies the manager task with its command and env, then retr
     expect(env.FACTORY_OUTBOX).toBeUndefined()
     expect(env.AX_SERVER).toBe('http://ax.example.svc:8080')
     expect(env.FACTORY_POLICY_BROKER).toBe('http://broker.example.svc:8080')
+    expect(env.AX_ROUTER).toBe('router.example.svc:80')
     const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules
     expect(
       rules.some((x: { https?: { hostnames: string[] } }) => x.https?.hostnames.includes('claude.ai')),
@@ -1520,4 +1521,11 @@ test('with FACTORY_POLICY_BROKER set, the policy and the CA go to the broker and
     delete process.env.FACTORY_CURL
     delete process.env.FACTORY_POLICY_BROKER
   }
+})
+
+test('routerAddress gives host:port of the router URL, port 80 by default, and nothing for a non-URL', () => {
+  expect(ax.routerAddress('http://r.example.svc')).toBe('r.example.svc:80')
+  expect(ax.routerAddress('http://r.example.svc:8081')).toBe('r.example.svc:8081')
+  expect(ax.routerAddress('r.example.svc:80')).toBeUndefined()
+  expect(ax.routerAddress(undefined)).toBeUndefined()
 })
