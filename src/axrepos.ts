@@ -76,7 +76,9 @@ export function planRepoSync(
   })
 }
 
-const run = (cmd: string[], cwd?: string) => Bun.spawnSync(cmd, { cwd, stdin: 'ignore', timeout: 600_000 })
+// env: Bun gives a child its start env unless told; the host's trustCA() sets the git CA var at runtime
+const run = (cmd: string[], cwd?: string) =>
+  Bun.spawnSync(cmd, { cwd, env: { ...process.env }, stdin: 'ignore', timeout: 600_000 })
 const errLine = (p: ReturnType<typeof run>) => p.stderr.toString().trim().split('\n').at(-1) ?? ''
 
 /**
