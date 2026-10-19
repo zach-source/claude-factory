@@ -39,6 +39,8 @@ jobs:
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - name: install zsh (src/cli.test.ts spawns it)
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - run: bun install --frozen-lockfile
       - name: bun test src factories
         # PKGGATE_E2E_REQUIRE=1 turns a missing go/npm/pip/uv/python3/zip into a named failure

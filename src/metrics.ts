@@ -1,4 +1,4 @@
-import { isPrWait, type Entry } from './machine'
+import { isNoWorker, isPrWait, type Entry } from './machine'
 
 /** one run, as metrics see it. It is live from its state, or kept in metrics.jsonl after `factory
  * rm`. `requeued` is set when the run ended on a requeue edge (claude-factory-wnm). It copies
@@ -85,9 +85,9 @@ export function metrics(records: RunRecord[]) {
     let reviewChanges = 0
     for (let i = 0; i < r.log.length; i++) {
       const e = r.log[i]!
-      // a pre-launch PR park (isPrWait) spent no worker: skip it so it is not a station visit,
+      // a no-worker entry (isNoWorker: a pre-launch PR park or a routed outcome) spent no worker: skip it so it is not a station visit,
       // and leave prev at the entry before it so the next real visit's wait time is still correct
-      if (isPrWait(e)) continue
+      if (isNoWorker(e)) continue
       const s = (stations[e.node] ??= { visits: 0, failed: 0, outcomes: {}, hours: [] })
       s.visits++
       s.outcomes[e.outcome] = (s.outcomes[e.outcome] ?? 0) + 1
@@ -127,7 +127,7 @@ export function metrics(records: RunRecord[]) {
   const ended = (fates.shipped ?? 0) + (fates.rejected ?? 0) + (fates.closed ?? 0) + (fates.aborted ?? 0)
   // a pre-launch PR park (isPrWait) spent no worker, so it is not a deploy session
   const deploySessions = records.reduce(
-    (n, r) => n + r.log.filter(e => e.node === 'deploy' && !isPrWait(e)).length,
+    (n, r) => n + r.log.filter(e => e.node === 'deploy' && !isNoWorker(e)).length,
     0,
   )
   return {

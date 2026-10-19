@@ -62,8 +62,9 @@
  * Claude Code's own prompt stays the backstop.
  */
 
-import { readFileSync, statSync } from 'node:fs'
-import { posix, resolve as resolvePath } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join as joinPath, posix, resolve as resolvePath } from 'node:path'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -93,6 +94,17 @@ export const LONG_COMMAND_REASON =
   'commands and run them one at a time. For a long report summary, bd description or pull ' +
   'request body, put the text in a file under .scratch/ and pass it with --body-file, or as ' +
   '"$(cat .scratch/<name>)". Do not retry this exact command.'
+
+// claude-factory-1zr5
+export const SHELL_ALIAS_REASON =
+  'The factory denies this command: a word in it is a shell alias from the Claude Code shell snapshot ' +
+  'that runs git or gh, or that this hook cannot read. The hook cannot check what the alias does. ' +
+  'Type the full git or gh command, with no alias. Do not retry this exact command.'
+
+// claude-factory-1zr5
+export const SHELL_ALIAS_READ_REASON =
+  'The factory denies this command: the hook cannot read the Claude Code shell-snapshot folder, so it ' +
+  'cannot tell which words are shell aliases. Report blocked with that fact. Do not retry this exact command.'
 
 // claude-factory-zl5
 export const MERGE_REASON =
@@ -177,6 +189,15 @@ export const PUSH_DIR_REASON =
   'remote branch directly instead, for example git push origin <run branch>, and never name a ' +
   'protected branch. Do not retry this exact command.'
 
+// claude-factory-ty8y: the global git config (~/.gitconfig, $XDG_CONFIG_HOME/git/config,
+// /etc/gitconfig) can set remote.<n>.push, push.default or an alias that pushes.
+export const GLOBAL_GIT_CONFIG_REASON =
+  'The factory denies this command: it writes the global git config (~/.gitconfig, ' +
+  '$XDG_CONFIG_HOME/git/config or /etc/gitconfig), or it names that path next to a git command. ' +
+  'The file can set a push target or an alias that pushes to a protected branch. Do not write ' +
+  'the global git config. To read it, use cat, or run the read as its own command. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-vco
 export const ENV_SPLIT_ESCAPE_REASON =
   'The factory denies this command: an env -S or env --split-string value holds a backslash or ' +
@@ -203,6 +224,15 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
+// guard denies every shell function definition.
+export const FUNCTION_DEF_REASON =
+  'The factory denies this command: it defines a shell function. A function name can hide a git, ' +
+  'gh, sh, eval, kubectl or rm word from this guard, and the guard cannot follow the call. Write ' +
+  'the commands plainly, or write the function to a .scratch script file with the Write tool and ' +
+  'run it with bash or zsh. A heredoc write of the function is also denied. Do not retry this ' +
+  'exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -220,12 +250,20 @@ export const SHELL_STDIN_REASON =
   'read that script. Run the commands directly, or run a script file with a literal name. ' +
   'Do not retry this exact command.'
 
+// claude-factory-38jm: reason for a dynamic word in the option slot of a shell call.
+export const SH_DYNAMIC_FLAG_REASON =
+  'The factory denies this command: a word in the option slot of a sh, bash, zsh or dash call ' +
+  'holds a shell expansion ($, a backtick, a glob, a brace or a paren). The shell can expand it ' +
+  'to -c and a script that the guard cannot read. Write the shell flags and the script plainly. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-p43v: a command or subcommand word can hold a dollar sign, a backtick, a glob
 // character, a brace, or a leading tilde. The shell has not expanded that word yet. This guard
 // reads the typed text. It does not read the shell's own expansion of that text.
 //
 // A check for one literal verb, such as push, cannot match an unexpanded word. Every check after
 // it then reads the wrong verb, or no verb at all.
+
 export const DYNAMIC_VERB_REASON =
   'The factory denies this command: a word at the command or subcommand slot holds a shell ' +
   'expansion ($, a backtick, a glob, a brace, or a leading ~). The shell expands this word at ' +
@@ -290,6 +328,11 @@ export interface HookGate {
    * user config; undefined only on a read error. `timeoutMs` bounds the gh spawn
    * (claude-factory-dts.4). */
   ghAliases?: (timeoutMs?: number) => Map<string, string> | undefined
+  /** claude-factory-1zr5: the shell aliases in the newest Claude Code shell snapshots (see
+   * `shellSnapshotAliases`): name to unquoted value, or null for a value the reader cannot unquote.
+   * The Bash tool shell expands them, but the hook sees only the alias word. Unset means no alias
+   * check. Undefined from the function means a read error: the hook denies every command. */
+  shellAliases?: () => Map<string, string | null> | undefined
 }
 
 /**
@@ -332,6 +375,19 @@ export interface HookGate {
  * a match. `denyReason` denies with `PUSH_REASON` when `headPush` is true and either
  * `branchChange` or `gitAdminPath` is true. This is the same rule as above. It now covers this
  * new, verb-free write path too.
+ *
+ * claude-factory-ty8y: two more facts, `globalGitConfig` and `gitWord`. A shell redirect, or another
+ * file tool, can write the global git config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`,
+ * `/etc/gitconfig`) with no `git` word. That file can set `remote.<n>.push`, `push.default` or an
+ * alias that pushes. `globalGitConfigUse` classifies each segment. A `write` (a redirect target, an
+ * `of=` target, a glob that can name the file, or an operand of a command that is not a reader)
+ * denies at once with `GLOBAL_GIT_CONFIG_REASON`. A git segment and a reader segment skip their
+ * operands. A `mention` (a `.config` directory word) sets `globalGitConfig`. `scanReason` denies
+ * when `globalGitConfig` is true and `gitWord` is true. `gitWord` comes from the dequoted segment
+ * words, so `"gi"t` counts. `hasDangerousConfigEnv` reads it too.
+ * Residual, not fixed: a path built from a shell variable (`F=~/.gitconfig; echo x >> $F`), a
+ * Write or Edit tool write (claude-factory-ak7), a `.git/config` write alone (claude-factory-cpn), and a directory copy with no path operand (`cp -R /r/acme/dot/. ~/`, `tar -xf x.tar -C ~`).
+ * Fix for the whole class: claude-factory-yoib (a push-time read of the effective git config).
  */
 interface ScanState {
   branchChange: boolean
@@ -342,6 +398,8 @@ interface ScanState {
   stdinFed: boolean
   /** claude-factory-l43b: set when a shell reads stdin. denyReason returns SHELL_STDIN_REASON last, so a more specific reason from the same command wins. */
   stdinDeferred: boolean
+  globalGitConfig: boolean
+  gitWord: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
   substFallbacks: number
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
@@ -391,13 +449,28 @@ const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', '
  * run the real binaries, so every guard must see them as `git`, `gh` and `sh`. APFS also folds
  * U+017F (long s) to `s`, so the fold goes through upper case: `toLowerCase` alone keeps it.
  */
-function baseWord(w: string): string {
+function baseWordUncached(w: string): string {
   const s = w.replace(/^\\/, '')
   const i = s.lastIndexOf('/')
   const b = i >= 0 ? s.slice(i + 1) : s
   // ASCII fast path: the upper-then-lower fold is slow on huge scans
   return /[^\x00-\x7f]/.test(b) ? b.toUpperCase().toLowerCase() : b.toLowerCase()
 }
+
+// claude-factory-4i60.14: a scan reads the same few words many times. The cache key is the exact
+// word and the value is the uncached result, so no verdict changes. It clears at the size bound.
+const BASE_WORD_CACHE_MAX = 4096
+const baseWordCache = new Map<string, string>()
+export function baseWord(w: string): string {
+  let r = baseWordCache.get(w)
+  if (r === undefined) {
+    r = baseWordUncached(w)
+    if (baseWordCache.size >= BASE_WORD_CACHE_MAX) baseWordCache.clear()
+    baseWordCache.set(w, r)
+  }
+  return r
+}
+export { baseWordUncached as baseWordForTest }
 
 /** a command substitution found inside a double-quoted span: its body, and the count of segments before it */
 interface DqSubstitution {
@@ -680,7 +753,7 @@ function isCatHeredoc(body: string): boolean {
  */
 function segments(
   cmd: string,
-  info?: { dollarQuote: boolean; state?: ScanState; deep?: boolean },
+  info?: { dollarQuote: boolean; funcDef?: boolean; state?: ScanState; deep?: boolean },
   subs?: DqSubstitution[],
 ): string[][] {
   const segs: string[][] = []
@@ -703,8 +776,13 @@ function segments(
     cur = []
   }
   let redirPrev = false
+  // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
+  // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
+  let exemptPrev: boolean = false
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
+    const wasExempt: boolean = exemptPrev
+    exemptPrev = false
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir: boolean = redirPrev
     redirPrev = false
@@ -755,6 +833,7 @@ function segments(
         // claude-factory-abmq: a continuation is not a char, so `>BSNL&1` stays one redirect.
         redirPrev = afterRedir
         i++
+        exemptPrev = wasExempt
         continue
       }
       word += cmd[++i]
@@ -772,6 +851,16 @@ function segments(
       // add no marker, and neither does the `)` that closes them. `<(` and `>(` keep one, because a word after them must stay in the push tail.
       const prev = cmd[i - 1] ?? ''
       if (c === '(') {
+        // claude-factory-4i60: an empty `()` pair after a word is a function definition.
+        if (info && !wasExempt) {
+          let j = i + 1
+          while (j < cmd.length) {
+            if (cmd[j] === ' ' || cmd[j] === '\t' || cmd[j] === '\n') j++
+            else if (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+            else break
+          }
+          if (cmd[j] === ')') info.funcDef = true
+        }
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
         if (arg) {
@@ -823,9 +912,54 @@ function segments(
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
+    exemptPrev = c === '$' || c === '<' || c === '>' || c === '='
   }
   endSeg()
   return segs.filter(s => s.length > 0)
+}
+
+// claude-factory-4i60: words that can come before a `function` keyword in a command position.
+const FUNCTION_PREFIX_WORDS = new Set([
+  '{',
+  '!',
+  'time',
+  '-p',
+  'then',
+  'do',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+])
+
+const FUNCTION_TABLE_WORD = /^(dis_)?functions(\[|\+?=|$)/
+const FUNCTION_IMPORT_VALUE = /^[^=]*=\(\) \{/
+
+/**
+ * claude-factory-4i60: true when this segment defines a shell function with the `function`
+ * keyword. The lexer already drops quotes and escapes, so `\function` matches too.
+ */
+function namesFunctionDefinition(words: string[]): boolean {
+  // claude-factory-4i60.15: every check below needs one of these strings in a word
+  if (!/function|BASH_FUNC_|=\(\) \{/.test(joinedWords(words))) return false
+  let k = 0
+  while (k < words.length && FUNCTION_PREFIX_WORDS.has(words[k]!)) k++
+  if (words[k] === 'function') return true
+  // claude-factory-4i60.5: a command position also follows `{` and the like inside
+  // the segment (zsh `repeat 1 {`, `if [[ 1 ]] {`, `} always {`), `repeat <word>`, and `time --`.
+  for (let j = 1; j < words.length; j++) {
+    if (words[j] !== 'function') continue
+    const prev = words[j - 1]!
+    if (FUNCTION_PREFIX_WORDS.has(prev) && prev !== '-p' && prev !== 'time') return true
+    if (prev === ']]') return true
+    if (words[j - 2] === 'repeat') return true
+    if (prev === '--' && (words[j - 2] === 'time' || words[j - 2] === '-p')) return true
+  }
+  // the zsh functions table, a bash BASH_FUNC_ import, and a bash function-import value
+  return words.some(
+    w => FUNCTION_TABLE_WORD.test(w) || w.includes('BASH_FUNC_') || FUNCTION_IMPORT_VALUE.test(w),
+  )
 }
 
 /** true when `w` is a short-flag cluster (e.g. `-rf`) or a long flag (`--recursive`) that means recursive */
@@ -1363,11 +1497,11 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
 }
 
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
-// way anyShellReason finds it: the first flag cluster that holds c, then the first word after it
+// way anyShellReason finds it: the first flag cluster that holds c (or a dynamic word), then the first word after it
 // that is not itself a flag, or the word right after a literal --.
 function shCScriptValue(words: string[], start: number): string | undefined {
   let nc = start
-  while (nc < words.length && words[nc] !== '--' && !isShCCluster(words[nc]!)) nc++
+  while (nc < words.length && words[nc] !== '--' && !possibleShCCluster(words[nc]!)) nc++
   if (nc >= words.length || words[nc] === '--') return undefined
   for (let k = nc + 1; k < words.length; k++) {
     const w = words[k]!
@@ -1391,10 +1525,18 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   // (rest holds them all, later eval words too). A later eval word then needs no recursion of its
   // own. Without this skip, n stacked eval words cost about 2^n work.
   let evalScanned = false
+  let slotEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+      // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
+      // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
+      if (k >= slotEnd) {
+        const walk = shOptionSlotWalk(words, k)
+        if (walk.dynamic) return true
+        slotEnd = walk.end
+      }
       const script = shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
     } else if (bw === 'eval' && !evalScanned) {
@@ -1886,12 +2028,261 @@ const GIT_NAME_RE = /(^|[^A-Za-z0-9_.-])\.git(?![A-Za-z0-9_-])/i
 // The worker must make one more Bash call with an explicit refspec.
 const GIT_DIR_FLAG_RE = /--git-dir|--absolute-git-dir|--git-path|--git-common-dir|GIT_DIR|GIT_COMMON_DIR/i
 
+// claude-factory-ty8y: a word that names the global git config file. The alternatives are:
+// `gitconfig` (`~/.gitconfig`, `/etc/gitconfig`), `git/config` (`$XDG_CONFIG_HOME/git/config`),
+// a `.config` directory word (a `cd` into it, then a bare `git/config` or `config` write), and
+// `XDG_CONFIG_HOME`. It does not match `vite.config.ts`, `.gitignore`, `widget.git` or `.git/config`.
+const GLOBAL_GIT_CONFIG_RE =
+  /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|(^|[^A-Za-z0-9_.-])\.config(?=\/|$)|XDG_CONFIG_HOME/i
+
+// claude-factory-ty8y: the alternatives of GLOBAL_GIT_CONFIG_RE that name the file itself, not a
+// directory on the way to it. A non-reader command that holds such a word writes, or can write.
+const GLOBAL_GIT_CONFIG_FILE_RE =
+  /gitconfig|(^|[^A-Za-z0-9_.-])git\/config(?![A-Za-z0-9_-])|(^|[^A-Za-z0-9_.-])\.config(\/git)?\/?["']?$|XDG_CONFIG_HOME/i
+
+// claude-factory-ty8y: paths a glob word is tested against, to find a glob that can name the file.
+const GLOBAL_GIT_CONFIG_SAMPLES = [
+  '~/.gitconfig',
+  '~acme/.gitconfig',
+  '$HOME/.gitconfig',
+  '${HOME}/.gitconfig',
+  '/home/acme/.gitconfig',
+  '/Users/acme/.gitconfig',
+  '/etc/gitconfig',
+  '~/.config/git/config',
+  '~/.config/git',
+  '~/.config/git/',
+  '$XDG_CONFIG_HOME/git/config',
+  '${XDG_CONFIG_HOME}/git/config',
+]
+
+// claude-factory-ty8y: commands that read their operands. A reader writes only through a redirect.
+const READER_COMMANDS = new Set([
+  'cat',
+  'less',
+  'more',
+  'head',
+  'tail',
+  'ls',
+  'stat',
+  'file',
+  'wc',
+  'grep',
+  'egrep',
+  'fgrep',
+  'rg',
+  'diff',
+  'cmp',
+  'test',
+  '[',
+  'echo',
+  'printf',
+  'readlink',
+  'realpath',
+  'basename',
+  'dirname',
+])
+
+// claude-factory-ty8y.12: commands whose operands are text (a search word, a title, a comment body).
+const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
+
+function globNamesGlobalGitConfig(word: string): boolean {
+  const w = word.replace(/^["']+|["']+$/g, '')
+  if (!/[*?[]/.test(w)) return false
+  // claude-factory-ty8y.24: star runs collapse; more than 4 stars fail closed, since a backtracking match could outlast the hook timeout.
+  const collapsed = w.replace(/\*+/g, '*')
+  if (collapsed.split('*').length - 1 > 4) return true
+  try {
+    const re = globToRegExp(collapsed)
+    return GLOBAL_GIT_CONFIG_SAMPLES.some(s => re.test(s))
+  } catch {
+    return false
+  }
+}
+
+type OperandSkip = 'none' | 'reader' | 'operands'
+
+// claude-factory-ty8y.9: a git segment with one of these words can write a path operand: the work
+// tree moves, or a clone or worktree creates the path. Such a segment keeps its operands checked.
+const GIT_OPERAND_WRITER_RE = /^(--work-tree|--git-dir|-C|GIT_WORK_TREE=|GIT_DIR=|clone$|worktree$)/
+
+// claude-factory-ty8y.12, .18: flags that make a skipped command write their value.
+const OUTPUT_FLAG_SOURCE = '--output|-o|-O|-D|--dir|--reporter-outfile'
+const OUTPUT_FLAG_RE = new RegExp(`^(${OUTPUT_FLAG_SOURCE})`)
+const OUTPUT_FLAG_EXACT_RE = new RegExp(`^(${OUTPUT_FLAG_SOURCE})$`)
+
+// claude-factory-ty8y.14: true when a work tree flag or env word moves the work tree out of `root`.
+// A git checkout or restore into another work tree can write the global git config.
+// claude-factory-ty8y.19: a `..` segment is bad, also when the path stays under `root`.
+// The `..` test runs before the root test. This guard fails closed.
+function pathOutsideRoot(raw: string | undefined, root: string | undefined): boolean {
+  const v = (raw ?? '').replace(/^["']+|["']+$/g, '')
+  if (v === '.') return false
+  if (!v || /[~$`\\]|(^|\/)\.\.(\/|$)/.test(v)) return true
+  if (root && (v === root || v.startsWith(root + '/'))) return false
+  return v.startsWith('/')
+}
+
+// claude-factory-lbn: the segment checks below test the same joined text. One cached join keeps a
+// 200000-word segment from paying for it once per check. The cache holds the last array only.
+let joinedFor: string[] | undefined
+let joinedText = ''
+function joinedWords(words: string[]): string {
+  if (joinedFor !== words) {
+    joinedFor = words
+    joinedText = words.join('\n')
+  }
+  return joinedText
+}
+
+// `moved` is true when a cd, pushd or popd word ran before this segment (claude-factory-ty8y.20).
+const SEGMENT_MAY_TOUCH_RE = /config|xdg|git|worktree|work-tree|[*?[{<>]|(^|\n)-C(\n|$)/i
+// One pass over the joined words. When it fails, none of the four ty8y segment checks can match.
+function segmentMayTouchGit(words: string[]): boolean {
+  return SEGMENT_MAY_TOUCH_RE.test(joinedWords(words))
+}
+
+function gitWorkTreeOutside(words: string[], root: string | undefined, moved = false): boolean {
+  if (!/--work-tree|GIT_WORK_TREE=|--git-dir|GIT_DIR=|(^|\n)-C(\n|$)/.test(joinedWords(words))) return false
+  const bad = (raw: string | undefined): boolean => pathOutsideRoot(raw, root)
+  let hasWorkTree = false
+  let hasGitDir = false
+  let badC = false
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    const c = w.charCodeAt(0)
+    if (c !== 45 && c !== 71) continue
+    if (w === '--work-tree') {
+      hasWorkTree = true
+      if (bad(words[i + 1])) return true
+    } else if (w.startsWith('--work-tree=')) {
+      hasWorkTree = true
+      if (bad(w.slice(12))) return true
+    } else if (w.startsWith('GIT_WORK_TREE=')) {
+      hasWorkTree = true
+      if (bad(w.slice(14))) return true
+    } else if (w === '--git-dir' || w.startsWith('--git-dir=') || w.startsWith('GIT_DIR=')) {
+      hasGitDir = true
+    } else if (w === '-C' && bad(words[i + 1])) {
+      badC = true
+    }
+  }
+  // claude-factory-ty8y.20: a git dir with no work tree makes the cwd the work tree.
+  return hasGitDir && !hasWorkTree && (moved || badC)
+}
+
+// claude-factory-ty8y.21: a git config write of core.worktree, or any `-c core.worktree=`, moves the
+// work tree. A value outside `root` denies. A read form has no value word, so it allows.
+function gitCoreWorktreeOutside(words: string[], root: string | undefined): boolean {
+  if (!/core\.worktree|(^|\n)config(\n|$)/i.test(joinedWords(words))) return false
+  if (words.some(w => w.length > 13 && /^(-c|--config-env)?core\.worktree=/i.test(w))) return true
+  const at = words.indexOf('config')
+  if (at < 0) return false
+  if (!words.some(w => baseWord(w) === 'git')) return false
+  const operands: string[] = []
+  const args = words.slice(at + 1)
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!
+    if (w === '--') {
+      operands.push(...args.slice(i + 1))
+      break
+    }
+    if (w.startsWith('-') && w !== '-') {
+      if (!w.includes('=') && GIT_CONFIG_VALUE_FLAGS.has(w)) i++
+      continue
+    }
+    operands.push(w)
+  }
+  const start = operands[0] === 'set' ? 1 : 0
+  const name = (operands[start] ?? '').replace(/^["']+|["']+$/g, '')
+  if (!/^core\.worktree$/i.test(name)) return false
+  const value = operands[start + 1]
+  return value !== undefined && pathOutsideRoot(value, root)
+}
+
+// claude-factory-ty8y.17: collapses `//`, `/./` and a trailing `/.` so a path spelling cannot dodge the regexes.
+function normalizeConfigPath(word: string): string {
+  return word
+    .replace(/\/+/g, '/')
+    .replace(/\/(\.\/)+/g, '/')
+    .replace(/\/\.(["']?)$/, '$1')
+}
+
+const PLAIN_WORD_RE = /^[^\/.*?[{~$\\'"<>&|]*$/
+
+/**
+ * claude-factory-ty8y: classifies one segment's raw words.
+ * `write`: a redirect target, a `dd` `of=` target, or an operand of a command that is not a reader
+ * names the global git config file, the `.config` directory, or a glob that can name the file.
+ * `mention`: a word names a directory on the way to it (`.config`), or the file where the
+ * segment skips operands.
+ *
+ * A git segment and a reader segment skip their non-redirect operands. They only name a path.
+ * A skipped command still checks the value of an output flag, because it writes that value.
+ */
+function globalGitConfigUse(
+  words: string[],
+  skip: OperandSkip,
+  isCd = false,
+): 'write' | 'mention' | undefined {
+  // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
+  // the text config or XDG, a glob character, a brace, or a redirect operator.
+  if (!/config|XDG|[*?[{<>]/i.test(joinedWords(words))) return undefined
+  let use: 'mention' | undefined
+  let pending = false
+  let prevWriterFlag = false
+  for (const word of words) {
+    const afterWriterFlag = prevWriterFlag
+    prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
+    const wasPending = pending
+    pending = false
+    // Fast path (claude-factory-lbn scan cost): a plain word holds no path or glob character, so no
+    // regex below can match it, unless it is a redirect, an of= word, or names gitconfig or XDG.
+    if (!wasPending && PLAIN_WORD_RE.test(word) && !/^of=|gitconfig|XDG_CONFIG_HOME/i.test(word)) continue
+    let candidate = normalizeConfigPath(word)
+    let redirect = wasPending
+    const m = word.match(REDIRECT_PREFIX_RE)
+    if (m && m[0].length === word.length) {
+      pending = true
+      continue
+    }
+    if (m) {
+      candidate = normalizeConfigPath(word.slice(m[0].length))
+      redirect = true
+    } else if (!wasPending && /^of=/i.test(word)) {
+      candidate = normalizeConfigPath(word.slice(3))
+      redirect = true
+    }
+    if (!redirect) {
+      if (skip === 'reader') continue
+      if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
+    }
+    if (isCd && !redirect) {
+      if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
+      continue
+    }
+    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate)) return 'write'
+    if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
+  }
+  return use
+}
+
+/** claude-factory-ty8y: true when a dequoted word of a segment is a git or git-<verb> word. */
+function hasGitWordIn(words: string[]): boolean {
+  if (!/git/i.test(joinedWords(words))) return false
+  return words.some(w => {
+    if (!/git/i.test(w)) return false
+    const b = baseWord(w)
+    return b === 'git' || /^git-/.test(b)
+  })
+}
+
 // claude-factory-9zd5: removes a leading redirect operator from a word.
 // This applies to one word that holds the operator and the target, with no space.
 // Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
 // A word that holds only the operator matches in full, such as a bare `>` or `>>`.
 // The caller then reads the next word as the target.
-const REDIRECT_PREFIX_RE = /^(?:\d+|&)?>>?/
+const REDIRECT_PREFIX_RE = /^(?:\d+|&)?(?:<>|>>?\|?)/
 
 // claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
 // `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
@@ -2260,6 +2651,46 @@ function firstVerbIndex(
     return { index: i, uncertain }
   }
   return { index: -1, uncertain }
+}
+
+/**
+ * claude-factory-38jm: true when `w` is a `-c` cluster, or a dynamic word that the shell can
+ * expand to one. The `-c` scans use this test, so a dynamic word after a literal operand
+ * (`sh script.sh $X 'git push origin main'`) reads like `sh script.sh -c '...'`.
+ */
+function possibleShCCluster(w: string): boolean {
+  return isShCCluster(w) || (w !== '--' && dynamicPushWord(w))
+}
+
+/**
+ * claude-factory-38jm: reads the option slot of the sh/bash/zsh/dash word at `words[j]`.
+ * The walk starts at `words[j + 1]`. It returns `dynamic: true` when a word in that slot holds a
+ * shell expansion (`dynamicPushWord`). The shell can expand such a word to `-c` and a script.
+ *
+ * The walk stops with `dynamic: false` at a literal `--`, at a literal `-c` cluster (the `-c`
+ * scan reads the script then), or at the first literal operand (a word that does not start with
+ * `-` or `+`). It skips a lone `-` and each literal flag word. After a short flag word that
+ * holds `o` or `O`, and after `--rcfile`, `--init-file` or `--emulate`, the next word is the flag value. The
+ * walk skips a literal value, and returns true for a dynamic one.
+ *
+ * `end` is the index of the word that stopped the walk, or `words.length`. The walk from a later
+ * shell word below `end` reads a suffix of this walk and ends the same way.
+ */
+function shOptionSlotWalk(words: string[], j: number): { dynamic: boolean; end: number } {
+  for (let i = j + 1; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--' || isShCCluster(w)) return { dynamic: false, end: i }
+    if (dynamicPushWord(w)) return { dynamic: true, end: i }
+    if (w === '-') continue
+    if (!w.startsWith('-') && !w.startsWith('+')) return { dynamic: false, end: i }
+    const takesValue =
+      w === '--rcfile' || w === '--init-file' || w === '--emulate' || (!w.startsWith('--') && /[oO]/.test(w))
+    if (takesValue) {
+      i++
+      if (i < words.length && dynamicPushWord(words[i]!)) return { dynamic: true, end: i }
+    }
+  }
+  return { dynamic: false, end: words.length }
 }
 
 /**
@@ -4603,6 +5034,9 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
   'api',
 ])
 
+// claude-factory-38jm: a brace word with a comma or a `..` range.
+const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
+
 /**
  * The function returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real
  * command (claude-factory-p43v.5). No wrapper that this hook knows by name names the command.
@@ -4655,6 +5089,10 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
   for (const a of commandAnchors(words)) {
+    // claude-factory-38jm: bash expands `{sh,-c}` into two words before it runs the command. A
+    // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
+    // no comma and no `..`, so it stays allowed.
+    if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
@@ -4842,7 +5280,7 @@ function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): strin
  * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
  * pointers that only move up.
  *
- * `nc` holds the next index at or after the current `j` whose word passes `isShCCluster`.
+ * `nc` holds the next index at or after the current `j` whose word passes `possibleShCCluster`.
  * `nd` holds the next index at or after `j` whose word is a literal `--`.
  *
  * Each pointer keeps its old value until `j` moves past it. Then the code scans forward from `j`
@@ -5082,6 +5520,7 @@ function anyShellReason(
 ): string | undefined {
   let nc = -1
   let nd = -1
+  let slotEnd = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -5124,9 +5563,16 @@ function anyShellReason(
       return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
     }
     if (bw === 'sh' || bw === 'bash' || bw === 'zsh' || bw === 'dash') {
+      // claude-factory-38jm: a shell word below slotEnd is a value word of an earlier walk. Its
+      // walk is a suffix of that one, so it ends the same way. Skipping it keeps the scan O(n).
+      if (j >= slotEnd) {
+        const walk = shOptionSlotWalk(words, j)
+        if (walk.dynamic) return SH_DYNAMIC_FLAG_REASON
+        slotEnd = walk.end
+      }
       if (nc < j) {
         nc = j
-        while (nc < words.length && !isShCCluster(words[nc]!)) nc++
+        while (nc < words.length && !possibleShCCluster(words[nc]!)) nc++
       }
       if (nd < j) {
         nd = j
@@ -5280,6 +5726,19 @@ function memoGate(gate: HookGate): HookGate {
       return result
     }
   }
+  // claude-factory-1zr5: shellAliases reads the snapshot folder at most one time for one denyReason call.
+  if (gate.shellAliases) {
+    const real = gate.shellAliases
+    let called = false
+    let result: Map<string, string | null> | undefined
+    memo.shellAliases = () => {
+      if (!called) {
+        called = true
+        result = real()
+      }
+      return result
+    }
+  }
   return memo
 }
 
@@ -5341,12 +5800,17 @@ export function scanReason(
     gitAdminPath: false,
     stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     stdinDeferred: false,
+    globalGitConfig: false,
+    gitWord: false,
     substFallbacks: 0,
     work: budget,
   }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
+  // claude-factory-ty8y: a global git config path word plus any git word denies, before the
+  // headPush check, because an alias call sets no headPush.
+  if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
   if (!state.headPush) return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
@@ -5354,6 +5818,85 @@ export function scanReason(
   // denies a write this guard's own word scan cannot read, such as a shell-variable target.
   if (state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd)) return PUSH_REASON
   return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+}
+
+// claude-factory-1zr5: the most alias expansions one word can chain through. A longer chain denies.
+const MAX_SHELL_ALIAS_DEPTH = 10
+
+// claude-factory-1zr5: writes one segment word back as shell text, so a rescan reads the same word.
+// A word with a $, backtick, glob or similar char stays bare, so the dynamic-word checks still see it.
+// A bare word that also holds a space or an operator char cannot be written safely: null.
+function aliasWordText(w: string): string | null {
+  if (/[$`*?[{~\\!]/.test(w)) return /[\s;&|<>()#'"]/.test(w) ? null : w
+  return `'${w.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * claude-factory-1zr5: the Bash tool shell expands a snapshot alias that is a word of this segment,
+ * but the other checks see only the alias word. This function reads every word of the segment (any
+ * position, like `anyGitReason`). For a word in `table`:
+ *   - a value that is null (the reader could not unquote it) denies.
+ *   - a name other than git or gh, whose expansion holds a git, gh or git-<verb> word, denies.
+ *   - any other alias: the expansion replaces the word, and `denyAt` scans the result again.
+ *     It skips the names already expanded, as zsh does, and denies past MAX_SHELL_ALIAS_DEPTH.
+ */
+function shellAliasReason(
+  words: string[],
+  table: Map<string, string | null>,
+  stack: readonly string[],
+  root: string | undefined,
+  personOnly: string[] | undefined,
+  gate: HookGate,
+  depth: number,
+  state: ScanState,
+  moved: boolean,
+  ghMoved: boolean,
+): string | undefined {
+  let end = words.length
+  const first = words.findIndex(w => !/^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/.test(w))
+  if (
+    first >= 0 &&
+    words[first]!.includes('/') &&
+    !/[=<>&|()]/.test(words[first]!) &&
+    !table.has(words[first]!)
+  ) {
+    end = first + 1
+  }
+  for (let i = 0; i < end; i++) {
+    const name = words[i]!
+    if (!table.has(name) || stack.includes(name)) continue
+    const value = table.get(name)
+    if (value === null || value === undefined) return SHELL_ALIAS_REASON
+    if (stack.length >= MAX_SHELL_ALIAS_DEPTH) return SHELL_ALIAS_REASON
+    if (spendWork(state, value.length + words.length)) return SCAN_BUDGET_REASON
+    const info = { dollarQuote: false }
+    const expansion = segments(value, info)
+    if (info.dollarQuote) return SHELL_ALIAS_REASON
+    if (name !== 'git' && name !== 'gh') {
+      const runsGit = expansion.some(seg =>
+        seg.some(x => {
+          const b = baseWord(x)
+          return b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)
+        }),
+      )
+      if (runsGit) return SHELL_ALIAS_REASON
+    }
+    const parts = expansion.length ? expansion.map(seg => [...seg]) : [[]]
+    parts[0] = [...words.slice(0, i), ...parts[0]!]
+    parts[parts.length - 1] = [...parts[parts.length - 1]!, ...words.slice(i + 1)]
+    const texts: string[] = []
+    for (const part of parts) {
+      const quoted = part.map(aliasWordText)
+      if (quoted.includes(null)) return SHELL_ALIAS_REASON
+      texts.push(quoted.join(' '))
+    }
+    const reason = denyAt(texts.join(' ; '), root, personOnly, gate, depth, state, moved, ghMoved, [
+      ...stack,
+      name,
+    ])
+    if (reason) return reason
+  }
+  return undefined
 }
 
 /**
@@ -5385,9 +5928,13 @@ function denyAt(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
+  aliasStack: readonly string[] = [],
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
+  // claude-factory-1zr5: a table the hook cannot read denies every command (fail closed).
+  const aliasTable = gate.shellAliases?.()
+  if (gate.shellAliases && !aliasTable) return SHELL_ALIAS_READ_REASON
   // claude-factory-epz: a deep command denies here, with no personOnly check at all. The
   // MAX_COMMAND_LENGTH cap (claude-factory-25z.20) now runs once, in denyReason, before this
   // function ever runs (claude-factory-dts). denyAt itself checks no length at all.
@@ -5408,13 +5955,15 @@ function denyAt(
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
   const subs: DqSubstitution[] = []
-  const quoteInfo: { dollarQuote: boolean; state: ScanState; deep?: boolean } = {
+  const quoteInfo: { dollarQuote: boolean; funcDef: boolean; state: ScanState; deep?: boolean } = {
     dollarQuote: false,
+    funcDef: false,
     state,
   }
   const segs = segments(command, quoteInfo, subs)
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  let definesFunction = quoteInfo.funcDef
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
@@ -5440,6 +5989,22 @@ function denyAt(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
+    if (aliasTable) {
+      const aliased = shellAliasReason(
+        words,
+        aliasTable,
+        aliasStack,
+        root,
+        personOnly,
+        g,
+        depth,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
+      if (aliased) return aliased
+    }
+    if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
@@ -5458,6 +6023,24 @@ function denyAt(
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
     const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
     if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
+    const mayTouch = segmentMayTouchGit(words)
+    if (mayTouch && hasGitWordIn(words)) state.gitWord = true
+    const isGitSegment = b === 'git' || /^git-/.test(b)
+    const operandSkip: OperandSkip = READER_COMMANDS.has(b)
+      ? 'reader'
+      : (isGitSegment && !words.some(w => GIT_OPERAND_WRITER_RE.test(w))) ||
+          (TEXT_OPERAND_COMMANDS.has(b) &&
+            !(
+              b === 'gh' &&
+              (words.includes('clone') || words.some(w => /^--clone(=(?!false$)|$)/.test(w)))
+            )) ||
+          (b === 'bun' && cmd[1] === 'test')
+        ? 'operands'
+        : 'none'
+    const configUse = mayTouch
+      ? globalGitConfigUse(words, operandSkip, b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir')
+      : undefined
+    if (configUse === 'mention') state.globalGitConfig = true
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
     // hide a kubectl, ko or helm word that follows it.
     //
@@ -5500,6 +6083,11 @@ function denyAt(
     // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
     const stdinShell = shellStdinReason(words, state)
     if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true
+    if (
+      configUse === 'write' ||
+      (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
+    )
+      return GLOBAL_GIT_CONFIG_REASON
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
@@ -5530,8 +6118,9 @@ function denyAt(
   }
   const tailReason = scanSubs(Infinity)
   if (tailReason) return tailReason
-  if (hasDangerousConfigEnv && commandHasGitWord(command)) return PUSH_REASON
+  if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
+  if (definesFunction) return FUNCTION_DEF_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
@@ -5624,6 +6213,96 @@ function ghAliasList(timeoutMs = 2000): Map<string, string> | undefined {
   }
 }
 
+// claude-factory-1zr5: unquotes the text after `name=` in one `alias -- name=value` snapshot line.
+// zsh prints a value bare, or as single-quoted spans joined with `\'`. A quoted span can cross lines.
+// It returns the value and the index of the line that ends it, or null for any other quoting.
+function unquoteAliasValue(
+  lines: string[],
+  first: number,
+  start: number,
+): { value: string; end: number } | null {
+  let value = ''
+  let li = first
+  let line = lines[li]!
+  let i = start
+  let quoted = false
+  for (;;) {
+    if (i >= line.length) {
+      if (!quoted) return { value, end: li }
+      li++
+      if (li >= lines.length) return null
+      value += '\n'
+      line = lines[li]!
+      i = 0
+      continue
+    }
+    const c = line[i]!
+    if (quoted) {
+      if (c === "'") quoted = false
+      else value += c
+      i++
+    } else if (c === "'") {
+      quoted = true
+      i++
+    } else if (c === '\\' && i + 1 < line.length) {
+      value += line[i + 1]
+      i += 2
+    } else if (/[A-Za-z0-9_@%+=:,./~^-]/.test(c)) {
+      value += c
+      i++
+    } else {
+      return null
+    }
+  }
+}
+
+const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
+const SNAPSHOT_FILES = 3
+
+/**
+ * claude-factory-1zr5: reads the shell aliases from the newest three `snapshot-*.sh` files in `dir`
+ * (Claude Code's shell-snapshots folder), a newer file over an older one. The Bash tool shell
+ * sources a snapshot before each command, so its aliases expand there. The hook never learns which
+ * snapshot a session uses, so it reads the union.
+ *
+ * A value maps to null when this reader cannot unquote it. A missing folder gives an empty Map.
+ * A folder or file that cannot be read, or a file over 4 MiB, gives undefined (fail closed).
+ */
+export function shellSnapshotAliases(dir: string): Map<string, string | null> | undefined {
+  let names: string[]
+  try {
+    names = readdirSync(dir).filter(n => /^snapshot-.*\.sh$/.test(n))
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? new Map() : undefined
+  }
+  const table = new Map<string, string | null>()
+  try {
+    const files = names
+      .map(n => ({ path: joinPath(dir, n), st: statSync(joinPath(dir, n)) }))
+      .sort((a, b) => b.st.mtimeMs - a.st.mtimeMs)
+      .slice(0, SNAPSHOT_FILES)
+      .reverse()
+    for (const f of files) {
+      if (f.st.size > SNAPSHOT_MAX_BYTES) return undefined
+      const lines = readFileSync(f.path, 'utf8').split('\n')
+      for (let n = 0; n < lines.length; n++) {
+        const m = /^alias -- ([^=\s]+)=/.exec(lines[n]!)
+        if (!m) continue
+        const parsed = unquoteAliasValue(lines, n, m[0].length)
+        if (parsed) {
+          table.set(m[1]!, parsed.value)
+          n = parsed.end
+        } else {
+          table.set(m[1]!, null)
+        }
+      }
+    }
+  } catch {
+    return undefined
+  }
+  return table
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -5666,6 +6345,11 @@ async function main() {
     // same i.cwd-then-root fallback rule.
     gitAliases: timeoutMs => gitConfigAliases(i.cwd || root, timeoutMs),
     ghAliases: timeoutMs => ghAliasList(timeoutMs),
+    // claude-factory-1zr5: the Bash tool shell sources a Claude Code snapshot of the user's aliases
+    shellAliases: () =>
+      shellSnapshotAliases(
+        joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots'),
+      ),
     // claude-factory-3f2z.2 / claude-factory-9zd5: the tool call's own cwd, with no fallback to
     // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
     // read this field; `gitReason` falls back to `root` itself at its own call site.

@@ -1,15 +1,18 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  baseWord,
+  baseWordForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
+  FUNCTION_DEF_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   GH_BUILTIN_VERBS,
@@ -20,10 +23,14 @@ import {
   MERGE_REASON,
   PUSH_DIR_REASON,
   PUSH_REASON,
+  GLOBAL_GIT_CONFIG_REASON,
   READY_REASON,
   REASON,
   SCAN_BUDGET_REASON,
   scanReason,
+  SHELL_ALIAS_READ_REASON,
+  SHELL_ALIAS_REASON,
+  shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
 
@@ -2642,7 +2649,6 @@ const ALLOW_DYNAMIC_PUSH_WORD = [
   '(git push origin feature)',
   'echo "$(git rev-parse HEAD)"',
   'echo $(git push origin feature)',
-  'f() { git push origin feature; }',
 ]
 
 test.each(ALLOW_DYNAMIC_PUSH_WORD)('denyReason allows %j (claude-factory-cu5m, no dynamic word)', cmd => {
@@ -2948,6 +2954,138 @@ test('denyReason allows a $ that does not start a $-quote (claude-factory-hewq)'
     "echo $\\\n\\'x\\'",
   ]) {
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+  }
+})
+
+// claude-factory-4i60: a call word can hide a git, sh or rm word in a function body.
+// The guard cannot follow the call. It denies every function definition.
+const FN_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+}
+const DENY_FUNCTION_DEF = [
+  `f() { sh x; }; f -c 'git push origin main'`,
+  `f () { sh x; }; f -c 'git push origin main'`,
+  `f ( ) { sh x; }; f -c 'git push origin main'`,
+  `f(\t) { sh x; }; f -c 'git push origin main'`,
+  `f(\\\n) { sh x; }; f -c 'git push origin main'`,
+  `f( \\\n \\\n ) { sh x; }; f -c 'git push origin main'`,
+  `f\\\n() { sh x; }; f -c 'git push origin main'`,
+  `f()\n{ sh x; }\nf -c 'git push origin main'`,
+  `f() ( sh x ); f -c 'git push origin main'`,
+  `f()(sh x);f -c 'git push origin main'`,
+  `f() sh x; f -c 'git push origin main'`,
+  `f g () { sh x }; g -c 'git push origin main'`,
+  `"f"() { sh x; }; f -c 'git push origin main'`,
+  `'f'() { sh x; }; f -c 'git push origin main'`,
+  `echo \\$() { sh x; }`,
+  `a\\=() { sh x; }; a= -c 'git push origin main'`,
+  `\\<() { sh x; }; \\< -c 'git push origin main'`,
+  `f() { rm "$@"; }; f -rf /tmp/x`,
+  `eval 'f() { sh x; }'; f -c 'git push origin main'`,
+  `sh -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `bash -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `zsh -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `echo $(f() { sh x; }; f -c 'git push origin main')`,
+  'echo `f() { sh x; }; f -c "git push origin main"`',
+  `f() { sh x; }; export -f f; bash -c 'f -c "git push origin main"'`,
+  // function keyword (4i60.2)
+  `function f { sh x; }; f -c 'git push origin main'`,
+  `function f() { sh x; }; f -c 'git push origin main'`,
+  `{ function f { sh x; }; }; f -c 'git push origin main'`,
+  `if true; then function f { sh x; }; fi; f -c 'git push origin main'`,
+  `! function f { sh x; }; f -c 'git push origin main'`,
+  `time function f { sh x; }; f -c 'git push origin main'`,
+  `time -p function f { sh x; }; f -c 'git push origin main'`,
+  `! time function f { sh x; }; f -c 'git push origin main'`,
+  `func\\\ntion f { sh x; }; f -c 'git push origin main'`,
+  `\\function f { :; }`,
+  `while true; do function f { :; }; done`,
+  `true || function f { :; }`,
+  // each prefix word alone, and a newline inside the pair
+  `if false; then :; else function f { :; }; fi`,
+  `if false; then :; elif true; then function f { :; }; fi`,
+  `if false; then :; elif function f { :; }; then :; fi`,
+  `while function f { :; }; do :; done`,
+  `until function f { :; }; do :; done`,
+  `for x in a; do function f { :; }; done`,
+  `time -p function f { :; }`,
+  `f(\n) { :; }`,
+  `env BASH_FUNC_f%%=$v bash -c f`,
+  // function tables and imports (4i60.3)
+  `functions[f]='sh x'; f -c 'git push origin main'`,
+  `functions+=(f 'sh x'); f -c 'git push origin main'`,
+  `set -A functions f 'sh x'; f -c 'git push origin main'`,
+  `typeset "functions[f]=sh"`,
+  'dis_functions[f]=x',
+  `env 'BASH_FUNC_f%%=() { sh x; }' bash -c 'f -c "git push origin main"'`,
+  `v='() { sh x; }'; env "BASH_FUNC_f%%=$v" bash -c f`,
+  `v='() { sh x; }'; env "$n=$v" bash -c f`,
+  // command positions after a later word (4i60.5)
+  `repeat 1 function f { sh x }; f -c 'git push origin main'`,
+  `repeat 1 { function f { sh x } }; f -c 'git push origin main'`,
+  `if [[ 1 ]] { function f { sh x } }; f -c 'git push origin main'`,
+  `{ :; } always { function f { sh x } }; f -c 'git push origin main'`,
+  `time -- function f { sh x; }; f -c 'git push origin main'`,
+  `time -p -- function f { sh x; }; f -c 'git push origin main'`,
+  // command position after ]] (4i60.8)
+  `if [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `if [[ 0 == 1 ]] { :; } elif [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `while [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `until [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `if [[ 1 ]] \\function f { sh x }; f -c 'git push origin main'`,
+  // accepted over-deny: a heredoc write of a function (4i60.6)
+  `cat > .scratch/x.sh <<'EOF'\nf() { :; }\nEOF`,
+  // accepted over-deny: a bare functions word
+  'grep -n functions src/x.ts',
+  // moved from ALLOW_DYNAMIC_PUSH_WORD: the guard now denies every definition
+  'f() { git push origin feature; }',
+  // accepted over-denies: an empty pair is a definition shape
+  '(( ))',
+  'ls *()',
+]
+
+test.each(DENY_FUNCTION_DEF)('denyReason denies %j (claude-factory-4i60, function definition)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, FN_GATE)).toBe(FUNCTION_DEF_REASON)
+})
+
+// These rows had another deny reason before 4i60. The more specific reason still wins.
+test('denyReason keeps the older reason for definitions with another deny (claude-factory-4i60)', () => {
+  const run = (c: string) => denyReason(c, '/root/repo', undefined, FN_GATE)
+  expect(run('g() { git "$@"; }; g push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(run('git-x() { git "$@"; }; git-x push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(run(`() { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  expect(run(`function { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+})
+
+const ALLOW_FUNCTION_DEF_LOOKALIKE = [
+  'a=(); echo hi',
+  'a+=(); echo hi',
+  'x=$(); echo hi',
+  'x=$( ); echo hi',
+  'x=$\\\n(); echo hi',
+  'diff <() >()',
+  'cat =()',
+  'diff <(sort a) <(sort b)',
+  'grep -n function src/x.ts',
+  'echo function',
+  'git log --grep=function',
+  'git commit -m "fix f() { x }"',
+  `echo 'f() { sh "$@"; }'`,
+  'bash .scratch/x.sh',
+  'ls functions.txt',
+]
+
+test.each(ALLOW_FUNCTION_DEF_LOOKALIKE)('denyReason allows %j (claude-factory-4i60, no definition)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, FN_GATE)).toBeUndefined()
+})
+
+test('denyReason scans a long function-like input fast (claude-factory-4i60)', () => {
+  for (const cmd of ['( '.repeat(4000), 'f'.repeat(8000) + '()', 'x=$('.repeat(2000)]) {
+    const t = Date.now()
+    denyReason(cmd, '/root/repo', undefined, FN_GATE)
+    expect(Date.now() - t).toBeLessThan(1000)
   }
 })
 
@@ -3315,6 +3453,304 @@ test('denyReason allows a plain HEAD push alone with a cwd at the worktree root 
 test('denyReason allows the write alone, and denies a later, separate HEAD push through the current branch (claude-factory-9zd5, A10)', () => {
   expect(denyReason("printf 'ref: refs/heads/main' > .git/HEAD")).toBeUndefined()
   expect(denyReason('git push o HEAD', undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+})
+
+// claude-factory-ty8y: a write to the global git config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`,
+// `/etc/gitconfig`) has no git verb. It can set `remote.<n>.push`, `push.default` or an alias that
+// pushes. Any later git word in the same command then pushes with no check. The guard denies when
+// a global-config path word and any git word stand in one command, in any order.
+const GLOBAL_GIT_CONFIG_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  cwd: '/r/acme/widget',
+  gitAliases: () => new Map<string, string>(),
+}
+
+const DENY_GLOBAL_GIT_CONFIG_WRITE = [
+  `printf '[remote "origin"] push = HEAD:refs/heads/main' >> ~/.gitconfig; git push`,
+  'printf x > ~/.gitconfig; git push',
+  'printf x >> $HOME/.gitconfig && git push origin',
+  'printf x >> "${HOME}/.gitconfig"; git push',
+  'printf x >> ~acme/.gitconfig; git push',
+  'printf x >> "$XDG_CONFIG_HOME/git/config"; git push',
+  'printf x >> ~/.config/git/config; git push',
+  'printf x >> /etc/gitconfig; git push',
+  // each regex alternative alone: a literal git/config path, and a bare XDG_CONFIG_HOME word.
+  'printf x >> /home/acme/xdg/git/config; git push',
+  'printf x >> $XDG_CONFIG_HOME/${n}; git push',
+  'echo x | tee -a ~/.gitconfig; git push',
+  "sed -i '' 's/a/b/' ~/.gitconfig; git push",
+  'cp f ~/.gitconfig; git push',
+  'mv f ~/.config/git/config; git push',
+  'ln -sf f ~/.gitconfig; git push',
+  'install f ~/.gitconfig; git push',
+  'dd of=$HOME/.gitconfig if=f; git push',
+  `python3 -c "open('/Users/acme/.gitconfig','a').write('x')"; git push`,
+  'printf x >> ~/.git\\\nconfig; git push',
+  'bash -c "printf x >> ~/.gitconfig"; git push',
+  'cd ~ && printf x >> .gitconfig && cd - && git status',
+  'cd ~/.config/git && printf x >> config; cd /r/acme/widget; git status',
+  // AC2: order and nesting do not matter.
+  'git push; printf x >> ~/.gitconfig',
+  "printf x >> ~/.gitconfig; bash -c 'git push'",
+  'eval "printf x >> ~/.gitconfig" && git push',
+  'env -S "printf x >> ~/.gitconfig" && git push',
+  // AC3: any git word denies, not only push.
+  `printf '[alias] p = push o HEAD:main' >> ~/.gitconfig; git p`,
+  `printf '[include] path = /r/x' >> ~/.gitconfig; git push`,
+  'printf x >> ~/.gitconfig; git push origin factory/x',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE)(
+  'denyReason denies %j (claude-factory-ty8y: a global git config path then a git word fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+// ty8y.4: the write alone denies. A worker cannot split the write and the push into 2 Bash calls.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE = [
+  `printf '[remote "origin"] push = HEAD:refs/heads/main' >> ~/.gitconfig`,
+  'printf x > ~/.gitconfig',
+  'printf x >~/.gitconfig',
+  'printf x 2>> ~/.gitconfig',
+  'printf x >> "$XDG_CONFIG_HOME/git/config"',
+  'printf x >> /etc/gitconfig',
+  'cat f > ~/.config/git/config',
+  'echo x | tee -a ~/.gitconfig',
+  "sed -i '' 's/a/b/' ~/.gitconfig",
+  'cp f ~/.gitconfig',
+  'mv f ~/.config/git/config',
+  'ln -sf f ~/.gitconfig',
+  'install f ~/.gitconfig',
+  'dd of=$HOME/.gitconfig if=f',
+  `python3 -c "open('/Users/acme/.gitconfig','a').write('x')"`,
+  'bash -c "printf x >> ~/.gitconfig"',
+  'printf x >> .gitconfig',
+  'git config --list > ~/.gitconfig',
+  'git diff --output=~/.gitconfig',
+  // ty8y.7: a glob target.
+  'printf x >> ~/.gitc*',
+  'printf x >> $HOME/.git?onfig',
+  'printf x >> "${HOME}/.gitconf[i]g"',
+  'cp f ~/.gitc*',
+  'tee -a ~/.config/g*/config',
+  'printf x >> /etc/gitc*',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE)('denyReason denies %j alone (claude-factory-ty8y.4)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test('denyReason scans a many-star glob fast and denies it (claude-factory-ty8y.24)', () => {
+  const cmd = `touch ~/.c${'*'.repeat(24)}x; printf x >> ~/.gitconfig; git push`
+  const t = performance.now()
+  const r = denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)
+  expect(performance.now() - t).toBeLessThan(1000)
+  expect(r).toBe(GLOBAL_GIT_CONFIG_REASON)
+  const t2 = performance.now()
+  expect(denyReason(`tee ~/.c${'*a'.repeat(24)}x`, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+  expect(performance.now() - t2).toBeLessThan(1000)
+})
+
+// ty8y.9-11: a git segment that writes through its operands, a directory operand, the <> redirect.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2 = [
+  'git --work-tree=$HOME checkout HEAD -- .gitconfig',
+  'git --work-tree ~ restore --source=HEAD .gitconfig',
+  'GIT_WORK_TREE=~ git checkout HEAD -- .gitconfig',
+  'git -C ~ checkout HEAD -- .gitconfig',
+  'git clone /r/acme/evil ~/.config/git',
+  'git clone /r/acme/evil ~/.config/git/',
+  'git diff --output ~/.gitconfig',
+  'cp config ~/.config/git/',
+  'cp config ~/.config/git',
+  'ln -s f ~/.config/git/',
+  'mv f $XDG_CONFIG_HOME/git/',
+  'printf x 1<>~/.gitconfig',
+  'printf x 1<> ~/.gitconfig',
+  'printf x <>~/.gitconfig',
+  'printf x >| ~/.gitconfig',
+  'printf x >|~/.gitconfig',
+  'gh release download v1 -O ~/.gitconfig',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2)(
+  'denyReason denies %j alone (claude-factory-ty8y r2)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'bd search gitconfig',
+  'bd create "fix ~/.gitconfig guard" -t bug',
+  'bun test src/worker-hook.test.ts -t gitconfig',
+  'gh pr comment 1 --body "checked ~/.gitconfig"',
+  'factory memory add "~/.gitconfig note" "x"',
+  'ls ~/.config/git',
+])('denyReason allows %j (claude-factory-ty8y r2: text operands)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
+// Accepted false positive: the word ~/.config/git has the base name git, and cd names the directory.
+test('denyReason denies cd into the global git config directory (claude-factory-ty8y r2)', () => {
+  expect(denyReason('cd ~/.config/git', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+})
+
+// ty8y.14-18 (review r3): work trees outside the root, gh clone, the .config directory, dot segments.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R3 = [
+  'git --work-tree=/Users/acme checkout HEAD -- .',
+  'git --work-tree ~ checkout -f HEAD',
+  'GIT_WORK_TREE=~ git checkout -f HEAD',
+  'git --work-tree=/etc checkout HEAD -- .',
+  'git --work-tree=../x checkout HEAD -- .',
+  "git --work-tree=/Users/acme checkout HEAD -- ':(glob)*config'",
+  'git --git-dir=/r/acme/widget/.git checkout HEAD -- .gitconfig',
+  'GIT_DIR=/r/acme/widget/.git git checkout HEAD -- .gitconfig',
+  'gh repo clone acme/evil ~/.config/git',
+  'gh gist clone abc ~/.config/git',
+  'rsync -a /r/acme/evil/ ~/.config/',
+  'cp -R /r/acme/evil ~/.config',
+  'mv /r/acme/evil ~/.config',
+  'ln -sfn /r/acme/evil ~/.config',
+  'tar -C ~/.config -xf x.tar',
+  'unzip -d ~/.config x.zip',
+  'cp x ~/.config/git/.',
+  'cp x ~/.config/git/./',
+  'cp x ~/.config/git/./config',
+  'cp x ~/.config//git/config',
+  'printf x > ~/./.gitconfig',
+  'bun test --reporter-outfile=~/.gitconfig',
+  'bun test --reporter-outfile ~/.gitconfig',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R3)(
+  'denyReason denies %j alone (claude-factory-ty8y r3)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'git --work-tree=. status',
+  'git --work-tree=/r/acme/widget/sub status',
+  'ls ~/.config',
+  'cat ~/.config/git/config',
+  'gh pr list --search clone',
+])('denyReason allows %j (claude-factory-ty8y r3)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
+// ty8y.19-22 (review r4): dot segments under the root, the cwd as work tree, core.worktree, gh --clone.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R4 = [
+  'git --work-tree=/r/acme/widget/../.. checkout HEAD -- .',
+  'git --work-tree=/r/acme/widget/sub/../../.. checkout -f HEAD',
+  'GIT_WORK_TREE=/r/acme/widget/.. git checkout -f HEAD',
+  'git -C ~ --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'cd /Users/acme && git --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'pushd ~; git --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'git -C ~ --git-dir /r/acme/widget/.git checkout -f HEAD',
+  'cd /Users/acme && GIT_DIR=. git checkout -f HEAD',
+  'pushd ~; GIT_DIR=. git checkout -f HEAD',
+  'GIT_DIR=. git -C ~ checkout -f HEAD',
+  'git config core.worktree /Users/acme',
+  'git config --local core.worktree ~',
+  'git config --add core.worktree /etc',
+  'git config --replace-all core.worktree /x',
+  'git config set core.worktree /x',
+  'git config CORE.WorkTree /x',
+  'git -c core.worktree=/x checkout -f HEAD',
+  'git -c CORE.WorkTree=. status',
+  'gh repo fork acme/evil --clone -- ~/.config/git',
+  'gh repo fork acme/evil --clone=true -- ~/.config/git',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R4)(
+  'denyReason denies %j alone (claude-factory-ty8y r4)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'git --work-tree=/r/acme/widget/sub status',
+  'git --work-tree=. status',
+  'git --git-dir=.git log',
+  'git -C src status',
+  'git -C /r/acme/widget/sub status',
+  'git config core.worktree .',
+  'git config --get core.worktree',
+  'git config core.worktree /r/acme/widget/sub',
+  'gh repo fork acme/evil --clone=false',
+  'gh issue list --search gitconfig',
+])('denyReason allows %j (claude-factory-ty8y r4)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
+// ty8y.5: a quoted or escaped git word still counts as a git word.
+const DENY_QUOTED_GIT_WORD = [
+  'printf x >> ~/.gitconfig; "gi"t push',
+  'printf x >> ~/.gitconfig; g\\it push',
+  `printf x >> ~/.gitconfig; sh -c '"gi"t push'`,
+  `cd ~/.config && "gi"t status`,
+]
+
+test.each(DENY_QUOTED_GIT_WORD)('denyReason denies %j (claude-factory-ty8y.5)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test.each([
+  'export GIT_CONFIG_GLOBAL=/r/acme/x; "gi"t push',
+  'export GIT_CONFIG_GLOBAL=/r/acme/x; g\\it push',
+])('denyReason denies %j (claude-factory-ty8y.5, GIT_CONFIG_GLOBAL rule)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(PUSH_REASON)
+})
+
+const ALLOW_GLOBAL_GIT_CONFIG = [
+  'cat ~/.gitconfig',
+  'cat ~/.gitconfig; git status',
+  'git push',
+  'git push origin factory/x',
+  'git config --global user.name',
+  'cat vite.config.ts && git push',
+  'cat .gitignore && git push',
+  'git push https://github.com/acme/widget.git HEAD',
+  'ls ~/.config/gh',
+  // ty8y.6: a git or reader segment that only names the path is not a write.
+  'git add .config/settings.json',
+  'git log -- .config/x',
+  'git diff --stat -- docs/gitconfig.md',
+  'rg gitconfig src; git status',
+  'ls ~/.config/nvim; git status',
+  'grep -r gitconfig docs; git status',
+  'cp ~/a/*.txt .',
+  'printf x >> out.txt',
+]
+
+test.each(ALLOW_GLOBAL_GIT_CONFIG)(
+  'denyReason allows %j (claude-factory-ty8y: no global git config write)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+  },
+)
+
+// A command that is not a reader names the path: it fails closed, also when it reads.
+test('denyReason denies a non-reader that names the global git config (claude-factory-ty8y, accepted false positive)', () => {
+  expect(denyReason('awk 1 ~/.gitconfig', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
 })
 
 // claude-factory-68gn: `gitReason` read the current branch with `gate.headOf(root)`.
@@ -5906,6 +6342,281 @@ test('denyReason allows git push origin factory/x (claude-factory-bjp0 AC4: cont
   expect(denyReason('git push origin factory/x', '/w', undefined, BJP0_GATE_FACTORYX)).toBeUndefined()
 })
 
+// claude-factory-1zr5: a Claude Code shell-snapshot alias (gp, gco) runs git, but the hook sees no git word.
+const SNAP_ALIASES = new Map<string, string | null>([
+  ['gp', 'git push'],
+  ['gpoat', 'git push origin --all && git push origin --tags'],
+  ['gpf', 'git push --force-with-lease --force-if-includes'],
+  ['gco', 'git checkout'],
+  ['g', 'git'],
+  ['k', 'kubectl'],
+  ['rmrf', 'rm -rf'],
+  ['rm', 'rm -i'],
+  ['gh', 'op plugin run -- gh'],
+  ['bad', null],
+  ['loop1', 'loop2'],
+  ['loop2', 'loop1'],
+])
+const snapGate = (shellAliases?: HookGate['shellAliases']): HookGate => ({
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+  shellAliases,
+})
+const SNAP_GATE = snapGate(() => SNAP_ALIASES)
+
+const SNAP_DENY_ALIAS = [
+  'gp origin main',
+  'gp',
+  'gp origin',
+  'gp --force origin factory/x',
+  'gpoat',
+  'gp --all origin',
+  'gpf origin main',
+  'gco main',
+  'g push origin main',
+  'echo x && gp origin main',
+  'sudo gp origin main',
+  'FOO=1 gp origin main',
+  'bad x',
+  'A+=/x gp origin main',
+  'B[1]=/x gp origin main',
+  'A+=/x gco main',
+  'C[k]+=/x gp origin main',
+  'a=/x gp origin main',
+  'A[a]b]=/x gp origin main',
+  '>/tmp/x gp origin main',
+  '2>/dev/null gp origin main',
+  '</dev/null gp origin main',
+  '>/tmp/x gco main',
+  '>|/tmp/x gp origin main',
+  '&>/tmp/x gp origin main',
+  'A=1 >/tmp/x gp origin main',
+  '3>/tmp/x gp origin main',
+  '>>/tmp/x gp origin main',
+]
+test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (claude-factory-1zr5)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
+})
+
+const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
+test.each([
+  'bin/factory gc --dry-run',
+  'FACTORY_HOME=/t /abs/bin/factory gc',
+  'A+=1 /abs/bin/factory gc',
+  'B[1]=2 /abs/bin/factory gc',
+  'C[k]+=3 /abs/bin/factory gc',
+])(
+  'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
+  cmd => {
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => SLASH_ALIASES),
+      ),
+    ).toBeUndefined()
+  },
+)
+test.each(['sudo gc', 'FOO=1 gc', 'echo x && gc', 'gc'])(
+  'denyReason still denies %j with gc as an alias at command position or after a bare word (claude-factory-1zr5)',
+  cmd => {
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => SLASH_ALIASES),
+      ),
+    ).toBe(SHELL_ALIAS_REASON)
+  },
+)
+
+test('denyReason rescans an alias that does not run git: kubectl, rm -rf, a gh wrapper (claude-factory-1zr5)', () => {
+  expect(denyReason('k --context acme apply -f x', '/w', ['acme'], SNAP_GATE)).toBe(LIVE_REASON)
+  expect(denyReason('rmrf build', '/w', undefined, SNAP_GATE)).toBe(REASON)
+  expect(denyReason('gh pr merge 5', '/w', undefined, SNAP_GATE)).toBe(MERGE_REASON)
+})
+
+test.each(['git push origin feature', 'git status', 'ls -la', 'rm -i notes.txt', 'gh pr view 5'])(
+  'denyReason allows %j with the snapshot table set (claude-factory-1zr5)',
+  cmd => {
+    expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBeUndefined()
+  },
+)
+
+test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x'))(
+  'denyReason allows %j when shellAliases is unset or empty, as before (claude-factory-1zr5)',
+  cmd => {
+    const pre = denyReason(cmd, '/w', undefined, snapGate())
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => new Map()),
+      ),
+    ).toBe(pre)
+    expect(pre).toBeUndefined()
+  },
+)
+
+test('denyReason denies an alias chain past the depth cap but ends on an alias cycle, as zsh does (claude-factory-1zr5)', () => {
+  expect(denyReason('loop1 x', '/w', undefined, SNAP_GATE)).toBeUndefined()
+  const long = new Map<string, string | null>()
+  for (let i = 0; i < 20; i++) long.set(`c${i}`, `c${i + 1}`)
+  expect(
+    denyReason(
+      'c0 x',
+      '/w',
+      undefined,
+      snapGate(() => long),
+    ),
+  ).toBe(SHELL_ALIAS_REASON)
+  const short = new Map<string, string | null>([
+    ['c0', 'c1'],
+    ['c1', 'echo'],
+  ])
+  expect(
+    denyReason(
+      'c0 x',
+      '/w',
+      undefined,
+      snapGate(() => short),
+    ),
+  ).toBeUndefined()
+})
+
+test('denyReason denies every command when the snapshot table cannot be read, and reads it once (claude-factory-1zr5)', () => {
+  let calls = 0
+  const gate = snapGate(() => {
+    calls++
+    return undefined
+  })
+  expect(denyReason('git status', '/w', undefined, gate)).toBe(SHELL_ALIAS_READ_REASON)
+  expect(calls).toBe(1)
+  let n = 0
+  const many = snapGate(() => (n++, new Map()))
+  expect(denyReason('ls && ls && ls ; echo a b c', '/w', undefined, many)).toBeUndefined()
+  expect(n).toBe(1)
+})
+
+test('denyReason keeps a dynamic alias word dynamic when it rescans the expansion (claude-factory-1zr5)', () => {
+  const t = new Map<string, string | null>([
+    ['kk', 'kubectl'],
+    ['q', 'echo'],
+  ])
+  expect(
+    denyReason(
+      'kk $V apply -f x',
+      '/w',
+      ['acme'],
+      snapGate(() => t),
+    ),
+  ).toBeDefined()
+  expect(
+    denyReason(
+      "q 'a;b' c",
+      '/w',
+      undefined,
+      snapGate(() => t),
+    ),
+  ).toBeUndefined()
+})
+
+// claude-factory-1zr5: a fake snapshot folder; the values are fake and use acme/widget names
+function snapDir(files: Record<string, string>, ageSec: Record<string, number> = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'snap-'))
+  for (const [name, text] of Object.entries(files)) {
+    writeFileSync(join(dir, name), text)
+    const t = new Date(Date.now() - (ageSec[name] ?? 0) * 1000)
+    utimesSync(join(dir, name), t, t)
+  }
+  return dir
+}
+
+test('shellSnapshotAliases parses bare, quoted, joined and multi-line values and maps the rest to null (claude-factory-1zr5)', () => {
+  const dir = snapDir({
+    'snapshot-zsh-1.sh': [
+      'f() { :; }',
+      'alias -- acme=widget',
+      "alias -- gp='git push'",
+      "alias -- q='echo '\\''a b'\\'' c'",
+      "alias -- multi='echo one",
+      "two'",
+      "alias -- dollar=$'a\\nb'",
+      'alias -- amp=a&b',
+      "alias -- after='x'",
+      '',
+    ].join('\n'),
+  })
+  const t = shellSnapshotAliases(dir)!
+  expect(t.get('acme')).toBe('widget')
+  expect(t.get('gp')).toBe('git push')
+  expect(t.get('q')).toBe("echo 'a b' c")
+  expect(t.get('multi')).toBe('echo one\ntwo')
+  expect(t.get('dollar')).toBeNull()
+  expect(t.get('amp')).toBeNull()
+  expect(t.get('after')).toBe('x')
+  expect(t.has('f')).toBe(false)
+})
+
+test('shellSnapshotAliases reads the newest 3 files and lets a newer file win (claude-factory-1zr5)', () => {
+  const dir = snapDir(
+    {
+      'snapshot-zsh-a.sh': "alias -- old='x'\n",
+      'snapshot-zsh-b.sh': "alias -- gp='echo b'\nalias -- mid='y'\n",
+      'snapshot-zsh-c.sh': "alias -- gp='echo c'\n",
+      'snapshot-zsh-d.sh': "alias -- gp='git push'\n",
+      'notes.txt': "alias -- other='z'\n",
+    },
+    { 'snapshot-zsh-a.sh': 40, 'snapshot-zsh-b.sh': 30, 'snapshot-zsh-c.sh': 20, 'snapshot-zsh-d.sh': 10 },
+  )
+  const t = shellSnapshotAliases(dir)!
+  expect(t.get('gp')).toBe('git push')
+  expect(t.get('mid')).toBe('y')
+  expect(t.has('old')).toBe(false)
+  expect(t.has('other')).toBe(false)
+})
+
+test('shellSnapshotAliases gives an empty Map for a missing folder and undefined for a read error (claude-factory-1zr5)', () => {
+  expect(shellSnapshotAliases(join(tmpdir(), 'snap-missing-acme'))?.size).toBe(0)
+  expect(shellSnapshotAliases(snapDir({}))?.size).toBe(0)
+  const big = snapDir({ 'snapshot-zsh-1.sh': 'x'.repeat(4 * 1024 * 1024 + 1) })
+  expect(shellSnapshotAliases(big)).toBeUndefined()
+  const notDir = snapDir({ 'file.txt': '' })
+  expect(shellSnapshotAliases(join(notDir, 'file.txt'))).toBeUndefined()
+  const bad = snapDir({})
+  mkdirSync(join(bad, 'snapshot-zsh-1.sh'))
+  expect(shellSnapshotAliases(bad)).toBeUndefined()
+})
+
+// claude-factory-1zr5: the spawned hook reads the folder that CLAUDE_CONFIG_DIR names
+const spawnEnv = (configDir: string) => ({
+  ...process.env,
+  FACTORY_OUTBOX: undefined,
+  FACTORY_FROM: undefined,
+  FACTORY_SELF_UPDATE: '0',
+  CLAUDE_CONFIG_DIR: configDir,
+})
+test('the spawned hook denies a snapshot alias word and allows git status with an empty folder (claude-factory-1zr5)', async () => {
+  const withAlias = mkdtempSync(join(tmpdir(), 'cfg-'))
+  mkdirSync(join(withAlias, 'shell-snapshots'))
+  writeFileSync(join(withAlias, 'shell-snapshots', 'snapshot-zsh-1.sh'), "alias -- gp='git push'\n")
+  const empty = mkdtempSync(join(tmpdir(), 'cfg-'))
+  mkdirSync(join(empty, 'shell-snapshots'))
+  const cmd = (command: string) => JSON.stringify({ tool_name: 'Bash', tool_input: { command } })
+  const denied = await run(cmd('gp origin main'), spawnEnv(withAlias))
+  expect(JSON.parse(denied.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
+  expect((await run(cmd('git status'), spawnEnv(empty))).out).toBe('')
+  const unreadable = mkdtempSync(join(tmpdir(), 'cfg-'))
+  writeFileSync(join(unreadable, 'shell-snapshots'), '')
+  const blocked = await run(cmd('git status'), spawnEnv(unreadable))
+  expect(JSON.parse(blocked.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_READ_REASON)
+}, 30_000)
+
 // claude-factory-a8pr: macOS APFS resolves Git, GH, SH to the real binaries, so a capitalized
 // command word must get the same verdict as its lowercase twin.
 const A8PR_GATE = {
@@ -5963,3 +6674,21 @@ test.each(['Git status', 'Gh pr view 1', 'Git log --oneline'])(
     expect(a8prVerdict(cmd)).toBeUndefined()
   },
 )
+
+// claude-factory-4i60.14: the baseWord cache returns the uncached value for every input
+const BASE_WORD_TABLE = ['\\rm', '/bin/SH', 'Git', '/usr/bin/\u017Ftat', '', 'dir/', 'a/b/GH', '\\\\x']
+
+test('baseWord cache equals the uncached function, also after a cache clear', () => {
+  const check = () => {
+    for (const w of BASE_WORD_TABLE) {
+      expect(baseWord(w)).toBe(baseWordForTest(w))
+      expect(baseWord(w)).toBe(baseWordForTest(w))
+    }
+  }
+  check()
+  for (let i = 0; i < 4200; i++) baseWord(`/x/W${i}`)
+  check()
+  expect(baseWord('\\rm')).toBe('rm')
+  expect(baseWord('/bin/SH')).toBe('sh')
+  expect(baseWord('dir/')).toBe('')
+})

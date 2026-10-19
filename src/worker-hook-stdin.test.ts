@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { denyReason, SHELL_STDIN_REASON } from './worker-hook'
+import { denyReason, SH_DYNAMIC_FLAG_REASON, SHELL_STDIN_REASON } from './worker-hook'
 
 // claude-factory-l43b: a shell with no -c script reads its script from stdin, a here-string or a
 // process substitution. xargs before a shell word hides the script too. These rows are static
@@ -151,7 +151,9 @@ const DENY = [
 ]
 
 test.each(DENY)('denyReason denies %j (claude-factory-l43b, shell reads stdin)', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, GATE)).toBe(SHELL_STDIN_REASON)
+  // claude-factory-38jm: a dynamic option word gets its own, more specific reason.
+  const reason = denyReason(cmd, '/root/repo', undefined, GATE) ?? ''
+  expect([SHELL_STDIN_REASON, SH_DYNAMIC_FLAG_REASON]).toContain(reason)
 })
 
 test('denyReason denies a dynamic shell word behind xargs -I (claude-factory-l43b)', () => {

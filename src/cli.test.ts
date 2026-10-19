@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
+import { watchDecide } from './watch'
 import {
   brief,
   clipFactsJson,
@@ -37,7 +38,6 @@ import {
   selfUpdateMail,
   stalled,
   swapUntil,
-  watchWake,
   workerFlags,
   workerSettings,
   WORKER_TOOLS,
@@ -308,7 +308,29 @@ test('a labeled PR belongs to the live run whose branch it is or whose reports l
   expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'fix/x' }, live)).toBeUndefined()
 })
 
-test('a watched park wakes when a PR changes, or on the plain timer once none is open', () => {
+// the wake rules of claude-factory-960, now decided by watchDecide (src/watch.ts, claude-factory-5wav)
+const watchWake = (
+  prs: { url: string; state: string; updatedAt: string }[],
+  parkedAt: number,
+  now: number,
+  plainMin: number,
+  isPreLaunch = false,
+) => {
+  const d = watchDecide({
+    prs: prs.map(p => ({ ...p, mergedAt: p.state === 'MERGED' ? p.updatedAt : undefined })),
+    failed: false,
+    parkedAt,
+    now,
+    wakeAt: parkedAt + 8 * 3600_000 * 10,
+    plainMin,
+    isPreLaunch,
+    canHold: false,
+    canChange: false,
+  })
+  return d?.kind === 'wake' ? d.text : undefined
+}
+
+test('a watched park wakes when a PR merges, or on the plain timer once none is open', () => {
   const pr = (state: string, updatedAt: string) => ({
     url: 'https://github.com/o/r/pull/1',
     state,
@@ -316,6 +338,8 @@ test('a watched park wakes when a PR changes, or on the plain timer once none is
   })
   const at = Date.parse('2026-10-11T10:00:00Z')
   expect(watchWake([pr('OPEN', '2026-10-11T09:00:00Z')], at, at + 9 * 3600_000, 60)).toBeUndefined()
+  // an open pull request whose updatedAt moved (CI status, label, bot comment) wakes nothing
+  expect(watchWake([pr('OPEN', '2026-10-11T10:05:00Z')], at, at + 600_000, 60)).toBeUndefined()
   expect(watchWake([pr('MERGED', '2026-10-11T10:05:00Z')], at, at + 600_000, 60)).toContain('it is merged')
   // merged before it parked (a deploy waiting on CI after the merge): the plain timer, not 8h
   expect(watchWake([pr('MERGED', '2026-10-11T09:00:00Z')], at, at + 30 * 60_000, 60)).toBeUndefined()
@@ -1721,3 +1745,28 @@ test('memory add --supersedes on a duplicate hit logs confirmed only and does no
   const confirmed = lines.find(l => l.confirmed === 1)
   expect(confirmed?.by).toBe('run2/verify')
 }, 30_000)
+
+// claude-factory-1zr5: a worker's Bash runs a script that clears the shell-snapshot aliases
+test("workerSettings sets CLAUDE_ENV_FILE to the factory's script and keeps the user's value for it to source", () => {
+  const script = join(import.meta.dir, 'worker-shell-env.sh')
+  expect(workerSettings({}, 200).env.CLAUDE_ENV_FILE).toBe(script)
+  const w = workerSettings({ env: { CLAUDE_ENV_FILE: '/u/acme.sh' } }, 200)
+  expect(w.env.CLAUDE_ENV_FILE).toBe(script)
+  expect((w.env as Record<string, string>).FACTORY_USER_ENV_FILE).toBe('/u/acme.sh')
+})
+
+test('worker-shell-env.sh leaves no alias in zsh and bash, runs the user file first, and ignores a missing one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wse-'))
+  const user = join(dir, 'user.sh')
+  writeFileSync(user, "export ACME_WIDGET=1\nalias widget='echo w'\n")
+  const script = join(import.meta.dir, 'worker-shell-env.sh')
+  for (const sh of ['zsh', 'bash']) {
+    for (const f of [user, join(dir, 'missing.sh'), '']) {
+      const code = `alias gp='git push'; . '${script}'; echo "rc=$? W=\${ACME_WIDGET:-} N=$(alias | wc -l | tr -d ' ')"`
+      const r = Bun.spawnSync([sh, '-c', code], { env: { ...process.env, FACTORY_USER_ENV_FILE: f } })
+      expect(r.stderr.toString()).toBe('')
+      expect(r.stdout.toString().trim()).toBe(`rc=0 W=${f === user ? '1' : ''} N=0`)
+    }
+  }
+  rmSync(dir, { recursive: true })
+})
