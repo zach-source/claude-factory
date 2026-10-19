@@ -2654,6 +2654,54 @@ test.each([
   expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
 })
 
+// claude-factory-4a4o: a plain < or > glued to a command, verb or sub word starts a redirect in
+// bash and zsh. The word before it is the real word.
+test.each([
+  'rm>/dev/null -rf /',
+  'rm>f -rf /',
+  'rm<f -rf /',
+  'rm</dev/null -rf /',
+  "'rm'>f -rf /",
+  '"rm">f -rf /',
+  'find>f . -exec rm -rf {} \\;',
+  'cd /x; rm>f -f y',
+])('denyReason denies %j (claude-factory-4a4o, glued redirect)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(REASON)
+})
+
+test.each(['gh>/dev/null pr merge 1', 'gh pr>f merge 1', 'gh pr merge>f 1'])(
+  'denyReason denies %j (claude-factory-4a4o, glued gh)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+  },
+)
+
+test.each(['git push>f origin main', 'git>f push origin main'])(
+  'denyReason denies %j (claude-factory-4a4o, glued git)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+test.each([
+  'ls>f',
+  'ls >f',
+  'git log>f',
+  'gh api x>f',
+  'gh api x > f',
+  'echo a>b',
+  'cat<f',
+  'echo 2>/dev/null',
+  'cmd 2>&1',
+  'rm\\>f -rf /',
+  "'rm>f' -rf /",
+  "git commit -m 'a>b'",
+  'echo x > out.txt',
+  'cat < acme.txt',
+])('denyReason allows %j (claude-factory-4a4o, glued redirect)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
+
 // claude-factory-59pp.13: segments() strips quotes, so a quoted word like a redirect must not hide the verb.
 test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () => {
   expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
