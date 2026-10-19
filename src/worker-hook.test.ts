@@ -427,6 +427,12 @@ test('scanReason denies a 40000-word sh -- scan, fast, no personOnly (claude-fac
   expect(scanReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
 
+test('scanReason denies a 40000-word dynamic-shell-word scan, fast (claude-factory-sft4)', () => {
+  expect(scanReason('echo ' + '$S '.repeat(SCAN_N) + '-c ' + '-x '.repeat(SCAN_N) + '; rm -rf x')).toBe(
+    REASON,
+  )
+}, 500)
+
 test('scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
   expect(scanReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
 }, 500)
@@ -2577,6 +2583,159 @@ test.each(ALLOW_REDIRECT_CONT)(
   'denyReason allows %j (claude-factory-abmq, continuation in redirect)',
   cmd => {
     expect(denyReason(cmd, undefined, undefined, ZS39_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-59pp: bash and zsh read `&>` as one redirect, dash reads a separator. segments()
+// returns both readings, so the words after the redirect stay with the command word.
+const AMP_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const BSNL = '\\\n'
+
+const DENY_AMP_RM = [
+  'rm &>/dev/null -rf /',
+  'rm &>>f -rf /',
+  'rm &>|f -rf /',
+  'rm &>!f -rf /',
+  'rm&>f -rf /',
+  `rm &${BSNL}>f -rf /`,
+  `rm &${BSNL}${BSNL}>>f -rf /`,
+  'sh -c "rm &>/dev/null -rf /"',
+]
+
+test.each(DENY_AMP_RM)('denyReason denies %j (claude-factory-59pp, rm after &>)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeDefined()
+})
+
+// claude-factory-59pp.10: the live gate sets ghAliases and gitAliases. With them, a redirect word at
+// the gh verb slot must not hide the real verb.
+const AMP_LIVE_GATE = {
+  ...AMP_GATE,
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
+
+const DENY_AMP_GH_MERGE = [
+  'gh &>/dev/null pr merge 1',
+  'gh&>/dev/null pr merge 1',
+  'gh &>>f pr merge 1',
+  'gh &> /dev/null pr merge 1',
+  'gh pr &>/dev/null merge 1',
+  'gh >/dev/null pr merge 1',
+  'gh 2>/dev/null pr merge 1',
+  'gh > f pr merge 1',
+  'gh repo &>/dev/null sync',
+]
+
+test.each(DENY_AMP_GH_MERGE)('denyReason denies %j (claude-factory-59pp.10, gh merge)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+test('denyReason denies gh pr ready after &> (claude-factory-59pp.10)', () => {
+  expect(denyReason('gh &>/dev/null pr ready 1', '/root/repo', undefined, AMP_LIVE_GATE)).toBe(READY_REASON)
+})
+
+test.each(['gh pr view 1 &>/dev/null', 'gh api x > f', 'gh pr list 2>/dev/null'])(
+  'denyReason allows %j with live aliases (claude-factory-59pp.10)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+  },
+)
+
+// claude-factory-59pp.12: here-string, here-doc and read-write redirects have a target word too.
+test.each([
+  'gh <<< x pr merge 1',
+  'gh pr <<< x merge 1',
+  'gh <> f pr merge 1',
+  'gh pr <> f merge 1',
+  'gh << x pr merge 1',
+])('denyReason denies %j (claude-factory-59pp.12)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+// claude-factory-59pp.13: segments() strips quotes, so a quoted word like a redirect must not hide the verb.
+test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () => {
+  expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+// claude-factory-59pp.14: git and kubectl take the verb from the same slot.
+test.each([
+  'git >/dev/null push origin main',
+  'git 2>/dev/null push origin main',
+  'git <<< x push origin main',
+])('denyReason denies %j (claude-factory-59pp.14)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(PUSH_REASON)
+})
+
+test.each(['git push origin feature >/dev/null', 'git log >f'])(
+  'denyReason allows %j (claude-factory-59pp.14)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+  },
+)
+
+test.each([
+  'kubectl >/dev/null apply -f x --context acme',
+  'kubectl 2>/dev/null delete pod x --context acme',
+])('denyReason denies %j with personOnly acme (claude-factory-59pp.14)', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+})
+
+const DENY_AMP_XARGS = [
+  'xargs &>/dev/null gh pr view 1',
+  'xargs&>/dev/null gh pr view 1',
+  'xargs -n1 &>>f gh pr view 1',
+  'XARGS &>/dev/null gh pr view 1',
+  `xargs &${BSNL}>/dev/null gh pr view 1`,
+  'xargs &>/dev/null git log',
+]
+
+test.each(DENY_AMP_XARGS)('denyReason denies %j (claude-factory-59pp, xargs after &>)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBe(XARGS_REASON)
+})
+
+// This test pins the verdict only. No row separates the dash reading from the joined reading until
+// claude-factory-4a4o (a leading redirect word hides rm) is fixed, so the joined-only mutant survives.
+test('denyReason denies a command after &> in both readings (claude-factory-59pp)', () => {
+  expect(denyReason('true &>/dev/null gh pr merge 1', '/root/repo', undefined, AMP_LIVE_GATE)).toBe(
+    MERGE_REASON,
+  )
+})
+
+const ALLOW_AMP = [
+  'sleep 1 & echo hi',
+  'a & b',
+  'a && b',
+  'echo hi &',
+  'echo hi & > f',
+  'ls &>/dev/null',
+  'ls &>/dev/null && echo ok',
+  'bun test &>log; echo done',
+  'gh pr view 1 &>/dev/null',
+  'git log &>/dev/null',
+  'echo "a &>b" rm -rf /',
+  "echo 'gh &>x pr merge 1'",
+]
+
+test.each(ALLOW_AMP)('denyReason allows %j (claude-factory-59pp)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeUndefined()
+})
+
+const AMP_SHELL_ROWS = [
+  `echo "'git push origin main'" | xargs &>/dev/null sh -c`,
+  'xargs&>/dev/null sh -c',
+  'xargs &>>f bash -c',
+  'XARGS &>/dev/null sh -c',
+  'xargs -n1 &>/dev/null sh -c',
+  `xargs &${BSNL}>/dev/null sh -c`,
+]
+
+test.each(AMP_SHELL_ROWS)(
+  'denyReason gives the same verdict with and without &> for %j (claude-factory-59pp)',
+  cmd => {
+    const bare = cmd.replace(/&(\\\n)*>>?\S*/, '')
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBe(
+      denyReason(bare, '/root/repo', undefined, AMP_GATE),
+    )
   },
 )
 
@@ -5049,6 +5208,90 @@ test('a single slow headOf call that spends the whole gate budget also skips the
     dateSpy.mockRestore()
   }
 })
+
+// claude-factory-sft4: a dynamic word in the shell slot (a variable, a glob, a brace or a tilde)
+// expands to sh, bash, zsh or dash at run time. The guard must still read the -c script.
+const SFT4_GATE = {
+  headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main'),
+  originHead: () => 'main',
+}
+const SFT4_PUSH = "'git push origin main'"
+const SFT4_DENY = [
+  `SH=sh; $SH -c ${SFT4_PUSH}`,
+  `/bin/s? -c ${SFT4_PUSH}`,
+  `s{h,} -c ${SFT4_PUSH}`,
+  `SH=sh; \${SH} -c ${SFT4_PUSH}`,
+  `SH=sh; "$SH" -c ${SFT4_PUSH}`,
+  `SH=sh; $SH -lc ${SFT4_PUSH}`,
+  `SH=sh; $SH -e -c ${SFT4_PUSH}`,
+  `/bin/[s]h -c ${SFT4_PUSH}`,
+  `/bin/sh* -c ${SFT4_PUSH}`,
+  `s{h..h} -c ${SFT4_PUSH}`,
+  `~/s? -c ${SFT4_PUSH}`,
+  `~x -c ${SFT4_PUSH}`,
+  `s[h -c ${SFT4_PUSH}`,
+  `s]h -c ${SFT4_PUSH}`,
+  `s{h -c ${SFT4_PUSH}`,
+  `s}h -c ${SFT4_PUSH}`,
+  `env /bin/s? -c ${SFT4_PUSH}`,
+  `SH=sh; env $SH -c ${SFT4_PUSH}`,
+  `SH=sh; nice $SH -c ${SFT4_PUSH}`,
+  `SH=sh; sudo -u x $SH -c ${SFT4_PUSH}`,
+  `SH=sh; timeout 5 $SH -c ${SFT4_PUSH}`,
+  'SH=sh; $SH -c "git push origin main"',
+  "SH=sh; $SH -c 'rm -rf /'",
+  `$E eval "git push origin main; echo" -c x`,
+  `$E eval 'git push origin main;' -c x`,
+  `$E env -S 'git push origin main' -c x`,
+  `nice $N eval 'git push origin main' -c x`,
+  `env -S '/bin/s?' -c ${SFT4_PUSH}`,
+  `env -S "/bin/s? -c 'git push origin main'"`,
+  `"\`echo sh\`" -c ${SFT4_PUSH}`,
+  `"\`echo /bin/sh\`" -c ${SFT4_PUSH}`,
+  `"\`echo sh\`" -c 'rm -rf x'`,
+  `"\`echo sh\`" -c 'gh pr merge 1'`,
+  `$X env -C /tmp/other sh -c 'git push'`,
+  `$X env -C /tmp/other sh -c 'git push origin'`,
+  `$X env -C /tmp/other sh -c 'git push origin HEAD'`,
+  `$X env -C /tmp/other sh -c 'git send-pack origin HEAD'`,
+  `$X env --chdir /tmp/other bash -c 'git push'`,
+  `$X env -C /tmp/other zsh -lc 'git push'`,
+  `$X env -C /tmp/other sh -c -- 'git push'`,
+  `"$X" env -C /tmp/other sh -c 'git push'`,
+  `\${X} env -C /tmp/other dash -c 'git push'`,
+]
+
+test.each(SFT4_DENY)('denyReason denies a dynamic shell word: %s (claude-factory-sft4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+test('denyReason denies a bd command behind a dynamic shell word (claude-factory-sft4)', () => {
+  expect(denyReason("SH=sh; env -i $SH -c 'bd create x'")).toBe(BEADS_ACTOR_REASON)
+  expect(denyReason("env -u BEADS_ACTOR $SH -c 'bd create x'")).toBe(BEADS_ACTOR_REASON)
+  expect(denyReason('env -i "`echo sh`" -c \'bd create x\'')).toBe(BEADS_ACTOR_REASON)
+})
+
+const SFT4_ALLOW = [
+  "env -S 'sh' -c 'echo x'",
+  'for f in *.ts; do echo $f; done',
+  "SH=sh; $SH -c 'echo x'",
+  "/bin/s? -c 'echo x'",
+  '$EDITOR file.txt',
+  '$CC -c foo.c',
+  'cc -c *.c',
+  `"$PYTHON" -c 'print(1)'`,
+  'ls *.ts -c',
+  "$X sh -c 'git push'",
+  "env -C /tmp/other sh -c 'git push origin feature'",
+]
+
+test.each(SFT4_ALLOW)('denyReason allows a harmless dynamic word: %s (claude-factory-sft4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test('scanReason denies a 40000-word run of $SH words, fast (claude-factory-sft4)', () => {
+  expect(scanReason('echo ' + '$SH '.repeat(SCAN_N) + "-c 'rm -rf x'")).toBe(REASON)
+}, 500)
 
 // claude-factory-2pdm: a command substitution inside double quotes runs in the shell. Every guard
 // must see its body, as it sees the same text outside quotes.

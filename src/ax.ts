@@ -137,6 +137,49 @@ export function manifest(l: Launch) {
 /** a task's phase from `ax get task` (YAML): Pending, Running, Suspended, Failed, Terminating; null when gone */
 export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1] ?? null
 
+/** Pending tasks cannot start while the shared controller is down; preserve them instead of retrying. */
+export function unavailable(): string | undefined {
+  const unknown = 'AX executor unavailable: controller readiness could not be observed'
+  try {
+    const p = Bun.spawnSync(
+      [
+        KUBECTL(),
+        ...context(),
+        'get',
+        'deployment',
+        'ax-controller',
+        '-n',
+        'ax-system',
+        '-o',
+        'json',
+        '--request-timeout=5s',
+      ],
+      { timeout: 6_000 },
+    )
+    if (p.exitCode !== 0) return unknown
+    const d = JSON.parse(p.stdout.toString())
+    const generation = d?.metadata?.generation
+    const status = d?.status
+    if (
+      !d?.metadata?.deletionTimestamp &&
+      Number.isSafeInteger(generation) &&
+      generation > 0 &&
+      Number.isSafeInteger(status?.observedGeneration) &&
+      status.observedGeneration >= generation &&
+      Number.isSafeInteger(d?.spec?.replicas) &&
+      d.spec.replicas > 0 &&
+      Number.isSafeInteger(status?.readyReplicas) &&
+      status.readyReplicas > 0 &&
+      Number.isSafeInteger(status?.availableReplicas) &&
+      status.availableReplicas > 0
+    )
+      return undefined
+    return 'AX executor unavailable: ax-system/ax-controller is not ready at its current generation'
+  } catch {
+    return unknown
+  }
+}
+
 /** what `factory worker poll` prints: the worker's state and the outbox lines past the cursor */
 export type Poll = {
   status: 'working' | 'idle' | 'exited'
