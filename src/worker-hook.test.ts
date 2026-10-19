@@ -7429,3 +7429,61 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
 })
+
+// claude-factory-j1ki: the shell splits an unquoted expansion (${IFS}, $IFS, ${X}, $(...)) that is
+// glued to other text into word breaks. The guard must read the split words.
+const J1KI_GATE = {
+  headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main'),
+  originHead: () => 'main',
+}
+const J1KI_REASON_ROWS = [
+  'rm${IFS}-rf${IFS}/',
+  'rm$IFS-rf$IFS/',
+  '${IFS}rm${IFS}-rf${IFS}/',
+  'rm${IFS%?}-rf${IFS%?}/',
+  'rm${IFS:0:1}-rf${IFS:0:1}/',
+  'rm${=IFS}-rf${=IFS}/',
+  'rm$=IFS-rf$=IFS/',
+  'rm${X}-rf${X}/',
+  'rm${IFS}../x',
+  'rm$(echo " ")-rf$(echo " ")/',
+  'sudo rm${IFS}-rf${IFS}/',
+  'env rm${IFS}-rf${IFS}/',
+  'X=1 rm${IFS}-rf${IFS}/',
+  'cd /x; rm${IFS}-rf${IFS}/',
+  'true && rm${IFS}-rf${IFS}/',
+]
+const J1KI_DENY_ROWS = [
+  'git${IFS}push${IFS}origin${IFS}main',
+  'gh${IFS}pr${IFS}merge${IFS}1',
+  'find . -exec rm${IFS}-rf {} +',
+  'find${IFS}.${IFS}-exec${IFS}rm${IFS}-rf${IFS}{}${IFS}+',
+]
+const J1KI_ALLOW_ROWS = [
+  'ls ${IFS}',
+  'echo a${X}b',
+  'echo${IFS}hi',
+  'ls$IFS-la',
+  '$HOME/.local/bin/claude plugin test mod',
+  '"$ROOT/bin/factory" report x 2 ready s',
+  'git commit -m "a ${X} b"',
+  'git -C "$WT"/sub status',
+  'rm -f build/a${X}b 2>/dev/null',
+  'find "$D"/x -name y -delete',
+  'echo a$(date)b',
+]
+test.each(J1KI_REASON_ROWS)('claude-factory-j1ki: %s denies with REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(J1KI_DENY_ROWS)('claude-factory-j1ki: %s denies', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeTruthy()
+})
+test.each(J1KI_ALLOW_ROWS)('claude-factory-j1ki: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
+test('claude-factory-j1ki: a 5000-word segment of glued words returns fast', () => {
+  const cmd = 'echo ' + Array.from({ length: 5000 }, () => 'a${X}b').join(' ')
+  const t = Date.now()
+  denyReason(cmd, '/root/repo', undefined, J1KI_GATE)
+  expect(Date.now() - t).toBeLessThan(1000)
+})
