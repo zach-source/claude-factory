@@ -7451,9 +7451,12 @@ const DENY_ZSH_DASH_PRECOMMAND = [
   'echo x && - rm -r ./d',
 ]
 
-test.each(DENY_ZSH_DASH_PRECOMMAND)('denyReason denies the dash precommand row %j (claude-factory-tyz6)', cmd => {
-  expect(denyReason(cmd)).toBe(REASON)
-})
+test.each(DENY_ZSH_DASH_PRECOMMAND)(
+  'denyReason denies the dash precommand row %j (claude-factory-tyz6)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(REASON)
+  },
+)
 
 test.each(['- $G $V origin main', 'G=git V=push; - $G $V origin main'])(
   'denyReason denies the dash precommand dynamic verb row %j (claude-factory-tyz6)',
