@@ -5293,6 +5293,44 @@ test('scanReason denies a 40000-word run of $SH words, fast (claude-factory-sft4
   expect(scanReason('echo ' + '$SH '.repeat(SCAN_N) + "-c 'rm -rf x'")).toBe(REASON)
 }, 500)
 
+// claude-factory-jsy0: zsh (EQUALS option) expands a word that starts with `=cmd` to the command
+// path. bash does not. A leading `=` word in the command or shell slot must count as dynamic.
+const JSY0_DENY = [
+  '=git push origin main',
+  '=git -C /tmp/other push origin main',
+  '=gh pr merge 1',
+  "=sh -c 'git push origin main'",
+  "=bash -c 'git push origin main'",
+  "=sh -lc 'git push origin main'",
+  "=zsh -e -c 'git push origin main'",
+  "=sh -c 'rm -rf /'",
+  "command =sh -c 'git push origin main'",
+  "env =sh -c 'git push origin main'",
+  "nohup =sh -c 'git push origin main'",
+]
+
+test.each(JSY0_DENY)('denyReason denies a leading = word: %s (claude-factory-jsy0)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+const JSY0_ALLOW = [
+  'x=y git status',
+  'git commit --message=hi',
+  'git log --format=%H -1',
+  'echo =',
+  '[ a = push ]',
+  'test x = checkout',
+  'echo a==b',
+  'echo == push',
+  '=git status',
+  "=sh -c 'echo x'",
+  "sh -c 'echo x'",
+]
+
+test.each(JSY0_ALLOW)('denyReason allows a harmless = word: %s (claude-factory-jsy0)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
 // claude-factory-2pdm: a command substitution inside double quotes runs in the shell. Every guard
 // must see its body, as it sees the same text outside quotes.
 const DQ_GATE: HookGate = {
