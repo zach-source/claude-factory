@@ -212,6 +212,15 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
+// guard denies every shell function definition.
+export const FUNCTION_DEF_REASON =
+  'The factory denies this command: it defines a shell function. A function name can hide a git, ' +
+  'gh, sh, eval, kubectl or rm word from this guard, and the guard cannot follow the call. Write ' +
+  'the commands plainly, or write the function to a .scratch script file with the Write tool and ' +
+  'run it with bash or zsh. A heredoc write of the function is also denied. Do not retry this ' +
+  'exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -220,12 +229,20 @@ export const XARGS_REASON =
   'Run the git or gh command directly, with every argument in the command line itself. ' +
   'Do not retry this exact command.'
 
+// claude-factory-38jm: reason for a dynamic word in the option slot of a shell call.
+export const SH_DYNAMIC_FLAG_REASON =
+  'The factory denies this command: a word in the option slot of a sh, bash, zsh or dash call ' +
+  'holds a shell expansion ($, a backtick, a glob, a brace or a paren). The shell can expand it ' +
+  'to -c and a script that the guard cannot read. Write the shell flags and the script plainly. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-p43v: a command or subcommand word can hold a dollar sign, a backtick, a glob
 // character, a brace, or a leading tilde. The shell has not expanded that word yet. This guard
 // reads the typed text. It does not read the shell's own expansion of that text.
 //
 // A check for one literal verb, such as push, cannot match an unexpanded word. Every check after
 // it then reads the wrong verb, or no verb at all.
+
 export const DYNAMIC_VERB_REASON =
   'The factory denies this command: a word at the command or subcommand slot holds a shell ' +
   'expansion ($, a backtick, a glob, a brace, or a leading ~). The shell expands this word at ' +
@@ -401,13 +418,28 @@ const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', '
  * run the real binaries, so every guard must see them as `git`, `gh` and `sh`. APFS also folds
  * U+017F (long s) to `s`, so the fold goes through upper case: `toLowerCase` alone keeps it.
  */
-function baseWord(w: string): string {
+function baseWordUncached(w: string): string {
   const s = w.replace(/^\\/, '')
   const i = s.lastIndexOf('/')
   const b = i >= 0 ? s.slice(i + 1) : s
   // ASCII fast path: the upper-then-lower fold is slow on huge scans
   return /[^\x00-\x7f]/.test(b) ? b.toUpperCase().toLowerCase() : b.toLowerCase()
 }
+
+// claude-factory-4i60.14: a scan reads the same few words many times. The cache key is the exact
+// word and the value is the uncached result, so no verdict changes. It clears at the size bound.
+const BASE_WORD_CACHE_MAX = 4096
+const baseWordCache = new Map<string, string>()
+export function baseWord(w: string): string {
+  let r = baseWordCache.get(w)
+  if (r === undefined) {
+    r = baseWordUncached(w)
+    if (baseWordCache.size >= BASE_WORD_CACHE_MAX) baseWordCache.clear()
+    baseWordCache.set(w, r)
+  }
+  return r
+}
+export { baseWordUncached as baseWordForTest }
 
 /** a command substitution found inside a double-quoted span: its body, and the count of segments before it */
 interface DqSubstitution {
@@ -690,7 +722,7 @@ function isCatHeredoc(body: string): boolean {
  */
 function segments(
   cmd: string,
-  info?: { dollarQuote: boolean; state?: ScanState; deep?: boolean },
+  info?: { dollarQuote: boolean; funcDef?: boolean; state?: ScanState; deep?: boolean },
   subs?: DqSubstitution[],
 ): string[][] {
   const segs: string[][] = []
@@ -713,8 +745,13 @@ function segments(
     cur = []
   }
   let redirPrev = false
+  // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
+  // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
+  let exemptPrev: boolean = false
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
+    const wasExempt: boolean = exemptPrev
+    exemptPrev = false
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir: boolean = redirPrev
     redirPrev = false
@@ -765,6 +802,7 @@ function segments(
         // claude-factory-abmq: a continuation is not a char, so `>BSNL&1` stays one redirect.
         redirPrev = afterRedir
         i++
+        exemptPrev = wasExempt
         continue
       }
       word += cmd[++i]
@@ -782,6 +820,16 @@ function segments(
       // add no marker, and neither does the `)` that closes them. `<(` and `>(` keep one, because a word after them must stay in the push tail.
       const prev = cmd[i - 1] ?? ''
       if (c === '(') {
+        // claude-factory-4i60: an empty `()` pair after a word is a function definition.
+        if (info && !wasExempt) {
+          let j = i + 1
+          while (j < cmd.length) {
+            if (cmd[j] === ' ' || cmd[j] === '\t' || cmd[j] === '\n') j++
+            else if (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+            else break
+          }
+          if (cmd[j] === ')') info.funcDef = true
+        }
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
         if (arg) {
@@ -833,9 +881,54 @@ function segments(
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
+    exemptPrev = c === '$' || c === '<' || c === '>' || c === '='
   }
   endSeg()
   return segs.filter(s => s.length > 0)
+}
+
+// claude-factory-4i60: words that can come before a `function` keyword in a command position.
+const FUNCTION_PREFIX_WORDS = new Set([
+  '{',
+  '!',
+  'time',
+  '-p',
+  'then',
+  'do',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+])
+
+const FUNCTION_TABLE_WORD = /^(dis_)?functions(\[|\+?=|$)/
+const FUNCTION_IMPORT_VALUE = /^[^=]*=\(\) \{/
+
+/**
+ * claude-factory-4i60: true when this segment defines a shell function with the `function`
+ * keyword. The lexer already drops quotes and escapes, so `\function` matches too.
+ */
+function namesFunctionDefinition(words: string[]): boolean {
+  // claude-factory-4i60.15: every check below needs one of these strings in a word
+  if (!/function|BASH_FUNC_|=\(\) \{/.test(joinedWords(words))) return false
+  let k = 0
+  while (k < words.length && FUNCTION_PREFIX_WORDS.has(words[k]!)) k++
+  if (words[k] === 'function') return true
+  // claude-factory-4i60.5: a command position also follows `{` and the like inside
+  // the segment (zsh `repeat 1 {`, `if [[ 1 ]] {`, `} always {`), `repeat <word>`, and `time --`.
+  for (let j = 1; j < words.length; j++) {
+    if (words[j] !== 'function') continue
+    const prev = words[j - 1]!
+    if (FUNCTION_PREFIX_WORDS.has(prev) && prev !== '-p' && prev !== 'time') return true
+    if (prev === ']]') return true
+    if (words[j - 2] === 'repeat') return true
+    if (prev === '--' && (words[j - 2] === 'time' || words[j - 2] === '-p')) return true
+  }
+  // the zsh functions table, a bash BASH_FUNC_ import, and a bash function-import value
+  return words.some(
+    w => FUNCTION_TABLE_WORD.test(w) || w.includes('BASH_FUNC_') || FUNCTION_IMPORT_VALUE.test(w),
+  )
 }
 
 /** true when `w` is a short-flag cluster (e.g. `-rf`) or a long flag (`--recursive`) that means recursive */
@@ -1381,11 +1474,11 @@ function shellSlotWord(w: string): boolean {
 }
 
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
-// way anyShellReason finds it: the first flag cluster that holds c, then the first word after it
+// way anyShellReason finds it: the first flag cluster that holds c (or a dynamic word), then the first word after it
 // that is not itself a flag, or the word right after a literal --.
 function shCScriptValue(words: string[], start: number): string | undefined {
   let nc = start
-  while (nc < words.length && words[nc] !== '--' && !isShCCluster(words[nc]!)) nc++
+  while (nc < words.length && words[nc] !== '--' && !possibleShCCluster(words[nc]!)) nc++
   if (nc >= words.length || words[nc] === '--') return undefined
   for (let k = nc + 1; k < words.length; k++) {
     const w = words[k]!
@@ -1409,10 +1502,18 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   // (rest holds them all, later eval words too). A later eval word then needs no recursion of its
   // own. Without this skip, n stacked eval words cost about 2^n work.
   let evalScanned = false
+  let slotEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
     if (shellSlotWord(words[k]!)) {
+      // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
+      // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
+      if (SHELL_NAMES.has(bw) && k >= slotEnd) {
+        const walk = shOptionSlotWalk(words, k)
+        if (walk.dynamic) return true
+        slotEnd = walk.end
+      }
       const script = shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
     } else if (bw === 'eval' && !evalScanned) {
@@ -2338,6 +2439,46 @@ function firstVerbIndex(
     return { index: i, uncertain }
   }
   return { index: -1, uncertain }
+}
+
+/**
+ * claude-factory-38jm: true when `w` is a `-c` cluster, or a dynamic word that the shell can
+ * expand to one. The `-c` scans use this test, so a dynamic word after a literal operand
+ * (`sh script.sh $X 'git push origin main'`) reads like `sh script.sh -c '...'`.
+ */
+function possibleShCCluster(w: string): boolean {
+  return isShCCluster(w) || (w !== '--' && dynamicPushWord(w))
+}
+
+/**
+ * claude-factory-38jm: reads the option slot of the sh/bash/zsh/dash word at `words[j]`.
+ * The walk starts at `words[j + 1]`. It returns `dynamic: true` when a word in that slot holds a
+ * shell expansion (`dynamicPushWord`). The shell can expand such a word to `-c` and a script.
+ *
+ * The walk stops with `dynamic: false` at a literal `--`, at a literal `-c` cluster (the `-c`
+ * scan reads the script then), or at the first literal operand (a word that does not start with
+ * `-` or `+`). It skips a lone `-` and each literal flag word. After a short flag word that
+ * holds `o` or `O`, and after `--rcfile`, `--init-file` or `--emulate`, the next word is the flag value. The
+ * walk skips a literal value, and returns true for a dynamic one.
+ *
+ * `end` is the index of the word that stopped the walk, or `words.length`. The walk from a later
+ * shell word below `end` reads a suffix of this walk and ends the same way.
+ */
+function shOptionSlotWalk(words: string[], j: number): { dynamic: boolean; end: number } {
+  for (let i = j + 1; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--' || isShCCluster(w)) return { dynamic: false, end: i }
+    if (dynamicPushWord(w)) return { dynamic: true, end: i }
+    if (w === '-') continue
+    if (!w.startsWith('-') && !w.startsWith('+')) return { dynamic: false, end: i }
+    const takesValue =
+      w === '--rcfile' || w === '--init-file' || w === '--emulate' || (!w.startsWith('--') && /[oO]/.test(w))
+    if (takesValue) {
+      i++
+      if (i < words.length && dynamicPushWord(words[i]!)) return { dynamic: true, end: i }
+    }
+  }
+  return { dynamic: false, end: words.length }
 }
 
 /**
@@ -4681,6 +4822,9 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
   'api',
 ])
 
+// claude-factory-38jm: a brace word with a comma or a `..` range.
+const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
+
 /**
  * The function returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real
  * command (claude-factory-p43v.5). No wrapper that this hook knows by name names the command.
@@ -4733,6 +4877,10 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
   for (const a of commandAnchors(words)) {
+    // claude-factory-38jm: bash expands `{sh,-c}` into two words before it runs the command. A
+    // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
+    // no comma and no `..`, so it stays allowed.
+    if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
@@ -4920,7 +5068,7 @@ function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): strin
  * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
  * pointers that only move up.
  *
- * `nc` holds the next index at or after the current `j` whose word passes `isShCCluster`.
+ * `nc` holds the next index at or after the current `j` whose word passes `possibleShCCluster`.
  * `nd` holds the next index at or after `j` whose word is a literal `--`.
  *
  * Each pointer keeps its old value until `j` moves past it. Then the code scans forward from `j`
@@ -5163,6 +5311,7 @@ function anyShellReason(
   let scriptNc = -1
   let scriptK = 0
   let scriptMoved = false
+  let slotEnd = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -5205,9 +5354,16 @@ function anyShellReason(
       return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
     }
     if (shellSlotWord(words[j]!)) {
+      // claude-factory-38jm: a shell word below slotEnd is a value word of an earlier walk. Its
+      // walk is a suffix of that one, so it ends the same way. Skipping it keeps the scan O(n).
+      if (SHELL_NAMES.has(bw) && j >= slotEnd) {
+        const walk = shOptionSlotWalk(words, j)
+        if (walk.dynamic) return SH_DYNAMIC_FLAG_REASON
+        slotEnd = walk.end
+      }
       if (nc < j) {
         nc = j
-        while (nc < words.length && !isShCCluster(words[nc]!)) nc++
+        while (nc < words.length && !possibleShCCluster(words[nc]!)) nc++
       }
       if (nd < j) {
         nd = j
@@ -5499,13 +5655,15 @@ function denyAt(
   // assignment. `anyGhReason` reads it for every later segment.
   let ghConfigMovedSoFar = ghConfigMovedBefore
   const subs: DqSubstitution[] = []
-  const quoteInfo: { dollarQuote: boolean; state: ScanState; deep?: boolean } = {
+  const quoteInfo: { dollarQuote: boolean; funcDef: boolean; state: ScanState; deep?: boolean } = {
     dollarQuote: false,
+    funcDef: false,
     state,
   }
   const segs = segments(command, quoteInfo, subs)
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  let definesFunction = quoteInfo.funcDef
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
@@ -5531,6 +5689,7 @@ function denyAt(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
+    if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
@@ -5643,6 +5802,7 @@ function denyAt(
   if (tailReason) return tailReason
   if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
+  if (definesFunction) return FUNCTION_DEF_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 

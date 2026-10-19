@@ -4,12 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  baseWord,
+  baseWordForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
+  FUNCTION_DEF_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   GH_BUILTIN_VERBS,
@@ -2649,7 +2652,6 @@ const ALLOW_DYNAMIC_PUSH_WORD = [
   '(git push origin feature)',
   'echo "$(git rev-parse HEAD)"',
   'echo $(git push origin feature)',
-  'f() { git push origin feature; }',
 ]
 
 test.each(ALLOW_DYNAMIC_PUSH_WORD)('denyReason allows %j (claude-factory-cu5m, no dynamic word)', cmd => {
@@ -2955,6 +2957,138 @@ test('denyReason allows a $ that does not start a $-quote (claude-factory-hewq)'
     "echo $\\\n\\'x\\'",
   ]) {
     expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+  }
+})
+
+// claude-factory-4i60: a call word can hide a git, sh or rm word in a function body.
+// The guard cannot follow the call. It denies every function definition.
+const FN_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+}
+const DENY_FUNCTION_DEF = [
+  `f() { sh x; }; f -c 'git push origin main'`,
+  `f () { sh x; }; f -c 'git push origin main'`,
+  `f ( ) { sh x; }; f -c 'git push origin main'`,
+  `f(\t) { sh x; }; f -c 'git push origin main'`,
+  `f(\\\n) { sh x; }; f -c 'git push origin main'`,
+  `f( \\\n \\\n ) { sh x; }; f -c 'git push origin main'`,
+  `f\\\n() { sh x; }; f -c 'git push origin main'`,
+  `f()\n{ sh x; }\nf -c 'git push origin main'`,
+  `f() ( sh x ); f -c 'git push origin main'`,
+  `f()(sh x);f -c 'git push origin main'`,
+  `f() sh x; f -c 'git push origin main'`,
+  `f g () { sh x }; g -c 'git push origin main'`,
+  `"f"() { sh x; }; f -c 'git push origin main'`,
+  `'f'() { sh x; }; f -c 'git push origin main'`,
+  `echo \\$() { sh x; }`,
+  `a\\=() { sh x; }; a= -c 'git push origin main'`,
+  `\\<() { sh x; }; \\< -c 'git push origin main'`,
+  `f() { rm "$@"; }; f -rf /tmp/x`,
+  `eval 'f() { sh x; }'; f -c 'git push origin main'`,
+  `sh -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `bash -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `zsh -c 'f() { sh x; }; f -c "git push origin main"'`,
+  `echo $(f() { sh x; }; f -c 'git push origin main')`,
+  'echo `f() { sh x; }; f -c "git push origin main"`',
+  `f() { sh x; }; export -f f; bash -c 'f -c "git push origin main"'`,
+  // function keyword (4i60.2)
+  `function f { sh x; }; f -c 'git push origin main'`,
+  `function f() { sh x; }; f -c 'git push origin main'`,
+  `{ function f { sh x; }; }; f -c 'git push origin main'`,
+  `if true; then function f { sh x; }; fi; f -c 'git push origin main'`,
+  `! function f { sh x; }; f -c 'git push origin main'`,
+  `time function f { sh x; }; f -c 'git push origin main'`,
+  `time -p function f { sh x; }; f -c 'git push origin main'`,
+  `! time function f { sh x; }; f -c 'git push origin main'`,
+  `func\\\ntion f { sh x; }; f -c 'git push origin main'`,
+  `\\function f { :; }`,
+  `while true; do function f { :; }; done`,
+  `true || function f { :; }`,
+  // each prefix word alone, and a newline inside the pair
+  `if false; then :; else function f { :; }; fi`,
+  `if false; then :; elif true; then function f { :; }; fi`,
+  `if false; then :; elif function f { :; }; then :; fi`,
+  `while function f { :; }; do :; done`,
+  `until function f { :; }; do :; done`,
+  `for x in a; do function f { :; }; done`,
+  `time -p function f { :; }`,
+  `f(\n) { :; }`,
+  `env BASH_FUNC_f%%=$v bash -c f`,
+  // function tables and imports (4i60.3)
+  `functions[f]='sh x'; f -c 'git push origin main'`,
+  `functions+=(f 'sh x'); f -c 'git push origin main'`,
+  `set -A functions f 'sh x'; f -c 'git push origin main'`,
+  `typeset "functions[f]=sh"`,
+  'dis_functions[f]=x',
+  `env 'BASH_FUNC_f%%=() { sh x; }' bash -c 'f -c "git push origin main"'`,
+  `v='() { sh x; }'; env "BASH_FUNC_f%%=$v" bash -c f`,
+  `v='() { sh x; }'; env "$n=$v" bash -c f`,
+  // command positions after a later word (4i60.5)
+  `repeat 1 function f { sh x }; f -c 'git push origin main'`,
+  `repeat 1 { function f { sh x } }; f -c 'git push origin main'`,
+  `if [[ 1 ]] { function f { sh x } }; f -c 'git push origin main'`,
+  `{ :; } always { function f { sh x } }; f -c 'git push origin main'`,
+  `time -- function f { sh x; }; f -c 'git push origin main'`,
+  `time -p -- function f { sh x; }; f -c 'git push origin main'`,
+  // command position after ]] (4i60.8)
+  `if [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `if [[ 0 == 1 ]] { :; } elif [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `while [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `until [[ 1 ]] function f { sh x }; f -c 'git push origin main'`,
+  `if [[ 1 ]] \\function f { sh x }; f -c 'git push origin main'`,
+  // accepted over-deny: a heredoc write of a function (4i60.6)
+  `cat > .scratch/x.sh <<'EOF'\nf() { :; }\nEOF`,
+  // accepted over-deny: a bare functions word
+  'grep -n functions src/x.ts',
+  // moved from ALLOW_DYNAMIC_PUSH_WORD: the guard now denies every definition
+  'f() { git push origin feature; }',
+  // accepted over-denies: an empty pair is a definition shape
+  '(( ))',
+  'ls *()',
+]
+
+test.each(DENY_FUNCTION_DEF)('denyReason denies %j (claude-factory-4i60, function definition)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, FN_GATE)).toBe(FUNCTION_DEF_REASON)
+})
+
+// These rows had another deny reason before 4i60. The more specific reason still wins.
+test('denyReason keeps the older reason for definitions with another deny (claude-factory-4i60)', () => {
+  const run = (c: string) => denyReason(c, '/root/repo', undefined, FN_GATE)
+  expect(run('g() { git "$@"; }; g push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(run('git-x() { git "$@"; }; git-x push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(run(`() { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  expect(run(`function { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+})
+
+const ALLOW_FUNCTION_DEF_LOOKALIKE = [
+  'a=(); echo hi',
+  'a+=(); echo hi',
+  'x=$(); echo hi',
+  'x=$( ); echo hi',
+  'x=$\\\n(); echo hi',
+  'diff <() >()',
+  'cat =()',
+  'diff <(sort a) <(sort b)',
+  'grep -n function src/x.ts',
+  'echo function',
+  'git log --grep=function',
+  'git commit -m "fix f() { x }"',
+  `echo 'f() { sh "$@"; }'`,
+  'bash .scratch/x.sh',
+  'ls functions.txt',
+]
+
+test.each(ALLOW_FUNCTION_DEF_LOOKALIKE)('denyReason allows %j (claude-factory-4i60, no definition)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, FN_GATE)).toBeUndefined()
+})
+
+test('denyReason scans a long function-like input fast (claude-factory-4i60)', () => {
+  for (const cmd of ['( '.repeat(4000), 'f'.repeat(8000) + '()', 'x=$('.repeat(2000)]) {
+    const t = Date.now()
+    denyReason(cmd, '/root/repo', undefined, FN_GATE)
+    expect(Date.now() - t).toBeLessThan(1000)
   }
 })
 
@@ -6352,3 +6486,21 @@ test.each(['Git status', 'Gh pr view 1', 'Git log --oneline'])(
     expect(a8prVerdict(cmd)).toBeUndefined()
   },
 )
+
+// claude-factory-4i60.14: the baseWord cache returns the uncached value for every input
+const BASE_WORD_TABLE = ['\\rm', '/bin/SH', 'Git', '/usr/bin/\u017Ftat', '', 'dir/', 'a/b/GH', '\\\\x']
+
+test('baseWord cache equals the uncached function, also after a cache clear', () => {
+  const check = () => {
+    for (const w of BASE_WORD_TABLE) {
+      expect(baseWord(w)).toBe(baseWordForTest(w))
+      expect(baseWord(w)).toBe(baseWordForTest(w))
+    }
+  }
+  check()
+  for (let i = 0; i < 4200; i++) baseWord(`/x/W${i}`)
+  check()
+  expect(baseWord('\\rm')).toBe('rm')
+  expect(baseWord('/bin/SH')).toBe('sh')
+  expect(baseWord('dir/')).toBe('')
+})
