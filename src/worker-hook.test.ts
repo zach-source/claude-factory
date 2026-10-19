@@ -4807,6 +4807,25 @@ test.each(DENY_WMSR_HEREDOC_FEED)('denyReason denies %j (body feeds a command, w
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
+// claude-factory-wmsr.8-.9: an earlier line can rebind the text consumer or its stdout.
+const DENY_WMSR_HEREDOC_REBIND = [
+  `exec 3> >(sh)\ncat <<EOF >&3\n# x\n${WM}\nEOF`,
+  `exec > >(sh)\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `exec 1> >(sh)\ngit commit -F - <<EOF\n# x\n${WM}\nEOF`,
+  `mkfifo f; sh <f &\ncat <<EOF >f\n# x\n${WM}\nEOF`,
+  `cat() ( sh )\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `function cat { sh; }\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `eval 'cat() ( sh )'\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `shopt -s expand_aliases; alias cat=sh\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `hash -p /bin/sh cat\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `command hash -p /bin/sh cat\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `builtin hash -p /bin/sh cat\ncat <<EOF\n# x\n${WM}\nEOF`,
+  `hash cat=/bin/sh\ncat <<EOF\n# x\n${WM}\nEOF`,
+]
+test.each(DENY_WMSR_HEREDOC_REBIND)('denyReason denies %j (rebound consumer, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
 test('denyReason denies a shift row with a later push (wmsr)', () => {
   expect(denyReason(`echo $((1<<2))\n${WM}\n2`, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
@@ -4819,6 +4838,8 @@ const ALLOW_WMSR_HEREDOC = [
   `cat <<<"it's"`,
   'cat <<EOF\n$(date)\nEOF',
   "cat <<'EOF' | grep x\ndon't\nEOF",
+  "cd x && git commit -F - <<'EOF'\ndon't\nEOF",
+  "cat > notes.md <<'EOF'\ndon't\nEOF",
 ]
 test.each(ALLOW_WMSR_HEREDOC)('denyReason allows %j (here-document, wmsr)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()

@@ -689,6 +689,11 @@ const HEREDOC_TEXT_COMMANDS = new Set([
   'perl',
 ])
 
+// claude-factory-wmsr.8: an earlier line can rebind a text consumer or its stdout (exec, alias,
+// a function, hash). A body is text only when every segment of the text so far starts with a word
+// in HEREDOC_TEXT_COMMANDS or this set.
+const HEREDOC_SETUP_COMMANDS = new Set(['cd', 'mkdir'])
+
 const COMPOUND_WORDS = new Set([
   '{',
   'do',
@@ -1048,11 +1053,10 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
           parens.length === 0 &&
           !inBacktick &&
           !compound &&
-          segs
-            .slice(lineStart)
-            .every(
-              s => s.length === 0 || HEREDOC_TEXT_COMMANDS.has(baseWord(s.find(w => !/^\w+=/.test(w)) ?? '')),
-            )
+          segs.every(s => {
+            const w = baseWord(s.find(x => !/^\w+=/.test(x)) ?? '')
+            return s.length === 0 || HEREDOC_TEXT_COMMANDS.has(w) || HEREDOC_SETUP_COMMANDS.has(w)
+          })
         let pos = i + 1
         const bodies: { body: string; entry: HeredocEntry }[] = []
         let unclear = false
