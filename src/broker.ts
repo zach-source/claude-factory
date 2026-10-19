@@ -106,17 +106,9 @@ export async function handle(req: Request, c: Config): Promise<Response> {
       : text(502, `ca: ${p.err.trim() || 'empty'}\n`)
   }
   if (r.op === 'ready') {
-    const p = await c.run([
-      c.kubectl,
-      'get',
-      'deployment',
-      'ax-controller',
-      '-n',
-      'ax-system',
-      '-o',
-      'json',
-      '--request-timeout=5s',
-    ])
+    // no --request-timeout: in a pod, any client flag makes kubectl skip the in-cluster config and call
+    // localhost:8080, which is this broker. run() stops the call after 30 s
+    const p = await c.run([c.kubectl, 'get', 'deployment', 'ax-controller', '-n', 'ax-system', '-o', 'json'])
     const why = p.code === 0 ? controllerReadiness(p.out) : CONTROLLER_UNKNOWN
     return why ? text(503, why + '\n') : text(200, 'ready\n')
   }
