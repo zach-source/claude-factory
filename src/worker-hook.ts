@@ -1161,6 +1161,7 @@ const RESERVED_LEADING_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'whi
 //
 // Source: each wrapper's own man page.
 // sudo takes a value after -u, -g, -C, -D, -h, -p, -U, -r and -t.
+// `realCommand` reads sudo through `skipSudoFlags`. `commandAnchors` still uses the sets below.
 // env takes a value after -u, -C, -P, -L, -U and -a.
 // nice takes a value after -n.
 //
@@ -1199,6 +1200,90 @@ const WRAPPER_BARE_FLAGS: Record<string, Set<string>> = {
   command: new Set(['-p']),
 }
 
+// claude-factory-aylh: sudo option tables. Source: sudo parse_args.c, sudo_short_opts
+// "+Aa:BbC:c:D:Eeg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv". Each letter below takes a value.
+// The other letters (A B b E e H i K k l N n P S s V v) are bare.
+const SUDO_SHORT_VALUE_FLAGS = new Set(['a', 'C', 'c', 'D', 'g', 'h', 'p', 'R', 'r', 'T', 't', 'U', 'u'])
+
+// The 31 names of sudo_long_opts. true means required_argument. `preserve-env` takes a value
+// only after `=`, so it is false.
+const SUDO_LONG_OPTIONS: Record<string, boolean> = {
+  'other-user': true,
+  'auth-type': true,
+  'close-from': true,
+  'login-class': true,
+  chdir: true,
+  group: true,
+  host: true,
+  prompt: true,
+  chroot: true,
+  role: true,
+  'command-timeout': true,
+  type: true,
+  user: true,
+  background: false,
+  edit: false,
+  'set-home': false,
+  login: false,
+  'remove-timestamp': false,
+  list: false,
+  'preserve-env': false,
+  'preserve-groups': false,
+  shell: false,
+  validate: false,
+  askpass: false,
+  bell: false,
+  help: false,
+  'reset-timestamp': false,
+  'no-update': false,
+  'non-interactive': false,
+  stdin: false,
+  version: false,
+}
+
+/**
+ * Skip the options and the NAME=value words that sudo reads before its command.
+ * It follows getopt_long: `--` ends the options, a long name can be a unique prefix,
+ * and a short cluster such as `-nEu root` ends in a value letter that takes the next word.
+ * It reads an unknown option as bare. Real sudo runs nothing after an unknown option,
+ * so this cannot hide a command that runs.
+ */
+function skipSudoFlags(words: string[]): string[] {
+  let i = 0
+  while (i < words.length) {
+    const w = words[i]!
+    if (w === '--') return words.slice(i + 1)
+    if (w[0] !== '-' && w[0] !== '/' && w.indexOf('=') > 0) {
+      i++
+      continue
+    }
+    if (w === '-' || w[0] !== '-') break
+    if (w.startsWith('--')) {
+      const eq = w.indexOf('=')
+      const name = eq < 0 ? w.slice(2) : w.slice(2, eq)
+      let required = false
+      if (eq < 0) {
+        if (name in SUDO_LONG_OPTIONS) required = SUDO_LONG_OPTIONS[name]!
+        else {
+          const hits = Object.keys(SUDO_LONG_OPTIONS).filter(k => k.startsWith(name))
+          if (hits.length === 1) required = SUDO_LONG_OPTIONS[hits[0]!]!
+        }
+      }
+      i += required ? 2 : 1
+      continue
+    }
+    let step = 1
+    for (let k = 1; k < w.length; k++) {
+      if (SUDO_SHORT_VALUE_FLAGS.has(w[k]!)) {
+        if (k === w.length - 1) step = 2
+        break
+      }
+    }
+    i += step
+  }
+  return words.slice(i)
+}
+
 /**
  * The function skips each flag word after a known wrapper's own name.
  * It handles one word pair at a time.
@@ -1215,6 +1300,7 @@ const WRAPPER_BARE_FLAGS: Record<string, Set<string>> = {
  * The scan skips that `--` word first, because it ends the wrapper's own option list.
  */
 function skipWrapperFlags(wrapperName: string, words: string[]): string[] {
+  if (wrapperName === 'sudo') return skipSudoFlags(words)
   const valueFlags = WRAPPER_VALUE_FLAGS[wrapperName]
   const bareFlags = WRAPPER_BARE_FLAGS[wrapperName]
   let w = words
