@@ -687,13 +687,19 @@ function isCatHeredoc(body: string): boolean {
  *
  * When `subs` is set, segments() pushes the body of each command substitution found inside a
  * double-quoted span. The caller must scan each body. The word keeps its raw text.
+ *
+ * claude-factory-59pp: when an unquoted & comes right before a >, the result holds both readings.
+ * The split reading (dash) comes first. The joined reading (bash, zsh) follows it and keeps &> in
+ * its own word, so the words after the redirect stay with the command.
  */
 function segments(
   cmd: string,
   info?: { dollarQuote: boolean; state?: ScanState; deep?: boolean },
   subs?: DqSubstitution[],
+  ampJoin = false,
 ): string[][] {
   const segs: string[][] = []
+  let sawAmpGt = false
   let cur: string[] = []
   let word = ''
   let hasWord = false
@@ -814,6 +820,22 @@ function segments(
       endSeg()
       continue
     }
+    if (c === '&') {
+      // claude-factory-59pp: bash and zsh read `&>` and `&>>` as one redirect. dash reads a
+      // separator and then `>`. The split pass is the dash reading. The ampJoin pass is the bash
+      // reading: it starts a new word with the `&`, so the words after the redirect stay with the command.
+      let j = i + 1
+      while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+      if (cmd[j] === '>') {
+        sawAmpGt = true
+        if (ampJoin) {
+          endWord()
+          word = '&'
+          hasWord = true
+          continue
+        }
+      }
+    }
     if (';|&\n'.includes(c)) {
       endSeg()
       continue
@@ -835,7 +857,9 @@ function segments(
     redirPrev = c === '<' || c === '>'
   }
   endSeg()
-  return segs.filter(s => s.length > 0)
+  const out = segs.filter(s => s.length > 0)
+  if (sawAmpGt && !ampJoin) out.push(...segments(cmd, undefined, undefined, true))
+  return out
 }
 
 /** true when `w` is a short-flag cluster (e.g. `-rf`) or a long flag (`--recursive`) that means recursive */
