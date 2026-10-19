@@ -3772,6 +3772,40 @@ test('denyReason scans a many-star glob fast and denies it (claude-factory-ty8y.
   expect(performance.now() - t2).toBeLessThan(1000)
 })
 
+// claude-factory-267o: wordNamesHead shares the star collapse and the fail-closed cap.
+test('denyReason tests a many-star write target fast (claude-factory-267o)', () => {
+  const run = (cmd: string) => {
+    const t = performance.now()
+    const r = denyReason(cmd, '/r/acme/widget', undefined, GIT_ADMIN_PATH_GATE)
+    return { r, ms: performance.now() - t }
+  }
+  const stars = '*'.repeat(8000)
+  const a1 = run(`echo x > H${stars}x; printf x >> ~/.gitconfig; git push`)
+  expect(a1.r).toBe(GLOBAL_GIT_CONFIG_REASON)
+  expect(a1.ms).toBeLessThan(1000)
+  const a2 = run(`echo x > H${stars}x; git push`)
+  expect(a2.r).toBeUndefined()
+  expect(a2.ms).toBeLessThan(1000)
+  const a3 = run(`echo x > H${stars}; git push`)
+  expect(a3.r).toBe(PUSH_REASON)
+  expect(a3.ms).toBeLessThan(1000)
+  const a4 = run(`cat H${'*?'.repeat(4000)}; git push`)
+  expect(a4.r).toBe(PUSH_REASON)
+  expect(a4.ms).toBeLessThan(1000)
+})
+
+test.each([
+  ['cat a*b*b*b*b*b; git push', PUSH_REASON],
+  ['cat a*b*c*d*e; git push', undefined],
+  ['echo x > H*; git push', PUSH_REASON],
+  ['echo x > HE?D; git push', PUSH_REASON],
+  ['echo x > H[E]AD; git push', PUSH_REASON],
+  ['echo x > out*.log', undefined],
+  ['echo x > out*.log; git push', undefined],
+])('denyReason glob cap row %s (claude-factory-267o)', (cmd, want) => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GIT_ADMIN_PATH_GATE)).toBe(want)
+})
+
 // ty8y.9-11: a git segment that writes through its operands, a directory operand, the <> redirect.
 const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2 = [
   'git --work-tree=$HOME checkout HEAD -- .gitconfig',
