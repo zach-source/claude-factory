@@ -5250,7 +5250,12 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
 ])
 
 // claude-factory-38jm: a brace word with a comma or a `..` range.
-const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
+/** True when a command word holds `*`, `?` or a `[..]` pair. A lone `[` or `[[` is not a glob. */
+function globCommandWord(w: string): boolean {
+  return /[*?]/.test(w) || /\[[\s\S]*\]/.test(w)
+}
+
+const BRACE_LIST_WORD =/\{[^{}]*(,|\.\.)[^{}]*\}/
 
 /**
  * The function returns `DYNAMIC_VERB_REASON` for a segment where a dynamic word hides the real
@@ -5308,6 +5313,8 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
     // no comma and no `..`, so it stays allowed.
     if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
+    // claude-factory-clcc: bash and zsh expand a glob in the command word, so `/bin/[r]m` runs rm.
+    if (globCommandWord(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
@@ -6364,6 +6371,9 @@ function denyAtScan(
       // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
       // O(n), not O(n^2).
       for (let i = 0; i < cmd.length; i++) {
+        if (cmd[i] === '-exec' || cmd[i] === '-execdir' || cmd[i] === '-ok' || cmd[i] === '-okdir') {
+          if (i + 1 < cmd.length && globCommandWord(cmd[i + 1]!)) return DYNAMIC_VERB_REASON
+        }
         if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
         if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
       }
