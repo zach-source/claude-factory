@@ -2613,7 +2613,9 @@ test.each(DENY_AMP_XARGS)('denyReason denies %j (claude-factory-59pp, xargs afte
   expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBe(XARGS_REASON)
 })
 
-test('denyReason still reads the dash split after &> (claude-factory-59pp)', () => {
+// This test pins the verdict only. No row separates the dash reading from the joined reading until
+// claude-factory-4a4o (a leading redirect word hides rm) is fixed, so the joined-only mutant survives.
+test('denyReason denies a command after &> in both readings (claude-factory-59pp)', () => {
   expect(denyReason('true &>/dev/null gh pr merge 1', '/root/repo', undefined, AMP_GATE)).toBeDefined()
 })
 

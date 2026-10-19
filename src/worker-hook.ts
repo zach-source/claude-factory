@@ -866,7 +866,8 @@ function segments(
   }
   endSeg()
   const out = segs.filter(s => s.length > 0)
-  if (sawAmpGt && !ampJoin) out.push(...segments(cmd, undefined, undefined, true))
+  if (sawAmpGt && !ampJoin)
+    out.push(...segments(cmd, { dollarQuote: false, state: info?.state, deep: info?.deep }, undefined, true))
   return out
 }
 
@@ -2154,8 +2155,8 @@ function cwdInsideGitDir(cwd: string | undefined): boolean {
 // send-pack word together. It over-denies a backtick that sits in an unrelated quoted argument.
 // This is fail closed.
 // claude-factory-cu5m.13: the same scan covers `&>` (also `&>>`, `&>|`, `&>!`). zsh and bash read it
-// as a redirect, but `segments()` splits at its `&` (dash reads `&` then `>`), so the words after it
-// leave the push tail. It over-denies `git push origin feature &>/dev/null`.
+// as a redirect. `segments()` now scans both readings (claude-factory-59pp). This check stays as a
+// fail closed backstop. It over-denies `git push origin feature &>/dev/null`.
 // claude-factory-abmq: bash joins `&BSNL>` into `&>`, so the scan allows backslash-newline pairs
 // between the `&` and the `>`. It also denies `git push origin feature &BSNL>/dev/null`.
 function backtickBesidePush(command: string): boolean {
