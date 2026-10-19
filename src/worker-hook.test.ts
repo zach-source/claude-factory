@@ -6773,6 +6773,14 @@ test.each([
   expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
 })
 
+test.each(
+  ['nice', 'time', 'nohup', 'exec', 'command', 'builtin']
+    .map(w => `${w} ./d=1/rm -r ./d`)
+    .concat(['nice -n 5 ./d=1/rm -r ./d', 'sudo nice ./d=1/rm -r ./d']),
+)('denyReason denies %j (claude-factory-mmc9.10, only sudo and env read NAME=v as assignment)', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
 // claude-factory-4i60.14: the baseWord cache returns the uncached value for every input
 const BASE_WORD_TABLE = ['\\rm', '/bin/SH', 'Git', '/usr/bin/\u017Ftat', '', 'dir/', 'a/b/GH', '\\\\x']
 

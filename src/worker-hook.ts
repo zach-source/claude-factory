@@ -1162,7 +1162,7 @@ function realCommand(words: string[]): string[] {
     const b = baseWord(head)
     if (WRAPPERS.has(b)) {
       w = skipWrapperFlags(b, w.slice(1))
-      afterWrapper = true
+      afterWrapper = b === 'sudo' || b === 'env'
       continue
     }
     if (b === 'timeout') {
