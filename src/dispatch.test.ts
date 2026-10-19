@@ -110,6 +110,10 @@ function reset(extRef: string | undefined) {
   writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
 }
 
+/** dispatch.json without its skip rows (why a ready bead did not start): the errors it carries */
+const errorRows = () =>
+  (JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8')) as { skip?: string }[]).filter(r => !r.skip)
+
 /** the new run's inbox: a GOTO line, if dispatch posted one */
 function gotoOf(): { type: string; node: string }[] {
   const runsDir = join(home, 'runs')
@@ -224,7 +228,7 @@ test("a corrupt plan.json ('not json') reads as no plan: acme-1 starts, dispatch
   const out = factory(['beads'])
   expect(out.code).toBe(0)
   expect(startedBead()).toBe('acme-1')
-  expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
+  expect(errorRows()).toEqual([])
 })
 
 test("a plan.json missing 'rigs' reads as no plan: acme-1 starts, dispatch.json carries no new error (claude-factory-dun.17d)", () => {
@@ -233,7 +237,7 @@ test("a plan.json missing 'rigs' reads as no plan: acme-1 starts, dispatch.json 
   const out = factory(['beads'])
   expect(out.code).toBe(0)
   expect(startedBead()).toBe('acme-1')
-  expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
+  expect(errorRows()).toEqual([])
 })
 
 test("a plan.json whose 'proposals' is not an array reads as no plan (claude-factory-dun.17d)", () => {
@@ -253,7 +257,7 @@ test("a plan.json whose rig entry has no 'items'/'findings' arrays reads as no p
   const out = factory(['beads'])
   expect(out.code).toBe(0)
   expect(startedBead()).toBe('acme-1') // bd order: the malformed plan changed nothing
-  expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
+  expect(errorRows()).toEqual([])
 })
 
 test("a plan.json with a null finding reads as no plan, not a throw: dispatch keeps bd order, not the plan's own ranking (claude-factory-dun.20)", () => {
@@ -279,7 +283,7 @@ test("a plan.json with a null finding reads as no plan, not a throw: dispatch ke
   const out = factory(['beads'])
   expect(out.code).toBe(0)
   expect(startedBead()).toBe('acme-1') // bd order: the malformed plan changed nothing
-  expect(JSON.parse(readFileSync(join(home, 'dispatch.json'), 'utf8'))).toEqual([])
+  expect(errorRows()).toEqual([])
 })
 
 test("a rig named like an Object.prototype member and absent from a valid plan's rigs still falls back to bd order (claude-factory-dun.18)", () => {
