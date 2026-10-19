@@ -318,11 +318,14 @@ The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the
 
 The broker is a small HTTP server in the cluster (`factory broker serve [--port 8080]`, image from `Dockerfile.broker`, manifest `deploy/broker.yaml`). It runs `kubectl ate` with a projected ServiceAccount token (audience `api.ate-system.svc`). ate-api checks the token and its audience. It applies no other authorization, so the broker enforces the limits itself.
 
+The VM has no cluster access of its own, so it cannot check the AX controller. With `FACTORY_POLICY_BROKER` set, the check before each launch calls `GET /ax-ready`. If the call fails in a way other than a 503, the launch is held, as when the controller cannot be observed. The broker needs a Role in `ax-system` for this (`get` on the `ax-controller` Deployment), which `deploy/broker.yaml` holds.
+
 | Call                                  | Result                                                                                              |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `PUT /policy/<atespace>/<actor>`      | Body is an EgressPolicy as JSON. The broker deletes the old policy, then creates the new one.       |
 | `DELETE /policy/<atespace>/<actor>`   | Deletes the policy. A policy that is gone already is not an error.                                  |
 | `GET /ca`                             | The PEM of the gateway CA bundle.                                                                   |
+| `GET /ax-ready`                       | `200 ready` when the AX controller is ready. Otherwise `503` and the reason.                        |
 | `GET /healthz`                        | `ok`.                                                                                               |
 
 Limits:

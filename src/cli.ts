@@ -107,7 +107,16 @@ import {
 import * as worker from './worker'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
-import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import {
+  bdEnv,
+  httpsRemote,
+  inAx,
+  isLaptopPane,
+  mapRigs,
+  mapRunRepo,
+  stationRunnerName,
+  syncRepos,
+} from './axrepos'
 import * as broker from './broker'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
@@ -711,7 +720,7 @@ const herdrRunner: Runner = {
   launch: launchPane,
   info: (_run, pane) => paneInfo(pane),
   deliver: (pane, text) => (herdr('agent', 'prompt', pane, text), true),
-  close: pane => void Bun.spawnSync([HERDR(), 'pane', 'close', pane]), // gone already is fine
+  close: pane => void (herdrInstalled() && Bun.spawnSync([HERDR(), 'pane', 'close', pane])), // gone already is fine
   phase: pane => paneInfo(pane)?.status ?? null,
 }
 
@@ -1114,9 +1123,17 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
   `[factory] Your pane closed and this session was resumed. Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
 
-/** where a station's workers run: the station's own runner, else the rig's */
+/** where a station's workers run: the station's own runner, else the rig's. In the AX manager, never a local one. */
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
-  runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+  runners[
+    stationRunnerName(
+      inAx(),
+      def.nodes[node]?.runner,
+      rigOf(run.repo)?.runner,
+      DEFAULT_RUNNER,
+      name => runners[name]?.local ?? true,
+    )
+  ] ?? runners[DEFAULT_RUNNER]!
 
 /**
  * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
@@ -1945,6 +1962,12 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const box = c.mail[node] ?? [] // the brief carried the whole box
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
+  }
+  // a herdr pane in the AX manager came from the laptop: its session is not here. Start a fresh worker on
+  // AX. HANDOFF spends no attempt and clears the pane.
+  if (isLaptopPane(inAx(), c.pane)) {
+    send({ type: 'HANDOFF', seq: c.seq, summary: 'worker moved to AX: relaunched fresh' })
+    return 'moved to AX'
   }
   const runner = runnerOf(c.pane)
   const info = runner.info(run, c.pane)
@@ -3126,8 +3149,8 @@ function reap(rows: Row[]) {
     return [{ ...run, isOver: r.node === 'done' || r.node === 'aborted', pane: r.pane }]
   })
   const { workspaces, panes } = reapable(runs, herdrPanes())
-  for (const ws of workspaces) Bun.spawnSync([HERDR(), 'workspace', 'close', ws])
-  for (const pane of panes) Bun.spawnSync([HERDR(), 'pane', 'close', pane])
+  for (const ws of workspaces) herdrInstalled() && Bun.spawnSync([HERDR(), 'workspace', 'close', ws])
+  for (const pane of panes) herdrInstalled() && Bun.spawnSync([HERDR(), 'pane', 'close', pane])
   for (const what of [...workspaces.map(w => `workspace ${w}`), ...panes.map(p => `pane ${p}`)])
     console.error(`${new Date().toISOString()} reaped ${what}`)
 }

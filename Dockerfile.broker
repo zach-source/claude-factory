@@ -18,9 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
   && curl -fsSL -o /usr/local/bin/kubectl https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl \
   && chmod +x /usr/local/bin/kubectl
 COPY --from=ate /kubectl-ate /usr/local/bin/kubectl-ate
-# broker.ts imports nothing, so no package install
+# broker.ts imports only ax-ready.ts, so no package install
 WORKDIR /opt/factory
-COPY src/broker.ts src/broker.ts
+COPY src/broker.ts src/ax-ready.ts src/
 USER bun
 EXPOSE 8080
 ENTRYPOINT ["bun", "/opt/factory/src/broker.ts", "serve"]

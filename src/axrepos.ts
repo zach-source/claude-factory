@@ -12,6 +12,27 @@ type RigLike = { name: string; repo: string; remote?: string; beadsRemote?: { ur
 
 export const inAx = (env: Env = process.env) => env.FACTORY_IN_AX === '1'
 
+/**
+ * the runner name a station gets. On the laptop it is the station's own, else the rig's, else the default.
+ * In the AX manager a station never gets a local runner (a herdr pane would sit next to the factory home):
+ * a local station runner gives way to the rig's runner, else to the default if that is remote.
+ */
+export function stationRunnerName(
+  inVm: boolean,
+  station: string | undefined,
+  rig: string | undefined,
+  dflt: string,
+  isLocal: (name: string) => boolean,
+) {
+  const name = station ?? rig ?? dflt
+  if (!inVm || !isLocal(name)) return name
+  return [rig, dflt].find(n => n !== undefined && !isLocal(n)) ?? name
+}
+
+/** a worker address with no `scheme://` is a herdr pane id: in the AX manager it can only come from the laptop */
+export const isLaptopPane = (inVm: boolean, pane: string | null | undefined) =>
+  inVm && !!pane && !pane.includes('://')
+
 /** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
 export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
 

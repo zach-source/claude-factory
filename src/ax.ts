@@ -3,6 +3,7 @@
 // queues what the worker's `factory report|mail|memory add` would have done in an outbox, which the
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
+import { CONTROLLER_UNKNOWN, controllerReadiness } from './ax-ready'
 import { sq } from './harness'
 import { WORKER_USER } from './worker'
 
@@ -151,7 +152,12 @@ export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1
 
 /** Pending tasks cannot start while the shared controller is down; preserve them instead of retrying. */
 export function unavailable(): string | undefined {
-  const unknown = 'AX executor unavailable: controller readiness could not be observed'
+  if (BROKER()) {
+    // the manager's VM has no cluster access of its own: the broker reads the controller in the cluster
+    const r = broker('GET', '/ax-ready', undefined, 6)
+    if (r.status === 200) return undefined
+    return r.status === 503 && r.body.trim() ? r.body.trim() : CONTROLLER_UNKNOWN
+  }
   try {
     const p = Bun.spawnSync(
       [
@@ -168,27 +174,9 @@ export function unavailable(): string | undefined {
       ],
       { timeout: 6_000 },
     )
-    if (p.exitCode !== 0) return unknown
-    const d = JSON.parse(p.stdout.toString())
-    const generation = d?.metadata?.generation
-    const status = d?.status
-    if (
-      !d?.metadata?.deletionTimestamp &&
-      Number.isSafeInteger(generation) &&
-      generation > 0 &&
-      Number.isSafeInteger(status?.observedGeneration) &&
-      status.observedGeneration >= generation &&
-      Number.isSafeInteger(d?.spec?.replicas) &&
-      d.spec.replicas > 0 &&
-      Number.isSafeInteger(status?.readyReplicas) &&
-      status.readyReplicas > 0 &&
-      Number.isSafeInteger(status?.availableReplicas) &&
-      status.availableReplicas > 0
-    )
-      return undefined
-    return 'AX executor unavailable: ax-system/ax-controller is not ready at its current generation'
+    return p.exitCode === 0 ? controllerReadiness(p.stdout.toString()) : CONTROLLER_UNKNOWN
   } catch {
-    return unknown
+    return CONTROLLER_UNKNOWN
   }
 }
 
@@ -233,13 +221,14 @@ function must(args: string[], stdin?: string) {
 const BROKER = () => process.env.FACTORY_POLICY_BROKER?.replace(/\/+$/, '')
 // ponytail: curl, since callers are synchronous; the manager image has it. The ceiling is one try, 30 s
 const CURL = () => process.env.FACTORY_CURL ?? 'curl'
-function broker(method: string, path: string, body?: string) {
+export { controllerReadiness }
+function broker(method: string, path: string, body?: string, seconds = 30) {
   const p = Bun.spawnSync(
     [
       CURL(),
       '-sS',
       '-m',
-      '30',
+      String(seconds),
       '-X',
       method,
       ...(body === undefined ? [] : ['--data-binary', '@-']),
@@ -247,12 +236,13 @@ function broker(method: string, path: string, body?: string) {
       '\\n%{http_code}',
       `${BROKER()}${path}`,
     ],
-    { stdin: body === undefined ? undefined : Buffer.from(body), timeout: 35_000 },
+    { stdin: body === undefined ? undefined : Buffer.from(body), timeout: (seconds + 5) * 1000 },
   )
   const out = p.stdout.toString()
   const nl = out.lastIndexOf('\n')
   const status = Number(out.slice(nl + 1))
   return {
+    status: p.exitCode === 0 ? status : 0,
     ok: p.exitCode === 0 && status >= 200 && status < 300,
     body: nl >= 0 ? out.slice(0, nl) : p.stderr.toString(),
   }

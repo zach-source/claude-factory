@@ -3,6 +3,8 @@
 // CA), so it asks this broker, which holds a Kubernetes ServiceAccount token that ate-api accepts.
 // See docs/remote-runner.md, Policy broker.
 
+import { CONTROLLER_UNKNOWN, controllerReadiness } from './ax-ready'
+
 export const MAX_BODY = 64 * 1024
 const EGRESS_CA = 'egress-mitm.ate.dev:mitm:primary-bundle'
 /** an RFC 1123 label, as an atespace or an actor name */
@@ -55,10 +57,11 @@ export const configFrom = (env: Record<string, string | undefined>, run: Run = s
 const text = (status: number, body: string) =>
   new Response(body, { status, headers: { 'content-type': 'text/plain' } })
 
-/** what a request asks for, or the refusal: `PUT|DELETE /policy/<atespace>/<actor>`, `GET /ca`, `GET /healthz` */
+/** what a request asks for, or the refusal: `PUT|DELETE /policy/<atespace>/<actor>`, `GET /ca`, `GET /ax-ready`, `GET /healthz` */
 export function route(method: string, path: string, c: Pick<Config, 'atespaces' | 'manager'>) {
   if (method === 'GET' && path === '/healthz') return { op: 'health' as const }
   if (method === 'GET' && path === '/ca') return { op: 'ca' as const }
+  if (method === 'GET' && path === '/ax-ready') return { op: 'ready' as const }
   const m = /^\/policy\/([^/]+)\/([^/]+)$/.exec(path)
   if (!m || (method !== 'PUT' && method !== 'DELETE')) return { status: 404, error: 'not found' }
   const [atespace, actor] = [m[1]!, m[2]!]
@@ -101,6 +104,21 @@ export async function handle(req: Request, c: Config): Promise<Response> {
     return p.code === 0 && p.out.trim()
       ? text(200, p.out.trim() + '\n')
       : text(502, `ca: ${p.err.trim() || 'empty'}\n`)
+  }
+  if (r.op === 'ready') {
+    const p = await c.run([
+      c.kubectl,
+      'get',
+      'deployment',
+      'ax-controller',
+      '-n',
+      'ax-system',
+      '-o',
+      'json',
+      '--request-timeout=5s',
+    ])
+    const why = p.code === 0 ? controllerReadiness(p.out) : CONTROLLER_UNKNOWN
+    return why ? text(503, why + '\n') : text(200, 'ready\n')
   }
   const target = [r.actor, '-a', r.atespace]
   if (r.op === 'delete') {

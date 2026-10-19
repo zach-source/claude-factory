@@ -2,7 +2,17 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axRepoPath, bdEnv, beadsDirOf, httpsRemote, mapRigs, mapRunRepo, planRepoSync } from './axrepos'
+import {
+  axRepoPath,
+  bdEnv,
+  beadsDirOf,
+  httpsRemote,
+  mapRigs,
+  isLaptopPane,
+  mapRunRepo,
+  planRepoSync,
+  stationRunnerName,
+} from './axrepos'
 
 const AX = { FACTORY_IN_AX: '1' }
 const rigs = [
@@ -67,4 +77,26 @@ test('bd gets its own store in the task once bootstrapped, and the laptop env is
   })
   const laptop = { FACTORY_HOME: home }
   expect(bdEnv(repo, laptop)).toBe(laptop)
+})
+
+const local = (n: string) => n === 'herdr'
+
+test('on the laptop a station keeps its own runner, else the rig, else the default', () => {
+  expect(stationRunnerName(false, 'herdr', 'ax', 'herdr', local)).toBe('herdr')
+  expect(stationRunnerName(false, undefined, 'ax', 'herdr', local)).toBe('ax')
+  expect(stationRunnerName(false, undefined, undefined, 'herdr', local)).toBe('herdr')
+})
+
+test('in the AX manager a herdr station runner gives way to the rig, else a remote default, never herdr', () => {
+  expect(stationRunnerName(true, 'herdr', 'ax', 'herdr', local)).toBe('ax')
+  expect(stationRunnerName(true, 'herdr', undefined, 'ax', local)).toBe('ax')
+  expect(stationRunnerName(true, 'ax', 'herdr', 'herdr', local)).toBe('ax')
+  expect(stationRunnerName(true, undefined, 'ax', 'herdr', local)).toBe('ax')
+})
+
+test('only a bare herdr pane id is a laptop pane, and only in the AX manager', () => {
+  expect(isLaptopPane(true, 'wA6:p1')).toBe(true)
+  expect(isLaptopPane(true, 'ax://f-run')).toBe(false)
+  expect(isLaptopPane(true, null)).toBe(false)
+  expect(isLaptopPane(false, 'wA6:p1')).toBe(false)
 })
