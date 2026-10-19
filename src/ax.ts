@@ -598,6 +598,10 @@ export const say = (text: string) =>
 
 /** the manager task's factory home: `managerEnv` sets FACTORY_HOME to it */
 export const MANAGER_HOME = `${WS}/home`
+/** the manager's working dir in the task (the task command and its herdr panes start there) */
+export const MANAGER_CWD = WS
+/** the manager Claude's project dir in the task: CLAUDE_CONFIG_DIR, then the slug of MANAGER_CWD */
+export const MANAGER_PROJECT = `${WS}/claude/projects/${MANAGER_CWD.replace(/[^A-Za-z0-9]/g, '-')}`
 
 /**
  * whether the manager's FACTORY_HOME already holds a factory (rigs.json, runs or the .migrated marker), so a
@@ -621,6 +625,10 @@ export const unpackMigration = (name: string) =>
     managerCmd([
       'sh',
       '-c',
-      `set -e; mkdir -p ${MANAGER_HOME}; tar -xzf ${OWN}/${name} -C ${MANAGER_HOME}; date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
+      // the manager's Claude memory and transcripts (migrate.CLAUDE_STAGE) go to its project dir before the marker
+      `set -e; mkdir -p ${MANAGER_HOME}; tar -xzf ${OWN}/${name} -C ${MANAGER_HOME}; ` +
+        `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
+        `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
+        `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
     ]),
   )
