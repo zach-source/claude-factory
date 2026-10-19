@@ -211,17 +211,19 @@ export const XARGS_REASON =
   'Run the git or gh command directly, with every argument in the command line itself. ' +
   'Do not retry this exact command.'
 
+// claude-factory-38jm: reason for a dynamic word in the option slot of a shell call.
+export const SH_DYNAMIC_FLAG_REASON =
+  'The factory denies this command: a word in the option slot of a sh, bash, zsh or dash call ' +
+  'holds a shell expansion ($, a backtick, a glob, a brace or a paren). The shell can expand it ' +
+  'to -c and a script that the guard cannot read. Write the shell flags and the script plainly. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-p43v: a command or subcommand word can hold a dollar sign, a backtick, a glob
 // character, a brace, or a leading tilde. The shell has not expanded that word yet. This guard
 // reads the typed text. It does not read the shell's own expansion of that text.
 //
 // A check for one literal verb, such as push, cannot match an unexpanded word. Every check after
 // it then reads the wrong verb, or no verb at all.
-export const SH_DYNAMIC_FLAG_REASON =
-  'The factory denies this command: a word in the option slot of a sh, bash, zsh or dash call ' +
-  'holds a shell expansion ($, a backtick, a glob, a brace or a paren). The shell can expand it ' +
-  'to -c and a script that the guard cannot read. Write the shell flags and the script plainly. ' +
-  'Do not retry this exact command.'
 
 export const DYNAMIC_VERB_REASON =
   'The factory denies this command: a word at the command or subcommand slot holds a shell ' +
@@ -1355,7 +1357,7 @@ function valueNamesBeadsActor(v: string | undefined): boolean {
 }
 
 // claude-factory-igj: finds the sh/bash/zsh/dash `-c` script word after words[start], the same
-// way anyShellReason finds it: the first flag cluster that holds c, then the first word after it
+// way anyShellReason finds it: the first flag cluster that holds c (or a dynamic word), then the first word after it
 // that is not itself a flag, or the word right after a literal --.
 function shCScriptValue(words: string[], start: number): string | undefined {
   let nc = start
@@ -2090,7 +2092,7 @@ function possibleShCCluster(w: string): boolean {
  * The walk stops with `dynamic: false` at a literal `--`, at a literal `-c` cluster (the `-c`
  * scan reads the script then), or at the first literal operand (a word that does not start with
  * `-` or `+`). It skips a lone `-` and each literal flag word. After a short flag word that
- * holds `o` or `O`, and after `--rcfile` or `--init-file`, the next word is the flag value. The
+ * holds `o` or `O`, and after `--rcfile`, `--init-file` or `--emulate`, the next word is the flag value. The
  * walk skips a literal value, and returns true for a dynamic one.
  *
  * `end` is the index of the word that stopped the walk, or `words.length`. The walk from a later
@@ -2103,7 +2105,7 @@ function shOptionSlotWalk(words: string[], j: number): { dynamic: boolean; end: 
     if (dynamicPushWord(w)) return { dynamic: true, end: i }
     if (w === '-') continue
     if (!w.startsWith('-') && !w.startsWith('+')) return { dynamic: false, end: i }
-    const takesValue = w === '--rcfile' || w === '--init-file' || (!w.startsWith('--') && /[oO]/.test(w))
+    const takesValue = w === '--rcfile' || w === '--init-file' || w === '--emulate' || (!w.startsWith('--') && /[oO]/.test(w))
     if (takesValue) {
       i++
       if (i < words.length && dynamicPushWord(words[i]!)) return { dynamic: true, end: i }
@@ -4699,7 +4701,7 @@ function anyDynamicLiveApplyReason(words: string[], personOnly: string[]): strin
  * claude-factory-1by: `nc` and `nd` hold state across one call of this function, as two forward
  * pointers that only move up.
  *
- * `nc` holds the next index at or after the current `j` whose word passes `isShCCluster`.
+ * `nc` holds the next index at or after the current `j` whose word passes `possibleShCCluster`.
  * `nd` holds the next index at or after `j` whose word is a literal `--`.
  *
  * Each pointer keeps its old value until `j` moves past it. Then the code scans forward from `j`

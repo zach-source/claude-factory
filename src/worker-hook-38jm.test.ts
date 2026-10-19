@@ -34,6 +34,7 @@ const AC1 = [
   "C='-c {git,push,origin,main}'; bash $C x",
   "C=-c; bash -o pipefail $C 'git push origin main'",
   "C=-c; bash --rcfile rc $C 'git push origin main'",
+  "C='-c git${IFS}push${IFS}origin${IFS}main'; zsh --emulate ksh $C",
   "C=-c; bash --init-file rc $C 'git push origin main'",
   "sh {-c,'git push origin main'}",
   "sh -[b-d] 'git push origin main'",
@@ -69,6 +70,7 @@ const AC3 = [
   'C=-c; env -i bash $C',
   "C=c; env -i sh -$C 'bd create x'",
   "C=-c; env -i sh $C 'bd create x'",
+  "C='-c bd${IFS}create${IFS}x'; env -i zsh --emulate ksh $C",
 ]
 test.each(AC3)('38JM AC3 denies %s', cmd => {
   expect(run(cmd)).toBe(BEADS_ACTOR_REASON)
