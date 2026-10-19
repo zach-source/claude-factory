@@ -5409,6 +5409,44 @@ test.each(ALLOW_WMSR_HEREDOC)('denyReason allows %j (here-document, wmsr)', cmd 
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
 })
 
+// claude-factory-wmsr (capped): rows where a shell runs the push and the round-8 reading allowed it.
+const DENY_WMSR_CAPPED = [
+  "x=1; echo $[ $(echo ]) #x ] '\n'; git push origin main",
+  "x=1; echo $[ `echo ]` #x ] '\n'; git push origin main",
+  "x=1; echo $[ ${x:-]} #x ] '\n'; git push origin main",
+  "echo $[ $(echo ]) 1<<2 ]\necho 'a\n2\n'; git push origin main",
+  "cat <<EOF ${x:-\nEOF\n}\n'\nEOF\ngit push origin main",
+  "cat <<EOF ${x:-\nEOF\n}\ndon't\nEOF\ngit push origin main",
+  "cat <<EOF $(\nEOF\n)\ndon't\nEOF\ngit push origin main",
+  "cat <<EOF $(echo\nEOF\n)\ndon't\nEOF\ngit push origin main",
+  "cat <<EOF $[\nEOF\n]\ndon't\nEOF\ngit push origin main",
+  "cat <<EOF $((\nEOF\n))\ndon't\nEOF\ngit push origin main",
+  "x=1; echo $[ $(true ]) #x ] '\n'; git push origin main",
+  "x=1; echo $[ `true ]` #x ] '\n'; git push origin main",
+  "x=1; echo $[ ${y+]} #x ] '\n'; git push origin main",
+  "echo $[ $(true ]) 1<<2 ]\necho 'a\n2\n'; git push origin main",
+  "echo $[ `true ]` 1<<2 ]\necho 'a\n2\n'; git push origin main",
+  "echo $[ ${y+]} 1<<2 ]\necho 'a\n2\n'; git push origin main",
+]
+test.each(DENY_WMSR_CAPPED)('denyReason denies %j (capped, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_CAPPED = [
+  `git commit -m "$(cat <<'EOF'\nFix: don't break\nEOF\n)"`,
+  `git commit -m "$(cat <<'EOF'\nFix: don't break\nEOF\n)" && git push origin factory/x`,
+  `gh pr create --title t --body "$(cat <<'EOF'\nIt's a fix\nEOF\n)"`,
+  `git commit -F - <<'EOF'\nFix: don't break\nEOF`,
+  "cat > notes.md <<'EOF'\n# Title\ndon't\nEOF",
+  "cat <<'EOF' | grep x\ndon't\nEOF",
+  "true # don't push",
+  "git commit -m x # it's",
+  "echo $[ 1 ] # it's fine",
+]
+test.each(ALLOW_WMSR_CAPPED)('denyReason allows %j (capped, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
 test('denyReason denies a deep double-quoted substitution nest', () => {
   expect(denyReason('echo "$('.repeat(40) + 'true' + ')"'.repeat(40), '/root/repo', ['acme'], DQ_GATE)).toBe(
     DEEP_COMMAND_REASON,
