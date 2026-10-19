@@ -2105,7 +2105,8 @@ function shOptionSlotWalk(words: string[], j: number): { dynamic: boolean; end: 
     if (dynamicPushWord(w)) return { dynamic: true, end: i }
     if (w === '-') continue
     if (!w.startsWith('-') && !w.startsWith('+')) return { dynamic: false, end: i }
-    const takesValue = w === '--rcfile' || w === '--init-file' || w === '--emulate' || (!w.startsWith('--') && /[oO]/.test(w))
+    const takesValue =
+      w === '--rcfile' || w === '--init-file' || w === '--emulate' || (!w.startsWith('--') && /[oO]/.test(w))
     if (takesValue) {
       i++
       if (i < words.length && dynamicPushWord(words[i]!)) return { dynamic: true, end: i }
