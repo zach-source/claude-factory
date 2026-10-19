@@ -6076,6 +6076,14 @@ const MAX_SHELL_ALIAS_DEPTH = 10
 // A word with a $, backtick, glob or similar char stays bare, so the dynamic-word checks still see it.
 // A bare word that also holds a space or an operator char cannot be written safely: null.
 function aliasWordText(w: string, marked = false): string | null {
+  if (marked && /[$`*?[{~\\!]/.test(w)) {
+    // claude-factory-upag: keep the mark. Quote the name part only, so the rest stays dynamic.
+    const eq = w.indexOf('=')
+    const rest = eq < 0 ? w : w.slice(eq)
+    const bad = /[$`*?[{~\\!\s;&|<>()#'"]/.test(w.slice(0, Math.max(eq, 0)))
+    if (eq <= 0 || bad || /[\s;&|<>()#'"]/.test(rest)) return null
+    return `'${w.slice(0, eq)}'${rest}`
+  }
   if (/[$`*?[{~\\!]/.test(w)) return /[\s;&|<>()#'"]/.test(w) ? null : w
   if (marked) return `'${w.replace(/'/g, `'\\''`)}'`
   return requoteWord(w)
@@ -6124,7 +6132,7 @@ function shellAliasReason(
     if (value === null || value === undefined) return SHELL_ALIAS_REASON
     if (stack.length >= MAX_SHELL_ALIAS_DEPTH) return SHELL_ALIAS_REASON
     if (spendWork(state, value.length + words.length)) return SCAN_BUDGET_REASON
-    const info = { dollarQuote: false }
+    const info: SegInfo = { dollarQuote: false, quotedNames: new Map() }
     const expansion = segments(value, info)
     if (info.dollarQuote) return SHELL_ALIAS_REASON
     if (name !== 'git' && name !== 'gh') {
@@ -6140,7 +6148,10 @@ function shellAliasReason(
     // so the rescan marks it again.
     const before = words.slice(0, i).map((w, k) => aliasWordText(w, marks?.includes(k)))
     const after = words.slice(i + 1).map((w, k) => aliasWordText(w, marks?.includes(i + 1 + k)))
-    const parts = (expansion.length ? expansion : [[]]).map(seg => seg.map(w => aliasWordText(w)))
+    const parts = (expansion.length ? expansion : [[]]).map(seg => {
+      const m = info.quotedNames?.get(seg)
+      return seg.map((w, k) => aliasWordText(w, m?.includes(k)))
+    })
     parts[0] = [...before, ...parts[0]!]
     parts[parts.length - 1] = [...parts[parts.length - 1]!, ...after]
     const texts: string[] = []
