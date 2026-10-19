@@ -6347,6 +6347,39 @@ function denyAtScan(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
+    // claude-factory-ieqm: zsh runs a command that follows a `]]` word in the same segment
+    // (`if [[ 1 ]] rm -rf /`), but realCommand reads `[[` as the command. Scan the words after
+    // each `]]`, up to the next `]]`, as a new command. Pieces do not overlap, so cost stays
+    // linear and no piece nests a scan of the next one.
+    for (let k = words.indexOf(']]', 1); k > 0 && k + 1 < words.length;) {
+      let end = words.indexOf(']]', k + 1)
+      if (end < 0) end = words.length
+      const piece = words.slice(k + 1, end)
+      k = end
+      if (!piece.length) continue
+      const quoted = piece.map(aliasWordText)
+      if (quoted.some(w => w === null)) return SHORT_FORM_REASON
+      const tailReason = denyAt(
+        quoted.join(' '),
+        root,
+        personOnly,
+        gate,
+        depth + 1,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
+      if (tailReason === HEREDOC_REASON || tailReason === COMMENT_REASON) late.reason ??= tailReason
+      else if (tailReason) return tailReason
+      const tc = realCommand(piece)
+      const tb = tc.length ? baseWord(tc[0]!) : ''
+      if (tb === 'rm') {
+        if (isRecursiveRm(tc) || rmTargets(tc).some(t => riskyTarget(t, root))) return REASON
+        hasRm = true
+      } else if (tb === 'cd') {
+        hasCd = true
+      }
+    }
     // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
     const stdinShell = shellStdinReason(words, state)
     if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true

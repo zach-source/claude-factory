@@ -7493,7 +7493,7 @@ const SHORT_PARITY = [
   'find . -exec rm -rf {} +',
   'ls | xargs rm -rf',
   'BEADS_ACTOR=x bd create y',
-  'git push --force origin x',
+  'git push --force origin main',
 ]
 
 test.each(SHORT_PARITY)('denyReason denies if/while [[ 1 ]] before %j (claude-factory-ieqm)', r => {
