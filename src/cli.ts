@@ -105,6 +105,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import * as managerhost from './managerhost'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -300,6 +301,19 @@ function durable(path: string, text: string, flag: 'w' | 'a') {
 function writeJson(path: string, value: unknown) {
   durable(`${path}.tmp`, JSON.stringify(value, null, 2), 'w')
   renameSync(`${path}.tmp`, path) // atomic: a reader never sees half a snapshot
+}
+/** `factory manager --ax [args]`: run the manager as the long-lived AX task (claude-factory-192.2) */
+async function launchAxManager(args: string[]) {
+  const image = process.env.FACTORY_AX_MANAGER_IMAGE
+  if (!image)
+    fail('FACTORY_AX_MANAGER_IMAGE is not set: name the manager image (Dockerfile.worker, target manager)')
+  const m = ax.remoteManager()
+  if (m) fail(m)
+  const { name, policy } = await ax.launchManager(image!, args)
+  console.log(
+    `the manager runs in AX task ${name}${policy ? '' : ' (its egress policy is NOT created: the task has no egress; check the AX controller)'}`,
+  )
+  console.log('attach with `factory attach`, steer with `factory say <text>`')
 }
 /** refuse to run a manager or a tick here while the AX manager task lives (claude-factory-192.6) */
 const lease = () => {
@@ -6789,6 +6803,14 @@ if (import.meta.main && !outboxCmd)
         await syncPass()
         break
       case 'manager':
+        if (args[0] === 'host') {
+          await managerhost.host(args.slice(1))
+          break
+        }
+        if (args[0] === '--ax') {
+          await launchAxManager(args.slice(1))
+          break
+        }
         lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))

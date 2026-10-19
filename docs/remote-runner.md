@@ -216,6 +216,32 @@ Before a new AX launch or explicit `factory retry`, the laptop reads `ax-system/
 
 Existing pending workers are retained while that check fails; their station deadlines do not produce another failed attempt during the outage. The manager receives the reason once per run and reason. Running-worker collection and cleanup continue. When readiness returns, normal station deadlines and retry policy apply; this does not extend an attempt's deadline.
 
+### Run the manager in AX
+
+`factory manager --ax [manager args...]` starts the manager as the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another name). Run it on the laptop. It applies one Workspace and one Task, then creates the task's egress policy.
+
+- Set `FACTORY_AX_MANAGER_IMAGE` to the manager image (`Dockerfile.worker`, target `manager`). The command stops with an error if it is not set.
+- The command stops if the task already runs. The task is the one-manager lease (see Attach to the AX manager).
+- The task has `spec.debug: true`, so `factory attach` and `factory say` can reach it.
+- The task runs `factory manager host <manager args>`. The task env has `FACTORY_IN_AX=1`, `FACTORY_HOME=/workspace/w/home` and `CLAUDE_CONFIG_DIR=/workspace/w/claude`. Both directories are on the workspace volume, which stays across a suspend.
+- The task env also holds the vault placeholders and `FACTORY_CA`, as a worker gets them. The laptop passes `FACTORY_MAX_RUNS`, `FACTORY_AX_IMAGE`, `FACTORY_AX_VAULT` and `FACTORY_AX_ATESPACE` to the task when they are set.
+- The egress policy has the worker defaults (Anthropic, GitHub, the Nix caches), `claude.ai`, and the host of `AX_SERVER` when it is set. The command tries to create the policy for 2 minutes, because the actor appears a short time after the apply.
+
+`factory manager host` runs inside the task. It stops unless `FACTORY_IN_AX=1`. It does these steps:
+
+1. It becomes the worker user, installs the gateway CA, and makes `FACTORY_HOME`.
+2. It starts herdr with no terminal attached. herdr needs a terminal, so `script` gives it one of 200 columns and 50 rows.
+3. It waits up to 60 seconds for `herdr pane list` to answer. Then it types `factory manager <args>` into the first pane (`w1:p1`).
+4. Every 30 seconds it checks herdr. If herdr is gone, it starts herdr and the manager again. It adds `--resume <session>` when `manager-sessions.json` in `FACTORY_HOME` names a session.
+
+Each restart is one line in `FACTORY_HOME/manager-host.log`.
+
+Limits:
+
+- The check runs every 30 seconds with no backoff. A herdr that dies again and again restarts every 30 seconds.
+- If the manager exits but herdr stays up, the host does nothing. `factory manager` restarts its own Claude.
+- The pane is always 200 columns wide.
+
 ### Attach to the AX manager
 
 The manager runs in the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another name). That task is the lease. While it is Running, Pending or Suspended, `factory manager`, `factory tick` and `factory loop` on the laptop stop and print how to attach. Inside the task, `FACTORY_IN_AX=1` turns the check off. The check runs only when `FACTORY_AX_CONTEXT` is set. If AX does not answer, the laptop prints a warning and runs. A laptop with no cluster must keep working.

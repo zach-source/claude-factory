@@ -20,7 +20,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { rmSafe } from './home-guard'
 
-const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
+export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
 const outbox = () => process.env.FACTORY_OUTBOX ?? join(own(), 'outbox.jsonl')
 const prompts = () => join(own(), 'prompts')
@@ -865,7 +865,7 @@ const home = () => `/home/${WORKER_USER}`
  * again as WORKER_USER and exit with it. The actor's / and /workspace are 0700, so a user could exec nothing, and
  * the workspace is root's. Without the capabilities (a task from an AX without spec.capabilities) serve stays root
  */
-function asWorker() {
+export function asWorker() {
   if (process.getuid?.() !== 0) return
   localhost()
   const ws = dirname(own())
@@ -908,22 +908,26 @@ export function excludeScratch(dir: string) {
   writeFileSync(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.scratch/\n`)
 }
 
+/** trust the egress gateway's CA (FACTORY_CA): write it and point every TLS client at it */
+export function trustCA() {
+  if (!process.env.FACTORY_CA) return
+  const ca = join(own(), 'egress-ca.crt')
+  writeFileSync(ca, process.env.FACTORY_CA)
+  // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
+  Object.assign(process.env, {
+    NODE_EXTRA_CA_CERTS: ca,
+    GIT_SSL_CAINFO: ca,
+    SSL_CERT_FILE: ca,
+    NIX_SSL_CERT_FILE: ca,
+  })
+}
+
 /**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
 export async function setup({ tries = 60, waitMs = 5000 } = {}) {
-  if (process.env.FACTORY_CA) {
-    const ca = join(own(), 'egress-ca.crt')
-    writeFileSync(ca, process.env.FACTORY_CA)
-    // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
-    Object.assign(process.env, {
-      NODE_EXTRA_CA_CERTS: ca,
-      GIT_SSL_CAINFO: ca,
-      SSL_CERT_FILE: ca,
-      NIX_SSL_CERT_FILE: ca,
-    })
-  }
+  trustCA()
   localhost()
   // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
   // replaces) go in the home rc, which every workspace reads

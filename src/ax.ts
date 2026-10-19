@@ -75,9 +75,11 @@ export function parseEgress(spec: string): Egress {
 
 export type Launch = {
   name: string
-  /** an https remote the VM clones, and the run's branch, already pushed */
-  repo: string
-  branch: string
+  /** an https remote the VM clones, and the run's branch, already pushed; a manager task has neither */
+  repo?: string
+  branch?: string
+  /** what the task runs; a worker's `factory worker serve [--model m]` when absent */
+  command?: string[]
   image: string
   /** the brief in the task's env; without it, the laptop sends brief.md once the task runs */
   brief?: string
@@ -109,17 +111,19 @@ export function manifest(l: Launch) {
     metadata,
     spec: {
       image: l.image,
-      command: ['factory', 'worker', 'serve', ...(l.model ? ['--model', l.model] : [])],
+      command: l.command ?? ['factory', 'worker', 'serve', ...(l.model ? ['--model', l.model] : [])],
       env: Object.entries({
         ...l.env,
-        FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
-        FACTORY_REPO: l.repo,
-        FACTORY_BRANCH: l.branch,
-        // AX v0.3.1's Workspace has no files: a short brief rides in the env
-        ...(l.brief !== undefined && { FACTORY_BRIEF: l.brief }),
-        FACTORY_HARNESS: l.harness ?? 'claude',
-        ...(l.provider && { FACTORY_PROVIDER: l.provider }),
-        ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+        ...(!l.command && {
+          FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
+          FACTORY_REPO: l.repo,
+          FACTORY_BRANCH: l.branch,
+          // AX v0.3.1's Workspace has no files: a short brief rides in the env
+          ...(l.brief !== undefined && { FACTORY_BRIEF: l.brief }),
+          FACTORY_HARNESS: l.harness ?? 'claude',
+          ...(l.provider && { FACTORY_PROVIDER: l.provider }),
+          ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+        }),
       }).map(([name, value]) => ({
         name,
         value,
@@ -512,6 +516,59 @@ export function remoteManager(): string | undefined {
   if (!/not ?found/i.test(r.err))
     console.error(`warning: AX unreachable, manager lease not checked: ${r.err}`)
   return undefined
+}
+
+/** the laptop's knobs the manager task needs to launch its own workers */
+const MANAGER_PASS = ['FACTORY_MAX_RUNS', 'FACTORY_AX_IMAGE', 'FACTORY_AX_VAULT', 'FACTORY_AX_ATESPACE']
+
+/** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
+export function managerEnv(env: Record<string, string | undefined> = process.env) {
+  return {
+    FACTORY_IN_AX: '1',
+    FACTORY_HOME: `${WS}/home`,
+    // its Claude sessions on the volume, so `--resume` finds them after a restart
+    CLAUDE_CONFIG_DIR: `${WS}/claude`,
+    ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
+  }
+}
+
+/**
+ * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
+ * and the AX server, which its ax runner talks to. ponytail: AX_SERVER only; a rig's hosts stay with the workers
+ */
+export function managerEgress(axServer = process.env.AX_SERVER): Egress[] {
+  const u = (() => {
+    try {
+      return axServer ? new URL(axServer) : null
+    } catch {
+      return null
+    }
+  })()
+  return [
+    { hosts: ['claude.ai'] },
+    ...(u?.hostname
+      ? [
+          {
+            hosts: [u.hostname],
+            ...(u.port ? { port: Number(u.port) } : u.protocol === 'http:' && { port: 80 }),
+          },
+        ]
+      : []),
+  ]
+}
+
+/**
+ * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
+ * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
+ */
+export async function launchManager(image: string, args: string[], { tries = 24, waitMs = 5000 } = {}) {
+  const name = managerTask()
+  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
+  for (let i = 0; i < tries; i++) {
+    if (createPolicy(name, managerEgress())) return { name, policy: true }
+    await Bun.sleep(waitMs)
+  }
+  return { name, policy: false }
 }
 
 /** a command in the manager's VM, as the worker user when the task drops to it (same rule as the worker's) */

@@ -1427,3 +1427,51 @@ test('attach reads the manager pane and say sends its text base64, so ax flags i
   expect(line).not.toContain('--context x')
   expect(line).toContain(Buffer.from(text).toString('base64'))
 })
+
+test('launchManager applies the manager task with its command and env, then retries the policy until the actor shows', async () => {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, {
+      FACTORY_MAX_RUNS: '16',
+      FACTORY_AX_VAULT: 'v1',
+      AX_SERVER: 'http://ax.example.private:8080',
+    })
+    delete process.env.FACTORY_AX_IMAGE
+    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], { waitMs: 0 })
+    expect(r).toEqual({ name: 'f-manager', policy: true })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
+    expect(task.spec.image).toBe('mgr@sha256:abc')
+    expect(task.spec.debug).toBe(true)
+    expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
+    const env = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env).toMatchObject({
+      FACTORY_IN_AX: '1',
+      FACTORY_HOME: '/workspace/w/home',
+      FACTORY_CA: 'CA-PEM',
+      FACTORY_MAX_RUNS: '16',
+      FACTORY_AX_VAULT: 'v1',
+      CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
+      GH_TOKEN: 'placeholder',
+    })
+    expect(env.FACTORY_AX_IMAGE).toBeUndefined()
+    expect(env.FACTORY_REPO).toBeUndefined()
+    expect(env.FACTORY_OUTBOX).toBeUndefined()
+    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.map(
+      (x: { https: { hostnames: string[]; ports?: unknown } }) => x.https,
+    )
+    expect(rules.some((h: { hostnames: string[] }) => h.hostnames.includes('claude.ai'))).toBe(true)
+    expect(rules.at(-1)).toEqual({ hostnames: ['ax.example.private'], ports: { numbers: [8080] } })
+    expect(logged().filter(l => l.includes('create egress-policy f-manager')).length).toBe(2) // refused once, then in
+  } finally {
+    process.env = saved
+  }
+})
+
+test('managerEgress names the AX server only when AX_SERVER is a URL', () => {
+  expect(ax.managerEgress(undefined)).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress('not a url')).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress('https://ax.x.io')).toEqual([{ hosts: ['claude.ai'] }, { hosts: ['ax.x.io'] }])
+})
