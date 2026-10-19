@@ -1434,7 +1434,9 @@ test('launchManager applies the manager task with its command and env, then retr
     Object.assign(process.env, {
       FACTORY_MAX_RUNS: '16',
       FACTORY_AX_VAULT: 'v1',
-      AX_SERVER: 'http://ax.example.private:8080',
+      FACTORY_AX_MANAGER_AX_SERVER: 'http://ax.example.svc:8080',
+      FACTORY_AX_MANAGER_ROUTER: 'http://router.example.svc',
+      FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
     })
     delete process.env.FACTORY_AX_IMAGE
     const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], { waitMs: 0 })
@@ -1459,19 +1461,63 @@ test('launchManager applies the manager task with its command and env, then retr
     expect(env.FACTORY_AX_IMAGE).toBeUndefined()
     expect(env.FACTORY_REPO).toBeUndefined()
     expect(env.FACTORY_OUTBOX).toBeUndefined()
-    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.map(
-      (x: { https: { hostnames: string[]; ports?: unknown } }) => x.https,
-    )
-    expect(rules.some((h: { hostnames: string[] }) => h.hostnames.includes('claude.ai'))).toBe(true)
-    expect(rules.at(-1)).toEqual({ hostnames: ['ax.example.private'], ports: { numbers: [8080] } })
+    expect(env.AX_SERVER).toBe('http://ax.example.svc:8080')
+    expect(env.FACTORY_POLICY_BROKER).toBe('http://broker.example.svc:8080')
+    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules
+    expect(
+      rules.some((x: { https?: { hostnames: string[] } }) => x.https?.hostnames.includes('claude.ai')),
+    ).toBe(true)
+    expect(rules.slice(-3)).toEqual([
+      { http: { hostnames: ['ax.example.svc'], ports: { numbers: [8080] } } },
+      { http: { hostnames: ['router.example.svc'], ports: { numbers: [80] } } },
+      { http: { hostnames: ['broker.example.svc'], ports: { numbers: [8080] } } },
+    ])
     expect(logged().filter(l => l.includes('create egress-policy f-manager')).length).toBe(2) // refused once, then in
   } finally {
     process.env = saved
   }
 })
 
-test('managerEgress names the AX server only when AX_SERVER is a URL', () => {
-  expect(ax.managerEgress(undefined)).toEqual([{ hosts: ['claude.ai'] }])
-  expect(ax.managerEgress('not a url')).toEqual([{ hosts: ['claude.ai'] }])
-  expect(ax.managerEgress('https://ax.x.io')).toEqual([{ hosts: ['claude.ai'] }, { hosts: ['ax.x.io'] }])
+test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
+  expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_ROUTER: 'http://r.example.svc' })).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['r.example.svc'], port: 80, http: true },
+  ])
+})
+
+// a fake curl: records the call and the body, answers by path
+const curl = join(dir, 'curl')
+writeFileSync(
+  curl,
+  `#!/bin/sh
+printf 'curl %s\\n' "$*" >> ${calls}
+case "$*" in
+  *PUT*) cat > ${dir}/policy; printf 'created\\n201' ;;
+  */ca*) printf 'CA-FROM-BROKER\\n200' ;;
+  *) printf 'no\\n502' ;;
+esac
+`,
+)
+chmodSync(curl, 0o755)
+
+test('with FACTORY_POLICY_BROKER set, the policy and the CA go to the broker and kubectl is not run', () => {
+  process.env.FACTORY_CURL = curl
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080/'
+  try {
+    expect(ax.egressCA()).toBe('CA-FROM-BROKER')
+    expect(ax.createPolicy('f-r1-1')).toBe(true)
+    expect(logged()).toEqual([
+      'curl -sS -m 30 -X GET -w \\n%{http_code} http://broker.example.svc:8080/ca',
+      'curl -sS -m 30 -X PUT --data-binary @- -w \\n%{http_code} http://broker.example.svc:8080/policy/factory/f-r1-1',
+    ])
+    expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy())
+    process.env.FACTORY_CURL = 'false'
+    expect(ax.createPolicy('f-r1-1')).toBe(false)
+    expect(() => ax.egressCA()).toThrow('the egress gateway')
+  } finally {
+    delete process.env.FACTORY_CURL
+    delete process.env.FACTORY_POLICY_BROKER
+  }
 })
