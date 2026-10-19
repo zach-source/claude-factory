@@ -51,7 +51,9 @@ export const homeReady = (f: { migrated: boolean; fresh: boolean; hasRigs: boole
 
 export const HOST_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? 'w1:p1'
 
-const herdr = (...a: string[]) => Bun.spawnSync(['herdr', ...a], { stdin: 'ignore', timeout: 10_000 })
+// env: Bun gives a child its start env unless told, and trustCA() sets the CA vars at runtime
+const herdr = (...a: string[]) =>
+  Bun.spawnSync(['herdr', ...a], { env: { ...process.env }, stdin: 'ignore', timeout: 10_000 })
 /** how many panes herdr lists; -1 when herdr does not answer */
 function paneCount() {
   const p = herdr('pane', 'list')
@@ -69,7 +71,9 @@ function paneCount() {
  */
 function startHerdr(logFile: string) {
   const fd = openSync(logFile, 'a')
+  // the herdr server's panes, the manager's Claude among them, get the CA vars trustCA() set
   Bun.spawn(['setsid', 'script', '-qfc', 'stty cols 200 rows 50; exec herdr', '/dev/null'], {
+    env: { ...process.env },
     stdin: 'ignore',
     stdout: fd,
     stderr: fd,
