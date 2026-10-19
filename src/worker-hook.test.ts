@@ -6778,7 +6778,17 @@ test.each(
     .map(w => `${w} ./d=1/rm -r ./d`)
     .concat(['nice -n 5 ./d=1/rm -r ./d', 'sudo nice ./d=1/rm -r ./d']),
 )('denyReason denies %j (claude-factory-mmc9.10, only sudo and env read NAME=v as assignment)', cmd => {
-  expect(denyReason(cmd)).toBeDefined()
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each([
+  'sudo timeout 5 ./d=1/rm -r ./d',
+  'env timeout 5 ./d=1/rm -r ./d',
+  'sudo xargs ./d=1/rm -r ./d',
+  'env xargs ./d=1/rm -r ./d',
+  'sudo A=1 timeout 5 ./d=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.11, timeout and xargs clear the wrapper flag)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
 })
 
 // claude-factory-4i60.14: the baseWord cache returns the uncached value for every input

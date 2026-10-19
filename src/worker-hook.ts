@@ -1168,11 +1168,13 @@ function realCommand(words: string[]): string[] {
     if (b === 'timeout') {
       w = skipWrapperFlags('timeout', w.slice(1))
       if (/^[\d.]+[smhd]?$/.test(w[0] ?? '')) w = w.slice(1)
+      afterWrapper = false
       continue
     }
     if (b === 'xargs') {
       w = w.slice(1)
       while (w.length && w[0]!.startsWith('-')) w = w.slice(1)
+      afterWrapper = false
       continue
     }
     return w
