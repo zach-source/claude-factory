@@ -459,7 +459,8 @@ export const DEEP_COMMAND_REASON =
 const MAX_SHELL_DEPTH = 32
 
 // wrapper commands whose own name we skip to find the command they run
-const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
+// claude-factory-tyz6: a lone `-` is a zsh precommand modifier. zsh runs the next word as the command.
+const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time', '-'])
 
 /**
  * the lowercase basename of a command word: drops a leading backslash (`\rm`) and any path
