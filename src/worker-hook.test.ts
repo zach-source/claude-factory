@@ -12,6 +12,7 @@ import {
   denyReason,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
+  ASSIGNMENT_PREFIX_REASON,
   FUNCTION_DEF_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
@@ -6644,13 +6645,7 @@ test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (c
 })
 
 const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
-test.each([
-  'bin/factory gc --dry-run',
-  'FACTORY_HOME=/t /abs/bin/factory gc',
-  'A+=1 /abs/bin/factory gc',
-  'B[1]=2 /abs/bin/factory gc',
-  'C[k]+=3 /abs/bin/factory gc',
-])(
+test.each(['bin/factory gc --dry-run', 'FACTORY_HOME=/t /abs/bin/factory gc', 'A+=1 /abs/bin/factory gc'])(
   'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
   cmd => {
     expect(
@@ -6690,7 +6685,7 @@ test.each(['git push origin feature', 'git status', 'ls -la', 'rm -i notes.txt',
   },
 )
 
-test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x'))(
+test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x' && !/^[A-Za-z]\[/.test(c)))(
   'denyReason allows %j when shellAliases is unset or empty, as before (claude-factory-1zr5)',
   cmd => {
     const pre = denyReason(cmd, '/w', undefined, snapGate())
@@ -7001,7 +6996,7 @@ test.each(['$G=x $V o main', '$G+=x $V o main', '${A}+=x $G $V o main'])(
   },
 )
 
-test.each(['A+=x ls', 'A[k]=x ls', 'A+=x bd list --all', 'echo A+=x', 'git commit -m A+=x', 'ls A[k]=x'])(
+test.each(['A+=x ls', 'A+=x bd list --all', 'echo A+=x', 'git commit -m A+=x', 'ls A[k]=x'])(
   'denyReason allows %j (claude-factory-mmc9, not a hidden command)',
   cmd => {
     expect(denyReason(cmd)).toBeUndefined()
@@ -7032,6 +7027,47 @@ test.each([
   'sudo A=1 timeout 5 ./d=1/rm -r ./d',
 ])('denyReason denies %j (claude-factory-mmc9.11, timeout and xargs clear the wrapper flag)', cmd => {
   expect(denyReason(cmd)).toBe(REASON)
+})
+
+const MMC9_13_WRAPPERS = ['nice', 'nohup', 'exec', 'command', 'builtin', 'timeout 5', 'xargs']
+test.each(
+  MMC9_13_WRAPPERS.flatMap(w => ['A=1/rm -r ./d', 'A+=1/rm -r ./d', 'é=1/rm -r ./d'].map(c => `${w} ${c}`)),
+)('denyReason denies %j (claude-factory-mmc9.13, a word with = after a wrapper is the command)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each([
+  'A=1/rm -r ./d',
+  'A+=x ls',
+  'time A=1/rm -r ./d',
+  'env A+=1/rm -r ./d',
+  'sudo A+=1/rm -r ./d',
+  'é=x',
+  'A[1]=x',
+  'A[1]=x; echo ok',
+  'echo A+=x',
+  'ls A[(r)x]',
+  'sudo timeout 5 ls',
+  'env a.b=1 ls',
+])('denyReason allows %j (claude-factory-mmc9.13, position rule)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test.each([
+  'é=1/rm -r ./d',
+  'Ⓐ=1/rm -r ./d',
+  'A²=1/rm -r ./d',
+  'A[k]=1/rm -r ./d',
+  'é=x ls',
+  'A[k]=x ls',
+  'time A[k]=x ls',
+  'B[1]=2 /abs/bin/factory gc',
+  'C[k]+=3 /abs/bin/factory gc',
+  'B[1]=/x gp origin main',
+  'C[k]+=/x gp origin main',
+  'A[a]b]=/x gp origin main',
+])('denyReason denies %j (claude-factory-mmc9.14, ambiguous assignment prefix)', cmd => {
+  expect(denyReason(cmd)).toBe(ASSIGNMENT_PREFIX_REASON)
 })
 
 // claude-factory-4i60.14: the baseWord cache returns the uncached value for every input

@@ -224,6 +224,13 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-mmc9.14: bash and zsh disagree on a non-ASCII or subscripted assignment prefix.
+export const ASSIGNMENT_PREFIX_REASON =
+  'The factory denies this command: it starts with an assignment word that bash and zsh read in ' +
+  'different ways (a non-ASCII name or a [subscript]). The guard cannot know which command runs. ' +
+  'Use an ASCII NAME=value prefix, or set the variable on its own line. Do not retry this exact ' +
+  'command.'
+
 // claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
 // guard denies every shell function definition.
 export const FUNCTION_DEF_REASON =
@@ -1182,38 +1189,59 @@ function shellAssignmentWord(w: string): boolean {
   return ASSIGNMENT_WORD_RE.test(w)
 }
 
+// claude-factory-mmc9.14: bash reads only an ASCII `NAME=v` or `NAME+=v` as an assignment. A
+// non-ASCII name or a subscript is an assignment in zsh and a command in bash. The hook cannot
+// know the shell, so it denies such a word at a shell-prefix position when a word follows it.
+const STRICT_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*\+?=/
+function hasAmbiguousAssignmentPrefix(words: string[]): boolean {
+  for (let i = 0; i < words.length - 1; i++) {
+    const w = words[i]!
+    if (RESERVED_LEADING_WORDS.has(w) || w === 'time') continue
+    if (!ASSIGNMENT_WORD_RE.test(w)) return false
+    if (!STRICT_ASSIGNMENT_RE.test(w)) return true
+  }
+  return false
+}
+
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   let w = words
-  let afterWrapper = false
+  // claude-factory-mmc9.13: the shell reads `NAME=v` as an assignment only at a shell-prefix
+  // position: the segment start, after a reserved word, or after the `time` keyword. `sudo` and
+  // `env` read any non-dash `NAME=v` word as their own operand. Every other wrapper (nice, nohup,
+  // exec, command, builtin, timeout, xargs) runs such a word as the command.
+  let pos: 'shell' | 'operand' | 'none' = 'shell'
   for (;;) {
     if (!w.length) return w
     const head = w[0]!
-    // `sudo` and `env` read any non-dash NAME=value word as an assignment (claude-factory-mmc9).
-    if (shellAssignmentWord(head) || (afterWrapper && wrapperAssignmentOperand(head))) {
+    if (
+      (pos === 'shell' && shellAssignmentWord(head)) ||
+      (pos === 'operand' && wrapperAssignmentOperand(head))
+    ) {
       w = w.slice(1)
       continue
     }
     if (RESERVED_LEADING_WORDS.has(head)) {
       w = w.slice(1)
+      pos = 'shell'
       continue
     }
     const b = baseWord(head)
     if (WRAPPERS.has(b)) {
       w = skipWrapperFlags(b, w.slice(1))
-      afterWrapper = b === 'sudo' || b === 'env'
+      pos = b === 'sudo' || b === 'env' ? 'operand' : b === 'time' && pos === 'shell' ? 'shell' : 'none'
       continue
     }
     if (b === 'timeout') {
       w = skipWrapperFlags('timeout', w.slice(1))
       if (/^[\d.]+[smhd]?$/.test(w[0] ?? '')) w = w.slice(1)
-      afterWrapper = false
+      pos = 'none'
       continue
     }
     if (b === 'xargs') {
       w = w.slice(1)
       while (w.length && w[0]!.startsWith('-')) w = w.slice(1)
-      afterWrapper = false
+      pos = 'none'
       continue
     }
     return w
@@ -6104,6 +6132,7 @@ function denyAt(
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   let definesFunction = quoteInfo.funcDef
+  let ambiguousAssignment = false
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
@@ -6145,6 +6174,7 @@ function denyAt(
       if (aliased) return aliased
     }
     if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
+    if (!ambiguousAssignment && hasAmbiguousAssignmentPrefix(words)) ambiguousAssignment = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
@@ -6261,6 +6291,7 @@ function denyAt(
   if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
   if (definesFunction) return FUNCTION_DEF_REASON
+  if (ambiguousAssignment) return ASSIGNMENT_PREFIX_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
