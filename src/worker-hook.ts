@@ -220,11 +220,11 @@ export const COMMENT_REASON =
   'the # as a comment, so this guard cannot find the real command words. Remove the # text, or ' +
   'put it on a line of its own after a newline. Do not retry this exact command.'
 
-// claude-factory-wmsr: segments() reads a here-document body only when it can tell where the body
-// ends and whether the shell runs it.
+// claude-factory-wmsr: segments() reads each here-document body as its own command text. It denies
+// a here-document when it cannot tell where the body ends.
 export const HEREDOC_REASON =
   'The factory denies this command: it holds a here-document that this guard cannot read. The ' +
-  'delimiter, the end line or the body is unclear, or the body runs a command and holds a quote. ' +
+  'delimiter, the end line or the body is unclear. ' +
   "Use a quoted delimiter such as <<'EOF', or write the text to a file. Do not retry this exact " +
   'command.'
 
@@ -691,79 +691,6 @@ function isCatHeredoc(body: string): boolean {
   return false
 }
 
-// claude-factory-wmsr: commands that read a here-document as text. They do not run it as shell
-// commands. If every command on the header line is in this set, segments() does not read the body
-// as commands.
-const HEREDOC_TEXT_COMMANDS = new Set([
-  'cat',
-  'tee',
-  'git',
-  'gh',
-  'bd',
-  'factory',
-  'grep',
-  'head',
-  'tail',
-  'wc',
-  'sort',
-  'uniq',
-  'diff',
-  'cmp',
-  'jq',
-  'echo',
-  'printf',
-  'true',
-])
-
-// claude-factory-wmsr.10: interpreters read a script from stdin only with no argument or with `-`.
-// Any other form can pass stdin to a shell (`-e`, a script file).
-const HEREDOC_INTERPRETERS = new Set(['python', 'python3', 'node', 'bun', 'ruby', 'perl'])
-
-/**
- * claude-factory-wmsr.10: true when this segment reads a here-document as plain text. A `NAME=`
- * prefix word can set an editor, so it makes the segment not text. A text consumer can still
- * hand its stdin to a shell: an interpreter with an argument, a git editor, a gh editor.
- */
-function isHeredocTextSegment(all: string[]): boolean {
-  const s = all.filter(x => !/^<<-?[^<]*$/.test(x))
-  if (s.length === 0) return true
-  if (/^\w+=/.test(s[0]!)) return false
-  const w = baseWord(s[0]!)
-  const rest = s.slice(1)
-  if (HEREDOC_SETUP_COMMANDS.has(w)) return true
-  if (HEREDOC_INTERPRETERS.has(w)) return rest.length === 0 || (rest.length === 1 && rest[0] === '-')
-  if (w === 'git') {
-    if (rest[0] !== 'commit') return false
-    const args = rest.slice(1)
-    if (args.some(a => /^-[a-zA-Z]*[ec]/.test(a) || /^--[ec]/.test(a))) return false
-    return args.some(
-      (a, k) => a === '--file=-' || a === '-F-' || ((a === '-F' || a === '--file') && args[k + 1] === '-'),
-    )
-  }
-  if (w === 'gh')
-    return ['pr', 'issue', 'release', 'gist'].includes(rest[0] ?? '') && !rest.some(a => /^--?e/.test(a))
-  return HEREDOC_TEXT_COMMANDS.has(w)
-}
-
-// claude-factory-wmsr.8: an earlier line can rebind a text consumer or its stdout (exec, alias,
-// a function, hash). A body is text only when every segment of the text so far starts with a word
-// in HEREDOC_TEXT_COMMANDS or this set.
-const HEREDOC_SETUP_COMMANDS = new Set(['cd', 'mkdir'])
-
-const COMPOUND_WORDS = new Set([
-  '{',
-  'do',
-  'then',
-  'else',
-  'elif',
-  'while',
-  'until',
-  'for',
-  'if',
-  'case',
-  'select',
-])
-
 interface HeredocEntry {
   delim: string
   dash: boolean
@@ -937,8 +864,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
   // `braceDepth` counts open unquoted `${`. `arith` counts open parens of a `((` or `$((` pair.
   // A `&` or `|` in a redirect (`>&`) opens a word, so a # after it is never at a word start.
   let lastSig: string = '\n'
-  // claude-factory-wmsr: the last char read that is not a blank, a comment or a continuation
-  let lastOp: string = '\n'
   let braceDepth = 0
   let arith = 0
   const arithStack: boolean[] = []
@@ -959,8 +884,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
     redirPrev = false
     const prevSig: string = lastSig
     lastSig = c
-    const prevOp: string = lastOp
-    if (c !== ' ' && c !== '\t') lastOp = c
     if (c === '\n' && quote && pending.length > 0) heredocUnclear()
     if (quote === "'") {
       if (c === "'") quote = null
@@ -1010,7 +933,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
         redirPrev = afterRedir
         i++
         lastSig = prevSig
-        lastOp = prevOp
         continue
       }
       word += cmd[++i]
@@ -1034,7 +956,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
           prevSig === '|')
       if (clear) {
         while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
-        lastOp = prevOp
         continue
       }
       if (info) {
@@ -1102,14 +1023,6 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
         // claude-factory-wmsr: the bodies of the here-documents on the line that just ended
         // A body is text only when no pipe, paren, backtick or compound command can feed it to a
         // later command: the header line must not end in `|` or `&`, and nothing may stay open.
-        const compound = segs.some(s => COMPOUND_WORDS.has(baseWord(s.find(w => !/^\w+=/.test(w)) ?? '')))
-        const textOnly =
-          prevOp !== '|' &&
-          prevOp !== '&' &&
-          parens.length === 0 &&
-          !inBacktick &&
-          !compound &&
-          segs.every(isHeredocTextSegment)
         let pos = i + 1
         const bodies: { body: string; entry: HeredocEntry }[] = []
         let unclear = false
@@ -1125,16 +1038,12 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
         } else {
           const read: string[] = []
           for (const { body, entry } of bodies) {
-            const hasSub = body.includes('$(') || body.includes('`')
-            const risky = /['"#]|<</.test(body)
-            if (textOnly && risky && entry.quoted) continue
-            if (textOnly && risky && !hasSub) continue
-            if (risky) heredocUnclear()
-            else if (textOnly && hasSub && !entry.quoted) {
+            read.push(body)
+            if (!entry.quoted && (body.includes('$(') || body.includes('`'))) {
               const subs = heredocSubstitutions(body)
               if (subs === undefined) heredocUnclear()
               else read.push(subs)
-            } else read.push(body)
+            }
           }
           for (const text of read) segs.push(...segments(text, info))
           i = Math.max(pos - 1, i)
