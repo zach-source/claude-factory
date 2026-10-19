@@ -2610,6 +2610,8 @@ test.each(DENY_AMP_RM)('denyReason denies %j (claude-factory-59pp, rm after &>)'
 
 // claude-factory-7xmz: a redirect word before the command word hides rm from realCommand.
 const DENY_REDIR_RM = [
+  '{a[b[0]]}>f rm -rf /',
+  '{a[0][1]}>f rm -rf /',
   '>/dev/null rm -rf /',
   '2>&1 rm -rf /',
   '>&2 rm -rf /',
@@ -2669,6 +2671,7 @@ const ALLOW_REDIR_RM = [
   'cmd 2>&1 | grep x',
   'echo x >&2',
   'echo {a,b} {c,d}',
+  'echo {a[0]} x',
 ]
 
 test.each(ALLOW_REDIR_RM)('denyReason allows %j (claude-factory-7xmz, redirect word)', cmd => {

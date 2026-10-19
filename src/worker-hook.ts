@@ -3446,7 +3446,7 @@ function dropRedirectWords(words: string[]): string[] {
     // claude-factory-7xmz.4: zsh also reads `>&|`, `>&!`, `>>&|`, `>>&!`, `>|`, `>!`. 7xmz.5: bash
     // reads a `{a[0]}` fd name with a subscript.
     const m =
-      /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\})(?:&>>?|>>?|<<<|<<-?|<>|<)(?:&[|!]?|[|!])?(.*)$/s.exec(
+      /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})(?:&>>?|>>?|<<<|<<-?|<>|<)(?:&[|!]?|[|!])?(.*)$/s.exec(
         words[i]!,
       )
     if (!m) {
