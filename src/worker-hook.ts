@@ -1329,6 +1329,7 @@ function realCommand(words: string[]): string[] {
   }
 }
 
+// claude-factory-mmc9.25: this function mirrors realCommand, but it returns an index.
 function realCommandStart(words: string[], from: number, memo: Map<number, number>): number {
   const seen: number[] = []
   let i = from
@@ -1387,7 +1388,9 @@ function rmFindDeny(cmd: string[], root?: string): boolean {
   return false
 }
 
-// plan3 prototype: deny-only second readings for every non-dash word with =.
+// claude-factory-mmc9.22: deny-only second readings for every non-dash word with =.
+// The word can be the command (bash runs a non-ASCII or path name) or an assignment.
+// This check returns true when rm or find -exec rm runs under either reading.
 function assignmentReadingsDeny(words: string[], root?: string): boolean {
   const memo = new Map<number, number>()
   for (let i = 0; i < words.length; i++) {
@@ -6375,6 +6378,21 @@ function denyAtScan(
     if (xargsHidesOperand(words)) return XARGS_REASON
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
     if (assignmentReadingsDeny(words, root)) return REASON
+    // claude-factory-mmc9.25: realCommand skips only an ASCII NAME=. For each word with =, read
+    // the word and the command after it. This sets hasRm and hasCd for the rm and cd pair check.
+    {
+      const memo2 = new Map<number, number>()
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i]!
+        if (w[0] === '-' || w.indexOf('=') < 0) continue
+        const s = realCommandStart(words, i + 1, memo2)
+        for (const h of [w, words[s] ?? '']) {
+          const hb = baseWord(h)
+          if (hb === 'rm') hasRm = true
+          else if (hb === 'cd') hasCd = true
+        }
+      }
+    }
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)

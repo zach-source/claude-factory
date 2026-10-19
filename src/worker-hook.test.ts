@@ -7454,6 +7454,13 @@ test.each(['FOO=bar ls -la', 'make A=1 -j4', 'git -c a=b status', 'rm -f a=b', '
   },
 )
 
+test.each(['cd .. && A+=1 rm foo', 'cd .. && sudo A+=1 rm foo', 'A+=1 cd ..; rm foo'])(
+  'denyReason denies %j (claude-factory-mmc9.25, rm and cd under a non-ASCII-name assignment)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(REASON)
+  },
+)
+
 const MMC9_13_WRAPPERS = ['nice', 'nohup', 'exec', 'command', 'builtin', 'timeout 5', 'xargs']
 test.each(
   MMC9_13_WRAPPERS.flatMap(w => ['A=1/rm -r ./d', 'A+=1/rm -r ./d', 'é=1/rm -r ./d'].map(c => `${w} ${c}`)),
@@ -7470,7 +7477,7 @@ test.each([
   'ls A[(r)x]',
   'sudo timeout 5 ls',
   'env a.b=1 ls',
-])('denyReason allows %j (claude-factory-mmc9.13, position rule)', cmd => {
+])('denyReason allows %j (claude-factory-mmc9.13, assignment only at a shell-prefix position)', cmd => {
   expect(denyReason(cmd)).toBeUndefined()
 })
 
