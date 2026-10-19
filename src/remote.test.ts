@@ -1028,7 +1028,7 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings).toEqual({
     autoMemoryEnabled: false,
-    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
+    env: { ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_ENV_FILE: '/opt/factory/src/worker-shell-env.sh' },
     skipDangerousModePermissionPrompt: true,
     autoCompactWindow: 300_000,
     disableBundledSkills: true, // mv9: Skill alone would add ~2.2k tokens/turn of bundled-skill listings
