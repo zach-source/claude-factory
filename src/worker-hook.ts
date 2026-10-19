@@ -6151,7 +6151,46 @@ function splitGluedExpansions(words: string[]): string[] | undefined {
   return out
 }
 
-const GLUED_SUBSTITUTION_RE = /(?<=[^\s("])\$\([^()]*\)|\$\([^()]*\)(?=[^\s)"])/g
+// claude-factory-j1ki.9: segments() drops quotes, so splitGluedExpansions cannot see where a bare
+// $NAME ends when a quote or a backslash follows it. This reads the raw text instead.
+const GLUED_BARE_NAME_RE = /\$[A-Za-z_][A-Za-z0-9_]*(?=["'\\])/g
+
+// claude-factory-j1ki.10: returns `command` with each outer $( ) that sits glued to other text
+// read as a space. The close paren is found by depth, and quotes and backslashes in the body are
+// skipped. A body with no close paren runs to the end of the text (fail closed).
+function replaceGluedSubstitutions(command: string): string {
+  let out = ''
+  let last = 0
+  let from = command.indexOf('$(')
+  while (from !== -1) {
+    let depth = 0
+    let q = ''
+    let end = command.length
+    for (let k = from + 1; k < command.length; k++) {
+      const c = command[k]!
+      if (q) {
+        if (c === '\\' && q === '"') k++
+        else if (c === q) q = ''
+        continue
+      }
+      if (c === '\\') k++
+      else if (c === "'" || c === '"') q = c
+      else if (c === '(') depth++
+      else if (c === ')' && --depth === 0) {
+        end = k + 1
+        break
+      }
+    }
+    const before = from > 0 ? command[from - 1]! : ' '
+    const after = end < command.length ? command[end]! : ' '
+    if (!/[\s("]/.test(before) || !/[\s)"]/.test(after)) {
+      out += command.slice(last, from) + ' '
+      last = end
+    }
+    from = command.indexOf('$(', end)
+  }
+  return out + command.slice(last)
+}
 
 function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
@@ -6257,7 +6296,8 @@ function denyAtScan(
   // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
   // command substitution glued to text. Read the command again with each such substitution as a
   // space. This text has fewer "$(" than the source, so the recursion ends.
-  const unglued = command.includes('$(') ? command.replace(GLUED_SUBSTITUTION_RE, ' ') : command
+  let unglued = command.includes('$(') ? replaceGluedSubstitutions(command) : command
+  if (unglued.includes('$')) unglued = unglued.replace(GLUED_BARE_NAME_RE, ' ')
   if (unglued !== command) {
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split

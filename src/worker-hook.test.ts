@@ -7456,9 +7456,23 @@ const J1KI_REASON_ROWS = [
   'true && rm${IFS}-rf${IFS}/',
   'find . -exec rm${IFS}-rf {} +',
   'find${IFS}.${IFS}-exec${IFS}rm${IFS}-rf${IFS}{}${IFS}+',
+  "rm$( (printf ' ') )-rf /",
+  'rm$(printf "%s" "$(printf " ")")-rf /',
+  "rm$(printf '%s' \"$(printf ' ')\")-rf /",
 ]
-const J1KI_PUSH_ROWS = ['git${IFS}push${IFS}origin${IFS}main']
+const J1KI_PUSH_ROWS = [
+  'git${IFS}push${IFS}origin${IFS}main',
+  'git$IFS"push"$IFS"origin"$IFS"main"',
+  "git$IFS'push'$IFS'origin'$IFS'main'",
+  'git$IFS\\push$IFS\\origin$IFS\\main',
+]
 const J1KI_MERGE_ROWS = ['gh${IFS}pr${IFS}merge${IFS}1']
+const J1KI_DYNAMIC_ROWS = ['gh$IFS"pr"$IFS"merge"${IFS}1', 'gh$IFS"pr"$IFS"merge"$IFS1']
+const J1KI_ALIAS_ROWS = [
+  'export$IFS"HOME=/x"; gh co 5',
+  'export${IFS}GH_CONFIG_DIR=/x; gh co 5',
+  'export${IFS}HOME=/x; gh co 5',
+]
 const J1KI_MOVE_ROWS = ['cd${IFS}/x; git push', 'cd$IFS/x && git push origin HEAD', 'pushd${IFS}/x; git push']
 const J1KI_ALLOW_ROWS = [
   'ls ${IFS}',
@@ -7481,6 +7495,12 @@ test.each(J1KI_PUSH_ROWS)('claude-factory-j1ki: %s denies with PUSH_REASON', cmd
 })
 test.each(J1KI_MERGE_ROWS)('claude-factory-j1ki: %s denies with MERGE_REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(MERGE_REASON)
+})
+test.each(J1KI_DYNAMIC_ROWS)('claude-factory-j1ki: %s denies with DYNAMIC_VERB_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+test.each(J1KI_ALIAS_ROWS)('claude-factory-j1ki: %s denies with ALIAS_USE_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
 })
 test.each(J1KI_MOVE_ROWS)('claude-factory-j1ki: %s denies with PUSH_DIR_REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_DIR_REASON)
