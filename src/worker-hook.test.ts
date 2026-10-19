@@ -5125,6 +5125,46 @@ test.each(DENY_WMSR_HEREDOC_REBIND)('denyReason denies %j (rebound consumer, wms
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
+// claude-factory-wmsr.10-.11: a text consumer can hand its stdin to a shell.
+const WB10 = `\n# x\n${WM}\nEOF`
+const DENY_WMSR_HEREDOC_STDIN = [
+  `perl -e 'system("sh")' <<EOF${WB10}`,
+  `perl -pe 'BEGIN{open STDOUT,"|sh"}' <<EOF${WB10}`,
+  `python3 -c 'import os; os.system("sh")' <<EOF${WB10}`,
+  `python3 x.py <<EOF${WB10}`,
+  `node -e 'require("child_process").execSync("sh",{stdio:"inherit"})' <<EOF${WB10}`,
+  `bun -e 'x' <<EOF${WB10}`,
+  `ruby -e 'system("sh")' <<EOF${WB10}`,
+  `GIT_EDITOR='sh -s' git commit --allow-empty -e <<EOF${WB10}`,
+  `git -c core.editor='sh -s' commit -e <<EOF${WB10}`,
+  `git config core.editor 'sh -s'\ngit commit --allow-empty <<EOF${WB10}`,
+  `git -c sequence.editor='sh -s' rebase -i <<EOF${WB10}`,
+  `GIT_SEQUENCE_EDITOR='sh -s' git commit -F - <<EOF${WB10}`,
+  `EDITOR='sh -s' git commit -F - <<EOF${WB10}`,
+  `git commit --edit -F - <<EOF${WB10}`,
+  `git commit -e <<EOF${WB10}`,
+  `git commit --allow-empty <<EOF${WB10}`,
+  `GH_EDITOR='sh -s' gh pr create <<EOF${WB10}`,
+  `gh config set editor 'sh -s'\ngh pr create <<EOF${WB10}`,
+  `gh alias set x '!sh'\ngh x <<EOF${WB10}`,
+  `X=1 cat <<EOF${WB10}`,
+]
+test.each(DENY_WMSR_HEREDOC_STDIN)('denyReason denies %j (stdin reaches a shell, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_HEREDOC_STDIN = [
+  "python3 <<'EOF'\nprint(\"don't\")\nEOF",
+  "python3 - <<'EOF'\nprint(\"don't\")\nEOF",
+  "git commit -F - <<'EOF'\ndon't\nEOF",
+  "git commit --file=- <<'EOF'\ndon't\nEOF",
+  "git commit --file - <<'EOF'\ndon't\nEOF",
+  "gh pr create --body-file - <<'EOF'\ndon't\nEOF",
+]
+test.each(ALLOW_WMSR_HEREDOC_STDIN)('denyReason allows %j (text stdin, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
 test('denyReason denies a shift row with a later push (wmsr)', () => {
   expect(denyReason(`echo $((1<<2))\n${WM}\n2`, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })

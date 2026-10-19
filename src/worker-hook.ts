@@ -713,13 +713,37 @@ const HEREDOC_TEXT_COMMANDS = new Set([
   'echo',
   'printf',
   'true',
-  'python',
-  'python3',
-  'node',
-  'bun',
-  'ruby',
-  'perl',
 ])
+
+// claude-factory-wmsr.10: interpreters read a script from stdin only with no argument or with `-`.
+// Any other form can pass stdin to a shell (`-e`, a script file).
+const HEREDOC_INTERPRETERS = new Set(['python', 'python3', 'node', 'bun', 'ruby', 'perl'])
+
+/**
+ * claude-factory-wmsr.10: true when this segment reads a here-document as plain text. A `NAME=`
+ * prefix word can set an editor, so it makes the segment not text. A text consumer can still
+ * hand its stdin to a shell: an interpreter with an argument, a git editor, a gh editor.
+ */
+function isHeredocTextSegment(all: string[]): boolean {
+  const s = all.filter(x => !/^<<-?[^<]*$/.test(x))
+  if (s.length === 0) return true
+  if (/^\w+=/.test(s[0]!)) return false
+  const w = baseWord(s[0]!)
+  const rest = s.slice(1)
+  if (HEREDOC_SETUP_COMMANDS.has(w)) return true
+  if (HEREDOC_INTERPRETERS.has(w)) return rest.length === 0 || (rest.length === 1 && rest[0] === '-')
+  if (w === 'git') {
+    if (rest[0] !== 'commit') return false
+    const args = rest.slice(1)
+    if (args.some(a => /^-[a-zA-Z]*[ec]/.test(a) || /^--[ec]/.test(a))) return false
+    return args.some(
+      (a, k) => a === '--file=-' || a === '-F-' || ((a === '-F' || a === '--file') && args[k + 1] === '-'),
+    )
+  }
+  if (w === 'gh')
+    return ['pr', 'issue', 'release', 'gist'].includes(rest[0] ?? '') && !rest.some(a => /^--?e/.test(a))
+  return HEREDOC_TEXT_COMMANDS.has(w)
+}
 
 // claude-factory-wmsr.8: an earlier line can rebind a text consumer or its stdout (exec, alias,
 // a function, hash). A body is text only when every segment of the text so far starts with a word
@@ -1085,10 +1109,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[]): string[
           parens.length === 0 &&
           !inBacktick &&
           !compound &&
-          segs.every(s => {
-            const w = baseWord(s.find(x => !/^\w+=/.test(x)) ?? '')
-            return s.length === 0 || HEREDOC_TEXT_COMMANDS.has(w) || HEREDOC_SETUP_COMMANDS.has(w)
-          })
+          segs.every(isHeredocTextSegment)
         let pos = i + 1
         const bodies: { body: string; entry: HeredocEntry }[] = []
         let unclear = false
