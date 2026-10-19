@@ -567,7 +567,8 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const task = ax.taskOf(pane)
   const phase = ax.phase(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
-  if (phase === 'Pending' || phase === 'Suspended') return { status: phase.toLowerCase(), agent: 'ax' }
+  if (phase === 'Pending') return { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
+  if (phase === 'Suspended') return { status: 'suspended', agent: 'ax' }
   // gone, and why, kept next to the task's other files; `failed` carries it into the attempt's FAIL reason
   // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
   const gone = (why: string): WorkerInfo => (
@@ -579,7 +580,8 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
-    if (!ax.createPolicy(task, side.egress, side.gitlabHost)) return { status: 'pending', agent: 'ax' }
+    if (!ax.createPolicy(task, side.egress, side.gitlabHost))
+      return { status: 'pending', agent: 'ax', pending: 'egress policy not created' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
   // what is too big for the task's env goes over ssh, in parts, and serve waits for it
@@ -593,7 +595,8 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       const failedAt = side!.putFailedAt ?? Date.now()
       const err = clip(r.err.replace(/\s+/g, ' ').trim(), 300)
       writeJson(sideFile(run, task), { ...side, putFailedAt: failedAt, putError: err })
-      if (Date.now() - failedAt < PUT_GRACE_MS) return { status: 'pending', agent: 'ax' }
+      if (Date.now() - failedAt < PUT_GRACE_MS)
+        return { status: 'pending', agent: 'ax', pending: `${name} not yet copied to the VM` }
       return {
         status: 'failed',
         agent: 'ax',
@@ -2066,7 +2069,15 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   else if (egressReason && !isAsking && (status === 'idle' || status === 'done'))
     send({ type: 'FAIL', seq: c.seq, reason: egressReason })
   else if (due === 'fail')
-    send({ type: 'FAIL', seq: c.seq, reason: egressReason ?? `no report within ${timeoutMin} min` })
+    send({
+      type: 'FAIL',
+      seq: c.seq,
+      reason:
+        egressReason ??
+        (info?.pending
+          ? `worker never started on AX after ${timeoutMin} min: ${info.pending}`
+          : `no report within ${timeoutMin} min`),
+    })
   else if (stall === 'fail') {
     const min = Math.round((now - seen.at) / 60_000)
     const last = tail.trimEnd().split('\n').at(-1) ?? ''

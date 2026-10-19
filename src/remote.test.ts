@@ -1,5 +1,5 @@
 // The runner with an AX worker, end to end through bin/factory: a fake `ax` stands in for the cluster.
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1449,4 +1449,76 @@ test('unavailable AX prevents a fresh launch before git, Beads sync or AX apply'
   expect(called()).not.toContain('apply')
   expect(called()).not.toContain('delete')
   rmSync(join(home, 'runs', id), { recursive: true })
+})
+
+// A deadline on a worker that never started must name the cause, not say "no report".
+describe('an AX worker that never started', () => {
+  const ctxOf = (id: string) =>
+    JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')).snapshot.context
+  const lastFail = (id: string): string =>
+    ctxOf(id)
+      .log.filter((e: { outcome: string }) => e.outcome === 'fail')
+      .at(-1)?.summary ?? ''
+  const setSide = (id: string, patch: object) => {
+    const side = join(home, 'runs', id, 't.json')
+    writeFileSync(side, JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), ...patch }))
+  }
+  const refuseCreate = () => {
+    const kubectl = join(dir, 'refuse-create')
+    writeFileSync(
+      kubectl,
+      `#!/bin/sh\ncase "$*" in *"get deployment ax-controller"*) exec ${readyController()} "$@" ;; esac\nexit 1\n`,
+    )
+    chmodSync(kubectl, 0o755)
+    return kubectl
+  }
+
+  test('a task still in phase Pending past the deadline fails naming the phase, with no TIME_UP mail', () => {
+    const id = 'nostart-phase'
+    launchedAfterFail(id, 'old failure', 120)
+    cluster('Pending', { status: 'idle', lines: [] })
+    factory(['tick'])
+    expect(lastFail(id)).toBe('worker never started on AX after 45 min: task phase Pending')
+    expect(JSON.stringify(ctxOf(id).mail)).not.toContain('minutes are up')
+    rmSync(join(home, 'runs', id), { recursive: true })
+  })
+
+  test('a Running task whose egress policy is refused fails naming the policy', () => {
+    const id = 'nostart-policy'
+    launchedAfterFail(id, 'old failure', 120)
+    setSide(id, { policy: false, egress: [], gitlabHost: 'gitlab.example' })
+    cluster('Running', { status: 'working', lines: [] })
+    factory(['tick'], { FACTORY_KUBECTL: refuseCreate() })
+    expect(lastFail(id)).toBe('worker never started on AX after 45 min: egress policy not created')
+    rmSync(join(home, 'runs', id), { recursive: true })
+  })
+
+  test('a Running task whose brief.md is not yet put fails naming the brief', () => {
+    const id = 'nostart-brief'
+    launchedAfterFail(id, 'old failure', 120)
+    setSide(id, { put: ['brief.md'] })
+    writeFileSync(join(home, 'runs', id, 't.brief.md'), 'hello')
+    writeFileSync(
+      join(dir, 'ax'),
+      `#!/bin/sh
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*) echo 'no route' >&2; exit 1 ;;
+esac
+`,
+    )
+    chmodSync(join(dir, 'ax'), 0o755)
+    factory(['tick'])
+    expect(lastFail(id)).toBe('worker never started on AX after 45 min: brief.md not yet copied to the VM')
+    rmSync(join(home, 'runs', id), { recursive: true })
+  })
+
+  test('a started worker that is idle past the deadline still fails "no report"', () => {
+    const id = 'nostart-control'
+    launchedAfterFail(id, 'old failure', 120)
+    cluster('Running', { status: 'idle', lines: [] })
+    factory(['tick'])
+    expect(lastFail(id)).toBe('no report within 45 min')
+    rmSync(join(home, 'runs', id), { recursive: true })
+  })
 })
