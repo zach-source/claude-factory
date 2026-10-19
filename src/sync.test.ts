@@ -101,3 +101,12 @@ test('runBounded returns once the killed process exits, though a child holds the
   expect(r.timedOut).toBe(true)
   expect(Date.now() - t0).toBeLessThan(5000)
 })
+
+test('runBounded returns near the cap after a normal exit, though a child holds the pipe', async () => {
+  mkdirSync(dir, { recursive: true })
+  const t0 = Date.now()
+  const r = await runBounded(['sh', '-c', 'sleep 30 & echo hi; exit 0'], { cwd: dir, timeoutMs: 500 })
+  expect(r.code).toBe(0)
+  expect(r.out).toBe('hi\n')
+  expect(Date.now() - t0).toBeLessThan(5000)
+})

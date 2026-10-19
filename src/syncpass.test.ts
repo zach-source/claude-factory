@@ -47,7 +47,9 @@ function setup(names: string[], marks: Record<string, Record<string, string>> = 
       "  ready) if [ -e .beads/ready.json ]; then cat .beads/ready.json; else printf '%s' '[]'; fi;;",
       '  children) if [ -e ".beads/children-$2.json" ]; then cat ".beads/children-$2.json"; else printf \'%s\' \'[]\'; fi;;',
       "  list) if [ -e .beads/list.json ]; then cat .beads/list.json; else printf '%s' '[]'; fi;;",
-      '  dolt) echo origin;;',
+      '  dolt) if [ "$2" = show ]; then',
+      `      printf '%s' '{"host":"127.0.0.1","port":3306,"database":"beads","user":"root","tls":false}'`,
+      '    else echo origin; fi;;',
       '  sync)',
       '    if [ -e .beads/hang ]; then exec sleep 600; fi',
       '    if [ -e .beads/slow ]; then sleep 3; echo "sync failed: remote is down" >&2; exit 1; fi',
@@ -57,6 +59,8 @@ function setup(names: string[], marks: Record<string, Record<string, string>> = 
     ].join('\n'),
   )
   chmodSync(join(bin, 'bd'), 0o755)
+  writeFileSync(join(bin, 'dolt'), '#!/bin/sh\nexec sleep 600\n')
+  chmodSync(join(bin, 'dolt'), 0o755)
   writeFileSync(
     join(bin, 'herdr'),
     [
@@ -92,7 +96,14 @@ function setup(names: string[], marks: Record<string, Record<string, string>> = 
   })
   writeFileSync(
     join(home, 'rigs.json'),
-    JSON.stringify(names.map((name, i) => ({ name, repo: repos[i], factory: 'lifecycle' }))),
+    JSON.stringify(
+      names.map((name, i) => ({
+        name,
+        repo: repos[i],
+        factory: 'lifecycle',
+        ...(marks[name]?.remote !== undefined && { beadsRemote: { name: 'vm', url: 'u', user: 'acme' } }),
+      })),
+    ),
   )
   return repos
 }
@@ -127,6 +138,16 @@ test('factory sync kills a hung sync at the cap and records it; the other rig st
   expect(s[b!].error).toBeUndefined()
   expect(s[b!].failures).toBe(0)
   expect(typeof s[a!].ms).toBe('number')
+})
+
+test('a beadsRemote rig with a hung dolt is killed at the cap and recorded; the other rig still syncs', () => {
+  const [a, b] = setup(['acme-a', 'acme-b'], { 'acme-a': { remote: '' } })
+  const r = factory(['sync'], { FACTORY_SYNC_TIMEOUT_MS: '1500' })
+  expect(r.code).toBe(0)
+  expect(r.ms).toBeLessThan(10_000)
+  const s = syncJson()
+  expect(s[a!].error).toBe('beads pull: timed out after 2 s')
+  expect(s[b!].error).toBeUndefined()
 })
 
 test('factory sync runs 11 failing rigs in parallel (AC3)', () => {

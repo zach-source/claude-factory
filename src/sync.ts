@@ -36,6 +36,22 @@ export function syncText(entry: SyncEntry | undefined): string | undefined {
 /** the kill cap of one sync call; FACTORY_SYNC_TIMEOUT_MS sets it */
 export const syncTimeoutMs = () => Number(process.env.FACTORY_SYNC_TIMEOUT_MS) || 120_000
 
+const PIPE_GRACE_MS = 1000
+
+/** reads a stream into memory; `text()` gives what has come so far */
+function drain(stream: ReadableStream<Uint8Array>) {
+  const dec = new TextDecoder()
+  let s = ''
+  const done = (async () => {
+    try {
+      for await (const chunk of stream) s += dec.decode(chunk, { stream: true })
+    } catch {
+      // the stream broke: keep what came
+    }
+  })()
+  return { done, text: () => s }
+}
+
 export type Ran = { code: number | null; out: string; err: string; timedOut: boolean }
 
 /**
@@ -57,11 +73,13 @@ export async function runBounded(
     }
   }, opts.timeoutMs)
   try {
-    const out = new Response(proc.stdout).text()
-    const err = new Response(proc.stderr).text()
+    const out = drain(proc.stdout)
+    const err = drain(proc.stderr)
     const code = await proc.exited
     if (timedOut) return { code, out: '', err: '', timedOut }
-    return { code, out: await out, err: await err, timedOut }
+    // a child that outlives the process can hold a pipe open: wait for the end of the output only a moment
+    await Promise.race([Promise.all([out.done, err.done]), new Promise(r => setTimeout(r, PIPE_GRACE_MS))])
+    return { code, out: out.text(), err: err.text(), timedOut }
   } finally {
     clearTimeout(timer)
   }
