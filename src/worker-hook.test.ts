@@ -7471,3 +7471,21 @@ test.each(['A=1 ll', "A=1 B='x y' ll -a"])('denyReason allows %j with a shell al
   const gate = snapGate(() => new Map([['ll', 'ls -l']]))
   expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
 })
+
+test.each([
+  ['n', 'nice', String.raw`n "d"=1/rm -r ./d`],
+  ['i', 'if', String.raw`i "d"=1/rm -r ./d; then :; fi`],
+  ['x', 'A=1', String.raw`x "d"=1/rm -r ./d`],
+])('denyReason denies a quoted assignment name after alias %s=%s', (name, value, cmd) => {
+  const gate = snapGate(() => new Map([[name, value]]))
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(QUOTED_ASSIGNMENT_REASON)
+})
+
+test.each([
+  ['ll', 'ls -l', String.raw`ll "d"=1/rm`],
+  ['x', 'ls', String.raw`x "d"=1/rm`],
+  ['n', 'nice', String.raw`n d=1/rm`],
+])('denyReason allows alias %s=%s with no live quoted name: %j', (name, value, cmd) => {
+  const gate = snapGate(() => new Map([[name, value]]))
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+})

@@ -6075,8 +6075,9 @@ const MAX_SHELL_ALIAS_DEPTH = 10
 // claude-factory-1zr5: writes one segment word back as shell text, so a rescan reads the same word.
 // A word with a $, backtick, glob or similar char stays bare, so the dynamic-word checks still see it.
 // A bare word that also holds a space or an operator char cannot be written safely: null.
-function aliasWordText(w: string): string | null {
+function aliasWordText(w: string, marked = false): string | null {
   if (/[$`*?[{~\\!]/.test(w)) return /[\s;&|<>()#'"]/.test(w) ? null : w
+  if (marked) return `'${w.replace(/'/g, `'\\''`)}'`
   return requoteWord(w)
 }
 function requoteWord(w: string): string {
@@ -6104,6 +6105,7 @@ function shellAliasReason(
   state: ScanState,
   moved: boolean,
   ghMoved: boolean,
+  marks?: readonly number[],
 ): string | undefined {
   let end = words.length
   const first = words.findIndex(w => !/^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/.test(w))
@@ -6134,12 +6136,15 @@ function shellAliasReason(
       )
       if (runsGit) return SHELL_ALIAS_REASON
     }
-    const parts = expansion.length ? expansion.map(seg => [...seg]) : [[]]
-    parts[0] = [...words.slice(0, i), ...parts[0]!]
-    parts[parts.length - 1] = [...parts[parts.length - 1]!, ...words.slice(i + 1)]
+    // claude-factory-upag: a word marked as a quoted assignment name stays single-quoted whole,
+    // so the rescan marks it again.
+    const before = words.slice(0, i).map((w, k) => aliasWordText(w, marks?.includes(k)))
+    const after = words.slice(i + 1).map((w, k) => aliasWordText(w, marks?.includes(i + 1 + k)))
+    const parts = (expansion.length ? expansion : [[]]).map(seg => seg.map(w => aliasWordText(w)))
+    parts[0] = [...before, ...parts[0]!]
+    parts[parts.length - 1] = [...parts[parts.length - 1]!, ...after]
     const texts: string[] = []
-    for (const part of parts) {
-      const quoted = part.map(aliasWordText)
+    for (const quoted of parts) {
       if (quoted.includes(null)) return SHELL_ALIAS_REASON
       texts.push(quoted.join(' '))
     }
@@ -6291,6 +6296,7 @@ function denyAtScan(
         state,
         movedSoFar,
         ghConfigMovedSoFar,
+        quoteInfo.quotedNames?.get(words),
       )
       if (aliased) return aliased
     }
