@@ -1439,8 +1439,15 @@ function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | u
     // A `{` or `}` word is a group marker, and realCommand strips it. A `name()` word is a function
     // definition. definesFunction denies it with its own reason.
     if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
+    // The head can expand to a wrapper with value flags or operands (`-u root`, `-n 5`, `5`). So
+    // scan forward to the first word that is rm or find. One pass for each anchor: O(n).
     let k = a + 1
-    while (k < words.length && words[k]!.length > 1 && words[k]!.startsWith('-')) k++
+    while (k < words.length) {
+      const kb = baseWord(words[k]!)
+      if (kb === 'rm' || kb === 'find') break
+      k++
+    }
+    if (k >= words.length) continue
     const rest = realCommand(words.slice(k))
     if (!rest.length) continue
     const rb = baseWord(rest[0]!)

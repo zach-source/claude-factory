@@ -5465,6 +5465,12 @@ const DYN_RM_DENY = [
   'echo x | $X rm -rf /',
   '$X rm a; cd /x',
   'cd /x; $X rm a',
+  '$X -u root rm -rf /',
+  '$X -C 5 rm -rf /',
+  '$X -n 5 rm -rf /',
+  '$X 5 rm -rf /',
+  '$X -k 5 5 rm -rf /',
+  '$X -u root $Y rm -rf /',
 ]
 
 test.each(DYN_RM_DENY)(
