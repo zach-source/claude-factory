@@ -7414,15 +7414,45 @@ test.each([
   expect(denyReason(cmd)).toBe(REASON)
 })
 
+test.each(['sudo A=1 ls', 'sudo /tmp/d=1/ls -la'])(
+  'denyReason allows %j (claude-factory-mmc9.19, the word is an assignment, not the command)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
 test.each([
-  'sudo ./d=1/rm -r ./d',
-  'sudo A=1 ls',
-  'sudo /tmp/d=1/ls -la',
-  'env /tmp/d=1/rm -r ./d',
-  'env -- ./d=1/rm -r ./d',
-])('denyReason allows %j (claude-factory-mmc9.19, the word is an assignment, not the command)', cmd => {
-  expect(denyReason(cmd)).toBeUndefined()
+  'sudo ~/d=1/rm -r ./d',
+  'sudo ~/d=1/rm -rf /',
+  'sudo ~root/d=1/rm -r ./d',
+  'sudo ~+/d=1/rm -r ./d',
+  'sudo $HOME/d=1/rm -r ./d',
+  'sudo ${HOME}/d=1/rm -r ./d',
+  'sudo "$HOME"/d=1/rm -r ./d',
+  'sudo $D=1/rm -r ./d',
+  'sudo -u root ~/d=1/rm -r ./d',
+  'sudo A=1 ~/d=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.20, the shell expands the word before sudo reads it)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
 })
+
+test.each([
+  'A+=x B+=y rm -rf /',
+  'A+=x sudo B+=y rm -rf /',
+  'sudo -E A+=1 rm -rf /',
+  'sudo -- A=1 rm -rf /',
+  'A=1 time B=2/rm -r ./d',
+  '/usr/bin/time A=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.22, both readings of a word with =)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each(['FOO=bar ls -la', 'make A=1 -j4', 'git -c a=b status', 'rm -f a=b', 'time ls'])(
+  'denyReason allows %j (claude-factory-mmc9.22, no rm under either reading)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
 
 const MMC9_13_WRAPPERS = ['nice', 'nohup', 'exec', 'command', 'builtin', 'timeout 5', 'xargs']
 test.each(
@@ -7432,10 +7462,7 @@ test.each(
 })
 
 test.each([
-  'A=1/rm -r ./d',
   'A+=x ls',
-  'env A+=1/rm -r ./d',
-  'sudo A+=1/rm -r ./d',
   'é=x',
   'A[1]=x',
   'A[1]=x; echo ok',
@@ -7455,13 +7482,16 @@ test.each(['nice A=1 $G $V origin main', 'nohup -- A=1 $G $V origin main', 'env 
 )
 
 test.each([
+  'sudo ./d=1/rm -r ./d',
+  'env /tmp/d=1/rm -r ./d',
+  'env -- ./d=1/rm -r ./d',
+  'A=1/rm -r ./d',
+  'env A+=1/rm -r ./d',
+  'sudo A+=1/rm -r ./d',
   'é=1/rm -r ./d',
   'Ⓐ=1/rm -r ./d',
   'A²=1/rm -r ./d',
   'A[k]=1/rm -r ./d',
-  'é=x ls',
-  'A[k]=x ls',
-  'time A[k]=x ls',
   'time A=1/rm -r ./d',
   'time -p é=1/rm -r ./d',
   'time -- é=1/rm -r ./d',
@@ -7473,11 +7503,22 @@ test.each([
   '\\time A=1/rm -r ./d',
   '"time" A=1/rm -r ./d',
   'tim""e A+=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.22, a word with = is the command or an assignment)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each([
+  'é=x ls',
+  'A[k]=x ls',
+  'time A[k]=x ls',
   'B[1]=2 /abs/bin/factory gc',
   'C[k]+=3 /abs/bin/factory gc',
   'B[1]=/x gp origin main',
   'C[k]+=/x gp origin main',
   'A[a]b]=/x gp origin main',
+  'time -p é=1 /abs/bin/factory gc',
+  '/usr/bin/time A+=1 /abs/bin/factory gc',
+  'tim""e A+=1 /abs/bin/factory gc',
 ])('denyReason denies %j (claude-factory-mmc9.14, ambiguous assignment prefix)', cmd => {
   expect(denyReason(cmd)).toBe(ASSIGNMENT_PREFIX_REASON)
 })

@@ -1299,61 +1299,105 @@ function hasAmbiguousAssignmentPrefix(words: string[]): boolean {
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   let w = words
-  // claude-factory-mmc9.13: the shell reads `NAME=v` as an assignment only at a shell-prefix
-  // position: the segment start, after a reserved word, or after the `time` keyword. `sudo` and
-  // `env` read any non-dash `NAME=v` word as their own operand. Every other wrapper (nice, nohup,
-  // exec, command, builtin, timeout, xargs) runs such a word as the command.
-  // claude-factory-mmc9.19: sudo reads an env var only when the word has `=` and starts with
-  // neither `/` nor `=`, and reads none after `--` (sudo parse_args.c, is_envar). Else sudo runs it.
-  let pos: 'shell' | 'operand' | 'sudo' | 'none' = 'shell'
   for (;;) {
     if (!w.length) return w
     const head = w[0]!
-    if (
-      (pos === 'shell' && shellAssignmentWord(head)) ||
-      (pos === 'operand' && wrapperAssignmentOperand(head)) ||
-      (pos === 'sudo' && wrapperAssignmentOperand(head) && head[0] !== '/')
-    ) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
       w = w.slice(1)
       continue
     }
     if (RESERVED_LEADING_WORDS.has(head)) {
       w = w.slice(1)
-      pos = 'shell'
       continue
     }
     const b = baseWord(head)
     if (WRAPPERS.has(b)) {
-      const after = w.slice(1)
-      w = skipWrapperFlags(b, after)
-      const endOfFlags =
-        b === 'sudo' && after.length > w.length && after[after.length - w.length - 1] === '--'
-      pos =
-        b === 'sudo'
-          ? endOfFlags
-            ? 'none'
-            : 'sudo'
-          : b === 'env'
-            ? 'operand'
-            : b === 'time' && pos === 'shell'
-              ? 'shell'
-              : 'none'
+      w = skipWrapperFlags(b, w.slice(1))
       continue
     }
     if (b === 'timeout') {
       w = skipWrapperFlags('timeout', w.slice(1))
       if (/^[\d.]+[smhd]?$/.test(w[0] ?? '')) w = w.slice(1)
-      pos = 'none'
       continue
     }
     if (b === 'xargs') {
       w = w.slice(1)
       while (w.length && w[0]!.startsWith('-')) w = w.slice(1)
-      pos = 'none'
       continue
     }
     return w
   }
+}
+
+function realCommandStart(words: string[], from: number, memo: Map<number, number>): number {
+  const seen: number[] = []
+  let i = from
+  let out = -1
+  for (;;) {
+    if (i >= words.length) {
+      out = words.length
+      break
+    }
+    const m = memo.get(i)
+    if (m !== undefined) {
+      out = m
+      break
+    }
+    seen.push(i)
+    const head = words[i]!
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head) || RESERVED_LEADING_WORDS.has(head)) {
+      i++
+      continue
+    }
+    const b = baseWord(head)
+    if (WRAPPERS.has(b)) {
+      const after = words.slice(i + 1)
+      i = i + 1 + (after.length - skipWrapperFlags(b, after).length)
+      continue
+    }
+    if (b === 'timeout') {
+      const after = words.slice(i + 1)
+      let j = i + 1 + (after.length - skipWrapperFlags('timeout', after).length)
+      if (/^[\d.]+[smhd]?$/.test(words[j] ?? '')) j++
+      i = j
+      continue
+    }
+    if (b === 'xargs') {
+      i++
+      while (i < words.length && words[i]!.startsWith('-')) i++
+      continue
+    }
+    out = i
+    break
+  }
+  for (const k of seen) memo.set(k, out)
+  return out
+}
+
+function rmFindDeny(cmd: string[], root: string): boolean {
+  if (!cmd.length) return false
+  const b = baseWord(cmd[0]!)
+  if (b === 'rm') return isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))
+  if (b === 'find') {
+    for (let i = 0; i < cmd.length; i++) {
+      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return true
+    }
+  }
+  return false
+}
+
+// plan3 prototype: deny-only second readings for every non-dash word with =.
+function assignmentReadingsDeny(words: string[], root: string): boolean {
+  const memo = new Map<number, number>()
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w[0] === '-' || w.indexOf('=') < 0) continue
+    if (rmFindDeny(words.slice(i), root)) return true
+    const s = realCommandStart(words, i + 1, memo)
+    if (s < words.length && rmFindDeny(words.slice(s), root)) return true
+  }
+  return false
 }
 
 // claude-factory-p43v.21: This list contains `WRAPPERS`, plus `timeout` and `xargs`.
@@ -6330,6 +6374,7 @@ function denyAtScan(
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
+    if (assignmentReadingsDeny(words, root)) return REASON
     const cmd = realCommand(words)
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
