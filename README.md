@@ -945,17 +945,26 @@ rows = [
   station. It spends no worker and no attempt. The manager learns what it waits for. A fresh
   worker checks again after `parkMin`, or as soon as someone mails the station. Deploy parks
   this way on a pull request that only a person can approve or merge. When the report links
-  pull requests, the factory watches them (`gh`, every minute). It mails the station once
-  someone merges, closes or updates one, instead of launching a worker to look. The timer only
-  backstops that watch, at 8 hours. When no linked pull request stays open (for example,
-  a deploy that waits on CI after the merge), the station wakes on the plain `parkMin` timer
-  instead.
+  pull requests, the factory watches them (`gh` or `glab`, every minute). It mails the station
+  once a real change happens after the park: a new head commit, a merge, a close, or a review
+  or comment by a person (an owner, member or collaborator, never a bot). A bot comment, a CI
+  status or a label changes only `updatedAt` and wakes nothing. Two cases start no worker. If
+  every linked pull request closes without a merge and the station has a `hold` outcome, the
+  watch routes `hold` and the run ends. If a person asks for changes on an open pull request
+  (a CHANGES_REQUESTED review, or a comment that starts with `/changes`) and the station has
+  a `changes` outcome, the watch routes `changes`. It mails the comments to the next station
+  and files one bd task for each comment under the run's bead. When the 8-hour timer is
+  near and every linked pull request is open and unchanged, the watch parks the station again
+  for 8 hours and starts no worker. If a `gh` call fails, the timer still starts a worker. When
+  no linked pull request stays open (for example, a deploy that waits on CI after the
+  merge), the station wakes on the plain `parkMin` timer instead. `watch.json` in the factory
+  home lists the `woke`, `routed` and `reparked` runs of the last pass.
 - **Parking before a worker ever starts**: a station marked `awaitsPr: true` (lifecycle's
   `deploy`) skips its first worker, too. This happens when the arrival that reaches the
   station already links a pull or merge request (release's report). The run parks there at
   once, the same way a worker's own `blocked` report parks it. It spends no attempt and
-  starts no worker. The same `gh`/`glab` watch, polled every minute, wakes it once someone
-  merges, closes or updates that pull or merge request. A deploy worker starts only once
+  starts no worker. The same `gh`/`glab` watch, polled every minute, wakes it for a real change
+  (a merge, a new head commit or a person's comment) and routes a close or a change request. A deploy worker starts only once
   there is work for it to do.
 - **Durable workers**: a worker whose pane dies resumes its own Claude session once
   before falling back to a retry; fresh workers are told what the branch already

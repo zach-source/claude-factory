@@ -3,6 +3,7 @@
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
 import { mrsIn, prsIn, type Entry } from './machine'
+import { isPerson, type Note } from './watch'
 export { mrsIn }
 
 export type PrSource = 'report' | 'mail' | 'search' | 'branch'
@@ -551,6 +552,10 @@ export type Viewed = Pick<
 > & {
   headRefName: string
   body: string
+  /** GitLab only (claude-factory-5wav): what the park watch reads beyond the fields above */
+  headSha?: string
+  mergedAt?: string
+  closedAt?: string
 }
 export function parseView(out: string): Viewed | null {
   let v: Record<string, unknown>
@@ -695,7 +700,63 @@ export function parseGitlabView(mrOut: string, approvalsOut = ''): Viewed | null
     updatedAt: str(mr.updated_at),
     headRefName: str(mr.source_branch),
     body: str(mr.description),
+    headSha: str(mr.sha) || undefined,
+    mergedAt: str(mr.merged_at) || undefined,
+    closedAt: str(mr.closed_at) || undefined,
   }
+}
+
+/** the human notes of an MR (`.../notes`): a system note (a push, a label) and a bot's note are not a person's,
+ * and neither is a note by a user who is not a member of the project: on a public project anyone can comment.
+ * `members` holds the ids of the users with project access of Developer or above (`gitlabWatchNotes`). */
+export function gitlabNotes(out: string, members: Set<number> = new Set()): Note[] {
+  const list = asJson(out)
+  if (!Array.isArray(list)) return []
+  const notes: Note[] = []
+  for (const n of list as Json[]) {
+    const at = Date.parse(str(n?.created_at))
+    if (!n || Number.isNaN(at)) continue
+    const author = n.author as Json | undefined
+    const id = typeof author?.id === 'number' ? author.id : -1
+    notes.push({
+      at,
+      person:
+        n.system !== true &&
+        isPerson(str(author?.username), members.has(id) ? 'MEMBER' : 'NONE', author?.bot === true),
+      changesRequested: false,
+      body: str(n.body),
+    })
+  }
+  return notes
+}
+
+/** the person notes of a merge request for the park watch, or null when glab could not say. The author of each
+ * human note is checked against the project members (`members/all/:id`, access level 30 or above). A 404 means
+ * not a member. Any other failure fails the whole call, so the watch never trusts a note it could not check. */
+export async function gitlabWatchNotes(glab: Gh, url: string, cwd: string): Promise<Note[] | null> {
+  const ref = prRef(url)
+  if (!ref) return null
+  const host = new URL(url).hostname
+  const base = `projects/${encodeURIComponent(ref.repo)}`
+  const api = (path: string) => glab(['api', '--hostname', host, path], timed(cwd))
+  const res = await api(`${base}/merge_requests/${ref.number}/notes?sort=desc&per_page=50`)
+  if (res.code !== 0) return null
+  const list = asJson(res.out)
+  if (!Array.isArray(list)) return null
+  const ids = new Set<number>()
+  for (const n of list as Json[]) {
+    const a = n?.author as Json | undefined
+    if (n?.system !== true && a?.bot !== true && typeof a?.id === 'number') ids.add(a.id)
+  }
+  const members = new Set<number>()
+  for (const id of ids) {
+    const m = await api(`${base}/members/all/${id}`)
+    if (m.code === 0) {
+      const level = (asJson(m.out) as Json | null)?.access_level
+      if (typeof level === 'number' && level >= 30) members.add(id)
+    } else if (!/404/.test(m.err)) return null
+  }
+  return gitlabNotes(res.out, members)
 }
 
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh

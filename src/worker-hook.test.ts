@@ -20,6 +20,7 @@ import {
   MERGE_REASON,
   PUSH_DIR_REASON,
   PUSH_REASON,
+  GLOBAL_GIT_CONFIG_REASON,
   READY_REASON,
   REASON,
   SCAN_BUDGET_REASON,
@@ -3315,6 +3316,304 @@ test('denyReason allows a plain HEAD push alone with a cwd at the worktree root 
 test('denyReason allows the write alone, and denies a later, separate HEAD push through the current branch (claude-factory-9zd5, A10)', () => {
   expect(denyReason("printf 'ref: refs/heads/main' > .git/HEAD")).toBeUndefined()
   expect(denyReason('git push o HEAD', undefined, undefined, { headOf: () => 'main' })).toBe(PUSH_REASON)
+})
+
+// claude-factory-ty8y: a write to the global git config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`,
+// `/etc/gitconfig`) has no git verb. It can set `remote.<n>.push`, `push.default` or an alias that
+// pushes. Any later git word in the same command then pushes with no check. The guard denies when
+// a global-config path word and any git word stand in one command, in any order.
+const GLOBAL_GIT_CONFIG_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  cwd: '/r/acme/widget',
+  gitAliases: () => new Map<string, string>(),
+}
+
+const DENY_GLOBAL_GIT_CONFIG_WRITE = [
+  `printf '[remote "origin"] push = HEAD:refs/heads/main' >> ~/.gitconfig; git push`,
+  'printf x > ~/.gitconfig; git push',
+  'printf x >> $HOME/.gitconfig && git push origin',
+  'printf x >> "${HOME}/.gitconfig"; git push',
+  'printf x >> ~acme/.gitconfig; git push',
+  'printf x >> "$XDG_CONFIG_HOME/git/config"; git push',
+  'printf x >> ~/.config/git/config; git push',
+  'printf x >> /etc/gitconfig; git push',
+  // each regex alternative alone: a literal git/config path, and a bare XDG_CONFIG_HOME word.
+  'printf x >> /home/acme/xdg/git/config; git push',
+  'printf x >> $XDG_CONFIG_HOME/${n}; git push',
+  'echo x | tee -a ~/.gitconfig; git push',
+  "sed -i '' 's/a/b/' ~/.gitconfig; git push",
+  'cp f ~/.gitconfig; git push',
+  'mv f ~/.config/git/config; git push',
+  'ln -sf f ~/.gitconfig; git push',
+  'install f ~/.gitconfig; git push',
+  'dd of=$HOME/.gitconfig if=f; git push',
+  `python3 -c "open('/Users/acme/.gitconfig','a').write('x')"; git push`,
+  'printf x >> ~/.git\\\nconfig; git push',
+  'bash -c "printf x >> ~/.gitconfig"; git push',
+  'cd ~ && printf x >> .gitconfig && cd - && git status',
+  'cd ~/.config/git && printf x >> config; cd /r/acme/widget; git status',
+  // AC2: order and nesting do not matter.
+  'git push; printf x >> ~/.gitconfig',
+  "printf x >> ~/.gitconfig; bash -c 'git push'",
+  'eval "printf x >> ~/.gitconfig" && git push',
+  'env -S "printf x >> ~/.gitconfig" && git push',
+  // AC3: any git word denies, not only push.
+  `printf '[alias] p = push o HEAD:main' >> ~/.gitconfig; git p`,
+  `printf '[include] path = /r/x' >> ~/.gitconfig; git push`,
+  'printf x >> ~/.gitconfig; git push origin factory/x',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE)(
+  'denyReason denies %j (claude-factory-ty8y: a global git config path then a git word fails closed)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+// ty8y.4: the write alone denies. A worker cannot split the write and the push into 2 Bash calls.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE = [
+  `printf '[remote "origin"] push = HEAD:refs/heads/main' >> ~/.gitconfig`,
+  'printf x > ~/.gitconfig',
+  'printf x >~/.gitconfig',
+  'printf x 2>> ~/.gitconfig',
+  'printf x >> "$XDG_CONFIG_HOME/git/config"',
+  'printf x >> /etc/gitconfig',
+  'cat f > ~/.config/git/config',
+  'echo x | tee -a ~/.gitconfig',
+  "sed -i '' 's/a/b/' ~/.gitconfig",
+  'cp f ~/.gitconfig',
+  'mv f ~/.config/git/config',
+  'ln -sf f ~/.gitconfig',
+  'install f ~/.gitconfig',
+  'dd of=$HOME/.gitconfig if=f',
+  `python3 -c "open('/Users/acme/.gitconfig','a').write('x')"`,
+  'bash -c "printf x >> ~/.gitconfig"',
+  'printf x >> .gitconfig',
+  'git config --list > ~/.gitconfig',
+  'git diff --output=~/.gitconfig',
+  // ty8y.7: a glob target.
+  'printf x >> ~/.gitc*',
+  'printf x >> $HOME/.git?onfig',
+  'printf x >> "${HOME}/.gitconf[i]g"',
+  'cp f ~/.gitc*',
+  'tee -a ~/.config/g*/config',
+  'printf x >> /etc/gitc*',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE)('denyReason denies %j alone (claude-factory-ty8y.4)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test('denyReason scans a many-star glob fast and denies it (claude-factory-ty8y.24)', () => {
+  const cmd = `touch ~/.c${'*'.repeat(24)}x; printf x >> ~/.gitconfig; git push`
+  const t = performance.now()
+  const r = denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)
+  expect(performance.now() - t).toBeLessThan(1000)
+  expect(r).toBe(GLOBAL_GIT_CONFIG_REASON)
+  const t2 = performance.now()
+  expect(denyReason(`tee ~/.c${'*a'.repeat(24)}x`, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+  expect(performance.now() - t2).toBeLessThan(1000)
+})
+
+// ty8y.9-11: a git segment that writes through its operands, a directory operand, the <> redirect.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2 = [
+  'git --work-tree=$HOME checkout HEAD -- .gitconfig',
+  'git --work-tree ~ restore --source=HEAD .gitconfig',
+  'GIT_WORK_TREE=~ git checkout HEAD -- .gitconfig',
+  'git -C ~ checkout HEAD -- .gitconfig',
+  'git clone /r/acme/evil ~/.config/git',
+  'git clone /r/acme/evil ~/.config/git/',
+  'git diff --output ~/.gitconfig',
+  'cp config ~/.config/git/',
+  'cp config ~/.config/git',
+  'ln -s f ~/.config/git/',
+  'mv f $XDG_CONFIG_HOME/git/',
+  'printf x 1<>~/.gitconfig',
+  'printf x 1<> ~/.gitconfig',
+  'printf x <>~/.gitconfig',
+  'printf x >| ~/.gitconfig',
+  'printf x >|~/.gitconfig',
+  'gh release download v1 -O ~/.gitconfig',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2)(
+  'denyReason denies %j alone (claude-factory-ty8y r2)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'bd search gitconfig',
+  'bd create "fix ~/.gitconfig guard" -t bug',
+  'bun test src/worker-hook.test.ts -t gitconfig',
+  'gh pr comment 1 --body "checked ~/.gitconfig"',
+  'factory memory add "~/.gitconfig note" "x"',
+  'ls ~/.config/git',
+])('denyReason allows %j (claude-factory-ty8y r2: text operands)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
+// Accepted false positive: the word ~/.config/git has the base name git, and cd names the directory.
+test('denyReason denies cd into the global git config directory (claude-factory-ty8y r2)', () => {
+  expect(denyReason('cd ~/.config/git', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+})
+
+// ty8y.14-18 (review r3): work trees outside the root, gh clone, the .config directory, dot segments.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R3 = [
+  'git --work-tree=/Users/acme checkout HEAD -- .',
+  'git --work-tree ~ checkout -f HEAD',
+  'GIT_WORK_TREE=~ git checkout -f HEAD',
+  'git --work-tree=/etc checkout HEAD -- .',
+  'git --work-tree=../x checkout HEAD -- .',
+  "git --work-tree=/Users/acme checkout HEAD -- ':(glob)*config'",
+  'git --git-dir=/r/acme/widget/.git checkout HEAD -- .gitconfig',
+  'GIT_DIR=/r/acme/widget/.git git checkout HEAD -- .gitconfig',
+  'gh repo clone acme/evil ~/.config/git',
+  'gh gist clone abc ~/.config/git',
+  'rsync -a /r/acme/evil/ ~/.config/',
+  'cp -R /r/acme/evil ~/.config',
+  'mv /r/acme/evil ~/.config',
+  'ln -sfn /r/acme/evil ~/.config',
+  'tar -C ~/.config -xf x.tar',
+  'unzip -d ~/.config x.zip',
+  'cp x ~/.config/git/.',
+  'cp x ~/.config/git/./',
+  'cp x ~/.config/git/./config',
+  'cp x ~/.config//git/config',
+  'printf x > ~/./.gitconfig',
+  'bun test --reporter-outfile=~/.gitconfig',
+  'bun test --reporter-outfile ~/.gitconfig',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R3)(
+  'denyReason denies %j alone (claude-factory-ty8y r3)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'git --work-tree=. status',
+  'git --work-tree=/r/acme/widget/sub status',
+  'ls ~/.config',
+  'cat ~/.config/git/config',
+  'gh pr list --search clone',
+])('denyReason allows %j (claude-factory-ty8y r3)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
+// ty8y.19-22 (review r4): dot segments under the root, the cwd as work tree, core.worktree, gh --clone.
+const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R4 = [
+  'git --work-tree=/r/acme/widget/../.. checkout HEAD -- .',
+  'git --work-tree=/r/acme/widget/sub/../../.. checkout -f HEAD',
+  'GIT_WORK_TREE=/r/acme/widget/.. git checkout -f HEAD',
+  'git -C ~ --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'cd /Users/acme && git --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'pushd ~; git --git-dir=/r/acme/widget/.git checkout -f HEAD',
+  'git -C ~ --git-dir /r/acme/widget/.git checkout -f HEAD',
+  'cd /Users/acme && GIT_DIR=. git checkout -f HEAD',
+  'pushd ~; GIT_DIR=. git checkout -f HEAD',
+  'GIT_DIR=. git -C ~ checkout -f HEAD',
+  'git config core.worktree /Users/acme',
+  'git config --local core.worktree ~',
+  'git config --add core.worktree /etc',
+  'git config --replace-all core.worktree /x',
+  'git config set core.worktree /x',
+  'git config CORE.WorkTree /x',
+  'git -c core.worktree=/x checkout -f HEAD',
+  'git -c CORE.WorkTree=. status',
+  'gh repo fork acme/evil --clone -- ~/.config/git',
+  'gh repo fork acme/evil --clone=true -- ~/.config/git',
+]
+
+test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R4)(
+  'denyReason denies %j alone (claude-factory-ty8y r4)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  },
+)
+
+test.each([
+  'git --work-tree=/r/acme/widget/sub status',
+  'git --work-tree=. status',
+  'git --git-dir=.git log',
+  'git -C src status',
+  'git -C /r/acme/widget/sub status',
+  'git config core.worktree .',
+  'git config --get core.worktree',
+  'git config core.worktree /r/acme/widget/sub',
+  'gh repo fork acme/evil --clone=false',
+  'gh issue list --search gitconfig',
+])('denyReason allows %j (claude-factory-ty8y r4)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+})
+
+// ty8y.5: a quoted or escaped git word still counts as a git word.
+const DENY_QUOTED_GIT_WORD = [
+  'printf x >> ~/.gitconfig; "gi"t push',
+  'printf x >> ~/.gitconfig; g\\it push',
+  `printf x >> ~/.gitconfig; sh -c '"gi"t push'`,
+  `cd ~/.config && "gi"t status`,
+]
+
+test.each(DENY_QUOTED_GIT_WORD)('denyReason denies %j (claude-factory-ty8y.5)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test.each([
+  'export GIT_CONFIG_GLOBAL=/r/acme/x; "gi"t push',
+  'export GIT_CONFIG_GLOBAL=/r/acme/x; g\\it push',
+])('denyReason denies %j (claude-factory-ty8y.5, GIT_CONFIG_GLOBAL rule)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(PUSH_REASON)
+})
+
+const ALLOW_GLOBAL_GIT_CONFIG = [
+  'cat ~/.gitconfig',
+  'cat ~/.gitconfig; git status',
+  'git push',
+  'git push origin factory/x',
+  'git config --global user.name',
+  'cat vite.config.ts && git push',
+  'cat .gitignore && git push',
+  'git push https://github.com/acme/widget.git HEAD',
+  'ls ~/.config/gh',
+  // ty8y.6: a git or reader segment that only names the path is not a write.
+  'git add .config/settings.json',
+  'git log -- .config/x',
+  'git diff --stat -- docs/gitconfig.md',
+  'rg gitconfig src; git status',
+  'ls ~/.config/nvim; git status',
+  'grep -r gitconfig docs; git status',
+  'cp ~/a/*.txt .',
+  'printf x >> out.txt',
+]
+
+test.each(ALLOW_GLOBAL_GIT_CONFIG)(
+  'denyReason allows %j (claude-factory-ty8y: no global git config write)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+  },
+)
+
+// A command that is not a reader names the path: it fails closed, also when it reads.
+test('denyReason denies a non-reader that names the global git config (claude-factory-ty8y, accepted false positive)', () => {
+  expect(denyReason('awk 1 ~/.gitconfig', '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
 })
 
 // claude-factory-68gn: `gitReason` read the current branch with `gate.headOf(root)`.
