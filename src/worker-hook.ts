@@ -1431,10 +1431,14 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
  * allowed rm (the caller then applies the rm + cd rule). Returns undefined otherwise.
  * One slice for each anchor. commandAnchors caps the anchors.
  */
-function dynamicHeadRmReading(words: string[], root: string): 'deny' | 'rm' | undefined {
+function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | undefined {
   let result: 'rm' | undefined
   for (const a of commandAnchors(words)) {
-    if (!dynamicCommandWord(words[a]!)) continue
+    const head = words[a]!
+    if (!dynamicCommandWord(head)) continue
+    // A `{` or `}` word is a group marker, and realCommand strips it. A `name()` word is a function
+    // definition. definesFunction denies it with its own reason.
+    if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
     let k = a + 1
     while (k < words.length && words[k]!.length > 1 && words[k]!.startsWith('-')) k++
     const rest = realCommand(words.slice(k))
@@ -1446,7 +1450,8 @@ function dynamicHeadRmReading(words: string[], root: string): 'deny' | 'rm' | un
     } else if (rb === 'find') {
       for (let i = 0; i < rest.length; i++) {
         if (rest[i] !== '-exec' && rest[i] !== '-execdir') continue
-        if (i + 1 < rest.length && baseWord(rest[i + 1]!) === 'rm' && isRecursiveRm(rest, i + 1)) return 'deny'
+        if (i + 1 < rest.length && baseWord(rest[i + 1]!) === 'rm' && isRecursiveRm(rest, i + 1))
+          return 'deny'
       }
     }
   }

@@ -5467,9 +5467,12 @@ const DYN_RM_DENY = [
   'cd /x; $X rm a',
 ]
 
-test.each(DYN_RM_DENY)('denyReason denies rm behind a dynamic command word: %s (claude-factory-2a3i)', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
-})
+test.each(DYN_RM_DENY)(
+  'denyReason denies rm behind a dynamic command word: %s (claude-factory-2a3i)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
 
 const DYN_RM_KEEP = [
   '$N ls',
