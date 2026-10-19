@@ -680,6 +680,22 @@ test('failures of different kinds still retry', () => {
   expect(where(s.value)).toEqual(['implement', 'backoff'])
 })
 
+test('a worker that never started is its own failure class: it repeats, and it does not lengthen the next deadline', () => {
+  const ax = 'worker never started on AX after 60 min: task phase Pending'
+  const pane = 'the worker never started in pane w1:p1 (no Claude after 3 relaunches)'
+  expect(failClass(ax)).toBe('unstarted')
+  expect(failClass(pane)).toBe('unstarted')
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, implement: { ...def.nodes.implement!, retries: 2 } },
+  })
+  send({ type: 'FAIL', seq: 1, reason: ax, at: 1000 })
+  let s = send({ type: 'TICK', at: 11_000 })
+  expect(afterTimeout(s.context as Ctx, 'implement')).toBe(false)
+  s = send({ type: 'FAIL', seq: 2, reason: pane, at: 12_000 })
+  expect(where(s.value)).toEqual(['implement', 'stuck']) // the same kind twice: the person is asked
+})
+
 // claude-factory-3t2: a timeout retry gets a longer limit and an extra brief section.
 test('afterTimeout is true right after a timeout fail, stays true through another fail kind in the same tail, and is false with no timeout fail in it', () => {
   const { send } = run({
