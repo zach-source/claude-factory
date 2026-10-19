@@ -7455,6 +7455,9 @@ test.each([
   'sh -c "if [[ 1 ]] rm -rf /"',
   'cd / ; if [[ 1 ]] rm acme',
   'if [[ 1 ]] cd / ; rm acme',
+  'if [[ 1 ]] find / ]] -exec rm -rf {} +',
+  'if [[ 1 ]] rm ]] -rf /Users/acme/other',
+  'if [[ 1 ]] find / -exec rm ]] -rf {} +',
 ])('denyReason denies %j (claude-factory-ieqm, short form after ]])', cmd => {
   expect(shortDeny(cmd)).toBeDefined()
 })
@@ -7510,7 +7513,8 @@ test.each(['rm -rf /', 'echo ok'])(
   'denyReason bounds the cost of many ]] words, tail %j (claude-factory-ieqm)',
   t => {
     const start = Date.now()
-    shortDeny('x ]] '.repeat(1500) + t)
+    const r = shortDeny('x ]] '.repeat(1500) + t)
     expect(Date.now() - start).toBeLessThan(2000)
+    if (t === 'rm -rf /') expect(r).toBeDefined()
   },
 )
