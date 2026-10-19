@@ -5217,7 +5217,7 @@ function shellAliasReason(
   if (
     first >= 0 &&
     words[first]!.includes('/') &&
-    !words[first]!.includes('=') &&
+    !/[=<>&|()]/.test(words[first]!) &&
     !table.has(words[first]!)
   ) {
     end = first + 1

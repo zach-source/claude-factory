@@ -5953,6 +5953,15 @@ const SNAP_DENY_ALIAS = [
   'C[k]+=/x gp origin main',
   'a=/x gp origin main',
   'A[a]b]=/x gp origin main',
+  '>/tmp/x gp origin main',
+  '2>/dev/null gp origin main',
+  '</dev/null gp origin main',
+  '>/tmp/x gco main',
+  '>|/tmp/x gp origin main',
+  '&>/tmp/x gp origin main',
+  'A=1 >/tmp/x gp origin main',
+  '3>/tmp/x gp origin main',
+  '>>/tmp/x gp origin main',
 ]
 test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (claude-factory-1zr5)', cmd => {
   expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
