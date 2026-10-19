@@ -2608,6 +2608,57 @@ test.each(DENY_AMP_RM)('denyReason denies %j (claude-factory-59pp, rm after &>)'
   expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeDefined()
 })
 
+// claude-factory-7xmz: a redirect word before the command word hides rm from realCommand.
+const DENY_REDIR_RM = [
+  '>/dev/null rm -rf /',
+  '2>&1 rm -rf /',
+  '>&2 rm -rf /',
+  '</dev/null rm -rf /',
+  '> /dev/null rm -rf /',
+  '&>/dev/null rm -rf /',
+  '>|f rm -rf /',
+  '2>>f rm -rf /',
+  '<<<x rm -rf /',
+  '>/dev/null rm /etc/passwd',
+  '>f rm -r acme',
+  'sudo >/dev/null rm -rf /',
+  'env >f rm -rf /',
+  'nice 2>&1 rm -rf /',
+  'nohup >f rm -rf /',
+  'timeout 5 >f rm -rf /',
+  'command >f rm -rf /',
+  'exec 2>&1 rm -rf /',
+  'X=1 >f rm -rf /',
+  '>f X=1 rm -rf /',
+  'sudo -u root >f env >g rm -rf /',
+  'find / -exec >/dev/null rm -rf {} \\;',
+  'find / -execdir 2>&1 rm -rf {} +',
+  '>f find / -exec rm -rf {} \\;',
+  'rm >f -r acme',
+  'rm 2>&1 -rf acme',
+  'cd /x; >f rm -f y',
+  '>f cd /x; rm -f y',
+  '{x}>f rm -rf /',
+]
+
+test.each(DENY_REDIR_RM)('denyReason denies %j (claude-factory-7xmz, redirect word before rm)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+const ALLOW_REDIR_RM = [
+  'echo x > out.txt',
+  'cat < acme.txt',
+  'rm acme.txt 2>/dev/null',
+  '>/dev/null rm acme.txt',
+  'rm acme',
+  "echo '>x' rm -rf /",
+  '>/dev/null echo rm -rf /',
+]
+
+test.each(ALLOW_REDIR_RM)('denyReason allows %j (claude-factory-7xmz, redirect word)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
 // claude-factory-59pp.10: the live gate sets ghAliases and gitAliases. With them, a redirect word at
 // the gh verb slot must not hide the real verb.
 const AMP_LIVE_GATE = {
