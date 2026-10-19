@@ -142,7 +142,15 @@ import {
   type PrState,
   type RunMeta,
 } from './prs'
-import { nextSyncEntry, runBounded, syncDue, syncTimeoutMs, timedOutText, type SyncEntry } from './sync'
+import {
+  nextSyncEntry,
+  runBounded,
+  syncDue,
+  syncText,
+  syncTimeoutMs,
+  timedOutText,
+  type SyncEntry,
+} from './sync'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -160,7 +168,6 @@ const CLI = join(ROOT, 'bin', 'factory')
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
-const SYNC_MS = 5 * 60_000 // how often each rig's beads sync with its Dolt remote
 const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below
 // ponytail: pr-merger's default label names; make them a rig setting when a repo uses others
 const CLOSE_LABEL = 'close'
@@ -2826,6 +2833,18 @@ const kickWatch = () => {
   }).unref()
 }
 
+/** a sync pass when none runs and the last one is older than a dispatch interval */
+const kickSync = () => {
+  const stamp = join(HOME, 'sync.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (isHeld('sync.lock') || age < DISPATCH_MS) return
+  spawnChild(CLI, ['sync'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, FACTORY_HOME: HOME },
+  }).unref()
+}
+
 /** once a day, or sooner when the inbox fills; the dream itself skips when nothing is new */
 const kickDream = () => {
   const stamp = join(HOME, 'dream.stamp')
@@ -3740,6 +3759,7 @@ async function tick(isPatrol = false) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
       if (!halted()) kickWatch()
+      if (!halted()) kickSync()
       kickDevenv()
       kickConfigSync()
       kickSelfUpdate()
@@ -4524,6 +4544,38 @@ export const room = (
       : rig.maxRuns - busy.filter(b => b === rig.name).length - held.filter(h => h === rig.name).length,
   )
 
+/**
+ * the rigs' beads sync with their Dolt remotes, apart from dispatch: a slow or hung remote must not hold
+ * a start. The due rigs sync in parallel, each killed at the sync cap; a rig that fails the same way again
+ * waits longer (src/sync.ts).
+ */
+async function syncPass() {
+  const release = hold('sync.lock')
+  if (!release) return
+  try {
+    if (halted()) return
+    writeFileSync(join(HOME, 'sync.stamp'), '')
+    const synced = existsSync(syncFile()) ? readJson<Record<string, SyncEntry>>(syncFile()) : {}
+    const due = rigs().filter(r => existsSync(join(r.repo, '.beads')) && syncDue(synced[r.repo], Date.now()))
+    await Promise.all(
+      due.map(async rig => {
+        const t0 = Date.now()
+        let error: string | undefined
+        try {
+          if (rig.beadsRemote) await syncAsRemoteUser(rig)
+          else await beads(rig.repo, 'factory').sync()
+        } catch (err) {
+          error = clip((err as Error).message || 'sync failed', 300)
+        }
+        synced[rig.repo] = nextSyncEntry(synced[rig.repo], { error, ms: Date.now() - t0 }, Date.now())
+        writeJson(syncFile(), synced)
+      }),
+    )
+  } finally {
+    release()
+  }
+}
+
 /** the rigs' ready `factory` beads become runs while each rig, and the factory, has room */
 /** what the last dispatch could not do, per rig: the board shows it as rows */
 const dispatchFile = () => join(HOME, 'dispatch.json')
@@ -4726,9 +4778,7 @@ async function dispatch() {
   // the pm's plan, read once per pass: a stale or missing plan changes nothing (claude-factory-dun.3)
   const freshPlan = freshPlanOrUndefined()
   // a sync's error stands until the next sync: dispatch passes every 30 s would clear it
-  const synced = existsSync(syncFile())
-    ? readJson<Record<string, { at: number; error?: string }>>(syncFile())
-    : {}
+  const synced = existsSync(syncFile()) ? readJson<Record<string, SyncEntry>>(syncFile()) : {}
   // The flood guard's own "already handled" marks (claude-factory-8pc.18). Dispatch reads this
   // once per pass, and writes it back once at the end. A sweep worker's bd labels never reach
   // this file.
@@ -4743,18 +4793,8 @@ async function dispatch() {
     try {
       const preview = await loadFactory(factorySource(rig.factory, rig.repo))
       const b = beads(rig.repo, 'factory')
-      // full or not: our claims and closes reach other machines either way
-      if (existsSync(join(rig.repo, '.beads')) && Date.now() - (synced[rig.repo]?.at ?? 0) > SYNC_MS) {
-        synced[rig.repo] = { at: Date.now() } // a failing sync retries next interval, not every pass
-        try {
-          if (rig.beadsRemote) await syncAsRemoteUser(rig)
-          else await b.sync()
-        } catch (err) {
-          synced[rig.repo]!.error = (err as Error).message
-        }
-        writeJson(syncFile(), synced)
-      }
-      const syncError = synced[rig.repo]?.error
+      // the sync runs in its own pass (syncPass): dispatch only shows how the last one went
+      const syncError = syncText(synced[rig.repo])
       if (syncError) errors.push({ id: `rig:${rig.name}`, error: syncError }) // dispatch goes on: local beads are still true
       if (room(rig, busy, undefined, held) <= 0) continue // full: no more bd calls
       if (linearRigs.has(rig.name)) {
@@ -6624,6 +6664,9 @@ if (import.meta.main && !outboxCmd)
         break
       case 'watch':
         await watchPass()
+        break
+      case 'sync':
+        await syncPass()
         break
       case 'manager':
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)

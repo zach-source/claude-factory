@@ -25,6 +25,14 @@ export function nextSyncEntry(
   return { at: now, error: result.error, failures, nextAt: now + wait, ...(ms !== undefined && { ms }) }
 }
 
+/** what the board's rig row says of a failed sync: the error, how often it failed, when the next try is */
+export function syncText(entry: SyncEntry | undefined): string | undefined {
+  if (!entry?.error) return undefined
+  const next = new Date(entry.nextAt ?? entry.at + SYNC_BASE_MS)
+  const hhmm = `${String(next.getHours()).padStart(2, '0')}:${String(next.getMinutes()).padStart(2, '0')}`
+  return `${entry.error} (sync failed ${entry.failures ?? 1}x, next try ${hhmm})`
+}
+
 /** the kill cap of one sync call; FACTORY_SYNC_TIMEOUT_MS sets it */
 export const syncTimeoutMs = () => Number(process.env.FACTORY_SYNC_TIMEOUT_MS) || 120_000
 
