@@ -993,13 +993,25 @@ function wrapperAssignmentOperand(w: string): boolean {
   return w[0] !== '-' && w.indexOf('=') > 0
 }
 
+// claude-factory-mmc9: true when the shell reads `w` as a prefix assignment, not as the command.
+// bash and zsh read `NAME=v` and `NAME+=v` (append). zsh also reads `NAME[sub]=v` and
+// `NAME[sub]+=v`. The name must be a literal identifier: a word such as `$G=x` word-splits into
+// the real command, so the hook must not skip it. The subscript can hold any text, including `]`
+// and quotes. The greedy match can skip more than the shell does. Then the hook reads later words
+// as the command and denies more, never less.
+function shellAssignmentWord(w: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*(?:\[[\s\S]*\])?\+?=/.test(w)
+}
+
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   let w = words
+  let afterWrapper = false
   for (;;) {
     if (!w.length) return w
     const head = w[0]!
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
+    // `sudo` and `env` read any non-dash NAME=value word as an assignment (claude-factory-mmc9).
+    if (shellAssignmentWord(head) || (afterWrapper && wrapperAssignmentOperand(head))) {
       w = w.slice(1)
       continue
     }
@@ -1010,6 +1022,7 @@ function realCommand(words: string[]): string[] {
     const b = baseWord(head)
     if (WRAPPERS.has(b)) {
       w = skipWrapperFlags(b, w.slice(1))
+      afterWrapper = true
       continue
     }
     if (b === 'timeout') {
@@ -1162,7 +1175,7 @@ function commandAnchors(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
     const w = words[i]!
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+    if (shellAssignmentWord(w)) {
       i++
       continue
     }
@@ -1474,7 +1487,7 @@ function envOptionScan(
       j = span.end - 1 // skip the flag and its own value word; it already ran above
       continue
     }
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(ew)) continue // a NAME=value assignment: not the command
+    if (wrapperAssignmentOperand(ew)) continue // a NAME=value assignment: not the command
     if (ew === '--') return { cmdStart: j + 1, clearsAll }
     if (ew === '-') {
       clearsAll = true

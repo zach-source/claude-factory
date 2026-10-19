@@ -5963,3 +5963,70 @@ test.each(['Git status', 'Gh pr view 1', 'Git log --oneline'])(
     expect(a8prVerdict(cmd)).toBeUndefined()
   },
 )
+
+// claude-factory-mmc9: zsh and bash read NAME+=value as an assignment. zsh also reads
+// NAME[sub]=value and NAME[sub]+=value. The hook must skip these words and read the real command.
+const MMC9_DENY = [
+  'A+=x rm -rf /',
+  'A+= rm -rf /',
+  'A=x B+=y rm -rf /',
+  'A+=x sudo rm -rf /',
+  'A+=x xargs rm -rf',
+  'A+=x\\\n rm -rf /',
+  'A[k]=x rm -rf /',
+  'A[k]+=x rm -rf /',
+  'A[1]=x rm -rf /',
+  'A[a[1]]=x rm -rf /',
+  "A['k y']=x rm -rf /",
+  'A["k]"]=x rm -rf /',
+  'sudo A+=x rm -rf /',
+  'env A+=x rm -rf /',
+  'env a.b=1 rm -rf /',
+]
+
+test.each(MMC9_DENY)('denyReason denies %j (claude-factory-mmc9, assignment forms)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+const MMC9_DYNAMIC = [
+  'A+=x $',
+  'A+=x $G $V origin main',
+  'A[k]+=x $G $V origin main',
+  'A+=x sudo -Z $P $G $V origin main',
+]
+
+test.each(MMC9_DYNAMIC)('denyReason denies %j as a dynamic verb (claude-factory-mmc9)', cmd => {
+  expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason denies A+=x $K apply with personOnly acme (claude-factory-mmc9)', () => {
+  expect(denyReason('A+=x $K apply -f x.yaml', undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason keeps its verdict on A+=x gh and git forms (claude-factory-mmc9)', () => {
+  const gate: HookGate = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+  expect(denyReason('A+=x gh pr merge 1')).toBe(MERGE_REASON)
+  expect(denyReason('A+=x git push origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+test.each(['$G=x $V o main', '$G+=x $V o main', '${A}+=x $G $V o main'])(
+  'denyReason keeps denying the dynamic head %j (claude-factory-mmc9)',
+  cmd => {
+    expect(denyReason(cmd)).toBeDefined()
+  },
+)
+
+test.each(['A+=x ls', 'A[k]=x ls', 'A+=x bd list --all', 'echo A+=x', 'git commit -m A+=x', 'ls A[k]=x'])(
+  'denyReason allows %j (claude-factory-mmc9, not a hidden command)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
+test.each([
+  'env -i A+=x sh -c "bd create t"',
+  'env -i a.b=1 sh -c "bd create t"',
+  'env -i A[k]=x bd create t',
+])('denyReason denies %j (claude-factory-mmc9, env assignment forms)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
