@@ -108,6 +108,7 @@ import * as worker from './worker'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import * as broker from './broker'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -6871,6 +6872,9 @@ if (import.meta.main && !outboxCmd)
         break
       case 'sync':
         await syncPass()
+        break
+      case 'broker':
+        broker.main(args)
         break
       case 'manager':
         if (args[0] === 'host') {

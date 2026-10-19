@@ -292,3 +292,33 @@ These stay on the laptop: `tick.lock`, `bin`, `devenv/`, the backups of `rigs.js
 - The host does not start the manager while the home is empty, or while a migration archive is on the volume.
 - Runs on `ax://` workers move with no change. Their workers keep running while the move happens.
 - The upload is `PUT_PART` bytes of base64 for each `ax ssh` call, because `ax ssh` has no stdin. A home of 100 MB sends in about 1500 calls. A part that fails is sent again 3 times. Then the command stops. Run it again, because a part sent twice does no harm.
+
+### Policy broker
+
+The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the TLS call to it with grpc-status 14. So the manager cannot create a worker egress policy or read the gateway CA with `kubectl ate`. The policy broker does these two jobs for it.
+
+The broker is a small HTTP server in the cluster (`factory broker serve [--port 8080]`, image from `Dockerfile.broker`, manifest `deploy/broker.yaml`). It runs `kubectl ate` with a projected ServiceAccount token (audience `api.ate-system.svc`). ate-api checks the token and its audience. It applies no other authorization, so the broker enforces the limits itself.
+
+| Call                                  | Result                                                                                              |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `PUT /policy/<atespace>/<actor>`      | Body is an EgressPolicy as JSON. The broker deletes the old policy, then creates the new one.       |
+| `DELETE /policy/<atespace>/<actor>`   | Deletes the policy. A policy that is gone already is not an error.                                  |
+| `GET /ca`                             | The PEM of the gateway CA bundle.                                                                   |
+| `GET /healthz`                        | `ok`.                                                                                               |
+
+Limits:
+
+- Only the atespaces in `FACTORY_BROKER_ATESPACES` (default `factory`).
+- Never the policy of the manager actor (`FACTORY_AX_MANAGER`, default `f-manager`). You create that policy from the laptop.
+- Atespace and actor must be RFC 1123 labels. The body must be a JSON object with `rules`, 64 KiB at most.
+- The broker logs one line for each call.
+
+Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task. The broker has no caller authentication.
+
+Use in the manager task:
+
+1. On the laptop, set `FACTORY_AX_MANAGER_AX_SERVER`, `FACTORY_AX_MANAGER_ROUTER` and `FACTORY_AX_MANAGER_BROKER` to the in-cluster URLs. Keep the values out of the repository. `factory manager --ax` then sets `AX_SERVER` and `FACTORY_POLICY_BROKER` in the task env.
+2. The manager policy gets one `http` rule for each of the three URLs. An `https` rule does not work for plain HTTP (h2c) to a service.
+3. In the VM, `FACTORY_POLICY_BROKER` makes `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before.
+
+Deploy: set `BROKER_IMAGE` to the image by digest. Run `envsubst '$BROKER_IMAGE' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image.
