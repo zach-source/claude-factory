@@ -5168,6 +5168,35 @@ test.each(ALLOW_WMSR_HEREDOC_STDIN)('denyReason allows %j (text stdin, wmsr)', c
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
 })
 
+// claude-factory-wmsr.14: a body is scanned as its own command text, so no reader can hide it.
+const DENY_WMSR_HEREDOC_OPTS = [
+  `sort -S 1k --compress-program=sh <<EOF${WB10}`,
+  `sort -S 1k --compress-prog sh <<EOF${WB10}`,
+  `/usr/bin/sort -S 1k --compress-program=sh <<EOF${WB10}`,
+  `bd edit x <<EOF\n:!sh${WB10}`,
+  `gh pr create -fe <<EOF${WB10}`,
+  `gh pr create -de <<EOF${WB10}`,
+  `git commit -p -F - <<EOF${WB10}`,
+  `git commit --patch -F - <<EOF${WB10}`,
+  `git commit -i -F - <<EOF${WB10}`,
+  `git commit --interactive -F - <<EOF${WB10}`,
+  `bash <<'EOF'\ndon't\nEOF\n${WM}`,
+  `bash <<'EOF'\ndon't\nx' ; ${WM}\nEOF`,
+]
+test.each(DENY_WMSR_HEREDOC_OPTS)('denyReason denies %j (body scanned as commands, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_HEREDOC_OPTS = [
+  "sort <<'EOF'\ndon't\nEOF",
+  "gh pr create -f -d --body-file - <<'EOF'\nit's\nEOF",
+  "git commit --file - --no-edit <<'EOF'\ndon't\nEOF",
+  "bash <<'EOF'\necho \"don't\"\nEOF",
+]
+test.each(ALLOW_WMSR_HEREDOC_OPTS)('denyReason allows %j (isolated body, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeUndefined()
+})
+
 test('denyReason denies a shift row with a later push (wmsr)', () => {
   expect(denyReason(`echo $((1<<2))\n${WM}\n2`, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
