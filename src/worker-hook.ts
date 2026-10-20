@@ -1129,10 +1129,13 @@ function recursiveFlag(w: string): boolean {
   return false
 }
 
+/** A redirect word. Group 1 is the glued target: empty when the target is the next word. */
+const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s
+
 /**
  * `words` is an rm command and its args. `words[start]` is the rm word itself.
  * This function returns true when `words` asks for a recursive delete.
- * It stops at the first `--` word or the first non-flag word.
+ * It skips redirect words and their targets. It stops at the first `--` word or the first other non-flag word.
  *
  * claude-factory-lbn: this function reads `words` by index. It does not call
  * `words.slice(start + 1)`. The find branch below calls this function once for each
@@ -1145,6 +1148,15 @@ function isRecursiveRm(words: string[], start = 0): boolean {
     if (w === '--') return false
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
+      continue
+    }
+    // claude-factory-g4l4: the shell takes a redirect word out of the rm args, so flags after it still count.
+    const redirect = RM_REDIRECT_WORD.exec(w)
+    if (redirect) {
+      if (redirect[1] === '') {
+        const next = words[k + 1] ?? '-'
+        if (next === '--' || !next.startsWith('-')) k++
+      }
       continue
     }
     return false
@@ -1916,6 +1928,48 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
     return
   }
   if (firstSingle >= 0) anchors.push(firstSingle)
+}
+
+/**
+ * claude-factory-2a3i: reads the word after each dynamic command word as a possible rm or find.
+ * Returns 'deny' for a recursive or risky rm, or a find -exec/-execdir rm. Returns 'rm' for an
+ * allowed rm (the caller then applies the rm + cd rule). Returns undefined otherwise.
+ * One slice for each anchor. commandAnchors caps the anchors.
+ */
+function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | undefined {
+  let result: 'rm' | undefined
+  const anchors = commandAnchors(words).slice()
+  // A find -exec, -execdir, -ok or -okdir slot is a command slot too. The scan is monotone in the
+  // start index, so the smallest dynamic slot gives the result of all of them. No cap needed.
+  for (let i = 0; i + 1 < words.length; i++) {
+    if (!/^-(exec|execdir|ok|okdir)$/.test(words[i]!)) continue
+    if (!dynamicCommandWord(words[i + 1]!)) continue
+    anchors.push(i + 1)
+    break
+  }
+  for (const a of anchors) {
+    const head = words[a]!
+    if (!dynamicCommandWord(head)) continue
+    // A `{` or `}` word is a group marker, and realCommand strips it. A `name()` word is a function
+    // definition. definesFunction denies it with its own reason.
+    if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
+    // The head can expand to a wrapper with value flags or operands (`-u root`, `-n 5`, `5`). So
+    // scan forward over every rm word. An rm word can be a flag value, so the real rm can come
+    // later. The first rm word gets the full rule. Each later rm word gets the recursive-flag rule.
+    // One pass for each anchor: O(n).
+    let first = true
+    for (let k = a + 1; k < words.length; k++) {
+      if (baseWord(words[k]!) !== 'rm') continue
+      if (isRecursiveRm(words, k)) return 'deny'
+      if (!first) continue
+      first = false
+      const rest = realCommand(words.slice(k))
+      if (!rest.length || baseWord(rest[0]!) !== 'rm') continue
+      if (isRecursiveRm(rest) || rmTargets(rest).some(t => riskyTarget(t, root))) return 'deny'
+      result = 'rm'
+    }
+  }
+  return result
 }
 
 function commandAnchors(words: string[]): number[] {
@@ -7139,6 +7193,11 @@ function denyAtScan(
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
+    // claude-factory-2a3i: a dynamic command word can expand to `command`, `sudo` or `env`, so the
+    // word after it can be the real rm or find. Deny-only: cmd, b and operandSkip stay unchanged.
+    const dynRm = dynamicHeadRmReading(words, root)
+    if (dynRm === 'deny') return REASON
+    if (dynRm === 'rm') hasRm = true
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
