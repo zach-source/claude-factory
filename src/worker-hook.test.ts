@@ -8762,6 +8762,7 @@ test.each([
   'env A+=1/rm -r ./d',
   'sudo A+=1/rm -r ./d',
   'é=1/rm -r ./d',
+  '{ é=1/rm -r ./d; }',
   'Ⓐ=1/rm -r ./d',
   'A²=1/rm -r ./d',
   'A[k]=1/rm -r ./d',
