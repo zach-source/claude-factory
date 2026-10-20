@@ -27,6 +27,10 @@ const DENIED = [
   '2>! f /bin/r(m) -rf /',
   '>&! f /bin/r(m) -rf /',
   '&>! f /bin/r(m) -rf /',
+  '>&| f /bin/r(m) -rf /',
+  '>>&| f /bin/r(m) -rf /',
+  '2>&| f /bin/r(m) -rf /',
+  '>&| f /bin/g(i)t push origin main',
   '>! f /bin/g(i)t push origin main',
   'shopt -s extglob\n{fd}>f /bin/@(r)m -rf /',
   'shopt -s extglob\n{fd}>/dev/null /bin/@(r)m -rf /',
@@ -70,6 +74,7 @@ test.each(DENIED)('denies a glob group in the command word: %s', cmd => {
 })
 
 const ALLOWED = [
+  'echo hi >&| f ; ls',
   'echo a(b)',
   'echo "r(m)"',
   "echo 'r(m)'",
