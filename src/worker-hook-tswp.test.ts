@@ -114,6 +114,17 @@ const DENY = [
   'doas {git,push} origin main',
   'doas $X $Y',
   'taskset 1 $X $Y',
+  'nice doas {rm,} -rf /',
+  'sudo stdbuf -o0 {rm,} -rf /',
+  'env doas $X $Y',
+  'nice taskset 1 {r,}m -rf /',
+  'command doas {rm,} -rf /',
+  'time doas {rm,} -rf /',
+  'exec doas {rm,} -rf /',
+  'nohup doas {rm,} -rf /',
+  'time stdbuf -o0 {rm,} -rf /',
+  "nice doas {sh,-c} 'rm -rf /'",
+  'sudo doas {git,push} origin main',
 ]
 
 test.each(DENY)('denyReason denies %j (claude-factory-tswp)', cmd => {

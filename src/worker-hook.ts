@@ -2171,6 +2171,12 @@ const LEAD_WRAPPERS = new Set([...WRAPPERS, 'timeout', 'xargs'])
 // This occurs if no wrapper flag is unknown to this hook.
 const MAX_COMMAND_ANCHORS = 16
 
+// claude-factory-tswp.9: a runner word at `at` makes each later word a possible command.
+function runnerAnchors(words: string[], at: number, anchors: number[]): number[] {
+  for (let k = at; k < words.length && anchors.length < MAX_COMMAND_ANCHORS; k++) anchors.push(k)
+  return anchors
+}
+
 /**
  * Gives each index in `words` where the shell can start the actual command.
  *
@@ -2438,7 +2444,7 @@ function commandAnchors(words: string[]): number[] {
   if (i >= words.length) return []
   let base = baseWord(words[i]!)
   // claude-factory-tswp: any later word of a runner can be the command. Deny-only readings use this.
-  if (RUNNER_WRAPPERS.has(base)) return words.slice(i, i + MAX_COMMAND_ANCHORS).map((_, k) => i + k)
+  if (RUNNER_WRAPPERS.has(base)) return runnerAnchors(words, i, [])
   if (!LEAD_WRAPPERS.has(base)) return [i]
 
   const anchors: number[] = []
@@ -2480,6 +2486,7 @@ function commandAnchors(words: string[]): number[] {
         while (j < words.length && wrapperAssignmentOperand(words[j]!)) j++
         if (j >= words.length) return anchors
         const nb = baseWord(words[j]!)
+        if (RUNNER_WRAPPERS.has(nb)) return runnerAnchors(words, j, anchors)
         if (LEAD_WRAPPERS.has(nb)) {
           base = nb
           j++
@@ -2516,6 +2523,7 @@ function commandAnchors(words: string[]): number[] {
         continue
       }
       const nb = baseWord(w)
+      if (RUNNER_WRAPPERS.has(nb)) return runnerAnchors(words, j, anchors)
       if (LEAD_WRAPPERS.has(nb)) {
         base = nb
         j++
@@ -2541,6 +2549,7 @@ function commandAnchors(words: string[]): number[] {
       // above the outer loop). Restart the flag walk there, in place of adding it as a flat
       // candidate.
       const nb2 = baseWord(words[k2]!)
+      if (RUNNER_WRAPPERS.has(nb2)) return runnerAnchors(words, k2, anchors)
       if (LEAD_WRAPPERS.has(nb2)) {
         anchors.push(k2)
         // claude-factory-p43v.32: a long run of `-Z v env -Z v env ...` restarts this chase once
