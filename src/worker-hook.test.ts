@@ -7643,7 +7643,7 @@ test.each([
   expect(denyReason(cmd)).toBeDefined()
 })
 
-test.each([["trap - EXIT"], ["trap -p"], ["trap 'echo hi' EXIT"], ["trap '' INT"], ['source .scratch/x.sh']])(
+test.each([['trap - EXIT'], ['trap -p'], ["trap 'echo hi' EXIT"], ["trap '' INT"], ['source .scratch/x.sh']])(
   'denyReason allows a harmless trap (claude-factory-81tz): %s',
   cmd => {
     expect(denyReason(cmd)).toBeUndefined()
