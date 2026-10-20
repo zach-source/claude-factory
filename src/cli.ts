@@ -114,6 +114,7 @@ import {
   isLaptopPane,
   mapRigs,
   mapRunRepo,
+  isLaptopRun,
   mapRunWorktree,
   stationRunnerName,
   syncRepos,
@@ -1183,6 +1184,18 @@ function reviveWorktree(run: Run) {
   const ref = `refs/factory-gc/${run.id}`
   const snapshot = verify(ref)
   const gcRemoved = existsSync(join(runDir(run.id), 'gc.json'))
+  // a laptop run merged before the move: its branch is gone from origin. Start from the default branch
+  const def = defaultRef(run.repo)
+  if (
+    inAx() &&
+    !gcRemoved &&
+    def &&
+    isLaptopRun(rawRigs(), readJson<Run>(join(runDir(run.id), 'run.json')))
+  ) {
+    git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, def)
+    console.error(`run ${run.id}: branch ${run.branch} is gone; worktree recreated from ${def}`)
+    return
+  }
   fail(
     gcRemoved
       ? `factory gc --worktrees removed ${run.worktree} and deleted its branch ${run.branch}. ` +
@@ -1193,10 +1206,49 @@ function reviveWorktree(run: Run) {
   )
 }
 
+/** the repo's default branch on origin (origin/HEAD), else origin/main; undefined when the ref is not there */
+function defaultRef(repo: string) {
+  const sym = Bun.spawnSync(['git', '-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  const ref = sym.exitCode === 0 ? sym.stdout.toString().trim() : 'origin/main'
+  const ok = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+  return ok.exitCode === 0 ? ref : undefined
+}
+
+/**
+ * In the AX manager, a laptop run's base can be a commit only the laptop has (never pushed), so `base..HEAD`
+ * fails in brief(). Make the base the merge-base of the worktree's HEAD and the default branch. Only `base`
+ * changes in run.json: the file keeps the laptop's paths, which loadRun maps each time.
+ */
+function resetMissingBase(run: Run) {
+  if (!run.base || !existsSync(run.worktree)) return
+  const known = Bun.spawnSync([
+    'git',
+    '-C',
+    run.worktree,
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    `${run.base}^{commit}`,
+  ])
+  const def = defaultRef(run.repo)
+  if (known.exitCode === 0 || !def) return
+  const base = Bun.spawnSync(['git', '-C', run.worktree, 'merge-base', 'HEAD', def])
+  if (base.exitCode !== 0) return
+  const file = join(runDir(run.id), 'run.json')
+  const was = run.base
+  run.base = base.stdout.toString().trim()
+  writeJson(file, { ...readJson<Run>(file), base: run.base })
+  console.error(
+    `run ${run.id}: base ${was} is not in this clone; base reset to ${run.base} (merge-base with ${def})`,
+  )
+}
+
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
-  // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
-  if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
+  // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first.
+  // In the AX manager the runner is remote, but brief() reads the worktree here, so it needs it too
+  if ((runnerOfStation(run, def, node).local || inAx()) && !existsSync(run.worktree)) reviveWorktree(run)
+  if (inAx()) resetMissingBase(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   const full = () => brief(run, def, node, c, c.mail[node] ?? [])
   // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)

@@ -1083,7 +1083,7 @@ const rowOf = (out: { out: string }, id: string) =>
   JSON.parse(out.out).runs.find((r: { id: string }) => r.id === id)
 
 /** a run as the laptop wrote it, moved to the AX manager: the laptop's worktree is not in the VM */
-function laptopRun(opts: { merged: boolean; base?: string }) {
+function laptopRun(opts: { merged: boolean; base?: string; gone?: boolean }) {
   reset()
   const { repo, origin } = makeRig('r1')
   const id = freshId('ship')
@@ -1092,6 +1092,10 @@ function laptopRun(opts: { merged: boolean; base?: string }) {
   writeRigs([{ name: 'r1', repo }])
   if (opts.base) patchRaw(id, { base: opts.base })
   git(repo, 'worktree', 'remove', '--force', worktree)
+  if (opts.gone) {
+    git(origin, 'branch', '-D', branch) // gc'd after the merge: gone from origin and the laptop, before the VM clones
+    git(repo, 'branch', '-D', branch)
+  }
   return { repo, origin, id, branch, mainSha, laptopWorktree: worktree, vm: axVm('r1', origin) }
 }
 
@@ -1112,9 +1116,7 @@ test('AX-a: spawn of a laptop run with no worktree makes it from origin/<branch>
 })
 
 test('AX-b: a gone branch of a merged laptop run is made from origin/<default>, and a base the VM lacks is reset in run.json only', () => {
-  const t = laptopRun({ merged: true, base: BOGUS })
-  git(t.origin, 'branch', '-D', t.branch) // gc'd after the merge: gone from origin
-  git(t.repo, 'branch', '-D', t.branch)
+  const t = laptopRun({ merged: true, base: BOGUS, gone: true })
   const before = readRaw(t.id)
   const out = factory(['tick'], t.vm.env)
   expect(out.code).toBe(0)
@@ -1132,9 +1134,7 @@ test('AX-b: a gone branch of a merged laptop run is made from origin/<default>, 
 })
 
 test('AX-c: a run with gc.json and no branch still fails with the gc message, and never falls back to origin/<default>', () => {
-  const t = laptopRun({ merged: true })
-  git(t.origin, 'branch', '-D', t.branch)
-  git(t.repo, 'branch', '-D', t.branch)
+  const t = laptopRun({ merged: true, gone: true })
   writeFileSync(join(runDir(t.id), 'gc.json'), '{}')
   const out = factory(['tick'], t.vm.env)
   expect(out.code).toBe(0)
