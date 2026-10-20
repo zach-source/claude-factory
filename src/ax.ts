@@ -3,6 +3,7 @@
 // queues what the worker's `factory report|mail|memory add` would have done in an outbox, which the
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
+import { readFileSync } from 'node:fs'
 import { CONTROLLER_UNKNOWN, controllerReadiness } from './ax-ready'
 import { ANTHROPIC_HOSTS, GITHUB_API_HOSTS, GITHUB_GIT_HOSTS, parseGithubKeys } from './ax-hosts'
 import { sq } from './harness'
@@ -594,6 +595,8 @@ const MANAGER_PASS = [
   'FACTORY_AX_VAULT',
   'FACTORY_AX_ATESPACE',
   'FACTORY_AX_GITHUB_KEYS',
+  'FACTORY_AX_PKG_GATE',
+  'FACTORY_AX_CAPABILITIES',
   // the broker's shared token: the gateway cannot inject it into the plain-HTTP broker rule
   'FACTORY_BROKER_TOKEN',
 ]
@@ -607,6 +610,18 @@ const MANAGER_AX_SERVER = 'FACTORY_AX_MANAGER_AX_SERVER'
 const MANAGER_ROUTER = 'FACTORY_AX_MANAGER_ROUTER'
 const MANAGER_BROKER = 'FACTORY_AX_MANAGER_BROKER'
 
+/**
+ * FACTORY_AX_ENV: a JSON file of extra worker env, or the JSON itself (a value that starts with `{`). The manager
+ * task has no laptop paths, so the laptop sends it the content. Errors never carry the content: it may hold env values
+ */
+export function readAxEnv(value: string, read: (path: string) => string = p => readFileSync(p, 'utf8')) {
+  try {
+    return JSON.parse(value.trimStart().startsWith('{') ? value : read(value)) as Record<string, string>
+  } catch {
+    throw new Error('FACTORY_AX_ENV is not a JSON object or the path of a JSON file')
+  }
+}
+
 /** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
 export function managerEnv(env: Record<string, string | undefined> = process.env) {
   return {
@@ -614,7 +629,14 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     FACTORY_HOME: `${WS}/home`,
     // its Claude sessions on the volume, so `--resume` finds them after a restart
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
-    ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
+    // ponytail: an empty FACTORY_AX_CAPABILITIES means "none" (the worker stays root), so it is passed too
+    ...Object.fromEntries(
+      MANAGER_PASS.filter(k => env[k] || (k === 'FACTORY_AX_CAPABILITIES' && env[k] === '')).map(k => [
+        k,
+        env[k]!,
+      ]),
+    ),
+    ...(env.FACTORY_AX_ENV && { FACTORY_AX_ENV: JSON.stringify(readAxEnv(env.FACTORY_AX_ENV)) }),
     ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
     ...(env[MANAGER_BROKER] && { FACTORY_POLICY_BROKER: env[MANAGER_BROKER] }),
     // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make

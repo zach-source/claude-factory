@@ -1557,7 +1557,23 @@ test("the manager's policy adds path-prefixed GitHub rules for each mapped owner
   expect(ax.managerEnv({ FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO' })).toMatchObject({
     FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO',
   })
+  const gate = { FACTORY_AX_PKG_GATE: 'http://gate.example.svc:8080', FACTORY_AX_CAPABILITIES: 'CHOWN' }
+  expect(ax.managerEnv(gate)).toMatchObject(gate)
+  expect(ax.managerEnv({ FACTORY_AX_CAPABILITIES: '' })).toMatchObject({ FACTORY_AX_CAPABILITIES: '' })
+  expect(ax.managerEnv({})).not.toHaveProperty('FACTORY_AX_CAPABILITIES')
   expect(ax.managerEnv({ FACTORY_BROKER_TOKEN: 'tok' })).toMatchObject({ FACTORY_BROKER_TOKEN: 'tok' })
+})
+
+test('FACTORY_AX_ENV goes to the manager task as inline JSON, read from the file on the laptop', () => {
+  const file = join(dir, 'ax-env.json')
+  writeFileSync(file, '{"BAZELRC":"remote"}')
+  expect(ax.managerEnv({ FACTORY_AX_ENV: file }).FACTORY_AX_ENV).toBe('{"BAZELRC":"remote"}')
+  expect(ax.managerEnv({ FACTORY_AX_ENV: ' {"A":"1"}' }).FACTORY_AX_ENV).toBe('{"A":"1"}')
+  expect(ax.readAxEnv('{"A":"1"}')).toEqual({ A: '1' })
+  expect(ax.readAxEnv(file)).toEqual({ BAZELRC: 'remote' })
+  // a bad value fails without echoing its content
+  expect(() => ax.readAxEnv('{"SECRET":"hunter2"')).toThrow(/^(?!.*hunter2)/)
+  expect(() => ax.readAxEnv(join(dir, 'missing.json'))).toThrow('FACTORY_AX_ENV')
 })
 
 // a fake curl: records the call and the body, answers by path

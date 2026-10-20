@@ -1242,7 +1242,7 @@ export { httpsRemote }
 
 /**
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
- * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
+ * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file or JSON) adds to its env.
  */
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
@@ -1276,7 +1276,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     .trim()
   if (unmerged) Bun.spawnSync(['git', '-C', run.worktree, 'checkout', 'HEAD', '--', ...unmerged.split('\n')])
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
-  const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
+  const env = process.env.FACTORY_AX_ENV ? ax.readAxEnv(process.env.FACTORY_AX_ENV) : {}
   const name = ax.taskName(run.id, c.seq)
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
