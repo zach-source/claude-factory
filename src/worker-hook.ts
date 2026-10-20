@@ -1153,6 +1153,41 @@ function isRecursiveRm(words: string[], start = 0): boolean {
   return false
 }
 
+const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+
+/**
+ * claude-factory-j471: true when `cmd`, a find command, runs a recursive rm in an exec slot.
+ * A slot word is `-exec`, `-execdir`, `-ok` or `-okdir`. The word after the slot is the head.
+ * A NAME=value head is not read here. assignmentReadingsDeny reads it. If the head is rm, `isRecursiveRm` reads it. If the head is a
+ * wrapper (sudo, env, nice, timeout, xargs ...), the scan reads every later word once for an rm
+ * word. Then it returns, because each later slot is a part of the range that it read.
+ *
+ * claude-factory-lbn: this function reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
+ * `isRecursiveRm(cmd, k)` starts right after the rm word and stops at the first non-flag word.
+ * Scans from different slots do not overlap. The wrapper scan runs at most once. So the whole
+ * function costs O(n), not O(n^2).
+ */
+function findExecRmDeny(cmdIn: string[]): boolean {
+  const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
+  for (let i = 0; i < cmd.length; i++) {
+    if (!FIND_EXEC_WORDS.has(cmd[i]!)) continue
+    const k = i + 1
+    if (k >= cmd.length) continue
+    const b = baseWord(cmd[k]!)
+    if (b === 'rm') {
+      if (isRecursiveRm(cmd, k)) return true
+      continue
+    }
+    if (WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
+      for (let j = k + 1; j < cmd.length; j++) {
+        if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
+      }
+      return false
+    }
+  }
+  return false
+}
+
 /**
  * Returns the operands of an rm command. `words[0]` is the rm word itself.
  * An operand is a non-flag word before a `--`, or any word after a `--`
@@ -1546,12 +1581,7 @@ function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolea
       })
     )
   }
-  if (b === 'find') {
-    for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return true
-    }
-  }
+  if (b === 'find' && findExecRmDeny(cmd)) return true
   return false
 }
 
@@ -1668,15 +1698,12 @@ function rmFindReading(
     return { deny: false, rm: true }
   }
   if (b === 'find') {
+    if (findExecRmDeny(cmd)) return { deny: true, rm: false }
     for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 >= cmd.length) continue
+      if (!FIND_EXEC_WORDS.has(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
-      if (baseWord(next) === 'rm') {
-        if (isRecursiveRm(cmd, i + 1)) return { deny: true, rm: false }
-      } else if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny) {
+      if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny)
         return { deny: true, rm: false }
-      }
     }
   }
   return { deny: false, rm: false }
@@ -2194,6 +2221,7 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   // own. Without this skip, n stacked eval words cost about 2^n work.
   let evalScanned = false
   let slotEnd = 0
+  let trapEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
@@ -2209,6 +2237,13 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       // here would change that reason to the BEADS_ACTOR one (claude-factory-38jm AC4).
       const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
+    } else if (bw === 'trap' && k >= trapEnd) {
+      // claude-factory-81tz.2: the trap action and every word after trap are scripts. Read them like eval.
+      // claude-factory-81tz.4: trapEnd skips a trap word inside an earlier walk, so the scan stays O(n).
+      // claude-factory-81tz.5: read every word to the end, since a redirect word can sit before the action.
+      for (let a = k + 1; a < words.length; a++)
+        if (stringNamesBdCommand(words[a]!, state, depth + 1)) return true
+      trapEnd = words.length
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true
       const rest = words.slice(k + 1).join(' ')
@@ -4317,6 +4352,9 @@ function dynamicWord(w: string): boolean {
   // claude-factory-jsy0: zsh EQUALS expands a leading =cmd to the command path.
   return REFSPEC_UNSAFE.test(w) || w.startsWith('~') || /^=[^=]/.test(w)
 }
+// claude-factory-teku: a head `$_`, or a zsh form such as `${=_}`. the flag-group re-read in
+// denyAt strips `(...)`, so `${(@)_}` reads as `${_}` there.
+const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9_])/
 
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
 // `{}` as not dynamic. Three sites use it, not `dynamicWord`: `commandAnchors`, and the `cmd[0]`
@@ -5864,6 +5902,9 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
     // no comma and no `..`, so it stays allowed.
     if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
+    // claude-factory-teku: `$_` is the last argument of the previous command, so it can hold any
+    // command, and no NAME=value in the text sets it. It is never a legitimate command head.
+    if (LAST_ARG_HEAD.test(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
@@ -6295,6 +6336,7 @@ function anyShellReason(
   let scriptK = 0
   let scriptMoved = false
   let slotEnd = 0
+  let trapEnd = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -6380,6 +6422,21 @@ function anyShellReason(
       scriptK = k
       scriptMoved = moved
       if (literal) j = k
+      continue
+    }
+    if (bw === 'trap') {
+      // claude-factory-81tz: the trap action is a script the shell runs later. Read it like an eval script.
+      // claude-factory-81tz.3: a trap word below trapEnd is a dash word of an earlier walk. That walk
+      // already read its words and the action. Skipping it keeps the scan O(n).
+      if (j < trapEnd) continue
+      // claude-factory-81tz.5: a redirect word can sit before the action, so read every word to the end.
+      // claude-factory-81tz.6, .7: the action runs at exit, after every later word (a cd, a config
+      // env). Read each word after trap with all later-state flags on.
+      for (let k = j + 1; k < words.length; k++) {
+        const o = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, true, true)
+        if (o) return o
+      }
+      trapEnd = words.length
       continue
     }
     if (bw === 'eval') {
@@ -6839,6 +6896,8 @@ function denyAt(
         aliasStack,
       )
       if (r === REASON) return r
+      // claude-factory-teku: `${(@)_}` reads as `${_}` here; a head `$_` stays denied.
+      if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }
   }
   const late: { reason?: string; glued?: string } = {}
@@ -7101,15 +7160,13 @@ function denyAtScan(
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'find') {
-      // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
-      // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
-      // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a
-      // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
-      // O(n), not O(n^2).
-      for (let i = 0; i < cmd.length; i++) {
-        if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-        if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
-      }
+      if (findExecRmDeny(cmd)) return REASON
+    }
+    // claude-factory-j471: a redirect word (`>f find ...`, `find -exec >f rm ...`) can hide the
+    // find word or the slot head. Read the segment again without its redirect words.
+    if (words.some(w => /[<>]/.test(w))) {
+      const c2 = realCommand(dropRedirectWords(words))
+      if (c2.length && baseWord(c2[0]!) === 'find' && findExecRmDeny(c2)) return REASON
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
