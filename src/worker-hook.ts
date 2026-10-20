@@ -352,6 +352,9 @@ export interface HookGate {
    * It does not know where the command runs.
    * So it denies nothing on that fact alone. */
   cwd?: string
+  /** claude-factory-ebmm: the home directory the global git config guard adds to its glob samples;
+   * defaults to os.homedir() */
+  homeDir?: () => string
   /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
    * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
   headOf?: (dir?: string, timeoutMs?: number) => string | undefined
@@ -3000,11 +3003,8 @@ const GLOBAL_GIT_CONFIG_FILE_RE =
 // claude-factory-ty8y: paths a glob word is tested against, to find a glob that can name the file.
 const GLOBAL_GIT_CONFIG_SAMPLES = [
   '~/.gitconfig',
-  '~acme/.gitconfig',
   '$HOME/.gitconfig',
   '${HOME}/.gitconfig',
-  '/home/acme/.gitconfig',
-  '/Users/acme/.gitconfig',
   '/etc/gitconfig',
   '~/.config/git/config',
   '~/.config/git',
@@ -3012,6 +3012,34 @@ const GLOBAL_GIT_CONFIG_SAMPLES = [
   '$XDG_CONFIG_HOME/git/config',
   '${XDG_CONFIG_HOME}/git/config',
 ]
+
+// claude-factory-ebmm: the sample list plus the real user's paths. A worker knows its home from the
+// gate, from os.homedir() and from the first two segments of root (for example /Users/<user>).
+// XDG_CONFIG_HOME adds its own git/config path. A `~<user>` form is added for each home.
+function globalGitConfigSamples(root: string | undefined, gate: HookGate | undefined): string[] {
+  const homes = new Set<string>(['/home/acme', '/Users/acme'])
+  try {
+    homes.add((gate?.homeDir ?? homedir)())
+  } catch {}
+  const m = (root ?? '').match(/^\/[^/]+\/[^/]+/)
+  if (m) homes.add(m[0])
+  const out = [...GLOBAL_GIT_CONFIG_SAMPLES]
+  for (const h0 of homes) {
+    const h = h0.replace(/\/+$/, '')
+    if (!h) continue
+    const user = h.split('/').pop()!
+    for (const base of user ? [h, `~${user}`] : [h])
+      out.push(
+        `${base}/.gitconfig`,
+        `${base}/.config/git/config`,
+        `${base}/.config/git`,
+        `${base}/.config/git/`,
+      )
+  }
+  const xdg = process.env.XDG_CONFIG_HOME
+  if (xdg) out.push(`${xdg}/git/config`)
+  return out
+}
 
 // claude-factory-ty8y: commands that read their operands. A reader writes only through a redirect.
 const READER_COMMANDS = new Set([
@@ -3043,11 +3071,199 @@ const READER_COMMANDS = new Set([
 // claude-factory-ty8y.12: commands whose operands are text (a search word, a title, a comment body).
 const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
 
-function globNamesGlobalGitConfig(word: string, state?: ScanState): boolean {
-  const w = word.replace(/^["']+|["']+$/g, '')
-  if (!/[*?[]/.test(w)) return false
-  // claude-factory-ty8y.24, 267o: globCanMatch collapses star runs and fails closed over the star cap.
-  return globCanMatch(w, GLOBAL_GIT_CONFIG_SAMPLES, state)
+// claude-factory-ebmm: a sound over-approximation of shell glob and brace words, with no RegExp and no
+// brace expansion. A `*` run, or a brace group that holds a glob character, matches any text. A `?` or
+// a `[..]` matches one char. Any other brace group matches any run of the chars in its text, of the
+// chars from `x` to `y` for each `x..y`, and of `{`, `}` and `,`. A digit range also adds `0-9` and `-`.
+// A `${..}` span and an unbalanced `{` stay literal.
+type GlobToken =
+  { k: 'lit'; c: string } | { k: 'one' } | { k: 'any' } | { k: 'cls'; f: (c: string) => boolean }
+
+function braceClass(text: string): (c: string) => boolean {
+  const set = new Set<string>([...text, '{', '}', ','])
+  const spans: [number, number][] = []
+  for (const m of text.matchAll(/(.)\.\.(.)/gu)) {
+    const lo = m[1]!.codePointAt(0)!
+    const hi = m[2]!.codePointAt(0)!
+    spans.push([Math.min(lo, hi), Math.max(lo, hi)])
+  }
+  if (/\d/.test(text) && text.includes('..')) spans.push([48, 57], [45, 45])
+  return c => {
+    for (const x of [c, c.toLowerCase(), c.toUpperCase()]) {
+      if (set.has(x)) return true
+      const cp = x.codePointAt(0)!
+      if (spans.some(([lo, hi]) => cp >= lo && cp <= hi)) return true
+    }
+    return false
+  }
+}
+
+// End of a bracket as bash and zsh read it: skip ! or ^, one leading ], and [:..:] [.x.] [=x=] spans.
+function bracketEnd(w: string, i: number): number {
+  let j = i + 1
+  if (w[j] === '!' || w[j] === '^') j++
+  if (w[j] === ']') j++
+  for (; j < w.length; j++) {
+    if (w[j] === '[' && ':.='.includes(w[j + 1] ?? '-')) {
+      const e = w.indexOf(w[j + 1]! + ']', j + 2)
+      if (e < 0) return -1
+      j = e + 1
+    } else if (w[j] === ']') return j
+  }
+  return -1
+}
+
+function braceEnd(w: string, i: number): number {
+  let depth = 0
+  for (let j = i; j < w.length; j++) {
+    if (w[j] === '{') depth++
+    else if (w[j] === '}' && --depth === 0) return j
+  }
+  return -1
+}
+
+// claude-factory-ebmm.20: grow a crossing span to a fixed point. A group or bracket that starts inside
+// the span and ends past it moves the end. One pass is enough, because the pointer reaches the new chars.
+// Brace expansion changes where a bracket ends, so a bracket in the span reaches the last ] of the word.
+function crossEnd(w: string, start: number, end: number): number {
+  for (let p = start; p <= end; p++) {
+    if (w[p] === '{') end = Math.max(end, braceEnd(w, p))
+    else if (w[p] === '[') end = Math.max(end, w.lastIndexOf(']'))
+  }
+  return end
+}
+
+// claude-factory-ebmm.17, .18: when a brace group and a bracket cross (bash expands braces first), one
+// star covers the smallest span that holds both parts.
+function tokenizeGlob(w: string): GlobToken[] {
+  const out: GlobToken[] = []
+  const lastClose = w.lastIndexOf(']')
+  for (let i = 0; i < w.length; i++) {
+    const c = w[i]!
+    const dynEnd = c === '$' && w[i + 1] === '{' ? braceEnd(w, i + 1) : -1
+    if (dynEnd > 0) {
+      // claude-factory-ebmm.31: a dynamic span (${HOME:-x}, $USER) can name any home: one star.
+      out.push({ k: 'any' })
+      i = dynEnd
+    } else if (c === '$' && /[A-Za-z_]/.test(w[i + 1] ?? '')) {
+      out.push({ k: 'any' })
+      while (/[A-Za-z_0-9]/.test(w[i + 1] ?? '')) i++
+    } else if (c === '~' && i === 0 && w.length > 1 && w[1] !== '/') {
+      out.push({ k: 'any' })
+      while (i + 1 < w.length && w[i + 1] !== '/') i++
+    } else if (c === '*') out.push({ k: 'any' })
+    else if (c === '?') out.push({ k: 'one' })
+    else if (c === '[' && bracketEnd(w, i) > 0) {
+      const e = bracketEnd(w, i)
+      if (/[{}]/.test(w.slice(i, e))) {
+        out.push({ k: 'any' })
+        i = crossEnd(w, i, e)
+      } else {
+        out.push({ k: 'one' })
+        i = e
+      }
+    } else if (c === '[' && lastClose > i) {
+      // claude-factory-ebmm.21: an unclosed span ([[:g) may close after brace expansion; fail closed.
+      out.push({ k: 'any' })
+      i = crossEnd(w, i, i)
+    } else if (c === '{') {
+      const j = braceEnd(w, i)
+      if (j < 0) out.push({ k: 'lit', c })
+      else {
+        const text = w.slice(i + 1, j)
+        if (/[[\]]/.test(text)) {
+          out.push({ k: 'any' })
+          i = crossEnd(w, i, j)
+        } else {
+          out.push(/[*?[]/.test(text) ? { k: 'any' } : { k: 'cls', f: braceClass(text) })
+          i = j
+        }
+      }
+    } else out.push({ k: 'lit', c })
+  }
+  return out
+}
+
+function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanState): boolean {
+  let w = word.replace(/^["']+|["']+$/g, '')
+  // claude-factory-ebmm.31: a dynamic span alone (${X}) is no glob; strip the innermost spans first.
+  let bare = w
+  for (let prev = ''; prev !== bare;) {
+    prev = bare
+    bare = bare.replace(/\$\{[^{}]*\}/g, '')
+  }
+  if (
+    !/[*?[{]/.test(w.replace(/\$\{[A-Za-z_]\w*\}/g, '').replace(/\{\}/g, '')) ||
+    (w.includes('$') && /^[/*]*$/.test(bare.replace(/\$[A-Za-z_]\w*(?:\[[^\]]*\])?/g, '')))
+  )
+    return false
+  // claude-factory-ebmm.23: collapse /<part>/.. (a glob part too) and a leading /.., as the shell does.
+  // A brace part can be empty, so it is not collapsed. A `..` left in a word that starts with /, ~ or $
+  // (a home prefix, or a brace part before it) can name the home's parent or a sibling: fail closed.
+  const rooted = /^[/~$]/.test(w) || (w[0] === '{' && /[{,][/~$]/.test(w) && w[braceEnd(w, 0) + 1] === '/')
+  if (
+    rooted &&
+    w
+      .split('/')
+      .slice(0, -1)
+      .some(p => /[{}[\]?*,]/.test(p) && p.includes('.') && /^[.{},[]/.test(p))
+  )
+    return true
+  if (w.includes('..')) {
+    for (let prev = ''; prev !== w;) {
+      prev = w
+      w = w.replace(/\/(?!\.\.?(?:\/|$))[^/{},]+\/\.\.(?=\/|$)/, '').replace(/^\/(?:\.\.(?:\/|$))+/, '/')
+    }
+    if (rooted && /(?:^|\/)\.\.(?:\/|$)/.test(w)) return true
+  }
+  const toks = tokenizeGlob(w)
+  // claude-factory-ty8y.24, 267o: star runs collapse, and more than MAX_GLOB_STARS fails closed.
+  let stars = 0
+  toks.forEach((t, i) => {
+    if (t.k === 'any' && toks[i - 1]?.k !== 'any') stars++
+  })
+  if (stars > MAX_GLOB_STARS) return true
+  if (state && spendWork(state, toks.length * samples.length)) return true
+  return samples.some(s => {
+    const L = s.length
+    let cur = new Uint8Array(L + 1)
+    cur[0] = 1
+    for (const [ti, t] of toks.entries()) {
+      const next = new Uint8Array(L + 1)
+      let live = false
+      let min = -1
+      for (let p = 0; p <= L; p++) {
+        if (!cur[p]) continue
+        if (min < 0) min = p
+        if (t.k === 'any') continue
+        if (t.k === 'cls') {
+          next[p] = 1
+          live = true
+          if (p < L && t.f(s[p]!)) cur[p + 1] = 1
+        } else if (
+          t.k === 'lit' &&
+          t.c === '.' &&
+          toks[ti - 1]?.k === 'lit' &&
+          (toks[ti - 1] as { c: string }).c === '/'
+        ) {
+          // a path part `/.` names the same path as no part (normalizeConfigPath)
+          next[p] = 1
+          live = true
+          if (p < L && s[p] === '.') next[p + 1] = 1
+        } else if (p < L && (t.k === 'one' || s[p]!.toLowerCase() === t.c.toLowerCase())) {
+          next[p + 1] = 1
+          live = true
+        }
+      }
+      if (t.k === 'any' && min >= 0) {
+        next.fill(1, min)
+        live = true
+      }
+      if (!live) return false
+      cur = next
+    }
+    return cur[L] === 1
+  })
 }
 
 type OperandSkip = 'none' | 'reader' | 'operands'
@@ -3180,15 +3396,28 @@ function globalGitConfigUse(
   skip: OperandSkip,
   isCd = false,
   state?: ScanState,
+  root?: string,
+  gate?: HookGate,
 ): 'write' | 'mention' | undefined {
   // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
   // the text config or XDG, a glob character, a brace, or a redirect operator.
-  if (!/config|XDG|[*?[{<>]/i.test(foldNonAscii(joinedWords(words)))) return undefined
+  if (!/config|XDG|[*?[{<>(]/i.test(foldNonAscii(joinedWords(words)))) return undefined
   let use: 'mention' | undefined
+  let samples: string[] | undefined
   let pending = false
   let prevWriterFlag = false
+  let lastCandidate: string | undefined
   for (const word of words) {
     const afterWriterFlag = prevWriterFlag
+    // claude-factory-ebmm.32: zsh reads a glued (a|b) group as part of the word; the lexer ends the word
+    // at a ( marker. Test the word before it with one star appended.
+    const groupBase = lastCandidate
+    lastCandidate = undefined
+    if (word === '(' && groupBase !== undefined && /[/~]/.test(groupBase) && !/\$\{?$/.test(groupBase)) {
+      if (globNamesGlobalGitConfig(groupBase + '*', (samples ??= globalGitConfigSamples(root, gate)), state))
+        return 'write'
+      continue
+    }
     prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
     const wasPending = pending
     pending = false
@@ -3219,11 +3448,15 @@ function globalGitConfigUse(
       if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
     }
     candidate = foldNonAscii(candidate)
+    lastCandidate = candidate
     if (isCd && !redirect) {
       if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
       continue
     }
-    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate, state))
+    if (
+      GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) ||
+      globNamesGlobalGitConfig(candidate, (samples ??= globalGitConfigSamples(root, gate)), state)
+    )
       return 'write'
     if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
   }
@@ -8067,6 +8300,8 @@ function denyAtScan(
           operandSkip,
           b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
           state,
+          root,
+          gate,
         )
       : undefined
     if (configUse === 'mention') state.globalGitConfig = true

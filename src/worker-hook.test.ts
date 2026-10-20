@@ -4190,6 +4190,297 @@ test.each(DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE)('denyReason denies %j alone (claud
   expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
 })
 
+// claude-factory-ebmm: a glob or brace word with the real user name names the global git config.
+const EBMM_ROOT = '/Users/widget/r/acme/widget'
+const DENY_EBMM_ROOT = [
+  `printf '[alias] p = push o HEAD:main' | tee -a /Users/wid*/.gitc*`,
+  'tee -a /Users/widget/.gitc*',
+  'tee -a ~widget/.gitc*',
+  'cp x /Users/widget/.config/g*/.',
+  'tee -a /Users/widget/.config/g*/config',
+  'tee -a /Users/widget/.gitconfi{g,}',
+  'tee -a ~widget/.config/g*/config',
+  'cp x ~widget/.config/g*/.',
+  'tee -a ~widget/.config/git/c*',
+  `tee -a /Users/{z-a,widget}/.gitc*${'{,}'.repeat(7)}`,
+  `cp x /Users/{z-a,widget}/.config/g*/.${'{,}'.repeat(7)}`,
+  'tee -a /Users/{a..z}idget/.gitc*',
+  `tee -a /Users/widge{t,x}/.gitc*${'{,}'.repeat(7)}`,
+  'tee -a ~{widget,x}/.gitc*',
+  'tee -a {~widget,x}/.gitc*',
+]
+const DENY_EBMM_ANY = [
+  'tee -a ~/.gitconfi[{]x,[}g]',
+  'tee -a ~/.gitconfi{x,[}{]y,z}g]',
+  'tee -a ~/.gitconfi{[,}{]x,}g]',
+  'tee -a ~/.gitconfi{g,}',
+  'tee -a ~/.git{c,x}onfig',
+  'tee -a ~/.gitconfi{g,{h,i}}',
+  'tee -a ~/.{gitconfig,x}',
+  'tee -a /Users/*/.gitc*',
+  'tee -a /home/*/.gitc*',
+  'tee -a /home/acme/.gitc*',
+  'tee -a ~/.gitc*',
+  'tee -a $HO{M,}E/.gitc*',
+  'tee -a ~/.{g*,x}',
+  'tee -a ~/.gitconfi{e..g..2}',
+  'tee -a ~/.gitconfi[[:alpha:]]',
+  'tee -a ~/.gitconfi[!]x]',
+  'tee -a ~/.gitconfi[^]x]',
+  'tee -a ~/.gitconfi[[.g.]]',
+  'tee -a ~/.gitconfi[[=g=]]',
+  'tee -a /Users/widget/.gitconfi[[:alpha:]]',
+  'cp x ~/.config/[[:alpha:]]it/.',
+  'tee -a ~/.gitconfi{[,}g]',
+  'tee -a ~/.gitconfi[{g],}',
+  'tee -a ~/.gitconfi{g,[}g]',
+  'tee -a ~/.gitconfi{x,[}^x]',
+  'tee -a ~/.gitconfi{x,[}!x]',
+  'tee -a ~/.gitconfi[{^x],}',
+  'tee -a ~/.gitconf{i,[}[:alpha:]]g',
+  'tee -a ~/.gitconfi{[,}g]{,}',
+  'tee -a /Users/widget/.gitconfi{[,}g]',
+  'tee -a ~widget/.gitconfi{[,}g]',
+  'cp x ~/.config/{[,}g]it/config',
+  'cp x ~/.config/{[,}g]it/.',
+  'tee -a ~/.gitconfi[[:alpha:{,x}]]',
+  'tee -a ~/.gitconfi[[:alph{a:,x}]]',
+  'tee -a ~/.gitconfi[[.g.{,x}]]',
+  'tee -a ~/.gitconfi[[=g={,x}]]',
+  'tee -a ~/.gitconfi[[:alpha{:,x}]]',
+  'tee -a ~/.gitconfi[[:alpha:{,]}]',
+  'cp x ~/.config/[[:alpha:{,x}]]it/config',
+  'tee -a ~/.gitconfi[[:g]',
+  'tee -a ~/.gitconfi[[.g]',
+  'tee -a ~/.gitconfi[[=g]',
+  'tee -a ~/.gitconfi[x[:g]',
+  'tee -a ~/.gitconfi[[:x:g]',
+  'tee -a ~/.gitconfi[![:x]',
+  'tee -a ~/.config/../.gitc*',
+  'tee -a ~/r/../.gitc*',
+  'tee -a ~/*/../.gitc*',
+  'tee -a ~/../widget/.gitc*',
+  'tee -a /Users/*/../widget/.gitc*',
+  'tee -a /Users/widget/r/../.gitc*',
+  'tee -a /Users/../Users/widget/.gitc*',
+  'tee -a ~/.config/git/../../.gitc*',
+  'tee -a ~/.config/../.gitconfi{g,}',
+  'tee -a $HOME/r/../.gitc*',
+  'tee -a ${HOME}/r/../.gitc*',
+  'echo x > ~/.config/../.gitc*',
+  'tee -a ~widget/r/../.gitc*',
+  'tee -a ~widget/../widget/.gitc*',
+  'install -m 644 x ~/r/../.gitc*',
+  'tee -a ~/{r,.config}/../.gitc*',
+  'tee -a ~/.config/{git,}/../.gitc*',
+  'tee -a ~/.config/git/../git/conf*',
+  'rsync -a git/ ~/.config/*/../git/',
+  'cp x ~/.config/../.config/g*/.',
+  'tee -a ~/{..,x}/widget/.gitc*',
+  'tee -a ~/r/{..,x}/.gitc*',
+  'tee -a ~/r/.{.,x}/.gitc*',
+  'tee -a ~/r/.{.,}/.gitc*',
+  'tee -a ~/r/..{,}/.gitc*',
+  'tee -a ~/r/{.,.}./.gitc*',
+  'tee -a ~/{r/..,x}/.gitc*',
+  'tee -a {~,x}/../widget/.gitc*',
+  'tee -a {/Users,x}/../Users/widget/.gitc*',
+  'tee -a ~/r/.?/.gitc*',
+  'tee -a ~/r/.[.]/.gitc*',
+  'tee -a ~/r/.*/.gitc*',
+  'tee -a /Users/widget/r/.?/.gitc*',
+  'cp x ~/.config/.?/.config/g*/.',
+  'tee -a ~/r/{,}../.gitc*',
+  'tee -a ~/r/{,}.?/.gitc*',
+  'tee -a ~/a/b/.?/../.gitc*',
+  'tee -a ~/r/x{,/..}/.gitc*',
+  'tee -a ~/r/{x/,..}/.gitc*',
+  'tee -a ${HOME:-x}/.gitc*',
+  'tee -a ${HOME%/}/.gitc*',
+  'tee -a ${HOME:-${HOME}}/.gitc*',
+  'tee -a ${HOME:-x}/.gitconfi{g,}',
+  'tee -a /Users/$USER/.gitc*',
+  'tee -a /Users/${USER}/.gitc*',
+  'tee -a ~$USER/.gitc*',
+  'tee -a ~HOME/.gitc*',
+  'tee -a /Users/$USER/.config/g*/config',
+  'tee -a ${X}/${HOME}/.gitc*',
+  'tee -a $X$HOME/.gitc*',
+  'tee -a ~/.gitconfi(g|x)',
+  'tee -a ~/.gitconf(i|x)g',
+  'tee -a ~/.git(config|x)',
+  'tee -a /Users/widget/.gitconfi(g)',
+  'tee -a ~widget/.gitconfi(g|x)',
+  'sed -i s/a/b/ ~/.gitconfi(g|x)',
+  'cp x ~/.config/g(it|x)/config',
+  'echo x > ~/.gitconfi(g|x)',
+  'tee -a ~/.gitconfi${X:-g}',
+  'tee -a ~/.gitconfi${HOME:+g}',
+  'tee -a ~/.gitconfi${:-g}',
+  'tee -a ~/.gitconf${X:-i}g',
+  'tee -a ~/.git${X:-config}',
+  'tee -a ~/.gitc${X:-onfig}',
+  'tee -a $HOME/.gitconfi${X:-g}',
+  'tee -a ${HOME}/.gitconfi${X:-g}',
+  'tee -a /Users/widget/.gitconfi${X-g}',
+  'sed -i s/a/b/ ~/.gitconfi${X:-g}',
+  'tee -a ~/.gitconfi${X:-${Y:-g}}',
+  'cp x ~/.config/gi${X:-t}/config',
+]
+test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
+  'denyReason denies %j under a second fixture user (claude-factory-ebmm)',
+  cmd => {
+    expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+  },
+)
+
+test.each(['cp x $DIR/*.log', 'tee -a $OUT/x*', 'cp x ${TMP}/a*/b', 'cp x ~/dots/a(b|c)', 'touch a(b|c)'])(
+  'denyReason allows %j (claude-factory-ebmm.31, .32)',
+  cmd => {
+    expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+  },
+)
+
+test.each([
+  'tee -a /home/wid*/.gitc*',
+  'tee -a ~widget/.gitc*',
+  'tee -a /home/widget/.config/g*/config',
+  'tee -a ~widget/.config/g*/config',
+  'cp x ~widget/.config/g*/.',
+])('denyReason denies %j from the gate home dir (claude-factory-ebmm)', cmd => {
+  const gate = { ...GLOBAL_GIT_CONFIG_GATE, homeDir: () => '/home/widget' }
+  expect(denyReason(cmd, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
+  expect(denyReason(`${cmd}; git push`, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test('denyReason denies a glob under a home with a trailing slash (claude-factory-ebmm.24)', () => {
+  const gate = { ...GLOBAL_GIT_CONFIG_GATE, homeDir: () => '/Users/widget/' }
+  expect(denyReason('tee -a /Users/widget/.gitc*', '/tmp/work/x', undefined, gate)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+  expect(denyReason('tee -a ~widget/.gitc*', '/tmp/work/x', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test('denyReason denies a glob under XDG_CONFIG_HOME (claude-factory-ebmm)', () => {
+  const old = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = '/home/widget/.xdg'
+  try {
+    const gate = { ...GLOBAL_GIT_CONFIG_GATE, homeDir: () => '/home/other' }
+    expect(denyReason('tee -a /home/widget/.xdg/g*/config', '/r/acme/widget', undefined, gate)).toBe(
+      GLOBAL_GIT_CONFIG_REASON,
+    )
+  } finally {
+    if (old === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = old
+  }
+})
+
+test.each([
+  'cat /Users/widget/.git*',
+  'xargs -I {} echo {}',
+  'find . -name x -exec tee {} +',
+  'tee /Users/widget/r/acme/widget/out.txt',
+  'echo ${HOME}',
+  'mkdir -p {a,b}',
+  'touch {a,b}',
+  'cp -r x {a,b}',
+  'touch {1..3}',
+  'mkdir -p {a..c}',
+  'cp x {1..2}',
+  'for i in {1..100}; do echo $i; done',
+  'touch {1..100}',
+  'cp x {1..100}',
+  'touch f{a,b}{1..40}',
+  'mkdir -p {a,b}{1..40}',
+  'touch {a..z}{a..z}',
+  `touch f${'{a,b}'.repeat(7)}`,
+  'mkdir -p {a,b}/{c,d}/{e,f}/{g,h}/{i,j}/{k,l}/{m,n}',
+  'touch {a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}x',
+  'touch {1..10..2}',
+  'touch {a..e..2}',
+  "sed -i 's/[{}]//g' f",
+  'sed -i "s/[{}]//g" f',
+  "sed -i 's/{[^}]*}//g' f",
+  "sed -i 's/[{]/x/' f",
+  "perl -pi -e 's/[{}]//g' f",
+  'touch [{]x',
+  'touch f[{]',
+  'touch x{[,]}',
+  'touch {a,b}[1]',
+  'cp x {a,b}/[cd]',
+  'touch [[:x',
+  'ls [[:alpha:]]x',
+  'touch f[a]x',
+  'touch [x{a,b}.',
+  'cp -r ../src/* dst',
+  'mv *.log ../logs/',
+  'cp x ../y*',
+  'touch a/../b*',
+  'touch /tmp/a/../b*',
+  'cp ~/dots/.* /tmp/x',
+  'cp a /tmp/v1.{2,3}/z',
+  'cp a /tmp/a.*/z',
+  'mkdir -p /Users/widget/r/{src,test}/x',
+  'cp x ~/r/*/y',
+  'cp x ${X%x}',
+  'cp x ${OUT:-out}/a',
+  'tee -a ${LOG:-log.txt}',
+  'echo ${X:-a} > f',
+])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
+  expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test.each(['tee -a ~/.gitconfi{f..h}', `tee -a ~/.gitconfi{g,}${'{a,b}'.repeat(7)}`])(
+  'denyReason denies %j (claude-factory-ebmm.5, .6)',
+  cmd => {
+    expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+  },
+)
+
+test.each(['tee -a /Users/widget{01..03}/.gitc*', 'tee -a ~widget{01..02}/.gitc*'])(
+  'denyReason keeps zero padding in %j (claude-factory-ebmm.8)',
+  cmd => {
+    const gate = { ...GLOBAL_GIT_CONFIG_GATE, homeDir: () => '/Users/widget01' }
+    expect(denyReason(cmd, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
+  },
+)
+
+test('denyReason scans many nested brace groups fast (claude-factory-ebmm.4)', () => {
+  for (const cmd of [
+    `tee -a x ${'{a,b}'.repeat(30)}; git push origin HEAD:main`,
+    `tee -a ~/.gitconfi{g,}${'{,}'.repeat(30)}`,
+  ]) {
+    const t = performance.now()
+    denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
+    expect(performance.now() - t).toBeLessThan(1000)
+  }
+})
+
+test('denyReason scans many unclosed spans fast (claude-factory-ebmm.21)', () => {
+  for (const [cmd, denied] of [
+    [`tee -a ~/.gitconfi${'[[:'.repeat(2700)}g]`, true],
+    [`tee -a ~/.gitconfi${'[[:'.repeat(2700)}`, false],
+  ] as const) {
+    const t = performance.now()
+    const r = denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
+    expect(performance.now() - t).toBeLessThan(1000)
+    expect(r === GLOBAL_GIT_CONFIG_REASON).toBe(denied)
+  }
+})
+
+test('denyReason scans a long brace word fast (claude-factory-ebmm.13)', () => {
+  for (const cmd of [
+    `tee -a ~/.gitconfi{g,}${'{,}'.repeat(2600)}`,
+    `tee -a ~/.gitconfi{g,}${'{a,b}'.repeat(1300)}`,
+  ]) {
+    expect(cmd.length).toBeLessThan(8192)
+    const t = performance.now()
+    const r = denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
+    expect(performance.now() - t).toBeLessThan(1000)
+    expect(r).toBe(GLOBAL_GIT_CONFIG_REASON)
+  }
+})
+
 test('denyReason scans a many-star glob fast and denies it (claude-factory-ty8y.24)', () => {
   const cmd = `touch ~/.c${'*'.repeat(24)}x; printf x >> ~/.gitconfig; git push`
   const t = performance.now()
