@@ -1090,6 +1090,9 @@ function recursiveFlag(w: string): boolean {
   return false
 }
 
+/** A redirect word. Group 1 is the glued target: empty when the target is the next word. */
+const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s
+
 /**
  * `words` is an rm command and its args. `words[start]` is the rm word itself.
  * This function returns true when `words` asks for a recursive delete.
@@ -1106,6 +1109,12 @@ function isRecursiveRm(words: string[], start = 0): boolean {
     if (w === '--') return false
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
+      continue
+    }
+    // claude-factory-g4l4: the shell takes a redirect word out of the rm args, so flags after it still count.
+    const redirect = RM_REDIRECT_WORD.exec(w)
+    if (redirect) {
+      if (redirect[1] === '' && !(words[k + 1] ?? '-').startsWith('-')) k++
       continue
     }
     return false
