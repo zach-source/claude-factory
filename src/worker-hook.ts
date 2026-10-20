@@ -3194,13 +3194,13 @@ function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanS
   }
   if (
     !/[*?[{]/.test(w.replace(/\$\{[A-Za-z_]\w*\}/g, '').replace(/\{\}/g, '')) ||
-    (w.includes('$') && /^[/*]*$/.test(bare.replace(/\$[A-Za-z_]\w*/g, '')))
+    (w.includes('$') && /^[/*]*$/.test(bare.replace(/\$[A-Za-z_]\w*(?:\[[^\]]*\])?/g, '')))
   )
     return false
   // claude-factory-ebmm.23: collapse /<part>/.. (a glob part too) and a leading /.., as the shell does.
   // A brace part can be empty, so it is not collapsed. A `..` left in a word that starts with /, ~ or $
   // (a home prefix, or a brace part before it) can name the home's parent or a sibling: fail closed.
-  const rooted = /^[/~$]/.test(w) || (w[0] === '{' && /[{,][/~$]/.test(w))
+  const rooted = /^[/~$]/.test(w) || (w[0] === '{' && /[{,][/~$]/.test(w) && w[braceEnd(w, 0) + 1] === '/')
   if (
     rooted &&
     w
