@@ -251,6 +251,17 @@ test('validate refuses a requeue edge that does not go into done, that also defe
   expect(rejects({ to: 'done', requeue: { factory: 'release', station: 'implement' } })).not.toThrow()
 })
 
+test('validate accepts a ship edge into done only, and refuses it with defer, reject or requeue', () => {
+  const rejects = (edge: object) => () =>
+    validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
+  const only = 'defers, rejects, requeues or ships, only one'
+  expect(rejects({ to: 'done', ship: true })).not.toThrow()
+  expect(rejects({ to: 'a', ship: true })).toThrow('only an edge into done ships')
+  expect(rejects({ to: 'done', ship: true, defer: true })).toThrow(only)
+  expect(rejects({ to: 'done', ship: true, reject: true })).toThrow(only)
+  expect(rejects({ to: 'done', ship: true, requeue: true })).toThrow(only)
+})
+
 test('a blocked worker parks its station without spending an attempt, and mail or the clock wakes it', () => {
   const { send } = run()
   send({ type: 'FAIL', seq: 1, reason: 'flaky', at: 1 })

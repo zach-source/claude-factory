@@ -189,9 +189,9 @@ To tick with no console, run `factory loop [--interval ms]` in the factory direc
 
    The goal can be a bead id or plain text. Plain text creates a new bead.
 2. Type `/factory`. Press `1` to open the Board. Find your run in a column.
-3. Watch the run move through the stations of the `lifecycle` factory: `triage`, `plan`, `implement`, `verify`, `review`, `release`, `deploy` and `soak`.
+3. Watch the run move through the stations of the `lifecycle` factory: `triage`, `plan`, `implement`, `verify` and `review`. When `review` approves, the run hands the pull request to the rig's `ship` run and ends. The `ship` run does `queue`, `release`, `deploy` and `soak`.
 4. If the run needs you, it appears in `? AWAITING YOU`. Read the question on the card. Press an outcome button to answer the gate. You can add a note for the next station.
-5. When `release` finishes, the worker marks the pull request ready. Open the pull request on GitHub and read it.
+5. When ship's `release` finishes, the worker marks the pull request ready. `factory ship <rig>` shows where it is in the queue. Open the pull request on GitHub and read it.
 6. Merge the pull request. Only you can merge it. The factory does not merge. The `deploy` station waits until you merge, then it deploys and watches the rollout.
 7. If you want changes, request changes on the pull request. The run goes back to `implement`. If you close the pull request, the run ends and its bead is deferred.
 8. When the run ends, it moves under `Finished` on the Board. Its bead is closed.

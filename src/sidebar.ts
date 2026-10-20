@@ -1,5 +1,6 @@
 // What herdr's sidebar shows for the factory: a $factory token on each run's workspace (its station and
 // what holds it) and one on the manager's (the rollup). Pure: the runner reports what this returns.
+import type { Bead } from './beads'
 import type { Row } from './cli'
 
 /** why a run waits on someone, or null while it moves on its own */
@@ -42,45 +43,93 @@ const ORDER = ['needs you', 'stuck', 'parked'] as const
 const ago = (ms: number) =>
   ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${(ms / 3_600_000).toFixed(1)}h`
 
-/** every run that waits on someone, by rig, with what it waits on and how to answer: one pass for the person */
-export function waiting(rows: Row[], now: number) {
+/** the command or step a run asks the person to do: what follows "parked, waiting on:" in its report */
+const ownerStep = (r: Row) => {
+  const why = (r.gate?.question ?? r.error ?? r.last?.summary ?? '').replace(/\s+/g, ' ')
+  return why.match(/parked, waiting on:\s*(.+)/i)?.[1]?.trim()
+}
+
+/** the ship queue as status shows it: the ship run and station, then the queue, next PR first */
+export function shipLines(queue: Bead[], run?: { id: string; node: string }) {
+  if (!queue.length && !run) return []
+  const next = queue[0]
+  return [
+    `  ship: ${run ? `${run.id} at ${run.node}` : 'no ship run live'}, ${queue.length} queued${next ? `, next ${next.metadata?.ship_pr ?? '-'} (${next.id})` : ''}`,
+    ...queue.slice(1).map(b => `    then ${b.metadata?.ship_pr ?? '-'} (${b.id})`),
+  ]
+}
+
+/**
+ * every run that waits on someone, by rig, with what it waits on and how to answer: one pass for the person.
+ * Each rig with a ship queue names its next PR to merge. Every owner-only step ("parked, waiting on:") from
+ * every rig is listed once, together, at the end.
+ */
+export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]> = {}) {
   const held = rows
     .filter(isLive)
     .filter(r => hold(r))
     .sort((a, b) => ORDER.indexOf(hold(a)!) - ORDER.indexOf(hold(b)!))
-  if (!held.length) return 'nothing waits on you'
-  const rigs = [...new Set(held.map(r => r.rig ?? '(no rig)'))]
-  return rigs
-    .map(rig =>
+  const steps = held.filter(r => ownerStep(r))
+  const others = held.filter(r => !ownerStep(r))
+  const whyOf = (r: Row) => {
+    const h = hold(r)!
+    const why =
+      r.gate?.question ??
+      (h === 'needs you'
+        ? `its worker waits on a prompt in pane ${r.pane}`
+        : (r.error ?? r.last?.summary ?? ''))
+    return why.replace(/\s+/g, ' ').trim()
+  }
+  const answerOf = (r: Row) =>
+    r.gate
+      ? `factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`
+      : hold(r) === 'parked'
+        ? `factory mail ${r.id} ${r.node} "<what changed>"`
+        : hold(r) === 'stuck'
+          ? `factory retry ${r.id}`
+          : `herdr pane read ${r.pane}`
+  const prsOf = (flat: string) => [...new Set(flat.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/g) ?? [])]
+  const queued = Object.entries(queues).filter(([, q]) => q.length)
+  if (!held.length && !queued.length) return 'nothing waits on you'
+  const rigs = [...new Set([...others.map(r => r.rig ?? '(no rig)'), ...queued.map(([rig]) => rig)])]
+  const blocks = rigs.map(rig =>
+    [
+      rig,
+      ...(queues[rig]?.length
+        ? [
+            `  next to merge: ${queues[rig]![0]!.metadata?.ship_pr ?? '-'} (${queues[rig]![0]!.id}), ${queues[rig]!.length} queued`,
+          ]
+        : []),
+      ...others
+        .filter(r => (r.rig ?? '(no rig)') === rig)
+        .map(r => {
+          const h = hold(r)!
+          const flat = whyOf(r)
+          const prs = prsOf(flat)
+          const answer = answerOf(r)
+          const t = h === 'parked' ? r.last?.at : r.since
+          return [
+            `  ${r.id} ${r.node} · ${h}${t ? ` ${ago(now - t)}` : ''}${r.bead ? ` · ${r.bead}` : ''}`,
+            `    ${flat.length > 400 ? `${flat.slice(0, 399)}…` : flat}`,
+            ...prs.map(p => `    ${p}`),
+            `    → ${answer}`,
+          ].join('\n')
+        }),
+    ].join('\n'),
+  )
+  if (steps.length)
+    blocks.push(
       [
-        rig,
-        ...held
-          .filter(r => (r.rig ?? '(no rig)') === rig)
-          .map(r => {
-            const h = hold(r)!
-            const why =
-              r.gate?.question ??
-              (h === 'needs you'
-                ? `its worker waits on a prompt in pane ${r.pane}`
-                : (r.error ?? r.last?.summary ?? ''))
-            const flat = why.replace(/\s+/g, ' ').trim()
-            const prs = [...new Set(flat.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/g) ?? [])]
-            const answer = r.gate
-              ? `factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`
-              : h === 'parked'
-                ? `factory mail ${r.id} ${r.node} "<what changed>"`
-                : h === 'stuck'
-                  ? `factory retry ${r.id}`
-                  : `herdr pane read ${r.pane}`
-            const t = h === 'parked' ? r.last?.at : r.since
-            return [
-              `  ${r.id} ${r.node} · ${h}${t ? ` ${ago(now - t)}` : ''}${r.bead ? ` · ${r.bead}` : ''}`,
-              `    ${flat.length > 400 ? `${flat.slice(0, 399)}…` : flat}`,
-              ...prs.map(p => `    ${p}`),
-              `    → ${answer}`,
-            ].join('\n')
-          }),
+        `Owner steps (${steps.length}):`,
+        ...steps.map((r, i) =>
+          [
+            `  ${i + 1}. ${ownerStep(r)}`,
+            `     run ${r.id} · rig ${r.rig ?? '(no rig)'} · ${ago(now - (r.last?.at ?? r.since ?? now))}`,
+            ...prsOf(whyOf(r)).map(p => `     ${p}`),
+            `     → ${answerOf(r)}`,
+          ].join('\n'),
+        ),
       ].join('\n'),
     )
-    .join('\n\n')
+  return blocks.join('\n\n')
 }
