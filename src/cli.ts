@@ -114,6 +114,7 @@ import {
   isLaptopPane,
   mapRigs,
   mapRunRepo,
+  mapRunWorktree,
   stationRunnerName,
   syncRepos,
 } from './axrepos'
@@ -897,8 +898,11 @@ function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
   const run: Run = readJson(file)
-  // a run the laptop made names the laptop's repo path: in the AX task it is the rig's clone
-  return inAx() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
+  // a run the laptop made names the laptop's repo and worktree paths: in the AX task they are the rig's clone
+  // and a worktree under the factory home (launchTask revives it)
+  return inAx()
+    ? { ...run, repo: mapRunRepo(rawRigs(), run.repo), worktree: mapRunWorktree(rawRigs(), run) }
+    : run
 }
 /** complete lines only: a writer may be mid-append */
 const inboxLines = (id: string) => {
@@ -1249,6 +1253,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  // a laptop run's worktree is not in the task yet: make it from the branch, as a gc'd one is
+  if (inAx() && !existsSync(run.worktree)) reviveWorktree(run)
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone

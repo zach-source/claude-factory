@@ -288,7 +288,7 @@ Limits:
 
 - With a `beadsRemote`, the task runs plain `bd dolt push` and `bd dolt pull`. The laptop uses SQL on its Dolt server, and the task has no Dolt server. The laptop's rule for a pull conflict (keep the worker's row, and comment the other on the issue) does not run in the task. A conflict stops the pull with bd's own error.
 - A store is made once. Later syncs pull; they do not make it again.
-- A run that the laptop made keeps the laptop's worktree path. The task has no such worktree. A worker on AX does not need it.
+- A run that the laptop made gets its worktree at `FACTORY_HOME/worktrees/<run id>` in the task. The task makes it from the run's branch the first time it launches a worker for the run.
 
 #### Steps
 

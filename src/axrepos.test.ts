@@ -10,6 +10,7 @@ import {
   mapRigs,
   isLaptopPane,
   mapRunRepo,
+  mapRunWorktree,
   planRepoSync,
   stationRunnerName,
 } from './axrepos'
@@ -34,6 +35,15 @@ test('in the task each rig repo is a clone under FACTORY_REPOS, default /workspa
 test('a run written with a laptop repo path maps to its rig clone; an unknown path stays', () => {
   expect(mapRunRepo(rigs, '/home/u/repos/beta', AX)).toBe('/workspace/w/repos/beta')
   expect(mapRunRepo(rigs, '/elsewhere', AX)).toBe('/elsewhere')
+})
+
+test('a laptop run worktree maps under the factory home; a task run and the laptop keep theirs', () => {
+  const run = { id: 'r1', repo: '/home/u/repos/beta', worktree: '/home/u/wt/beta/r1' }
+  const env = { ...AX, FACTORY_HOME: '/workspace/w/home' }
+  expect(mapRunWorktree(rigs, run, env)).toBe('/workspace/w/home/worktrees/r1')
+  expect(mapRunWorktree(rigs, run, {})).toBe('/home/u/wt/beta/r1')
+  const own = { ...run, repo: '/workspace/w/repos/beta', worktree: '/workspace/w/wt/r1' }
+  expect(mapRunWorktree(rigs, own, env)).toBe('/workspace/w/wt/r1')
 })
 
 test('ssh and git@ GitHub URLs become https; https stays', () => {

@@ -51,6 +51,19 @@ export function mapRunRepo(rigs: RigLike[], repo: string, env: Env = process.env
   return rig ? axRepoPath(rig.name, env) : repo
 }
 
+/**
+ * where the task keeps the worktree of a run the laptop made: `FACTORY_HOME/worktrees/<run id>`. A run is the
+ * laptop's when its repo is a rig's laptop path (as mapRunRepo reads it); a run made in the task keeps its own
+ */
+export function mapRunWorktree(
+  rigs: RigLike[],
+  run: { id: string; repo: string; worktree: string },
+  env: Env = process.env,
+) {
+  const laptop = inAx(env) && rigs.some(r => r.repo === run.repo)
+  return laptop ? join(env.FACTORY_HOME ?? '/workspace/w/home', 'worktrees', run.id) : run.worktree
+}
+
 /** a repo's beads store in the task: a directory of its own, as the worker keeps one (the repo's .beads names a laptop server) */
 export const beadsDirOf = (home: string, repo: string) => join(home, 'beads', basename(repo))
 
