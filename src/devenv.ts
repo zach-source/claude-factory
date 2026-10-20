@@ -2,11 +2,12 @@
 // fail under the VMs' gVisor) and pushes its closure to the rig's binary cache (FACTORY_NIX_CACHE), which the
 // VM's worker loads it from. A rig is rebuilt when its devenv files or the worker image change.
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { REPO } from './ax'
+import { rmSafe } from './home-guard'
 
 /**
  * `$FACTORY_HOME/devenv.json`: the buildx builder, a command printing the cache's push token, and the shell
@@ -116,7 +117,7 @@ export function build(
     writeFileSync(a.log, `${p.out}\n${p.err}\n`)
     return { ok: p.ok, why: p.ok ? '' : p.err.split('\n').slice(-15).join('\n') }
   } finally {
-    rmSync(ctx, { recursive: true, force: true })
+    rmSafe(ctx, { recursive: true, force: true })
   }
 }
 
