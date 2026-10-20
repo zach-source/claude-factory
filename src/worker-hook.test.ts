@@ -348,14 +348,15 @@ test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-fac
 // A depth limit, MAX_SHELL_DEPTH = 32, corrects this problem.
 // The hook denies a command that has more than 32 levels of eval.
 // It will fail closed.
-// This check is much faster than the 500 ms time limit of this test.
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
+// The limit is 2000 ms, not 500 ms: the scan takes about 380 ms on a laptop and 611 ms was seen
+// on a CI runner.
 const DEEP_RM_N = 4000
 const DEEP_RM_COMMAND = 'eval '.repeat(DEEP_RM_N) + 'rm '.repeat(DEEP_RM_N) + '; rm -rf x'
 
 test('scanReason denies a 4000-level stacked eval rm -rf form, fast, no personOnly (claude-factory-epz)', () => {
   expect(scanReason(DEEP_RM_COMMAND)).toBe(DEEP_COMMAND_REASON)
-}, 500)
+}, 2000)
 
 // claude-factory-dts: the same over-8192-character command denies with LONG_COMMAND_REASON
 // through denyReason, on every rig, with no personOnly set.
