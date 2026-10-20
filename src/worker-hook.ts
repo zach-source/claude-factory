@@ -6925,12 +6925,49 @@ function shellQuoteWord(w: string): string {
 // word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
 // the real command. This returns the words with each such expansion read as a word break, or
 // undefined when no word holds a glued expansion. A whole-word expansion ($X, ${X}) is not glued.
-const GLUED_EXPANSION_RE = /\$(?:\{[^}]*\}|\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
-function splitGluedExpansions(words: string[]): string[] | undefined {
+const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
+// claude-factory-dnw1: a ${...} span ends at its matching close brace, so a nested default
+// (${X:-${IFS}}) is one expansion. Only a "${" adds depth: a bare "{" in a default is literal. Each
+// span becomes $@ for the split. An unclosed span ends at the first "}" (or after "${" when none),
+// so no word after it is dropped. segments() drops quotes and backslashes, so the depth reading
+// cannot tell an escaped or single-quoted "${" from a real one. The caller also reads with byDepth
+// false (the first "}" ends the span, and a stray "}" left over is a word break) and denies if
+// either reading denies. The stray break covers a word where an escaped "${" fools the depth
+// reading and a nested default fools the first-close reading. replaceGluedExpansions reads the raw
+// text, where quotes and backslashes are visible, and is the reading that does not depend on them.
+function flattenBraceExpansions(w: string, byDepth: boolean): string {
+  let out = ''
+  for (let i = 0; i < w.length;) {
+    if (w[i] !== '$' || w[i + 1] !== '{') {
+      // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
+      out += !byDepth && w[i] === '}' ? '$@' : w[i]
+      i++
+      continue
+    }
+    let depth = 0
+    let end = -1
+    for (let j = i + 1; byDepth && j < w.length; j++) {
+      if (w[j] === '{' && w[j - 1] === '$') depth++
+      else if (w[j] === '}' && --depth === 0) {
+        end = j
+        break
+      }
+    }
+    if (end < 0) end = w.indexOf('}', i)
+    out += '$@'
+    i = (end < 0 ? i + 1 : end) + 1
+  }
+  return out
+}
+function splitGluedExpansions(words: string[], byDepth = true): string[] | undefined {
   let out: string[] | undefined
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    const parts = w.includes('$') ? w.split(GLUED_EXPANSION_RE).filter(p => p !== '') : [w]
+    const parts = w.includes('$')
+      ? flattenBraceExpansions(w, byDepth)
+          .split(GLUED_EXPANSION_RE)
+          .filter(p => p !== '')
+      : [w]
     // No part, or one part equal to the word: the word is one whole expansion, or holds none.
     if (parts.length === 0 || (parts.length === 1 && parts[0] === w)) {
       out?.push(w)
@@ -6995,6 +7032,69 @@ function replaceGluedSubstitutions(command: string): string {
     from = command.indexOf('$(', end)
   }
   return out + command.slice(last) + extra.map(e => '\n' + e).join('')
+}
+
+// claude-factory-dnw1.9: segments() drops quotes and backslashes, so the readings above cannot tell
+// an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
+// ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
+// becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
+// replaces only the "${".
+function replaceGluedExpansions(command: string): string {
+  let out = ''
+  let q = ''
+  const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (q) {
+      if (c === '\\' && q === '"') {
+        out += c + (command[i + 1] ?? '')
+        i++
+        continue
+      }
+      if (c === q) q = ''
+      out += c
+      continue
+    }
+    if (c === '\\') {
+      out += c + (command[i + 1] ?? '')
+      i++
+      continue
+    }
+    if (c === "'" || c === '"') {
+      q = c
+      out += c
+      continue
+    }
+    if (c !== '$') {
+      out += c
+      continue
+    }
+    let end = i + 1
+    const n = command[i + 1]
+    if (n === '{') {
+      let depth = 0
+      end = -1
+      for (let j = i + 1; j < command.length; j++) {
+        if (command[j] === '{' && command[j - 1] === '$') depth++
+        else if (command[j] === '}' && --depth === 0) {
+          end = j + 1
+          break
+        }
+      }
+      if (end < 0) end = i + 2
+    } else if (n !== undefined && /[A-Za-z_]/.test(n)) {
+      while (end < command.length && /[A-Za-z0-9_]/.test(command[end]!)) end++
+    } else if (n !== undefined && /[0-9@*#?$!-]/.test(n)) end++
+    else {
+      out += c
+      continue
+    }
+    if (isSpace(command[i - 1]) && isSpace(command[end])) {
+      out += command.slice(i, end)
+    } else out += ' '
+    i = end - 1
+  }
+  return out
 }
 
 function quoteWord(w: string): string {
@@ -7132,6 +7232,13 @@ function denyAtScan(
   if (unglued !== command) {
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+  }
+  if (unglued.includes('$')) {
+    const raw = replaceGluedExpansions(unglued)
+    if (raw !== unglued) {
+      const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
   }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
@@ -7286,9 +7393,10 @@ function denyAtScan(
       if (aliased) return aliased
     }
     const splitWords = splitGluedExpansions(words)
-    if (splitWords?.length) {
+    for (const sw of [splitWords, splitGluedExpansions(words, false)]) {
+      if (!sw?.length) continue
       const split = denyAt(
-        splitWords.map(quoteWord).join(' '),
+        sw.map(quoteWord).join(' '),
         root,
         personOnly,
         g,

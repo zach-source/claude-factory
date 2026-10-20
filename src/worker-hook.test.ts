@@ -8253,6 +8253,88 @@ const J1KI_ALLOW_ROWS = [
   'find "$D"/x -name y -delete',
   'echo a$(date)b',
 ]
+// claude-factory-dnw1: a nested default inside a glued brace expansion must not end at the first "}".
+test.each(['rm${X:-${IFS}}-rf${X:-${IFS}}/', 'rm${X:-${Y:-${IFS}}}-rf${X:-${IFS}}/', 'rm${X:-${IFS}}-rf /'])(
+  'claude-factory-dnw1: %s denies with REASON',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test('claude-factory-dnw1: glued nested default git push denies with PUSH_REASON', () => {
+  expect(
+    denyReason('git${X:-${IFS}}push${X:-${IFS}}origin${X:-${IFS}}main', '/root/repo', undefined, J1KI_GATE),
+  ).toBe(PUSH_REASON)
+})
+// A bare "{" in a default is literal in bash (words: rm { -rf /), so it must not add depth.
+test('claude-factory-dnw1: a bare brace in a glued default still denies rm', () => {
+  expect(denyReason('rm${IFS}${X:-{}${IFS}-rf${IFS}/', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test('claude-factory-dnw1: a bare brace in a glued default still denies git push', () => {
+  expect(
+    denyReason('git${IFS}${X:-{}${IFS}push${IFS}origin${IFS}main', '/root/repo', undefined, J1KI_GATE),
+  ).toBe(REASON)
+})
+test('claude-factory-dnw1: a bare brace does not hide a later close brace', () => {
+  expect(denyReason('rm${X:-{}${IFS}-rf${IFS}/}', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each([
+  String.raw`rm${'${IFS}'}${'${X:-\\${}'}${'${IFS}'}-rf${'${IFS}'}/${'${IFS}'}x}`,
+  "rm${IFS}${X:-'${'}${IFS}-rf${IFS}/${IFS}x}",
+])('claude-factory-dnw1: an escaped or quoted dollar-brace does not nest: rm %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each([
+  String.raw`git${'${IFS}'}${'${X:-\\${}'}${'${IFS}'}push${'${IFS}'}origin${'${IFS}'}main${'${IFS}'}x}`,
+  "git${IFS}${X:-'${'}${IFS}push${IFS}origin${IFS}main${IFS}x}",
+])('claude-factory-dnw1: an escaped or quoted dollar-brace does not nest: git %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+const N = '${X:-${IFS}}'
+test.each([String.raw`rm${N}${'${Y:-\\${}'}${N}-rf${N}/${N}}`, `rm${N}\${Y:-'\${'}${N}-rf${N}/${N}}`])(
+  'claude-factory-dnw1: a nested default and a hidden dollar-brace in one word: rm %s',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test.each([
+  String.raw`git${N}${'${Y:-\\${}'}${N}push${N}origin${N}main${N}}`,
+  `git${N}\${Y:-'\${'}${N}push${N}origin${N}main${N}}`,
+])('claude-factory-dnw1: a nested default and a hidden dollar-brace in one word: git %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+test('claude-factory-dnw1: an unclosed glued default keeps the words after it', () => {
+  expect(denyReason('rm${X:-${IFS}-rf${IFS}/', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(['echo ${X:-${HOME}}x', 'ls ${A:-${B}}/c', 'echo ${X:-x}y'])(
+  'claude-factory-dnw1: %s stays allowed',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+  },
+)
+test.each([String.raw`rm${'${IFS}'}\${$IFS-rf$IFS/$IFS}`, "rm${IFS}'${'$IFS-rf$IFS/$IFS}"])(
+  'claude-factory-dnw1: a hidden dollar-brace and bare IFS breaks: rm %s',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test.each([
+  String.raw`git${'${IFS}'}\${$IFS''push$IFS''origin$IFS''main$IFS}`,
+  "git${IFS}'${'$IFS''push$IFS''origin$IFS''main$IFS}",
+])('claude-factory-dnw1: a hidden dollar-brace and bare IFS breaks: git %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+test.each([
+  'ls $HOME/x',
+  'cp "${A}"/b c',
+  'echo \\${X}y',
+  "echo '${X}'y",
+  'echo "${X:-a b}"c',
+  'ls ${A}/b ${C}.txt',
+  'bun test src/${F}.test.ts',
+  'cat ${D}/a',
+])('claude-factory-dnw1: raw reading keeps %s allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
 test.each(J1KI_REASON_ROWS)('claude-factory-j1ki: %s denies with REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })
