@@ -8637,6 +8637,8 @@ const DENY_GJ9L = [
   "a=1 find . {-exec,rm} -rf x ';'",
   "find . {-exec,rm} -r{,f} x ';'",
   "find . {-exec,rm} --recursive x ';'",
+  "find . {-exec,rm,--recursive} x ';'",
+  "find . {-exec,rm,--rec} x ';'",
 ]
 test.each(DENY_GJ9L)('denyReason denies %j (claude-factory-gj9l)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
