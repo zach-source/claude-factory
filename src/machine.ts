@@ -19,6 +19,10 @@ import { NAME } from './beads'
  * The `requeue` field (`to: 'done'` only) also ends the run. It keeps the bead ready and
  * factory-labeled, not closed or deferred. The next dispatch starts a new run for the bead.
  *
+ * The `ship` field (`to: 'done'` only) also ends the run. The runner hands the bead to the rig's ship
+ * run: it keeps the bead open, drops its factory label, and labels it `ship`. Do not name it
+ * `handoff`: that is a worker outcome (a context handoff). Use only one of defer, reject, requeue, ship.
+ *
  * With `requeue: true`, the bead keeps its own `factory:<name>` and `station:<name>` labels, as the
  * worker set them. The `requeue` object names the factory, the station, or the two, to continue at.
  * It replaces each label that its fields name.
@@ -31,6 +35,7 @@ export type Edge =
       defer?: true
       reject?: true
       requeue?: true | { factory?: string; station?: string }
+      ship?: true
     }
 export const edgeTo = (e: Edge) => (typeof e === 'string' ? e : e.to)
 const delayOf = (e: Edge) => (typeof e === 'string' ? 0 : (e.delayMin ?? 0))
@@ -308,6 +313,14 @@ export function validate(def: Factory): Factory {
             edge.requeue &&
             (edge.defer || edge.reject) &&
             `${id}: an edge defers, rejects or requeues, only one`,
+          typeof edge !== 'string' &&
+            edge.ship &&
+            edge.to !== 'done' &&
+            `${id}: only an edge into done ships`,
+          typeof edge !== 'string' &&
+            edge.ship &&
+            (edge.defer || edge.reject || edge.requeue) &&
+            `${id}: an edge defers, rejects, requeues or ships, only one`,
           ...(typeof edge !== 'string' && typeof edge.requeue === 'object'
             ? (['factory', 'station'] as const)
                 .map(k => edge.requeue && typeof edge.requeue === 'object' && edge.requeue[k])
