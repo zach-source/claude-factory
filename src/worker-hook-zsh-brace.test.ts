@@ -128,7 +128,8 @@ test('4IOD eval with glued words stays bounded', () => {
   const tail = 'y '.repeat(4000)
   const t = performance.now()
   expect(run('eval {x '.repeat(8) + tail)).toBeUndefined()
-  expect(run('eval {x '.repeat(14) + tail)).toBe(SCAN_BUDGET_REASON)
+  // `{x` after the first word is an argument, not a group opener, so these bodies no longer count.
+  expect(run('eval {x '.repeat(14) + tail)).toBeUndefined()
   expect(performance.now() - t).toBeLessThan(15_000)
 }, 30_000)
 
@@ -195,3 +196,18 @@ test.each(BODY_ROWS.flatMap(b => [`repeat 1 { ${b} }`, `if [[ 1 ]] { ${b}; }`, `
     expect(run(cmd)).toBe(REASON)
   },
 )
+
+// A glued `{` word opens a group only at a command anchor. In an argument position zsh reads it as
+// a plain word: `echo {a[0]} x` prints `{a[0]} x`.
+test.each(['echo {a[0]} x', 'printf %s {a[1]} y'])('4IOD allows a glued brace in an argument: %s', cmd => {
+  expect(run(cmd)).toBeUndefined()
+})
+test.each(['{rm -rf /}', 'repeat 1 {rm -rf /}', 'if [[ 1 ]] { true } else {rm -rf /}'])(
+  '4IOD denies REASON for a glued group at a command position: %s',
+  cmd => {
+    expect(run(cmd)).toBe(REASON)
+  },
+)
+test('4IOD denies a glued group with a glob command word', () => {
+  expect(run('{r[m]} -rf /')).toBeDefined()
+})

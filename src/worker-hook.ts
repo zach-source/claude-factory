@@ -102,6 +102,13 @@ export const SHELL_ALIAS_REASON =
   'that runs git or gh, or that this hook cannot read. The hook cannot check what the alias does. ' +
   'Type the full git or gh command, with no alias. Do not retry this exact command.'
 
+// claude-factory-mn2y
+export const SHELL_ALIAS_DEFINE_REASON =
+  'The factory denies this command: it defines a shell alias (alias, an aliases[...] or BASH_ALIASES ' +
+  'write, or a dynamic command word) and also runs more. An eval, trap, source, substitution or ' +
+  'sourced file reads the new alias after this hook ran. Define no alias; type the full command. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-1zr5
 export const SHELL_ALIAS_READ_REASON =
   'The factory denies this command: the hook cannot read the Claude Code shell-snapshot folder, so it ' +
@@ -436,6 +443,10 @@ interface ScanState {
   bodyDeny: boolean
   globalGitConfig: boolean
   gitWord: boolean
+  /** claude-factory-mn2y: set when any segment, at any depth, may define a shell alias. */
+  aliasWrite: boolean
+  /** claude-factory-mn2y: set when a builtin or unknown command has an expansion argument. A name built from it may write the aliases table. */
+  dynArg: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
   substFallbacks: number
   /** claude-factory-4iod.11: dequoted words that began with an unquoted `{`. Only these can open a zsh brace group. */
@@ -481,6 +492,7 @@ const MAX_SHELL_DEPTH = 32
 // wrapper commands whose own name we skip to find the command they run. `noglob` and `nocorrect`
 // are zsh precommand modifiers: the next word is the command, and they take no flags
 // (claude-factory-563n).
+// claude-factory-tyz6: a lone `-` is a zsh precommand modifier. zsh runs the next word as the command.
 const WRAPPERS = new Set([
   'sudo',
   'command',
@@ -492,6 +504,7 @@ const WRAPPERS = new Set([
   'time',
   'noglob',
   'nocorrect',
+  '-',
 ])
 
 /**
@@ -798,6 +811,8 @@ type SegInfo = {
   funcDef?: boolean
   // claude-factory-wmsr: a here-document that segments() cannot read with certainty
   heredoc?: boolean
+  // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
+  gluedRedir?: boolean
 }
 
 const HAZARD_RE = /['"`\\]/
@@ -884,7 +899,14 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz): void {
  * The split reading (dash) comes first. The joined reading (bash, zsh) follows it and keeps &> in
  * its own word, so the words after the redirect stay with the command.
  */
-function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin = false): string[][] {
+const FD_PREFIX_RE = /^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\})$/
+function segments(
+  cmd: string,
+  info?: SegInfo,
+  subs?: DqSubstitution[],
+  ampJoin = false,
+  cutRedir = false,
+): string[][] {
   const segs: string[][] = []
   let sawAmpGt = false
   let cur: string[] = []
@@ -1049,6 +1071,15 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
         }
       }
     }
+    if (c === '|' && !quote && />&$/.test(word)) {
+      // claude-factory-7xmz.4: zsh reads `>&|` as one redirect. The split pass ends the segment
+      // here. The joined pass keeps the `|` in the word, so the words after it stay with the command.
+      sawAmpGt = true
+      if (ampJoin) {
+        word += c
+        continue
+      }
+    }
     if (';|&\n'.includes(c)) {
       endSeg()
       continue
@@ -1066,6 +1097,12 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
     if (c === '{' && !hasWord) wordBrace = true
+    // claude-factory-4a4o: bash and zsh start a redirect at an unquoted < or > inside a word, so
+    // `rm>f -rf /` runs rm. The default reading keeps one word. The cut reading ends the word here.
+    if ((c === '<' || c === '>') && hasWord && !/[<>]/.test(word) && !FD_PREFIX_RE.test(word)) {
+      if (info) info.gluedRedir = true
+      if (cutRedir) endWord()
+    }
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
@@ -1074,7 +1111,15 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
   endSeg()
   const out = segs.filter(s => s.length > 0)
   if (sawAmpGt && !ampJoin)
-    out.push(...segments(cmd, { dollarQuote: false, state: info?.state, deep: info?.deep }, undefined, true))
+    out.push(
+      ...segments(
+        cmd,
+        { dollarQuote: false, state: info?.state, deep: info?.deep },
+        undefined,
+        true,
+        cutRedir,
+      ),
+    )
   return out
 }
 
@@ -1165,6 +1210,41 @@ function isRecursiveRm(words: string[], start = 0): boolean {
   return false
 }
 
+const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+
+/**
+ * claude-factory-j471: true when `cmd`, a find command, runs a recursive rm in an exec slot.
+ * A slot word is `-exec`, `-execdir`, `-ok` or `-okdir`. The word after the slot is the head.
+ * A NAME=value head is not read here. assignmentReadingsDeny reads it. If the head is rm, `isRecursiveRm` reads it. If the head is a
+ * wrapper (sudo, env, nice, timeout, xargs ...), the scan reads every later word once for an rm
+ * word. Then it returns, because each later slot is a part of the range that it read.
+ *
+ * claude-factory-lbn: this function reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
+ * `isRecursiveRm(cmd, k)` starts right after the rm word and stops at the first non-flag word.
+ * Scans from different slots do not overlap. The wrapper scan runs at most once. So the whole
+ * function costs O(n), not O(n^2).
+ */
+function findExecRmDeny(cmdIn: string[]): boolean {
+  const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
+  for (let i = 0; i < cmd.length; i++) {
+    if (!FIND_EXEC_WORDS.has(cmd[i]!)) continue
+    const k = i + 1
+    if (k >= cmd.length) continue
+    const b = baseWord(cmd[k]!)
+    if (b === 'rm') {
+      if (isRecursiveRm(cmd, k)) return true
+      continue
+    }
+    if (WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
+      for (let j = k + 1; j < cmd.length; j++) {
+        if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
+      }
+      return false
+    }
+  }
+  return false
+}
+
 /**
  * Returns the operands of an rm command. `words[0]` is the rm word itself.
  * An operand is a non-flag word before a `--`, or any word after a `--`
@@ -1189,13 +1269,13 @@ function rmTargets(words: string[]): string[] {
 
 /**
  * Checks rm target `t` for risk.
- * A `$` expansion, a glob char (`*`, `?`, `[`), a brace (`{`, a list that hides a path), or a leading `~` makes `t` risky.
+ * A `$` expansion, a glob char (`*`, `?`, `[`), a brace (`{`, a list that hides a path), a leading `~`, or a leading `=cmd` (zsh expands it to a command path) makes `t` risky.
  * A path that resolves outside `root` also makes `t` risky, when the caller passes `root`.
  * `root` itself counts as outside, so `rm <root>` is risky too.
  * When the caller omits `root`, an absolute path or a path with a `..` segment is risky instead.
  */
 function riskyTarget(t: string, root?: string): boolean {
-  if (/[$*?[{]/.test(t) || t.startsWith('~')) return true
+  if (/[$*?[{]/.test(t) || t.startsWith('~') || /^=[^=]/.test(t)) return true
   if (root === undefined) return t.startsWith('/') || t.split('/').includes('..')
   const base = root.endsWith('/') ? root.slice(0, -1) : root
   const resolved = resolvePath(base, t)
@@ -1558,12 +1638,7 @@ function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolea
       })
     )
   }
-  if (b === 'find') {
-    for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return true
-    }
-  }
+  if (b === 'find' && findExecRmDeny(cmd)) return true
   return false
 }
 
@@ -1623,6 +1698,8 @@ function hasLettersInOrder(w: string, letters: string): boolean {
  * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
  * C: another segment holds flag text (a variable there can put flags in the word).
  * D: the word may read as rm or find, and a target is risky or a default value holds a path.
+ * E (0xw4): a later dynamic word is followed by recursive flags (the head can be env or sudo).
+ * F (0xw4): a risky target follows the first later dynamic word.
  * Returns rm: true when D holds but no target is risky, for the cd + rm rule. O(length).
  */
 function dynamicHeadDeny(
@@ -1640,6 +1717,31 @@ function dynamicHeadDeny(
   if (start === 0) {
     for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
   }
+  // claude-factory-0xw4: the head can expand to env, sudo or command with value flags (-u root),
+  // so a later dynamic word can be rm. Deny-only; never sets rm.
+  let later = 0
+  for (let k = start + 1; k < cmd.length; k++) {
+    const t = cmd[k]!
+    if (start > 0 && (t === ';' || t === '+')) break
+    if (t[0] === '-' || !DYN_CHARS.test(t)) continue
+    if (!later) later = k
+    if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
+  }
+  const riskyFrom = (from: number): boolean => {
+    let afterDashDash = false
+    for (let k = from; k < cmd.length; k++) {
+      const t = cmd[k]!
+      if (start > 0 && (t === ';' || t === '+')) break
+      if (!afterDashDash && t === '--') {
+        afterDashDash = true
+        continue
+      }
+      if (!afterDashDash && t.startsWith('-')) continue
+      if (riskyTarget(t, root)) return true
+    }
+    return false
+  }
+  if (later && riskyFrom(later + 1)) return { deny: true, rm: false }
   if (!(other.rmfind || hasLettersInOrder(w, 'rm') || hasLettersInOrder(w, 'find')))
     return { deny: false, rm: false }
   const dflt = /\$\{[^}:=+-]*:?[-=+]/.exec(w)
@@ -1647,17 +1749,7 @@ function dynamicHeadDeny(
     const rest = w.slice(dflt.index + dflt[0].length)
     if (rest.includes('/') || rest.includes('~') || rest.includes('..')) return { deny: true, rm: false }
   }
-  let afterDashDash = false
-  for (let k = start + 1; k < cmd.length; k++) {
-    const t = cmd[k]!
-    if (start > 0 && (t === ';' || t === '+')) break
-    if (!afterDashDash && t === '--') {
-      afterDashDash = true
-      continue
-    }
-    if (!afterDashDash && t.startsWith('-')) continue
-    if (riskyTarget(t, root)) return { deny: true, rm: false }
-  }
+  if (riskyFrom(start + 1)) return { deny: true, rm: false }
   return { deny: false, rm: true }
 }
 
@@ -1680,15 +1772,12 @@ function rmFindReading(
     return { deny: false, rm: true }
   }
   if (b === 'find') {
+    if (findExecRmDeny(cmd)) return { deny: true, rm: false }
     for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 >= cmd.length) continue
+      if (!FIND_EXEC_WORDS.has(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
-      if (baseWord(next) === 'rm') {
-        if (isRecursiveRm(cmd, i + 1)) return { deny: true, rm: false }
-      } else if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny) {
+      if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny)
         return { deny: true, rm: false }
-      }
     }
   }
   return { deny: false, rm: false }
@@ -1968,7 +2057,8 @@ function isBraceList(w: string): boolean {
 }
 function braceOpensGroup(w: string, braceWords: Set<string>): boolean {
   if (w === '{') return true
-  if (w === '{}' || !w.startsWith('{') || /\s/.test(w)) return false
+  // `{fd}>f` is a bash and zsh redirect word, not a group.
+  if (w === '{}' || !w.startsWith('{') || /\s/.test(w) || /^\{[^{}]*\}[<>]/.test(w)) return false
   return braceWords.has(w) && !isBraceList(w)
 }
 // The first word of a glued body: the text after the leading braces, less the closing braces
@@ -1983,11 +2073,27 @@ function braceHead(w: string): string {
   }
   return head
 }
+// zsh reads a glued `{word` as a group only where a command starts: the segment start, after a
+// reserved word or `repeat N`, after a wrapper, after `]]` or `} always`, and at the end of a
+// `for`, `foreach` or `select` head. In an argument it is a plain word (`echo {a[0]} x`).
+function gluedBraceSlots(words: string[]): Set<number> {
+  const slots = new Set(commandAnchors(words))
+  const loop = words[0] === 'for' || words[0] === 'foreach' || words[0] === 'select'
+  const test = words.includes('[[')
+  for (let k = 1; k < words.length; k++) {
+    const prev = words[k - 1]!
+    if (loop || (test && prev === ']]') || (prev === 'always' && words[k - 2] === '}')) slots.add(k)
+    else if (RESERVED_LEADING_WORDS.has(words[0]!) && RESERVED_LEADING_WORDS.has(prev)) slots.add(k)
+  }
+  return slots
+}
 function braceBodies(words: string[], braceWords: Set<string>): string[][] {
   const out: string[][] = []
-  for (let k = 1; k < words.length; k++) {
+  let slots: Set<number> | undefined
+  for (let k = 0; k < words.length; k++) {
     const w = words[k]!
     if (!braceOpensGroup(w, braceWords)) continue
+    if (w === '{' ? k === 0 : !(slots ??= gluedBraceSlots(words)).has(k)) continue
     const head = braceHead(w)
     out.push(head ? [head, ...words.slice(k + 1)] : words.slice(k + 1))
   }
@@ -2269,6 +2375,7 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   // own. Without this skip, n stacked eval words cost about 2^n work.
   let evalScanned = false
   let slotEnd = 0
+  let trapEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
@@ -2284,6 +2391,13 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       // here would change that reason to the BEADS_ACTOR one (claude-factory-38jm AC4).
       const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
+    } else if (bw === 'trap' && k >= trapEnd) {
+      // claude-factory-81tz.2: the trap action and every word after trap are scripts. Read them like eval.
+      // claude-factory-81tz.4: trapEnd skips a trap word inside an earlier walk, so the scan stays O(n).
+      // claude-factory-81tz.5: read every word to the end, since a redirect word can sit before the action.
+      for (let a = k + 1; a < words.length; a++)
+        if (stringNamesBdCommand(words[a]!, state, depth + 1)) return true
+      trapEnd = words.length
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true
       const rest = words.slice(k + 1).join(' ')
@@ -2515,8 +2629,8 @@ function xargsHidesOperand(words: string[]): boolean {
 }
 
 // claude-factory-l43b: a redirect word starts with an optional fd number, then < or >.
-const REDIRECT_WORD = /^\d*[<>]/
-const REDIRECT_OPERATOR = /^\d*(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
+const REDIRECT_WORD = /^(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})[<>]/
+const REDIRECT_OPERATOR = /^(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
 
 /** Returns how many leading redirect words (and their targets) `words` has. */
 function leadingRedirects(words: string[]): number {
@@ -2882,9 +2996,14 @@ function joinedWords(words: string[]): string {
 
 // `moved` is true when a cd, pushd or popd word ran before this segment (claude-factory-ty8y.20).
 const SEGMENT_MAY_TOUCH_RE = /config|xdg|git|worktree|work-tree|[*?[{<>]|(^|\n)-C(\n|$)/i
+// claude-factory-93fx: APFS folds case fully (U+FB01 fi, U+00DF ss), but a regex i flag folds simply.
+// Fold a non-ASCII text the same way as baseWord before a path regex tests it.
+function foldNonAscii(s: string): string {
+  return /[^\x00-\x7f]/.test(s) ? s.toUpperCase().toLowerCase() : s
+}
 // One pass over the joined words. When it fails, none of the four ty8y segment checks can match.
 function segmentMayTouchGit(words: string[]): boolean {
-  return SEGMENT_MAY_TOUCH_RE.test(joinedWords(words))
+  return SEGMENT_MAY_TOUCH_RE.test(foldNonAscii(joinedWords(words)))
 }
 
 function gitWorkTreeOutside(words: string[], root: string | undefined, moved = false): boolean {
@@ -2933,7 +3052,7 @@ function gitCoreWorktreeOutside(words: string[], root: string | undefined): bool
       break
     }
     if (w.startsWith('-') && w !== '-') {
-      if (!w.includes('=') && GIT_CONFIG_VALUE_FLAGS.has(w)) i++
+      if (!w.includes('=') && gitConfigTakesValue(w)) i++
       continue
     }
     operands.push(w)
@@ -2973,7 +3092,7 @@ function globalGitConfigUse(
 ): 'write' | 'mention' | undefined {
   // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
   // the text config or XDG, a glob character, a brace, or a redirect operator.
-  if (!/config|XDG|[*?[{<>]/i.test(joinedWords(words))) return undefined
+  if (!/config|XDG|[*?[{<>]/i.test(foldNonAscii(joinedWords(words)))) return undefined
   let use: 'mention' | undefined
   let pending = false
   let prevWriterFlag = false
@@ -2984,7 +3103,12 @@ function globalGitConfigUse(
     pending = false
     // Fast path (claude-factory-lbn scan cost): a plain word holds no path or glob character, so no
     // regex below can match it, unless it is a redirect, an of= word, or names gitconfig or XDG.
-    if (!wasPending && PLAIN_WORD_RE.test(word) && !/^of=|gitconfig|XDG_CONFIG_HOME/i.test(word)) continue
+    if (
+      !wasPending &&
+      PLAIN_WORD_RE.test(word) &&
+      !/^of=|gitconfig|XDG_CONFIG_HOME/i.test(foldNonAscii(word))
+    )
+      continue
     let candidate = normalizeConfigPath(word)
     let redirect = wasPending
     const m = word.match(REDIRECT_PREFIX_RE)
@@ -3003,6 +3127,7 @@ function globalGitConfigUse(
       if (skip === 'reader') continue
       if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
     }
+    candidate = foldNonAscii(candidate)
     if (isCd && !redirect) {
       if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
       continue
@@ -3029,7 +3154,7 @@ function hasGitWordIn(words: string[]): boolean {
 // Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
 // A word that holds only the operator matches in full, such as a bare `>` or `>>`.
 // The caller then reads the next word as the target.
-const REDIRECT_PREFIX_RE = /^(?:\d+|&)?(?:<>|>>?\|?)/
+const REDIRECT_PREFIX_RE = /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})?(?:<>|>>?\|?)/
 
 // claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
 // `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
@@ -4068,7 +4193,12 @@ function ghAliasExpansion(text: string): string[] | undefined {
 function dropRedirectWords(words: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < words.length; i++) {
-    const m = /^[0-9]*(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s.exec(words[i]!)
+    // claude-factory-7xmz.4: zsh also reads `>&|`, `>&!`, `>>&|`, `>>&!`, `>|`, `>!`. 7xmz.5: bash
+    // reads a `{a[0]}` fd name with a subscript.
+    const m =
+      /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})(?:&>>?|>>?|<<<|<<-?|<>|<)(?:&[|!]?|[|!])?(.*)$/s.exec(
+        words[i]!,
+      )
     if (!m) {
       out.push(words[i]!)
       continue
@@ -4401,6 +4531,9 @@ function dynamicWord(w: string): boolean {
   // claude-factory-jsy0: zsh EQUALS expands a leading =cmd to the command path.
   return REFSPEC_UNSAFE.test(w) || w.startsWith('~') || /^=[^=]/.test(w)
 }
+// claude-factory-teku: a head `$_`, or a zsh form such as `${=_}`. the flag-group re-read in
+// denyAt strips `(...)`, so `${(@)_}` reads as `${_}` there.
+const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9_])/
 
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
 // `{}` as not dynamic. Three sites use it, not `dynamicWord`: `commandAnchors`, and the `cmd[0]`
@@ -4410,6 +4543,86 @@ function dynamicWord(w: string): boolean {
 // name. This exemption lets `xargs -I {} cp {} dest` and `xargs -I {} delete {}` run.
 function dynamicCommandWord(w: string): boolean {
   return w !== '{}' && dynamicWord(w)
+}
+
+// claude-factory-mn2y: external programs cannot change the parent shell's alias table. Never add
+// a shell builtin (echo, print, printf, read, typeset, :) to this list.
+const ALIAS_SAFE_COMMANDS = new Set([
+  'grep',
+  'egrep',
+  'fgrep',
+  'rg',
+  'git',
+  'gh',
+  'bd',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'sed',
+  'awk',
+  'jq',
+  'sort',
+  'bun',
+  'ls',
+  'diff',
+  'kubectl',
+  'docker',
+  'ssh',
+  'fish',
+])
+
+// claude-factory-mn2y: a command word with a slash and no expansion is an external program.
+function externalProgram(w: string): boolean {
+  return ALIAS_SAFE_COMMANDS.has(w) || (w.includes('/') && !/[$`]/.test(w))
+}
+
+// claude-factory-mn2y: any expansion in an argument can build a parameter name (set -A $n'ases').
+const NAME_BUILT = /[$`]/
+
+// claude-factory-mn2y: a name-building argument of a command that is not provably external.
+function segmentDynArg(words: string[]): boolean {
+  const first = commandAnchors(words)[0]
+  if (
+    first === undefined ||
+    externalProgram(words[first]!) ||
+    words[first] === 'echo' ||
+    words[first] === 'cd' ||
+    words[first]!.startsWith('#')
+  )
+    return false
+  return words.some((w, i) => i > first && NAME_BUILT.test(w))
+}
+
+// claude-factory-mn2y: true when this segment may define a shell alias.
+// W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
+// W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
+function segmentMayDefineAlias(words: string[]): boolean {
+  const anchors = commandAnchors(words)
+  const first = anchors[0]
+  const safe = first !== undefined && externalProgram(words[first]!)
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (!/alias/i.test(w)) continue
+    if (safe && i > first! && !/[$`]/.test(w)) continue
+    return true
+  }
+  for (const a of anchors) {
+    if (!dynamicCommandWord(words[a]!)) continue
+    for (let i = a + 1; i < words.length; i++) {
+      if (/^[^-=]+=/.test(words[i]!) || /[$`]/.test(words[i]!)) return true
+    }
+  }
+  return false
+}
+
+// claude-factory-mn2y: the raw text has no expansion, substitution or brace, and every segment
+// is an alias command.
+function plainAliasOnly(command: string): boolean {
+  const raw = command.replace(/\\\r?\n/g, '')
+  if (/[$`()<>{}]/.test(raw)) return false
+  const segs = segments(raw)
+  return segs.length > 0 && segs.every(w => w[0] === 'alias')
 }
 
 /**
@@ -4862,7 +5075,27 @@ function gitDashCKeyDynamic(tail: string[]): boolean {
 
 // claude-factory-zl5.21: `git config` flags that take a value word of their own. The operand
 // search below steps past them, the same way `GIT_PUSH_VALUE_FLAGS` does for `git push`.
-const GIT_CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '-t', '--type', '--default'])
+const GIT_CONFIG_VALUE_FLAGS = new Set([
+  '-f',
+  '--file',
+  '--blob',
+  '-t',
+  '--type',
+  '--default',
+  '--comment',
+  '--value',
+  '--url',
+])
+
+// claude-factory-v5iw: git accepts a unique prefix of a long flag (`--comm`) and a short cluster
+// (`-zf`), so both forms take a value word too. A long prefix of one letter or more that starts a
+// value flag takes the next word. So does a cluster whose first `f` or `t` is its last letter. Git
+// gives the rest of a cluster to the first `f` or `t`, so in `-ft` and `-tf` the next word is the key.
+function gitConfigTakesValue(w: string): boolean {
+  if (GIT_CONFIG_VALUE_FLAGS.has(w)) return true
+  if (w.startsWith('--')) return w.length >= 3 && [...GIT_CONFIG_VALUE_FLAGS].some(f => f.startsWith(w))
+  return /^-[a-eg-su-zA-Z]*[ft]$/.test(w)
+}
 
 /**
  * True when `configArgs`, the arguments of a `git config` call after the `config` word, sets a
@@ -4893,7 +5126,7 @@ function gitConfigKeyValue(configArgs: string[]): { name: string; value: string 
     }
     if (w.startsWith('-') && w !== '-') {
       if (w.includes('=')) continue
-      if (GIT_CONFIG_VALUE_FLAGS.has(w)) i++
+      if (gitConfigTakesValue(w)) i++
       continue
     }
     operands.push(w)
@@ -5937,7 +6170,7 @@ const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
  * starts at the command slot.
  */
 function anyDynamicCommandReason(words: string[], braceWords: Set<string>): string | undefined {
-  const own = anyDynamicCommandReason1(words)
+  const own = anyDynamicCommandReason1(words, braceWords)
   if (own) return own
   for (const body of braceBodies(words, braceWords).slice(0, MAX_BRACE_BODIES)) {
     const r = anyDynamicCommandReason1(body)
@@ -5945,8 +6178,10 @@ function anyDynamicCommandReason(words: string[], braceWords: Set<string>): stri
   }
   return undefined
 }
-function anyDynamicCommandReason1(words: string[]): string | undefined {
+function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): string | undefined {
   for (const a of commandAnchors(words)) {
+    // A glued `{word` at an anchor opens a group. braceBodies reads its body as a command.
+    if (braceWords && words[a] !== '{' && braceOpensGroup(words[a]!, braceWords)) continue
     // claude-factory-mmc9.6: segments() ends a word at `(`, so `A[(r)x]=x cmd` leaves the word `A[` at
     // the anchor. zsh runs that as an assignment with a subscript flag. Deny a name-and-bracket
     // anchor word that is not a whole assignment word.
@@ -5957,6 +6192,9 @@ function anyDynamicCommandReason1(words: string[]): string | undefined {
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
     // no comma and no `..`, so it stays allowed.
     if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
+    // claude-factory-teku: `$_` is the last argument of the previous command, so it can hold any
+    // command, and no NAME=value in the text sets it. It is never a legitimate command head.
+    if (LAST_ARG_HEAD.test(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
@@ -6394,6 +6632,7 @@ function anyShellReason(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
+  vars?: VarTable,
 ): string | undefined {
   let nc = -1
   let nd = -1
@@ -6401,6 +6640,7 @@ function anyShellReason(
   let scriptK = 0
   let scriptMoved = false
   let slotEnd = 0
+  let trapEnd = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -6423,7 +6663,7 @@ function anyShellReason(
       // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
       // or gh verb; env expands it to one command word at run time, past this guard's sight.
       if (val.includes('$')) return ENV_SPLIT_VAR_REASON
-      const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+      const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
       if (r) return r
       // claude-factory-s1fj: env inserts the split words into argv and keeps parsing the words
       // after the value. Rebuild that argv and scan it, so a shell word in the value reaches
@@ -6440,7 +6680,7 @@ function anyShellReason(
         ...words.slice(span.end),
       ]
       const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
-      return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+      return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
     }
     if (shellSlotWord(words[j]!)) {
       // claude-factory-38jm: a shell word below slotEnd is a value word of an earlier walk. Its
@@ -6474,11 +6714,22 @@ function anyShellReason(
         if (w === '--') {
           k++
           if (k < words.length)
-            found = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+            found = denyAt(
+              words[k]!,
+              root,
+              personOnly,
+              gate,
+              depth + 1,
+              state,
+              moved,
+              ghConfigMovedBefore,
+              [],
+              vars,
+            )
           break
         }
         if (w.startsWith('-')) continue
-        found = denyAt(w, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+        found = denyAt(w, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
         if (found) break
       }
       if (found) return found
@@ -6488,10 +6739,38 @@ function anyShellReason(
       if (literal) j = k
       continue
     }
+    if (bw === 'trap') {
+      // claude-factory-81tz: the trap action is a script the shell runs later. Read it like an eval script.
+      // claude-factory-81tz.3: a trap word below trapEnd is a dash word of an earlier walk. That walk
+      // already read its words and the action. Skipping it keeps the scan O(n).
+      if (j < trapEnd) continue
+      // claude-factory-81tz.5: a redirect word can sit before the action, so read every word to the end.
+      // claude-factory-81tz.6, .7: the action runs at exit, after every later word (a cd, a config
+      // env). Read each word after trap with all later-state flags on.
+      for (let k = j + 1; k < words.length; k++) {
+        const o = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, true, true)
+        if (o) return o
+      }
+      trapEnd = words.length
+      continue
+    }
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
+      // bash eval has no options, and zsh eval skips every leading `-` word, also after `--`: drop each one, none is the script head.
+      while (rest.length && ['--', '-'].includes(rest[0]!.replace(/["'\\]/g, ''))) rest.shift()
       if (rest.length) {
-        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+        const r = denyAt(
+          rest.join(' '),
+          root,
+          personOnly,
+          gate,
+          depth + 1,
+          state,
+          moved,
+          ghConfigMovedBefore,
+          [],
+          vars,
+        )
         if (r) return r
       }
       break
@@ -6719,6 +6998,8 @@ export function scanReason(
     bodyDeny: false,
     globalGitConfig: false,
     gitWord: false,
+    aliasWrite: false,
+    dynArg: false,
     substFallbacks: 0,
     braceWords: new Set(),
     work: budget,
@@ -6730,12 +7011,23 @@ export function scanReason(
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
   if (state.bodyDeny && !state.stdinDeferred) return REASON
-  if (!state.headPush) return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+  // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
+  // trap, source or substitution reads it after this hook ran. Deny unless the command is only
+  // plain alias segments.
+  // A name built from an expansion can write the aliases table (set -A ${n}ases g ...), so an
+  // expansion argument plus a second segment or a substitution counts as a write too.
+  const dynWrite = state.dynArg && /[;&|\n`]|\$\(|<\(/.test(command) && !plainAliasOnly(command)
+  if (state.aliasWrite && !plainAliasOnly(command)) return SHELL_ALIAS_DEFINE_REASON
+  if (!state.headPush) {
+    if (state.stdinDeferred) return SHELL_STDIN_REASON
+    return dynWrite ? SHELL_ALIAS_DEFINE_REASON : undefined
+  }
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
   // inside a .git-named path. cwdInsideGitDir reads gate.cwd, not the command text, so it also
   // denies a write this guard's own word scan cannot read, such as a shell-variable target.
   if (state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd)) return PUSH_REASON
+  if (dynWrite) return SHELL_ALIAS_DEFINE_REASON
   return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
 }
 
@@ -6818,16 +7110,165 @@ function shellAliasReason(
   return undefined
 }
 
+// claude-factory-miqy: bash splits an unquoted `$X` into words. So a command word `$X` runs X's value.
+// This table holds each NAME=value the command text sets. The table stores undefined for a value the hook cannot read.
+// The hook reads a visible value as the command. A name with no visible set stays allowed.
+type VarTable = Map<string, string | undefined>
+const VAR_REF = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/
+const VAR_UNREADABLE = /[$`\\;&|<>()"'*?[\]{}~!#]/
+
+function recordVarWrites(words: string[], vars: VarTable): void {
+  const b = baseWord(words[0] ?? '')
+  // miqy.9: a name set twice with different values is unreadable.
+  const set = (name: string, value: string | undefined) =>
+    vars.set(name, vars.has(name) && vars.get(name) !== value ? undefined : value)
+  if (b === 'for' && words[1]) set(words[1], undefined)
+  if (
+    b === 'read' ||
+    b === 'mapfile' ||
+    b === 'readarray' ||
+    b === 'printf' ||
+    b === 'print' ||
+    b === 'getopts'
+  ) {
+    for (const w of words.slice(1)) {
+      if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+      // miqy.18: a glued -vNAME writes NAME.
+      const g = /^-v([A-Za-z_]\w*)$/.exec(w)
+      if (g) set(g[1]!, undefined)
+    }
+  }
+  // miqy.21: a glued read -aNAME (also -raNAME) writes NAME, after an IFS=, prefix too.
+  if (words.some(w => baseWord(w) === 'read')) {
+    for (const w of words) {
+      // miqy.23: the split of flags and name is unknown (-raarr), so mark every possible name.
+      if (/^-[A-Za-z]*a[A-Za-z_]\w*$/.test(w)) {
+        for (const m of w.matchAll(/a(?=([A-Za-z_]\w*)$)/g)) set(m[1]!, undefined)
+      }
+    }
+  }
+  const declares = ['export', 'declare', 'typeset', 'local', 'readonly'].includes(b)
+  let i = 0
+  while (i < words.length && (/^[A-Za-z_]\w*\+?=/.test(words[i]!) || (i === 0 && declares))) {
+    if (i > 0 || !declares) {
+      const m = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(words[i]!)!
+      set(m[1]!, m[2] ? undefined : m[3]!)
+    }
+    i++
+  }
+  if (declares) {
+    // miqy.10: a flag (-n, -l, -u ...) can change what the name holds, so its names are unreadable.
+    const flagged = words.slice(1).some(w => /^[-+][A-Za-z]/.test(w))
+    for (const w of words.slice(1)) {
+      const m = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(w)
+      if (m) set(m[1]!, m[2] || flagged ? undefined : m[3]!)
+      else if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+    }
+  }
+  // miqy.11: env/sudo NAME=value words are readable. Any other write inside a word (an eval script) is not.
+  const wraps = b === 'env' || b === 'sudo'
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k]!
+    const lead = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(w)
+    if (lead && k >= i && wraps) set(lead[1]!, lead[2] ? undefined : lead[3]!)
+    for (const m of w.matchAll(/(?:^|[\s;&|({])([A-Za-z_]\w*)\+?=/g)) {
+      const handled = m.index === 0 && (k < i || declares || wraps)
+      if (!handled) vars.set(m[1]!, undefined)
+    }
+  }
+}
+
+// claude-factory-miqy.8: an operator or zsh form also runs the split value of its name.
+const VAR_OP_REF = /^\$(?:=([A-Za-z_]\w*)|\{[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)[\s\S]*\})$/
+function varOpName(w: string): string | undefined {
+  const m = VAR_OP_REF.exec(w)
+  return m ? (m[1] ?? m[2]) : undefined
+}
+
+// claude-factory-miqy.12: count the raw-text mentions of NAME that are not a pure read (the plain and braced forms).
+// A write form the table does not know still shows as a mention, so the head check fails closed.
+const MENTION_COUNTERS = new WeakMap<VarTable, (name: string) => number>()
+// miqy.17: a nested level inherits the outer level's dynamic-name write check.
+const DYNWRITE_CHECKS = new WeakMap<VarTable, () => boolean>()
+// claude-factory-miqy.13: names the shell sets itself. A head of one of them denies.
+const IMPLICIT_VARS = new Set([
+  '_',
+  'REPLY',
+  'BASH_REMATCH',
+  'MAPFILE',
+  'OPTARG',
+  'COPROC',
+  'READLINE_LINE',
+  'reply',
+  'match',
+  'MATCH',
+])
+function countMentions(text: string, name: string): number {
+  let n = 0
+  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))) {
+    const i = m.index!
+    const pure = text[i - 1] === '$' || (text.slice(i - 2, i) === '${' && text[i + name.length] === '}')
+    if (!pure) n++
+  }
+  return n
+}
+
+function varRefName(w: string): string | undefined {
+  const m = VAR_REF.exec(w)
+  return m ? (m[1] ?? m[2]) : undefined
+}
+
+function shellQuoteWord(w: string): string {
+  return /^[\w./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`
+}
+
 // claude-factory-j1ki: the shell splits an unquoted expansion that is glued to other text in one
 // word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
 // the real command. This returns the words with each such expansion read as a word break, or
 // undefined when no word holds a glued expansion. A whole-word expansion ($X, ${X}) is not glued.
-const GLUED_EXPANSION_RE = /\$(?:\{[^}]*\}|\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
-function splitGluedExpansions(words: string[]): string[] | undefined {
+const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
+// claude-factory-dnw1: a ${...} span ends at its matching close brace, so a nested default
+// (${X:-${IFS}}) is one expansion. Only a "${" adds depth: a bare "{" in a default is literal. Each
+// span becomes $@ for the split. An unclosed span ends at the first "}" (or after "${" when none),
+// so no word after it is dropped. segments() drops quotes and backslashes, so the depth reading
+// cannot tell an escaped or single-quoted "${" from a real one. The caller also reads with byDepth
+// false (the first "}" ends the span, and a stray "}" left over is a word break) and denies if
+// either reading denies. The stray break covers a word where an escaped "${" fools the depth
+// reading and a nested default fools the first-close reading. replaceGluedExpansions reads the raw
+// text, where quotes and backslashes are visible, and is the reading that does not depend on them.
+function flattenBraceExpansions(w: string, byDepth: boolean): string {
+  let out = ''
+  for (let i = 0; i < w.length;) {
+    if (w[i] !== '$' || w[i + 1] !== '{') {
+      // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
+      out += !byDepth && w[i] === '}' ? '$@' : w[i]
+      i++
+      continue
+    }
+    let depth = 0
+    let end = -1
+    for (let j = i + 1; byDepth && j < w.length; j++) {
+      if (w[j] === '{' && w[j - 1] === '$') depth++
+      else if (w[j] === '}' && --depth === 0) {
+        end = j
+        break
+      }
+    }
+    if (end < 0) end = w.indexOf('}', i)
+    out += '$@'
+    i = (end < 0 ? i + 1 : end) + 1
+  }
+  return out
+}
+function splitGluedExpansions(words: string[], byDepth = true): string[] | undefined {
   let out: string[] | undefined
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    const parts = w.includes('$') ? w.split(GLUED_EXPANSION_RE).filter(p => p !== '') : [w]
+    const parts = w.includes('$')
+      ? flattenBraceExpansions(w, byDepth)
+          .split(GLUED_EXPANSION_RE)
+          .filter(p => p !== '')
+      : [w]
     // No part, or one part equal to the word: the word is one whole expansion, or holds none.
     if (parts.length === 0 || (parts.length === 1 && parts[0] === w)) {
       out?.push(w)
@@ -6894,6 +7335,69 @@ function replaceGluedSubstitutions(command: string): string {
   return out + command.slice(last) + extra.map(e => '\n' + e).join('')
 }
 
+// claude-factory-dnw1.9: segments() drops quotes and backslashes, so the readings above cannot tell
+// an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
+// ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
+// becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
+// replaces only the "${".
+function replaceGluedExpansions(command: string): string {
+  let out = ''
+  let q = ''
+  const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (q) {
+      if (c === '\\' && q === '"') {
+        out += c + (command[i + 1] ?? '')
+        i++
+        continue
+      }
+      if (c === q) q = ''
+      out += c
+      continue
+    }
+    if (c === '\\') {
+      out += c + (command[i + 1] ?? '')
+      i++
+      continue
+    }
+    if (c === "'" || c === '"') {
+      q = c
+      out += c
+      continue
+    }
+    if (c !== '$') {
+      out += c
+      continue
+    }
+    let end = i + 1
+    const n = command[i + 1]
+    if (n === '{') {
+      let depth = 0
+      end = -1
+      for (let j = i + 1; j < command.length; j++) {
+        if (command[j] === '{' && command[j - 1] === '$') depth++
+        else if (command[j] === '}' && --depth === 0) {
+          end = j + 1
+          break
+        }
+      }
+      if (end < 0) end = i + 2
+    } else if (n !== undefined && /[A-Za-z_]/.test(n)) {
+      while (end < command.length && /[A-Za-z0-9_]/.test(command[end]!)) end++
+    } else if (n !== undefined && /[0-9@*#?$!-]/.test(n)) end++
+    else {
+      out += c
+      continue
+    }
+    if (isSpace(command[i - 1]) && isSpace(command[end])) {
+      out += command.slice(i, end)
+    } else out += ' '
+    i = end - 1
+  }
+  return out
+}
+
 function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
 }
@@ -6928,6 +7432,7 @@ function denyAt(
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
   aliasStack: readonly string[] = [],
+  outerVars?: VarTable,
 ): string | undefined {
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
@@ -6948,6 +7453,8 @@ function denyAt(
         aliasStack,
       )
       if (r === REASON) return r
+      // claude-factory-teku: `${(@)_}` reads as `${_}` here; a head `$_` stays denied.
+      if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }
   }
   const late: { reason?: string; glued?: string } = {}
@@ -6963,6 +7470,7 @@ function denyAt(
       ghConfigMovedBefore,
       late,
       aliasStack,
+      outerVars,
     ) ??
     late.glued ??
     late.reason
@@ -6980,6 +7488,7 @@ function denyAtScan(
   ghConfigMovedBefore: boolean,
   late: { reason?: string; glued?: string },
   aliasStack: readonly string[],
+  outerVars?: VarTable,
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
@@ -7014,6 +7523,11 @@ function denyAtScan(
     state,
   }
   const segs = segments(command, quoteInfo, subs)
+  // claude-factory-4a4o: a redirect glued to a word is a second reading. It only adds segments.
+  if (quoteInfo.gluedRedir && !quoteInfo.deep)
+    segs.push(
+      ...segments(command, { dollarQuote: false, state, deep: quoteInfo.deep }, undefined, false, true),
+    )
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
@@ -7025,11 +7539,108 @@ function denyAtScan(
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
   }
+  if (unglued.includes('$')) {
+    const raw = replaceGluedExpansions(unglued)
+    if (raw !== unglued) {
+      const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
+  }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
   let ambiguousAssignment = false
   let subIdx = 0
+  const vars: VarTable = new Map(outerVars)
+  const joined = command.split('\\\n').join('')
+  const inheritedCount = outerVars && MENTION_COUNTERS.get(outerVars)
+  const mentionCache = new Map<string, number>()
+  const mentions = (name: string): number => {
+    let n = mentionCache.get(name)
+    if (n === undefined) {
+      n = Math.max(countMentions(joined, name), inheritedCount ? inheritedCount(name) : 0)
+      mentionCache.set(name, n)
+    }
+    return n
+  }
+  MENTION_COUNTERS.set(vars, mentions)
+  // claude-factory-miqy: collect every write first. A set after the use still counts.
+  for (const w of segs) recordVarWrites(w, vars)
+  // miqy.11: ${NAME:=v} and ${NAME=v} write a name the lexer does not show as a write.
+  for (const m of command.matchAll(/\$\{([A-Za-z_]\w*):?=/g)) vars.set(m[1]!, undefined)
+  // The lexer splits ${(z)X} at the parens, so read the raw text: a zsh flag form of a set name denies.
+  if (vars.size > 0) {
+    for (const m of command.matchAll(/\$\{[!=~^]*\([^)]*\)([A-Za-z_]\w*)/g)) {
+      if (vars.has(m[1]!)) return DYNAMIC_VERB_REASON
+    }
+  }
+  // miqy.15: a write whose name comes from an expansion is unreadable, so every variable head denies.
+  const dynName = (x: string): boolean => /^[^=]*[$`]/.test(x)
+  const NAME_WRITERS = [
+    'declare',
+    'typeset',
+    'local',
+    'readonly',
+    'export',
+    'read',
+    'mapfile',
+    'readarray',
+    'getopts',
+    'eval',
+  ]
+  let dynWriteCache: boolean | undefined
+  const inheritedDyn = outerVars && DYNWRITE_CHECKS.get(outerVars)
+  const dynWrite = (): boolean =>
+    (dynWriteCache ??=
+      (inheritedDyn ? inheritedDyn() : false) ||
+      segs.some(ws =>
+        ws.some((w, k) => {
+          const b = baseWord(w)
+          // An eval script with no "=" writes nothing, so it is no dynamic-name write.
+          // miqy.20: an eval script that names a writer word counts too.
+          if (b === 'eval') {
+            // miqy.22: join the args and drop quotes and backslashes, as eval does.
+            const args = ws.slice(k + 1)
+            if (!args.some(dynName)) return false
+            const j = args.join(' ').replace(/["'\\]/g, '')
+            return (
+              j.includes('=') ||
+              /(?:^|[\s;&|({])(?:declare|typeset|local|readonly|export|read|mapfile|readarray|getopts|printf|print|vared)\b/.test(
+                j,
+              )
+            )
+          }
+          if (NAME_WRITERS.includes(b)) return ws.slice(k + 1).some(dynName)
+          if (b === 'printf' || b === 'print') {
+            return ws
+              .slice(k + 1)
+              .some((x, j, a) => (a[j - 1] === '-v' && dynName(x)) || (/^-v./.test(x) && dynName(x.slice(2))))
+          }
+          return false
+        }),
+      ))
+  DYNWRITE_CHECKS.set(vars, dynWrite)
+  const scanValue = (name: string, rest: string[]): string | undefined => {
+    if (dynWrite()) return DYNAMIC_VERB_REASON
+    const n = mentions(name)
+    if (n === 0 && !vars.has(name) && !IMPLICIT_VARS.has(name)) return undefined
+    const value = vars.get(name)
+    if (
+      n !== 1 ||
+      IMPLICIT_VARS.has(name) ||
+      value === undefined ||
+      vars.has('IFS') ||
+      VAR_UNREADABLE.test(value)
+    ) {
+      return DYNAMIC_VERB_REASON
+    }
+    const text = [...value.split(/\s+/).filter(Boolean), ...rest.map(shellQuoteWord)].join(' ')
+    return denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+  }
+  const varsGuard = (words: string[], cmd: string[]): boolean =>
+    cmd.length > 0 &&
+    !anyDynamicCommandReason(words, state.braceWords) &&
+    !(personOnly?.length && anyDynamicLiveApplyReason(words, personOnly, state.braceWords))
   // claude-factory-pwy0: per-segment flag text and rm/find text, so a dynamic word reads the others.
   const segFlag = segs.map(sg => DYN_FLAG_TEXT.test(sg.join(' ')))
   const segRmFind = segs.map(sg => /rm|find/i.test(sg.join(' ')))
@@ -7049,7 +7660,18 @@ function denyAtScan(
       // the raw body is read too. This only adds a deny reading.
       const clean = cleanSubstitutionBody(body)
       for (const text of clean === body ? [body] : [clean, body]) {
-        const r = denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+        const r = denyAt(
+          text,
+          root,
+          personOnly,
+          g,
+          depth + 1,
+          state,
+          movedSoFar,
+          ghConfigMovedSoFar,
+          [],
+          vars,
+        )
         // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
         if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
         else if (r) return r
@@ -7061,6 +7683,8 @@ function denyAtScan(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
+    if (!state.aliasWrite && segmentMayDefineAlias(words)) state.aliasWrite = true
+    if (!state.dynArg && segmentDynArg(words)) state.dynArg = true
     if (aliasTable) {
       const aliased = shellAliasReason(
         words,
@@ -7077,9 +7701,10 @@ function denyAtScan(
       if (aliased) return aliased
     }
     const splitWords = splitGluedExpansions(words)
-    if (splitWords?.length) {
+    for (const sw of [splitWords, splitGluedExpansions(words, false)]) {
+      if (!sw?.length) continue
       const split = denyAt(
-        splitWords.map(quoteWord).join(' '),
+        sw.map(quoteWord).join(' '),
         root,
         personOnly,
         g,
@@ -7132,6 +7757,26 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
+    // The older dynamic-word scan keeps its own reason when it denies first.
+    if (varsGuard(words, cmd)) {
+      const headName = varRefName(cmd[0]!)
+      if (headName) {
+        const r = scanValue(headName, cmd.slice(1))
+        if (r) return r
+      } else {
+        // The head may name a set variable. ${!Y} names another one, so any set name denies.
+        const opName = varOpName(cmd[0]!)
+        if (
+          opName &&
+          (IMPLICIT_VARS.has(opName) ||
+            vars.has(opName) ||
+            mentions(opName) >= 2 ||
+            cmd[0]!.startsWith('${!') ||
+            dynWrite())
+        )
+          return DYNAMIC_VERB_REASON
+      }
+    }
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
@@ -7185,7 +7830,11 @@ function denyAtScan(
     // claude-factory-p43v.5: a dynamic word, with no git or gh word of its own before it, can
     // still hide a verb or subcommand that anyGitReason and anyGhReason never see, because no
     // literal git or gh word ever starts this segment.
-    const dynamicCmdFound = anyDynamicCommandReason(words, state.braceWords)
+    // claude-factory-lpiu: a redirect word (`$G >f push`) is no flag, so read the words again
+    // without redirects. This only adds denials.
+    const dynamicCmdFound =
+      anyDynamicCommandReason(words, state.braceWords) ??
+      anyDynamicCommandReason(dropRedirectWords(words), state.braceWords)
     if (dynamicCmdFound) return dynamicCmdFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
@@ -7199,12 +7848,17 @@ function denyAtScan(
       state,
       movedSoFar,
       ghConfigMovedSoFar,
+      vars,
     )
     if (shellReason) return shellReason
     // claude-factory-4iod.5: a glued first word (`{git push`) hides from every word scan, so
     // the first glued body runs the full guard. Its own later glued bodies are suffixes of it:
     // the recursion reads them, so one call per level keeps the cost linear.
-    const glued = words.findIndex((w, k) => k >= 1 && w !== '{' && braceOpensGroup(w, state.braceWords))
+    // A glued `{` opens a group only at a command slot (see gluedBraceSlots).
+    const gluedSlots = gluedBraceSlots(words)
+    const glued = words.findIndex(
+      (w, k) => k >= 1 && w !== '{' && braceOpensGroup(w, state.braceWords) && gluedSlots.has(k),
+    )
     if (glued > 0) {
       const head = braceHead(words[glued]!)
       // claude-factory-4iod.10: a head with an expansion (`{${X:-rm} -rf / }`) names no command
@@ -7229,21 +7883,33 @@ function denyAtScan(
     const dynRm = dynamicHeadRmReading(words, root)
     if (dynRm === 'deny') return REASON
     if (dynRm === 'rm') hasRm = true
+    // claude-factory-7xmz: a redirect word can come before the command word. It can also come in a
+    // wrapper, assignment or find -exec slot. realCommand stops at it, so rm stays hidden.
+    // This second reading only adds denies. It drops the redirect words and reads the command again.
+    // The `<` and `>` check makes a segment with no redirect word almost free.
+    if (words.some(w => w.includes('<') || w.includes('>'))) {
+      const c2 = realCommand(dropRedirectWords(words))
+      const b2 = c2.length ? baseWord(c2[0]!) : ''
+      if (b2 === 'rm') {
+        if (isRecursiveRm(c2) || rmTargets(c2).some(t => riskyTarget(t, root))) return REASON
+        hasRm = true
+      } else if (b2 === 'cd') {
+        hasCd = true
+      }
+    }
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'find') {
-      // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
-      // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
-      // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a
-      // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
-      // O(n), not O(n^2).
-      for (let i = 0; i < cmd.length; i++) {
-        if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-        if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
-      }
+      if (findExecRmDeny(cmd)) return REASON
+    }
+    // claude-factory-j471: a redirect word (`>f find ...`, `find -exec >f rm ...`) can hide the
+    // find word or the slot head. Read the segment again without its redirect words.
+    if (words.some(w => /[<>]/.test(w))) {
+      const c2 = realCommand(dropRedirectWords(words))
+      if (c2.length && baseWord(c2[0]!) === 'find' && findExecRmDeny(c2)) return REASON
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
@@ -7254,6 +7920,18 @@ function denyAtScan(
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
+    }
+    // claude-factory-sdur: a redirect word (`>f`, `{fd}>f`) is not the command or an -exec word.
+    // Read the segment again without redirect words. Deny-only.
+    if (words.some(w => /[<>]/.test(w))) {
+      const noRedir = dropRedirectWords(words)
+      if (noRedir.length !== words.length) {
+        const real = realCommand(noRedir)
+        if (rmFindDeny(real, root)) return REASON
+        const base = baseWord(real[0] ?? '')
+        if (base === 'rm') hasRm = true
+        else if (base === 'cd') hasCd = true
+      }
     }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
