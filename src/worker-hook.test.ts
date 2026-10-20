@@ -6082,6 +6082,51 @@ test.each(DYN_RM_KEEP)('denyReason keeps allowing a harmless dynamic word: %s (c
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
+const DYN_LATER_DENY = [
+  '$X -u root $Y -rf /',
+  '$X -u root $Y ../x',
+  '$X -n 5 $Y -rf /',
+  '$X -u root "$Y" -rf /',
+  '$X -u root ${Y} ../x',
+  '$X -u root -- $Y -rf /',
+  '$X -u root $Y -- -rf /',
+  '$X -u root $Y -r src',
+  '$X -u root $Y /',
+  '$X a b $Y -rf /',
+  'X=env; $X -u root $Y -rf /',
+  '{ $X -u root $Y -rf /; }',
+  'sudo -u root $X -u root $Y ../x',
+  'find . -exec $X -u root $Y -rf / {} \\;',
+  '$X $Y -rf /',
+  '$X $Y ../x',
+  '$X -u $Y -rf /',
+]
+
+test.each(DYN_LATER_DENY)(
+  'denyReason denies a dynamic word after a dynamic head and wrapper flags: %s (claude-factory-0xw4)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+const DYN_LATER_KEEP = ['echo $X -u root $Y -rf /', 'git -C $Y status']
+
+test.each(DYN_LATER_KEEP)('denyReason keeps allowing: %s (claude-factory-0xw4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test('denyReason denies a later dynamic word after a risky-free dynamic head (fail-closed, claude-factory-0xw4)', () => {
+  expect(denyReason('$GIT -C $DIR log $REF', '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+test('denyReason reads a long dynamic head command in linear time (claude-factory-0xw4)', () => {
+  const cmd = '$X ' + '$A '.repeat(1300) + '-x '.repeat(1300)
+  expect(cmd.length).toBeLessThan(8192)
+  const t = Date.now()
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).not.toBe(LONG_COMMAND_REASON)
+  expect(Date.now() - t).toBeLessThan(1000)
+}, 30_000)
+
 test.each(['$(echo command) rm -rf /', '$N git push origin main', 'rm -rf /', '$X =rm -rf /'])(
   'denyReason keeps denying: %s (claude-factory-2a3i)',
   cmd => {
@@ -9420,3 +9465,62 @@ test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', 
   const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
   expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
 }, 30_000)
+
+// claude-factory-sdur: a bash {NAME}> fd-name redirect word is a redirect word at every reader.
+test.each(['X=rm; {fd}> f $X -rf ./x'])(
+  'denyReason denies %j (claude-factory-sdur dropRedirectWords)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  },
+)
+
+test.each([
+  'echo x {fd}>~/.gitconfig',
+  'echo x {fd}> ~/.gitconfig',
+  'echo x {a[1]}>~/.gitconfig',
+  'echo x {a[b[0]]}>~/.gitconfig',
+])('denyReason denies %j (claude-factory-sdur REDIRECT_PREFIX_RE)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+})
+
+test.each(['echo x | {fd}> f $SH', 'echo x | {fd}> f $SH -s'])(
+  'denyReason denies %j (claude-factory-sdur leadingRedirects)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(SHELL_ALIAS_DEFINE_REASON)
+  },
+)
+
+test.each([
+  '{fd}>f rm -rf /',
+  '{fd}>f find / -exec rm -rf {} \\;',
+  'find / -exec {fd}>f rm -rf {} \\;',
+  'find / -exec rm {fd}>f -rf {} \\;',
+  '>f rm -rf ./x',
+  '2>&1 rm -rf /',
+  '<f rm -rf /',
+  '&>f rm -rf /',
+  '>!f rm -rf /',
+  '> f rm -rf /',
+  'command >f rm -rf /',
+  'env >f rm -rf /',
+  'find / -exec 2>/dev/null rm -rf {} +',
+  'find / -exec > f rm -rf {} +',
+])('denyReason denies %j (claude-factory-sdur redirect re-read)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+test.each(['cd .. && >f rm x', 'cd .. ; 2>/dev/null rm x', 'cd .. ; command >f rm x', '>f cd .. ; rm x'])(
+  'denyReason denies %j (claude-factory-sdur cd and rm pair)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  },
+)
+
+test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{fd}>f echo hi'])(
+  'denyReason keeps allowing %j (claude-factory-sdur)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  },
+)
