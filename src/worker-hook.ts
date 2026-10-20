@@ -6587,12 +6587,16 @@ const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]
 // span becomes $@ for the split. An unclosed span ends at the first "}" (or after "${" when none),
 // so no word after it is dropped. segments() drops quotes and backslashes, so the depth reading
 // cannot tell an escaped or single-quoted "${" from a real one. The caller also reads with byDepth
-// false (the first "}" ends the span) and denies if either reading denies.
+// false (the first "}" ends the span, and a stray "}" left over is a word break) and denies if
+// either reading denies. The stray break covers a word where an escaped "${" fools the depth
+// reading and a nested default fools the first-close reading.
 function flattenBraceExpansions(w: string, byDepth: boolean): string {
   let out = ''
   for (let i = 0; i < w.length;) {
     if (w[i] !== '$' || w[i + 1] !== '{') {
-      out += w[i++]
+      // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
+      out += !byDepth && w[i] === '}' ? '$@' : w[i]
+      i++
       continue
     }
     let depth = 0
