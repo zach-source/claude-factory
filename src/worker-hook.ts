@@ -4872,10 +4872,10 @@ function segmentMayGlobSubst(words: string[]): boolean {
       return true
     }
     if (w === 'setopt' || w === 'unsetopt') {
-      if (bare.slice(i + 1).some(a => a === '-m' || /[$`*?[]/.test(a))) return true
+      if (bare.slice(i + 1).some(a => a === '-m' || /[$`*?[{]/.test(a))) return true
     } else if (w === 'set') {
       const rest = bare.slice(i + 1)
-      if (rest.some((a, j) => (a === '-o' || a === '+o') && /[$`]/.test(rest[j + 1] ?? ''))) return true
+      if (rest.some((a, j) => (a === '-o' || a === '+o') && /[$`{]/.test(rest[j + 1] ?? ''))) return true
     }
   }
   return false

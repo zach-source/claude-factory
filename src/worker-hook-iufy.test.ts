@@ -51,6 +51,9 @@ const UNREADABLE = [
   'setopt $o',
   'unsetopt ${o}',
   'set -o $o',
+  'setopt glob{s,s}ubst',
+  'set -o glob{s,}ubst',
+  'unsetopt noglob{s,s}ubst',
   'options[$k]=on',
   'options+=($k on)',
 ]
