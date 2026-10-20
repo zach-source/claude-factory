@@ -9585,12 +9585,17 @@ test.each(BC1U_DENY)('denyReason denies %j (claude-factory-bc1u)', cmd => {
   expect(got === DYNAMIC_VERB_REASON || got === REASON).toBe(true)
 })
 
+// claude-factory-clcc (#158): in bash, $X[1] is $X followed by the glob [1], so the guard cannot read
+// the command word. It denies, fail closed, though zsh reads the word as a subscript.
+test.each(['$X[1,-1]', '$X[1] a.txt'])('denyReason denies %j (claude-factory-bc1u, clcc glob head)', cmd => {
+  const got = denyReason(cmd, '/root/repo', undefined, MIQY_GATE)
+  expect(got === DYNAMIC_VERB_REASON || got === REASON).toBe(true)
+})
+
 test.each([
   '$~X',
-  '$X[1,-1]',
   'eval $~X',
   '$^foo a.txt',
-  '$X[1] a.txt',
   '$X[(w)1] a.txt',
   'echo $X[(w)1]',
   'echo $~X',
