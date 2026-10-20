@@ -282,7 +282,7 @@ This section moves a running laptop factory to the manager task. The task needs 
 
 A rig can have a `remote` field: its https clone URL. `factory repos sync` clones every rig's `remote` that is missing, and fetches the others. It changes `git@` and `ssh://` GitHub URLs to https. The gateway puts the GitHub credential in. A rig with no `remote` and no clone is an error, and the command names the rig. `factory manager host` runs `factory repos sync` before it starts the manager. A failure goes into `manager-host.log` and does not stop the manager.
 
-`factory repos sync` also makes the beads store of each rig that has a `.beads`. It uses the same steps as the worker (see Beads in the VM). The store is in `FACTORY_HOME/beads/<rig name>`. bd uses it through `BEADS_DIR`, with `BEADS_DOLT_SHARED_SERVER=0`. The store comes from the rig's `beadsRemote`, or from the `refs/dolt` of the GitHub origin. The laptop-side `bd dolt push` and `bd dolt pull` in the task use that store.
+`factory repos sync` also makes the beads store of each rig that has a `.beads`. It uses the same steps as the worker (see Beads in the VM). The store is in `FACTORY_HOME/beads/<rig name>`. bd uses it through `BEADS_DIR`, with `BEADS_DOLT_SHARED_SERVER=0`. The store comes from the rig's `beadsRemote`, or from the `refs/dolt` of the GitHub origin. A rig with no `beadsRemote` needs `refs/dolt/data` on its origin. If the origin has none, set `beadsRemote` for the rig. The laptop-side `bd dolt push` and `bd dolt pull` in the task use that store.
 
 Limits:
 
