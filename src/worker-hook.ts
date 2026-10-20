@@ -7728,7 +7728,7 @@ function denyAtScan(
           return DYNAMIC_VERB_REASON
         // piqf read this glued head and allowed it (no IFS, a path value), so the late deny skips it.
         const h0 = cmd[0]!
-        if (/\$(?:\{[^}]*\}|[A-Za-z_]\w*)\//.test(h0) &&!/[`]|\$\(/.test(h0)) headValueRead = true
+        if (/\$(?:\{[^}]*\}|[A-Za-z_]\w*)\//.test(h0) && !/[`]|\$\(/.test(h0)) headValueRead = true
       }
     }
     if (!cmd.length) continue
