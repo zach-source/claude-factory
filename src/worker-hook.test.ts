@@ -3981,6 +3981,7 @@ test.each([
   'mv *.log ../logs/',
   'cp x ../y*',
   'touch a/../b*',
+  'touch /tmp/a/../b*',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
 })
