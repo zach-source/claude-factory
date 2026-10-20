@@ -1894,6 +1894,7 @@ function dynamicHeadDeny(
     if (start > 0 && (t === ';' || t === '+')) break
     if (!DYN_CHARS.test(t)) continue
     if (!later) later = k
+    // Safe skip: isRecursiveRm at the earlier dash word k-1 already reads this word as a flag.
     if (t[0] === '-' && scanned === k - 1) {
       scanned = k
       continue
@@ -2003,6 +2004,14 @@ function wrapperReadingsDeny(
     if (r.deny) found = true
     if (r.rm) rm = true
   }
+  // claude-factory-cwt9: the lexer drops a substitution, so `-$(y)` or `-E$(y)` reads as `-` or `-E`.
+  // The dropped text can be a command word. A recursive flag and a risky target after the dash
+  // word then mean rm. This check skips a plain -r: `xargs -0 -r ls /` is common and safe.
+  const dashHidesRm = (j: number): boolean => {
+    const nx = words[j + 1]
+    if (nx === undefined || nx === '-r' || nx === '-R') return false
+    return isRecursiveRm(words, j) && rmTargets(words.slice(j)).some(t => riskyTarget(t, root))
+  }
   const xargsFlags = (j: number): void => {
     const key = 'xargs:' + j
     if (seenFlag.has(key)) return
@@ -2014,6 +2023,7 @@ function wrapperReadingsDeny(
       return
     }
     if (DYN_CHARS.test(w)) work.push(() => head(j))
+    if (dashHidesRm(j)) found = true
     work.push(() => xargsFlags(j + 1))
     work.push(() => xargsFlags(j + 2))
   }
@@ -2032,6 +2042,7 @@ function wrapperReadingsDeny(
       work.push(() => flags(name, j + 1))
       return
     }
+    if (w.startsWith('-') && dashHidesRm(j)) found = true
     if (w === '-' || !w.startsWith('-')) {
       after(name, j)
       return
@@ -8155,7 +8166,12 @@ function denyAtScan(
         if (/\$(?:\{[^}]*\}|[A-Za-z_]\w*)\//.test(h0) && !/[`]|\$\(/.test(h0)) headValueRead = true
       }
     }
-    if (!cmd.length) continue
+    if (!cmd.length) {
+      // claude-factory-cwt9: `sudo -`y`` leaves no command word, but the backtick word can be one.
+      if (words.some(w => w[0] === '-' && w.includes('`')) && wrapperReadingsDeny(words, root).deny)
+        return REASON
+      continue
+    }
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
     // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2

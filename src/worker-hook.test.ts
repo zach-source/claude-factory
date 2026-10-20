@@ -6175,6 +6175,18 @@ const DASH_DYN_DENY = [
   '$X -u root -$Y -rf /',
   '$X -u root -$Y ../x',
   '$X -u root --$Y -rf /',
+  'sudo -$(y) -rf /',
+  'sudo -u root -$(y) -rf /',
+  'sudo -E$(y) -rf /',
+  'sudo -`y` -rf /',
+  'xargs -$(y) -rf /',
+  'xargs -0$(y) -rf /',
+  'xargs -n1 -$(y) -rf /',
+  'xargs -`y` -rf /',
+  'timeout -$Y -rf /',
+  'nohup -$Y -rf /',
+  'exec -$Y -rf /',
+  'time -$Y -rf /',
 ]
 
 test.each(DASH_DYN_DENY)(
