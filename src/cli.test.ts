@@ -26,6 +26,7 @@ import {
   parsePkgGateMinDays,
   prOwner,
   queuedOwner,
+  unshipClosed,
   loadFactory,
   ownCopy,
   paramsOf,
@@ -318,6 +319,17 @@ test('a queued PR belongs to the ship queue: its branch or its link names the be
   expect(
     queuedOwner({ url: '', headRefName: 'other' }, [{ id: 'b-2', title: 't', metadata: { ship_pr: '' } }]),
   ).toBeUndefined()
+})
+
+test('unshipClosed unships the bead whose ship_pr is the closed PR and no other', () => {
+  const pull = 'https://github.com/o/r/pull/4'
+  const queue = [{ id: 'b-1', title: 't', metadata: { ship_pr: pull } }]
+  const calls: string[][] = []
+  const b = { unship: (id: string, reason: string) => void calls.push([id, reason]) } as never
+  expect(unshipClosed('https://github.com/o/r/pull/5', queue, b)).toBeUndefined()
+  expect(calls).toEqual([])
+  expect(unshipClosed(pull, queue, b)?.id).toBe('b-1')
+  expect(calls).toEqual([['b-1', `${pull} was closed unmerged`]])
 })
 
 // the wake rules of claude-factory-960, now decided by watchDecide (src/watch.ts, claude-factory-5wav)

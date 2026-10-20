@@ -107,6 +107,15 @@ test('a run ships 30 PRs in a row without a stuck step budget', () => {
   expect(visited.at(-1)).toBe('done')
 })
 
+test('a queue that always reports again reaches stuck: again does not refill the budget', () => {
+  const { snapshot } = walk(ship, Array(30).fill('again'))
+  expect(where(snapshot.value)[1]).toBe('stuck')
+})
+
+test('queue tells the worker to unship a PR a person closed unmerged', () => {
+  expect(ship.nodes.queue.prompt).toContain('closed unmerged leaves the queue')
+})
+
 test('a PR closed unmerged leaves the queue before the hold, and soak reads the bead for earlier rollbacks', () => {
   expect(ship.nodes.deploy.prompt).toContain('--remove-label ship')
   expect(ship.nodes.deploy.prompt).toContain('bd defer <bead>')

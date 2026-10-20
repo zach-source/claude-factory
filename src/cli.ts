@@ -5793,6 +5793,13 @@ export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: 
 export const queuedOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, queue: Bead[]) =>
   queue.find(b => b.metadata?.ship_branch === pr.headRefName || (!!pr.url && b.metadata?.ship_pr === pr.url))
 
+/** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
+export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<typeof beads>, 'unship'>) {
+  const owner = queuedOwner({ url, headRefName: '' }, queue)
+  if (owner) b.unship(owner.id, `${url} was closed unmerged`)
+  return owner
+}
+
 /**
  * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
  * aborts the live run it belongs to; `conflict` or `rework` mails that run's station (so two workers never
@@ -6069,6 +6076,14 @@ async function watchPass() {
           store[key]!.routed = true
           console.log(`${iso} ${id}: routing ${node} -> ${outcome}: ${d.text.split('\n')[0]}`)
           routed.push({ run: id, node, url: d.url, outcome, at: now })
+          if (d.kind === 'hold' && run.ship && hasBeads(run.repo)) {
+            try {
+              const b = beads(run.repo, actorOf(id))
+              unshipClosed(d.url, b.shipQueue(), b)
+            } catch (err) {
+              console.log(`${iso} ${id}: closed PR not taken out of the queue: ${(err as Error).message}`)
+            }
+          }
           if (d.kind === 'changes' && run.bead && hasBeads(run.repo)) {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
