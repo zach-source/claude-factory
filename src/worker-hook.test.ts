@@ -6,6 +6,7 @@ import {
   ALIAS_REASON,
   baseWord,
   baseWordForTest,
+  dynamicHeadDenyForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   COMMENT_REASON,
@@ -6162,6 +6163,48 @@ const DYN_LATER_KEEP = ['echo $X -u root $Y -rf /', 'git -C $Y status']
 
 test.each(DYN_LATER_KEEP)('denyReason keeps allowing: %s (claude-factory-0xw4)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+const DYN_SUB_DENY = [
+  '$X -u root $(cat f) ../x',
+  '$X -u root `cat f` ../x',
+  '$X -u root a$(cat f) ../x',
+  '$X -u root $(cat f)x ../x',
+  '$X -u root -$(cat f) ../x',
+  'find . -exec $X -u root $(cat f) ../x {} \\;',
+  '$X -u root $(cat f) ~/x',
+  "$X -u root $(cat f) ../x '${('",
+]
+
+test.each(DYN_SUB_DENY)(
+  'denyReason denies a substitution after a dynamic head and wrapper flags: %s (claude-factory-hevt)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+test.each(['echo $X -u root $(cat f) ../x', 'echo $X -u root `cat f` ../x'])(
+  'denyReason keeps allowing: %s (claude-factory-hevt)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+  },
+)
+
+const NO_OTHER = { flags: false, rmfind: false, ifs: false }
+
+test.each([
+  [0, ['$X', '-u', 'root', '$']],
+  [0, ['$X', '-u', 'root', '`']],
+  [0, ['$X', '-u', 'root', '-$']],
+  [0, ['$X', '-u', 'root', 'a$']],
+  [0, ['$X', '-u', 'root', '<', '(']],
+  [3, ['find', '.', '-exec', '$X', '-u', 'root', '$']],
+])('dynamicHeadDeny denies a later word cut at a substitution: %#', (start, cmd) => {
+  expect(dynamicHeadDenyForTest(cmd as string[], start as number, '/root/repo', NO_OTHER).deny).toBe(true)
+})
+
+test('dynamicHeadDeny allows a plain later word (claude-factory-hevt)', () => {
+  expect(dynamicHeadDenyForTest(['$X', '-u', 'root', 'x'], 0, '/root/repo', NO_OTHER).deny).toBe(false)
 })
 
 test('denyReason denies a later dynamic word after a risky-free dynamic head (fail-closed, claude-factory-0xw4)', () => {
