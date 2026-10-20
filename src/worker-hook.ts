@@ -2413,7 +2413,8 @@ function commandAnchors(words: string[]): number[] {
         const v = words[j + 1]
         // claude-factory-mndr.4: segments() cuts a word at a substitution and keeps `$` or a backtick.
         // The shell splits the output into more words, so that word can hold the command too.
-        if (v !== undefined && (BRACE_LIST_WORD.test(v) || v === '$' || v.endsWith('`'))) anchors.push(j + 1)
+        if (v !== undefined && (BRACE_LIST_WORD.test(v) || v.endsWith('$') || v.includes('`')))
+          anchors.push(j + 1)
         j += 2
         continue
       }
@@ -8208,6 +8209,10 @@ function denyAtScan(
       // value word is no command to realCommand, but the shell splits its output.
       const dyn = anyDynamicCommandReason(words, state.braceWords)
       if (dyn) return dyn
+      // claude-factory-mndr.6: a glued `x$` value word is no anchor word to read; deny it here.
+      const w0 = words.findIndex(w => !/^[A-Za-z_]\w*\+?=/.test(w))
+      if (w0 >= 0 && words.slice(w0 + 1).some(w => w.endsWith('$') || w.includes('`')))
+        return DYNAMIC_VERB_REASON
       continue
     }
     const b = baseWord(cmd[0]!)

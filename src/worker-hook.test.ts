@@ -10312,6 +10312,15 @@ test.each([
 })
 
 test.each([
+  "env -u x$(echo ' rm') -rf /",
+  "nice -n 1$(echo ' rm') -rf /",
+  "time -o f$(echo ' rm') -rf /",
+  "env -C d$(echo ' rm') -rf /",
+])('denyReason denies a glued substitution value word %j (claude-factory-mndr.6)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(DYNAMIC_VERB_REASON)
+})
+
+test.each([
   'env -u X -rf /',
   'env -u X ls',
   'env -u A make',
