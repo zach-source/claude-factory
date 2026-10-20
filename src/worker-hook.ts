@@ -488,6 +488,7 @@ const MAX_SHELL_DEPTH = 32
 // wrapper commands whose own name we skip to find the command they run. `noglob` and `nocorrect`
 // are zsh precommand modifiers: the next word is the command, and they take no flags
 // (claude-factory-563n).
+// claude-factory-tyz6: a lone `-` is a zsh precommand modifier. zsh runs the next word as the command.
 const WRAPPERS = new Set([
   'sudo',
   'command',
@@ -499,6 +500,7 @@ const WRAPPERS = new Set([
   'time',
   'noglob',
   'nocorrect',
+  '-',
 ])
 
 /**
