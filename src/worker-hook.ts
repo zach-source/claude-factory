@@ -1628,6 +1628,29 @@ function dynamicHeadDeny(
   if (start === 0) {
     for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
   }
+  // claude-factory-0xw4: the head can expand to env, sudo or command with value flags (-u root),
+  // so a later dynamic word can be rm. Deny-only; never sets rm.
+  let later = 0
+  for (let k = start + 1; k < cmd.length; k++) {
+    const t = cmd[k]!
+    if (start > 0 && (t === ';' || t === '+')) break
+    if (t[0] === '-' || t === '{' || t === '}' || !DYN_CHARS.test(t)) continue
+    if (!later) later = k
+    if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
+  }
+  if (later) {
+    let afterDashDash = false
+    for (let k = later + 1; k < cmd.length; k++) {
+      const t = cmd[k]!
+      if (start > 0 && (t === ';' || t === '+')) break
+      if (!afterDashDash && t === '--') {
+        afterDashDash = true
+        continue
+      }
+      if (!afterDashDash && t.startsWith('-')) continue
+      if (riskyTarget(t, root)) return { deny: true, rm: false }
+    }
+  }
   if (!(other.rmfind || hasLettersInOrder(w, 'rm') || hasLettersInOrder(w, 'find')))
     return { deny: false, rm: false }
   const dflt = /\$\{[^}:=+-]*:?[-=+]/.exec(w)
