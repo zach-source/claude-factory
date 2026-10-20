@@ -741,17 +741,49 @@ test('a rig with no Dolt remote bootstraps its beads from the git origin through
   Object.assign(process.env, {
     FACTORY_WORKER_DIR: own,
     FACTORY_BEADS: '1',
-    FACTORY_REPO: 'https://github.com/acme/widget.git',
+    FACTORY_REPO: gitOrigin('origin-ref', true),
     FACTORY_BD: bd,
   })
   try {
     worker.setupBeads()
     const log = readFileSync(join(dir, 'bd-boot-origin.log'), 'utf8')
-    expect(log).toBe('sync.remote: "git+https://github.com/acme/widget.git"\n')
+    expect(log).toBe(`sync.remote: "git+${process.env.FACTORY_REPO}"\n`)
   } finally {
     process.env = saved
   }
 })
+
+test('a rig with no Dolt remote and an origin with no refs/dolt/data gets no store', () => {
+  const own = join(dir, 'own-beads-noref')
+  const bd = join(dir, 'bd-boot-noref')
+  writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
+  const saved = { ...process.env }
+  delete process.env.FACTORY_BEADS_REMOTE
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_REPO: gitOrigin('origin-noref', false),
+    FACTORY_BD: bd,
+  })
+  try {
+    expect(() => worker.setupBeads()).toThrow('has no refs/dolt/data')
+    expect(existsSync(join(own, 'beads', '.beads', 'embeddeddolt'))).toBe(false)
+  } finally {
+    process.env = saved
+  }
+})
+
+/** a local git origin, with refs/dolt/data when `withRef` */
+function gitOrigin(name: string, withRef: boolean) {
+  const o = join(dir, name)
+  mkdirSync(o, { recursive: true })
+  const git = (...a: string[]) =>
+    Bun.spawnSync(['git', '-C', o, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])
+  git('init', '-q')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  if (withRef) git('update-ref', 'refs/dolt/data', 'HEAD')
+  return o
+}
 
 test("a cached devenv becomes the worker's environment, keeping the VM's places and CA", () => {
   const own = join(dir, 'own-devenv')

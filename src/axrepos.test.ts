@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -78,6 +78,33 @@ test('bd gets its own store in the task once bootstrapped, and the laptop env is
   expect(bdEnv(repo, laptop)).toBe(laptop)
 })
 
+test('repos sync reports a rig with no beadsRemote whose origin has no refs/dolt/data, and makes no store', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-sync-'))
+  const origin = join(root, 'origin')
+  const git = (...a: string[]) =>
+    Bun.spawnSync(['git', '-C', origin, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])
+  mkdirSync(join(origin, '.beads'), { recursive: true })
+  writeFileSync(join(origin, '.beads', 'config.yaml'), 'issue-prefix: acme\n')
+  git('init', '-q')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'init')
+  const bd = join(root, 'bd')
+  writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
+  const saved = process.env.FACTORY_BD
+  process.env.FACTORY_BD = bd
+  try {
+    const home = join(root, 'home')
+    const env = { ...AX, FACTORY_HOME: home, FACTORY_REPOS: join(root, 'repos') }
+    const problems = syncRepos([{ name: 'widget', repo: '/x', remote: origin }], home, env)
+    expect(problems.join('\n')).toContain('no refs/dolt/data')
+    const dir = beadsDirOf(home, join(root, 'repos', 'widget'))
+    expect(existsSync(join(dir, '.beads', 'embeddeddolt'))).toBe(false)
+  } finally {
+    if (saved === undefined) delete process.env.FACTORY_BD
+    else process.env.FACTORY_BD = saved
+  }
+})
+
 test('repos sync gives a rig with no beadsRemote a store from its git origin, and no problem line', () => {
   const root = mkdtempSync(join(tmpdir(), 'axrepos-sync-'))
   const origin = join(root, 'origin')
@@ -88,6 +115,7 @@ test('repos sync gives a rig with no beadsRemote a store from its git origin, an
   git('init', '-q')
   git('add', '-A')
   git('commit', '-q', '-m', 'init')
+  git('update-ref', 'refs/dolt/data', 'HEAD')
   // like bd 1.3.0: no .beads/config.yaml, no workspace
   const bd = join(root, 'bd')
   writeFileSync(
