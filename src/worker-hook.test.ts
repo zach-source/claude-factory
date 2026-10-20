@@ -6203,6 +6203,16 @@ const DASH_DYN_DENY = [
   'xargs -${Y}rf /home',
   'sudo -${Y}r -f /home',
   'sudo -${Y}rf /home',
+  'xargs -$(y) foo -rf /home',
+  'xargs -$(y) -I REPL -rf /home',
+  'xargs -$(y) a b -rf /home',
+  'xargs -$(y) -n1 foo -rf /home',
+  'xargs -$Y -I REPL -rf /home',
+  'sudo -$(y) foo -rf /home',
+  'sudo -$(y) x -rf /home',
+  'sudo -$(y) -u root -rf /home',
+  'sudo -$(y) -n foo -rf /home',
+  'sudo -$(y) foo --recursive /home',
 ]
 
 test.each(DASH_DYN_DENY)(

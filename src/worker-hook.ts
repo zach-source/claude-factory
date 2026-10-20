@@ -2010,6 +2010,16 @@ function wrapperReadingsDeny(
   const dashHidesRm = (j: number): boolean => {
     const nx = words[j + 1]
     if (nx === undefined) return false
+    // claude-factory-cwt9.7: a dash word with a dynamic part can hide a command word and its
+    // operands. A recursive flag anywhere after it and a risky operand mean rm.
+    if (words[j] === '-' || DYN_CHARS.test(words[j]!)) {
+      const rest = words.slice(j + 1)
+      if (
+        rest.some(x => /^-[A-Za-z]*[rR]/.test(x) || x === '--recursive') &&
+        rest.some(x => !x.startsWith('-') && riskyTarget(x, root))
+      )
+        return true
+    }
     if (
       nx !== '-r' &&
       nx !== '-R' &&
