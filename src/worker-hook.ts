@@ -1982,25 +1982,6 @@ function braceBodies(words: string[], braceWords: Set<string>): string[][] {
   return out
 }
 
-// claude-factory-4iod: the rm, find and cd reading of one command. 'deny' means REASON.
-function rmFindBodyReading(cmd: string[], root: string | undefined): 'deny' | 'rm' | 'cd' | undefined {
-  if (!cmd.length) return undefined
-  const b = baseWord(cmd[0]!)
-  if (b === 'rm') {
-    if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return 'deny'
-    return 'rm'
-  }
-  if (b === 'cd') return 'cd'
-  if (b === 'find') {
-    // claude-factory-lbn: this loop reads `cmd` by index, so it costs O(n), not O(n^2).
-    for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return 'deny'
-    }
-  }
-  return undefined
-}
-
 function commandAnchors(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
@@ -7089,10 +7070,10 @@ function denyAtScan(
     const bodies = braceBodies(words, state.braceWords)
     if (bodies.length > MAX_BRACE_BODIES) return SCAN_BUDGET_REASON
     for (const body of bodies) {
-      const inner = rmFindBodyReading(realCommand(body), root)
-      if (inner === 'deny') state.bodyDeny = true
-      if (inner === 'rm') hasRm = true
-      if (inner === 'cd') hasCd = true
+      const inner = wrapperReadingsDeny(body, root, otherSegs(segIdx))
+      if (inner.deny) state.bodyDeny = true
+      if (inner.rm) hasRm = true
+      if (baseWord(realCommand(body)[0] ?? '') === 'cd') hasCd = true
     }
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
@@ -7189,10 +7170,22 @@ function denyAtScan(
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
-    const outer = rmFindBodyReading(cmd, root)
-    if (outer === 'deny') return REASON
-    if (outer === 'rm') hasRm = true
-    if (outer === 'cd') hasCd = true
+    if (b === 'rm') {
+      if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
+      hasRm = true
+    } else if (b === 'cd') {
+      hasCd = true
+    } else if (b === 'find') {
+      // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
+      // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
+      // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a
+      // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
+      // O(n), not O(n^2).
+      for (let i = 0; i < cmd.length; i++) {
+        if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+        if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
+      }
+    }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
     if (readings.deny) return REASON

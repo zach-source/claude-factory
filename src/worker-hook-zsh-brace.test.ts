@@ -175,3 +175,22 @@ test.each([
 ])('4IOD.14 denies %s', cmd => {
   expect(run(cmd)).toBe(REASON)
 })
+
+// claude-factory-4iod.16: a spaced brace body gets the same wrapper and dynamic-word readings as an
+// outer command.
+const BODY_ROWS = [
+  '/usr/bin/time -l rm -rf /',
+  'nice --foo 3 rm -rf /',
+  'timeout --foo 5 rm -rf /',
+  '$X -rf /',
+  '"$X" -rf /',
+  '$RM -rf /',
+  '${X:-rm} -rf /',
+  'r$X -rf /',
+  'find . -exec $X -rf {} +',
+]
+test.each(
+  BODY_ROWS.flatMap(b => [`repeat 1 { ${b} }`, `if [[ 1 ]] { ${b}; }`, `{ true } always { ${b} }`]),
+)('4IOD.16 denies %s', cmd => {
+  expect(run(cmd)).toBe(REASON)
+})
