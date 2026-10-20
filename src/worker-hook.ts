@@ -6585,8 +6585,10 @@ const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]
 // claude-factory-dnw1: a ${...} span ends at its matching close brace, so a nested default
 // (${X:-${IFS}}) is one expansion. Only a "${" adds depth: a bare "{" in a default is literal. Each
 // span becomes $@ for the split. An unclosed span ends at the first "}" (or after "${" when none),
-// so no word after it is dropped.
-function flattenBraceExpansions(w: string): string {
+// so no word after it is dropped. segments() drops quotes and backslashes, so the depth reading
+// cannot tell an escaped or single-quoted "${" from a real one. The caller also reads with byDepth
+// false (the first "}" ends the span) and denies if either reading denies.
+function flattenBraceExpansions(w: string, byDepth: boolean): string {
   let out = ''
   for (let i = 0; i < w.length;) {
     if (w[i] !== '$' || w[i + 1] !== '{') {
@@ -6595,7 +6597,7 @@ function flattenBraceExpansions(w: string): string {
     }
     let depth = 0
     let end = -1
-    for (let j = i + 1; j < w.length; j++) {
+    for (let j = i + 1; byDepth && j < w.length; j++) {
       if (w[j] === '{' && w[j - 1] === '$') depth++
       else if (w[j] === '}' && --depth === 0) {
         end = j
@@ -6608,12 +6610,12 @@ function flattenBraceExpansions(w: string): string {
   }
   return out
 }
-function splitGluedExpansions(words: string[]): string[] | undefined {
+function splitGluedExpansions(words: string[], byDepth = true): string[] | undefined {
   let out: string[] | undefined
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     const parts = w.includes('$')
-      ? flattenBraceExpansions(w)
+      ? flattenBraceExpansions(w, byDepth)
           .split(GLUED_EXPANSION_RE)
           .filter(p => p !== '')
       : [w]
@@ -6842,9 +6844,10 @@ function denyAtScan(
       if (aliased) return aliased
     }
     const splitWords = splitGluedExpansions(words)
-    if (splitWords?.length) {
+    for (const sw of [splitWords, splitGluedExpansions(words, false)]) {
+      if (!sw?.length) continue
       const split = denyAt(
-        splitWords.map(quoteWord).join(' '),
+        sw.map(quoteWord).join(' '),
         root,
         personOnly,
         g,

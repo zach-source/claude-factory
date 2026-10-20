@@ -7999,6 +7999,18 @@ test('claude-factory-dnw1: a bare brace in a glued default still denies git push
 test('claude-factory-dnw1: a bare brace does not hide a later close brace', () => {
   expect(denyReason('rm${X:-{}${IFS}-rf${IFS}/}', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })
+test.each([
+  String.raw`rm${'${IFS}'}${'${X:-\\${}'}${'${IFS}'}-rf${'${IFS}'}/${'${IFS}'}x}`,
+  "rm${IFS}${X:-'${'}${IFS}-rf${IFS}/${IFS}x}",
+])('claude-factory-dnw1: an escaped or quoted dollar-brace does not nest: rm %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each([
+  String.raw`git${'${IFS}'}${'${X:-\\${}'}${'${IFS}'}push${'${IFS}'}origin${'${IFS}'}main${'${IFS}'}x}`,
+  "git${IFS}${X:-'${'}${IFS}push${IFS}origin${IFS}main${IFS}x}",
+])('claude-factory-dnw1: an escaped or quoted dollar-brace does not nest: git %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
 test('claude-factory-dnw1: an unclosed glued default keeps the words after it', () => {
   expect(denyReason('rm${X:-${IFS}-rf${IFS}/', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })
