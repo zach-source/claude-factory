@@ -1781,6 +1781,17 @@ function findBraceRmDeny(cmd: string[]): boolean {
   for (let i = 1; i < cmd.length; i++) {
     const w = cmd[i]!
     const isExec = w === '-exec' || w === '-execdir'
+    // claude-factory-wpka: a nested brace can hide the rm flag from BRACE_LIST_WORD. Fail closed, no expansion.
+    // The word must be able to hold an action: it follows an action word, or holds exec or ok.
+    if (
+      !isExec &&
+      /\{[^}]*\{/.test(w) &&
+      hasLettersInOrder(w, 'rm') &&
+      (/^-(exec|execdir|ok|okdir)$/.test(cmd[i - 1]!) ||
+        hasLettersInOrder(w, 'exec') ||
+        hasLettersInOrder(w, 'ok'))
+    )
+      return true
     if (!isExec && !BRACE_LIST_WORD.test(w)) continue
     if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && recursive(i + 1)) return true
     if (isExec || !hasLettersInOrder(w, 'rm')) continue
@@ -6494,7 +6505,7 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length;) {
+  for (let i = 0; i < words.length; ) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
@@ -7601,7 +7612,7 @@ const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]
 // text, where quotes and backslashes are visible, and is the reading that does not depend on them.
 function flattenBraceExpansions(w: string, byDepth: boolean): string {
   let out = ''
-  for (let i = 0; i < w.length;) {
+  for (let i = 0; i < w.length; ) {
     if (w[i] !== '$' || w[i + 1] !== '{') {
       // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
       out += !byDepth && w[i] === '}' ? '$@' : w[i]
