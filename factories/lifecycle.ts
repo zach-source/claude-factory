@@ -3,22 +3,28 @@ import type { Factory } from '../src/machine'
 // The whole software lifecycle as one graph. A run enters at triage (or at a
 // station, `lifecycle@incident`) and walks one of these loops:
 //
-//   build      plan → implement ⇄ verify ⇄ review (→ security) → release → deploy (you merge) → soak
-//   small      triage → quick ⇄ check (→ security if flagged) → release → deploy (you merge)
-//   optimize   baseline → plan → implement ⇄ verify (against the target) → … → soak     (abandon when disproved)
-//   refactor   characterize → plan → implement ⇄ verify (pinned behavior holds) → … → soak
-//   operate    soak regressed → rollback → plan (fix forward) → … → soak resolved → postmortem
-//   incident   incident → rollback | plan → … → soak resolved → postmortem
+//   build      plan → implement ⇄ verify ⇄ review (→ security) → hand off to ship
+//   small      triage → quick ⇄ check (→ security if flagged) → hand off to ship
+//   optimize   baseline → plan → implement ⇄ verify (against the target) → … → hand off   (abandon when disproved)
+//   refactor   characterize → plan → implement ⇄ verify (pinned behavior holds) → … → hand off
+//   incident   incident → rollback | plan → … → hand off
+//
+// Approval ends the run on a `ship` edge. The runner leaves the bead open with the label `ship`, and the
+// rig's one ship run (factories/ship.ts) owns release, the wait for your merge, deploy, soak, rollback
+// and postmortem. A run holds no slot after the handoff. If ship finds the pull request needs changes,
+// it starts a new run for the bead at implement. Runs that started before this change follow the
+// release, deploy and soak nodes in their own pinned factory.json, so they finish on the old path.
 //
 // The standing sweeps (monitor, maintain, improve) are not here: they live in factories/sweeps.ts,
 // their own factory, one pass per run, started by `factory sweep` on each sweep's own cadence
 // (src/sweeps.ts). A pinned run from before claude-factory-8pc still loads this file's own copy of
 // them if its factory.json holds one; see that bead for the move.
 //
-// The pull request is the one place a person must act. Deploy waits for a person to merge it and
+// The pull request is the one place a person must act. Ship's deploy waits for a person to merge it and
 // never merges itself, so nothing reaches the default branch or production without them.
 // In a repo with beads, a run's bead is its epic: plan records the tasks as its children,
-// implement works them, verify and review file findings as more, and release needs them all closed.
+// implement works them, verify and review file findings as more, and every task must be closed
+// before the handoff.
 //
 // `factory adopt <repo>` copies this file into the repo as .factory/lifecycle.ts. From then on the
 // factory is the repo's code: improve's factory lens and postmortems file changes to it, and they ship
@@ -89,7 +95,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 3. Test plan: the failing tests implement writes first.
 4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access.
 5. Rollout and rollback: flags, migration order, how to undo it.
-6. Observability: the metrics, logs or checks that prove it works in production; soak reads them.
+6. Observability: the metrics, logs or checks that prove it works in production; the ship run's soak reads them.
 7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary.
 For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned. For a change to the factory itself (.factory/), the acceptance criteria say what future runs will do differently and how that shows in their journals.
 Commit nothing but an architecture decision record, and only where the repo keeps them.`,
@@ -115,7 +121,8 @@ Report pinned with the invariants the refactor must keep and the area's coverage
     implement: {
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line.
-Before you report ready, do what review would: merge origin/main and resolve any conflict; for each new branch, error path and guard, break it and see a test fail; check each claim you wrote in a doc, ADR or docstring against the code, and run each command you documented exactly as written. Push the branch and open it as a draft pull request if this run has none yet. Say in the summary that you did, and give the pull request link.
+Before you report ready, do what review would: merge origin/main and resolve any conflict; for each new branch, error path and guard, break it and see a test fail; check each claim you wrote in a doc, ADR or docstring against the code, and run each command you documented exactly as written. Close every task of this run (see Tracking). Push the branch and open it as a draft pull request if this run has none yet. Say in the summary that you did, and give the pull request link.
+Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
 For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, mail the manager the question and wait for the answer.
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
       next: { ready: 'verify', abandon: 'done' },
@@ -137,7 +144,7 @@ Report green with the evidence, or red with a numbered list of every failure, th
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 Post the review on the pull request: implement opens it as a draft; push the branch and open one yourself if this run still has none. Then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
 Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/main...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
-      next: { approve: 'release', changes: 'implement', security: 'security' },
+      next: { approve: { to: 'done', ship: true }, changes: 'implement', security: 'security' },
     },
     security: {
       agent: FABLE,
@@ -152,7 +159,7 @@ Report approve; changes with a numbered list of everything to fix, found in one 
       prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section, or triage's summary on a small run. Change no code.
 Post it on the pull request the way review does.
 Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
-      next: { approve: 'release', changes: 'implement' },
+      next: { approve: { to: 'done', ship: true }, changes: 'implement' },
     },
 
     // ── the small route: a tiny, docs-only or test-only change skips plan and a separate review ──────
@@ -160,6 +167,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
       timeoutMin: 60,
       prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. Merge origin/main, run the formatter and the tests of what you touched, commit.
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
+Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request.
 If the work proves bigger than small (more files, a security-sensitive surface, a new dependency, a design choice), report full with why, and plan takes it.`,
       next: { ready: 'check', full: 'plan', abandon: 'done' },
     },
@@ -170,50 +178,12 @@ If the work proves bigger than small (more files, a security-sensitive surface, 
       prompt: `One station does both verify and review for a small change. Trust no earlier report.
 Run the repo's full pipeline: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Then try to fail it: \`git merge-tree\` it against origin/main (a conflict is red); break each new guard, branch and error path and see a test fail; check that each claim in a changed doc or docstring matches the code, and each documented command runs as written. For a change to .factory/, run the factory check on every changed file.
 Then review the diff as you would before a merge: correctness, the tests' quality, simplicity, naming, backward compatibility. A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
-Push the branch and open it as a draft pull request if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line. Leave the pull request a draft; release marks it ready.
+Push the branch and open it as a draft pull request if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line. Leave the pull request a draft; ship marks it ready.
 Report approve; or changes with one numbered list of every failure and finding, found in one pass over the whole diff, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the diff or the bead is security-sensitive (auth, secrets, crypto, input parsing, permissions, infrastructure access, or the label \`security\`), or the diff changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/main...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
-      next: { approve: 'release', changes: 'quick', security: 'security' },
+      next: { approve: { to: 'done', ship: true }, changes: 'quick', security: 'security' },
     },
 
-    // ── the outer loop: ship it, watch it, undo it ───────────────────────────
-    release: {
-      timeoutMin: 75,
-      prompt: `Prepare the release. Every task of this run must be closed (see Tracking); if any is open, report red naming them. Rebase onto the latest default branch (re-run the tests if anything moved), add the changelog entry and the version bump the repo's conventions call for, push the branch and update the pull request implement opened (open one if there is none). Release is the only station that can mark it ready for review: do that now. Its description carries the plan's summary (triage's on a small run), the verification evidence and the rollback plan. Wait for CI and read every failing check.
-Report ready with the pull request link, the CI status and exactly what shipping will do; or red with the failures.`,
-      next: { ready: 'deploy', red: 'implement' },
-    },
-    deploy: {
-      runner: LAPTOP,
-      retries: 1,
-      timeoutMin: 90,
-      // the arrival carries the pull request link (release always names it): the tick waits for the
-      // merge, the close, or new activity on that pull request, and spawns no worker until then
-      awaitsPr: true,
-      prompt: `Ship the pull request once a person has merged it: their merge is the approval, and you never merge it yourself. First check what is already done (merged? tagged? deployed?) and do only what is not.
-A merge approves the change it carries, not an owner-only step (see House rules): a hand-run kubectl or helm apply, an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential change. Do every other step, then park with "parked, waiting on: <the owner step and the exact command>" and a \`Question:\` line asking the person to run it or to approve you running it.
-Not merged yet: if a person requested changes or left comments asking for them since release, report changes with every point they raised, each also recorded as a task of this run (see Tracking); if a person closed it unmerged, report hold with their reason, if any; otherwise report blocked with the pull request link and what it waits for (the merge, or a required check or queue), so the person is asked; you are woken when it changes.
-Merged: record the production baseline it will be compared against (error rate, latency, saturation and cost signals) from the window just before the merge, since a GitOps repo may already be rolling it out, tag or publish when the repo's conventions call for it, run or watch the deploy pipeline to the end, verify the rollout (for example kubectl rollout status) and run a smoke check.
-Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a docs-only or test-only change, or a change to .factory/ only, which runs started from now on follow); failed when the rollout did not complete.`,
-      next: {
-        deployed: { to: 'soak', delayMin: 15 },
-        published: 'done',
-        failed: 'rollback',
-        changes: 'implement',
-        hold: { to: 'done', defer: true },
-      },
-    },
-    soak: {
-      runner: LAPTOP,
-      timeoutMin: 30,
-      prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only.
-Report healthy when it holds, or resolved instead when this run began with an incident or went through a rollback, so it gets a postmortem; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
-      next: {
-        healthy: 'done',
-        resolved: 'postmortem',
-        unsure: { to: 'soak', delayMin: 15 },
-        regressed: 'rollback',
-      },
-    },
+    // ── undo it: a rollback, from an incident. Release, deploy and soak live in factories/ship.ts ──
     rollback: {
       runner: LAPTOP,
       retries: 3,
@@ -231,12 +201,6 @@ Report recovered with what you did, the evidence of recovery, the revert pull re
       prompt: `Production is degraded. Diagnose, read-only: the impact and blast radius, when it started, what changed then (deploys, config, dependencies, traffic), and the evidence in metrics, logs and traces.
 Report rollback when a recent release caused it (name it and the version to return to); fix when it needs a code or config change (say how urgent, and what mitigates it meanwhile); noise when it is a false alarm (file a run to tune the alert).`,
       next: { rollback: 'rollback', fix: 'plan', noise: 'done' },
-    },
-    postmortem: {
-      agent: OPUS,
-      timeoutMin: 45,
-      prompt: `Write the blameless postmortem from the journal: impact, timeline, root cause, contributing factors, what went well, and the action items. File each action item that needs work (missing tests, alerts, runbooks, guardrails) as separate work for a person to prioritize, except a guardrail without which the incident can recur this week, which starts on its own. When the factory itself let this happen (a station that missed it, a prompt, a rule, a gate), file the change to .factory/ the same way, for a person to prioritize. Your summary is the postmortem.`,
-      next: { filed: 'done' },
     },
   },
 } satisfies Factory

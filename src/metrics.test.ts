@@ -44,6 +44,18 @@ test("a run's fate: shipped, rejected, closed, aborted or where it is", () => {
 // from its track.json). `fate` reports it as 'requeued', ahead of 'rejected'/'closed', and behind
 // 'shipped'. An older record with no `requeued` field still reads as 'closed' (or 'rejected'), as
 // it always did: this field is new, and optional.
+test("a run that ends on an approve is 'handed-off'; a ship run's deploy counts as shipped", () => {
+  expect(fate({ id: 'a', node: 'done', createdAt: 0, log: [e('review', 'approve', 1)] })).toBe('handed-off')
+  expect(
+    fate({
+      id: 'ship-1',
+      node: 'done',
+      createdAt: 0,
+      log: [e('queue', 'ready', 1), e('deploy', 'published', 2)],
+    }),
+  ).toBe('shipped')
+})
+
 test("a requeued run's fate is 'requeued', ahead of rejected/closed, behind shipped", () => {
   expect(
     fate({ id: 'a', node: 'done', createdAt: 0, log: [e('implement', 'ship', 1)], requeued: true }),

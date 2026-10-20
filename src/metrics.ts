@@ -35,6 +35,7 @@ export function fate(r: RunRecord) {
   if (r.log.some(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))) return 'shipped'
   if (r.requeued) return 'requeued'
   if (r.log[0]?.node === 'triage' && r.log[0].outcome === 'reject') return 'rejected'
+  if (r.node === 'done' && r.log.at(-1)?.outcome === 'approve') return 'handed-off' // a ship edge: the PR waits in the ship queue
   if (r.node === 'done') return 'closed'
   if (r.node === 'aborted') return 'aborted'
   return `running@${r.node}`
