@@ -14,6 +14,7 @@ import {
 } from '../src/machine'
 import lifecycle from './lifecycle'
 import release from './release'
+import ship from './ship'
 
 const PR = 'https://github.com/acme/widget/pull/42'
 
@@ -54,41 +55,59 @@ test('every factory in factories/ compiles', async () => {
   for (const file of files) compile(validate((await import(`./${file}`)).default))
 })
 
-test("build: inner loops, a security review, a deploy parked on the person's merge, a soak", () => {
+const SHIP_NODES = ['release', 'deploy', 'soak', 'postmortem']
+
+test('build: inner loops, a security review, then approve ends the run on a ship edge (rtuw AC2)', () => {
   const { visited, snapshot } = walk(lifecycle, [
     ...['build', 'ready', 'ready', 'red', 'ready', 'green', 'security', 'changes', 'ready', 'green'],
-    ...['approve', 'ready', 'blocked', 'deployed', 'healthy'],
+    ...['approve'],
   ])
   expect(visited).toEqual([
     ...['triage', 'plan', 'implement', 'verify', 'implement', 'verify', 'review', 'security', 'implement'],
-    'verify',
-    ...['review', 'release', 'deploy', 'deploy', 'soak', 'done'],
+    ...['verify', 'review', 'done'],
   ])
   expect(snapshot.context.error).toBeNull()
+  expect(snapshot.context.log.at(-1)).toMatchObject({ node: 'review', outcome: 'approve' })
+  for (const n of SHIP_NODES) expect(visited).not.toContain(n)
 })
 
-test('changes asked on the pull request go back to implement; closing it holds the run', () => {
-  const pr = ['build', 'ready', 'ready', 'green', 'approve', 'ready']
-  expect(walk(lifecycle, [...pr, 'changes', 'ready']).visited.slice(6)).toEqual([
-    'deploy',
-    'implement',
-    'verify',
-  ])
-  const { visited, snapshot } = walk(lifecycle, [...pr, 'hold'])
-  expect(visited.at(-1)).toBe('done')
+test('lifecycle has no release, deploy, soak or postmortem node; incident and rollback stay (rtuw AC14)', () => {
+  for (const n of SHIP_NODES) expect(lifecycle.nodes).not.toHaveProperty(n)
+  expect(lifecycle.nodes).toHaveProperty('incident')
+  expect(lifecycle.nodes.rollback!.next).toEqual({ recovered: 'plan' })
+})
+
+test('review, security and check approve on a ship edge; no other edge ships', () => {
+  const ships = Object.entries(lifecycle.nodes).flatMap(([id, n]) =>
+    Object.entries(n.next).flatMap(([outcome, e]) =>
+      typeof e === 'object' && e.ship ? [`${id}:${outcome}:${e.to}`] : [],
+    ),
+  )
+  expect(ships.sort()).toEqual(['check:approve:done', 'review:approve:done', 'security:approve:done'])
+})
+
+test('a ship rework brief tells the worker to push to the ship branch and open no new PR (rtuw AC8)', () => {
+  for (const n of ['implement', 'quick'] as const) {
+    expect(lifecycle.nodes[n]!.prompt).toContain('ship_branch')
+    expect(lifecycle.nodes[n]!.prompt).toContain('git push origin HEAD:<ship_branch>')
+    expect(lifecycle.nodes[n]!.prompt).toContain('open no new pull request')
+  }
+})
+
+test('a run pinned before the ship change still walks release -> deploy -> soak -> done (rtuw AC15)', () => {
+  const pinned: Factory = {
+    ...lifecycle,
+    nodes: {
+      ...lifecycle.nodes,
+      review: { ...lifecycle.nodes.review!, next: { approve: 'release', changes: 'implement' } },
+      release: { prompt: 'release', next: { ready: 'deploy' } },
+      deploy: { prompt: 'deploy', awaitsPr: true, next: { deployed: { to: 'soak', delayMin: 15 } } },
+      soak: { prompt: 'soak', next: { healthy: 'done' } },
+    },
+  }
+  const { visited, snapshot } = walk(validate(pinned), ['approve', 'ready', 'deployed', 'healthy'], 'review')
+  expect(visited).toEqual(['review', 'release', 'deploy', 'soak', 'done'])
   expect(snapshot.context.error).toBeNull()
-})
-
-test('a soak that regresses rolls back, fixes forward, and ends in a postmortem', () => {
-  const { visited } = walk(lifecycle, [
-    ...['build', 'ready', 'ready', 'green', 'approve', 'ready', 'deployed', 'regressed'],
-    ...['recovered', 'ready', 'ready', 'green', 'approve', 'ready', 'deployed', 'unsure', 'resolved'],
-    'filed',
-  ])
-  expect(visited.slice(8)).toEqual([
-    ...['rollback', 'plan', 'implement', 'verify', 'review', 'release', 'deploy', 'soak', 'soak'],
-    ...['postmortem', 'done'],
-  ])
 })
 
 test('incidents, optimizations and refactors take their own entries', () => {
@@ -107,7 +126,7 @@ test('incidents, optimizations and refactors take their own entries', () => {
 })
 
 test('lifecycle and release house rules each name every owner-only class, the approval clause and the park text', () => {
-  for (const rules of [lifecycle.rules!, release.rules!]) {
+  for (const rules of [lifecycle.rules!, release.rules!, ship.rules!]) {
     expect(rules).toContain('kubectl apply')
     expect(rules).toContain('production registry')
     expect(rules).toContain('ruleset')
@@ -119,10 +138,10 @@ test('lifecycle and release house rules each name every owner-only class, the ap
   }
 })
 
-test('the lifecycle deploy prompt and the release rollout prompt park on an owner-only step instead of doing it', () => {
-  expect(lifecycle.nodes.deploy!.prompt).toContain('parked, waiting on:')
-  expect(lifecycle.nodes.deploy!.prompt).toContain('owner-only')
-  expect(lifecycle.nodes.deploy!.prompt).toContain('Question:')
+test('the ship deploy prompt and the release rollout prompt park on an owner-only step instead of doing it', () => {
+  expect(ship.nodes.deploy!.prompt).toContain('parked, waiting on:')
+  expect(ship.nodes.deploy!.prompt).toContain('owner-only')
+  expect(ship.nodes.deploy!.prompt).toContain('Question:')
   expect(release.nodes.rollout!.prompt).toContain('parked, waiting on:')
   expect(release.nodes.rollout!.prompt).toContain('owner-only')
   expect(release.nodes.rollout!.prompt).toContain('Question:')
@@ -130,8 +149,8 @@ test('the lifecycle deploy prompt and the release rollout prompt park on an owne
 
 test('a deploy or rollout brief for a rig whose goal names owner-only steps carries the goal, the rule and the park text', () => {
   const cases: { def: Factory; node: string; goal: string }[] = [
-    { def: lifecycle, node: 'deploy', goal: AX_GOAL }, // ax-768: the ko build/push + kubectl apply incident
-    { def: lifecycle, node: 'deploy', goal: CLAUDE_FACTORY_GOAL }, // claude-factory-5h9: the ruleset incident
+    { def: ship, node: 'deploy', goal: AX_GOAL }, // ax-768: the ko build/push + kubectl apply incident
+    { def: ship, node: 'deploy', goal: CLAUDE_FACTORY_GOAL }, // claude-factory-5h9: the ruleset incident
     { def: release, node: 'rollout', goal: AX_GOAL },
   ]
   for (const { def, node, goal } of cases) {
@@ -153,9 +172,9 @@ test('a deploy or rollout brief for a rig whose goal names owner-only steps carr
 // claude-factory-960: release always names the pull request, so deploy parks before any worker starts
 // (AC1), wakes on a merge/close/activity mail or the 8h backstop (AC3/AC4), and still routes every
 // outcome exactly as today once a worker does run (AC4); a release with no link starts deploy at once (AC5).
-test('release reporting ready with a pull request link parks deploy with no worker (claude-factory-960 AC1)', () => {
-  const actor = createActor(compile(lifecycle)).start()
-  actor.send({ type: 'GOTO', node: 'release', at: 0 })
+test('queue reporting ready with a pull request link parks deploy with no worker (claude-factory-960 AC1)', () => {
+  const actor = createActor(compile(ship)).start()
+  actor.send({ type: 'GOTO', node: 'queue', at: 0 })
   const { seq } = actor.getSnapshot().context
   actor.send({ type: 'DONE', seq, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
   const s = actor.getSnapshot()
@@ -171,14 +190,14 @@ test('release reporting ready with a pull request link parks deploy with no work
 test('a merge or close mail wakes a parked deploy, which then routes every outcome as today (claude-factory-960 AC4)', () => {
   const cases: { outcome: string; next: [string, string] }[] = [
     { outcome: 'deployed', next: ['soak', 'waiting'] },
-    { outcome: 'published', next: ['done', ''] },
-    { outcome: 'changes', next: ['implement', 'working'] },
-    { outcome: 'hold', next: ['done', ''] },
+    { outcome: 'published', next: ['queue', 'working'] },
+    { outcome: 'changes', next: ['queue', 'working'] },
+    { outcome: 'hold', next: ['queue', 'working'] },
     { outcome: 'failed', next: ['rollback', 'working'] },
   ]
   for (const { outcome, next } of cases) {
-    const actor = createActor(compile(lifecycle)).start()
-    actor.send({ type: 'GOTO', node: 'release', at: 0 })
+    const actor = createActor(compile(ship)).start()
+    actor.send({ type: 'GOTO', node: 'queue', at: 0 })
     const released = actor.getSnapshot().context.seq
     actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
     expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'waiting'])
@@ -191,8 +210,8 @@ test('a merge or close mail wakes a parked deploy, which then routes every outco
 })
 
 test("a worker's own blocked report at deploy still parks as today, after the pre-launch park woke it (claude-factory-960 AC4)", () => {
-  const actor = createActor(compile(lifecycle)).start()
-  actor.send({ type: 'GOTO', node: 'release', at: 0 })
+  const actor = createActor(compile(ship)).start()
+  actor.send({ type: 'GOTO', node: 'queue', at: 0 })
   const released = actor.getSnapshot().context.seq
   actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
   actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
@@ -204,9 +223,9 @@ test("a worker's own blocked report at deploy still parks as today, after the pr
   expect(isPrWait(s.context.log.at(-1))).toBe(false) // a real worker report, not the pre-launch park
 })
 
-test('release reporting ready with no pull request link starts deploy at once (claude-factory-960 AC5)', () => {
-  const actor = createActor(compile(lifecycle)).start()
-  actor.send({ type: 'GOTO', node: 'release', at: 0 })
+test('queue reporting ready with no pull request link starts deploy at once (claude-factory-960 AC5)', () => {
+  const actor = createActor(compile(ship)).start()
+  actor.send({ type: 'GOTO', node: 'queue', at: 0 })
   const { seq } = actor.getSnapshot().context
   actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 'shipping, nothing to link', at: 1000 })
   const s = actor.getSnapshot()
@@ -307,16 +326,16 @@ test("security's onTimeout prompt points the retry at review's or check's diff s
 
 // claude-factory-wnn: a small run (docs-only, test-only, a tiny fix) skips plan and security, and
 // trades verify+review for one combined `check` station, so it ships without paying the full loop.
-test('small AC1: triage -> quick -> check -> release -> deploy -> done, no plan/verify/review/security/soak', () => {
-  const { visited } = walk(lifecycle, ['small', 'ready', 'approve', 'ready', 'published'])
-  expect(visited).toEqual(['triage', 'quick', 'check', 'release', 'deploy', 'done'])
-  for (const skipped of ['plan', 'verify', 'review', 'security', 'soak'])
+test('small AC1: triage -> quick -> check -> done on a ship edge, no plan/verify/review/security/soak', () => {
+  const { visited } = walk(lifecycle, ['small', 'ready', 'approve'])
+  expect(visited).toEqual(['triage', 'quick', 'check', 'done'])
+  for (const skipped of ['plan', 'verify', 'review', 'security', 'soak', 'release', 'deploy'])
     expect(visited).not.toContain(skipped)
 })
 
-test('small AC2: check flags security, the same node security reviews unchanged, then release ships', () => {
-  const { visited } = walk(lifecycle, ['small', 'ready', 'security', 'approve', 'ready'])
-  expect(visited).toEqual(['triage', 'quick', 'check', 'security', 'release', 'deploy'])
+test('small AC2: check flags security, the same node security reviews unchanged, then approve hands off to ship', () => {
+  const { visited } = walk(lifecycle, ['small', 'ready', 'security', 'approve'])
+  expect(visited).toEqual(['triage', 'quick', 'check', 'security', 'done'])
 })
 
 test('small AC3: check changes loops back through quick; quick full joins the full loop at plan; quick abandon ends it', () => {
@@ -344,23 +363,24 @@ test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for sec
   ])
     expect(check.prompt).toContain(needle)
   expect(check.prompt).not.toContain('mark it ready')
-  expect(lifecycle.nodes.release!.prompt).toContain('mark it ready')
+  expect(check.prompt).toContain('ship marks it ready')
+  expect(ship.nodes.queue.prompt).toContain('mark it ready')
   expect(check.agent).toContain('{judge_model}')
   expect((lifecycle as Factory).nodes.quick!.agent).toBeUndefined()
 })
 
-test('claude-factory-wnn.4: quick closes each task check filed, with its commit, so release never finds one open', () => {
+test('claude-factory-wnn.4: quick closes each task check filed, with its commit, so the handoff never finds one open', () => {
   const quick = lifecycle.nodes.quick!
   expect(quick.prompt).toContain('closing each task check filed')
   expect(quick.prompt).toContain('its commit')
   expect(quick.prompt).toContain('Tracking')
 })
 
-test('small AC7/AC8: triage names the small route and its exclusions; deploy counts docs/test-only as published', () => {
+test('small AC7/AC8: triage names the small route and its exclusions; the ship deploy counts docs/test-only as published', () => {
   expect(lifecycle.nodes.triage!.prompt).toContain('small:')
   expect(lifecycle.nodes.triage!.prompt).toContain('security-sensitive')
   expect(lifecycle.nodes.triage!.prompt).toContain('factories/')
-  expect(lifecycle.nodes.deploy!.prompt).toContain('docs-only')
+  expect(ship.nodes.deploy!.prompt).toContain('docs-only')
 })
 
 // claude-factory-qgz: review hits its round cap (3) and re-plans once with the round's findings,

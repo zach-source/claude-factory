@@ -68,7 +68,20 @@ function setup(rigs: { name: string; queued: boolean }[]) {
     mkdirSync(join(repo, '.beads'), { recursive: true })
     if (r.queued) writeFileSync(join(repo, '.beads', 'queue'), '')
     Bun.spawnSync(['git', '-C', repo, 'init', '-q'])
-    Bun.spawnSync(['git', '-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-q', '-m', 'i'])
+    Bun.spawnSync([
+      'git',
+      '-C',
+      repo,
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      'commit',
+      '--allow-empty',
+      '-q',
+      '-m',
+      'i',
+    ])
     return { name: r.name, repo, factory: 'lifecycle' }
   })
   writeFileSync(join(home, 'rigs.json'), JSON.stringify(defs))
