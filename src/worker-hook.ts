@@ -2603,8 +2603,9 @@ function globalGitConfigSamples(root: string | undefined, gate: HookGate | undef
   const m = (root ?? '').match(/^\/[^/]+\/[^/]+/)
   if (m) homes.add(m[0])
   const out = [...GLOBAL_GIT_CONFIG_SAMPLES]
-  for (const h of homes) {
-    if (!h || h === '/') continue
+  for (const h0 of homes) {
+    const h = h0.replace(/\/+$/, '')
+    if (!h) continue
     const user = h.split('/').pop()!
     for (const base of user ? [h, `~${user}`] : [h])
       out.push(
@@ -2757,8 +2758,18 @@ function tokenizeGlob(w: string): GlobToken[] {
 }
 
 function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanState): boolean {
-  const w = word.replace(/^["']+|["']+$/g, '')
+  let w = word.replace(/^["']+|["']+$/g, '')
   if (!/[*?[{]/.test(w)) return false
+  // claude-factory-ebmm.23: collapse /<part>/.. (a glob part too) and a leading /.., as the shell does.
+  // A brace part can be empty, so it is not collapsed. A `..` left in a word that starts with /, ~ or $
+  // (a home prefix, or a brace part before it) can name the home's parent or a sibling: fail closed.
+  if (w.includes('..')) {
+    for (let prev = ''; prev !== w;) {
+      prev = w
+      w = w.replace(/\/(?!\.\.?(?:\/|$))[^/{]+\/\.\.(?=\/|$)/, '').replace(/^\/(?:\.\.(?:\/|$))+/, '/')
+    }
+    if (/^[/~$]/.test(w) && /(?:^|\/)\.\.(?:\/|$)/.test(w)) return true
+  }
   const toks = tokenizeGlob(w)
   // claude-factory-ty8y.24, 267o: star runs collapse, and more than MAX_GLOB_STARS fails closed.
   let stars = 0

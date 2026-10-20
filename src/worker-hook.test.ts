@@ -3878,6 +3878,26 @@ const DENY_EBMM_ANY = [
   'tee -a ~/.gitconfi[x[:g]',
   'tee -a ~/.gitconfi[[:x:g]',
   'tee -a ~/.gitconfi[![:x]',
+  'tee -a ~/.config/../.gitc*',
+  'tee -a ~/r/../.gitc*',
+  'tee -a ~/*/../.gitc*',
+  'tee -a ~/../widget/.gitc*',
+  'tee -a /Users/*/../widget/.gitc*',
+  'tee -a /Users/widget/r/../.gitc*',
+  'tee -a /Users/../Users/widget/.gitc*',
+  'tee -a ~/.config/git/../../.gitc*',
+  'tee -a ~/.config/../.gitconfi{g,}',
+  'tee -a $HOME/r/../.gitc*',
+  'tee -a ${HOME}/r/../.gitc*',
+  'echo x > ~/.config/../.gitc*',
+  'tee -a ~widget/r/../.gitc*',
+  'tee -a ~widget/../widget/.gitc*',
+  'install -m 644 x ~/r/../.gitc*',
+  'tee -a ~/{r,.config}/../.gitc*',
+  'tee -a ~/.config/{git,}/../.gitc*',
+  'tee -a ~/.config/git/../git/conf*',
+  'rsync -a git/ ~/.config/*/../git/',
+  'cp x ~/.config/../.config/g*/.',
 ]
 test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
   'denyReason denies %j under a second fixture user (claude-factory-ebmm)',
@@ -3896,6 +3916,14 @@ test.each([
   const gate = { ...GLOBAL_GIT_CONFIG_GATE, homeDir: () => '/home/widget' }
   expect(denyReason(cmd, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
   expect(denyReason(`${cmd}; git push`, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test('denyReason denies a glob under a home with a trailing slash (claude-factory-ebmm.24)', () => {
+  const gate = { ...GLOBAL_GIT_CONFIG_GATE, homeDir: () => '/Users/widget/' }
+  expect(denyReason('tee -a /Users/widget/.gitc*', '/tmp/work/x', undefined, gate)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+  expect(denyReason('tee -a ~widget/.gitc*', '/tmp/work/x', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
 })
 
 test('denyReason denies a glob under XDG_CONFIG_HOME (claude-factory-ebmm)', () => {
@@ -3949,6 +3977,10 @@ test.each([
   'ls [[:alpha:]]x',
   'touch f[a]x',
   'touch [x{a,b}.',
+  'cp -r ../src/* dst',
+  'mv *.log ../logs/',
+  'cp x ../y*',
+  'touch a/../b*',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
 })
