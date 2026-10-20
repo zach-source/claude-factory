@@ -326,6 +326,9 @@ How it works:
 - The host does not back up while the home is not ready. An empty home never replaces a good backup.
 - When the host starts with an empty home (no `rigs.json`, `runs/` or `.migrated`), it fetches the branch and writes `.migrated`. The manager then starts and resumes the last session. A used home is never changed. If the fetch fails (network or auth), the host tries again each cycle and does not start the manager. This holds with `FACTORY_AX_FRESH=1` too. If there is no remote or no branch, the host waits for `factory migrate-to-ax` as before.
 - `home/memory` goes in as plain files, with or without a `.git` inside. The memory `.gitignore` applies, and uncommitted notes are saved. The git history of memory is not saved, so only files that the scan reads leave the VM. The snapshot writes `home/memory-dream.at`, the time of the last `dream:` commit. Restore runs `git init` in `home/memory` and makes one commit that has this date, so the next dream reads the journal from the last real dream.
+- The scan reads the staged files (the blobs), not the work tree. It also checks URL user info, JWT, `sk-proj-`, `lin_api_`, `glpat-`, `AIza`, `ops_`, `npm_`, `xapp-` and `PRIVATE-TOKEN:`.
+- If `home/.git` exists (the config sync repo), the backup refuses with an error. Git would save it as one empty link.
+- A restore refuses a branch that holds a path the backup leaves out (for example `claude/settings.json` or `home/bin/`). It writes no file and returns an error.
 - A restore writes `home/.restoring` before the checkout and removes it at the end. While the file exists, the host counts the home as not ready, restore runs again, and no backup runs. If the remote is unset while the file exists, a person must remove the file.
 - Look at `home/backup.json` (`at`, `sha`, `error`), `manager-host.log` and `factory status` in the task (the backup age and the last error).
 
