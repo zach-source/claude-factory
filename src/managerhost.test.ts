@@ -1,5 +1,13 @@
 import { expect, test } from 'bun:test'
-import { backupStep, decide, lastSession, managerLine, restoreStep, withResume } from './managerhost'
+import {
+  awaitHome,
+  backupStep,
+  decide,
+  lastSession,
+  managerLine,
+  restoreStep,
+  withResume,
+} from './managerhost'
 
 const free = () => () => {}
 
@@ -55,6 +63,19 @@ test('AC1/AC6: the restore step logs what it did and never throws', () => {
   })
   expect(r).toBe(true)
   expect(lines.at(-1)).toBe('restore failed: y')
+})
+
+test('a failed restore keeps the host waiting even when the home is ready (FACTORY_AX_FRESH)', async () => {
+  const answers = [true, true, false]
+  let calls = 0
+  let sleeps = 0
+  await awaitHome(
+    () => true,
+    () => (calls++, answers.shift()!),
+    async () => void sleeps++,
+  )
+  expect(calls).toBe(3)
+  expect(sleeps).toBe(2)
 })
 
 test('the pane line quotes what the shell would split', () => {

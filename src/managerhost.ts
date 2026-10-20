@@ -70,6 +70,18 @@ export function restoreStep(
   }
 }
 
+/**
+ * Wait until the home is ready and no restore is pending. Try a failed restore again each cycle, also with
+ * FACTORY_AX_FRESH=1. A manager that starts empty over a good backup would push the deletes on top of it.
+ */
+export async function awaitHome(ready: () => boolean, step: () => boolean, sleep: () => Promise<unknown>) {
+  let retry = step()
+  while (!ready() || retry) {
+    await sleep()
+    if (retry) retry = step()
+  }
+}
+
 /** one backup; backup() takes the tick lock for the snapshot only. A failure is logged and the host loop goes on */
 export function backupStep(
   cfg: BackupCfg,
@@ -177,13 +189,13 @@ export async function host(
   if (process.env.FACTORY_AX_BACKUP_REMOTE && !bcfg.remote)
     log('backup off: FACTORY_HOME is not <workspace>/home')
   const backupMs = Number(process.env.FACTORY_AX_BACKUP_EVERY) || 600_000
-  let retry = restoreStep(bcfg, log)
   if (!ready()) log('waiting for `factory migrate-to-ax` (or FACTORY_AX_FRESH=1) before the manager starts')
   // ponytail: no timeout: an empty home waits until the laptop migrates it. A restore that failed is tried again
-  while (!ready()) {
-    await Bun.sleep(everyMs)
-    if (retry && !ready()) retry = restoreStep(bcfg, log)
-  }
+  await awaitHome(
+    ready,
+    () => restoreStep(bcfg, log),
+    () => Bun.sleep(everyMs),
+  )
   // the rig repos and their beads stores, before the manager reads them; a failure is logged, and the manager still starts
   for (const problem of prepare?.() ?? []) log(`repos sync: ${problem}`)
   await bringUp(args, home, log, session())

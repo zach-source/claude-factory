@@ -115,12 +115,17 @@ function bundleMemory(ws: string): string | undefined {
   const mem = join(ws, 'home', 'memory')
   const bad = files(mem).filter(f => secretFile(readFileSync(f)))
   if (bad.length) return `backup refused: secret-like text in ${bad.map(f => relative(ws, f)).join(', ')}`
+  // the bundle carries every commit, so a token in an old commit counts even when the work tree is clean
+  const hist = Bun.spawnSync(['git', '-C', mem, 'log', '--all', '-p', '--format='], { stdout: 'pipe' })
+  if (hist.exitCode === 0 && secretFile(Buffer.from(hist.stdout)))
+    return 'backup refused: secret-like text in the history of home/memory'
   const refs = Bun.spawnSync(['git', '-C', mem, 'for-each-ref', '--format=%(objectname) %(refname)'])
   const state = refs.stdout.toString()
   const marker = join(ws, 'home', `${BUNDLE}.refs`)
   if (!state.trim()) return undefined // no commit yet: nothing to bundle
   if (existsSync(marker) && readFileSync(marker, 'utf8') === state && existsSync(join(ws, 'home', BUNDLE)))
     return undefined
+  // ponytail: each ref change stores a whole new bundle. Push the memory refs to their own remote ref if the branch grows too big
   const b = Bun.spawnSync(['git', '-C', mem, 'bundle', 'create', '-q', join(ws, 'home', BUNDLE), '--all'])
   if (b.exitCode !== 0) return `git bundle: ${clean(b.stderr.toString())}`
   writeFileSync(marker, state)

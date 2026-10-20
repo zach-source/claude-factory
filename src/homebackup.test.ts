@@ -226,6 +226,22 @@ test('a secret in a memory repo file stops the backup', () => {
   expect(backup(cfg(a, r), true).error).toContain('home/memory/leak.md')
 })
 
+test('a token in an old memory commit stops the backup even when the work tree is clean', () => {
+  const r = remote()
+  const a = workspace()
+  const mem = join(a, 'home', 'memory')
+  const g = (...x: string[]) => sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', ...x)
+  sh('-C', mem, 'init', '-q')
+  put(join(mem, 'leak.md'), 'ghp_' + 'a'.repeat(36))
+  g('add', '-A')
+  g('commit', '-q', '-m', 'one')
+  put(join(mem, 'leak.md'), 'clean')
+  g('commit', '-q', '-am', 'two')
+  const out = backup(cfg(a, r), true)
+  expect(out.error).toContain('history of home/memory')
+  expect(Bun.spawnSync(['git', '--git-dir', r, 'rev-parse', '--verify', 'manager-home']).exitCode).not.toBe(0)
+})
+
 test('a failing remote is an error in restore, an empty remote is "no backup"', () => {
   const ws = empty()
   const out = restore(cfg(ws, join(tmp(), 'missing.git')))
