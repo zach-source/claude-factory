@@ -8103,6 +8103,23 @@ test.each([['trap - EXIT'], ['trap -p'], ["trap 'echo hi' EXIT"], ["trap '' INT"
   },
 )
 
+test.each([['env -i sh -c "trap \'bd create x\' EXIT"'], ['env -i bash -c "trap \'bd create x\' EXIT"']])(
+  'denyReason reads a trap action in the BEADS_ACTOR bd scan (claude-factory-81tz.2): %s',
+  cmd => {
+    expect(denyReason(cmd)).toBeDefined()
+  },
+)
+
+test('denyReason allows a harmless trap under env -i (claude-factory-81tz.2)', () => {
+  expect(denyReason('env -i sh -c "trap \'echo hi\' EXIT"')).toBeUndefined()
+})
+
+test('denyReason bounds a long dash-led trap chain (claude-factory-81tz.3)', () => {
+  const t0 = Date.now()
+  denyReason('trap ' + '-/trap '.repeat(1150) + 'x')
+  expect(Date.now() - t0).toBeLessThan(300)
+}, 30_000)
+
 test.each([
   ["source <(echo 'git push origin main')"],
   [". <(echo 'git push origin main')"],

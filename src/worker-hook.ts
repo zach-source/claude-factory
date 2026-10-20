@@ -2064,6 +2064,15 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       // here would change that reason to the BEADS_ACTOR one (claude-factory-38jm AC4).
       const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
+    } else if (bw === 'trap') {
+      // claude-factory-81tz.2: the trap action and the dash words before it are scripts. Read them like eval.
+      let a = k + 1
+      while (a < words.length && words[a]!.startsWith('-') && words[a] !== '-') {
+        if (stringNamesBdCommand(words[a]!, state, depth + 1)) return true
+        a++
+        if (words[a - 1] === '--') break
+      }
+      if (a < words.length && stringNamesBdCommand(words[a]!, state, depth + 1)) return true
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true
       const rest = words.slice(k + 1).join(' ')
@@ -6150,6 +6159,7 @@ function anyShellReason(
   let scriptK = 0
   let scriptMoved = false
   let slotEnd = 0
+  let trapEnd = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -6239,6 +6249,9 @@ function anyShellReason(
     }
     if (bw === 'trap') {
       // claude-factory-81tz: the trap action is a script the shell runs later. Read it like an eval script.
+      // claude-factory-81tz.3: a trap word below trapEnd is a dash word of an earlier walk. That walk
+      // already read its words and the action. Skipping it keeps the scan O(n).
+      if (j < trapEnd) continue
       let k = j + 1
       while (k < words.length && words[k]!.startsWith('-') && words[k] !== '-') {
         // zsh has no trap options: it runs "-x; cmd" as a script.
@@ -6247,6 +6260,7 @@ function anyShellReason(
         k++
         if (words[k - 1] === '--') break
       }
+      trapEnd = k
       if (k < words.length) {
         const r = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
         if (r) return r
