@@ -8502,6 +8502,18 @@ const DENY_K8IZ: string[] = [
   'a=I; b=F; c=S; eval $a$b$c=_; y=m_../acme.txt; r$y',
   'a=I; b=F; c=S; local $a$b$c=_; y=m_../acme.txt; r$y',
   'a=I; b=F; c=S; let $a$b$c=_; y=m1../acme.txt; r$y',
+  "y+='rm ../acme.txt'; $y",
+  "y=rm; y+=' ../acme.txt'; $y",
+  "declare y+='rm ../acme.txt'; $y",
+  "printf -v y 'rm ../acme.txt'; $y",
+  "printf -v y '%s' 'rm ../acme.txt'; $y",
+  'read y; $y',
+  "IFS=_; y=rm_../acme.txt; eval '$y'",
+  'IFS=_; y=rm_../acme.txt; eval \\$y',
+  "y=rm_../acme.txt; IFS=_; eval '$y'",
+  "y='rm ../acme.txt'; eval '$y'",
+  "export y='rm ../acme.txt'; bash -c '$y'",
+  "export y='rm ../acme.txt'; sh -c '$y'",
   'a=I; b=F; c=S; eval "$a$b$c=_"; y=m_../acme.txt; r$y',
 ]
 test.each(DENY_K8IZ)('denyReason denies %j (claude-factory-k8iz)', cmd => {

@@ -424,6 +424,8 @@ export interface HookGate {
  * Fix for the whole class: claude-factory-yoib (a push-time read of the effective git config).
  */
 interface ScanState {
+  /** claude-factory-k8iz: what the other segments of the enclosing scans hold; a nested eval or sh -c scan reads it. */
+  outer: OtherSegs
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
@@ -6562,6 +6564,7 @@ export function scanReason(
     globalGitConfig: false,
     gitWord: false,
     substFallbacks: 0,
+    outer: NO_OTHER_SEGS,
     work: budget,
   }
   const g = memoGate(gate ?? {})
@@ -6879,17 +6882,19 @@ function denyAtScan(
     const t = sg.join(' ')
     return (
       /IFS/.test(t) ||
-      (/[$`][^\s=]*=|\bprintf +-v|\bread\b/.test(t) && /[$`]/.test(t)) ||
-      sg.some(x => /^[A-Za-z_]\w*=.*['"\\\s]/.test(x))
+      (/[$`][^\s=]*=/.test(t) && /[$`]/.test(t)) ||
+      /\bprintf +-v|\bread\b/.test(t) ||
+      sg.some(x => /^[A-Za-z_]\w*\+?=.*['"\\\s]/.test(x))
     )
   })
   const ifsCount = segIfs.filter(Boolean).length
   const flagCount = segFlag.filter(Boolean).length
   const rmFindCount = segRmFind.filter(Boolean).length
+  const outerSegs = state.outer
   const otherSegs = (i: number): OtherSegs => ({
-    flags: flagCount - (segFlag[i] ? 1 : 0) > 0,
-    rmfind: rmFindCount - (segRmFind[i] ? 1 : 0) > 0,
-    ifs: ifsCount - (segIfs[i] ? 1 : 0) > 0,
+    flags: outerSegs.flags || flagCount - (segFlag[i] ? 1 : 0) > 0,
+    rmfind: outerSegs.rmfind || rmFindCount - (segRmFind[i] ? 1 : 0) > 0,
+    ifs: outerSegs.ifs || ifsCount - (segIfs[i] ? 1 : 0) > 0,
   })
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
@@ -6912,6 +6917,7 @@ function denyAtScan(
   for (let segIdx = 0; segIdx < segs.length; segIdx++) {
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
+    state.outer = otherSegs(segIdx)
     const words = segs[segIdx]!
     if (aliasTable) {
       const aliased = shellAliasReason(
