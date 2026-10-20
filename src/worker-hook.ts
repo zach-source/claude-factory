@@ -4352,6 +4352,9 @@ function dynamicWord(w: string): boolean {
   // claude-factory-jsy0: zsh EQUALS expands a leading =cmd to the command path.
   return REFSPEC_UNSAFE.test(w) || w.startsWith('~') || /^=[^=]/.test(w)
 }
+// claude-factory-teku: a head `$_`, or a zsh form such as `${=_}`. the flag-group re-read in
+// denyAt strips `(...)`, so `${(@)_}` reads as `${_}` there.
+const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9_])/
 
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
 // `{}` as not dynamic. Three sites use it, not `dynamicWord`: `commandAnchors`, and the `cmd[0]`
@@ -5899,6 +5902,9 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
     // no comma and no `..`, so it stays allowed.
     if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
+    // claude-factory-teku: `$_` is the last argument of the previous command, so it can hold any
+    // command, and no NAME=value in the text sets it. It is never a legitimate command head.
+    if (LAST_ARG_HEAD.test(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
@@ -6890,6 +6896,8 @@ function denyAt(
         aliasStack,
       )
       if (r === REASON) return r
+      // claude-factory-teku: `${(@)_}` reads as `${_}` here; a head `$_` stays denied.
+      if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }
   }
   const late: { reason?: string; glued?: string } = {}
