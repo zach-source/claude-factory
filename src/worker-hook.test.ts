@@ -8483,3 +8483,33 @@ test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', 
   const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
   expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
 }, 30_000)
+
+const DENY_DNAF = [
+  "find . -exe? rm -rf / ';'",
+  "find . -exe[c] rm -rf / ';'",
+  "find . -exe* rm -rf / ';'",
+  "find . -execdi? rm -rf / ';'",
+  "find . ?exec rm -rf / ';'",
+  "find . [-]exec rm -rf / ';'",
+  'find . -name x -exe? rm -rf {} +',
+  "find . -exe? /bin/rm -rf x ';'",
+  "find . -exe? r? -rf x ';'",
+  "time -l find . -exe? rm -rf x ';'",
+  "a=1 find . -exe? rm -rf x ';'",
+  "$F . -exe? rm -rf x ';'",
+]
+test.each(DENY_DNAF)('denyReason denies glob find action %j (claude-factory-dnaf)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+const ALLOW_DNAF = [
+  'find . -name x',
+  'find . -name *.ts -print',
+  'find src/* -name x',
+  "find . -exe? echo hi ';'",
+  "find . -exe? rm -f x ';'",
+  'find . -iname -x? -print',
+]
+test.each(ALLOW_DNAF)('denyReason allows %j (claude-factory-dnaf)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
