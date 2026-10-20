@@ -11,6 +11,7 @@ import {
   COMMENT_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  COMMENT_CONTINUATION_REASON,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
   ASSIGNMENT_PREFIX_REASON,
@@ -33,6 +34,7 @@ import {
   scanReason,
   SHELL_ALIAS_READ_REASON,
   SHELL_ALIAS_REASON,
+  SHELL_STDIN_REASON,
   shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
@@ -3240,7 +3242,6 @@ const DENY_FUNCTION_DEF = [
   `echo \\$() { sh x; }`,
   `a\\=() { sh x; }; a= -c 'git push origin main'`,
   `\\<() { sh x; }; \\< -c 'git push origin main'`,
-  `f() { rm "$@"; }; f -rf /tmp/x`,
   `eval 'f() { sh x; }'; f -c 'git push origin main'`,
   `sh -c 'f() { sh x; }; f -c "git push origin main"'`,
   `bash -c 'f() { sh x; }; f -c "git push origin main"'`,
@@ -3315,6 +3316,8 @@ test('denyReason keeps the older reason for definitions with another deny (claud
   expect(run('git-x() { git "$@"; }; git-x push origin main')).toBe(DYNAMIC_VERB_REASON)
   expect(run(`() { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
   expect(run(`function { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  // fmeu: the brace group body now reaches the rm check first
+  expect(run(`f() { rm "$@"; }; f -rf /tmp/x`)).toBe(REASON)
 })
 
 const ALLOW_FUNCTION_DEF_LOOKALIKE = [
@@ -5672,6 +5675,64 @@ test.each(DENY_DQ_SUBST)('denyReason denies %j (double-quoted substitution)', (c
   expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
 })
 
+// claude-factory-mozp: a backslash at the end of a comment line is literal in a shell, so the next
+// line runs as a command. segments() joins the lines, so the guard must deny the comment line.
+const BS = '\\'
+const NL = '\n'
+const DENY_COMMENT_CONTINUATION: [string, string][] = [
+  [`true #${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true #a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true;#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # it's${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}git${BS}${NL} push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}gh pr merge 5`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}rm -rf /`, COMMENT_CONTINUATION_REASON],
+  [`echo $(true # a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo "$(true # a${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`x="$(true # a${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`echo DQ"$(true # a${BS}${NL}git push origin main${NL})"DQ`, COMMENT_CONTINUATION_REASON],
+  // quote concatenation: the backslash and the newline sit in different quote spans
+  [`sh -c 'true #a${BS}'"${NL}"'git push origin main'`, COMMENT_CONTINUATION_REASON],
+  [`bash -c 'true #a${BS}'"${NL}git push origin main"`, COMMENT_CONTINUATION_REASON],
+  [`eval 'true #a${BS}'"${NL}"'git push origin main'`, COMMENT_CONTINUATION_REASON],
+  [`echo $(sh -c 'true #a${BS}'"${NL}"'git push origin main')`, COMMENT_CONTINUATION_REASON],
+  // every character that can start a word before the comment hash
+  [`true|#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true&&#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true&#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`(true)#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`(#a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo $(#a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`true\t#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  // the rows from the bead, with a space before the backslash: the push word is already visible
+  [`true # a ${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`echo $(true # a ${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo "$(true # a ${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`x="$(true # a ${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+]
+
+test.each(DENY_COMMENT_CONTINUATION)(
+  'denyReason denies %j (comment line ends in a backslash)',
+  (cmd, reason) => {
+    expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
+  },
+)
+
+const ALLOW_COMMENT_CONTINUATION = [
+  `echo x#y${BS}${NL}git status`,
+  `echo '#'${BS}${NL}git status`,
+  `echo "#"${BS}${NL}git status`,
+  `echo a #b${NL}git status`,
+  `git status # note${BS}`,
+  `git status # note${BS}${NL}  `,
+]
+
+test.each(ALLOW_COMMENT_CONTINUATION)('denyReason allows %j (no comment continuation)', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeUndefined()
+})
+
 const ALLOW_DQ_SUBST = [
   'echo "git push origin main"',
   "echo 'git push origin main'",
@@ -5703,8 +5764,8 @@ const DENY_WMSR_COMMENT: [string, string][] = [
   [`true &# it's\n${WM}`, COMMENT_REASON],
   [`true &&# it's\n${WM}`, COMMENT_REASON],
   [`# don't\n${WM}`, COMMENT_REASON],
-  [`true # a\\\n${WM}`, COMMENT_REASON],
-  [`echo $(true # a\\\n${WM}\n)`, COMMENT_REASON],
+  [`true # a\\\n${WM}`, COMMENT_CONTINUATION_REASON],
+  [`echo $(true # a\\\n${WM}\n)`, COMMENT_CONTINUATION_REASON],
   [`echo $(true)#' \n${WM}\n'`, COMMENT_REASON],
 ]
 test.each(DENY_WMSR_COMMENT)('denyReason denies %j (comment text, wmsr)', (cmd, reason) => {
@@ -7835,6 +7896,129 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('\\rm')).toBe('rm')
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
+})
+
+// claude-factory-fmeu: a brace group is a shell-prefix word. The command inside it still runs.
+const DENY_BRACE_GROUP_REASON = [
+  '{ rm -rf /; }',
+  '{ A=x rm -rf /; }',
+  '{ rm -rf / }',
+  '! { rm -rf /; }',
+  'if true; then { rm -rf /; }; fi',
+  'while true; do { rm -rf /; }; done',
+  '{ { rm -rf /; }; }',
+  '{ sudo rm -rf /; }',
+  'time { rm -rf /; }',
+  'x | { rm -rf /; }',
+  'coproc { rm -rf /; }',
+]
+
+test.each(DENY_BRACE_GROUP_REASON)('denyReason denies %j (claude-factory-fmeu, brace group)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test('denyReason keeps the older reason for brace groups with another deny (claude-factory-fmeu)', () => {
+  expect(denyReason('coproc N { rm -rf /; }')).toBe(SHELL_STDIN_REASON)
+  expect(denyReason('{ git push o main; }')).toBe(PUSH_REASON)
+  expect(denyReason('{ $G $V o main; }')).toBe(DYNAMIC_VERB_REASON)
+})
+
+const ALLOW_BRACE_GROUP = [
+  'echo {a,b}',
+  'find . -exec ls {} +',
+  '{ echo hi; }',
+  '{ echo }',
+  '{ ls; } > .scratch/o',
+  '{ git commit -m x; }',
+  'echo }',
+]
+
+test.each(ALLOW_BRACE_GROUP)('denyReason allows %j (claude-factory-fmeu, brace group)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+// claude-factory-aylh: sudo reads its own options before the command. An unknown option must not
+// hide the command (`sudo -E rm -rf /`). Source: sudo parse_args.c, sudo_short_opts and sudo_long_opts.
+const AYLH_RM = 'rm -rf /'
+const AYLH_DENY = [
+  // the 11 rows of the bead
+  ...['-s', '-E', '-H', '-n', '-b', '-S', '-k', '-A', '-P', '-K', '--preserve-env'].map(
+    f => `sudo ${f} ${AYLH_RM}`,
+  ),
+  // other bare letters, clusters, attached values, long forms and prefixes
+  ...[
+    '-B',
+    '-N',
+    '-l',
+    '-nE',
+    '-uroot',
+    '-Eu root',
+    '-nEu root',
+    '--user=root',
+    '--preserve-env=PATH',
+    '--pres',
+    '--non-interactive',
+    '--us root',
+  ].map(f => `sudo ${f} ${AYLH_RM}`),
+  // one row for each short value letter
+  ...[
+    '-a x',
+    '-C 3',
+    '-c x',
+    '-D /x',
+    '-g x',
+    '-h host',
+    '-p x',
+    '-R /',
+    '-r x',
+    '-T 5',
+    '-t x',
+    '-U x',
+    '-u x',
+  ].map(f => `sudo ${f} ${AYLH_RM}`),
+  // one row for each required-argument long name
+  ...[
+    '--other-user x',
+    '--auth-type x',
+    '--close-from 3',
+    '--login-class x',
+    '--chdir /x',
+    '--group x',
+    '--host x',
+    '--prompt x',
+    '--chroot /',
+    '--role x',
+    '--command-timeout 5',
+    '--type x',
+    '--user x',
+    '--chdir=/x',
+  ].map(f => `sudo ${f} ${AYLH_RM}`),
+  // env words, --, unknown flags and nesting
+  `sudo A=1 -E ${AYLH_RM}`,
+  `sudo A=1 -u root ${AYLH_RM}`,
+  `sudo -E A=1 ${AYLH_RM}`,
+  `sudo -E -- ${AYLH_RM}`,
+  `sudo -Z ${AYLH_RM}`,
+  `sudo -E env ${AYLH_RM}`,
+  `sudo -E sudo -E ${AYLH_RM}`,
+  'sudo -E rm "$X"',
+]
+
+test.each(AYLH_DENY)('denyReason denies %j (claude-factory-aylh)', cmd => {
+  expect(denyReason(cmd, '/x')).toBe(REASON)
+})
+
+test.each([
+  'sudo -E ls',
+  'sudo -E ls -la',
+  'sudo -nE ls',
+  'sudo --user=root ls',
+  'sudo -Z v ls',
+  'sudo -s',
+  'sudo -l',
+  'sudo -E rm a',
+])('denyReason allows %j (claude-factory-aylh)', cmd => {
+  expect(denyReason(cmd, '/x')).toBeUndefined()
 })
 
 // claude-factory-21ux: a wrapper flag that realCommand does not know must not hide an rm or a
