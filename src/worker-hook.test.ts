@@ -8777,12 +8777,18 @@ test.each(BC1U_DENY)('denyReason denies %j (claude-factory-bc1u)', cmd => {
   expect(got === DYNAMIC_VERB_REASON || got === REASON).toBe(true)
 })
 
-test.each(['$~X', '$X[1,-1]', 'eval $~X', '$^foo a.txt', '$X[1] a.txt', 'echo $~X', 'X=rm; echo $~X', 'X=(a b); echo $X[1]'])(
-  'denyReason allows %j (claude-factory-bc1u)',
-  cmd => {
-    expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
-  },
-)
+test.each([
+  '$~X',
+  '$X[1,-1]',
+  'eval $~X',
+  '$^foo a.txt',
+  '$X[1] a.txt',
+  'echo $~X',
+  'X=rm; echo $~X',
+  'X=(a b); echo $X[1]',
+])('denyReason allows %j (claude-factory-bc1u)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
+})
 
 test.each([
   ["trap 'git push origin main' EXIT"],
