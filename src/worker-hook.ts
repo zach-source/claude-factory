@@ -1049,6 +1049,15 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
         }
       }
     }
+    if (c === '|' && !quote && />&$/.test(word)) {
+      // claude-factory-7xmz.4: zsh reads `>&|` as one redirect. The split pass ends the segment
+      // here. The joined pass keeps the `|` in the word, so the words after it stay with the command.
+      sawAmpGt = true
+      if (ampJoin) {
+        word += c
+        continue
+      }
+    }
     if (';|&\n'.includes(c)) {
       endSeg()
       continue
@@ -4041,7 +4050,12 @@ function ghAliasExpansion(text: string): string[] | undefined {
 function dropRedirectWords(words: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < words.length; i++) {
-    const m = /^[0-9]*(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s.exec(words[i]!)
+    // claude-factory-7xmz.4: zsh also reads `>&|`, `>&!`, `>>&|`, `>>&!`, `>|`, `>!`. 7xmz.5: bash
+    // reads a `{a[0]}` fd name with a subscript.
+    const m =
+      /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})(?:&>>?|>>?|<<<|<<-?|<>|<)(?:&[|!]?|[|!])?(.*)$/s.exec(
+        words[i]!,
+      )
     if (!m) {
       out.push(words[i]!)
       continue
@@ -7659,6 +7673,20 @@ function denyAtScan(
     const dynRm = dynamicHeadRmReading(words, root)
     if (dynRm === 'deny') return REASON
     if (dynRm === 'rm') hasRm = true
+    // claude-factory-7xmz: a redirect word can come before the command word. It can also come in a
+    // wrapper, assignment or find -exec slot. realCommand stops at it, so rm stays hidden.
+    // This second reading only adds denies. It drops the redirect words and reads the command again.
+    // The `<` and `>` check makes a segment with no redirect word almost free.
+    if (words.some(w => w.includes('<') || w.includes('>'))) {
+      const c2 = realCommand(dropRedirectWords(words))
+      const b2 = c2.length ? baseWord(c2[0]!) : ''
+      if (b2 === 'rm') {
+        if (isRecursiveRm(c2) || rmTargets(c2).some(t => riskyTarget(t, root))) return REASON
+        hasRm = true
+      } else if (b2 === 'cd') {
+        hasCd = true
+      }
+    }
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
