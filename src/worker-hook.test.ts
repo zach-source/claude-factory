@@ -8620,3 +8620,28 @@ test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', 
   const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
   expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
 }, 30_000)
+
+// claude-factory-ieqm: zsh short forms. A word after `]]` starts a command, so a dynamic head must deny too.
+const SF_GATE: HookGate = {
+  ...AMP_GATE,
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
+const sfDeny = (c: string) => denyReason(c, '/Users/acme/widget', ['kubectl'], SF_GATE)
+
+test.each([
+  '$G $V origin main',
+  '$GH $V merge 5',
+  '$K apply -f x',
+  'sudo -E $G $V o main',
+  '${RM:-rm} -rf /',
+  'r${x}m -rf /',
+  'r?? -rf /',
+  'A[k]=x ls',
+  'A+=x $G $V origin main',
+  'repeat $N echo hi',
+])('denyReason denies %j bare and after a ]] short form (claude-factory-ieqm)', r => {
+  expect(sfDeny(r)).toBeDefined()
+  expect(sfDeny(`if [[ 1 ]] ${r}`)).toBeDefined()
+  expect(sfDeny(`while [[ 1 ]] ${r}`)).toBeDefined()
+})
