@@ -8374,6 +8374,11 @@ const DENY_PWY0: string[] = [
   'IFS=_; ${RM:-r}${x:-m_-rf} /',
   'IFS=_; ${F:-find_/_-delete}',
   'y=I$z; ${RM:-rm}${!y}-rf /',
+  'z=FS; declare I$z=_; ${F:-find_/_-delete}',
+  'y=m_-rf_/; z=FS; export I$z=_; ${RM:-r}$y',
+  'z=FS; readonly I$z=_; ${RM:-rm_-rf_/}',
+  'z=FS; typeset I$z=_; ${RM:-rm_-rf_/}',
+  'z=FS; printf -v I$z _; ${RM:-rm_-rf_/}',
 ]
 test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)

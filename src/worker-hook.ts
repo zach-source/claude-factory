@@ -1665,14 +1665,16 @@ function rmFindReading(
   ) {
     return { deny: true, rm: false }
   }
-  // IFS splits a word with a default value at run time, so the default can be rm: deny.
-  // An earlier segment can set IFS, and ${!y} reads it by indirection: deny on either.
-  if (
-    b !== 'rm' &&
-    /\$\{[!=~^]*\w+[^}]*[-=+]/.test(cmd[0]!) &&
-    (ifsInText || cmd[0]!.includes('${!') || /\bIFS\b/.test(cmd[0]!))
-  ) {
-    return { deny: true, rm: false }
+  // A default-value word can split on IFS at run time, and any builtin can set IFS: no IFS model.
+  // Deny when the word reads IFS by indirection, or its default reading holds rm or find.
+  if (b !== 'rm' && /\$\{[!=~^]*\w+[^}]*[-=+]/.test(cmd[0]!)) {
+    if (
+      cmd[0]!.includes('${!') ||
+      cmd[0]!.split('$').length > 2 ||
+      /rm|find/.test(expandedCommandWord(cmd[0]!) ?? cmd[0]!)
+    ) {
+      return { deny: true, rm: false }
+    }
   }
   if (b === 'rm') {
     if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
