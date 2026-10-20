@@ -57,6 +57,7 @@ import {
   dispatchable,
   factoryOf,
   goalOf,
+  shipBranchOf,
   hasBeads,
   isOwned,
   LABEL,
@@ -858,6 +859,13 @@ export function ownCopy(template: string, name: string) {
     `// commit, checked with \`factory check ${OWN}/${name}.ts\`. The improve sweep proposes changes to it.\n\n` +
     body
   )
+}
+
+/** the queued PR's branch on origin, fetched, so a rework run starts on the PR's own commits; undefined when it is gone */
+export function reworkBase(repo: string, branch: string) {
+  Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', branch], { timeout: 30_000 })
+  const ref = `origin/${branch}`
+  return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0 ? ref : undefined
 }
 
 /**
@@ -4358,12 +4366,18 @@ async function createRun(
   spec: string,
   repo: string,
   goal: string,
-  { id, bead, from, ship }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true },
+  {
+    id,
+    bead,
+    from,
+    ship,
+    onto,
+  }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true; onto?: string },
 ) {
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
   const created = herdr(
-    ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? base],
+    ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? onto ?? base],
     ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
   )
   const ws: string = created.workspace.workspace_id
@@ -4427,12 +4441,19 @@ async function createTracked(
   bead?: string,
   from?: { run: Run; saved: Saved },
   ship?: true,
+  shipBranch?: string,
 ) {
   const id = `${name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`
   const b = beads(repo, actorOf(id))
   if (bead && !b.claim(bead)) fail(`${bead} is already claimed by another worker`)
   try {
-    return await createRun(spec, repo, goal, { id, bead, from, ship })
+    return await createRun(spec, repo, goal, {
+      id,
+      bead,
+      from,
+      ship,
+      onto: shipBranch && reworkBase(repo, shipBranch),
+    })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
     if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
@@ -5280,7 +5301,7 @@ async function dispatch() {
         }
         let run, def
         try {
-          ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id))
+          ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id, undefined, undefined, shipBranchOf(bead)))
         } catch (err) {
           if (/already claimed/.test((err as Error).message)) {
             skips.set(bead.id, 'claimed elsewhere')

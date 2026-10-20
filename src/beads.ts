@@ -62,9 +62,24 @@ export const actorOf = (runId: string) => `factory/${runId}`
 
 /** what a run is asked to do, from its bead */
 export const goalOf = (b: Bead) =>
-  [`${b.id}: ${b.title}`, b.description, b.acceptance_criteria && `Acceptance: ${b.acceptance_criteria}`]
+  [
+    `${b.id}: ${b.title}`,
+    b.description,
+    b.acceptance_criteria && `Acceptance: ${b.acceptance_criteria}`,
+    shipRework(b),
+  ]
     .filter(Boolean)
     .join('\n\n')
+
+/** a bead handed to ship keeps its PR: a rework run pushes to that branch and opens no new PR */
+export const shipBranchOf = (b: Bead) => (b.metadata?.ship_branch ? String(b.metadata.ship_branch) : undefined)
+const shipRework = (b: Bead) => {
+  const branch = shipBranchOf(b)
+  return (
+    branch &&
+    `Ship rework: this bead is queued with ship as ${b.metadata?.ship_pr ?? 'a PR'} on branch ${branch}. Your worktree starts from origin/${branch}. Push your commits to that branch (git push origin HEAD:${branch}). Open no new PR.`
+  )
+}
 
 /** its owner recorded decisions governing it (fabriek's pilots): the owner hands it out, not the factory */
 export const isOwned = (b: Bead) => !!b.metadata?.owner_decisions
