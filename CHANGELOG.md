@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: main CI after #197 and #158 merged. #197 (bc1u) allowed the heads `$X[1,-1]` and `$X[1] a.txt`. #158 (clcc) denies a glob char in a command word, and in bash `$X[1]` is `$X` plus the glob `[1]`. The two rows now expect a deny (fail closed).
 - Fixed: the alias guard (claude-factory-mn2y) denied `ssh $h uptime` and `fish $h` in a command with a second segment, so main failed the miqy allow rows. `ssh` and `fish` are now on `ALIAS_SAFE_COMMANDS`: a child process cannot change the parent shell's alias table.
 - Fixed: the label pass mailed a run (or started a rework run) before it took the `conflict` or `rework` label off. When `gh pr edit --remove-label` failed, every pass mailed again: one run got 305 copies in 11 hours. The label now comes off first, and a failed removal sends nothing.
 - New: `FACTORY_WORKER_PLUGINS` (comma-separated plugin names, the `enabledPlugins` key before `@`) keeps those plugins in a worker's settings, next to `asd-ste100`. A plugin must also be enabled in the user's settings. Example: `FACTORY_WORKER_PLUGINS=ponytail`.
