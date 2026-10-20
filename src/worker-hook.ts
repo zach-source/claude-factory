@@ -1131,10 +1131,14 @@ const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|
  * `-exec rm` or `-execdir rm` word. A slice there would still cost O(n) for each call, and
  * O(n^2) in total.
  */
-function isRecursiveRm(words: string[], start = 0): boolean {
+function isRecursiveRm(words: string[], start = 0, brace = false): boolean {
   for (let k = start + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '--') return false
+    if (brace && BRACE_LIST_WORD.test(w) && !w.startsWith('-')) {
+      if (bracePieceRecursive(w)) return true
+      continue
+    }
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
       continue
@@ -1538,23 +1542,38 @@ function realCommandStart(words: string[], from: number, memo: Map<number, numbe
 // (B) The word can hold rm when it has the letters r and m in order.
 //     Deny if recursive flags follow it, or if a piece of the word is one.
 // The function scans each flag run one time, so the cost is O(n).
+function bracePieceRecursive(w: string): boolean {
+  return w.split(/[{},]/).some(p => recursiveFlag(p) || p.startsWith('--rec'))
+}
+
 function findBraceRmDeny(cmd: string[]): boolean {
   let clearUntil = 0
   const recursive = (j: number): boolean => {
     if (j < clearUntil) return false
-    if (isRecursiveRm(cmd, j)) return true
+    if (isRecursiveRm(cmd, j, true)) return true
     let k = j + 1
-    while (k < cmd.length && (cmd[k]!.startsWith('-') || RM_REDIRECT_WORD.test(cmd[k]!))) k++
+    while (k < cmd.length) {
+      const c = cmd[k]!
+      const redirect = RM_REDIRECT_WORD.exec(c)
+      if (redirect) {
+        if (redirect[1] === '') {
+          const next = cmd[k + 1] ?? '-'
+          if (next === '--' || !next.startsWith('-')) k++
+        }
+      } else if (!c.startsWith('-') && !BRACE_LIST_WORD.test(c)) break
+      k++
+    }
     clearUntil = k
     return false
   }
   for (let i = 1; i < cmd.length; i++) {
     const w = cmd[i]!
-    if (!BRACE_LIST_WORD.test(w)) continue
+    const isExec = w === '-exec' || w === '-execdir'
+    if (!isExec && !BRACE_LIST_WORD.test(w)) continue
     if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && recursive(i + 1)) return true
-    if (!hasLettersInOrder(w, 'rm')) continue
+    if (isExec || !hasLettersInOrder(w, 'rm')) continue
     if (recursive(i)) return true
-    if (w.split(/[{},]/).some(p => recursiveFlag(p) || p.startsWith('--rec'))) return true
+    if (bracePieceRecursive(w)) return true
   }
   return false
 }

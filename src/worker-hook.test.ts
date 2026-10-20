@@ -8639,6 +8639,9 @@ const DENY_GJ9L = [
   "find . {-exec,rm} --recursive x ';'",
   "find . {-exec,rm,--recursive} x ';'",
   "find . {-exec,rm,--rec} x ';'",
+  "find . {x,-exec} rm {-rf,y} / ';'",
+  "find . {-exec,rm} -f {-r,x} / ';'",
+  "find . -exec rm -f {-r,x} / ';'",
 ]
 test.each(DENY_GJ9L)('denyReason denies %j (claude-factory-gj9l)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
@@ -8661,4 +8664,10 @@ test.each(ALLOW_GJ9L)('denyReason allows %j (claude-factory-gj9l)', cmd => {
 test('denyReason reads 3000 brace words after find in one pass (claude-factory-gj9l)', () => {
   expect(scanReason('find . ' + '-{rm,x} '.repeat(3000), '/Users/acme/widget')).toBe(REASON)
   expect(scanReason('find . ' + '{-exec,rm} '.repeat(3000) + '-rf /', '/Users/acme/widget')).toBe(REASON)
+}, 30_000)
+
+test('denyReason reads 3000 redirect pairs after find in one pass (claude-factory-gj9l)', () => {
+  const t0 = Date.now()
+  expect(scanReason('find . ' + '2> {r,m} '.repeat(3000) + 'x', '/Users/acme/widget')).toBeUndefined()
+  expect(Date.now() - t0).toBeLessThan(500)
 }, 30_000)
