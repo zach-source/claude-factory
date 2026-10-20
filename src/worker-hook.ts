@@ -225,6 +225,13 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-mmc9.14: bash and zsh disagree on a non-ASCII or subscripted assignment prefix.
+export const ASSIGNMENT_PREFIX_REASON =
+  'The factory denies this command: it starts with an assignment word that bash and zsh read in ' +
+  'different ways (a non-ASCII name or a [subscript]). The guard cannot know which command runs. ' +
+  'Use an ASCII NAME=value prefix, or set the variable on its own line. Do not retry this exact ' +
+  'command.'
+
 // claude-factory-wmsr: a quote, a backtick or a backslash in a comment can hide a later command
 // from segments(). It reads the text as words. segments() only flags the hazard. It never changes
 // the words it returns.
@@ -1270,6 +1277,42 @@ function wrapperAssignmentOperand(w: string): boolean {
   return w[0] !== '-' && w.indexOf('=') > 0
 }
 
+// claude-factory-mmc9: true when the shell reads `w` as a prefix assignment, not as the command.
+// bash and zsh read `NAME=v` and `NAME+=v` (append). zsh also reads `NAME[sub]=v` and
+// `NAME[sub]+=v`. The name must be a literal identifier: a word such as `$G=x` word-splits into
+// the real command, so the hook must not skip it. The subscript can hold any text, including `]`
+// and quotes. The greedy match can skip more than the shell does. Then the hook reads later words
+// as the command and denies more, never less.
+// claude-factory-mmc9.8: zsh uses glibc iswalnum for names. That set is wider than letters, so the
+// name is any Alphabetic, mark, number or `_`, and not an ASCII digit first. A wider match only
+// makes the hook deny more.
+const SHELL_NAME = '(?![0-9])[\\p{Alphabetic}\\p{M}\\p{N}_]+'
+const ASSIGNMENT_WORD_RE = new RegExp(`^${SHELL_NAME}(?:\\[[\\s\\S]*\\])?\\+?=`, 'u')
+const SUBSCRIPT_NAME_RE = new RegExp(`^${SHELL_NAME}\\[`, 'u')
+function shellAssignmentWord(w: string): boolean {
+  return ASSIGNMENT_WORD_RE.test(w)
+}
+
+// claude-factory-mmc9.14: bash reads only an ASCII `NAME=v` or `NAME+=v` as an assignment. A
+// non-ASCII name or a subscript is an assignment in zsh and a command in bash. The hook cannot
+// know the shell, so it denies such a word at a shell-prefix position when a word follows it.
+const STRICT_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*\+?=/
+function hasAmbiguousAssignmentPrefix(words: string[]): boolean {
+  for (let i = 0; i < words.length - 1; i++) {
+    const w = words[i]!
+    // claude-factory-mmc9.17: only the unquoted keyword `time` reads NAME=v as an assignment.
+    // /usr/bin/time and a quoted time run the word as the command. Deny any such word fail-closed.
+    if (baseWord(w) === 'time') {
+      const rest = skipWrapperFlags('time', words.slice(i + 1))
+      if (rest.length >= 2 && ASSIGNMENT_WORD_RE.test(rest[0]!)) return true
+    }
+    if (RESERVED_LEADING_WORDS.has(w) || w === 'time') continue
+    if (!ASSIGNMENT_WORD_RE.test(w)) return false
+    if (!STRICT_ASSIGNMENT_RE.test(w)) return true
+  }
+  return false
+}
+
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
   return realCommandInfo(words).cmd
@@ -1316,6 +1359,107 @@ function realCommandInfo(words: string[]): { cmd: string[]; dynamicRepeatCount: 
     }
     return { cmd: w, dynamicRepeatCount }
   }
+}
+
+// claude-factory-mmc9.25: this function mirrors realCommand, but it returns an index.
+function realCommandStart(words: string[], from: number, memo: Map<number, number>): number {
+  const seen: number[] = []
+  let i = from
+  let out = -1
+  for (;;) {
+    if (i >= words.length) {
+      out = words.length
+      break
+    }
+    const m = memo.get(i)
+    if (m !== undefined) {
+      out = m
+      break
+    }
+    seen.push(i)
+    const head = words[i]!
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head) || RESERVED_LEADING_WORDS.has(head)) {
+      i++
+      continue
+    }
+    const b = baseWord(head)
+    if (WRAPPERS.has(b)) {
+      const after = words.slice(i + 1)
+      i = i + 1 + (after.length - skipWrapperFlags(b, after).length)
+      continue
+    }
+    if (b === 'timeout') {
+      const after = words.slice(i + 1)
+      let j = i + 1 + (after.length - skipWrapperFlags('timeout', after).length)
+      if (/^[\d.]+[smhd]?$/.test(words[j] ?? '')) j++
+      i = j
+      continue
+    }
+    if (b === 'xargs') {
+      i++
+      while (i < words.length && words[i]!.startsWith('-')) i++
+      continue
+    }
+    out = i
+    break
+  }
+  for (const k of seen) memo.set(k, out)
+  return out
+}
+
+function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolean>): boolean {
+  if (!cmd.length) return false
+  const b = baseWord(cmd[0]!)
+  if (b === 'rm') {
+    return (
+      isRecursiveRm(cmd) ||
+      rmTargets(cmd).some(t => {
+        if (!riskyMemo) return riskyTarget(t, root)
+        let r = riskyMemo.get(t)
+        if (r === undefined) riskyMemo.set(t, (r = riskyTarget(t, root)))
+        return r
+      })
+    )
+  }
+  if (b === 'find') {
+    for (let i = 0; i < cmd.length; i++) {
+      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return true
+    }
+  }
+  return false
+}
+
+// claude-factory-mmc9.22: deny-only second readings for every non-dash word with =.
+// The word can be the command (bash runs a non-ASCII or path name) or an assignment.
+// This check returns true when rm or find -exec rm runs under either reading.
+function assignmentReadingsDeny(words: string[], root: string | undefined, state: ScanState): boolean {
+  const memo = new Map<number, number>()
+  // claude-factory-mmc9.26: read each start index once. Many words with = share one command
+  // start. A repeated read costs O(words * targets) and can pass the hook timeout.
+  const read = new Map<number, boolean>()
+  const riskyMemo = new Map<string, boolean>()
+  const denyAt = (s: number): boolean => {
+    if (s >= words.length) return false
+    let v = read.get(s)
+    if (v === undefined) {
+      const b = baseWord(words[s]!)
+      if (b === 'rm' || b === 'find') {
+        // claude-factory-mmc9.27: charge each uncached read. Many starts (a=/rm) cost O(words) each.
+        if (spendWork(state, words.length - s)) return true
+        v = rmFindDeny(words.slice(s), root, riskyMemo)
+      } else v = false
+      read.set(s, v)
+    }
+    return v
+  }
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w[0] === '-' || w.indexOf('=') < 0) continue
+    if (denyAt(i)) return true
+    if (denyAt(realCommandStart(words, i + 1, memo))) return true
+  }
+  return false
 }
 
 /**
@@ -1576,7 +1720,7 @@ function commandAnchors(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
     const w = words[i]!
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+    if (shellAssignmentWord(w)) {
       i++
       continue
     }
@@ -1911,7 +2055,7 @@ function envOptionScan(
       j = span.end - 1 // skip the flag and its own value word; it already ran above
       continue
     }
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(ew)) continue // a NAME=value assignment: not the command
+    if (wrapperAssignmentOperand(ew)) continue // a NAME=value assignment: not the command
     if (ew === '--') return { cmdStart: j + 1, clearsAll }
     if (ew === '-') {
       clearsAll = true
@@ -5465,6 +5609,12 @@ const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
  */
 function anyDynamicCommandReason(words: string[]): string | undefined {
   for (const a of commandAnchors(words)) {
+    // claude-factory-mmc9.6: segments() ends a word at `(`, so `A[(r)x]=x cmd` leaves the word `A[` at
+    // the anchor. zsh runs that as an assignment with a subscript flag. Deny a name-and-bracket
+    // anchor word that is not a whole assignment word.
+    if (SUBSCRIPT_NAME_RE.test(words[a]!) && !shellAssignmentWord(words[a]!)) {
+      return DYNAMIC_VERB_REASON
+    }
     // claude-factory-38jm: bash expands `{sh,-c}` into two words before it runs the command. A
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
     // no comma and no `..`, so it stays allowed.
@@ -6390,6 +6540,7 @@ function denyAtScan(
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
+  let ambiguousAssignment = false
   let subIdx = 0
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
@@ -6433,6 +6584,7 @@ function denyAtScan(
       if (aliased) return aliased
     }
     if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
+    if (!ambiguousAssignment && hasAmbiguousAssignmentPrefix(words)) ambiguousAssignment = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
@@ -6443,6 +6595,22 @@ function denyAtScan(
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
+    if (assignmentReadingsDeny(words, root, state)) return state.work < 0 ? SCAN_BUDGET_REASON : REASON
+    // claude-factory-mmc9.25: realCommand skips only an ASCII NAME=. For each word with =, read
+    // the word and the command after it. This sets hasRm and hasCd for the rm and cd pair check.
+    {
+      const memo2 = new Map<number, number>()
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i]!
+        if (w[0] === '-' || w.indexOf('=') < 0) continue
+        const s = realCommandStart(words, i + 1, memo2)
+        for (const h of [w, words[s] ?? '']) {
+          const hb = baseWord(h)
+          if (hb === 'rm') hasRm = true
+          else if (hb === 'cd') hasCd = true
+        }
+      }
+    }
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
@@ -6560,6 +6728,7 @@ function denyAtScan(
   if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
   if (definesFunction) return FUNCTION_DEF_REASON
+  if (ambiguousAssignment) return ASSIGNMENT_PREFIX_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
