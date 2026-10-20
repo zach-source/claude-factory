@@ -1196,6 +1196,7 @@ test('MIG-b: a branch deleted upstream with a stale local origin ref stops migra
   const id = freshId('ship')
   const { branch } = writeRun(repo, id, { outcome: 'working' })
   writeRigs([{ name: 'r1', repo }])
+  git(repo, 'config', 'fetch.prune', 'false') // a global fetch.prune would hide a missing --prune
   git(repo, 'fetch', '--quiet', 'origin') // the stale ref origin/<branch> exists here
   git(origin, 'branch', '-D', branch)
   const out = factory(['migrate-to-ax', '--dry-run'])
