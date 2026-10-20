@@ -3822,6 +3822,18 @@ const DENY_EBMM_ANY = [
   'tee -a ~/.gitconfi[[=g=]]',
   'tee -a /Users/widget/.gitconfi[[:alpha:]]',
   'cp x ~/.config/[[:alpha:]]it/.',
+  'tee -a ~/.gitconfi{[,}g]',
+  'tee -a ~/.gitconfi[{g],}',
+  'tee -a ~/.gitconfi{g,[}g]',
+  'tee -a ~/.gitconfi{x,[}^x]',
+  'tee -a ~/.gitconfi{x,[}!x]',
+  'tee -a ~/.gitconfi[{^x],}',
+  'tee -a ~/.gitconf{i,[}[:alpha:]]g',
+  'tee -a ~/.gitconfi{[,}g]{,}',
+  'tee -a /Users/widget/.gitconfi{[,}g]',
+  'tee -a ~widget/.gitconfi{[,}g]',
+  'cp x ~/.config/{[,}g]it/config',
+  'cp x ~/.config/{[,}g]it/.',
 ]
 test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
   'denyReason denies %j under a second fixture user (claude-factory-ebmm)',

@@ -2691,7 +2691,8 @@ function bracketEnd(w: string, i: number): number {
   return -1
 }
 
-function tokenizeGlob(w: string): GlobToken[] {
+// claude-factory-ebmm.17: null when a brace group and a bracket cross (bash expands braces first).
+function tokenizeGlob(w: string): GlobToken[] | null {
   const out: GlobToken[] = []
   for (let i = 0; i < w.length; i++) {
     const c = w[i]!
@@ -2703,6 +2704,7 @@ function tokenizeGlob(w: string): GlobToken[] {
     } else if (c === '*') out.push({ k: 'any' })
     else if (c === '?') out.push({ k: 'one' })
     else if (c === '[' && bracketEnd(w, i) > 0) {
+      if (/[{}]/.test(w.slice(i, bracketEnd(w, i)))) return null
       out.push({ k: 'one' })
       i = bracketEnd(w, i)
     } else if (c === '{') {
@@ -2715,6 +2717,7 @@ function tokenizeGlob(w: string): GlobToken[] {
       if (j >= w.length) out.push({ k: 'lit', c })
       else {
         const text = w.slice(i + 1, j)
+        if (/[[\]]/.test(text)) return null
         out.push(/[*?[]/.test(text) ? { k: 'any' } : { k: 'cls', f: braceClass(text) })
         i = j
       }
@@ -2727,6 +2730,7 @@ function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanS
   const w = word.replace(/^["']+|["']+$/g, '')
   if (!/[*?[{]/.test(w)) return false
   const toks = tokenizeGlob(w)
+  if (!toks) return true
   // claude-factory-ty8y.24, 267o: star runs collapse, and more than MAX_GLOB_STARS fails closed.
   let stars = 0
   toks.forEach((t, i) => {
