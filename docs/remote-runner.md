@@ -324,6 +324,12 @@ Owner steps (the factory does not do them):
    Do not install the GitHub App on it. Every worker task has the App token (`GITHUB_BASIC`). A worker can then push to the backup, and the next restore writes its files.
    Put a fine-grained token in the vault key `GITHUB_BASIC_MANAGER`. The value must be base64 of `x-access-token:<token>`, the same as `GITHUB_BASIC`. A raw token makes every `github.com` git call of the manager fail.
    The token needs read and write on the backup repository and on the rig repositories the manager syncs. A fine-grained token covers one resource owner only. If the owners differ, put the backup repository under the owner of the rig repositories, or use a classic token with the `repo` scope.
+   The App must not cover the backup repository. An installation for "All repositories" covers a new repository at once. Then every worker of that account can force-push the backup branch.
+   Do one of these:
+   - Set the installation of that account to "Only select repositories". Leave the backup repository out.
+   - Put the backup repository under an account that has no installation. Use a classic token with the `repo` scope.
+
+   Then do this check. In a worker task, run `git ls-remote <backup url>`. It must get 401 or 403. If it lists refs, the App covers the repository. Do not continue.
    When `FACTORY_AX_BACKUP_REMOTE` is set, `factory manager --ax` gives the manager task that key for `github.com`. Worker tasks keep `GITHUB_BASIC`.
 2. On the laptop, set `FACTORY_AX_BACKUP_REMOTE` to its https URL. Do not put a key in the URL. Optional: `FACTORY_AX_BACKUP_BRANCH` (default `manager-home`) and `FACTORY_AX_BACKUP_EVERY` in ms (default 600000).
 3. Run `factory manager --ax`. The task gets the variables.
