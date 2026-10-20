@@ -7966,9 +7966,12 @@ test('claude-factory-dnw1: glued nested default git push denies with PUSH_REASON
     denyReason('git${X:-${IFS}}push${X:-${IFS}}origin${X:-${IFS}}main', '/root/repo', undefined, J1KI_GATE),
   ).toBe(PUSH_REASON)
 })
-test.each(['echo ${X:-${HOME}}x', 'ls ${A:-${B}}/c', 'echo ${X:-x}y'])('claude-factory-dnw1: %s stays allowed', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
-})
+test.each(['echo ${X:-${HOME}}x', 'ls ${A:-${B}}/c', 'echo ${X:-x}y'])(
+  'claude-factory-dnw1: %s stays allowed',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+  },
+)
 test.each(J1KI_REASON_ROWS)('claude-factory-j1ki: %s denies with REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })

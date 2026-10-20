@@ -6581,12 +6581,37 @@ function shellAliasReason(
 // word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
 // the real command. This returns the words with each such expansion read as a word break, or
 // undefined when no word holds a glued expansion. A whole-word expansion ($X, ${X}) is not glued.
-const GLUED_EXPANSION_RE = /\$(?:\{[^}]*\}|\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
+const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
+// claude-factory-dnw1: a ${...} span ends at its matching close brace, so a nested default
+// (${X:-${IFS}}) is one expansion. Each span becomes $@ for the split. An unclosed span runs to the
+// end of the word (fail closed).
+function flattenBraceExpansions(w: string): string {
+  let out = ''
+  for (let i = 0; i < w.length;) {
+    if (w[i] !== '$' || w[i + 1] !== '{') {
+      out += w[i++]
+      continue
+    }
+    let depth = 0
+    let j = i + 1
+    for (; j < w.length; j++) {
+      if (w[j] === '{') depth++
+      else if (w[j] === '}' && --depth === 0) break
+    }
+    out += '$@'
+    i = j + 1
+  }
+  return out
+}
 function splitGluedExpansions(words: string[]): string[] | undefined {
   let out: string[] | undefined
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    const parts = w.includes('$') ? w.split(GLUED_EXPANSION_RE).filter(p => p !== '') : [w]
+    const parts = w.includes('$')
+      ? flattenBraceExpansions(w)
+          .split(GLUED_EXPANSION_RE)
+          .filter(p => p !== '')
+      : [w]
     // No part, or one part equal to the word: the word is one whole expansion, or holds none.
     if (parts.length === 0 || (parts.length === 1 && parts[0] === w)) {
       out?.push(w)
