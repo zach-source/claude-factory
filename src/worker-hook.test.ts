@@ -8744,6 +8744,46 @@ test.each([
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
 })
 
+// claude-factory-bc1u: a brace-less zsh flag run or a glued subscript is an operator head of a set name.
+const BC1U_DENY: string[] = [
+  'X="git push origin main"; $=~X',
+  'X="git push origin main"; $~=X',
+  'X="git push origin main"; $^=X',
+  'X="git push origin main"; eval $~X',
+  'X="git push origin main"; eval $^X',
+  'X="git push origin main"; eval $X[1,-1]',
+  'X="git push origin main"; command $=~X',
+  'X="git push origin main"; builtin eval $~X',
+  'X="git push origin main"; $~X',
+  'X="git push origin main"; $X[1,-1]',
+  'X="rm -rf /"; eval $~X',
+  'X="rm -rf /"; eval $^X',
+  'X="rm -rf /"; eval $X[1,-1]',
+  'X="rm -rf /"; eval $=~X',
+  'X=bd; $~X init',
+  'X=bd; $X[1,2] init',
+  'X=rm; $~X -r ./d',
+  'X=rm; $^X -r ./d',
+  'X=rm; $=~X -r ./d',
+  'X=rm; $~=X -r ./d',
+  'X=rm; $^=X -r ./d',
+  'X=rm; $X[1,2] -r ./d',
+  'X=rm; $X[1,-1] -r ./d',
+  'X=rm; sudo $~X -r ./d',
+  'X=rm; eval $~X -r ./d',
+]
+test.each(BC1U_DENY)('denyReason denies %j (claude-factory-bc1u)', cmd => {
+  const got = denyReason(cmd, '/root/repo', undefined, MIQY_GATE)
+  expect(got === DYNAMIC_VERB_REASON || got === REASON).toBe(true)
+})
+
+test.each(['$~X', '$X[1,-1]', 'eval $~X', '$^foo a.txt', '$X[1] a.txt', 'echo $~X', 'X=rm; echo $~X', 'X=(a b); echo $X[1]'])(
+  'denyReason allows %j (claude-factory-bc1u)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
+  },
+)
+
 test.each([
   ["trap 'git push origin main' EXIT"],
   ['trap "git push origin main" EXIT'],
