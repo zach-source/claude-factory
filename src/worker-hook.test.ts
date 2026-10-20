@@ -5466,7 +5466,6 @@ test('denyReason denies a bd command behind a dynamic shell word (claude-factory
 const SFT4_ALLOW = [
   "env -S 'sh' -c 'echo x'",
   'for f in *.ts; do echo $f; done',
-  "SH=sh; $SH -c 'echo x'",
   "/bin/s? -c 'echo x'",
   '$EDITOR file.txt',
   '$CC -c foo.c',
@@ -8140,7 +8139,6 @@ test.each(J1KI_PUSH_ROWS2)('claude-factory-j1ki.12-15: %s denies with PUSH_REASO
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
 })
 test.each([
-  'export${IFS}PATH=/x; git status',
   'cd /x && ls',
   'rm ./f',
   'echo $(date)',
@@ -8590,8 +8588,12 @@ test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
 })
 
 const ALLOW_PWY0: string[] = [
-  'export EDITOR=vim; $EDITOR acme.txt',
   '$EDITOR acme.txt',
+  'bash -c ls',
+  'eval echo hi',
+  "EDITOR=vim bash -c 'ls'",
+  'echo hi; ls',
+  'A[1]=x; echo ok',
   'echo $x rm',
   '$x ls',
   '${EDITOR:-vi} acme.txt',
@@ -8652,6 +8654,17 @@ const DENY_K8IZ: string[] = [
   "export y='rm ../acme.txt'; bash -c '$y'",
   "export y='rm ../acme.txt'; sh -c '$y'",
   'a=I; b=F; c=S; eval "$a$b$c=_"; y=m_../acme.txt; r$y',
+  "y='rm ../acme.txt' bash -c '$y'",
+  "y='rm ../acme.txt' eval '$y'",
+  "y='rm ../acme.txt' env bash -c '$y'",
+  'y=\'rm ../acme.txt\'; echo "`$y`"',
+  "for y in 'rm ../acme.txt'; do $y; done",
+  'set -- rm ../acme.txt; $1',
+  'cd acme && $y',
+  // k8iz.15: accepted false denies (fail closed)
+  'export EDITOR=vim; $EDITOR acme.txt',
+  "SH=sh; $SH -c 'echo x'",
+  'export${IFS}PATH=/x; git status',
 ]
 test.each(DENY_K8IZ)('denyReason denies %j (claude-factory-k8iz)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)

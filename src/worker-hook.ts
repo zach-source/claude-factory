@@ -1628,7 +1628,7 @@ function dynamicHeadDeny(
   const bal = w.endsWith('${') ? w.slice(0, -2) : w
   if (w.includes('`') || w.includes('${!') || bal.split('{').length > bal.split('}').length)
     return { deny: true, rm: false }
-  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags || other.ifs)
+  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags || (other.ifs && /[$`]/.test(w)))
     return { deny: true, rm: false }
   if (start === 0) {
     for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
@@ -6932,23 +6932,19 @@ function denyAtScan(
   const segRmFind = segs.map(sg => /rm|find/i.test(sg.join(' ')))
   // k8iz: a segment with IFS, a dollar or a backtick can set IFS or build a value. A NAME= with a
   // quote, backslash or space in the value can split into words with the default IFS.
-  const segIfs = segs.map(sg => {
-    const t = sg.join(' ')
-    return (
-      /IFS/.test(t) ||
-      (/[$`][^\s=]*=/.test(t) && /[$`]/.test(t)) ||
-      /\bprintf +-v|\bread\b/.test(t) ||
-      sg.some(x => /^[A-Za-z_]\w*\+?=.*['"\\\s]/.test(x))
-    )
-  })
-  const ifsCount = segIfs.filter(Boolean).length
+  // Rule (k8iz): a command word with a dollar or backtick can read any value that an earlier
+  // or outer segment, a prefix assignment, a loop or `set --` gave it. So it denies when the
+  // text has 2+ segments or its own segment starts with a NAME= or NAME+= prefix.
+  // A zsh flag group cuts a word into segments, so it does not count there.
+  const manySegs = segs.length > 1 && !command.includes('${(')
+  const segIfs = segs.map(sg => manySegs || /^[A-Za-z_]\w*\+?=/.test(sg[0] ?? ''))
   const flagCount = segFlag.filter(Boolean).length
   const rmFindCount = segRmFind.filter(Boolean).length
   const outerSegs = state.outer
-  const otherSegs = (i: number): OtherSegs => ({
+  const otherSegs = (i: number, withIfs = false): OtherSegs => ({
     flags: outerSegs.flags || flagCount - (segFlag[i] ? 1 : 0) > 0,
     rmfind: outerSegs.rmfind || rmFindCount - (segRmFind[i] ? 1 : 0) > 0,
-    ifs: outerSegs.ifs || ifsCount - (segIfs[i] ? 1 : 0) > 0,
+    ifs: withIfs && (outerSegs.ifs || segIfs[i]!),
   })
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
@@ -6969,9 +6965,9 @@ function denyAtScan(
     return undefined
   }
   for (let segIdx = 0; segIdx < segs.length; segIdx++) {
+    state.outer = otherSegs(segIdx, true)
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
-    state.outer = otherSegs(segIdx)
     const words = segs[segIdx]!
     if (aliasTable) {
       const aliased = shellAliasReason(
@@ -7136,6 +7132,13 @@ function denyAtScan(
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
     if (readings.deny) return REASON
     if (readings.rm) hasRm = true
+    // k8iz: this reading is late, so a specific reason (push, alias, here-document) wins.
+    if (
+      (segIfs[segIdx] || outerSegs.ifs) &&
+      !late.reason &&
+      wrapperReadingsDeny(words, root, otherSegs(segIdx, true)).deny
+    )
+      late.reason = REASON
     // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
     if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
