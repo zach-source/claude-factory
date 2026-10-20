@@ -32,6 +32,7 @@ import {
   REASON,
   SCAN_BUDGET_REASON,
   scanReason,
+  SHELL_ALIAS_DEFINE_REASON,
   SHELL_ALIAS_READ_REASON,
   SHELL_ALIAS_REASON,
   SHELL_STDIN_REASON,
@@ -7449,6 +7450,89 @@ test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x' && !/^[A-Za-z]\[/.test(c)))(
     expect(pre).toBeUndefined()
   },
 )
+
+const ALIAS_DEFINE_DENY = [
+  "alias g='git push origin main'; eval g",
+  "alias g='git push origin main'; trap g EXIT",
+  "alias g='git push origin main'; . ./g.sh",
+  "alias g='git push origin main'; source ./g.sh",
+  "alias -g M=main; eval 'git push origin M'",
+  "alias g='rm -rf /'; eval g",
+  "shopt -s expand_aliases; alias g='git push origin main'; eval g",
+  `bash -c "shopt -s expand_aliases; alias g='git push origin main'; eval g"`,
+  "builtin alias g='git push origin main'; eval g",
+  "\\alias g='git push origin main'; eval g",
+  "alias -- g='git push origin main'; eval g",
+  "alias a=b g='git push origin main'; eval g",
+  "alias 'g'='git push origin main'; eval g",
+  "command alias g='git push origin main'; eval g",
+  "al''ias g='git push origin main'; eval g",
+  "alias g='git push origin main'; echo $(g)",
+  "alias g='git push origin main'; echo `g`",
+  "alias g='git push origin main'; cat <(g)",
+  `eval "alias g='git push origin main'"; eval g`,
+  "aliases[g]='git push origin main'; eval g",
+  "typeset aliases[g]='git push origin main'; eval g",
+  "galiases[M]=main; eval 'git push origin M'",
+  "BASH_ALIASES[g]='git push origin main'; eval g",
+  ": ${aliases[g]::=git push origin main}; eval g",
+  "A=alias; $A g='git push origin main'; eval g",
+  "A=al; ${A}ias g='git push origin main'; eval g",
+  "A=alias; builtin $A g='git push origin main'; eval g",
+]
+const ALIAS_DEFINE_ALLOW = [
+  "alias ll='ls -l'",
+  'alias -g M=widget',
+  'alias a=b c=d',
+  'alias a=b && alias c=d',
+  'alias',
+  'alias g',
+  'grep -n alias src/worker-hook.ts',
+  'rg -n shellAliases src | head',
+  'gh alias list',
+  'bd search alias',
+  'bun test src/worker-hook.test.ts -t alias',
+  'git log --grep=alias',
+]
+
+test.each(ALIAS_DEFINE_DENY)('denyReason denies a command that defines an alias and runs more: %s (claude-factory-mn2y)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, snapGate())).toBeDefined()
+  expect(
+    denyReason(
+      cmd,
+      '/w',
+      undefined,
+      snapGate(() => new Map()),
+    ),
+  ).toBeDefined()
+})
+
+test.each(["alias g='echo acme'; eval g", "alias ll='ls -l'; ll"])(
+  'denyReason gives the alias-define reason: %s (claude-factory-mn2y)',
+  cmd => {
+    expect(denyReason(cmd, '/w', undefined, snapGate())).toBe(SHELL_ALIAS_DEFINE_REASON)
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => new Map()),
+      ),
+    ).toBe(SHELL_ALIAS_DEFINE_REASON)
+  },
+)
+
+test.each(ALIAS_DEFINE_ALLOW)('denyReason allows a plain alias command: %s (claude-factory-mn2y)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, snapGate())).toBeUndefined()
+  expect(
+    denyReason(
+      cmd,
+      '/w',
+      undefined,
+      snapGate(() => new Map()),
+    ),
+  ).toBeUndefined()
+})
 
 test('denyReason denies an alias chain past the depth cap but ends on an alias cycle, as zsh does (claude-factory-1zr5)', () => {
   expect(denyReason('loop1 x', '/w', undefined, SNAP_GATE)).toBeUndefined()

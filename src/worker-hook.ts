@@ -102,6 +102,13 @@ export const SHELL_ALIAS_REASON =
   'that runs git or gh, or that this hook cannot read. The hook cannot check what the alias does. ' +
   'Type the full git or gh command, with no alias. Do not retry this exact command.'
 
+// claude-factory-mn2y
+export const SHELL_ALIAS_DEFINE_REASON =
+  'The factory denies this command: it defines a shell alias (alias, an aliases[...] or BASH_ALIASES ' +
+  'write, or a dynamic command word) and also runs more. An eval, trap, source, substitution or ' +
+  'sourced file reads the new alias after this hook ran. Define no alias; type the full command. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-1zr5
 export const SHELL_ALIAS_READ_REASON =
   'The factory denies this command: the hook cannot read the Claude Code shell-snapshot folder, so it ' +
