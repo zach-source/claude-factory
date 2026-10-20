@@ -1251,8 +1251,10 @@ function namesFunctionDefinition(words: string[]): boolean {
 
 /** true when `w` is a short-flag cluster (e.g. `-rf`) or a long flag (`--recursive`) that means recursive */
 function recursiveFlag(w: string): boolean {
-  if (w === '--recursive' || w.startsWith('--recursive=')) return true
-  if (w.startsWith('--')) return false
+  if (w.startsWith('--')) {
+    const name = w.split('=')[0]!
+    return name.length >= 3 && '--recursive'.startsWith(name)
+  }
   if (w.startsWith('-') && w.length > 1) return /[rR]/.test(w.slice(1))
   return false
 }
@@ -1755,7 +1757,7 @@ function realCommandStart(words: string[], from: number, memo: Map<number, numbe
 //     Deny if recursive flags follow it, or if a piece of the word is one.
 // The function scans each flag run one time, so the cost is O(n).
 function bracePieceRecursive(w: string): boolean {
-  return w.split(/[{},]/).some(p => recursiveFlag(p) || p.startsWith('--rec'))
+  return w.split(/[{},]/).some(recursiveFlag)
 }
 
 function findBraceRmDeny(cmd: string[]): boolean {
