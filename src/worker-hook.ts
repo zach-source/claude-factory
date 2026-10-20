@@ -7213,7 +7213,8 @@ function denyAtScan(
     // find word or the slot head. Read the segment again without its redirect words.
     if (words.some(w => /[<>]/.test(w))) {
       const c2 = realCommand(dropRedirectWords(words))
-      if (c2.length && baseWord(c2[0]!) === 'find' && (findBraceRmDeny(c2) || findExecRmDeny(c2))) return REASON
+      if (c2.length && baseWord(c2[0]!) === 'find' && (findBraceRmDeny(c2) || findExecRmDeny(c2)))
+        return REASON
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
