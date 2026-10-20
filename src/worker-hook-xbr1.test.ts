@@ -50,6 +50,11 @@ denyRows.push(
   'X="git push origin main"; sudo ${X}=1',
   'X="a=1 git push origin main"; sudo ${=X}',
   'X="-- git push origin main"; sudo ${=X}',
+  'sudo ${=REPLY}',
+  'sudo ${=MATCH}',
+  'sudo ${!Y}',
+  'read X; sudo ${=X}',
+  'X=a; A=$X sudo ls',
 )
 
 test.each(denyRows)('denies %s', row => {
@@ -66,12 +71,9 @@ test('a plain dynamic word uses the dynamic reason', () => {
   expect(run('X="git push origin main"; sudo ${=X}')).toBe(DYNAMIC_VERB_REASON)
 })
 
-test.each([
-  'sudo ls',
-  'sudo A=1 git status',
-  'sudo A=1 B=2 ls',
-  'sudo -u root A=b ls -la',
-  'X=ls; sudo $X',
-])('allows %s', row => {
-  expect(run(row)).toBeUndefined()
-})
+test.each(['sudo ls', 'sudo A=1 git status', 'sudo A=1 B=2 ls', 'sudo -u root A=b ls -la', 'X=ls; sudo $X'])(
+  'allows %s',
+  row => {
+    expect(run(row)).toBeUndefined()
+  },
+)
