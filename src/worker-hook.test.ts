@@ -121,6 +121,34 @@ const ALLOW = [
 // stay allowed even though they mention $ or a glob char, because none is an rm operand: claude-factory-99d.1
 const ALLOW_VAR_OR_GLOB = ['echo $X', 'ls *.md', "git rm '*.md'"]
 
+// claude-factory-q462: a brace list expands before rm runs, so it can hide a path outside the root.
+const DENY_BRACE_RM = [
+  'rm {,../}x',
+  'rm {x,/etc/passwd}',
+  'rm -- {,../}x',
+  'rm x{,../../y}',
+  'rm -f {,../}x',
+  'rm {a,b}',
+  'rm .scratch/{a,b}.md',
+]
+const ALLOW_BRACE_NEIGHBOURS = [
+  'rm x',
+  'rm ./build/a',
+  'mkdir -p {acme,widget}/{src,test}',
+  'find . -name x -exec rm -f {} +',
+]
+const BRACE_OPTS = { headOf: () => 'factory/x' }
+
+test.each(DENY_BRACE_RM)('denyReason denies an rm with a brace target %j', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+  expect(denyReason(cmd, '/root/repo', undefined, BRACE_OPTS)).toBe(REASON)
+})
+
+test.each(ALLOW_BRACE_NEIGHBOURS)('denyReason allows %j beside the brace rows', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+  expect(denyReason(cmd, '/root/repo', undefined, BRACE_OPTS)).toBeUndefined()
+})
+
 const ROOT = '/w'
 
 // an rm operand outside ROOT, checked with denyReason(cmd, ROOT): claude-factory-99d.2

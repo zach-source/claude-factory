@@ -1200,13 +1200,13 @@ function rmTargets(words: string[]): string[] {
 
 /**
  * Checks rm target `t` for risk.
- * A `$` expansion, a glob char (`*`, `?`, `[`), or a leading `~` makes `t` risky.
+ * A `$` expansion, a glob char (`*`, `?`, `[`), a brace (`{`, a list that hides a path), or a leading `~` makes `t` risky.
  * A path that resolves outside `root` also makes `t` risky, when the caller passes `root`.
  * `root` itself counts as outside, so `rm <root>` is risky too.
  * When the caller omits `root`, an absolute path or a path with a `..` segment is risky instead.
  */
 function riskyTarget(t: string, root?: string): boolean {
-  if (/[$*?[]/.test(t) || t.startsWith('~')) return true
+  if (/[$*?[{]/.test(t) || t.startsWith('~')) return true
   if (root === undefined) return t.startsWith('/') || t.split('/').includes('..')
   const base = root.endsWith('/') ? root.slice(0, -1) : root
   const resolved = resolvePath(base, t)
