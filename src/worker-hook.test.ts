@@ -9151,6 +9151,7 @@ const BC1U_MOD: string[] = [
   'X="git push origin main"; $=X[1,-1]:l',
   'X="git push origin main"; $=X:s/a/a/',
   'X="git push origin main"; command $=X:l',
+  'X=bd; $X[1,2]:l init',
 ]
 test.each(BC1U_MOD)('denyReason denies %j (claude-factory-bc1u.6)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(DYNAMIC_VERB_REASON)
