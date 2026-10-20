@@ -67,8 +67,15 @@ const UNREADABLE = [
   'ls ${(j:):)=~x}',
   'options[$k]=on',
   'options+=($k on)',
+  'emulate sh; setopt noshglob bareglobqual',
+  'emulate ksh',
+  'emulate csh',
+  'emulate -L sh',
+  'emulate -R sh',
+  'emulate -o evallineno sh',
+  'emulate sh; set +o shglob -o bareglobqual',
 ]
-// These three also hit an earlier, more specific reason (function definition, dynamic verb).
+// These also hit an earlier, more specific reason (function definition, dynamic verb).
 const EARLIER = new Set([
   'eval \\$\\~x',
   "eval '$''~x'",
@@ -97,5 +104,9 @@ const ALLOW = [
   'git log --grep globsubst',
   'setopt extendedglob',
   'set -o pipefail',
+  'emulate zsh',
+  'emulate -L zsh',
+  'emulate',
+  'git log --grep emulate',
 ]
 for (const c of ALLOW) test(`allows ${c}`, () => expect(run(c)).toBeUndefined())

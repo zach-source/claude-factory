@@ -4858,8 +4858,9 @@ function segmentMayDefineAlias(words: string[]): boolean {
 }
 
 // claude-factory-iufy: true when this segment may turn on GLOB_SUBST.
-// (a) a word names globsubst (case and _ ignored); (b) setopt/unsetopt with -m or a pattern or
-// expansion argument; (c) set -o/+o with an expansion. An options[...] write has a dynamic verb.
+// (a) a word names globsubst (case and _ ignored); (b) setopt/unsetopt with a -m flag word or an
+// argument outside [A-Za-z0-9_+-]; (c) set with a -/+ o cluster, then a word outside [A-Za-z0-9_];
+// (d) emulate with a mode word other than zsh. An options[...] write has a dynamic verb.
 function segmentMayGlobSubst(words: string[]): boolean {
   const first = commandAnchors(words)[0]
   const safe = first !== undefined && externalProgram(words[first]!)
@@ -4871,7 +4872,12 @@ function segmentMayGlobSubst(words: string[]): boolean {
       if (safe && i > first! && !dyn) continue
       return true
     }
-    if (w === 'setopt' || w === 'unsetopt') {
+    if (w === 'emulate' && !(safe && i > first!)) {
+      // emulate sh, ksh or csh turns GLOB_SUBST on: the mode word must be exactly zsh
+      let j = i + 1
+      while (j < bare.length && /^[-+][A-Za-z]+$/.test(bare[j]!)) j += /o/.test(bare[j]!) ? 2 : 1
+      if (j < bare.length && bare[j] !== 'zsh') return true
+    } else if (w === 'setopt' || w === 'unsetopt') {
       if (bare.slice(i + 1).some(a => /^-[^-]*m/.test(a) || /[^A-Za-z0-9_+-]/.test(a))) return true
     } else if (w === 'set') {
       const rest = bare.slice(i + 1)
