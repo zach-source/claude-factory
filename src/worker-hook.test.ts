@@ -8366,6 +8366,13 @@ const DENY_PWY0: string[] = [
   '${RM:-rm$IFS-rf} /',
   '${RM:-rm${IFS:0:1}-rf} /',
   '${RM:-rm}${IFS}-rf /',
+  'y=IFS; ${RM:-rm}${!y}-rf /',
+  'y=IFS; r${x:-m}${!y}-rf /',
+  'IFS=_; ${RM:-rm_-rf_/}',
+  'IFS=_; ${RM:-rm_-rf} /',
+  'IFS=_ ; r${x:-m_-rf} /',
+  'IFS=_; ${RM:-r}${x:-m_-rf} /',
+  'IFS=_; ${F:-find_/_-delete}',
 ]
 test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)

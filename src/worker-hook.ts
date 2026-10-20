@@ -1649,7 +1649,11 @@ function rmFindBase(w: string): string {
  * claude-factory-21ux: true when an rm or find-exec-rm rule denies the command that starts at `cmd[0]`.
  * `rm` is true when `cmd[0]` is an rm word that the rule did not deny.
  */
-function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+function rmFindReading(
+  cmd: string[],
+  root: string | undefined,
+  ifsInText = false,
+): { deny: boolean; rm: boolean } {
   const b = rmFindBase(cmd[0]!)
   // Fail closed: a dollar word that may expand to rm, with recursive flags, denies.
   if (b !== 'rm' && cmd[0]!.includes('$') && isRecursiveRm(cmd)) return { deny: true, rm: false }
@@ -1662,7 +1666,12 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
     return { deny: true, rm: false }
   }
   // IFS splits a word with a default value at run time, so the default can be rm: deny.
-  if (b !== 'rm' && /\$\{[!=~^]*\w+[^}]*[-=+]/.test(cmd[0]!) && /\bIFS\b/.test(cmd[0]!)) {
+  // An earlier segment can set IFS, and ${!y} reads it by indirection: deny on either.
+  if (
+    b !== 'rm' &&
+    /\$\{[!=~^]*\w+[^}]*[-=+]/.test(cmd[0]!) &&
+    (ifsInText || cmd[0]!.includes('${!') || /\bIFS\b/.test(cmd[0]!))
+  ) {
     return { deny: true, rm: false }
   }
   if (b === 'rm') {
@@ -1698,7 +1707,11 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
  * The caller then sets hasRm, for the cd + rm rule.
  * Each (index, wrapper) state runs once, so the walk has O(n) states.
  */
-function wrapperReadingsDeny(words: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+function wrapperReadingsDeny(
+  words: string[],
+  root: string | undefined,
+  ifsInText = false,
+): { deny: boolean; rm: boolean } {
   const n = words.length
   const seenHead = new Set<number>()
   const seenFlag = new Set<string>()
@@ -1722,7 +1735,7 @@ function wrapperReadingsDeny(words: string[], root: string | undefined): { deny:
       work.push(() => xargsFlags(i + 1))
       return
     }
-    const r = rmFindReading(words.slice(i), root)
+    const r = rmFindReading(words.slice(i), root, ifsInText)
     if (r.deny) found = true
     if (r.rm) rm = true
   }
@@ -7058,12 +7071,12 @@ function denyAtScan(
       }
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
-    const readings = wrapperReadingsDeny(words, root)
+    const readings = wrapperReadingsDeny(words, root, /\bIFS\b/.test(command))
     if (readings.deny) return REASON
     if (readings.rm) hasRm = true
     // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
     if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
-      const dropped = wrapperReadingsDeny(dropRedirectWords(words), root)
+      const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, /\bIFS\b/.test(command))
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
     }
