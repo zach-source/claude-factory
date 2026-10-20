@@ -2700,6 +2700,17 @@ function braceEnd(w: string, i: number): number {
   return -1
 }
 
+// claude-factory-ebmm.20: grow a crossing span to a fixed point. A group or bracket that starts inside
+// the span and ends past it moves the end. One pass is enough, because the pointer reaches the new chars.
+// Brace expansion changes where a bracket ends, so a bracket in the span reaches the last ] of the word.
+function crossEnd(w: string, start: number, end: number): number {
+  for (let p = start; p <= end; p++) {
+    if (w[p] === '{') end = Math.max(end, braceEnd(w, p))
+    else if (w[p] === '[') end = Math.max(end, w.lastIndexOf(']'))
+  }
+  return end
+}
+
 // claude-factory-ebmm.17, .18: when a brace group and a bracket cross (bash expands braces first), one
 // star covers the smallest span that holds both parts.
 function tokenizeGlob(w: string): GlobToken[] {
@@ -2715,10 +2726,9 @@ function tokenizeGlob(w: string): GlobToken[] {
     else if (c === '?') out.push({ k: 'one' })
     else if (c === '[' && bracketEnd(w, i) > 0) {
       const e = bracketEnd(w, i)
-      const k = w.slice(i, e).indexOf('{')
       if (/[{}]/.test(w.slice(i, e))) {
         out.push({ k: 'any' })
-        i = Math.max(e, k < 0 ? e : braceEnd(w, i + k))
+        i = crossEnd(w, i, e)
       } else {
         out.push({ k: 'one' })
         i = e
@@ -2728,10 +2738,9 @@ function tokenizeGlob(w: string): GlobToken[] {
       if (j < 0) out.push({ k: 'lit', c })
       else {
         const text = w.slice(i + 1, j)
-        const k = text.indexOf('[')
         if (/[[\]]/.test(text)) {
           out.push({ k: 'any' })
-          i = Math.max(j, k < 0 ? j : bracketEnd(w, i + 1 + k))
+          i = crossEnd(w, i, j)
         } else {
           out.push(/[*?[]/.test(text) ? { k: 'any' } : { k: 'cls', f: braceClass(text) })
           i = j

@@ -3804,6 +3804,9 @@ const DENY_EBMM_ROOT = [
   'tee -a {~widget,x}/.gitc*',
 ]
 const DENY_EBMM_ANY = [
+  'tee -a ~/.gitconfi[{]x,[}g]',
+  'tee -a ~/.gitconfi{x,[}{]y,z}g]',
+  'tee -a ~/.gitconfi{[,}{]x,}g]',
   'tee -a ~/.gitconfi{g,}',
   'tee -a ~/.git{c,x}onfig',
   'tee -a ~/.gitconfi{g,{h,i}}',
