@@ -2942,7 +2942,13 @@ function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanS
   // A brace part can be empty, so it is not collapsed. A `..` left in a word that starts with /, ~ or $
   // (a home prefix, or a brace part before it) can name the home's parent or a sibling: fail closed.
   const rooted = /^[/~$]/.test(w) || (w[0] === '{' && /[{,][/~$]/.test(w))
-  if (rooted && w.split('/').slice(0, -1).some(p => /[{}[\]?*,]/.test(p) && p.includes('.') && /^[.{},[]/.test(p)))
+  if (
+    rooted &&
+    w
+      .split('/')
+      .slice(0, -1)
+      .some(p => /[{}[\]?*,]/.test(p) && p.includes('.') && /^[.{},[]/.test(p))
+  )
     return true
   if (w.includes('..')) {
     for (let prev = ''; prev !== w;) {
