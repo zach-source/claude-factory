@@ -434,6 +434,8 @@ interface ScanState {
   stdinFed: boolean
   /** claude-factory-l43b: set when a shell reads stdin. denyReason returns SHELL_STDIN_REASON last, so a more specific reason from the same command wins. */
   stdinDeferred: boolean
+  /** k8iz: set when the late dollar-word deny fired, so a stdin-shell reason can win over it. */
+  ifsLate: boolean
   globalGitConfig: boolean
   gitWord: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
@@ -6616,6 +6618,7 @@ export function scanReason(
     gitAdminPath: false,
     stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     stdinDeferred: false,
+    ifsLate: false,
     globalGitConfig: false,
     gitWord: false,
     substFallbacks: 0,
@@ -6624,7 +6627,7 @@ export function scanReason(
   }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
-  if (reason) return reason
+  if (reason) return state.ifsLate && state.stdinDeferred && reason === REASON ? SHELL_STDIN_REASON : reason
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
@@ -7138,8 +7141,10 @@ function denyAtScan(
       (segIfs[segIdx] || outerSegs.ifs) &&
       !late.reason &&
       wrapperReadingsDeny(words, root, otherSegs(segIdx, true)).deny
-    )
+    ) {
       late.reason = REASON
+      state.ifsLate = true
+    }
     // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
     if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
