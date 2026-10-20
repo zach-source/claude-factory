@@ -32,6 +32,7 @@ import {
   REASON,
   SCAN_BUDGET_REASON,
   scanReason,
+  SHELL_ALIAS_DEFINE_REASON,
   SHELL_ALIAS_READ_REASON,
   SHELL_ALIAS_REASON,
   SHELL_STDIN_REASON,
@@ -721,6 +722,74 @@ test(
   FIND_MS,
 )
 
+// claude-factory-j471: a wrapper word, an -ok/-okdir word or a redirect word in a find exec slot
+// must not hide a recursive rm.
+const J471_DENY = [
+  'find / -exec sudo rm -rf {} \\;',
+  'find / -exec env rm -rf {} \\;',
+  'find . -exec nice rm -rf {} \\;',
+  'find . -exec nohup rm -rf {} \\;',
+  'find . -exec command rm -rf {} \\;',
+  'find . -exec timeout 5 rm -rf {} \\;',
+  'find . -exec sudo -u root rm -rf {} \\;',
+  'find . -exec /usr/bin/time -l rm -rf {} \\;',
+  'sudo find / -exec env rm -rf {} \\;',
+  'find . -execdir env rm -r {} +',
+  'find / -ok rm -rf {} \\;',
+  'find / -okdir rm -rf {} \\;',
+  'find / -ok sudo rm -rf {} \\;',
+  'find . -name x -okdir env rm -r {} +',
+  'find / -exec >f sudo rm -rf {} \\;',
+  'find / -exec >f rm -rf {} \\;',
+  '>f find / -ok rm -rf {} \\;',
+  '>f find / -exec rm -rf {} \\;',
+  'find / -exec 2>&1 env rm -rf {} \\;',
+  '/usr/bin/time -l find / -exec >f rm -rf {} \\;',
+  '/usr/bin/time -l find / -ok >f sudo rm -rf {} \\;',
+  '/usr/bin/time -h find / -exec 2>&1 rm -rf {} \\;',
+  'nice --adjustment=5 find / -exec >f rm -rf {} \\;',
+  'env --ignore-environment find / -exec >f rm -rf {} \\;',
+  'xargs -n 1 find / -exec >f rm -rf {} \\;',
+]
+for (const cmd of J471_DENY) {
+  test(`denyReason denies ${cmd} (claude-factory-j471)`, () => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  })
+}
+
+const J471_ALLOW = [
+  'find / -exec ls {} \\;',
+  'find . -exec env FOO=1 cat {} \\;',
+  'find . -exec rm {} +',
+  'find . -exec env rm {} +',
+  'find . -exec sudo rm -f {} +',
+  'find . -ok ls {} \\;',
+  'find . -exec git rm -r --cached {} +',
+  'echo x > out.txt',
+  'find . -name rm -exec ls {} \\;',
+]
+for (const cmd of J471_ALLOW) {
+  test(`denyReason allows ${cmd} (claude-factory-j471)`, () => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  })
+}
+
+test(
+  'scanReason allows a 200000-word find -exec env scan, fast (claude-factory-j471)',
+  () => {
+    expect(scanReason('find . ' + '-exec env '.repeat(FIND_N))).toBeUndefined()
+  },
+  FIND_MS,
+)
+
+test(
+  'scanReason denies a 200000-word find -ok env scan with rm -rf at the end (claude-factory-j471)',
+  () => {
+    expect(scanReason('find . ' + '-ok env '.repeat(FIND_N) + '-ok env rm -rf x')).toBe(REASON)
+  },
+  FIND_MS,
+)
+
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
 // claude-factory-3f2z.2: `cwd` sets the filesystem cwd of the spawned hook process. It does not
@@ -1264,6 +1333,21 @@ const DENY_GIT_CONFIG_PUSH_ANY_VALUE = [
   'git config set alias.p push',
   'git -c alias.p=push p origin main',
   'git config set remote.origin.push HEAD:refs/heads/main',
+  'git config --comment x remote.origin.push HEAD:refs/heads/main',
+  'git config --value x remote.origin.push HEAD:refs/heads/main',
+  'git config --blob x remote.origin.push HEAD:refs/heads/main',
+  'git config --url x remote.origin.push HEAD:refs/heads/main',
+  'git config --comm x remote.origin.push HEAD:refs/heads/main',
+  'git config --val x remote.origin.push HEAD:refs/heads/main',
+  'git config -zf x remote.origin.push HEAD:refs/heads/main',
+  'git config -zt x remote.origin.push HEAD:refs/heads/main',
+  'git config -ft remote.origin.push HEAD:refs/heads/main',
+  'git config -flt remote.origin.push HEAD:refs/heads/main',
+  'git config -zft remote.origin.push HEAD:refs/heads/main',
+  'git config -tf remote.origin.push HEAD:refs/heads/main',
+  'git config -fz remote.origin.push HEAD:refs/heads/main',
+  'git config set --value x remote.origin.push HEAD:refs/heads/main',
+  'git config set --comment x alias.p push',
   'git config push.default upstream',
   'git config push.default tracking',
   'git -c push.default=upstream push origin main',
@@ -2706,6 +2790,55 @@ test.each([
   expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
 })
 
+// claude-factory-g4l4: a redirect word between rm and its -r flag must not hide the recursive rm.
+const G4L4_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
+test.each([
+  'rm 2>o -r src',
+  'rm >o -r src',
+  'rm 2>&1 -r src',
+  'rm <o -r src',
+  'rm -f 2>o -r src',
+  'sudo -u rm rm 2>o -r src',
+  'rm &>o -r src',
+  'rm 2> o -r src',
+  'rm {x}>o -r src',
+  'rm >|o -r src',
+  'rm <<<x -r src',
+  'rm 2>o 2> p -r src',
+  'rm 2> -r src',
+  'rm 2>o -R src',
+  'rm 2>o --recursive src',
+  'rm 2>o -fr src',
+  'nice rm 2>o -r src',
+  'time -l rm 2>o -r src',
+  'find . -exec rm 2>o -r {} \\;',
+  'rm 2> -- -r src',
+  'rm > -- -r src',
+  'rm &> -- -rf src',
+  'rm << -- -r src',
+  'nice rm 2> -- -r src',
+  'find . -exec rm 2> -- -r {} \\;',
+])('denyReason denies %j (claude-factory-g4l4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, G4L4_GATE)).toBe(REASON)
+})
+
+test.each([
+  'rm 2>o a.txt',
+  'ls 2>o -R',
+  'rm 2>o -f a.txt',
+  'rm 2>o -- -r',
+  'find . -exec rm 2>o {} \\;',
+  'rm a.txt 2>o',
+  'rm 2> -- a.txt',
+])('denyReason allows %j (claude-factory-g4l4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, G4L4_GATE)).toBeUndefined()
+})
+
 // claude-factory-59pp.13: segments() strips quotes, so a quoted word like a redirect must not hide the verb.
 test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () => {
   expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
@@ -3970,6 +4103,13 @@ const DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R4 = [
   'git config --add core.worktree /etc',
   'git config --replace-all core.worktree /x',
   'git config set core.worktree /x',
+  'git config --comment x core.worktree /Users/acme',
+  'git config --value x core.worktree /Users/acme',
+  'git config --co x core.worktree /Users/acme',
+  'git config --val x core.worktree /Users/acme',
+  'git config -zf x core.worktree /Users/acme',
+  'git config -ft core.worktree /Users/acme',
+  'git config set --value x core.worktree /Users/acme',
   'git config CORE.WorkTree /x',
   'git -c core.worktree=/x checkout -f HEAD',
   'git -c CORE.WorkTree=. status',
@@ -5591,6 +5731,94 @@ const DTR2_ALLOW = [
 test.each(DTR2_ALLOW)('denyReason allows a harmless repeat word: %s (claude-factory-dtr2)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
+
+const DYN_RM_DENY = [
+  '$N rm -rf /',
+  'X=command; $X rm -rf /',
+  '"$X" rm -rf /',
+  '${X} rm -rf /',
+  '$X -p rm -rf /',
+  '$X -- rm -rf /',
+  '$X sudo rm -rf /',
+  '$X command rm -rf /',
+  '$X /bin/rm -rf /',
+  '$X rm ../x',
+  '$X rm -r x',
+  '$X find . -exec rm -r {} +',
+  '$X find / -execdir rm -rf {} \\;',
+  'sudo $X rm -rf /',
+  'env $X rm -rf /',
+  'sudo -E $X rm -rf /',
+  'env -v $X rm -rf /',
+  'timeout 5 $X rm -rf /',
+  'nice -n 5 $X rm -rf /',
+  'if true; then $X rm -rf /; fi',
+  'echo x | $X rm -rf /',
+  '$X rm a; cd /x',
+  'cd /x; $X rm a',
+  '$X -u root rm -rf /',
+  '$X -C 5 rm -rf /',
+  '$X -n 5 rm -rf /',
+  '$X 5 rm -rf /',
+  '$X -k 5 5 rm -rf /',
+  '$X -u root $Y rm -rf /',
+  '$X -u find rm -rf /',
+  'X=env; $X -u find rm -rf /',
+  '$X -C find rm -rf /',
+  '$X -u find /bin/rm -rf /',
+  '$X find rm -rf /',
+  '$X -u rm rm -r src',
+  'X=env; $X -u rm rm -r src',
+  '$X -u rm -- rm -r src',
+  '$X -u rm rm -rf src',
+  '$X -u rm =rm -r src',
+  '$X -C rm rm -r src',
+  '$X -u rm sudo rm -r src',
+  '$X -u rm find src -exec rm -r {} +',
+  'find . -exec $X rm -rf / {} \\;',
+  'find . -exec $X rm -r src {} \\;',
+  'find . -exec $X rm {} +',
+  'find . -exec ${X} rm -rf {} +',
+  'find . -exec "$X" rm -rf {} +',
+  'find . -execdir $X rm -rf {} +',
+  'find . -exec $X -u rm rm -r src {} +',
+  'find . -exec $X -u + rm -rf / {} \\;',
+  'sudo find . -exec $X rm -rf {} +',
+  'find . -name x -exec $X rm -rf / {} \\;',
+  'find . -exec $X rm -rf / {} \\; -print',
+  'find . \\( -exec $X rm -rf / {} \\; \\)',
+  'X=env; find . -exec $X rm -rf / {} \\;',
+]
+
+test.each(DYN_RM_DENY)(
+  'denyReason denies rm behind a dynamic command word: %s (claude-factory-2a3i)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+const DYN_RM_KEEP = [
+  '$N ls',
+  'echo $N rm',
+  'echo $N rm -rf /',
+  '$N rm a',
+  '$N rm build/x',
+  '"$PY" -c "print(1)"',
+  '$X ls -d /',
+  'echo rm -rf /',
+  'find . -exec $X ls {} +',
+]
+
+test.each(DYN_RM_KEEP)('denyReason keeps allowing a harmless dynamic word: %s (claude-factory-2a3i)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test.each(['$(echo command) rm -rf /', '$N git push origin main', 'rm -rf /', '$X =rm -rf /'])(
+  'denyReason keeps denying: %s (claude-factory-2a3i)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
 
 test.each([
   ['=rm', 'rm'],
@@ -7450,6 +7678,112 @@ test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x' && !/^[A-Za-z]\[/.test(c)))(
   },
 )
 
+const ALIAS_DEFINE_DENY = [
+  "alias g='git push origin main'; eval g",
+  "alias g='git push origin main'; trap g EXIT",
+  "alias g='git push origin main'; . ./g.sh",
+  "alias g='git push origin main'; source ./g.sh",
+  "alias -g M=main; eval 'git push origin M'",
+  "alias g='rm -rf /'; eval g",
+  "shopt -s expand_aliases; alias g='git push origin main'; eval g",
+  `bash -c "shopt -s expand_aliases; alias g='git push origin main'; eval g"`,
+  "builtin alias g='git push origin main'; eval g",
+  "\\alias g='git push origin main'; eval g",
+  "alias -- g='git push origin main'; eval g",
+  "alias a=b g='git push origin main'; eval g",
+  "alias 'g'='git push origin main'; eval g",
+  "command alias g='git push origin main'; eval g",
+  "al''ias g='git push origin main'; eval g",
+  "alias g='git push origin main'; echo $(g)",
+  "alias g='git push origin main'; echo `g`",
+  "alias g='git push origin main'; cat <(g)",
+  `eval "alias g='git push origin main'"; eval g`,
+  "aliases[g]='git push origin main'; eval g",
+  "typeset aliases[g]='git push origin main'; eval g",
+  "galiases[M]=main; eval 'git push origin M'",
+  "BASH_ALIASES[g]='git push origin main'; eval g",
+  ': ${aliases[g]::=git push origin main}; eval g',
+  "A=alias; $A g='git push origin main'; eval g",
+  "A=al; ${A}ias g='git push origin main'; eval g",
+  "A=alias; builtin $A g='git push origin main'; eval g",
+  'cat $aliases; eval g',
+  'ls ${galiases[M]}; eval g',
+  'aliases=x cat y; eval g',
+  "alias ll='ls > out'",
+  "n=ali; set -A ${n}ases g 'echo PWNED'; eval g",
+  "n=ali; set -A ${n}ases g 'echo PWNED'; echo $(g)",
+  "n=ali; set -A $n'ases' g 'echo PWNED'; eval g",
+  `n=ali; set -A "$n"ases g 'echo PWNED'; eval g`,
+  `n=ali; set -A $n"ases" g 'echo PWNED'; echo $(g)`,
+  "set -A ali$(echo ases) g 'echo PWNED'; eval g",
+  "x=$(printf '%s' ali; printf '%s' ases); set -A $x g 'echo PWNED'; eval g",
+  `zsh -c 'n=ali; set -A $n"ases" g "echo PWNED"; eval g'`,
+  'n=ali; typeset "${n}ases[g]=echo PWNED"; eval g',
+  "n=ali; noglob typeset ${n}ases[g]='echo PWNED'; eval g",
+  'n=ali; read -r "${n}ases[g]" <<< \'echo PWNED\'; eval g',
+  "n=BASH_ALI; printf -v \"${n}ASES[g]\" '%s' 'echo PWNED'; eval g",
+  'n=ali; print -v "${n}ases[g]" \'echo PWNED\'; eval g',
+]
+const ALIAS_DEFINE_ALLOW = [
+  "alias ll='ls -l'",
+  'alias -g M=widget',
+  'alias a=b c=d',
+  'alias a=b && alias c=d',
+  'alias',
+  'alias g',
+  'grep -n alias src/worker-hook.ts',
+  'rg -n shellAliases src | head',
+  'gh alias list',
+  'bd search alias',
+  'bun test src/worker-hook.test.ts -t alias',
+  'git log --grep=alias',
+  '/abs/bin/factory report run-x 5 approve "Fix the alias guard"',
+  '/abs/bin/factory memory search "shell alias"',
+  './bin/factory memory search "alias"',
+]
+
+test.each(ALIAS_DEFINE_DENY)(
+  'denyReason denies a command that defines an alias and runs more: %s (claude-factory-mn2y)',
+  cmd => {
+    expect(denyReason(cmd, '/w', undefined, snapGate())).toBeDefined()
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => new Map()),
+      ),
+    ).toBeDefined()
+  },
+)
+
+test.each(["alias g='echo acme'; eval g", "alias ll='ls -l'; ll"])(
+  'denyReason gives the alias-define reason: %s (claude-factory-mn2y)',
+  cmd => {
+    expect(denyReason(cmd, '/w', undefined, snapGate())).toBe(SHELL_ALIAS_DEFINE_REASON)
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => new Map()),
+      ),
+    ).toBe(SHELL_ALIAS_DEFINE_REASON)
+  },
+)
+
+test.each(ALIAS_DEFINE_ALLOW)('denyReason allows a plain alias command: %s (claude-factory-mn2y)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, snapGate())).toBeUndefined()
+  expect(
+    denyReason(
+      cmd,
+      '/w',
+      undefined,
+      snapGate(() => new Map()),
+    ),
+  ).toBeUndefined()
+})
+
 test('denyReason denies an alias chain past the depth cap but ends on an alias cycle, as zsh does (claude-factory-1zr5)', () => {
   expect(denyReason('loop1 x', '/w', undefined, SNAP_GATE)).toBeUndefined()
   const long = new Map<string, string | null>()
@@ -8026,6 +8360,88 @@ const J1KI_ALLOW_ROWS = [
   'find "$D"/x -name y -delete',
   'echo a$(date)b',
 ]
+// claude-factory-dnw1: a nested default inside a glued brace expansion must not end at the first "}".
+test.each(['rm${X:-${IFS}}-rf${X:-${IFS}}/', 'rm${X:-${Y:-${IFS}}}-rf${X:-${IFS}}/', 'rm${X:-${IFS}}-rf /'])(
+  'claude-factory-dnw1: %s denies with REASON',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test('claude-factory-dnw1: glued nested default git push denies with PUSH_REASON', () => {
+  expect(
+    denyReason('git${X:-${IFS}}push${X:-${IFS}}origin${X:-${IFS}}main', '/root/repo', undefined, J1KI_GATE),
+  ).toBe(PUSH_REASON)
+})
+// A bare "{" in a default is literal in bash (words: rm { -rf /), so it must not add depth.
+test('claude-factory-dnw1: a bare brace in a glued default still denies rm', () => {
+  expect(denyReason('rm${IFS}${X:-{}${IFS}-rf${IFS}/', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test('claude-factory-dnw1: a bare brace in a glued default still denies git push', () => {
+  expect(
+    denyReason('git${IFS}${X:-{}${IFS}push${IFS}origin${IFS}main', '/root/repo', undefined, J1KI_GATE),
+  ).toBe(REASON)
+})
+test('claude-factory-dnw1: a bare brace does not hide a later close brace', () => {
+  expect(denyReason('rm${X:-{}${IFS}-rf${IFS}/}', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each([
+  String.raw`rm${'${IFS}'}${'${X:-\\${}'}${'${IFS}'}-rf${'${IFS}'}/${'${IFS}'}x}`,
+  "rm${IFS}${X:-'${'}${IFS}-rf${IFS}/${IFS}x}",
+])('claude-factory-dnw1: an escaped or quoted dollar-brace does not nest: rm %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each([
+  String.raw`git${'${IFS}'}${'${X:-\\${}'}${'${IFS}'}push${'${IFS}'}origin${'${IFS}'}main${'${IFS}'}x}`,
+  "git${IFS}${X:-'${'}${IFS}push${IFS}origin${IFS}main${IFS}x}",
+])('claude-factory-dnw1: an escaped or quoted dollar-brace does not nest: git %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+const N = '${X:-${IFS}}'
+test.each([String.raw`rm${N}${'${Y:-\\${}'}${N}-rf${N}/${N}}`, `rm${N}\${Y:-'\${'}${N}-rf${N}/${N}}`])(
+  'claude-factory-dnw1: a nested default and a hidden dollar-brace in one word: rm %s',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test.each([
+  String.raw`git${N}${'${Y:-\\${}'}${N}push${N}origin${N}main${N}}`,
+  `git${N}\${Y:-'\${'}${N}push${N}origin${N}main${N}}`,
+])('claude-factory-dnw1: a nested default and a hidden dollar-brace in one word: git %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+test('claude-factory-dnw1: an unclosed glued default keeps the words after it', () => {
+  expect(denyReason('rm${X:-${IFS}-rf${IFS}/', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(['echo ${X:-${HOME}}x', 'ls ${A:-${B}}/c', 'echo ${X:-x}y'])(
+  'claude-factory-dnw1: %s stays allowed',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+  },
+)
+test.each([String.raw`rm${'${IFS}'}\${$IFS-rf$IFS/$IFS}`, "rm${IFS}'${'$IFS-rf$IFS/$IFS}"])(
+  'claude-factory-dnw1: a hidden dollar-brace and bare IFS breaks: rm %s',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test.each([
+  String.raw`git${'${IFS}'}\${$IFS''push$IFS''origin$IFS''main$IFS}`,
+  "git${IFS}'${'$IFS''push$IFS''origin$IFS''main$IFS}",
+])('claude-factory-dnw1: a hidden dollar-brace and bare IFS breaks: git %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+test.each([
+  'ls $HOME/x',
+  'cp "${A}"/b c',
+  'echo \\${X}y',
+  "echo '${X}'y",
+  'echo "${X:-a b}"c',
+  'ls ${A}/b ${C}.txt',
+  'bun test src/${F}.test.ts',
+  'cat ${D}/a',
+])('claude-factory-dnw1: raw reading keeps %s allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
 test.each(J1KI_REASON_ROWS)('claude-factory-j1ki: %s denies with REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })
@@ -8363,3 +8779,375 @@ test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repe
   },
   30_000,
 )
+
+// claude-factory-miqy: a lone dynamic command word runs the value of a variable set in the same text.
+const MIQY_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const MIQY_DENY: Array<[string, string]> = [
+  ['X="rm -rf /"; $X', REASON],
+  ['X="rm -rf /"; ${X}', REASON],
+  ['X="rm -rf /" && $X', REASON],
+  ['X="rm -rf /"\n$X', REASON],
+  ['export X="rm -rf /"; $X', REASON],
+  ['declare X="rm -rf /"; $X', REASON],
+  ['X=rm; $X -rf /', REASON],
+  ['X="rm -rf"; $X /', REASON],
+  ['X="rm -rf /"; sudo $X', REASON],
+  ['X="rm -rf /"; timeout 5 $X', REASON],
+  ['X="rm -rf /"; eval $X', REASON],
+  ['X="rm -rf /"; bash -c "$X"', REASON],
+  ['X="git push origin main"; $X', PUSH_REASON],
+  ['X="git push"; $X origin main', PUSH_REASON],
+  ['X=; $X rm -rf /', REASON],
+  ['X=$(cat f); $X', DYNAMIC_VERB_REASON],
+  ['X="rm *"; $X', DYNAMIC_VERB_REASON],
+  ['X=rm; X+=" -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['for X in "rm -rf /"; do $X; done', DYNAMIC_VERB_REASON],
+  ['printf -v X "rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X="rm,-rf,/"; IFS=,; $X', DYNAMIC_VERB_REASON],
+  ['while :; do $X; X="rm -rf /"; done', REASON],
+  ['until false; do $X; X="rm -rf /"; done', REASON],
+  ['for i in 1 2; do $X; X="rm -rf /"; done', REASON],
+  ['X="rm -rf /"; Y="$($X)"', REASON],
+  ['X="rm -rf /"; echo "$($X)"', REASON],
+  ['X="rm -rf /"; echo "`$X`"', REASON],
+  ['X="rm -rf /"; echo "$(eval $X)"', REASON],
+  ['X="git push origin main"; echo "$($X)"', PUSH_REASON],
+  ['X="rm -rf /"; env $X', REASON],
+  ['X="rm -rf /"; command $X', REASON],
+  ['X="rm -rf /"; exec $X', REASON],
+  ['X="rm -rf /"; nohup $X', REASON],
+  ['X="rm -rf /"; eval \'true; $X\'', REASON],
+  ['X="rm -rf /"; eval \'eval $X\'', REASON],
+  ['X="rm -rf /"; bash -c "true; $X"', REASON],
+  ['X="git push origin main"; eval \'true; $X\'', PUSH_REASON],
+  ['export X="git push origin main"; bash -c \'true && $X\'', PUSH_REASON],
+  ['X="rm -rf /"; ${X%x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X#x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X:0}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X^^}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X//x/y}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X:+$X}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X[@]}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; Y=X; ${!Y}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${=X}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; $=X', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${(z)X}', DYNAMIC_VERB_REASON],
+  ['X="git push origin main"; ${X%x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; $X; X=ls', DYNAMIC_VERB_REASON],
+  ['X="git push origin main"; $X; X=true', DYNAMIC_VERB_REASON],
+  ['for X in "rm -rf /"; do $X; done; X=ls', DYNAMIC_VERB_REASON],
+  ['declare -n R=X; X="rm -rf /"; $R', DYNAMIC_VERB_REASON],
+  ['declare -l X="GIT PUSH ORIGIN MAIN"; $X', DYNAMIC_VERB_REASON],
+  [': ${X:=rm}; $X -rf /', DYNAMIC_VERB_REASON],
+  [': ${X="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['eval \'X="rm -rf /"\'; $X', DYNAMIC_VERB_REASON],
+  ['{ X="rm -rf /"; }; $X', DYNAMIC_VERB_REASON],
+  ['env X="rm -rf /" bash -c \'$X\'', REASON],
+  ['X=ls; X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]+=" -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[1,-1]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; declare X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; export X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; eval \'X[0]="rm -rf /"\'; $X', DYNAMIC_VERB_REASON],
+  [': ${X[0]:="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]="git push origin main"; ${X}', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]="rm -rf /"; sudo $X', DYNAMIC_VERB_REASON],
+  ['X=ls; select X in "rm -rf /"; do $X; done', DYNAMIC_VERB_REASON],
+  ['X=ls; vared X; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; : ${X::="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X=ls; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; unset X; $X', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; $_', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; ${_}', DYNAMIC_VERB_REASON],
+  ['$REPLY', DYNAMIC_VERB_REASON],
+  ['${BASH_REMATCH}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; sudo $_', DYNAMIC_VERB_REASON],
+  ['declare X\'\'Y="rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['export X\'\'Y="git push origin main"; $XY', DYNAMIC_VERB_REASON],
+  ['printf -v X\'\'Y "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['declare X\'\'Y="rm -rf /"; sudo $XY', DYNAMIC_VERB_REASON],
+  ['A=X; declare "${A}Y=rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; printf -v "${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; export "${A}Y=rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval "${A}Y=\'rm -rf /\'"; $XY', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; ${_%x}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; ${_:0}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; sudo ${_%x}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; eval ${_%x}', DYNAMIC_VERB_REASON],
+  ['A=X; declare "${A}Y=rm -rf /"; echo "$($XY)"', DYNAMIC_VERB_REASON],
+  ['A=X; export "${A}Y=rm -rf /"; bash -c \'$XY\'', DYNAMIC_VERB_REASON],
+  ["A=X; eval \"${A}Y='rm -rf /'\"; eval '$XY'", DYNAMIC_VERB_REASON],
+  ['A=X; export "${A}Y=git push origin main"; bash -c \'$XY\'', DYNAMIC_VERB_REASON],
+  ['X=ls; printf -vX "rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['printf -vXY "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; printf -v"${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; print -v "${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; print -v"${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['print -vXY "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "git push origin main"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; sudo $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'declare ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ["A=X; eval 'export ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ["A=X; eval 'getopts ab ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ['A=X; eval \'print -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; echo "$($XY)"', DYNAMIC_VERB_REASON],
+  ['IFS=, read -aXY; $XY', DYNAMIC_VERB_REASON],
+  ['IFS=, read -raXY; sudo $XY', DYNAMIC_VERB_REASON],
+  ['read -aXY; $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'printf -v' '${A}Y \"rm -rf /\"'; $XY", DYNAMIC_VERB_REASON],
+  ['A=X; eval \'\\printf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'"printf" -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'p\\rintf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'printf -v' '${A}Y \"git push origin main\"'; $XY", DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; $arr', DYNAMIC_VERB_REASON],
+  ['rray=ls; read -rarray; $rray', DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; sudo $arr', DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; eval $arr', DYNAMIC_VERB_REASON],
+]
+test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
+  const got = denyReason(cmd, '/root/repo', undefined, MIQY_GATE)
+  // claude-factory-pwy0 reads rm text across segments first: such a row denies with the rm reason.
+  expect(got === reason || got === REASON).toBe(true)
+})
+
+test.each([
+  'for h in a b; do ssh $h uptime; done',
+  'for h in a b; do fish $h; done',
+  'X="git push origin main"; ssh host $X',
+  '${EDITOR:-vi} a.txt',
+  '${X%x}',
+  '${HOME%/}/bin/tool',
+  '$EDITOR a.txt',
+  '$X',
+  'echo $X',
+  'X="ls -l"; $X',
+  'X=1; echo $X',
+  'X="rm -rf /"; echo $X',
+  'X=(ls); echo ${X[0]}',
+  'X=ls; $X -la',
+  'X=ls; $X',
+  'echo $_',
+])('denyReason allows %j (claude-factory-miqy)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
+})
+
+test.each([
+  ["trap 'git push origin main' EXIT"],
+  ['trap "git push origin main" EXIT'],
+  ['trap git\\ push\\ origin\\ main EXIT'],
+  ["trap 'git push origin main;' EXIT"],
+  ["trap 'git push origin main' INT TERM EXIT"],
+  ["trap -- 'git push origin main' EXIT"],
+  ["builtin trap 'git push origin main' EXIT"],
+  ["command trap 'git push origin main' EXIT"],
+  ["x=1 trap 'git push origin main' EXIT"],
+  ["trap 'eval git push origin main' EXIT"],
+  ["trap 'rm -rf /' EXIT"],
+  ["trap '-x; git push origin main' EXIT"],
+  ["trap '-; git push origin main' EXIT"],
+  ["trap 2>/dev/null 'git push origin main' EXIT"],
+  ["trap 2> /dev/null 'git push origin main' EXIT"],
+  ["trap >/dev/null 'git push origin main' EXIT"],
+  ["trap &>/dev/null 'git push origin main' EXIT"],
+  ["trap 2>&1 'git push origin main' EXIT"],
+  ["trap </dev/null 'git push origin main' EXIT"],
+  ["trap 2> -- 'git push origin main' EXIT"],
+  ["trap -- 2>/dev/null 'git push origin main' EXIT"],
+  ["builtin trap 2>/dev/null 'git push origin main' EXIT"],
+  ["trap 'git push origin HEAD' EXIT; cd /x"],
+  ["trap 'git push origin main' EXIT; cd /x"],
+])('denyReason denies a trap action that holds a guarded command (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+test.each([
+  ['trap - EXIT'],
+  ['trap -p'],
+  ["trap 'echo hi' EXIT"],
+  ["trap '' INT"],
+  ['source .scratch/x.sh'],
+  ["trap 'git push origin factory/x' EXIT"],
+  ["trap 'git status' EXIT"],
+  ["trap 'git push origin factory/x' EXIT; cd /x"],
+])('denyReason allows a harmless trap (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test.each([
+  ['env -i sh -c "trap \'bd create x\' EXIT"'],
+  ['env -i bash -c "trap \'bd create x\' EXIT"'],
+  ['env -i sh -c "trap 2>/dev/null \'bd create x\' EXIT"'],
+])('denyReason reads a trap action in the BEADS_ACTOR bd scan (claude-factory-81tz.2): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+test.each([
+  ["trap 'gh co 5' EXIT; export GH_CONFIG_DIR=/x"],
+  ["trap 'gh co 5' EXIT; GH_CONFIG_DIR=/x"],
+  ["trap 'gh co 5' EXIT; HOME=/x"],
+])('denyReason denies a gh alias in a trap action as config-moved (claude-factory-81tz.7): %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], BEMR_GATE)).toBeDefined()
+})
+
+test.each([
+  ["trap 'gh pr view 5' EXIT; export GH_CONFIG_DIR=/x"],
+  ["trap 'echo hi' EXIT; export GH_CONFIG_DIR=/x"],
+])('denyReason allows a builtin gh verb in a trap (claude-factory-81tz.7): %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], BEMR_GATE)).toBeUndefined()
+})
+
+test('denyReason allows a harmless trap under env -i (claude-factory-81tz.2)', () => {
+  expect(denyReason('env -i sh -c "trap \'echo hi\' EXIT"')).toBeUndefined()
+})
+
+test('denyReason bounds a long dash-led trap chain (claude-factory-81tz.3)', () => {
+  const t0 = Date.now()
+  denyReason('trap ' + '-/trap '.repeat(1150) + 'x')
+  expect(Date.now() - t0).toBeLessThan(300)
+}, 30_000)
+
+test.each([
+  ['env -i sh -c "trap ' + '-/trap '.repeat(1000) + 'x"'],
+  ['env -i sh -c "eval trap ' + '-/trap '.repeat(1000) + 'x"'],
+])(
+  'denyReason bounds a long trap chain in the bd scan (claude-factory-81tz.4)',
+  cmd => {
+    const t0 = Date.now()
+    denyReason(cmd)
+    expect(Date.now() - t0).toBeLessThan(100)
+  },
+  30_000,
+)
+
+test.each([
+  ["source <(echo 'git push origin main')"],
+  [". <(echo 'git push origin main')"],
+  ["source =(echo 'git push origin main')"],
+])('denyReason keeps denying a source process substitution (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+// claude-factory-pwy0: a command word that expands to rm at run time runs rm.
+const DENY_PWY0: string[] = [
+  '${RM:-rm} -rf /',
+  '${RM-rm} -rf /',
+  '${RM:=rm} -rf /',
+  '${RM=rm} -rf /',
+  'r${x}m -rf /',
+  'rm$x -rf /',
+  '${x}rm -rf /',
+  '${x:-r}m -rf /',
+  '${RM:-/bin/rm} -rf /',
+  '${RM:-${Y:-rm}} -rf /',
+  '${RM:+rm} -rf /',
+  '${RM+rm} -rf /',
+  '"${RM:-rm}" -rf /',
+  'r"${x}"m -rf /',
+  'sudo ${RM:-rm} -rf /',
+  'env ${RM:-rm} -rf /',
+  'FOO=1 r${x}m -rf /',
+  'time -l ${RM:-rm} -rf /',
+  '>f ${RM:-rm} -rf /',
+  '> f ${RM:-rm} -rf /',
+  '2>/dev/null r${x}m -rf /',
+  'cd / ; ${RM:-rm} acme.txt',
+  '${F:-find} . -exec rm -rf {} +',
+  'find . -exec ${RM:-rm} -rf {} +',
+  '${' + 'a'.repeat(500) + ':-rm} -rf /',
+  'rm$' + 'a'.repeat(500) + ' -rf /',
+  '${x[0]:-rm} -rf /',
+  '${x[@]:-rm} -rf /',
+  '${!x:-rm} -rf /',
+  '${x[1]:-rm} -rf /',
+  '${(L)x:-rm} -rf /',
+  '${=x:-rm} -rf /',
+  '${~x:-rm} -rf /',
+  '${^x:-rm} -rf /',
+  '${(L)(U)x:-rm} -rf /',
+  'rm$~x -rf /',
+  'rm$^x -rf /',
+  'rm$=x -rf /',
+  'r$x"m" -rf /',
+  "r$x''m -rf /",
+  'r$x\\m -rf /',
+  '"$x"rm -rf /',
+  'r"$x"m -rf /',
+  'find . -exec $x -rf {} +',
+  '${RM:-rm\n-rf /}',
+  '${RM:-\nrm} -rf /',
+  '${RM:-rm\n} -rf /',
+  '${RM:-rm${IFS}-rf} /',
+  '${RM:-rm$IFS-rf} /',
+  '${RM:-rm${IFS:0:1}-rf} /',
+  '${RM:-rm}${IFS}-rf /',
+  'y=IFS; ${RM:-rm}${!y}-rf /',
+  'y=IFS; r${x:-m}${!y}-rf /',
+  'IFS=_; ${RM:-rm_-rf_/}',
+  'IFS=_; ${RM:-rm_-rf} /',
+  'IFS=_ ; r${x:-m_-rf} /',
+  'IFS=_; ${RM:-r}${x:-m_-rf} /',
+  'IFS=_; ${F:-find_/_-delete}',
+  'y=I$z; ${RM:-rm}${!y}-rf /',
+  'z=FS; declare I$z=_; ${F:-find_/_-delete}',
+  'y=m_-rf_/; z=FS; export I$z=_; ${RM:-r}$y',
+  'z=FS; readonly I$z=_; ${RM:-rm_-rf_/}',
+  'z=FS; typeset I$z=_; ${RM:-rm_-rf_/}',
+  'z=FS; printf -v I$z _; ${RM:-rm_-rf_/}',
+  'IFS=_; ${x:-"printf r\\155"_-rf_/}',
+  "y='rm -rf /'; $y",
+  'IFS=_; y=rm_-rf_/; $y',
+  'IFS=_; r$x"m_-rf_/"',
+  'IFS=_; $x"rm_-rf_/"',
+  'r$x"m" ../acme.txt',
+  'r?? -rf /',
+  '/bin/r[m] -rf /',
+  'RM$x -rf /',
+  '$x acme.txt -delete',
+  'x=rm; $x ../acme.txt',
+  'RM$x ../acme.txt',
+  '${x:-/bin/rm} acme.txt',
+  '${!y} acme.txt',
+  '"`echo x`" acme.txt',
+  '${RM:-rm\n} acme.txt',
+  'FIND$x ../acme.txt',
+]
+test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
+  // claude-factory-miqy: a variable write in the same command can deny first, with the dynamic reason.
+  const got = denyReason(cmd, '/Users/acme/widget')
+  expect(got === REASON || got === DYNAMIC_VERB_REASON).toBe(true)
+})
+
+const ALLOW_PWY0: string[] = [
+  '$EDITOR acme.txt',
+  'echo $x rm',
+  '$x ls',
+  '${EDITOR:-vi} acme.txt',
+  'r$xm acme.txt',
+  '${RM:-rm} acme.txt',
+  'echo ${RM:-rm} -rf /',
+  'ls ${x}rm',
+  '${(L)x:-ls} acme.txt',
+  'ls$~x acme.txt',
+  '$x acme.txt',
+  '$HOME/.local/bin/claude plugin test mod',
+  '"$ROOT/bin/factory" report x 2 ready "rm -rf rows"',
+  '/bin/s? -c x',
+  'env --unset "$X" --chdir /tmp make test',
+]
+test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
+test('scanReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {
+  const n = 20_000
+  const cmd = '${a:-'.repeat(n) + 'rm' + '}'.repeat(n) + ' -rf /'
+  const got = scanReason(cmd, '/Users/acme/widget')
+  expect(got === REASON || got === DYNAMIC_VERB_REASON).toBe(true)
+}, 30_000)
+
+test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', () => {
+  const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
+  expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
+}, 30_000)
