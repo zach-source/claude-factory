@@ -2079,7 +2079,7 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
     } else if (bw === 'trap' && k >= trapEnd) {
-      // claude-factory-81tz.2: the trap action and the dash words before it are scripts. Read them like eval.
+      // claude-factory-81tz.2: the trap action and every word after trap are scripts. Read them like eval.
       // claude-factory-81tz.4: trapEnd skips a trap word inside an earlier walk, so the scan stays O(n).
       // claude-factory-81tz.5: read every word to the end, since a redirect word can sit before the action.
       for (let a = k + 1; a < words.length; a++)
@@ -6265,9 +6265,10 @@ function anyShellReason(
       // already read its words and the action. Skipping it keeps the scan O(n).
       if (j < trapEnd) continue
       // claude-factory-81tz.5: a redirect word can sit before the action, so read every word to the end.
-      // claude-factory-81tz.6: the action runs at exit, maybe after a cd, so read it as moved.
+      // claude-factory-81tz.6, .7: the action runs at exit, after every later word (a cd, a config
+      // env). Read each word after trap with all later-state flags on.
       for (let k = j + 1; k < words.length; k++) {
-        const o = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, true, ghConfigMovedBefore)
+        const o = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, true, true)
         if (o) return o
       }
       trapEnd = words.length

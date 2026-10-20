@@ -8241,6 +8241,38 @@ test.each(DENY_21UX)('denyReason denies %j (claude-factory-21ux)', cmd => {
   expect(denyReason(cmd)).toBe(REASON)
 })
 
+const DENY_P6WN: string[] = [
+  'sudo A=1 -u root rm -rf /',
+  'sudo A=1 -E rm -rf /',
+  'sudo A=1 -i rm -rf /',
+  'sudo A=1 -- rm -rf /',
+  'sudo A=1 -- ./d=1/rm -r ./d',
+  'sudo A=1 -u root -- ./d=1/rm -r ./d',
+  'sudo ./d=1/x -u root rm -rf /',
+  'sudo A=1 -u root B=2 -g wheel rm -rf /',
+  'sudo A=1 -u root -- rm -rf /',
+  'sudo A=1 -u root env rm -rf /',
+  'sudo A=1 -u root timeout 5 rm -rf /',
+  'sudo -u root A=1 rm -rf /',
+  'sudo A=1 rm -rf /',
+]
+test.each(DENY_P6WN)('denyReason denies %j (claude-factory-p6wn)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+const ALLOW_P6WN: string[] = [
+  'sudo -u root A=1 ls',
+  'sudo A=1 -u root ls',
+  'sudo A=1 -- ls',
+  'sudo -- A=1 ls',
+  'sudo A=1 -- ./d=1/ls -l',
+  'sudo A=1 -u root -- ./d=1/ls -l',
+  'env A=1 -- B=2 ls',
+]
+test.each(ALLOW_P6WN)('denyReason allows %j (claude-factory-p6wn)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
 const ALLOW_21UX: string[] = [
   'time ls',
   'time -p ls',
@@ -8329,6 +8361,21 @@ test.each([
   ['env -i sh -c "trap 2>/dev/null \'bd create x\' EXIT"'],
 ])('denyReason reads a trap action in the BEADS_ACTOR bd scan (claude-factory-81tz.2): %s', cmd => {
   expect(denyReason(cmd)).toBeDefined()
+})
+
+test.each([
+  ["trap 'gh co 5' EXIT; export GH_CONFIG_DIR=/x"],
+  ["trap 'gh co 5' EXIT; GH_CONFIG_DIR=/x"],
+  ["trap 'gh co 5' EXIT; HOME=/x"],
+])('denyReason denies a gh alias in a trap action as config-moved (claude-factory-81tz.7): %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], BEMR_GATE)).toBeDefined()
+})
+
+test.each([
+  ["trap 'gh pr view 5' EXIT; export GH_CONFIG_DIR=/x"],
+  ["trap 'echo hi' EXIT; export GH_CONFIG_DIR=/x"],
+])('denyReason allows a builtin gh verb in a trap (claude-factory-81tz.7): %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], BEMR_GATE)).toBeUndefined()
 })
 
 test('denyReason allows a harmless trap under env -i (claude-factory-81tz.2)', () => {
