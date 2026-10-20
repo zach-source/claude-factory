@@ -5670,10 +5670,10 @@ const ALLOW_J1DR = [
   `git commit -m "$(cat <<EOF\nit's ok\nEOF\n)"`,
   `echo "$(true # it's\n)"; echo hi`,
 ]
-test.each(DENY_J1DR)('denyReason denies %j (j1dr)', (cmd) => {
+test.each(DENY_J1DR)('denyReason denies %j (j1dr)', cmd => {
   expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeTruthy()
 })
-test.each(ALLOW_J1DR)('denyReason allows %j (j1dr)', (cmd) => {
+test.each(ALLOW_J1DR)('denyReason allows %j (j1dr)', cmd => {
   expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeUndefined()
 })
 
