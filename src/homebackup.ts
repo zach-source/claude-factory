@@ -144,8 +144,8 @@ export function backup(cfg: BackupCfg, ready: boolean): Outcome {
     init(cfg)
     const add = git(cfg, ['add', '-A', '--', ...pathspecs(cfg.ws)])
     if (!add.ok) return fail(`git add: ${add.err}`)
-    const staged = git(cfg, ['diff', '--cached', '--name-only', '--diff-filter=d', '-z']).out
-      .split('\0')
+    const staged = git(cfg, ['diff', '--cached', '--name-only', '--diff-filter=d', '-z'])
+      .out.split('\0')
       .filter(Boolean)
     const bad = staged.filter(n => secretFile(readFileSync(join(cfg.ws, n))))
     if (bad.length) {

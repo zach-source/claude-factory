@@ -305,6 +305,29 @@ Limits:
 
 These stay on the laptop: `tick.lock`, `bin`, `devenv/`, the backups of `rigs.json`, and any other top-level file over 5 MB. The dry run names them.
 
+#### Back up the manager home
+
+AX keeps the workspace of a task only across suspend and resume. A new task, for example after an image update, starts with an empty `/workspace/w`. The host can back up `FACTORY_HOME` and the manager's Claude memory and sessions to a private git branch. It restores them in a new task.
+
+Owner steps (the factory does not do them):
+
+1. Make a private GitHub repository. It must belong to the owner of the token in the vault key `GITHUB_BASIC` (see "Keys"). The backup holds run journals and transcripts. Keep the repository private.
+2. On the laptop, set `FACTORY_AX_BACKUP_REMOTE` to its https URL. Do not put a key in the URL. Optional: `FACTORY_AX_BACKUP_BRANCH` (default `manager-home`) and `FACTORY_AX_BACKUP_EVERY` in ms (default 600000).
+3. Run `factory manager --ax`. The task gets the variables.
+
+How it works:
+
+- The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It holds `tick.lock` during the snapshot. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
+- The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log` and `worktrees/`.
+- A file that holds a token shape (GitHub, Anthropic, AWS, Slack, a private key, an Authorization header) stops the backup. `home/backup.json` names the file, not the text.
+- The host does not back up while the home is not ready. An empty home never replaces a good backup.
+- When the host starts with an empty home (no `rigs.json`, `runs/` or `.migrated`), it fetches the branch and writes `.migrated`. The manager then starts and resumes the last session. A used home is never changed. If there is no remote or no branch, the host waits for `factory migrate-to-ax` as before.
+- Look at `home/backup.json` (`at`, `sha`, `error`), `manager-host.log` and `factory status` in the task (the backup age).
+
+To test (owner only, it changes the live system): run `ax delete task f-manager`. Then run `factory manager --ax` with the new image. The manager must come back with the same runs, memory and session, with no migration from the laptop.
+
+To turn it off, unset `FACTORY_AX_BACKUP_REMOTE` and run `factory manager --ax` again.
+
 #### Safety
 
 - The command refuses to send into a home that holds a factory (`rigs.json`, `runs/` or `.migrated`). `--force` overrides this. Use it only when no manager runs in the task.

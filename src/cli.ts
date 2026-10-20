@@ -105,6 +105,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import { backupAge } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
@@ -6628,6 +6629,12 @@ async function status(id: string | undefined) {
         ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
         : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
     )
+  if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
+    const age = backupAge(HOME, Date.now())
+    console.log(
+      age === undefined ? 'home backup: none yet' : `home backup: ${Math.round(age / 60_000)} min ago`,
+    )
+  }
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
   for (const runId of id ? [id] : runIds()) {
     const { run, value, c } = current(runId)
@@ -6884,7 +6891,7 @@ if (import.meta.main && !outboxCmd)
         break
       case 'manager':
         if (args[0] === 'host') {
-          await managerhost.host(args.slice(1), { prepare: reposSync })
+          await managerhost.host(args.slice(1), { prepare: reposSync, lock: () => hold('tick.lock') })
           break
         }
         if (args[0] === '--ax') {

@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { sq } from './harness'
+import { backup, restore, type BackupCfg, type Outcome } from './homebackup'
 import * as worker from './worker'
 
 /**
@@ -48,6 +49,46 @@ export function lastSession(json: string): string | undefined {
  */
 export const homeReady = (f: { migrated: boolean; fresh: boolean; hasRigs: boolean; archive: boolean }) =>
   f.migrated || f.fresh || (f.hasRigs && !f.archive)
+
+/** restore an empty home from the backup branch (192.9); logs what it did and never throws */
+export function restoreStep(
+  cfg: BackupCfg,
+  log: (m: string) => void,
+  run: (c: BackupCfg) => Outcome = restore,
+) {
+  if (!cfg.remote) return
+  try {
+    const o = run(cfg)
+    if (o.restored) log(`restored ${o.restored}`)
+    else if (o.error) log(`restore failed: ${o.error}`)
+    else
+      log(`restore: ${o.skipped}${o.skipped === 'no backup' ? '; waiting for `factory migrate-to-ax`' : ''}`)
+  } catch (e) {
+    log(`restore failed: ${(e as Error).message}`)
+  }
+}
+
+/** one backup under the tick lock (a tick writes state files); a failure is logged and the host loop goes on */
+export function backupStep(
+  cfg: BackupCfg,
+  ready: boolean,
+  lock: () => (() => void) | null,
+  log: (m: string) => void,
+  run: (c: BackupCfg, ready: boolean) => Outcome = backup,
+) {
+  if (!cfg.remote) return
+  const release = lock()
+  if (!release) return log('backup skipped: a tick holds the lock')
+  try {
+    const o = run(cfg, ready)
+    if (o.error) log(o.error.startsWith('backup refused') ? o.error : `backup failed: ${o.error}`)
+    else if (o.changed) log(`backup ${o.sha}`)
+  } catch (e) {
+    log(`backup failed: ${(e as Error).message}`)
+  } finally {
+    release()
+  }
+}
 
 export const HOST_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? 'w1:p1'
 
@@ -101,7 +142,11 @@ async function bringUp(args: string[], home: string, log: (m: string) => void, s
 
 export async function host(
   args: string[],
-  { everyMs = 30_000, prepare }: { everyMs?: number; prepare?: () => string[] } = {},
+  {
+    everyMs = 30_000,
+    prepare,
+    lock = () => () => {},
+  }: { everyMs?: number; prepare?: () => string[]; lock?: () => (() => void) | null } = {},
 ) {
   if (process.env.FACTORY_IN_AX !== '1') throw new Error('factory manager host runs only inside the AX task')
   const home = process.env.FACTORY_HOME
@@ -124,6 +169,16 @@ export async function host(
       archive:
         existsSync(join(worker.own(), 'migrate.tgz')) || existsSync(join(worker.own(), 'put', 'migrate.tgz')),
     })
+  // the backup keeps FACTORY_HOME at <workspace>/home; any other home is not backed up
+  const bcfg: BackupCfg = {
+    ws: dirname(home),
+    remote: basename(home) === 'home' ? process.env.FACTORY_AX_BACKUP_REMOTE : undefined,
+    branch: process.env.FACTORY_AX_BACKUP_BRANCH || 'manager-home',
+  }
+  if (process.env.FACTORY_AX_BACKUP_REMOTE && !bcfg.remote)
+    log('backup off: FACTORY_HOME is not <workspace>/home')
+  const backupMs = Number(process.env.FACTORY_AX_BACKUP_EVERY) || 600_000
+  restoreStep(bcfg, log)
   if (!ready()) log('waiting for `factory migrate-to-ax` (or FACTORY_AX_FRESH=1) before the manager starts')
   // ponytail: no timeout: an empty home waits until the laptop migrates it
   while (!ready()) await Bun.sleep(everyMs)
@@ -132,8 +187,13 @@ export async function host(
   await bringUp(args, home, log, session())
   // ponytail: polls every 30 s with no backoff. A manager that exits inside a live herdr is not restarted
   // (superviseManager restarts its Claude); a herdr that keeps dying restarts every 30 s
+  let lastBackup = Date.now()
   for (;;) {
     await Bun.sleep(everyMs)
+    if (Date.now() - lastBackup >= backupMs) {
+      lastBackup = Date.now()
+      backupStep(bcfg, ready(), lock, log)
+    }
     const n = paneCount()
     const action = decide({ herdrUp: n >= 0, panes: Math.max(n, 0) })
     if (action === 'none') continue

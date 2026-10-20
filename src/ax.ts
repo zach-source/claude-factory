@@ -525,6 +525,9 @@ const MANAGER_PASS = [
   'FACTORY_AX_IMAGE',
   'FACTORY_AX_VAULT',
   'FACTORY_AX_ATESPACE',
+  'FACTORY_AX_BACKUP_REMOTE',
+  'FACTORY_AX_BACKUP_BRANCH',
+  'FACTORY_AX_BACKUP_EVERY',
 ]
 
 /** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
