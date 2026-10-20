@@ -2906,11 +2906,17 @@ function tokenizeGlob(w: string): GlobToken[] {
   const lastClose = w.lastIndexOf(']')
   for (let i = 0; i < w.length; i++) {
     const c = w[i]!
-    if (c === '$' && w[i + 1] === '{') {
-      const e = w.indexOf('}', i)
-      const end = e < 0 ? i : e
-      for (; i <= end; i++) out.push({ k: 'lit', c: w[i]! })
-      i--
+    const dynEnd = c === '$' && w[i + 1] === '{' ? braceEnd(w, i + 1) : -1
+    if (dynEnd > 0) {
+      // claude-factory-ebmm.31: a dynamic span (${HOME:-x}, $USER) can name any home: one star.
+      out.push({ k: 'any' })
+      i = dynEnd
+    } else if (c === '$' && /[A-Za-z_]/.test(w[i + 1] ?? '')) {
+      out.push({ k: 'any' })
+      while (/[A-Za-z_0-9]/.test(w[i + 1] ?? '')) i++
+    } else if (c === '~' && i === 0 && w.length > 1 && w[1] !== '/') {
+      out.push({ k: 'any' })
+      while (i + 1 < w.length && w[i + 1] !== '/') i++
     } else if (c === '*') out.push({ k: 'any' })
     else if (c === '?') out.push({ k: 'one' })
     else if (c === '[' && bracketEnd(w, i) > 0) {
@@ -2946,7 +2952,17 @@ function tokenizeGlob(w: string): GlobToken[] {
 
 function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanState): boolean {
   let w = word.replace(/^["']+|["']+$/g, '')
-  if (!/[*?[{]/.test(w)) return false
+  // claude-factory-ebmm.31: a dynamic span alone (${X}) is no glob; strip the innermost spans first.
+  let bare = w
+  for (let prev = ''; prev !== bare;) {
+    prev = bare
+    bare = bare.replace(/\$\{[^{}]*\}/g, '')
+  }
+  if (
+    !/[*?[{]/.test(bare.replace(/\{\}/g, '')) ||
+    (w.includes('$') && /^[/*]*$/.test(bare.replace(/\$[A-Za-z_]\w*/g, '')))
+  )
+    return false
   // claude-factory-ebmm.23: collapse /<part>/.. (a glob part too) and a leading /.., as the shell does.
   // A brace part can be empty, so it is not collapsed. A `..` left in a word that starts with /, ~ or $
   // (a home prefix, or a brace part before it) can name the home's parent or a sibling: fail closed.
@@ -3151,13 +3167,23 @@ function globalGitConfigUse(
 ): 'write' | 'mention' | undefined {
   // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
   // the text config or XDG, a glob character, a brace, or a redirect operator.
-  if (!/config|XDG|[*?[{<>]/i.test(foldNonAscii(joinedWords(words)))) return undefined
+  if (!/config|XDG|[*?[{<>(]/i.test(foldNonAscii(joinedWords(words)))) return undefined
   let use: 'mention' | undefined
   let samples: string[] | undefined
   let pending = false
   let prevWriterFlag = false
+  let lastCandidate: string | undefined
   for (const word of words) {
     const afterWriterFlag = prevWriterFlag
+    // claude-factory-ebmm.32: zsh reads a glued (a|b) group as part of the word; the lexer ends the word
+    // at a ( marker. Test the word before it with one star appended.
+    const groupBase = lastCandidate
+    lastCandidate = undefined
+    if (word === '(' && groupBase !== undefined && /[/~]/.test(groupBase) && !/\$\{?$/.test(groupBase)) {
+      if (globNamesGlobalGitConfig(groupBase + '*', (samples ??= globalGitConfigSamples(root, gate)), state))
+        return 'write'
+      continue
+    }
     prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
     const wasPending = pending
     pending = false
@@ -3188,6 +3214,7 @@ function globalGitConfigUse(
       if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
     }
     candidate = foldNonAscii(candidate)
+    lastCandidate = candidate
     if (isCd && !redirect) {
       if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
       continue
