@@ -7150,6 +7150,14 @@ function denyAtScan(
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
+      if (
+        (segIfs[segIdx] || outerSegs.ifs) &&
+        !late.reason &&
+        wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx, true)).deny
+      ) {
+        late.reason = REASON
+        state.ifsLate = true
+      }
     }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir

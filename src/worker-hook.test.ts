@@ -8662,6 +8662,10 @@ const DENY_K8IZ: string[] = [
   "for y in 'rm ../acme.txt'; do $y; done",
   'set -- rm ../acme.txt; $1',
   'cd acme && $y',
+  // k8iz.18: a leading redirect word
+  "y='rm ../acme.txt'; >/dev/null $y",
+  "y='rm ../acme.txt'; 2>/dev/null $y",
+  'IFS=_; y=rm_../acme.txt; >/dev/null $y',
   // k8iz.15: accepted false denies (fail closed)
   'export EDITOR=vim; $EDITOR acme.txt',
   "SH=sh; $SH -c 'echo x'",
