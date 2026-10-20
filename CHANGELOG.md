@@ -370,7 +370,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook did not see the command after the zsh modifiers `noglob` and `nocorrect`. Example: `noglob rm -rf /` and `nocorrect A=x rm -rf /` ran unchecked, because zsh runs the next word as the command. The hook now skips both words like `sudo`. Bash does not run them (claude-factory-563n).
 - Tests: new rows pin how the worker hook reads `sudo` NAME=value words before an option, such as `sudo A=1 -u root rm -rf /` and `sudo A=1 -- ./d=1/rm -r ./d`. The hook denies these rows. `sudo A=1 -u root ls` stays allowed. The fix came with claude-factory-aylh (claude-factory-p6wn).
 - Fixed: the worker hook did not deny a quoted `git push` inside a double-quoted substitution when a false comment or here-document hid it. Example: `echo "$(echo <(true)#x ; 'g'it push origin main)"`. The cleaner blanked the quote characters, so the hook read the wrong words. The hook now also reads the raw body. This adds a deny reading only (claude-factory-j1dr).
-- Fixed: the worker hook did not see a push after a redirect word that follows a dynamic command word. Example: `$G >f push origin main` and `$G 2>&1 push origin main` ran unchecked.
+- Fixed: the worker hook did not see a push after a redirect word that follows a dynamic command word. Example: `$G >f push origin main` and `$G 2>&1 push origin main` ran unchecked. This adds a deny reading only (claude-factory-lpiu).
 
 ## 0.13.0 (2026-10-18)
 
