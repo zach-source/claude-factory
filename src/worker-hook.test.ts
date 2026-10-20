@@ -8393,6 +8393,9 @@ const DENY_PWY0: string[] = [
   'RM$x ../acme.txt',
   '${x:-/bin/rm} acme.txt',
   '${!y} acme.txt',
+  '`echo x` acme.txt',
+  '${RM:-rm\n} acme.txt',
+  'FIND$x ../acme.txt',
 ]
 test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
