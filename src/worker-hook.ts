@@ -225,13 +225,14 @@ export const ENV_SPLIT_VAR_REASON =
   'env expands ${NAME} in this value into a command word, so this guard cannot read the real ' +
   'command. Write the command words plainly, without env -S. Do not retry this exact command.'
 
-// claude-factory-hewq: bash and zsh decode an unquoted $'...' or $"..." quote, and they decode it
-// in different ways. segments() cannot read the real words, so denyAt denies the quote.
+// claude-factory-1r7x: zsh runs the text of a glob qualifier e:...: or +name as a command.
 export const GLOB_CODE_REASON =
   'The factory denies this command: an unquoted ( ) group glued to a word holds e, +, a $ or a ' +
   'backtick. zsh reads it as a glob qualifier and runs that text as a command for each file. ' +
   'Quote the pattern, or use find. Do not retry this exact command.'
 
+// claude-factory-hewq: bash and zsh decode an unquoted $'...' or $"..." quote, and they decode it
+// in different ways. segments() cannot read the real words, so denyAt denies the quote.
 export const DOLLAR_QUOTE_REASON =
   'The factory denies this command: it holds an unquoted $\'...\' or $"..." quote. The shell ' +
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
@@ -945,6 +946,11 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: b
         info.heredoc = true
       return
     }
+    // claude-factory-wmsr.37: in a backtick body, a line that starts with the delimiter plus a backtick ends the body early.
+    if (hazard && (dash ? line.replace(/^\t+/, '') : line).startsWith(delim)) {
+      info.heredoc = true
+      return
+    }
     p = e + 1
   }
   info.heredoc = true
@@ -1116,7 +1122,7 @@ function segments(
           !info.globCode &&
           !(wasExempt && '$<>'.includes(prev)) &&
           !(wasExempt && prev === '=' && (word === '=' || cur.every(shellAssignmentWord))) &&
-          !(prev === '{' && cmd[i - 2] === '$') &&
+          !(prev === '{' && cmd[i - 2] === '$' && !/(?:^|[^\\])(?:\\\\)*\\$/.test(cmd.slice(0, i - 2))) &&
           !(prev === '[' && /^(?:\$\w+)?\[$/.test(word)) &&
           !hz.quoted.some(([a, b]) => i >= a && i < b) &&
           /[e+$`]/.test(groupBody(cmd, i))
@@ -1134,7 +1140,7 @@ function segments(
             hasWord &&
             !wasExempt &&
             !info.funcDef &&
-            !(prev === '{' && cmd[i - 2] === '$') &&
+            !(prev === '{' && cmd[i - 2] === '$' && !/(?:^|[^\\])(?:\\\\)*\\$/.test(cmd.slice(0, i - 2))) &&
             !(prev === '[' && /^(?:\$\w+)?\[$/.test(word)) &&
             !groupEndsCommand(cmd, i)
           ) {

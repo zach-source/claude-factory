@@ -13,6 +13,7 @@ const RM = 'r' + 'm'
 const PUSH = 'git ' + 'push origin main'
 
 const DENIED = [
+  "ls a\\${(e:'echo hi':)",
   `ls *(e:'${RM} -rf /':)`,
   `ls *(e:'${PUSH}':)`,
   `echo *(e:'${RM} -rf /':)`,
@@ -55,6 +56,7 @@ test.each(DENIED)('denies a glob qualifier that runs code: %s', cmd => {
 })
 
 const ALLOWED = [
+  "ls a\\\\${(e:'echo hi':)",
   'ls *(N)',
   'ls *(.)',
   'ls -d *(/)',
