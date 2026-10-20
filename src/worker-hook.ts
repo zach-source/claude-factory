@@ -6433,26 +6433,6 @@ function shellAliasReason(
   return undefined
 }
 
-/**
- * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
- * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
- * `depth + 1` at each of its 4 recursion sites: one for `env -S`, two for `sh`/`bash`/`zsh`/
- * `dash -c` (one for the `--` form, one for the plain form), and one for `eval`.
- *
- * `state` is the claude-factory-c63 scan state. It is one object that `denyReason` makes one time.
- * This function passes `state` down unchanged to every recursive call that it makes.
- * That includes each call that `anyShellReason` makes into a nested shell, `eval`, or `env -S` script.
- *
- * claude-factory-68gn: `movedBefore` is true when a `cd`, `pushd` or `popd` word already ran
- * before `command`, either in an outer command's earlier segment or in the script `command`
- * itself sat inside (an eval/sh -c/env -S argument, or an env -S split string). It seeds this
- * call's own `movedSoFar`, the same accumulator that a `cd`/`pushd`/`popd` word in one of
- * `command`'s own segments extends for every segment after it.
- *
- * claude-factory-bemr: `ghConfigMovedBefore` is the same kind of seed.
- * It is for a `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` assignment, not a `cd`.
- * It seeds this call's own `ghConfigMovedSoFar`.
- */
 // claude-factory-miqy: bash splits an unquoted `$X` into words. So a command word `$X` runs X's value.
 // This table holds each NAME=value the command text sets. The table stores undefined for a value the hook cannot read.
 // The hook reads a visible value as the command. A name with no visible set stays allowed.
@@ -6494,6 +6474,26 @@ function shellQuoteWord(w: string): string {
   return /^[\w./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`
 }
 
+/**
+ * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
+ * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
+ * `depth + 1` at each of its 4 recursion sites: one for `env -S`, two for `sh`/`bash`/`zsh`/
+ * `dash -c` (one for the `--` form, one for the plain form), and one for `eval`.
+ *
+ * `state` is the claude-factory-c63 scan state. It is one object that `denyReason` makes one time.
+ * This function passes `state` down unchanged to every recursive call that it makes.
+ * That includes each call that `anyShellReason` makes into a nested shell, `eval`, or `env -S` script.
+ *
+ * claude-factory-68gn: `movedBefore` is true when a `cd`, `pushd` or `popd` word already ran
+ * before `command`, either in an outer command's earlier segment or in the script `command`
+ * itself sat inside (an eval/sh -c/env -S argument, or an env -S split string). It seeds this
+ * call's own `movedSoFar`, the same accumulator that a `cd`/`pushd`/`popd` word in one of
+ * `command`'s own segments extends for every segment after it.
+ *
+ * claude-factory-bemr: `ghConfigMovedBefore` is the same kind of seed.
+ * It is for a `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` assignment, not a `cd`.
+ * It seeds this call's own `ghConfigMovedSoFar`.
+ */
 function denyAt(
   command: string,
   root: string | undefined,
@@ -6504,6 +6504,7 @@ function denyAt(
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
   aliasStack: readonly string[] = [],
+  outerVars?: VarTable,
 ): string | undefined {
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
@@ -6520,6 +6521,7 @@ function denyAt(
       ghConfigMovedBefore,
       late,
       aliasStack,
+      outerVars,
     ) ?? late.reason
   )
 }
@@ -6535,6 +6537,7 @@ function denyAtScan(
   ghConfigMovedBefore: boolean,
   late: { reason?: string },
   aliasStack: readonly string[],
+  outerVars?: VarTable,
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
@@ -6574,7 +6577,23 @@ function denyAtScan(
   let definesFunction = quoteInfo.funcDef
   let ambiguousAssignment = false
   let subIdx = 0
-  const vars: VarTable = new Map()
+  const vars: VarTable = new Map(outerVars)
+  // claude-factory-miqy: collect every write first. A set after the use still counts.
+  for (const w of segs) recordVarWrites(w, vars)
+  const scanValue = (name: string, rest: string[]): string | undefined => {
+    if (!vars.has(name)) return undefined
+    const value = vars.get(name)
+    if (value === undefined || vars.has('IFS') || VAR_UNREADABLE.test(value)) {
+      return DYNAMIC_VERB_REASON
+    }
+    const text = [...value.split(/\s+/).filter(Boolean), ...rest.map(shellQuoteWord)].join(' ')
+    return denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar, [], vars)
+  }
+  const varsGuard = (words: string[], cmd: string[]): boolean =>
+    cmd.length > 0 &&
+    vars.size > 0 &&
+    !anyDynamicCommandReason(words) &&
+    !(personOnly?.length && anyDynamicLiveApplyReason(words, personOnly))
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
   const scanSubs = (upTo: number): string | undefined => {
@@ -6590,6 +6609,8 @@ function denyAtScan(
         state,
         movedSoFar,
         ghConfigMovedSoFar,
+        [],
+        vars,
       )
       // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
       if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
@@ -6647,35 +6668,12 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
-    recordVarWrites(words, vars)
     // The older dynamic-word scan keeps its own reason when it denies first.
-    if (
-      cmd.length &&
-      vars.size &&
-      !anyDynamicCommandReason(words) &&
-      !(personOnly?.length && anyDynamicLiveApplyReason(words, personOnly))
-    ) {
-      const hb = baseWord(cmd[0]!)
-      const scanValue = (name: string, rest: string[]): string | undefined => {
-        if (!vars.has(name)) return undefined
-        const value = vars.get(name)
-        if (value === undefined || vars.has('IFS') || VAR_UNREADABLE.test(value)) {
-          return DYNAMIC_VERB_REASON
-        }
-        const text = [...value.split(/\s+/).filter(Boolean), ...rest.map(shellQuoteWord)].join(' ')
-        return denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
-      }
+    if (varsGuard(words, cmd)) {
       const headName = varRefName(cmd[0]!)
       if (headName) {
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
-      }
-      if (hb === 'eval' || /^(?:[a-z]*sh)$/.test(hb)) {
-        for (const w of cmd.slice(1)) {
-          const n = varRefName(w)
-          const r = n ? scanValue(n, []) : undefined
-          if (r) return r
-        }
       }
     }
     if (!cmd.length) continue
@@ -6747,6 +6745,17 @@ function denyAtScan(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
+    // claude-factory-miqy: after anyShellReason, so the 38jm reasons keep priority.
+    if (varsGuard(words, cmd)) {
+      const hb = baseWord(cmd[0]!)
+      if (hb === 'eval' || /^(?:[a-z]*sh)$/.test(hb)) {
+        for (const w of cmd.slice(1)) {
+          const n = varRefName(w)
+          const r = n ? scanValue(n, []) : undefined
+          if (r) return r
+        }
+      }
+    }
     // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
     const stdinShell = shellStdinReason(words, state)
     if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true

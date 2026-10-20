@@ -7918,6 +7918,18 @@ const MIQY_DENY: Array<[string, string]> = [
   ['for X in "rm -rf /"; do $X; done', DYNAMIC_VERB_REASON],
   ['printf -v X "rm -rf /"; $X', DYNAMIC_VERB_REASON],
   ['X="rm,-rf,/"; IFS=,; $X', DYNAMIC_VERB_REASON],
+  ['while :; do $X; X="rm -rf /"; done', REASON],
+  ['until false; do $X; X="rm -rf /"; done', REASON],
+  ['for i in 1 2; do $X; X="rm -rf /"; done', REASON],
+  ['X="rm -rf /"; Y="$($X)"', REASON],
+  ['X="rm -rf /"; echo "$($X)"', REASON],
+  ['X="rm -rf /"; echo "`$X`"', REASON],
+  ['X="rm -rf /"; echo "$(eval $X)"', REASON],
+  ['X="git push origin main"; echo "$($X)"', PUSH_REASON],
+  ['X="rm -rf /"; env $X', REASON],
+  ['X="rm -rf /"; command $X', REASON],
+  ['X="rm -rf /"; exec $X', REASON],
+  ['X="rm -rf /"; nohup $X', REASON],
 ]
 test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
