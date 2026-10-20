@@ -1145,8 +1145,8 @@ const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
 
 /**
  * claude-factory-j471: true when `cmd`, a find command, runs a recursive rm in an exec slot.
- * A slot word is `-exec`, `-execdir`, `-ok` or `-okdir`. The word after the slot (after any
- * NAME=value words) is the head. If the head is rm, `isRecursiveRm` reads it. If the head is a
+ * A slot word is `-exec`, `-execdir`, `-ok` or `-okdir`. The word after the slot is the head.
+ * A NAME=value head is not read here. assignmentReadingsDeny reads it. If the head is rm, `isRecursiveRm` reads it. If the head is a
  * wrapper (sudo, env, nice, timeout, xargs ...), the scan reads every later word once for an rm
  * word. Then it returns, because each later slot is a part of the range that it read.
  *
@@ -1158,8 +1158,7 @@ const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
 function findExecRmDeny(cmd: string[]): boolean {
   for (let i = 0; i < cmd.length; i++) {
     if (!FIND_EXEC_WORDS.has(cmd[i]!)) continue
-    let k = i + 1
-    while (k < cmd.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(cmd[k]!)) k++
+    const k = i + 1
     if (k >= cmd.length) continue
     const b = baseWord(cmd[k]!)
     if (b === 'rm') {
