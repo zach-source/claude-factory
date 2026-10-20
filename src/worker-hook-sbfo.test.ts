@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test'
 import { BEADS_ACTOR_REASON, denyReason, type HookGate, PUSH_REASON } from './worker-hook'
 
-// claude-factory-sbfo: bash eval has no options, so a leading `--` word is skipped before the
-// eval script is read. Without the skip, the real head of the script stays hidden.
+// claude-factory-sbfo: bash eval has no options and zsh eval skips leading `-` words, so each
+// leading `--` or `-` word is skipped before the eval script is read. Without the skip, the real head of the script stays hidden.
 const GATE: HookGate = {
   headOf: d => (d === '/root/repo' ? 'factory/x' : 'main'),
   originHead: () => 'main',
@@ -23,6 +23,10 @@ const AC1: [string, string][] = [
   ['eval - rm -rf /', 'eval rm -rf /'],
   ['eval "-" rm -rf /', 'eval rm -rf /'],
   ['eval - "rm -rf /"', 'eval "rm -rf /"'],
+  ['eval -- - rm -rf /', 'eval rm -rf /'],
+  ['eval - - rm -rf /', 'eval rm -rf /'],
+  ['eval - - "rm -rf /"', 'eval "rm -rf /"'],
+  ["eval -- '-' rm -rf /", 'eval rm -rf /'],
 ]
 
 test('AC1: eval -- hides nothing', () => {
@@ -34,7 +38,7 @@ test('AC1: eval -- hides nothing', () => {
 })
 
 test('AC2: harmless eval -- rows stay allowed', () => {
-  for (const row of ['eval -- echo ok', 'eval --', 'eval -- ls -- -rf']) expect(run(row), row).toBeUndefined()
+  for (const row of ['eval -- echo ok', 'eval -- - - echo ok', 'eval --', 'eval -- ls -- -rf']) expect(run(row), row).toBeUndefined()
 })
 
 test('AC3: parity with and without --', () => {

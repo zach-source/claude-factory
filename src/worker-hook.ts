@@ -6384,8 +6384,8 @@ function anyShellReason(
     }
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
-      // bash eval has no options, and zsh eval ends options at `-`: a leading `--` or `-` word is not the script head.
-      if (rest.length && ['--', '-'].includes(rest[0]!.replace(/["'\\]/g, ''))) rest.shift()
+      // bash eval has no options, and zsh eval skips every leading `-` word, also after `--`: drop each one, none is the script head.
+      while (rest.length &&['--', '-'].includes(rest[0]!.replace(/["'\\]/g, ''))) rest.shift()
       if (rest.length) {
         const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
         if (r) return r
