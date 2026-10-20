@@ -417,6 +417,19 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   expect(workerSettings({ env: { SHUNT_MODEL: 'sonnet' } }, 200).env.SHUNT_MODEL).toBe('sonnet')
 })
 
+test('a worker keeps asd-ste100 and the plugins the factory names, and no other', () => {
+  const user = {
+    enabledPlugins: { 'asd-ste100@m': true, 'ponytail@ponytail': true, 'other@x': true, 'ponytailx@y': true },
+  }
+  expect(Object.keys(workerSettings(user, 200).enabledPlugins!)).toEqual(['asd-ste100@m'])
+  const kept = workerSettings(user, 200, undefined, undefined, undefined, ['ponytail']).enabledPlugins!
+  expect(Object.keys(kept).sort()).toEqual(['asd-ste100@m', 'ponytail@ponytail'])
+  const off = { enabledPlugins: { 'ponytail@ponytail': false } }
+  expect(
+    workerSettings(off, 200, undefined, undefined, undefined, ['ponytail']).enabledPlugins,
+  ).toBeUndefined()
+})
+
 // claude-factory-25z.2: a rig with personOnlyContexts gets its own worker-settings-<rig>.json, so a
 // launch for a different rig (which writes the shared file with no argv) never overwrites its hook argv
 test("workerFlags writes a rig's own worker-settings-<rig>.json when it has personOnlyContexts, else the shared worker-settings.json", () => {
