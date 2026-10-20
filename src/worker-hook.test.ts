@@ -2878,6 +2878,54 @@ test.each([
   expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
 })
 
+// claude-factory-4a4o: a plain < or > glued to a command, verb or sub word starts a redirect in
+// bash and zsh. The word before it is the real word.
+test.each([
+  'rm>/dev/null -rf /',
+  'rm>f -rf /',
+  'rm<f -rf /',
+  'rm</dev/null -rf /',
+  "'rm'>f -rf /",
+  '"rm">f -rf /',
+  'find>f . -exec rm -rf {} \\;',
+  'cd /x; rm>f -f y',
+])('denyReason denies %j (claude-factory-4a4o, glued redirect)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(REASON)
+})
+
+test.each(['gh>/dev/null pr merge 1', 'gh pr>f merge 1', 'gh pr merge>f 1'])(
+  'denyReason denies %j (claude-factory-4a4o, glued gh)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+  },
+)
+
+test.each(['git push>f origin main', 'git>f push origin main'])(
+  'denyReason denies %j (claude-factory-4a4o, glued git)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+test.each([
+  'ls>f',
+  'ls >f',
+  'git log>f',
+  'gh api x>f',
+  'gh api x > f',
+  'echo a>b',
+  'cat<f',
+  'echo 2>/dev/null',
+  'cmd 2>&1',
+  'rm\\>f -rf /',
+  "'rm>f' -rf /",
+  "git commit -m 'a>b'",
+  'echo x > out.txt',
+  'cat < acme.txt',
+])('denyReason allows %j (claude-factory-4a4o, glued redirect)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
+
 // claude-factory-g4l4: a redirect word between rm and its -r flag must not hide the recursive rm.
 const G4L4_GATE = {
   headOf: () => 'factory/x',
@@ -8575,6 +8623,54 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
 })
+
+// claude-factory-tyz6: zsh reads a lone - in command position as a precommand modifier, so the next word is the command.
+const DENY_ZSH_DASH_PRECOMMAND = [
+  '- rm -r ./d',
+  '- rm -rf /',
+  'A=1 - rm -r ./d',
+  'A=1; - rm -r ./d',
+  "'-' rm -r ./d",
+  '\\- rm -r ./d',
+  '"-" rm -r ./d',
+  '- - rm -r ./d',
+  '- exec rm -r ./d',
+  '- builtin rm -r ./d',
+  'exec - rm -r ./d',
+  'builtin - rm -r ./d',
+  'env - rm -r ./d',
+  'time - rm -r ./d',
+  'sudo - rm -r ./d',
+  'if - rm -r ./d; then :; fi',
+  'echo x && - rm -r ./d',
+]
+
+test.each(DENY_ZSH_DASH_PRECOMMAND)(
+  'denyReason denies the dash precommand row %j (claude-factory-tyz6)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(REASON)
+  },
+)
+
+test.each(['- $G $V origin main', 'G=git V=push; - $G $V origin main'])(
+  'denyReason denies the dash precommand dynamic verb row %j (claude-factory-tyz6)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason keeps the git, gh and sh -c denies behind a dash (claude-factory-tyz6)', () => {
+  expect(denyReason('- git push origin main')).toBe(PUSH_REASON)
+  expect(denyReason('- gh pr merge 1')).toBe(MERGE_REASON)
+  expect(denyReason('- sh -c "rm -r ./d"')).toBeDefined()
+})
+
+test.each(['- ls', 'cat -', 'echo - x', 'ls -', 'git diff -'])(
+  'denyReason allows %j (claude-factory-tyz6: a dash is not always a precommand)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
 
 // claude-factory-j1ki: the shell splits an unquoted expansion (${IFS}, $IFS, ${X}, $(...)) that is
 // glued to other text into word breaks. The guard must read the split words.
