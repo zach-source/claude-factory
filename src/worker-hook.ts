@@ -7008,8 +7008,7 @@ function gluedHeadReason(
   if (end < 0) return true
   for (const n of setNames) {
     const value = vars.get(n)
-    if (IMPLICIT_VARS.has(n) || /\s/.test(value) || VAR_UNREADABLE.test(value))
-      return true
+    if (IMPLICIT_VARS.has(n) || /\s/.test(value) || VAR_UNREADABLE.test(value)) return true
     let ops = 0
     for (const m of head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))) {
       if (/[\s$\`'"\\*?[]/.test(m[1]!)) return true
@@ -7073,7 +7072,7 @@ const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]
 // text, where quotes and backslashes are visible, and is the reading that does not depend on them.
 function flattenBraceExpansions(w: string, byDepth: boolean): string {
   let out = ''
-  for (let i = 0; i < w.length;) {
+  for (let i = 0; i < w.length; ) {
     if (w[i] !== '$' || w[i + 1] !== '{') {
       // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
       out += !byDepth && w[i] === '}' ? '$@' : w[i]
