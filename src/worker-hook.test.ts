@@ -7194,6 +7194,39 @@ test.each(ALLOW_QBTZ_KUBECTL_SUB_PAST_FLAG)(
   },
 )
 
+// claude-factory-qbtz.2: past an unknown flag the sub word slot is uncertain. The guard then
+// scans the words before -- for the verb own mutating set or a dynamic word.
+const DENY_QBTZ2_KUBECTL_SUB_SCAN = [
+  'kubectl auth --bogus v reconcile -f r.yaml --context acme',
+  'kubectl certificate --bogus v approve csr-x --context acme',
+  'kubectl certificate --bogus v deny csr-x --context acme',
+  'kubectl rollout --bogus v $S deploy/x --context acme',
+  'kubectl rollout --bogus v undo deploy/x --context acme',
+  "kubectl rollout -n x '' restart deploy/x --context acme",
+  'kubectl rollout -n x - restart deploy/x --context acme',
+]
+
+test.each(DENY_QBTZ2_KUBECTL_SUB_SCAN)(
+  'denyReason denies %j with personOnly acme (claude-factory-qbtz.2: uncertain sub slot scan)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+  },
+)
+
+const ALLOW_QBTZ2_KUBECTL_SUB_SCAN = [
+  'kubectl rollout --bogus status deploy/x --context acme -- restart',
+  'kubectl auth --bogus v can-i get pods --context acme',
+  'kubectl rollout -n x - status deploy/x --context acme',
+  'kubectl rollout --bogus v pause deploy/x --context kind-x',
+]
+
+test.each(ALLOW_QBTZ2_KUBECTL_SUB_SCAN)(
+  'denyReason allows %j with personOnly acme (claude-factory-qbtz.2: read-only sub word or unlisted context)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
+  },
+)
+
 // claude-factory-p43v.8: two dynamic words in a row hide the wrapper word and the verb.
 const DENY_TWO_DYNAMIC_COMMAND_WORDS = [
   'G=git V=push; $G $V origin main',
