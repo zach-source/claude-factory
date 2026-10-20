@@ -3891,6 +3891,16 @@ test.each([
   'touch {a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}x',
   'touch {1..10..2}',
   'touch {a..e..2}',
+  "sed -i 's/[{}]//g' f",
+  'sed -i "s/[{}]//g" f',
+  "sed -i 's/{[^}]*}//g' f",
+  "sed -i 's/[{]/x/' f",
+  "perl -pi -e 's/[{}]//g' f",
+  'touch [{]x',
+  'touch f[{]',
+  'touch x{[,]}',
+  'touch {a,b}[1]',
+  'cp x {a,b}/[cd]',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
 })
