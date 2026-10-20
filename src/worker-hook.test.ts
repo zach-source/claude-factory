@@ -5722,6 +5722,55 @@ test.each(DYN_RM_KEEP)('denyReason keeps allowing a harmless dynamic word: %s (c
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
+const DYN_LATER_DENY = [
+  '$X -u root $Y -rf /',
+  '$X -u root $Y ../x',
+  '$X -n 5 $Y -rf /',
+  '$X -u root "$Y" -rf /',
+  '$X -u root ${Y} ../x',
+  '$X -u root -- $Y -rf /',
+  '$X -u root $Y -- -rf /',
+  '$X -u root $Y -r src',
+  '$X -u root $Y /',
+  '$X a b $Y -rf /',
+  'X=env; $X -u root $Y -rf /',
+  '{ $X -u root $Y -rf /; }',
+  'sudo -u root $X -u root $Y ../x',
+  'find . -exec $X -u root $Y -rf / {} \\;',
+  '$X $Y -rf /',
+  '$X $Y ../x',
+  '$X -u $Y -rf /',
+]
+
+test.each(DYN_LATER_DENY)(
+  'denyReason denies a dynamic word after a dynamic head and wrapper flags: %s (claude-factory-0xw4)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+const DYN_LATER_KEEP = [
+  '$X -u root ls',
+  '$X -u root $Y',
+  '$X -u root $Y ls',
+  '$X -u root $Y src',
+  '$X -u root ls $Y',
+  'echo $X -u root $Y -rf /',
+  'git -C $Y status',
+  '$X -u root $Y a; cd ..',
+]
+
+test.each(DYN_LATER_KEEP)('denyReason keeps allowing: %s (claude-factory-0xw4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test('denyReason reads a long dynamic head command in linear time (claude-factory-0xw4)', () => {
+  const cmd = '$X ' + '$A '.repeat(20_000) + '-x '.repeat(20_000)
+  const t = Date.now()
+  denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
+  expect(Date.now() - t).toBeLessThan(1000)
+}, 30_000)
+
 test.each(['$(echo command) rm -rf /', '$N git push origin main', 'rm -rf /', '$X =rm -rf /'])(
   'denyReason keeps denying: %s (claude-factory-2a3i)',
   cmd => {
