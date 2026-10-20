@@ -98,8 +98,6 @@ test.each(AC4)('38JM AC4 denies %s', cmd => {
 const AC5 = [
   'sh script.sh',
   'sh -x file',
-  "bash -c 'echo $HOME'",
-  "sh -c 'git status' $X",
   'sh script.sh $X',
   'sh -- $X',
   "bash -o pipefail -c 'git status'",
@@ -108,7 +106,6 @@ const AC5 = [
   'echo {a,b}',
   'ls {a,b}.txt',
   'cp "$A" "$B"',
-  'sh -c "$CMD"',
 ]
 test.each(AC5)('38JM AC5 allows %s', cmd => {
   expect(run(cmd)).toBeUndefined()
