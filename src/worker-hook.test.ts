@@ -8418,6 +8418,17 @@ const MIQY_DENY: Array<[string, string]> = [
   ['A=X; print -v "${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
   ['A=X; print -v"${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
   ['print -vXY "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "git push origin main"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; sudo $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'declare ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ["A=X; eval 'export ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ["A=X; eval 'getopts ab ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ['A=X; eval \'print -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; echo "$($XY)"', DYNAMIC_VERB_REASON],
+  ['IFS=, read -aXY; $XY', DYNAMIC_VERB_REASON],
+  ['IFS=, read -raXY; sudo $XY', DYNAMIC_VERB_REASON],
+  ['read -aXY; $XY', DYNAMIC_VERB_REASON],
 ]
 test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
