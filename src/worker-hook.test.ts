@@ -8379,6 +8379,15 @@ const DENY_PWY0: string[] = [
   'z=FS; readonly I$z=_; ${RM:-rm_-rf_/}',
   'z=FS; typeset I$z=_; ${RM:-rm_-rf_/}',
   'z=FS; printf -v I$z _; ${RM:-rm_-rf_/}',
+  'IFS=_; ${x:-"printf r\\155"_-rf_/}',
+  "y='rm -rf /'; $y",
+  'IFS=_; y=rm_-rf_/; $y',
+  'IFS=_; r$x"m_-rf_/"',
+  'IFS=_; $x"rm_-rf_/"',
+  'r$x"m" ../acme.txt',
+  'r?? -rf /',
+  '/bin/r[m] -rf /',
+  'RM$x -rf /',
 ]
 test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
@@ -8396,6 +8405,10 @@ const ALLOW_PWY0: string[] = [
   '${(L)x:-ls} acme.txt',
   'ls$~x acme.txt',
   '$x acme.txt',
+  '$HOME/.local/bin/claude plugin test mod',
+  '"$ROOT/bin/factory" report x 2 ready "rm -rf rows"',
+  '/bin/s? -c x',
+  'env --unset "$X" --chdir /tmp make test',
 ]
 test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
