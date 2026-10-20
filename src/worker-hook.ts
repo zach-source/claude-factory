@@ -432,6 +432,8 @@ interface ScanState {
   stdinFed: boolean
   /** claude-factory-l43b: set when a shell reads stdin. denyReason returns SHELL_STDIN_REASON last, so a more specific reason from the same command wins. */
   stdinDeferred: boolean
+  /** claude-factory-4iod: set when a brace body reads as a risky rm. denyReason returns REASON after the older reasons. */
+  bodyDeny: boolean
   globalGitConfig: boolean
   gitWord: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
@@ -1903,7 +1905,7 @@ function braceBodies(words: string[], braceWords: Set<string>): string[][] {
 }
 
 // claude-factory-4iod: the rm, find and cd reading of one command. 'deny' means REASON.
-function rmFindReading(cmd: string[], root: string | undefined): 'deny' | 'rm' | 'cd' | undefined {
+function rmFindBodyReading(cmd: string[], root: string | undefined): 'deny' | 'rm' | 'cd' | undefined {
   if (!cmd.length) return undefined
   const b = baseWord(cmd[0]!)
   if (b === 'rm') {
@@ -6601,6 +6603,7 @@ export function scanReason(
     gitAdminPath: false,
     stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     stdinDeferred: false,
+    bodyDeny: false,
     globalGitConfig: false,
     gitWord: false,
     substFallbacks: 0,
@@ -6613,6 +6616,7 @@ export function scanReason(
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
+  if (state.bodyDeny && !state.stdinDeferred) return REASON
   if (!state.headPush) return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
@@ -6979,8 +6983,8 @@ function denyAtScan(
     const bodies = braceBodies(words, state.braceWords)
     if (bodies.length > MAX_BRACE_BODIES) return SCAN_BUDGET_REASON
     for (const body of bodies) {
-      const inner = rmFindReading(realCommand(body), root)
-      if (inner === 'deny') return REASON
+      const inner = rmFindBodyReading(realCommand(body), root)
+      if (inner === 'deny') state.bodyDeny = true
       if (inner === 'rm') hasRm = true
       if (inner === 'cd') hasCd = true
     }
@@ -7079,7 +7083,7 @@ function denyAtScan(
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
-    const outer = rmFindReading(cmd, root)
+    const outer = rmFindBodyReading(cmd, root)
     if (outer === 'deny') return REASON
     if (outer === 'rm') hasRm = true
     if (outer === 'cd') hasCd = true
