@@ -318,6 +318,14 @@ export function restore(cfg: BackupCfg): Outcome {
     // a branch that holds a path the backup excludes (login files, Claude hooks, home/bin) is not ours: write nothing
     const names = git(cfg, ['ls-tree', '-r', '--name-only', '-z', sha])
     if (!names.ok) return { error: `git ls-tree: ${names.err}` }
+    // the backup writes only home/ and claude/projects/: any other path (backup.git/config, claude/CLAUDE.md, skills, .bashrc) is not ours
+    const outside = names.out
+      .split('\0')
+      .filter(n => n && !n.startsWith('home/') && !n.startsWith('claude/projects/'))
+    if (outside.length)
+      return {
+        error: `restore refused: the branch holds paths outside home/ and claude/projects/: ${outside.slice(0, 5).join(', ')}`,
+      }
     const ign = git(cfg, ['check-ignore', '--no-index', '-v', '-z', '--stdin'], 120_000, { input: names.out })
     if (ign.code !== 0 && ign.code !== 1) return { error: `git check-ignore: ${ign.err}` }
     const f4 = ign.out.split('\0')

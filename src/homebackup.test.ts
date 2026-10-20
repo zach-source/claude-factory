@@ -418,6 +418,27 @@ test('restore refuses a branch that holds excluded paths and writes nothing', ()
   expect(existsSync(join(ws, 'home', 'rigs.json'))).toBe(false)
 })
 
+test('restore refuses paths outside home/ and claude/projects/', () => {
+  const r = remote()
+  const src = workspace()
+  expect(backup(cfg(src, r), true).error).toBeUndefined()
+  const w = tmp()
+  sh('clone', '-q', '-b', 'manager-home', r, w)
+  put(join(w, 'backup.git', 'config'), '[core]\n\tfsmonitor = false\n')
+  put(join(w, 'claude', 'CLAUDE.md'), 'x')
+  put(join(w, 'claude', 'skills', 'x', 'SKILL.md'), 'x')
+  sh('-C', w, ...G, 'add', '-Af', '.')
+  sh('-C', w, ...G, 'commit', '-q', '-m', 'x')
+  sh('-C', w, 'push', '-q', 'origin', 'manager-home')
+  const ws = empty()
+  const out = restore(cfg(ws, r))
+  expect(out.restored).toBeUndefined()
+  expect(out.error).toContain('backup.git/config')
+  expect(existsSync(join(ws, 'claude', 'CLAUDE.md'))).toBe(false)
+  expect(existsSync(join(ws, 'home', '.restoring'))).toBe(false)
+  expect(existsSync(join(ws, 'home', 'rigs.json'))).toBe(false)
+})
+
 test('secretFile finds URL userinfo, JWT and the other vendor token shapes', () => {
   const hit = [
     'https://bob:hunter2pass@example.com/x',
