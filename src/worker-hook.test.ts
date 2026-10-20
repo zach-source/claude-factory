@@ -7895,6 +7895,90 @@ test.each(ALLOW_BRACE_GROUP)('denyReason allows %j (claude-factory-fmeu, brace g
   expect(denyReason(cmd)).toBeUndefined()
 })
 
+// claude-factory-aylh: sudo reads its own options before the command. An unknown option must not
+// hide the command (`sudo -E rm -rf /`). Source: sudo parse_args.c, sudo_short_opts and sudo_long_opts.
+const AYLH_RM = 'rm -rf /'
+const AYLH_DENY = [
+  // the 11 rows of the bead
+  ...['-s', '-E', '-H', '-n', '-b', '-S', '-k', '-A', '-P', '-K', '--preserve-env'].map(
+    f => `sudo ${f} ${AYLH_RM}`,
+  ),
+  // other bare letters, clusters, attached values, long forms and prefixes
+  ...[
+    '-B',
+    '-N',
+    '-l',
+    '-nE',
+    '-uroot',
+    '-Eu root',
+    '-nEu root',
+    '--user=root',
+    '--preserve-env=PATH',
+    '--pres',
+    '--non-interactive',
+    '--us root',
+  ].map(f => `sudo ${f} ${AYLH_RM}`),
+  // one row for each short value letter
+  ...[
+    '-a x',
+    '-C 3',
+    '-c x',
+    '-D /x',
+    '-g x',
+    '-h host',
+    '-p x',
+    '-R /',
+    '-r x',
+    '-T 5',
+    '-t x',
+    '-U x',
+    '-u x',
+  ].map(f => `sudo ${f} ${AYLH_RM}`),
+  // one row for each required-argument long name
+  ...[
+    '--other-user x',
+    '--auth-type x',
+    '--close-from 3',
+    '--login-class x',
+    '--chdir /x',
+    '--group x',
+    '--host x',
+    '--prompt x',
+    '--chroot /',
+    '--role x',
+    '--command-timeout 5',
+    '--type x',
+    '--user x',
+    '--chdir=/x',
+  ].map(f => `sudo ${f} ${AYLH_RM}`),
+  // env words, --, unknown flags and nesting
+  `sudo A=1 -E ${AYLH_RM}`,
+  `sudo A=1 -u root ${AYLH_RM}`,
+  `sudo -E A=1 ${AYLH_RM}`,
+  `sudo -E -- ${AYLH_RM}`,
+  `sudo -Z ${AYLH_RM}`,
+  `sudo -E env ${AYLH_RM}`,
+  `sudo -E sudo -E ${AYLH_RM}`,
+  'sudo -E rm "$X"',
+]
+
+test.each(AYLH_DENY)('denyReason denies %j (claude-factory-aylh)', cmd => {
+  expect(denyReason(cmd, '/x')).toBe(REASON)
+})
+
+test.each([
+  'sudo -E ls',
+  'sudo -E ls -la',
+  'sudo -nE ls',
+  'sudo --user=root ls',
+  'sudo -Z v ls',
+  'sudo -s',
+  'sudo -l',
+  'sudo -E rm a',
+])('denyReason allows %j (claude-factory-aylh)', cmd => {
+  expect(denyReason(cmd, '/x')).toBeUndefined()
+})
+
 // claude-factory-21ux: a wrapper flag that realCommand does not know must not hide an rm or a
 // find -exec rm. Each flag word reads as a bare flag or as a flag with a value word.
 const DENY_21UX: string[] = [
