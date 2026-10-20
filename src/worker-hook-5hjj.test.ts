@@ -13,6 +13,14 @@ const run = (cmd: string) => denyReason(cmd, '/root/repo', undefined, GATE)
 const RM = 'r' + 'm'
 
 const DENIED = [
+  '/bin/r(m|"))") -rf /',
+  '/bin/r(m|");") -rf /',
+  "/bin/r(m|')|') -rf /",
+  '>| x /bin/r(m) -rf /',
+  '>>| x /bin/r(m) -rf /',
+  '2>| x /bin/r(m) -rf /',
+  '&>| x /bin/r(m) -rf /',
+  '>| x /bin/g(i)t push origin main',
   '/bin/r(m) -rf /',
   `/bin/${RM}(.) -rf /`,
   '/bin/r(m|x) -rf /',

@@ -793,8 +793,15 @@ function groupEndsCommand(cmd: string, open: number): boolean {
   let depth = 0
   let j = open
   for (; j < cmd.length; j++) {
-    if (cmd[j] === '(') depth++
-    else if (cmd[j] === ')' && --depth === 0) break
+    const c = cmd[j]!
+    if (c === '\\') j++
+    else if (c === "'") {
+      j = cmd.indexOf("'", j + 1)
+      if (j < 0) return false
+    } else if (c === '"') {
+      for (j++; j < cmd.length && cmd[j] !== '"'; j++) if (cmd[j] === '\\') j++
+    } else if (c === '(') depth++
+    else if (c === ')' && --depth === 0) break
   }
   if (j >= cmd.length) return false
   j++
@@ -1428,7 +1435,7 @@ function gluedAtCommandSlot(head: string[]): boolean {
   if (commandAnchors(head).includes(last)) return true
   if (/^-(exec|execdir|ok|okdir)$/.test(head[last - 1] ?? '')) return true
   let i = 0
-  while (i < last && /^(\d*[<>]|&>)/.test(head[i]!)) i += /^(\d*[<>]+|&>>?)&?-?$/.test(head[i]!) ? 2 : 1
+  while (i < last && /^(\d*[<>]|&>)/.test(head[i]!)) i += /^(\d*[<>]+\|?|&>>?\|?)&?-?$/.test(head[i]!) ? 2 : 1
   return i === last
 }
 
