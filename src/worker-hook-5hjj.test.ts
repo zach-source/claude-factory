@@ -13,6 +13,9 @@ const run = (cmd: string) => denyReason(cmd, '/root/repo', undefined, GATE)
 const RM = 'r' + 'm'
 
 const DENIED = [
+  'eval /bin/r(m) -rf /',
+  'eval /bin/@(r)m -rf /',
+  'eval /bin/g(i)t push origin main',
   '/bin/r(m|"))") -rf /',
   '/bin/r(m|\\)) -rf /',
   '/bin/r(m|");") -rf /',

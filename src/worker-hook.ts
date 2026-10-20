@@ -1434,7 +1434,7 @@ function gluedAtCommandSlot(head: string[]): boolean {
   const last = head.length - 1
   if (last < 0) return false
   if (commandAnchors(head).includes(last)) return true
-  if (/^-(exec|execdir|ok|okdir)$/.test(head[last - 1] ?? '')) return true
+  if (/^(-(exec|execdir|ok|okdir)|eval)$/.test(head[last - 1] ?? '')) return true
   let i = 0
   // {name}> and {name}< name an fd; >&- closes one and takes no operand
   while (i < last && /^((\d*|\{[A-Za-z_]\w*\})[<>]|&>)/.test(head[i]!))
