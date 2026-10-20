@@ -37,6 +37,12 @@ const DENY = [
   'X=/x; ${X/x/ y}/bin/tool',
   'IFS=/; X=/x; ${X}/bin/tool',
   'let X=1; ${X}/bin/tool',
+  'read $N; X=/x; ${X}/bin/tool',
+  'X=/x; git${X}',
+  'X=/x; ${X:-$Y}/bin/tool',
+  'X=/x; X=/x; ${X}/bin/tool',
+  'X=/x; echo X; ${X}/bin/tool',
+  'REPLY=/x; ${REPLY}/bin/tool',
   'X=/x; $X/bin/rm -rf /',
 ]
 const ALLOW = [

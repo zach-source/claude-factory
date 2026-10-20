@@ -5942,7 +5942,7 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length;) {
+  for (let i = 0; i < words.length; ) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
@@ -6903,10 +6903,11 @@ function gluedHeadReason(
   if (vars.has('IFS')) return true
   let end = -1
   for (const m of head.matchAll(GLUED_EXPANSION_RE)) end = m.index! + m[0].length
-  if (end < 0 || head[end] !== '/') return true
+  if (end < 0) return true
   for (const n of setNames) {
     const value = vars.get(n)
-    if (IMPLICIT_VARS.has(n) || value === undefined || /\s/.test(value) || VAR_UNREADABLE.test(value)) return true
+    if (IMPLICIT_VARS.has(n) || /\s/.test(value) || VAR_UNREADABLE.test(value))
+      return true
     let ops = 0
     for (const m of head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))) {
       if (/[\s$\`'"\\*?[]/.test(m[1]!)) return true
@@ -7371,7 +7372,8 @@ function denyAtScan(
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
       } else if (gluedHeadReason(cmd[0]!, vars, mentions, dynWrite)) {
-        return DYNAMIC_VERB_REASON
+        // A later real command reason wins over this broad one.
+        late.reason ??= DYNAMIC_VERB_REASON
       } else {
         // The head may name a set variable. ${!Y} names another one, so any set name denies.
         const opName = varOpName(cmd[0]!)
