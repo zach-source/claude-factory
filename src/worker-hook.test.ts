@@ -722,6 +722,74 @@ test(
   FIND_MS,
 )
 
+// claude-factory-j471: a wrapper word, an -ok/-okdir word or a redirect word in a find exec slot
+// must not hide a recursive rm.
+const J471_DENY = [
+  'find / -exec sudo rm -rf {} \\;',
+  'find / -exec env rm -rf {} \\;',
+  'find . -exec nice rm -rf {} \\;',
+  'find . -exec nohup rm -rf {} \\;',
+  'find . -exec command rm -rf {} \\;',
+  'find . -exec timeout 5 rm -rf {} \\;',
+  'find . -exec sudo -u root rm -rf {} \\;',
+  'find . -exec /usr/bin/time -l rm -rf {} \\;',
+  'sudo find / -exec env rm -rf {} \\;',
+  'find . -execdir env rm -r {} +',
+  'find / -ok rm -rf {} \\;',
+  'find / -okdir rm -rf {} \\;',
+  'find / -ok sudo rm -rf {} \\;',
+  'find . -name x -okdir env rm -r {} +',
+  'find / -exec >f sudo rm -rf {} \\;',
+  'find / -exec >f rm -rf {} \\;',
+  '>f find / -ok rm -rf {} \\;',
+  '>f find / -exec rm -rf {} \\;',
+  'find / -exec 2>&1 env rm -rf {} \\;',
+  '/usr/bin/time -l find / -exec >f rm -rf {} \\;',
+  '/usr/bin/time -l find / -ok >f sudo rm -rf {} \\;',
+  '/usr/bin/time -h find / -exec 2>&1 rm -rf {} \\;',
+  'nice --adjustment=5 find / -exec >f rm -rf {} \\;',
+  'env --ignore-environment find / -exec >f rm -rf {} \\;',
+  'xargs -n 1 find / -exec >f rm -rf {} \\;',
+]
+for (const cmd of J471_DENY) {
+  test(`denyReason denies ${cmd} (claude-factory-j471)`, () => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  })
+}
+
+const J471_ALLOW = [
+  'find / -exec ls {} \\;',
+  'find . -exec env FOO=1 cat {} \\;',
+  'find . -exec rm {} +',
+  'find . -exec env rm {} +',
+  'find . -exec sudo rm -f {} +',
+  'find . -ok ls {} \\;',
+  'find . -exec git rm -r --cached {} +',
+  'echo x > out.txt',
+  'find . -name rm -exec ls {} \\;',
+]
+for (const cmd of J471_ALLOW) {
+  test(`denyReason allows ${cmd} (claude-factory-j471)`, () => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  })
+}
+
+test(
+  'scanReason allows a 200000-word find -exec env scan, fast (claude-factory-j471)',
+  () => {
+    expect(scanReason('find . ' + '-exec env '.repeat(FIND_N))).toBeUndefined()
+  },
+  FIND_MS,
+)
+
+test(
+  'scanReason denies a 200000-word find -ok env scan with rm -rf at the end (claude-factory-j471)',
+  () => {
+    expect(scanReason('find . ' + '-ok env '.repeat(FIND_N) + '-ok env rm -rf x')).toBe(REASON)
+  },
+  FIND_MS,
+)
+
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
 // claude-factory-3f2z.2: `cwd` sets the filesystem cwd of the spawned hook process. It does not
@@ -8607,6 +8675,102 @@ test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repe
   },
   30_000,
 )
+
+test.each([
+  ["trap 'git push origin main' EXIT"],
+  ['trap "git push origin main" EXIT'],
+  ['trap git\\ push\\ origin\\ main EXIT'],
+  ["trap 'git push origin main;' EXIT"],
+  ["trap 'git push origin main' INT TERM EXIT"],
+  ["trap -- 'git push origin main' EXIT"],
+  ["builtin trap 'git push origin main' EXIT"],
+  ["command trap 'git push origin main' EXIT"],
+  ["x=1 trap 'git push origin main' EXIT"],
+  ["trap 'eval git push origin main' EXIT"],
+  ["trap 'rm -rf /' EXIT"],
+  ["trap '-x; git push origin main' EXIT"],
+  ["trap '-; git push origin main' EXIT"],
+  ["trap 2>/dev/null 'git push origin main' EXIT"],
+  ["trap 2> /dev/null 'git push origin main' EXIT"],
+  ["trap >/dev/null 'git push origin main' EXIT"],
+  ["trap &>/dev/null 'git push origin main' EXIT"],
+  ["trap 2>&1 'git push origin main' EXIT"],
+  ["trap </dev/null 'git push origin main' EXIT"],
+  ["trap 2> -- 'git push origin main' EXIT"],
+  ["trap -- 2>/dev/null 'git push origin main' EXIT"],
+  ["builtin trap 2>/dev/null 'git push origin main' EXIT"],
+  ["trap 'git push origin HEAD' EXIT; cd /x"],
+  ["trap 'git push origin main' EXIT; cd /x"],
+])('denyReason denies a trap action that holds a guarded command (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+test.each([
+  ['trap - EXIT'],
+  ['trap -p'],
+  ["trap 'echo hi' EXIT"],
+  ["trap '' INT"],
+  ['source .scratch/x.sh'],
+  ["trap 'git push origin factory/x' EXIT"],
+  ["trap 'git status' EXIT"],
+  ["trap 'git push origin factory/x' EXIT; cd /x"],
+])('denyReason allows a harmless trap (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test.each([
+  ['env -i sh -c "trap \'bd create x\' EXIT"'],
+  ['env -i bash -c "trap \'bd create x\' EXIT"'],
+  ['env -i sh -c "trap 2>/dev/null \'bd create x\' EXIT"'],
+])('denyReason reads a trap action in the BEADS_ACTOR bd scan (claude-factory-81tz.2): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+test.each([
+  ["trap 'gh co 5' EXIT; export GH_CONFIG_DIR=/x"],
+  ["trap 'gh co 5' EXIT; GH_CONFIG_DIR=/x"],
+  ["trap 'gh co 5' EXIT; HOME=/x"],
+])('denyReason denies a gh alias in a trap action as config-moved (claude-factory-81tz.7): %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], BEMR_GATE)).toBeDefined()
+})
+
+test.each([
+  ["trap 'gh pr view 5' EXIT; export GH_CONFIG_DIR=/x"],
+  ["trap 'echo hi' EXIT; export GH_CONFIG_DIR=/x"],
+])('denyReason allows a builtin gh verb in a trap (claude-factory-81tz.7): %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], BEMR_GATE)).toBeUndefined()
+})
+
+test('denyReason allows a harmless trap under env -i (claude-factory-81tz.2)', () => {
+  expect(denyReason('env -i sh -c "trap \'echo hi\' EXIT"')).toBeUndefined()
+})
+
+test('denyReason bounds a long dash-led trap chain (claude-factory-81tz.3)', () => {
+  const t0 = Date.now()
+  denyReason('trap ' + '-/trap '.repeat(1150) + 'x')
+  expect(Date.now() - t0).toBeLessThan(300)
+}, 30_000)
+
+test.each([
+  ['env -i sh -c "trap ' + '-/trap '.repeat(1000) + 'x"'],
+  ['env -i sh -c "eval trap ' + '-/trap '.repeat(1000) + 'x"'],
+])(
+  'denyReason bounds a long trap chain in the bd scan (claude-factory-81tz.4)',
+  cmd => {
+    const t0 = Date.now()
+    denyReason(cmd)
+    expect(Date.now() - t0).toBeLessThan(100)
+  },
+  30_000,
+)
+
+test.each([
+  ["source <(echo 'git push origin main')"],
+  [". <(echo 'git push origin main')"],
+  ["source =(echo 'git push origin main')"],
+])('denyReason keeps denying a source process substitution (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
 
 // claude-factory-pwy0: a command word that expands to rm at run time runs rm.
 const DENY_PWY0: string[] = [
