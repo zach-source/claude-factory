@@ -1653,6 +1653,14 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
   const b = rmFindBase(cmd[0]!)
   // Fail closed: a dollar word that may expand to rm, with recursive flags, denies.
   if (b !== 'rm' && cmd[0]!.includes('$') && isRecursiveRm(cmd)) return { deny: true, rm: false }
+  // A newline in a default value splits the word into segments and loses the flags: an open brace denies.
+  if (
+    b !== 'rm' &&
+    /\$\{[!=~^]*\w+[^}]*[-=+]/.test(cmd[0]!) &&
+    cmd[0]!.split('{').length > cmd[0]!.split('}').length
+  ) {
+    return { deny: true, rm: false }
+  }
   if (b === 'rm') {
     if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
     return { deny: false, rm: true }
