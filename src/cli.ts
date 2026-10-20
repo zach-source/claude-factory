@@ -1607,6 +1607,7 @@ export const HAIKU = 'claude-haiku-5-5'
  * It compacts well past the handoff limit too, only as a backstop.
  * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
  * One plugin stays in: `asd-ste100`, so the worker still writes in ASD-STE100; `disableBundledSkills` keeps its skill alone.
+ * `keep` adds more plugins by name (the enabledPlugins key before `@`): FACTORY_WORKER_PLUGINS, comma-separated.
  * `hooks.PreToolUse` keeps the user's own entries first and adds the deny-rm hook last (claude-factory-cr6, claude-factory-99d).
  */
 export const workerSettings = (
@@ -1619,8 +1620,12 @@ export const workerSettings = (
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
   personOnly?: string[],
   branches?: string[],
+  keep: string[] = [],
 ) => {
-  const ste = Object.entries(user.enabledPlugins ?? {}).filter(([k, v]) => v && k.startsWith('asd-ste100@'))
+  const names = ['asd-ste100', ...keep]
+  const ste = Object.entries(user.enabledPlugins ?? {}).filter(
+    ([k, v]) => v && names.includes(k.split('@')[0]!),
+  )
   const hooks: Record<string, unknown[]> = {
     ...user.hooks,
     PreToolUse: [
@@ -1709,7 +1714,11 @@ export function workerFlags(
     home,
     contexts?.length || branches?.length ? `worker-settings-${rig!.name}.json` : 'worker-settings.json',
   )
-  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches)
+  const keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches, keep)
   const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
   const prompt = join(home, 'worker-system.md')
@@ -5727,14 +5736,15 @@ async function labelPass() {
         } else if (action === 'rework' && runId) {
           const node = live.find(r => r.id === runId)!.node
           const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
-          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
+          // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
           forge.unlabel(pr, reworkLabels(pr))
+          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
           forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
+          forge.unlabel(pr, reworkLabels(pr))
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
           busy.push(rig.name)
-          forge.unlabel(pr, reworkLabels(pr))
           forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
         }

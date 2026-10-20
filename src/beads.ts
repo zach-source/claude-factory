@@ -162,18 +162,22 @@ export function backlogOf(
 
 /**
  * unowned top-level work only: a child is a task of some run's plan (children inherit the label). With
- * `parents` (the rig's beads by id), a labeled child also starts when its parent has no `factory` label and
- * no live run: no run carries it, so it would else wait for ever (claude-factory-2rik).
+ * `parents` (the rig's beads by id), a child also starts when its parent has no live run, if the child or
+ * the parent has the `factory` label: no run carries it, so it would else wait for ever (claude-factory-2rik).
+ * A labeled parent with open children never starts itself (dispatch skips it for "open children"), so its
+ * children must start on their own.
  */
 export const dispatchable = (ready: Bead[], linked: Set<string>, room: number, parents?: Map<string, Bead>) =>
   ready
     .filter(b => !b.assignee && !linked.has(b.id) && (!b.parent || isOrphanChild(b, linked, parents)))
     .slice(0, Math.max(0, room))
 
-/** a `factory` child whose parent is in the listing, is no `factory` bead, and has no live run */
+/** a child whose parent is in the listing and has no live run, where the child or the parent is a `factory` bead */
 const isOrphanChild = (b: Bead, linked: Set<string>, parents?: Map<string, Bead>) => {
   const parent = b.parent ? parents?.get(b.parent) : undefined
-  return !!parent && !!b.labels?.includes(LABEL) && !parent.labels?.includes(LABEL) && !linked.has(parent.id)
+  return (
+    !!parent && (!!b.labels?.includes(LABEL) || !!parent.labels?.includes(LABEL)) && !linked.has(parent.id)
+  )
 }
 
 /** the listing by id, for `dispatchable`'s child rule */
