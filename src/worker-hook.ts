@@ -7027,12 +7027,12 @@ function gluedHeadReason(head: string, vars: VarTable, mentions: (name: string) 
     [...head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))].map(m => m[1]!)
   const zsOf = (n: string): number =>
     [...head.matchAll(new RegExp(`\\$\\{?[=~^]+(?:\\([^)]*\\))?${n}\\b`, 'g'))].length
-  const setNames = names.filter(n => vars.has(n) || mentions(n) > opsOf(n).length + zsOf(n))
+  const setNames = names.filter(n => mentions(n) > opsOf(n).length + zsOf(n))
   if (!setNames.length) return false
   if (vars.has('IFS')) return true
   let end = -1
   for (const m of head.matchAll(/\$\{[^}]*\}|\$[=~^]*[A-Za-z_]\w*/g)) end = m.index! + m[0].length
-  if (end < 0 || head[end] !== '/') return true
+  if (head[end] !== '/') return true
   for (const n of setNames) {
     const value = vars.get(n)
     if (typeof value !== 'string' || IMPLICIT_VARS.has(n) || /\s/.test(value) || VAR_UNREADABLE.test(value))
