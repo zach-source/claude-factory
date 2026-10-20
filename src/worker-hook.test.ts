@@ -8300,6 +8300,12 @@ const DENY_PWY0: string[] = [
   'rm$~x -rf /',
   'rm$^x -rf /',
   'rm$=x -rf /',
+  'r$x"m" -rf /',
+  "r$x''m -rf /",
+  'r$x\\m -rf /',
+  '"$x"rm -rf /',
+  'r"$x"m -rf /',
+  'find . -exec $x -rf {} +',
 ]
 test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
@@ -8316,6 +8322,7 @@ const ALLOW_PWY0: string[] = [
   'ls ${x}rm',
   '${(L)x:-ls} acme.txt',
   'ls$~x acme.txt',
+  '$x acme.txt',
 ]
 test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()

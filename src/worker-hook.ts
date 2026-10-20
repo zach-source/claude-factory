@@ -1651,6 +1651,8 @@ function rmFindBase(w: string): string {
  */
 function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean; rm: boolean } {
   const b = rmFindBase(cmd[0]!)
+  // Fail closed: a dollar word that may expand to rm, with recursive flags, denies.
+  if (b !== 'rm' && cmd[0]!.includes('$') && isRecursiveRm(cmd)) return { deny: true, rm: false }
   if (b === 'rm') {
     if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
     return { deny: false, rm: true }
@@ -1658,7 +1660,11 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
   if (b === 'find') {
     for (let i = 0; i < cmd.length; i++) {
       if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 < cmd.length && rmFindBase(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) {
+      if (
+        i + 1 < cmd.length &&
+        (rmFindBase(cmd[i + 1]!) === 'rm' || cmd[i + 1]!.includes('$')) &&
+        isRecursiveRm(cmd, i + 1)
+      ) {
         return { deny: true, rm: false }
       }
     }
