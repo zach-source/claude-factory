@@ -3837,6 +3837,19 @@ const DENY_EBMM_ANY = [
   'tee -a ~widget/.gitconfi{[,}g]',
   'cp x ~/.config/{[,}g]it/config',
   'cp x ~/.config/{[,}g]it/.',
+  'tee -a ~/.gitconfi[[:alpha:{,x}]]',
+  'tee -a ~/.gitconfi[[:alph{a:,x}]]',
+  'tee -a ~/.gitconfi[[.g.{,x}]]',
+  'tee -a ~/.gitconfi[[=g={,x}]]',
+  'tee -a ~/.gitconfi[[:alpha{:,x}]]',
+  'tee -a ~/.gitconfi[[:alpha:{,]}]',
+  'cp x ~/.config/[[:alpha:{,x}]]it/config',
+  'tee -a ~/.gitconfi[[:g]',
+  'tee -a ~/.gitconfi[[.g]',
+  'tee -a ~/.gitconfi[[=g]',
+  'tee -a ~/.gitconfi[x[:g]',
+  'tee -a ~/.gitconfi[[:x:g]',
+  'tee -a ~/.gitconfi[![:x]',
 ]
 test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
   'denyReason denies %j under a second fixture user (claude-factory-ebmm)',
@@ -3904,6 +3917,10 @@ test.each([
   'touch x{[,]}',
   'touch {a,b}[1]',
   'cp x {a,b}/[cd]',
+  'touch [[:x',
+  'ls [[:alpha:]]x',
+  'touch f[a]x',
+  'touch [x{a,b}.',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
 })
@@ -3931,6 +3948,18 @@ test('denyReason scans many nested brace groups fast (claude-factory-ebmm.4)', (
     const t = performance.now()
     denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
     expect(performance.now() - t).toBeLessThan(1000)
+  }
+})
+
+test('denyReason scans many unclosed spans fast (claude-factory-ebmm.21)', () => {
+  for (const [cmd, denied] of [
+    [`tee -a ~/.gitconfi${'[[:'.repeat(2700)}g]`, true],
+    [`tee -a ~/.gitconfi${'[[:'.repeat(2700)}`, false],
+  ] as const) {
+    const t = performance.now()
+    const r = denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
+    expect(performance.now() - t).toBeLessThan(1000)
+    expect(r === GLOBAL_GIT_CONFIG_REASON).toBe(denied)
   }
 })
 

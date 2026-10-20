@@ -2715,6 +2715,7 @@ function crossEnd(w: string, start: number, end: number): number {
 // star covers the smallest span that holds both parts.
 function tokenizeGlob(w: string): GlobToken[] {
   const out: GlobToken[] = []
+  const lastClose = w.lastIndexOf(']')
   for (let i = 0; i < w.length; i++) {
     const c = w[i]!
     if (c === '$' && w[i + 1] === '{') {
@@ -2733,6 +2734,10 @@ function tokenizeGlob(w: string): GlobToken[] {
         out.push({ k: 'one' })
         i = e
       }
+    } else if (c === '[' && lastClose > i) {
+      // claude-factory-ebmm.21: an unclosed span ([[:g) may close after brace expansion; fail closed.
+      out.push({ k: 'any' })
+      i = crossEnd(w, i, i)
     } else if (c === '{') {
       const j = braceEnd(w, i)
       if (j < 0) out.push({ k: 'lit', c })
