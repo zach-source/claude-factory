@@ -8147,23 +8147,41 @@ test.each([
   ["trap 'rm -rf /' EXIT"],
   ["trap '-x; git push origin main' EXIT"],
   ["trap '-; git push origin main' EXIT"],
+  ["trap 2>/dev/null 'git push origin main' EXIT"],
+  ["trap 2> /dev/null 'git push origin main' EXIT"],
+  ["trap >/dev/null 'git push origin main' EXIT"],
+  ["trap &>/dev/null 'git push origin main' EXIT"],
+  ["trap 2>&1 'git push origin main' EXIT"],
+  ["trap </dev/null 'git push origin main' EXIT"],
+  ["trap 2> -- 'git push origin main' EXIT"],
+  ["trap -- 2>/dev/null 'git push origin main' EXIT"],
+  ["builtin trap 2>/dev/null 'git push origin main' EXIT"],
+  ["trap 'git push origin HEAD' EXIT; cd /x"],
+  ["trap 'git push origin main' EXIT; cd /x"],
 ])('denyReason denies a trap action that holds a guarded command (claude-factory-81tz): %s', cmd => {
   expect(denyReason(cmd)).toBeDefined()
 })
 
-test.each([['trap - EXIT'], ['trap -p'], ["trap 'echo hi' EXIT"], ["trap '' INT"], ['source .scratch/x.sh']])(
-  'denyReason allows a harmless trap (claude-factory-81tz): %s',
-  cmd => {
-    expect(denyReason(cmd)).toBeUndefined()
-  },
-)
+test.each([
+  ['trap - EXIT'],
+  ['trap -p'],
+  ["trap 'echo hi' EXIT"],
+  ["trap '' INT"],
+  ['source .scratch/x.sh'],
+  ["trap 'git push origin factory/x' EXIT"],
+  ["trap 'git status' EXIT"],
+  ["trap 'git push origin factory/x' EXIT; cd /x"],
+])('denyReason allows a harmless trap (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
 
-test.each([['env -i sh -c "trap \'bd create x\' EXIT"'], ['env -i bash -c "trap \'bd create x\' EXIT"']])(
-  'denyReason reads a trap action in the BEADS_ACTOR bd scan (claude-factory-81tz.2): %s',
-  cmd => {
-    expect(denyReason(cmd)).toBeDefined()
-  },
-)
+test.each([
+  ['env -i sh -c "trap \'bd create x\' EXIT"'],
+  ['env -i bash -c "trap \'bd create x\' EXIT"'],
+  ['env -i sh -c "trap 2>/dev/null \'bd create x\' EXIT"'],
+])('denyReason reads a trap action in the BEADS_ACTOR bd scan (claude-factory-81tz.2): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
 
 test('denyReason allows a harmless trap under env -i (claude-factory-81tz.2)', () => {
   expect(denyReason('env -i sh -c "trap \'echo hi\' EXIT"')).toBeUndefined()

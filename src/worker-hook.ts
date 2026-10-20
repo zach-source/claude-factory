@@ -2081,14 +2081,10 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
     } else if (bw === 'trap' && k >= trapEnd) {
       // claude-factory-81tz.2: the trap action and the dash words before it are scripts. Read them like eval.
       // claude-factory-81tz.4: trapEnd skips a trap word inside an earlier walk, so the scan stays O(n).
-      let a = k + 1
-      while (a < words.length && words[a]!.startsWith('-') && words[a] !== '-') {
+      // claude-factory-81tz.5: read every word to the end, since a redirect word can sit before the action.
+      for (let a = k + 1; a < words.length; a++)
         if (stringNamesBdCommand(words[a]!, state, depth + 1)) return true
-        a++
-        if (words[a - 1] === '--') break
-      }
-      trapEnd = a
-      if (a < words.length && stringNamesBdCommand(words[a]!, state, depth + 1)) return true
+      trapEnd = words.length
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true
       const rest = words.slice(k + 1).join(' ')
@@ -6268,19 +6264,13 @@ function anyShellReason(
       // claude-factory-81tz.3: a trap word below trapEnd is a dash word of an earlier walk. That walk
       // already read its words and the action. Skipping it keeps the scan O(n).
       if (j < trapEnd) continue
-      let k = j + 1
-      while (k < words.length && words[k]!.startsWith('-') && words[k] !== '-') {
-        // zsh has no trap options: it runs "-x; cmd" as a script.
-        const o = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+      // claude-factory-81tz.5: a redirect word can sit before the action, so read every word to the end.
+      // claude-factory-81tz.6: the action runs at exit, maybe after a cd, so read it as moved.
+      for (let k = j + 1; k < words.length; k++) {
+        const o = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, true, ghConfigMovedBefore)
         if (o) return o
-        k++
-        if (words[k - 1] === '--') break
       }
-      trapEnd = k
-      if (k < words.length) {
-        const r = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
-        if (r) return r
-      }
+      trapEnd = words.length
       continue
     }
     if (bw === 'eval') {
