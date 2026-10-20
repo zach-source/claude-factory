@@ -1040,6 +1040,7 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
       // claude-factory-cu5m.12: a `&` or `|` right after `<` or `>` is part of a redirect
       // (`>&`, `<&`, `>|`, `>>|`) in zsh, bash and sh. It is not a separator.
       word += c
+      redirPrev = c === '&' && cmd[i + 1] === '|'
       hasWord = true
       continue
     }
