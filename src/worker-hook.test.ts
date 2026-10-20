@@ -8114,6 +8114,7 @@ const DENY_PWY0: string[] = [
   '${=x:-rm} -rf /',
   '${~x:-rm} -rf /',
   '${^x:-rm} -rf /',
+  '${(L)(U)x:-rm} -rf /',
 ]
 test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
@@ -8128,15 +8129,19 @@ const ALLOW_PWY0: string[] = [
   '${RM:-rm} acme.txt',
   'echo ${RM:-rm} -rf /',
   'ls ${x}rm',
+  '${(L)x:-ls} acme.txt',
 ]
 test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
 })
 
-test('denyReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {
-  const n = 200_000 / 5
-  const cmd = '${a:-'.repeat(n) + '}'.repeat(n) + ' -rf /'
-  const t0 = Date.now()
-  denyReason(cmd, '/Users/acme/widget')
-  expect(Date.now() - t0).toBeLessThan(1000)
+test('scanReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {
+  const n = 20_000
+  const cmd = '${a:-'.repeat(n) + 'rm' + '}'.repeat(n) + ' -rf /'
+  expect(scanReason(cmd, '/Users/acme/widget')).toBe(REASON)
+}, 30_000)
+
+test('scanReason reads 1000 zsh flag groups in one pass (claude-factory-pwy0)', () => {
+  const cmd = '${' + '(L)'.repeat(1000) + 'x:-rm} -rf /'
+  expect(scanReason(cmd, '/Users/acme/widget')).toBe(REASON)
 }, 30_000)

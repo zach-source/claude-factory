@@ -6671,7 +6671,7 @@ function denyAt(
   // claude-factory-pwy0: the lexer splits a word at the `(` of a zsh flag group, `${(L)x:-rm}`.
   // Read the command again without the flag groups. This is deny-only: only the rm reason counts.
   if (command.includes('${(')) {
-    const bare = command.replace(/\$\{\([^()]*\)/g, '${')
+    const bare = command.replace(/\$\{(?:\([^()]*\))+/g, '${')
     if (bare !== command) {
       const r = denyAt(
         bare,
