@@ -12,6 +12,27 @@ type RigLike = { name: string; repo: string; remote?: string; beadsRemote?: { ur
 
 export const inAx = (env: Env = process.env) => env.FACTORY_IN_AX === '1'
 
+/**
+ * the runner name a station gets. On the laptop it is the station's own, else the rig's, else the default.
+ * In the AX manager a station never gets a local runner (a herdr pane would sit next to the factory home):
+ * a local station runner gives way to the rig's runner, else to the default if that is remote, else to `ax`.
+ */
+export function stationRunnerName(
+  inVm: boolean,
+  station: string | undefined,
+  rig: string | undefined,
+  dflt: string,
+  isLocal: (name: string) => boolean,
+) {
+  const name = station ?? rig ?? dflt
+  if (!inVm || !isLocal(name)) return name
+  return [rig, dflt].find(n => n !== undefined && !isLocal(n)) ?? 'ax'
+}
+
+/** a worker address with no `scheme://` is a herdr pane id: in the AX manager it can only come from the laptop */
+export const isLaptopPane = (inVm: boolean, pane: string | null | undefined) =>
+  inVm && !!pane && !pane.includes('://')
+
 /** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
 export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
 
@@ -28,6 +49,24 @@ export const mapRigs = <R extends RigLike>(rigs: R[], env: Env = process.env) =>
 export function mapRunRepo(rigs: RigLike[], repo: string, env: Env = process.env) {
   const rig = inAx(env) ? rigs.find(r => r.repo === repo) : undefined
   return rig ? axRepoPath(rig.name, env) : repo
+}
+
+/** in the task, a run whose repo (as written in run.json) is a rig's laptop path: the laptop made it */
+export const isLaptopRun = (rigs: RigLike[], run: { repo: string }, env: Env = process.env) =>
+  inAx(env) && rigs.some(r => r.repo === run.repo)
+
+/**
+ * where the task keeps the worktree of a run the laptop made: `FACTORY_HOME/worktrees/<run id>`. A run is the
+ * laptop's when its repo is a rig's laptop path (as mapRunRepo reads it); a run made in the task keeps its own
+ */
+export function mapRunWorktree(
+  rigs: RigLike[],
+  run: { id: string; repo: string; worktree: string },
+  env: Env = process.env,
+) {
+  return isLaptopRun(rigs, run, env)
+    ? join(env.FACTORY_HOME ?? '/workspace/w/home', 'worktrees', run.id)
+    : run.worktree
 }
 
 /** a repo's beads store in the task: a directory of its own, as the worker keeps one (the repo's .beads names a laptop server) */

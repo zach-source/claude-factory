@@ -19,6 +19,8 @@ export type WorkerInfo = {
   failed?: string
   /** why an AX worker has not started: the deadline names it instead of "no report" */
   pending?: string
+  /** an AX task that waits for a free worker (WaitingForCapacity): queued, so the attempt's clock does not run */
+  queued?: boolean
 }
 
 /** what a runner needs to start a worker for one station attempt */

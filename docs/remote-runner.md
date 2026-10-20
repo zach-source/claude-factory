@@ -176,6 +176,7 @@ The VM holds no key and no token. Every HTTPS request out goes through Substrate
 - **In the VM** (`setup()` in `src/worker.ts`, on every start): writes the CA and points `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` and `SSL_CERT_FILE` at it (the gateway re-signs every host the VM may reach, so it is the only root needed), then clones the run's branch.
 - **Who may fetch**: Substrate makes one actor per task (`spiffe://substrate-actor.local/actor/factory/<task>`). One agent-vault agent, `factory-tasks`, registered as `spiffe://substrate-actor.local/actor/factory/*` with `proxy` on vault `factory`, covers every task in the atespace, so the runner registers nothing per task.
 - **Where the keys come from**: agent-vault holds `ANTHROPIC`, `GITHUB` and `GITHUB_BASIC` (and `GITLAB` and `GITLAB_BASIC` for a rig on GitLab, and any rig key such as `OPENAI`) in the vault `FACTORY_AX_VAULT` names, as references to wherever they live (a password manager, a GitHub App that mints installation tokens). The cluster holds no copy of a key. `GITLAB` is a GitLab access token with the `api` scope (what `glab` sends); `GITLAB_BASIC` is base64 of `<user>:<the same token>` (what git sends as Basic auth; the token needs `write_repository`).
+- **Another GitHub account**: a GitHub App installation token is for one account. `FACTORY_AX_GITHUB_KEYS=other-owner=GITHUB_OO,third=GITHUB_T` names, for each other owner, the vault keys `GITHUB_OO` (token, Bearer) and `GITHUB_OO_BASIC` (git, Basic). A worker whose rig repo belongs to `other-owner` uses these two keys for all GitHub paths, because `gh` calls `api.github.com/graphql`, and that path has no owner. The manager works on many owners, so its policy keeps the default keys and adds path rules: `/other-owner/` on `github.com` and `/repos/other-owner/` on `api.github.com`. The gateway must support `pathPrefixes` on a rule. A gateway that does not ignores the field, and the manager gets the default token on those paths. A bad entry stops the launch with an error. The manager task gets the variable from the laptop.
 - **Devenv cache and GitLab**: `factory devenv` fetches the repo with a `github.com` header and `gh auth token`, so a private GitLab rig's devenv build cannot fetch it. Such a rig has no cached devenv, and its workers use `nix shell` as they would without one.
 
 ### A known outage: the egress gateway and `api.anthropic.com`
@@ -287,12 +288,13 @@ Limits:
 
 - With a `beadsRemote`, the task runs plain `bd dolt push` and `bd dolt pull`. The laptop uses SQL on its Dolt server, and the task has no Dolt server. The laptop's rule for a pull conflict (keep the worker's row, and comment the other on the issue) does not run in the task. A conflict stops the pull with bd's own error.
 - A store is made once. Later syncs pull; they do not make it again.
-- A run that the laptop made keeps the laptop's worktree path. The task has no such worktree. A worker on AX does not need it.
+- A run that the laptop made gets its worktree at `FACTORY_HOME/worktrees/<run id>` in the task. The task makes it from `origin/<branch>` when it starts a worker for the run, before it writes the brief. If the branch is gone from origin (a merged run that was cleaned up), the task makes the branch from `origin/<default>`. It does this only when `runs/<id>/gc.json` does not exist and `runs/<id>/merged-before-move` exists. `factory migrate-to-ax` writes that marker for each run whose head is on `origin/<default>` and whose branch is gone. `--dry-run` and a refused migrate write no marker. Without the marker, the run stops and the message names the branch. With `gc.json`, the run still stops with the gc message.
+- If the run's base commit is not in the task's clone (for example, a laptop commit that was never pushed), the task sets `base` to the merge-base of the worktree's HEAD and `origin/<default>`. It writes only `base` into `run.json`, and writes one line to the manager log. A base that the clone has stays.
 
 #### Steps
 
 1. Stop the laptop manager. Stop `factory loop` and `factory tick` too.
-2. Run `factory migrate-to-ax --dry-run`. It prints what moves, the size, and what stays. It writes nothing and sends nothing. If it stops with a list of runs, those runs have a worker in a herdr pane on the laptop. A pane cannot move. Finish or abort those runs, or let them reach a station boundary (a gate or a wait). Then run the dry run again.
+2. Run `factory migrate-to-ax --dry-run`. It prints what moves, the size, and what stays. It writes nothing and sends nothing. If it stops with a list of runs, those runs have a worker in a herdr pane on the laptop. A pane cannot move. Finish or abort those runs, or let them reach a station boundary (a gate or a wait). Then run the dry run again. The command also stops, before any upload, for a live run that has commits on no origin ref (not on `origin/<branch>` and not on origin's default branch), or uncommitted changes in its worktree. It also stops if `git fetch --prune origin` fails in a run's repo. The message names each run. Push or commit the work, then run it again. A live run whose work is on origin's default branch but whose branch is gone does move. The plan names it as recreated from `origin/<default>`. The plan also names each run whose base commit is on no origin ref as a base reset. That is a report, not a stop.
 3. Run `factory manager --ax`. The task starts. Its host sees an empty home and waits for the migration. It does not start the manager yet. For a new factory with no migration, set `FACTORY_AX_FRESH=1` on the laptop before this step.
 4. Run `factory migrate-to-ax`. It packs a tar.gz, sends it in parts to the task with `put`, and unpacks it into `FACTORY_HOME` as the worker user. The unpack writes `FACTORY_HOME/.migrated` last. The host sees the marker, runs `factory repos sync`, and starts the manager.
 5. Run `factory attach`. The board shows the same runs as the laptop did.
@@ -311,3 +313,48 @@ These stay on the laptop: `tick.lock`, `bin`, `devenv/`, the backups of `rigs.js
 - The host does not start the manager while the home is empty, or while a migration archive is on the volume.
 - Runs on `ax://` workers move with no change. Their workers keep running while the move happens.
 - The upload is `PUT_PART` bytes of base64 for each `ax ssh` call, because `ax ssh` has no stdin. A home of 100 MB sends in about 1500 calls. A part that fails is sent again 3 times. Then the command stops. Run it again, because a part sent twice does no harm.
+
+### Policy broker
+
+The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the TLS call to it with grpc-status 14. So the manager cannot create a worker egress policy or read the gateway CA with `kubectl ate`. The policy broker does these two jobs for it.
+
+The broker is a small HTTP server in the cluster (`factory broker serve [--port 8080]`, image from `Dockerfile.broker`, manifest `deploy/broker.yaml`). It runs `kubectl ate` with a projected ServiceAccount token (audience `api.ate-system.svc`). ate-api checks the token and its audience. It applies no other authorization, so the broker enforces the limits itself.
+
+The VM has no cluster access of its own, so it cannot check the AX controller. With `FACTORY_POLICY_BROKER` set, the check before each launch calls `GET /ax-ready`. If the call fails in a way other than a 503, the launch is held, as when the controller cannot be observed. The broker needs a Role in `ax-system` for this (`get` on the `ax-controller` Deployment), which `deploy/broker.yaml` holds.
+
+| Call                                  | Result                                                                                              |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `PUT /policy/<atespace>/<actor>`      | Body is an EgressPolicy as JSON. The broker deletes the old policy, then creates the new one.       |
+| `DELETE /policy/<atespace>/<actor>`   | Deletes the policy. A policy that is gone already is not an error.                                  |
+| `GET /ca`                             | The PEM of the gateway CA bundle.                                                                   |
+| `GET /ax-ready`                       | `200 ready` when the AX controller is ready. Otherwise `503` and the reason.                        |
+| `GET /healthz`                        | `ok`.                                                                                               |
+
+Limits:
+
+- Only the atespaces in `FACTORY_BROKER_ATESPACES` (default `factory`).
+- Never the policy of the manager actor (`FACTORY_AX_MANAGER`, default `f-manager`). You create that policy from the laptop.
+- Atespace and actor must be RFC 1123 labels. The body must be a JSON object with `rules`, 64 KiB at most.
+- Every `credentialUri` in the body, at any depth, must be `ate-secret://agent-vault/<vault>/<KEY>` with `<vault>` equal to the broker's `FACTORY_AX_VAULT`. `<KEY>` must be a key that `egressPolicy` uses (`src/ax-hosts.ts`), and all the rule's hostnames must be hosts of that key. Set `FACTORY_AX_GITHUB_KEYS` on the broker as on the laptop for owner keys. For keys that depend on a rig (a GitLab host, a rig egress key), set `FACTORY_BROKER_KEY_HOSTS=KEY=host+host,...`. A rule with no credential is allowed.
+- A rule that names the broker (`FACTORY_BROKER_HOSTS`, default `factory-policy-broker.factory-broker.svc`) or a wildcard hostname is refused with 400.
+- The broker logs one line for each call.
+
+`PUT` and `DELETE /policy/...` need `Authorization: Bearer <token>`, compared in constant time with `FACTORY_BROKER_TOKEN`. With no token set, the broker refuses them with 503. The `GET` routes need no token. Create the Secret before you apply the manifest, and give the same value to the laptop:
+
+```sh
+TOKEN=$(openssl rand -hex 32)
+kubectl -n factory-broker create secret generic factory-broker-token --from-literal=token=$TOKEN
+export FACTORY_BROKER_TOKEN=$TOKEN   # on the laptop; the manager task gets it from there
+```
+
+The gateway cannot add the header for the manager: it injects a vault value into HTTPS only, and the broker rule is plain HTTP. So the token is in the manager task env (`FACTORY_BROKER_TOKEN`) and the manager sends it with `curl`. It is not logged.
+
+`deploy/broker.yaml` has a NetworkPolicy that admits ingress on the broker port only from the `ate-system` namespace, where the egress gateway runs. The VM traffic leaves through the gateway. The policy selects the namespace, not the gateway pods, because their labels are not in this repo.
+
+Use in the manager task:
+
+1. On the laptop, set `FACTORY_AX_MANAGER_AX_SERVER`, `FACTORY_AX_MANAGER_ROUTER` and `FACTORY_AX_MANAGER_BROKER` to the in-cluster URLs. Keep the values out of the repository. `factory manager --ax` then sets `AX_SERVER` and `FACTORY_POLICY_BROKER` in the task env.
+2. The manager policy gets one `http` rule for each of the three URLs. An `https` rule does not work for plain HTTP (h2c) to a service.
+3. In the VM, `FACTORY_POLICY_BROKER` makes `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before.
+
+Deploy: set `BROKER_IMAGE` to the image by digest. Set `FACTORY_AX_VAULT` to the vault name. Set `FACTORY_AX_GITHUB_KEYS` to the same value as in the manager, or leave it empty. Run `envsubst '$BROKER_IMAGE $FACTORY_AX_VAULT $FACTORY_AX_GITHUB_KEYS' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image.
