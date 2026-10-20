@@ -56,6 +56,10 @@ const ALLOWED = [
   'echo $(ls)',
   '(cd x; ls)',
   'ls (-)-all',
+  "python3 -c 'print(len(x))'",
+  "python3 <<'EOF'\nprint(\"don't\")\nEOF",
+  '"$PY" -c \'print(1)\'',
+  '/bin/r(m)',
 ]
 test.each(ALLOWED)('allows a harmless paren: %s', cmd => {
   expect(run(cmd)).toBeUndefined()

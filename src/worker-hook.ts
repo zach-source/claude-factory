@@ -756,6 +756,24 @@ function isCatHeredoc(body: string): boolean {
   return false
 }
 
+/**
+ * claude-factory-5hjj: true when the group that opens at `cmd[open]` closes and then nothing
+ * follows it but a space, a separator or the end. A command word with such a group has no
+ * argument, so it is harmless. Python bodies (`print(len(x))`) take this path.
+ */
+function groupEndsCommand(cmd: string, open: number): boolean {
+  let depth = 0
+  let j = open
+  for (; j < cmd.length; j++) {
+    if (cmd[j] === '(') depth++
+    else if (cmd[j] === ')' && --depth === 0) break
+  }
+  if (j >= cmd.length) return false
+  j++
+  while (cmd[j] === ' ' || cmd[j] === '\t') j++
+  return j >= cmd.length || ';&|\n)'.includes(cmd[j]!)
+}
+
 /** What segments() reports to its caller. A set flag makes denyAt deny the command. */
 type SegInfo = {
   dollarQuote: boolean
@@ -969,7 +987,10 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
         if (arg) {
           // claude-factory-5hjj: a glued `(` (`/bin/r(m)`, `/bin/@(r)m`) is a glob group in the
           // word. It is not a function pair, `a=(` or `<(`.
-          if (info && hasWord && !wasExempt && !info.funcDef) (info.glued ??= new Set()).add(cur)
+          // A call such as `print(1)` in an interpreter body has nothing after the group, so it passes.
+          if (info && hasWord && !wasExempt && !info.funcDef && !groupEndsCommand(cmd, i)) {
+            ;(info.glued ??= new Set()).add(cur)
+          }
           endWord()
           cur.push('(')
         }
@@ -5498,7 +5519,7 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length;) {
+  for (let i = 0; i < words.length; ) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
