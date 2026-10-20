@@ -94,6 +94,12 @@ test('in the AX manager a herdr station runner gives way to the rig, else a remo
   expect(stationRunnerName(true, undefined, 'ax', 'herdr', local)).toBe('ax')
 })
 
+test('in the AX manager, with no remote runner anywhere, a station falls back to ax', () => {
+  expect(stationRunnerName(true, undefined, undefined, 'herdr', local)).toBe('ax')
+  expect(stationRunnerName(true, 'herdr', 'herdr', 'herdr', local)).toBe('ax')
+  expect(stationRunnerName(true, 'herdr', undefined, 'herdr', local)).toBe('ax')
+})
+
 test('only a bare herdr pane id is a laptop pane, and only in the AX manager', () => {
   expect(isLaptopPane(true, 'wA6:p1')).toBe(true)
   expect(isLaptopPane(true, 'ax://f-run')).toBe(false)

@@ -15,7 +15,7 @@ export const inAx = (env: Env = process.env) => env.FACTORY_IN_AX === '1'
 /**
  * the runner name a station gets. On the laptop it is the station's own, else the rig's, else the default.
  * In the AX manager a station never gets a local runner (a herdr pane would sit next to the factory home):
- * a local station runner gives way to the rig's runner, else to the default if that is remote.
+ * a local station runner gives way to the rig's runner, else to the default if that is remote, else to `ax`.
  */
 export function stationRunnerName(
   inVm: boolean,
@@ -26,7 +26,7 @@ export function stationRunnerName(
 ) {
   const name = station ?? rig ?? dflt
   if (!inVm || !isLocal(name)) return name
-  return [rig, dflt].find(n => n !== undefined && !isLocal(n)) ?? name
+  return [rig, dflt].find(n => n !== undefined && !isLocal(n)) ?? 'ax'
 }
 
 /** a worker address with no `scheme://` is a herdr pane id: in the AX manager it can only come from the laptop */
