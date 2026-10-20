@@ -1263,38 +1263,45 @@ const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|
 /**
  * `words` is an rm command and its args. `words[start]` is the rm word itself.
  * This function returns true when `words` asks for a recursive delete.
- * It skips redirect words and their targets. It stops at the first `--` word or the first other non-flag word.
+ * It skips redirect words and their targets, and it reads past operands: GNU rm permutes options,
+ * so `rm x -rf dir` is recursive. It stops at the first `--` word that is not a redirect target.
+ * claude-factory-39cy: with `find` set, a `;` word ends the scan, and so does a `+` word right after `{}`.
  *
  * claude-factory-lbn: this function reads `words` by index. It does not call
  * `words.slice(start + 1)`. The find branch below calls this function once for each
  * `-exec rm` or `-execdir rm` word. A slice there would still cost O(n) for each call, and
- * O(n^2) in total.
+ * O(n^2) in total. `rmScan` also returns the end index, so a caller can skip the range that it read.
  */
-function isRecursiveRm(words: string[], start = 0): boolean {
-  for (let k = start + 1; k < words.length; k++) {
+function rmScan(words: string[], start: number, find: boolean | 'head' = false): { recursive: boolean; end: number } {
+  let k = start + 1
+  for (; k < words.length; k++) {
     const w = words[k]!
-    if (w === '--') return false
-    if (BRACE_LIST_WORD.test(w)) {
+    if (w === '--') break
+    // A brace word that may hold rm is not a real rm slot: another exec word starts a new slot.
+    if (find === 'head' && FIND_EXEC_WORDS.has(w)) break
+    if (find && (w === ';' || (w === '+' && words[k - 1] === '{}'))) break
+    // claude-factory-39cy: a nested brace word has no plain list inside, so also test for a comma and both braces.
+    if (BRACE_LIST_WORD.test(w) || (w.includes('{') && w.includes(',') && w.includes('}'))) {
       // claude-factory-gj9l: pieces can join with the text outside the braces ({-,}r). A - with r or R in the word counts.
-      if (bracePieceRecursive(w) || (w.includes('-') && /[rR]/.test(w))) return true
+      if (bracePieceRecursive(w) || (w.includes('-') && /[rR]/.test(w))) return { recursive: true, end: k }
       if (!w.startsWith('-')) continue
     }
     if (w.startsWith('-')) {
-      if (recursiveFlag(w)) return true
+      if (recursiveFlag(w)) return { recursive: true, end: k }
       continue
     }
     // claude-factory-g4l4: the shell takes a redirect word out of the rm args, so flags after it still count.
     const redirect = RM_REDIRECT_WORD.exec(w)
-    if (redirect) {
-      if (redirect[1] === '') {
-        const next = words[k + 1] ?? '-'
-        if (next === '--' || !next.startsWith('-')) k++
-      }
-      continue
+    if (redirect && redirect[1] === '') {
+      const next = words[k + 1] ?? '-'
+      if (next === '--' || !next.startsWith('-')) k++
     }
-    return false
   }
-  return false
+  return { recursive: false, end: k }
+}
+
+function isRecursiveRm(words: string[], start = 0, find: boolean | 'head' = false): boolean {
+  return rmScan(words, start, find).recursive
 }
 
 const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
@@ -1307,20 +1314,24 @@ const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
  * word. Then it returns, because each later slot is a part of the range that it read.
  *
  * claude-factory-lbn: this function reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
- * `isRecursiveRm(cmd, k)` starts right after the rm word and stops at the first non-flag word.
+ * `rmScan(cmd, k, true)` starts right after the rm word and stops at `--`, at `;` or at `{} +`. Callers skip to its end index.
  * Scans from different slots do not overlap. The wrapper scan runs at most once. So the whole
  * function costs O(n), not O(n^2).
  */
 function findExecRmDeny(cmdIn: string[]): boolean {
   const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
   let braceScanned = false
+  let scannedTo = -1
   for (let i = 0; i < cmd.length; i++) {
     if (!FIND_EXEC_WORDS.has(cmd[i]!) && !globActionWord(cmd[i]!)) {
       // gj9l: a brace word can expand to an exec word plus a wrapper. Scan the rest once.
       if (!braceScanned && BRACE_LIST_WORD.test(cmd[i]!)) {
         braceScanned = true
         for (let j = i + 1; j < cmd.length; j++) {
-          if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
+          if (baseWord(cmd[j]!) !== 'rm') continue
+          const r = rmScan(cmd, j, true)
+          if (r.recursive) return true
+          j = r.end
         }
       }
       continue
@@ -1329,12 +1340,19 @@ function findExecRmDeny(cmdIn: string[]): boolean {
     if (k >= cmd.length) continue
     const b = baseWord(cmd[k]!)
     if (b === 'rm') {
-      if (isRecursiveRm(cmd, k)) return true
+      // A slot inside a range that a scan read clean sees a subset of the same words.
+      if (k <= scannedTo) continue
+      const r = rmScan(cmd, k, true)
+      if (r.recursive) return true
+      scannedTo = r.end
       continue
     }
     if (WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
       for (let j = k + 1; j < cmd.length; j++) {
-        if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
+        if (baseWord(cmd[j]!) !== 'rm') continue
+        const r = rmScan(cmd, j, true)
+        if (r.recursive) return true
+        j = r.end
       }
       return false
     }
@@ -1760,22 +1778,13 @@ function bracePieceRecursive(w: string): boolean {
 
 function findBraceRmDeny(cmd: string[]): boolean {
   let clearUntil = 0
-  const recursive = (j: number): boolean => {
-    if (j < clearUntil) return false
-    if (isRecursiveRm(cmd, j)) return true
-    let k = j + 1
-    while (k < cmd.length) {
-      const c = cmd[k]!
-      const redirect = RM_REDIRECT_WORD.exec(c)
-      if (redirect) {
-        if (redirect[1] === '') {
-          const next = cmd[k + 1] ?? '-'
-          if (next === '--' || !next.startsWith('-')) k++
-        }
-      } else if (!c.startsWith('-') && !BRACE_LIST_WORD.test(c)) break
-      k++
-    }
-    clearUntil = k
+  let clearHead = 0
+  const recursive = (j: number, head = false): boolean => {
+    if (j < clearUntil || (head && j < clearHead)) return false
+    const r = rmScan(cmd, j, head ? 'head' : true)
+    if (r.recursive) return true
+    if (head) clearHead = r.end
+    else clearUntil = r.end
     return false
   }
   for (let i = 1; i < cmd.length; i++) {
@@ -1784,7 +1793,7 @@ function findBraceRmDeny(cmd: string[]): boolean {
     if (!isExec && !BRACE_LIST_WORD.test(w)) continue
     if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && recursive(i + 1)) return true
     if (isExec || !hasLettersInOrder(w, 'rm')) continue
-    if (recursive(i)) return true
+    if (recursive(i, true)) return true
     if (bracePieceRecursive(w)) return true
   }
   return false
@@ -1885,7 +1894,7 @@ function dynamicHeadDeny(
   const bal = w.endsWith('${') ? w.slice(0, -2) : w
   if (w.includes('`') || w.includes('${!') || bal.split('{').length > bal.split('}').length)
     return { deny: true, rm: false }
-  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags || (other.ifs && /[$`]/.test(w)))
+  if (isRecursiveRm(cmd, start, start > 0) || DYN_FLAG_TEXT.test(w) || other.flags || (other.ifs && /[$`]/.test(w)))
     return { deny: true, rm: false }
   if (start === 0) {
     for (let k = 1; k < cmd.length; k++)
@@ -1907,7 +1916,9 @@ function dynamicHeadDeny(
     if (start > 0 && (t === ';' || t === '+')) break
     if (t[0] === '-' || !DYN_CHARS.test(t)) continue
     if (!later) later = k
-    if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
+    const r = rmScan(cmd, k, start > 0)
+    if (r.recursive) return { deny: true, rm: false }
+    k = r.end
   }
   const riskyFrom = (from: number): boolean => {
     let afterDashDash = false
@@ -2313,8 +2324,12 @@ function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | u
     let first = true
     for (let k = a + 1; k < words.length; k++) {
       if (baseWord(words[k]!) !== 'rm') continue
-      if (isRecursiveRm(words, k)) return 'deny'
-      if (!first) continue
+      const r = rmScan(words, k)
+      if (r.recursive) return 'deny'
+      if (!first) {
+        k = r.end
+        continue
+      }
       first = false
       const rest = realCommand(words.slice(k))
       if (!rest.length || baseWord(rest[0]!) !== 'rm') continue

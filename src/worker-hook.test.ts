@@ -10286,3 +10286,48 @@ test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{f
     expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
   },
 )
+
+// claude-factory-39cy: GNU rm permutes options, so an operand before -r must not hide a recursive rm.
+test.each([
+  'rm x -rf acme',
+  "rm '>' -rf acme",
+  'rm acme/x -r acme',
+  'rm x -R acme',
+  "rm x ';' -rf acme",
+  'rm x 2> -rf acme',
+  'rm x > -- -rf acme',
+  'sudo rm x -rf acme',
+  'env rm x -rf acme',
+  'nice rm x -rf acme',
+  'command rm x -rf acme',
+  'timeout 5 rm x -rf acme',
+  'echo a | xargs rm x -rf acme',
+  'X=1 rm x -rf acme',
+  'rm x -rf acme; echo ok',
+  'find / -exec rm {} -rf \\;',
+  'find / -exec env rm {} -rf \\;',
+  'find / -exec rm -f {} -r \\;',
+  "find . -exec rm {} -r ';'",
+  "find . -exec rm {-f,{}} {-r,{}} ';'",
+  "find . -exec rm x + -rf {} ';'",
+])('denyReason denies %j (claude-factory-39cy)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+test.each([
+  'rm acme.txt',
+  'rm -- -rf',
+  'rm acme/x',
+  'rm x -- -rf acme',
+  'rm x -- -r',
+  'rm x -f acme',
+  'rm -f a b c',
+  'git rm x -r acme',
+  'find . -name x -exec rm {} \\; -print',
+  'find . -exec rm {} + -print',
+  "find . -exec rm {} ';' -prune",
+  "find . -name '*.o' -exec rm -f {} \\;",
+  'find . -type f -exec rm {} +',
+])('denyReason allows %j (claude-factory-39cy)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
