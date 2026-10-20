@@ -1437,7 +1437,7 @@ function gluedAtCommandSlot(head: string[]): boolean {
   const a = anchors[0]
   if (a === undefined || anchors.includes(last)) return true
   const w = head[a]!
-  if (!/^[\w./+][\w./+-]*$/.test(w) || LEAD_WRAPPERS.has(baseWord(w)) || baseWord(w) === 'eval') return true
+  if (!/^[\w./+][\w./+-]*$/.test(w) || baseWord(w) === 'eval') return true
   for (let k = a + 1; k < last; k++) if (/^-(exec|execdir|ok|okdir)$/.test(head[k]!)) return true
   return false
 }
