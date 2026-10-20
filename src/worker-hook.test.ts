@@ -8516,6 +8516,54 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('dir/')).toBe('')
 })
 
+// claude-factory-tyz6: zsh reads a lone - in command position as a precommand modifier, so the next word is the command.
+const DENY_ZSH_DASH_PRECOMMAND = [
+  '- rm -r ./d',
+  '- rm -rf /',
+  'A=1 - rm -r ./d',
+  'A=1; - rm -r ./d',
+  "'-' rm -r ./d",
+  '\\- rm -r ./d',
+  '"-" rm -r ./d',
+  '- - rm -r ./d',
+  '- exec rm -r ./d',
+  '- builtin rm -r ./d',
+  'exec - rm -r ./d',
+  'builtin - rm -r ./d',
+  'env - rm -r ./d',
+  'time - rm -r ./d',
+  'sudo - rm -r ./d',
+  'if - rm -r ./d; then :; fi',
+  'echo x && - rm -r ./d',
+]
+
+test.each(DENY_ZSH_DASH_PRECOMMAND)(
+  'denyReason denies the dash precommand row %j (claude-factory-tyz6)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(REASON)
+  },
+)
+
+test.each(['- $G $V origin main', 'G=git V=push; - $G $V origin main'])(
+  'denyReason denies the dash precommand dynamic verb row %j (claude-factory-tyz6)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason keeps the git, gh and sh -c denies behind a dash (claude-factory-tyz6)', () => {
+  expect(denyReason('- git push origin main')).toBe(PUSH_REASON)
+  expect(denyReason('- gh pr merge 1')).toBe(MERGE_REASON)
+  expect(denyReason('- sh -c "rm -r ./d"')).toBeDefined()
+})
+
+test.each(['- ls', 'cat -', 'echo - x', 'ls -', 'git diff -'])(
+  'denyReason allows %j (claude-factory-tyz6: a dash is not always a precommand)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
 // claude-factory-j1ki: the shell splits an unquoted expansion (${IFS}, $IFS, ${X}, $(...)) that is
 // glued to other text into word breaks. The guard must read the split words.
 const J1KI_GATE = {
@@ -9405,6 +9453,37 @@ test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', 
   const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
   expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
 }, 30_000)
+
+const DENY_DNAF = [
+  "find . -exe? rm -rf / ';'",
+  "find . -exe[c] rm -rf / ';'",
+  "find . -exe* rm -rf / ';'",
+  "find . -execdi? rm -rf / ';'",
+  "find . ?exec rm -rf / ';'",
+  "find . *xec rm -rf / ';'",
+  "find . [-]exec rm -rf / ';'",
+  'find . -name x -exe? rm -rf {} +',
+  "find . -exe? /bin/rm -rf x ';'",
+  "find . -exe? r? -rf x ';'",
+  "time -l find . -exe? rm -rf x ';'",
+  "a=1 find . -exe? rm -rf x ';'",
+  "$F . -exe? rm -rf x ';'",
+]
+test.each(DENY_DNAF)('denyReason denies glob find action %j (claude-factory-dnaf)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+const ALLOW_DNAF = [
+  'find . -name x',
+  'find . -name *.ts -print',
+  'find src/* -name x',
+  "find . -exe? echo hi ';'",
+  "find . -exe? rm -f x ';'",
+  'find . -iname -x? -print',
+]
+test.each(ALLOW_DNAF)('denyReason allows %j (claude-factory-dnaf)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
 
 // claude-factory-sdur: a bash {NAME}> fd-name redirect word is a redirect word at every reader.
 test.each(['X=rm; {fd}> f $X -rf ./x'])(
