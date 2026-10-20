@@ -1424,6 +1424,10 @@ function wrapperAssignmentOperand(w: string): boolean {
   return w[0] !== '-' && w.indexOf('=') > 0
 }
 
+// claude-factory-5hjj.14: commands that never run an argument.
+const GLUED_ARG_SAFE = new Set(
+  'ls echo printf cat grep rg head tail wc file stat du diff sort uniq cut tr find'.split(' '),
+)
 /**
  * claude-factory-5hjj: `head` ends with the word that has a glued `(`.
  * The function returns false only if the word is provably an argument. Otherwise it returns true.
@@ -1434,10 +1438,6 @@ function wrapperAssignmentOperand(w: string): boolean {
  * `caffeinate g(i)t` can run the word.
  * The function returns false for a glued `(` in a plain argument, for example `ls a(b)`.
  */
-// claude-factory-5hjj.14: commands that never run an argument.
-const GLUED_ARG_SAFE = new Set(
-  'ls echo printf cat grep rg head tail wc file stat du diff sort uniq cut tr find'.split(' '),
-)
 function gluedAtCommandSlot(head: string[]): boolean {
   const last = head.length - 1
   if (last < 0) return false
@@ -1445,7 +1445,7 @@ function gluedAtCommandSlot(head: string[]): boolean {
   const a = anchors[0]
   if (a === undefined || anchors.includes(last)) return true
   const w = head[a]!
-  if (!/^[\w./+][\w./+-]*$/.test(w) || !GLUED_ARG_SAFE.has(baseWord(w))) return true
+  if (!/^[\w./+][\w./+-]*$/.test(w) || !GLUED_ARG_SAFE.has(w.replace(/^\/(usr\/)?bin\//, ''))) return true
   for (let k = a + 1; k < last; k++) if (/^-(exec|execdir|ok|okdir)$/.test(head[k]!)) return true
   return false
 }

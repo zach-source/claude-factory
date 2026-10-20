@@ -13,6 +13,9 @@ const run = (cmd: string) => denyReason(cmd, '/root/repo', undefined, GATE)
 const RM = 'r' + 'm'
 
 const DENIED = [
+  './ls /bin/g(i)t push --force origin main',
+  '.scratch/echo /bin/g(i)t push origin main',
+  '/tmp/x/cat /bin/r(m) -rf /',
   'eval /bin/r(m) -rf /',
   'eval /bin/@(r)m -rf /',
   'eval /bin/g(i)t push origin main',
@@ -138,6 +141,7 @@ const ALLOWED = [
   'echo a(b) c',
   'ls *.@(js|ts) -l',
   'ls src/*.@(js|ts) -l',
+  '/bin/ls a(b)',
   'sudo ls a(b) c',
   'find . -name a(b) -print',
   'eval echo hi',
