@@ -8114,14 +8114,26 @@ const MIQY_DENY: Array<[string, string]> = [
   ['X="rm -rf /"; command $X', REASON],
   ['X="rm -rf /"; exec $X', REASON],
   ['X="rm -rf /"; nohup $X', REASON],
+  ['X="rm -rf /"; eval \'true; $X\'', REASON],
+  ['X="rm -rf /"; eval \'eval $X\'', REASON],
+  ['X="rm -rf /"; bash -c "true; $X"', REASON],
+  ['X="git push origin main"; eval \'true; $X\'', PUSH_REASON],
+  ['export X="git push origin main"; bash -c \'true && $X\'', PUSH_REASON],
 ]
 test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
 })
 
-test.each(['$EDITOR a.txt', '$X', 'echo $X', 'X="ls -l"; $X', 'X=1; echo $X', 'X="rm -rf /"; echo $X'])(
-  'denyReason allows %j (claude-factory-miqy)',
-  cmd => {
-    expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
-  },
-)
+test.each([
+  'for h in a b; do ssh $h uptime; done',
+  'for h in a b; do fish $h; done',
+  'X="git push origin main"; ssh host $X',
+  '$EDITOR a.txt',
+  '$X',
+  'echo $X',
+  'X="ls -l"; $X',
+  'X=1; echo $X',
+  'X="rm -rf /"; echo $X',
+])('denyReason allows %j (claude-factory-miqy)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
+})

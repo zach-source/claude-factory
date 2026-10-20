@@ -6143,6 +6143,7 @@ function anyShellReason(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
+  vars?: VarTable,
 ): string | undefined {
   let nc = -1
   let nd = -1
@@ -6172,7 +6173,7 @@ function anyShellReason(
       // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
       // or gh verb; env expands it to one command word at run time, past this guard's sight.
       if (val.includes('$')) return ENV_SPLIT_VAR_REASON
-      const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+      const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
       if (r) return r
       // claude-factory-s1fj: env inserts the split words into argv and keeps parsing the words
       // after the value. Rebuild that argv and scan it, so a shell word in the value reaches
@@ -6189,7 +6190,7 @@ function anyShellReason(
         ...words.slice(span.end),
       ]
       const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
-      return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+      return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
     }
     if (shellSlotWord(words[j]!)) {
       // claude-factory-38jm: a shell word below slotEnd is a value word of an earlier walk. Its
@@ -6223,11 +6224,22 @@ function anyShellReason(
         if (w === '--') {
           k++
           if (k < words.length)
-            found = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+            found = denyAt(
+              words[k]!,
+              root,
+              personOnly,
+              gate,
+              depth + 1,
+              state,
+              moved,
+              ghConfigMovedBefore,
+              [],
+              vars,
+            )
           break
         }
         if (w.startsWith('-')) continue
-        found = denyAt(w, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+        found = denyAt(w, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
         if (found) break
       }
       if (found) return found
@@ -6240,7 +6252,18 @@ function anyShellReason(
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {
-        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+        const r = denyAt(
+          rest.join(' '),
+          root,
+          personOnly,
+          gate,
+          depth + 1,
+          state,
+          moved,
+          ghConfigMovedBefore,
+          [],
+          vars,
+        )
         if (r) return r
       }
       break
@@ -6876,19 +6899,9 @@ function denyAtScan(
       state,
       movedSoFar,
       ghConfigMovedSoFar,
+      vars,
     )
     if (shellReason) return shellReason
-    // claude-factory-miqy: after anyShellReason, so the 38jm reasons keep priority.
-    if (varsGuard(words, cmd)) {
-      const hb = baseWord(cmd[0]!)
-      if (hb === 'eval' || /^(?:[a-z]*sh)$/.test(hb)) {
-        for (const w of cmd.slice(1)) {
-          const n = varRefName(w)
-          const r = n ? scanValue(n, []) : undefined
-          if (r) return r
-        }
-      }
-    }
     // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
     const stdinShell = shellStdinReason(words, state)
     if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true
