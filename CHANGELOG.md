@@ -414,6 +414,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook did not see a here-document after an escaped `<` (for example `cat \<<<EOF`). A shell reads `\<` as a plain word and `<<EOF` as a here-document. The hook took it for a `<<<` here-string and skipped the check, so a quote in the body hid a push to main. The check now skips only after a real `<` (claude-factory-wmsr.35).
 - Fixed: the worker hook did not see the `kubectl rollout`, `auth` or `certificate` sub word after a flag. Example: `kubectl --context acme rollout -n x restart deploy/x`. The hook now finds the sub word past flags. If an unknown flag makes the slot uncertain, the hook denies a mutating word or a dynamic word before `--`. (claude-factory-qbtz.2)
 - Fixed: the worker hook did not read a word cut at a substitution after a dynamic command word and its wrapper flags. In `$X -u root $(cat f) ../x` with `X=env`, the shell runs `env -u root rm ../x`. The hook now denies a later word that ends in `$`, holds a backtick, or is `(` after `<` (claude-factory-hevt).
+- Fixed: the worker hook did not see a quote hidden in a here-document inside a backtick substitution. A shell ends such a body at a line with the delimiter and a closing backtick. The hook looked for an exact delimiter line, found a later one, and skipped the check. The hook now denies when a body line starts with the delimiter but is not equal to it (claude-factory-wmsr.37).
 
 ## 0.13.0 (2026-10-18)
 
