@@ -8453,6 +8453,7 @@ test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
 })
 
 const ALLOW_PWY0: string[] = [
+  'export EDITOR=vim; $EDITOR acme.txt',
   '$EDITOR acme.txt',
   'echo $x rm',
   '$x ls',
@@ -8493,6 +8494,15 @@ const DENY_K8IZ: string[] = [
   'n=I; export ${n}FS=_; y=m_../acme.txt; r$y',
   'a=I; b=F; c=S; export $a$b$c=_; y=m_../acme.txt; r$y',
   'z=FS; export I`echo`$z=_; y=m_../acme.txt; r$y',
+  "y='rm ../acme.txt'; $y",
+  'y="rm ../acme.txt"; $y',
+  "y='m ../acme.txt'; r$y",
+  'y=m\\ ../acme.txt; r$y',
+  "y='rm -f ../acme.txt'; $y",
+  'a=I; b=F; c=S; eval $a$b$c=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; local $a$b$c=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; let $a$b$c=_; y=m1../acme.txt; r$y',
+  'a=I; b=F; c=S; eval "$a$b$c=_"; y=m_../acme.txt; r$y',
 ]
 test.each(DENY_K8IZ)('denyReason denies %j (claude-factory-k8iz)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
