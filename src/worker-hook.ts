@@ -7741,6 +7741,7 @@ function replaceGluedSubstitutions(command: string, fill = ' '): string {
     const assignWord = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/.test(command.slice(wordStart, from))
     const assign =
       assignWord &&
+      !/['"\\`]/.test(command.slice(0, wordStart)) &&
       command
         .slice(cmdStart, wordStart)
         .split(/\s+/)

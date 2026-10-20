@@ -6259,6 +6259,15 @@ test.each([
   'env X+=$(y) -rf /home',
   'env X=$(y)b -rf /home',
   'env X=$(y) ls /home',
+  'env A=1\\;B=1 X=$(y) -rf /home',
+  "env A='(B=1' X=$(y) -rf /home",
+  'env A="|B=1" X=$(y) -rf /home',
+  "env A='&B=1' X=$(y) -rf /home",
+  'sudo A=1\\;B=1 X=$(y) -rf /home',
+  "env A='|B=1' X=$(y) foo /home/x",
+  'env A=1\\|B=1 X=$(y) -rf /home',
+  'env A=1\\\nX=$(y) -rf /home',
+  "sudo A='(B=1' X=$(y) foo -rf /home",
 ])(
   'denyReason denies a split substitution after an env assignment argument: %s (claude-factory-cwt9)',
   cmd => {
