@@ -2194,6 +2194,7 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   // own. Without this skip, n stacked eval words cost about 2^n work.
   let evalScanned = false
   let slotEnd = 0
+  let trapEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
@@ -2209,6 +2210,13 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       // here would change that reason to the BEADS_ACTOR one (claude-factory-38jm AC4).
       const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
+    } else if (bw === 'trap' && k >= trapEnd) {
+      // claude-factory-81tz.2: the trap action and every word after trap are scripts. Read them like eval.
+      // claude-factory-81tz.4: trapEnd skips a trap word inside an earlier walk, so the scan stays O(n).
+      // claude-factory-81tz.5: read every word to the end, since a redirect word can sit before the action.
+      for (let a = k + 1; a < words.length; a++)
+        if (stringNamesBdCommand(words[a]!, state, depth + 1)) return true
+      trapEnd = words.length
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true
       const rest = words.slice(k + 1).join(' ')
@@ -6295,6 +6303,7 @@ function anyShellReason(
   let scriptK = 0
   let scriptMoved = false
   let slotEnd = 0
+  let trapEnd = 0
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
@@ -6380,6 +6389,21 @@ function anyShellReason(
       scriptK = k
       scriptMoved = moved
       if (literal) j = k
+      continue
+    }
+    if (bw === 'trap') {
+      // claude-factory-81tz: the trap action is a script the shell runs later. Read it like an eval script.
+      // claude-factory-81tz.3: a trap word below trapEnd is a dash word of an earlier walk. That walk
+      // already read its words and the action. Skipping it keeps the scan O(n).
+      if (j < trapEnd) continue
+      // claude-factory-81tz.5: a redirect word can sit before the action, so read every word to the end.
+      // claude-factory-81tz.6, .7: the action runs at exit, after every later word (a cd, a config
+      // env). Read each word after trap with all later-state flags on.
+      for (let k = j + 1; k < words.length; k++) {
+        const o = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, true, true)
+        if (o) return o
+      }
+      trapEnd = words.length
       continue
     }
     if (bw === 'eval') {
