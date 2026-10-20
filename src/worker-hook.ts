@@ -6331,7 +6331,7 @@ function anyShellReason(
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       // bash eval has no options: a leading `--` word is not the script head.
-      if (rest.length && rest[0].replace(/["'\\]/g, '') === '--') rest.shift()
+      if (rest.length && rest[0]!.replace(/["'\\]/g, '') === '--') rest.shift()
       if (rest.length) {
         const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
         if (r) return r

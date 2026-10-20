@@ -36,9 +36,9 @@ test('AC2: harmless eval -- rows stay allowed', () => {
 
 test('AC3: parity with and without --', () => {
   for (const plain of [
-    ": 'rm -rf /'; eval \"$_\"",
-    "X='rm -rf /'; eval \"$X\"",
-    ": 'git push origin main'; eval \"$_\"",
+    ': \'rm -rf /\'; eval "$_"',
+    'X=\'rm -rf /\'; eval "$X"',
+    ': \'git push origin main\'; eval "$_"',
   ]) {
     const withDash = plain.replace('eval ', 'eval -- ')
     expect(run(withDash) === undefined, withDash).toBe(run(plain) === undefined)
