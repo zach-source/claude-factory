@@ -7130,7 +7130,13 @@ function denyAtScan(
     // Read the segment again without redirect words. Deny-only.
     if (words.some(w => /[<>]/.test(w))) {
       const noRedir = dropRedirectWords(words)
-      if (noRedir.length !== words.length && rmFindDeny(realCommand(noRedir), root)) return REASON
+      if (noRedir.length !== words.length) {
+        const real = realCommand(noRedir)
+        if (rmFindDeny(real, root)) return REASON
+        const base = baseWord(real[0] ?? '')
+        if (base === 'rm') hasRm = true
+        else if (base === 'cd') hasCd = true
+      }
     }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
