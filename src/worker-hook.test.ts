@@ -810,6 +810,19 @@ const T1N8_DENY = [
   'sudo find . -exec {} rm -rf / \\;',
   'find . -exec {} rm -rf / +',
   'find . -exec ls {} \\; -exec {} rm -rf / \\;',
+  'find /bin/rm -exec sudo {} -rf / \\;',
+  'find /bin/rm -exec env {} -rf / \\;',
+  'find /bin/rm -exec nice {} -rf / \\;',
+  'find /bin/rm -exec nice -n 5 {} -rf / \\;',
+  'find /bin/rm -exec sudo -u root {} -rf / \\;',
+  'find /bin/rm -exec time {} -rf / \\;',
+  'find /bin/rm -exec timeout 5 {} -rf / \\;',
+  'find /bin/rm -exec command {} -rf / \\;',
+  'find /bin/rm -exec xargs {} -rf / \\;',
+  'find /bin -name rm -exec sudo {} -rf / \\;',
+  'find /bin/rm -exec sudo {} -r src \\;',
+  'find /bin/rm -exec sudo {} -rf / +',
+  'find /bin/rm -execdir sudo {} -rf / \\;',
 ]
 for (const cmd of T1N8_DENY) {
   test(`denyReason denies ${cmd} (claude-factory-t1n8)`, () => {
@@ -829,6 +842,9 @@ const T1N8_ALLOW = [
   'find /bin/rm -exec {} / \\;',
   'xargs -I {} cp {} dest',
   'find . -exec cp {} /Users/acme/widget/x \\;',
+  'find . -exec sudo chmod +x {} \\;',
+  'find . -exec sudo cp -r {} /Users/acme/widget/x \\;',
+  'find . -exec sudo chown -R u {} \\;',
 ]
 for (const cmd of T1N8_ALLOW) {
   test(`denyReason allows ${cmd} (claude-factory-t1n8)`, () => {
