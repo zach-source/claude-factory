@@ -644,11 +644,20 @@ test.each(BEADS_ACTOR_SPLIT_STRING_DENY)('denyReason denies %s (claude-factory-i
 // fails open. The command's `rm -rf` then runs unchecked.
 //
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
+//
+// The limit is FIND_MS, not 500 ms: the linear scan takes about 280 ms on a laptop and 280 to 560 ms
+// on a shared CI runner, so 500 ms failed CI at random. The O(n^2) scan above takes about 11 s, so
+// 2000 ms still fails it by more than 5x.
 const FIND_N = 200000
+const FIND_MS = 2000
 
-test('scanReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)', () => {
-  expect(scanReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)',
+  () => {
+    expect(scanReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
+  },
+  FIND_MS,
+)
 
 // claude-factory-dts: the same over-8192-character command denies with LONG_COMMAND_REASON
 // through denyReason, on every rig.
@@ -660,17 +669,29 @@ test('denyReason denies the same 200000-word find -exec scan with LONG_COMMAND_R
 // checks baseWord(cmd[i + 1]) === 'rm' before the slice (the bead's own first proposal).
 // The slice itself costs O(n), not the check before it. Each rm here carries no recursive flag.
 // So the command must stay allowed.
-test('scanReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)', () => {
-  expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
-}, 500)
+test(
+  'scanReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)',
+  () => {
+    expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
+  },
+  FIND_MS,
+)
 
-test('scanReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)', () => {
-  expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)',
+  () => {
+    expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
+  },
+  FIND_MS,
+)
 
-test('scanReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)', () => {
-  expect(scanReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)',
+  () => {
+    expect(scanReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
+  },
+  FIND_MS,
+)
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
