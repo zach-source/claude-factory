@@ -3,6 +3,7 @@
 // the run's inbox.jsonl, which the next tick drains in order.
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -17,6 +18,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
   writeSync,
 } from 'node:fs'
@@ -1752,12 +1754,90 @@ export function workerFlags(
   return ` --tools ${WORKER_TOOLS} --setting-sources project,local --settings ${sq(file)} --system-prompt-file ${sq(prompt)}`
 }
 
+// codex features the guard needs off: each one lets a command run with no PreToolUse hook (claude-factory-x0b9)
+const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
+
+/** the reason a codex agent command turns a guard part off, or undefined */
+function codexGuardOff(agent: string): string | undefined {
+  const w = agent.trim().split(/\s+/).flatMap(s => (/^--[\w-]+=/.test(s) ? s.split(/=(.*)/s).slice(0, 2) : [s]))
+  for (let i = 0; i < w.length; i++) {
+    const next = (w[i + 1] ?? '').replace(/\s/g, '')
+    if (w[i] === '--ignore-user-config') return w[i]
+    if (w[i] === '--disable' && next === 'hooks') return '--disable hooks'
+    if (w[i] === '--enable' && CODEX_UNGUARDED.includes(next)) return `--enable ${next}`
+    if (w[i] === '-c' || w[i] === '--config') {
+      if (next === 'features.hooks=false') return `${w[i]} ${next}`
+      if (CODEX_UNGUARDED.some(f => next === `features.${f}=true`)) return `${w[i]} ${next}`
+    }
+  }
+}
+
+/**
+ * A codex worker gets its own CODEX_HOME at <run dir>/codex/<node>, never the person's ~/.codex. It holds
+ * config.toml (context limit), hooks.json (the person's hooks, then the deny hook last), AGENTS.md (the worker
+ * rules) and an auth.json link. Codex has the PreToolUse hook, so worker-hook.ts runs as it is. Fail closed:
+ * no hook file, or an agent command that turns the guard off, refuses the launch (claude-factory-x0b9).
+ */
+export function codexWorker(
+  run: Pick<Run, 'id' | 'worktree'>,
+  def: Pick<Factory, 'maxContextK'>,
+  node: string,
+  agent: string,
+  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches'>,
+  o: { hookFile?: string; userHome?: string; dir?: string } = {},
+): { env: Record<string, string>; extra: string } {
+  const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
+  if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
+  const off = codexGuardOff(agent)
+  if (off) fail(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
+  const user = o.userHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
+  const dir = o.dir ?? join(runDir(run.id), 'codex', node)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  let theirs: Record<string, unknown[]> = {}
+  try {
+    theirs = readJson<{ hooks?: Record<string, unknown[]> }>(join(user, 'hooks.json')).hooks ?? {}
+  } catch {
+    // no user hooks, or not JSON: the deny hook is the only one
+  }
+  const hook = denyHook(process.execPath, hookFile, personOnlyContexts(rig), protectedBranches(rig))
+  writeJson(join(dir, 'hooks.json'), {
+    hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), hook] },
+  })
+  writeFileSync(
+    join(dir, 'config.toml'),
+    `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
+      `[projects.${JSON.stringify(run.worktree)}]\ntrust_level = "trusted"\n`,
+  )
+  const id = commitIdentity(HOME)
+  writeFileSync(
+    join(dir, 'AGENTS.md'),
+    readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') +
+      readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8') +
+      id.rule,
+  )
+  // one token store: codex rotates a ChatGPT refresh token, and a copy that refreshes would stale the person's own
+  const auth = join(user, 'auth.json')
+  const link = join(dir, 'auth.json')
+  rmSync(link, { force: true })
+  if (existsSync(auth)) symlinkSync(auth, link)
+  return {
+    env: { CODEX_HOME: dir, CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
+    extra:
+      ' --enable hooks --dangerously-bypass-hook-trust' +
+      CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
+      ' --disable apps --disable memories',
+  }
+}
+
 function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
-  const extra = workerFlags(def, rig)
-  return command(agentOfNode(run, def, node), prompt, {
+  const agent = agentOfNode(run, def, node)
+  const setup =
+    harnessOf(agent) === 'codex' ? codexWorker(run, def, node, agent, rig) : { extra: workerFlags(def, rig) }
+  return command(agent, prompt, {
     session,
-    extra,
+    ...setup,
     mcp: rig?.mcp ? readMcp(rig.mcp) : undefined,
   })
 }
