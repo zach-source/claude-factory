@@ -150,6 +150,20 @@ test.each(ALLOW_BRACE_NEIGHBOURS)('denyReason allows %j beside the brace rows', 
   expect(denyReason(cmd, '/root/repo', undefined, BRACE_OPTS)).toBeUndefined()
 })
 
+// claude-factory-e39x: zsh expands a leading =cmd word to a command path, so it can hide a path outside the root.
+const DENY_EQUALS_RM = ['rm =x', 'rm -f =x', 'rm -- =x', 'rm -rf =x']
+const ALLOW_EQUALS_NEIGHBOURS = ['rm x', 'rm x=y', 'rm ./build/a', 'env A=1 rm x']
+
+test.each(DENY_EQUALS_RM)('denyReason denies an rm with a leading = target %j', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+  expect(denyReason(cmd, '/root/repo', undefined, BRACE_OPTS)).toBe(REASON)
+})
+
+test.each(ALLOW_EQUALS_NEIGHBOURS)('denyReason allows %j beside the = rows', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+  expect(denyReason(cmd, '/root/repo', undefined, BRACE_OPTS)).toBeUndefined()
+})
+
 const ROOT = '/w'
 
 // an rm operand outside ROOT, checked with denyReason(cmd, ROOT): claude-factory-99d.2
