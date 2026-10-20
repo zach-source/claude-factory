@@ -2676,6 +2676,21 @@ function braceClass(text: string): (c: string) => boolean {
   }
 }
 
+// End of a bracket as bash and zsh read it: skip ! or ^, one leading ], and [:..:] [.x.] [=x=] spans.
+function bracketEnd(w: string, i: number): number {
+  let j = i + 1
+  if (w[j] === '!' || w[j] === '^') j++
+  if (w[j] === ']') j++
+  for (; j < w.length; j++) {
+    if (w[j] === '[' && ':.='.includes(w[j + 1] ?? '-')) {
+      const e = w.indexOf(w[j + 1]! + ']', j + 2)
+      if (e < 0) return -1
+      j = e + 1
+    } else if (w[j] === ']') return j
+  }
+  return -1
+}
+
 function tokenizeGlob(w: string): GlobToken[] {
   const out: GlobToken[] = []
   for (let i = 0; i < w.length; i++) {
@@ -2687,9 +2702,9 @@ function tokenizeGlob(w: string): GlobToken[] {
       i--
     } else if (c === '*') out.push({ k: 'any' })
     else if (c === '?') out.push({ k: 'one' })
-    else if (c === '[' && w.indexOf(']', i + 2) > 0) {
+    else if (c === '[' && bracketEnd(w, i) > 0) {
       out.push({ k: 'one' })
-      i = w.indexOf(']', i + 2)
+      i = bracketEnd(w, i)
     } else if (c === '{') {
       let depth = 0
       let j = i

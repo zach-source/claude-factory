@@ -3815,6 +3815,13 @@ const DENY_EBMM_ANY = [
   'tee -a $HO{M,}E/.gitc*',
   'tee -a ~/.{g*,x}',
   'tee -a ~/.gitconfi{e..g..2}',
+  'tee -a ~/.gitconfi[[:alpha:]]',
+  'tee -a ~/.gitconfi[!]x]',
+  'tee -a ~/.gitconfi[^]x]',
+  'tee -a ~/.gitconfi[[.g.]]',
+  'tee -a ~/.gitconfi[[=g=]]',
+  'tee -a /Users/widget/.gitconfi[[:alpha:]]',
+  'cp x ~/.config/[[:alpha:]]it/.',
 ]
 test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
   'denyReason denies %j under a second fixture user (claude-factory-ebmm)',
@@ -3903,11 +3910,15 @@ test('denyReason scans many nested brace groups fast (claude-factory-ebmm.4)', (
 })
 
 test('denyReason scans a long brace word fast (claude-factory-ebmm.13)', () => {
-  for (const g of ['{,}', '{a,b}x']) {
-    const cmd = `tee -a ~/.gitconfi${g.repeat(2000)}`
+  for (const cmd of [
+    `tee -a ~/.gitconfi{g,}${'{,}'.repeat(2600)}`,
+    `tee -a ~/.gitconfi{g,}${'{a,b}'.repeat(1300)}`,
+  ]) {
+    expect(cmd.length).toBeLessThan(8192)
     const t = performance.now()
-    denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
+    const r = denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
     expect(performance.now() - t).toBeLessThan(1000)
+    expect(r).toBe(GLOBAL_GIT_CONFIG_REASON)
   }
 })
 
