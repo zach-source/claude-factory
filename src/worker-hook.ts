@@ -6872,7 +6872,13 @@ function denyAtScan(
   // claude-factory-pwy0: per-segment flag text and rm/find text, so a dynamic word reads the others.
   const segFlag = segs.map(sg => DYN_FLAG_TEXT.test(sg.join(' ')))
   const segRmFind = segs.map(sg => /rm|find/i.test(sg.join(' ')))
-  const segIfs = segs.map(sg => /IFS|\bI\$/.test(sg.join(' ')))
+  // k8iz: a name-setting verb with a dollar or backtick can build IFS from parts.
+  const segIfs = segs.map(sg => {
+    const t = sg.join(' ')
+    return (
+      /IFS|\bI\$/.test(t) || (/\b(export|declare|typeset|readonly|printf|read)\b/.test(t) && /[$`]/.test(t))
+    )
+  })
   const ifsCount = segIfs.filter(Boolean).length
   const flagCount = segFlag.filter(Boolean).length
   const rmFindCount = segRmFind.filter(Boolean).length

@@ -8490,6 +8490,9 @@ const DENY_K8IZ: string[] = [
   'IFS=_; read y; $y',
   'z=FS; declare I$z=_; y=m_../acme.txt; r$y',
   'z=FS; printf -v I$z _; y=m_../acme.txt; r$y',
+  'n=I; export ${n}FS=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; export $a$b$c=_; y=m_../acme.txt; r$y',
+  'z=FS; export I`echo`$z=_; y=m_../acme.txt; r$y',
 ]
 test.each(DENY_K8IZ)('denyReason denies %j (claude-factory-k8iz)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
