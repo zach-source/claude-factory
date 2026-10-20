@@ -8932,7 +8932,6 @@ test.each(J1KI_PUSH_ROWS2)('claude-factory-j1ki.12-15: %s denies with PUSH_REASO
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
 })
 test.each([
-  'export${IFS}PATH=/x; git status',
   'cd /x && ls',
   'rm ./f',
   'echo $(date)',
@@ -9792,7 +9791,14 @@ test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
 })
 
 const ALLOW_PWY0: string[] = [
+  'export EDITOR=vim; $EDITOR acme.txt',
+  "SH=sh; $SH -c 'echo x'",
   '$EDITOR acme.txt',
+  'bash -c ls',
+  'eval echo hi',
+  "EDITOR=vim bash -c 'ls'",
+  'echo hi; ls',
+  'A[1]=x; echo ok',
   'echo $x rm',
   '$x ls',
   '${EDITOR:-vi} acme.txt',
@@ -9811,6 +9817,85 @@ const ALLOW_PWY0: string[] = [
 ]
 test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
+test.each(['IFS=_; y=m_-rf_/; r$y', 'y=m_-rf_/; z=FS; export I$z=_; r$y'])(
+  'denyReason denies a variable set in an earlier segment %j (claude-factory-k8iz)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  },
+)
+
+test('denyReason denies the bead row with the variable reason (claude-factory-k8iz)', () => {
+  expect(denyReason('y=rm_-rf_/; IFS=_; $y', '/Users/acme/widget')).toBe(DYNAMIC_VERB_REASON)
+})
+
+const DENY_K8IZ: string[] = [
+  "y='rm ../acme.txt'; $y",
+  'y="rm ../acme.txt"; $y',
+  "y='rm -f ../acme.txt'; $y",
+  "y='rm ../acme.txt'; eval '$y'",
+  "export y='rm ../acme.txt'; bash -c '$y'",
+  "export y='rm ../acme.txt'; sh -c '$y'",
+  "y='rm ../acme.txt' bash -c '$y'",
+  "y='rm ../acme.txt' eval '$y'",
+  "y='rm ../acme.txt' env bash -c '$y'",
+  'y=\'rm ../acme.txt\'; echo "`$y`"',
+  'y=\'rm ../acme.txt\' echo "`$y`"',
+  'set -- rm ../acme.txt; $1',
+  'cd acme && $y',
+  // k8iz.18: a leading redirect word
+  "y='rm ../acme.txt'; >/dev/null $y",
+  "y='rm ../acme.txt'; 2>/dev/null $y",
+  'IFS=_; y=rm_../acme.txt; >/dev/null $y',
+  // k8iz.26: an operator or flag-group head with IFS set or 2+ commands
+  'IFS=_; ${X%y} a.txt',
+  'IFS=_; ${X:-} a.txt',
+  'IFS=_; $=X a.txt',
+  'export IFS=_; ${X:0} a.txt',
+  'IFS=_; $PATH[(w)1] a.txt',
+  'echo hi; ${X%y} a.txt',
+  'IFS=_; $X[(w)1] a.txt',
+  'echo hi; $X[(w)1] a.txt',
+  // k8iz.15: accepted false denies (fail closed)
+  'export${IFS}PATH=/x; git status',
+]
+// miqy reads the value of a pure $NAME head first and denies with DYNAMIC_VERB_REASON.
+const DENY_K8IZ_DYN: string[] = [
+  'IFS=_; y=m_../acme.txt; r$y',
+  'z=FS; export I$z=_; y=m_../acme.txt; r$y',
+  'z=FS; declare I$z=_; y=m_../acme.txt; r$y',
+  'z=FS; printf -v I$z _; y=m_../acme.txt; r$y',
+  'n=I; export ${n}FS=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; export $a$b$c=_; y=m_../acme.txt; r$y',
+  'z=FS; export I`echo`$z=_; y=m_../acme.txt; r$y',
+  "y='m ../acme.txt'; r$y",
+  'y=m\\ ../acme.txt; r$y',
+  'a=I; b=F; c=S; eval $a$b$c=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; local $a$b$c=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; let $a$b$c=_; y=m1../acme.txt; r$y',
+  'a=I; b=F; c=S; eval "$a$b$c=_"; y=m_../acme.txt; r$y',
+  'IFS=_; y=rm_../acme.txt; $y',
+  'y=rm_../acme.txt; IFS=_; $y',
+  'IFS=_; y=rm_/etc/hosts; $y',
+  'y=rm_/; IFS=_; $y',
+  'IFS=_; read y; $y',
+  "y+='rm ../acme.txt'; $y",
+  "y=rm; y+=' ../acme.txt'; $y",
+  "declare y+='rm ../acme.txt'; $y",
+  "printf -v y 'rm ../acme.txt'; $y",
+  "printf -v y '%s' 'rm ../acme.txt'; $y",
+  'read y; $y',
+  "IFS=_; y=rm_../acme.txt; eval '$y'",
+  'IFS=_; y=rm_../acme.txt; eval \\$y',
+  "y=rm_../acme.txt; IFS=_; eval '$y'",
+  "for y in 'rm ../acme.txt'; do $y; done",
+]
+test.each(DENY_K8IZ_DYN)('denyReason denies %j with the variable reason (claude-factory-k8iz)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(DYNAMIC_VERB_REASON)
+})
+test.each(DENY_K8IZ)('denyReason denies %j (claude-factory-k8iz)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
 })
 
 test('scanReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {
