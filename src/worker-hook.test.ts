@@ -8363,3 +8363,123 @@ test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repe
   },
   30_000,
 )
+
+// claude-factory-pwy0: a command word that expands to rm at run time runs rm.
+const DENY_PWY0: string[] = [
+  '${RM:-rm} -rf /',
+  '${RM-rm} -rf /',
+  '${RM:=rm} -rf /',
+  '${RM=rm} -rf /',
+  'r${x}m -rf /',
+  'rm$x -rf /',
+  '${x}rm -rf /',
+  '${x:-r}m -rf /',
+  '${RM:-/bin/rm} -rf /',
+  '${RM:-${Y:-rm}} -rf /',
+  '${RM:+rm} -rf /',
+  '${RM+rm} -rf /',
+  '"${RM:-rm}" -rf /',
+  'r"${x}"m -rf /',
+  'sudo ${RM:-rm} -rf /',
+  'env ${RM:-rm} -rf /',
+  'FOO=1 r${x}m -rf /',
+  'time -l ${RM:-rm} -rf /',
+  '>f ${RM:-rm} -rf /',
+  '> f ${RM:-rm} -rf /',
+  '2>/dev/null r${x}m -rf /',
+  'cd / ; ${RM:-rm} acme.txt',
+  '${F:-find} . -exec rm -rf {} +',
+  'find . -exec ${RM:-rm} -rf {} +',
+  '${' + 'a'.repeat(500) + ':-rm} -rf /',
+  'rm$' + 'a'.repeat(500) + ' -rf /',
+  '${x[0]:-rm} -rf /',
+  '${x[@]:-rm} -rf /',
+  '${!x:-rm} -rf /',
+  '${x[1]:-rm} -rf /',
+  '${(L)x:-rm} -rf /',
+  '${=x:-rm} -rf /',
+  '${~x:-rm} -rf /',
+  '${^x:-rm} -rf /',
+  '${(L)(U)x:-rm} -rf /',
+  'rm$~x -rf /',
+  'rm$^x -rf /',
+  'rm$=x -rf /',
+  'r$x"m" -rf /',
+  "r$x''m -rf /",
+  'r$x\\m -rf /',
+  '"$x"rm -rf /',
+  'r"$x"m -rf /',
+  'find . -exec $x -rf {} +',
+  '${RM:-rm\n-rf /}',
+  '${RM:-\nrm} -rf /',
+  '${RM:-rm\n} -rf /',
+  '${RM:-rm${IFS}-rf} /',
+  '${RM:-rm$IFS-rf} /',
+  '${RM:-rm${IFS:0:1}-rf} /',
+  '${RM:-rm}${IFS}-rf /',
+  'y=IFS; ${RM:-rm}${!y}-rf /',
+  'y=IFS; r${x:-m}${!y}-rf /',
+  'IFS=_; ${RM:-rm_-rf_/}',
+  'IFS=_; ${RM:-rm_-rf} /',
+  'IFS=_ ; r${x:-m_-rf} /',
+  'IFS=_; ${RM:-r}${x:-m_-rf} /',
+  'IFS=_; ${F:-find_/_-delete}',
+  'y=I$z; ${RM:-rm}${!y}-rf /',
+  'z=FS; declare I$z=_; ${F:-find_/_-delete}',
+  'y=m_-rf_/; z=FS; export I$z=_; ${RM:-r}$y',
+  'z=FS; readonly I$z=_; ${RM:-rm_-rf_/}',
+  'z=FS; typeset I$z=_; ${RM:-rm_-rf_/}',
+  'z=FS; printf -v I$z _; ${RM:-rm_-rf_/}',
+  'IFS=_; ${x:-"printf r\\155"_-rf_/}',
+  "y='rm -rf /'; $y",
+  'IFS=_; y=rm_-rf_/; $y',
+  'IFS=_; r$x"m_-rf_/"',
+  'IFS=_; $x"rm_-rf_/"',
+  'r$x"m" ../acme.txt',
+  'r?? -rf /',
+  '/bin/r[m] -rf /',
+  'RM$x -rf /',
+  '$x acme.txt -delete',
+  'x=rm; $x ../acme.txt',
+  'RM$x ../acme.txt',
+  '${x:-/bin/rm} acme.txt',
+  '${!y} acme.txt',
+  '"`echo x`" acme.txt',
+  '${RM:-rm\n} acme.txt',
+  'FIND$x ../acme.txt',
+]
+test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+const ALLOW_PWY0: string[] = [
+  '$EDITOR acme.txt',
+  'echo $x rm',
+  '$x ls',
+  '${EDITOR:-vi} acme.txt',
+  'r$xm acme.txt',
+  '${RM:-rm} acme.txt',
+  'echo ${RM:-rm} -rf /',
+  'ls ${x}rm',
+  '${(L)x:-ls} acme.txt',
+  'ls$~x acme.txt',
+  '$x acme.txt',
+  '$HOME/.local/bin/claude plugin test mod',
+  '"$ROOT/bin/factory" report x 2 ready "rm -rf rows"',
+  '/bin/s? -c x',
+  'env --unset "$X" --chdir /tmp make test',
+]
+test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
+test('scanReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {
+  const n = 20_000
+  const cmd = '${a:-'.repeat(n) + 'rm' + '}'.repeat(n) + ' -rf /'
+  expect(scanReason(cmd, '/Users/acme/widget')).toBe(REASON)
+}, 30_000)
+
+test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', () => {
+  const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
+  expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
+}, 30_000)
