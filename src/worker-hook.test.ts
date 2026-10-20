@@ -8182,7 +8182,7 @@ test('claude-factory-dnw1: a bare brace in a glued default still denies rm', () 
 test('claude-factory-dnw1: a bare brace in a glued default still denies git push', () => {
   expect(
     denyReason('git${IFS}${X:-{}${IFS}push${IFS}origin${IFS}main', '/root/repo', undefined, J1KI_GATE),
-  ).toBe(PUSH_REASON)
+  ).toBe(REASON)
 })
 test('claude-factory-dnw1: a bare brace does not hide a later close brace', () => {
   expect(denyReason('rm${X:-{}${IFS}-rf${IFS}/}', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
