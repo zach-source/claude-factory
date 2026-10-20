@@ -1322,7 +1322,7 @@ function findExecRmDeny(cmdIn: string[]): boolean {
       if (!braceScanned && BRACE_LIST_WORD.test(cmd[i]!)) {
         braceScanned = true
         for (let j = i + 1; j < cmd.length; j++) {
-          if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
+          if ((baseWord(cmd[j]!) === 'rm' || cmd[j]!.includes('{}')) && isRecursiveRm(cmd, j)) return true
         }
       }
       continue
@@ -1338,7 +1338,7 @@ function findExecRmDeny(cmdIn: string[]): boolean {
     }
     if (ph || WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
       for (let j = k + 1; j < cmd.length; j++) {
-        if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
+        if ((baseWord(cmd[j]!) === 'rm' || cmd[j]!.includes('{}')) && isRecursiveRm(cmd, j)) return true
       }
       return false
     }
