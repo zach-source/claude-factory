@@ -278,16 +278,17 @@ export const XARGS_REASON =
 // claude-factory-l43b: a shell word with no -c script reads its script from stdin, a here-string
 // or a here-document. The text that feeds it is not in this word list, so this guard cannot read
 // the script. xargs before a shell word hides its script in the same way.
-export const SH_DYNAMIC_SCRIPT_REASON =
-  'The factory denies this command: a sh, bash, zsh or dash -c call has a word after -c that holds ' +
-  '$ or a backtick. The shell expands it at run time, so the guard cannot read the script. Run the ' +
-  'commands directly, with literal words. Do not retry this exact command.'
-
 export const SHELL_STDIN_REASON =
   'The factory denies this command: a shell word (sh, bash, zsh, dash or a dynamic word) can read ' +
   'its script from a pipe, a redirect or a here-string, or xargs runs a shell. This guard cannot ' +
   'read that script. Run the commands directly, or run a script file with a literal name. ' +
   'Do not retry this exact command.'
+
+// claude-factory-3frd: a dollar or backtick word after a literal sh -c cluster.
+export const SH_DYNAMIC_SCRIPT_REASON =
+  'The factory denies this command: a sh, bash, zsh or dash -c call has a word after -c that holds ' +
+  '$ or a backtick. The shell expands it at run time, so the guard cannot read the script. Run the ' +
+  'commands directly, with literal words. Do not retry this exact command.'
 
 // claude-factory-38jm: reason for a dynamic word in the option slot of a shell call.
 export const SH_DYNAMIC_FLAG_REASON =
@@ -6299,6 +6300,7 @@ function anyShellReason(
   let nc = -1
   let nd = -1
   let scriptNc = -1
+  let dynChecked = -1
   let scriptK = 0
   let scriptMoved = false
   let slotEnd = 0
@@ -6364,17 +6366,21 @@ function anyShellReason(
       }
       if (nc >= nd) continue
       const literal = SHELL_NAMES.has(baseWord(words[j]!))
+      // claude-factory-3frd: only a literal shell name before the -c cluster makes it a shell call.
+      if (dynChecked !== nc) {
+        dynChecked = nc
+        if (isShCCluster(words[nc]!) && words.slice(0, nc).some(w => SHELL_NAMES.has(baseWord(w)))) {
+          for (let d = nc + 1; d < words.length; d++) {
+            if (/[$`]/.test(words[d]!)) {
+              state.dynamicScript = true
+              break
+            }
+          }
+        }
+      }
       if (scriptNc === nc && scriptMoved === moved) {
         if (literal) j = scriptK
         continue
-      }
-      if (isShCCluster(words[nc]!)) {
-        for (let d = nc + 1; d < words.length; d++) {
-          if (/[$`]/.test(words[d]!)) {
-            state.dynamicScript = true
-            break
-          }
-        }
       }
       let k = nc + 1
       let found: string | undefined

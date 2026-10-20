@@ -36,6 +36,9 @@ const AC1 = [
   'sudo bash -c "$y"',
   'timeout 5 bash -c "$y"',
   'nohup bash -c "$y"',
+  'X=$B bash -c "$y"',
+  'env A=$B bash -c "$y"',
+  'nohup ~/x bash -c "$y"',
 ].map(c => SET + c)
 test.each(AC1)('3FRD AC1 denies %s', cmd => {
   expect(run(cmd)).toBeDefined()
@@ -82,6 +85,9 @@ const AC6 = [
   "bash -c 'echo hi' > .scratch/out.txt",
   'sh script.sh $X',
   'sh -- $X',
+  'tar -C ~/src -czf $OUT .',
+  'tar --exclude=*.log -czf out.tgz $DIR',
+  'tar -C $D -czf $OUT .',
 ]
 test.each(AC6)('3FRD AC6 allows %s', cmd => {
   expect(run(cmd)).toBeUndefined()
