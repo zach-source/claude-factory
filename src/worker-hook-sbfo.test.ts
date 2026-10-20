@@ -20,6 +20,9 @@ const AC1: [string, string][] = [
   ['eval \\-- rm -rf /', 'eval rm -rf /'],
   ['command eval -- rm -rf /', 'command eval rm -rf /'],
   ['eval -- eval -- rm -rf /', 'eval eval rm -rf /'],
+  ['eval - rm -rf /', 'eval rm -rf /'],
+  ['eval "-" rm -rf /', 'eval rm -rf /'],
+  ['eval - "rm -rf /"', 'eval "rm -rf /"'],
 ]
 
 test('AC1: eval -- hides nothing', () => {
