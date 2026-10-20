@@ -10201,6 +10201,20 @@ const DENY_WPKA = [
   "find . {-exec,rm} {-r,{}} ';'",
   "find . -exec {rm,-f} {-r,{x}} ../o ';'",
   "find . {-exec,rm,-f,{}} {-r,{}} ';'",
+  "find . -exec nice {rm,-r,{}} ';'",
+  "find . -exec env {rm,-r,{}} ';'",
+  "find . -exec sudo {rm,-r,{}} ';'",
+  "find . -exec timeout 5 {rm,-r,{}} ';'",
+  "find . -exec command {rm,-r,{}} ';'",
+  "find . -exec nohup {rm,-r,{}} ';'",
+  "find . -exec nice -n 5 {rm,-r,{}} ';'",
+  "find . -exec env -i {rm,-r,{}} ';'",
+  "find . -exec {nice,-n,5} {rm,-r,{}} ';'",
+  "find . {-exec,env} {rm,-r,{}} ';'",
+  "find . {-exec,nice,-n,5} {rm,-r,{}} ';'",
+  "find . -ok nice {rm,-r,{}} ';'",
+  "find . -execdir env {rm,-r,{}} ';'",
+  "find . -exec nice {rm,{-r,{}}} ';'",
 ]
 test.each(DENY_WPKA)('denyReason denies %j (claude-factory-wpka)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
@@ -10211,6 +10225,8 @@ const ALLOW_WPKA = [
   'find . -name {a,{b,c}} -print',
   'find . -name {form,{x,y}} -exec grep -r foo {} +',
   "find . {-exec,rm} -f x ';'",
+  'find . -exec grep -r foo {} +',
+  "find . -exec nice {cat,{}} ';'",
 ]
 test.each(ALLOW_WPKA)('denyReason allows %j (claude-factory-wpka)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()

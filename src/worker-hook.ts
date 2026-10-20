@@ -1780,6 +1780,7 @@ function findBraceRmDeny(cmd: string[]): boolean {
     clearUntil = k
     return false
   }
+  let afterAction = false
   for (let i = 1; i < cmd.length; i++) {
     const w = cmd[i]!
     const isExec = w === '-exec' || w === '-execdir'
@@ -1789,11 +1790,15 @@ function findBraceRmDeny(cmd: string[]): boolean {
       !isExec &&
       /\{[^}]*\{/.test(w) &&
       hasLettersInOrder(w, 'rm') &&
-      (/^-(exec|execdir|ok|okdir)$/.test(cmd[i - 1]!) ||
+      (afterAction ||
+        /^-(exec|execdir|ok|okdir)$/.test(cmd[i - 1]!) ||
         hasLettersInOrder(w, 'exec') ||
         hasLettersInOrder(w, 'ok'))
     )
       return true
+    // claude-factory-wpka.7: a wrapper (nice, env) can sit between the action word and the nested-brace rm word.
+    if (FIND_EXEC_WORDS.has(w) || hasLettersInOrder(w, 'exec') || hasLettersInOrder(w, 'ok'))
+      afterAction = true
     if (!isExec && !BRACE_LIST_WORD.test(w)) continue
     if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && recursive(i + 1)) return true
     if (isExec || !hasLettersInOrder(w, 'rm')) continue
