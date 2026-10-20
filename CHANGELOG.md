@@ -369,6 +369,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook did not read the options of `sudo`. An unknown option, such as `-E`, `-s`, `-H`, `-n` or `--preserve-env`, hid the command, so `sudo -E rm -rf /` ran unchecked. The hook now reads `sudo` options as `getopt_long` does: option clusters, attached values, long names and unique prefixes, `NAME=value` words and `--`. It reads an unknown option as a bare flag.
 - Fixed: the worker hook did not see the command after the zsh modifiers `noglob` and `nocorrect`. Example: `noglob rm -rf /` and `nocorrect A=x rm -rf /` ran unchecked, because zsh runs the next word as the command. The hook now skips both words like `sudo`. Bash does not run them (claude-factory-563n).
 - Tests: new rows pin how the worker hook reads `sudo` NAME=value words before an option, such as `sudo A=1 -u root rm -rf /` and `sudo A=1 -- ./d=1/rm -r ./d`. The hook denies these rows. `sudo A=1 -u root ls` stays allowed. The fix came with claude-factory-aylh (claude-factory-p6wn).
+- Fixed: the worker hook did not deny a quoted `git push` inside a double-quoted substitution when a false comment or here-document hid it. Example: `echo "$(echo <(true)#x ; 'g'it push origin main)"`. The cleaner blanked the quote characters, so the hook read the wrong words. The hook now also reads the raw body. This adds a deny reading only (claude-factory-j1dr).
 
 ## 0.13.0 (2026-10-18)
 

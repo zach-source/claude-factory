@@ -6776,19 +6776,15 @@ function denyAtScan(
     for (; subIdx < subs.length && subs[subIdx]!.at <= upTo; subIdx++) {
       const body = subs[subIdx]!.body
       if (isCatHeredoc(body)) continue
-      const r = denyAt(
-        cleanSubstitutionBody(body),
-        root,
-        personOnly,
-        g,
-        depth + 1,
-        state,
-        movedSoFar,
-        ghConfigMovedSoFar,
-      )
-      // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
-      if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
-      else if (r) return r
+      // claude-factory-j1dr: the cleaner may blank quotes in a false comment or here-document, so
+      // the raw body is read too. This only adds a deny reading.
+      const clean = cleanSubstitutionBody(body)
+      for (const text of clean === body ? [body] : [clean, body]) {
+        const r = denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+        // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
+        if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
+        else if (r) return r
+      }
     }
     return undefined
   }
