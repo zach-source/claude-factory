@@ -274,6 +274,13 @@ export const FUNCTION_DEF_REASON =
   'run it with bash or zsh. A heredoc write of the function is also denied. Do not retry this ' +
   'exact command.'
 
+// claude-factory-upag
+export const QUOTED_ASSIGNMENT_REASON =
+  'The factory denies this command: a word has a quote or a backslash before its first =. Bash ' +
+  'and zsh run such a word as a command. They do not read it as a NAME=value assignment. The ' +
+  'guard cannot tell which command runs. Write the assignment with no quote in the name, or call ' +
+  'the command by a plain path. Do not retry this exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -842,6 +849,7 @@ type SegInfo = {
   heredoc?: boolean
   // claude-factory-5hjj: segments that end in a `(` marker glued to the word before it
   glued?: Set<string[]>
+  quotedNames?: Map<string[], number[]>
   // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
   gluedRedir?: boolean
 }
@@ -948,10 +956,19 @@ function segments(
   const parens: boolean[] = []
   // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
   let inBacktick = false
+  let nameRaw = false
+  let sawEq = false
   const endWord = () => {
+    if (hasWord && nameRaw && word.includes('=') && info?.quotedNames) {
+      const m = info.quotedNames.get(cur)
+      if (m) m.push(cur.length)
+      else info.quotedNames.set(cur, [cur.length])
+    }
     if (hasWord) cur.push(word)
     word = ''
     hasWord = false
+    nameRaw = false
+    sawEq = false
   }
   const endSeg = () => {
     endWord()
@@ -1006,6 +1023,7 @@ function segments(
     }
     if (c === "'" || c === '"') {
       quote = c
+      if (!sawEq) nameRaw = true
       hasWord = true
       continue
     }
@@ -1020,6 +1038,7 @@ function segments(
         exemptPrev = wasExempt
         continue
       }
+      if (!sawEq) nameRaw = true
       word += cmd[++i]
       hasWord = true
       continue
@@ -1134,6 +1153,7 @@ function segments(
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
+    if (c === '=') sawEq = true
     // claude-factory-4a4o: bash and zsh start a redirect at an unquoted < or > inside a word, so
     // `rm>f -rf /` runs rm. The default reading keeps one word. The cut reading ends the word here.
     if ((c === '<' || c === '>') && hasWord && !/[<>]/.test(word) && !FD_PREFIX_RE.test(word)) {
@@ -3500,6 +3520,7 @@ function firstVerbIndex(
   words: string[],
   valueFlags: Set<string>,
   noValueFlags?: Set<string>,
+  skipBlank = false,
 ): { index: number; uncertain: boolean } {
   let uncertain = false
   for (let i = 0; i < words.length; i++) {
@@ -3514,9 +3535,18 @@ function firstVerbIndex(
       uncertain = true
       continue
     }
+    // claude-factory-t1xo: cobra stripFlags skips an empty word and a lone `-` when it looks for a
+    // sub command. A value flag above already took its value word, so this skip runs at the
+    // word slot only. Only the cobra tools (gh, kubectl, ko, helm) ask for it.
+    if (skipBlank && isBlankWord(w)) continue
     return { index: i, uncertain }
   }
   return { index: -1, uncertain }
+}
+
+/** claude-factory-t1xo: true for an empty word or a lone `-`, which cobra skips at a sub command slot. */
+function isBlankWord(w: string): boolean {
+  return w === '' || w === '-'
 }
 
 /**
@@ -3600,19 +3630,22 @@ function contextDenied(ctx: string | undefined, personOnly: string[]): boolean {
  * takes a value word. An unknown flag must not hide a mutating verb that follows it.
  */
 function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
-  return (
-    liveApplyDeniedOn(cmd, personOnly) ||
-    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly)) === true
-  )
+  const scan = (skipBlank: boolean): boolean =>
+    liveApplyDeniedOn(cmd, personOnly, skipBlank) ||
+    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly, skipBlank)) ===
+      true
+  // claude-factory-t1xo: the second pass skips a blank word at the verb and sub slots, like cobra.
+  return scan(false) || (cmd.slice(1).some(isBlankWord) && scan(true))
 }
 
-function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
+function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = false): boolean {
   const b = baseWord(cmd[0]!)
   const tail = cmd.slice(1)
   if (b === 'kubectl') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS, undefined, skipBlank)
     const verb = vi >= 0 ? tail[vi]! : undefined
-    const sub = vi >= 0 ? tail[vi + 1] : undefined
+    const subRest = vi >= 0 ? tail.slice(vi + 1) : []
+    const sub = skipBlank ? subRest.find(w => !isBlankWord(w)) : subRest[0]
     // claude-factory-p43v.6: a dynamic verb hides the real kubectl command. A dynamic sub word
     // hides the real rollout, auth or certificate action. This guard fails closed on either one,
     // the same way it fails closed on a listed verb or sub name.
@@ -3647,7 +3680,7 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
     return cluster !== undefined && (unknownFlagValue(cluster) || personOnly.includes(cluster))
   }
   if (b === 'ko') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS, undefined, skipBlank)
     // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
     let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || KO_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, KO_MUTATING_VERBS)
@@ -3656,7 +3689,7 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
     return contextDenied(ctx, personOnly)
   }
   if (b === 'helm') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS, undefined, skipBlank)
     // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
     let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || HELM_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, HELM_MUTATING_VERBS)
@@ -4216,10 +4249,13 @@ function ghReason(
   ghConfigMoved = false,
   aliasDepth = 0,
 ): string | undefined {
-  return (
-    ghReasonOn(cmd.slice(1), gate, state, ghConfigMoved, aliasDepth) ??
-    scanWithoutRedirects(cmd, dropped => ghReasonOn(dropped, gate, state, ghConfigMoved, aliasDepth))
-  )
+  const pass = (skipBlank: boolean): string | undefined =>
+    ghReasonOn(cmd.slice(1), gate, state, ghConfigMoved, aliasDepth, skipBlank) ??
+    scanWithoutRedirects(cmd, dropped =>
+      ghReasonOn(dropped, gate, state, ghConfigMoved, aliasDepth, skipBlank),
+    )
+  // claude-factory-t1xo: the second pass skips a blank word at the verb and sub slots, like cobra.
+  return pass(false) ?? (cmd.slice(1).some(isBlankWord) ? pass(true) : undefined)
 }
 
 /**
@@ -4243,17 +4279,25 @@ function ghReasonOn(
   state: ScanState,
   ghConfigMoved: boolean,
   aliasDepth: number,
+  skipBlank = false,
 ): string | undefined {
-  const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
+  if (spendWork(state, tail.join(' ').length + 1)) return SCAN_BUDGET_REASON
+  const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS, undefined, skipBlank)
   const verb = vi >= 0 ? tail[vi] : undefined
   // claude-factory-zsj0: a flag after `pr` or `repo` must not become the sub word.
   const rest = vi >= 0 ? tail.slice(vi + 1) : []
   const subScan =
     verb === 'pr' || verb === 'repo'
-      ? firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+      ? firstVerbIndex(rest, GH_SUB_VALUE_FLAGS, undefined, skipBlank)
       : { index: -1, uncertain: false }
   const sub =
-    verb === 'pr' || verb === 'repo' ? (subScan.index >= 0 ? rest[subScan.index] : undefined) : rest[0]
+    verb === 'pr' || verb === 'repo'
+      ? subScan.index >= 0
+        ? rest[subScan.index]
+        : undefined
+      : skipBlank
+        ? rest.find(w => !isBlankWord(w))
+        : rest[0]
   // claude-factory-p43v: a dynamic verb word can hide the real gh command. The same risk applies
   // at the git verb slot, where dynamicWord denies it. A dynamic sub word under pr, repo or alias
   // can hide the real merge, sync, ready, checkout or alias-set call, and this guard denies both
@@ -4267,7 +4311,10 @@ function ghReasonOn(
   // Skip this when the verb search itself is uncertain.
   // `firstVerbIndex` then does not know if `verb` is the real word.
   // The uncertain-fallback word scans below still cover that case, the same as before.
-  if (!uncertain && verb !== undefined && !GH_BUILTIN_VERBS.has(verb)) {
+  // claude-factory-t1xo.5: the blank-skipping pass resolves the alias only when it skipped a blank
+  // before the verb. Otherwise pass 1 already resolved it, and its recursion ran both passes.
+  const aliasAlreadyDone = skipBlank && !tail.slice(0, Math.max(vi, 0)).some(isBlankWord)
+  if (!uncertain && verb !== undefined && !GH_BUILTIN_VERBS.has(verb) && !aliasAlreadyDone) {
     if (ghConfigMoved) return ALIAS_USE_REASON
     if (aliasDepth > MAX_ALIAS_DEPTH) return ALIAS_USE_REASON
     const table = gate.ghAliases?.()
@@ -4314,7 +4361,10 @@ function ghReasonOn(
     }
     return undefined
   }
-  if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
+  if (verb === 'alias') {
+    const first = rest.findIndex(w => !isBlankWord(w))
+    return ghAliasDenied(skipBlank && first > 0 ? rest.slice(first) : rest)
+  }
   // claude-factory-zsj0: an unknown flag before the sub word can hide it. Scan the words, fail closed.
   // This does not depend on the top-level `uncertain`: an extra flag must not switch it off.
   if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
@@ -6635,7 +6685,7 @@ function anyShellReason(
         ...segments(envSplitCommentCut(val)).flat(),
         ...words.slice(span.end),
       ]
-      const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
+      const line = argv.map(requoteWord).join(' ')
       return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
     }
     if (shellSlotWord(words[j]!)) {
@@ -7006,9 +7056,22 @@ const MAX_SHELL_ALIAS_DEPTH = 10
 // claude-factory-1zr5: writes one segment word back as shell text, so a rescan reads the same word.
 // A word with a $, backtick, glob or similar char stays bare, so the dynamic-word checks still see it.
 // A bare word that also holds a space or an operator char cannot be written safely: null.
-function aliasWordText(w: string): string | null {
+function aliasWordText(w: string, marked = false): string | null {
+  if (marked && /[$`*?[{~\\!]/.test(w)) {
+    // claude-factory-upag: keep the mark. Quote the name part only, so the rest stays dynamic.
+    const eq = w.indexOf('=')
+    const rest = eq < 0 ? w : w.slice(eq)
+    const bad = /[$`*?[{~\\!\s;&|<>()#'"]/.test(w.slice(0, Math.max(eq, 0)))
+    if (eq <= 0 || bad || /[\s;&|<>()#'"]/.test(rest)) return null
+    return `'${w.slice(0, eq)}'${rest}`
+  }
   if (/[$`*?[{~\\!]/.test(w)) return /[\s;&|<>()#'"]/.test(w) ? null : w
-  return `'${w.replace(/'/g, `'\\''`)}'`
+  if (marked) return `'${w.replace(/'/g, `'\\''`)}'`
+  return requoteWord(w)
+}
+function requoteWord(w: string): string {
+  const name = /^[A-Za-z_][A-Za-z0-9_]*=/.exec(w)?.[0] ?? ''
+  return `${name}'${w.slice(name.length).replace(/'/g, `'\\''`)}'`
 }
 
 /**
@@ -7031,6 +7094,7 @@ function shellAliasReason(
   state: ScanState,
   moved: boolean,
   ghMoved: boolean,
+  marks?: readonly number[],
 ): string | undefined {
   let end = words.length
   const first = words.findIndex(w => !/^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/.test(w))
@@ -7049,7 +7113,7 @@ function shellAliasReason(
     if (value === null || value === undefined) return SHELL_ALIAS_REASON
     if (stack.length >= MAX_SHELL_ALIAS_DEPTH) return SHELL_ALIAS_REASON
     if (spendWork(state, value.length + words.length)) return SCAN_BUDGET_REASON
-    const info = { dollarQuote: false }
+    const info: SegInfo = { dollarQuote: false, quotedNames: new Map() }
     const expansion = segments(value, info)
     if (info.dollarQuote) return SHELL_ALIAS_REASON
     if (name !== 'git' && name !== 'gh') {
@@ -7061,12 +7125,18 @@ function shellAliasReason(
       )
       if (runsGit) return SHELL_ALIAS_REASON
     }
-    const parts = expansion.length ? expansion.map(seg => [...seg]) : [[]]
-    parts[0] = [...words.slice(0, i), ...parts[0]!]
-    parts[parts.length - 1] = [...parts[parts.length - 1]!, ...words.slice(i + 1)]
+    // claude-factory-upag: a word marked as a quoted assignment name stays single-quoted whole,
+    // so the rescan marks it again.
+    const before = words.slice(0, i).map((w, k) => aliasWordText(w, marks?.includes(k)))
+    const after = words.slice(i + 1).map((w, k) => aliasWordText(w, marks?.includes(i + 1 + k)))
+    const parts = (expansion.length ? expansion : [[]]).map(seg => {
+      const m = info.quotedNames?.get(seg)
+      return seg.map((w, k) => aliasWordText(w, m?.includes(k)))
+    })
+    parts[0] = [...before, ...parts[0]!]
+    parts[parts.length - 1] = [...parts[parts.length - 1]!, ...after]
     const texts: string[] = []
-    for (const part of parts) {
-      const quoted = part.map(aliasWordText)
+    for (const quoted of parts) {
       if (quoted.includes(null)) return SHELL_ALIAS_REASON
       texts.push(quoted.join(' '))
     }
@@ -7519,6 +7589,7 @@ function denyAtScan(
     dollarQuote: false,
     funcDef: false,
     state,
+    quotedNames: new Map(),
   }
   const segs = segments(command, quoteInfo, subs)
   // claude-factory-4a4o: a redirect glued to a word is a second reading. It only adds segments.
@@ -7547,6 +7618,7 @@ function denyAtScan(
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
+  let quotedAssign = false
   let ambiguousAssignment = false
   let subIdx = 0
   const vars: VarTable = new Map(outerVars)
@@ -7695,6 +7767,7 @@ function denyAtScan(
         state,
         movedSoFar,
         ghConfigMovedSoFar,
+        quoteInfo.quotedNames?.get(words),
       )
       if (aliased) return aliased
     }
@@ -7729,7 +7802,18 @@ function denyAtScan(
       return DYNAMIC_VERB_REASON
     if (setsDangerousGitConfigEnv(words) || (splitWords && setsDangerousGitConfigEnv(splitWords)))
       hasDangerousConfigEnv = true
-    if (assignmentReadingsDeny(words, root, state)) return state.work < 0 ? SCAN_BUDGET_REASON : REASON
+    // claude-factory-upag: a quoted assignment name keeps its own reason where assignmentReadingsDeny
+    // would deny the same word first.
+    const marks = quoteInfo.quotedNames?.get(words)
+    if (marks) {
+      const probe = [...words]
+      for (const k of marks) probe[k] = '\u0000'
+      if (realCommand(probe).length > realCommand(words).length) quotedAssign = true
+    }
+    if (assignmentReadingsDeny(words, root, state)) {
+      if (quotedAssign) return QUOTED_ASSIGNMENT_REASON
+      return state.work < 0 ? SCAN_BUDGET_REASON : REASON
+    }
     // claude-factory-mmc9.25: realCommand skips only an ASCII NAME=. For each word with =, read
     // the word and the command after it. This sets hasRm and hasCd for the rm and cd pair check.
     {
@@ -7929,6 +8013,7 @@ function denyAtScan(
   if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
   if (definesFunction) return FUNCTION_DEF_REASON
+  if (quotedAssign) return QUOTED_ASSIGNMENT_REASON
   if (ambiguousAssignment) return ASSIGNMENT_PREFIX_REASON
   return hasRm && hasCd ? REASON : undefined
 }
