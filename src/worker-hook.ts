@@ -227,6 +227,11 @@ export const ENV_SPLIT_VAR_REASON =
 
 // claude-factory-hewq: bash and zsh decode an unquoted $'...' or $"..." quote, and they decode it
 // in different ways. segments() cannot read the real words, so denyAt denies the quote.
+export const GLOB_CODE_REASON =
+  'The factory denies this command: an unquoted ( ) group glued to a word holds e, +, a $ or a ' +
+  'backtick. zsh reads it as a glob qualifier and runs that text as a command for each file. ' +
+  'Quote the pattern, or use find. Do not retry this exact command.'
+
 export const DOLLAR_QUOTE_REASON =
   'The factory denies this command: it holds an unquoted $\'...\' or $"..." quote. The shell ' +
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
@@ -847,6 +852,24 @@ function groupEndsCommand(cmd: string, open: number): boolean {
   return j >= cmd.length || ';&|\n)'.includes(cmd[j]!)
 }
 
+/** claude-factory-1r7x: the raw text of the group that opens at `cmd[open]`, up to its matching `)`. */
+function groupBody(cmd: string, open: number): string {
+  let depth = 0
+  let j = open
+  for (; j < cmd.length; j++) {
+    const c = cmd[j]!
+    if (c === '\\') j++
+    else if (c === "'") {
+      j = cmd.indexOf("'", j + 1)
+      if (j < 0) return cmd.slice(open + 1)
+    } else if (c === '"') {
+      for (j++; j < cmd.length && cmd[j] !== '"'; j++) if (cmd[j] === '\\') j++
+    } else if (c === '(') depth++
+    else if (c === ')' && --depth === 0) break
+  }
+  return cmd.slice(open + 1, j)
+}
+
 /** What segments() reports to its caller. A set flag makes denyAt deny the command. */
 type SegInfo = {
   dollarQuote: boolean
@@ -862,6 +885,8 @@ type SegInfo = {
   quotedNames?: Map<string[], number[]>
   // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
   gluedRedir?: boolean
+  // claude-factory-1r7x: a glued ( ) group holds e, +, $ or a backtick: a zsh glob qualifier that runs code
+  globCode?: boolean
 }
 
 const HAZARD_RE = /['"`\\]/
@@ -869,7 +894,7 @@ function lastHazard(cmd: string): number {
   for (let k = cmd.length - 1; k >= 0; k--) if (HAZARD_RE.test(cmd[k]!)) return k
   return -1
 }
-type Hz = { clearTo: number; checks: number; last: number }
+type Hz = { clearTo: number; checks: number; last: number; quoted: [number, number][] }
 function prevRaw(cmd: string, i: number): string {
   let k = i - 1
   while (k >= 1 && cmd[k] === '\n' && cmd[k - 1] === '\\') k -= 2
@@ -915,6 +940,7 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: b
     const line = cmd.slice(p, e)
     if (line === delim || (dash && line.replace(/^\t+/, '') === delim)) {
       const body = cmd.slice(nl + 1, p)
+      if (quoted) hz.quoted.push([nl + 1, p])
       if (hazard && (/\S/.test(cmd.slice(e + 1)) || (!quoted && /\$\(|`/.test(body)))) info.heredoc = true
       return
     }
@@ -996,7 +1022,7 @@ function segments(
   // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
   // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
   let exemptPrev: boolean = false
-  const hz: Hz = { clearTo: -1, checks: 0, last: -2 }
+  const hz: Hz = { clearTo: -1, checks: 0, last: -2, quoted: [] }
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
     const wasExempt: boolean = exemptPrev
@@ -1082,6 +1108,19 @@ function segments(
             else break
           }
           if (cmd[j] === ')') info.funcDef = true
+        }
+        if (
+          info &&
+          hasWord &&
+          !info.globCode &&
+          !(wasExempt && '$<>'.includes(prev)) &&
+          !(wasExempt && prev === '=' && (word === '=' || cur.every(shellAssignmentWord))) &&
+          !(prev === '{' && cmd[i - 2] === '$') &&
+          !(prev === '[' && /^(?:\$\w+)?\[$/.test(word)) &&
+          !hz.quoted.some(([a, b]) => i >= a && i < b) &&
+          /[e+$`]/.test(groupBody(cmd, i))
+        ) {
+          info.globCode = true
         }
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
@@ -7888,6 +7927,7 @@ function denyAtScan(
     )
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  if (quoteInfo.globCode) return GLOB_CODE_REASON
   // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
   // command substitution glued to text. Read the command again with each such substitution as a
   // space. This text has fewer "$(" than the source, so the recursion ends.
