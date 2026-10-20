@@ -1,7 +1,7 @@
 # The policy broker (docs/remote-runner.md, Policy broker). Set BROKER_IMAGE to the image, by digest, and
 # FACTORY_AX_VAULT to the agent-vault vault of the workers, and apply:
-#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> FACTORY_AX_VAULT=<vault> \
-#     envsubst '$BROKER_IMAGE $FACTORY_AX_VAULT' < deploy/broker.yaml | kubectl apply -f -
+#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> FACTORY_AX_VAULT=<vault> FACTORY_AX_GITHUB_KEYS=<owner=KEY,...> \
+#     envsubst '$BROKER_IMAGE $FACTORY_AX_VAULT $FACTORY_AX_GITHUB_KEYS' < deploy/broker.yaml | kubectl apply -f -
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -101,6 +101,9 @@ spec:
             # the vault a policy may name; the broker refuses a credential from any other
             - name: FACTORY_AX_VAULT
               value: ${FACTORY_AX_VAULT}
+            # owner keys (owner=KEY,...): match FACTORY_AX_GITHUB_KEYS in the manager, or the broker refuses them
+            - name: FACTORY_AX_GITHUB_KEYS
+              value: '${FACTORY_AX_GITHUB_KEYS}'
             - name: FACTORY_BROKER_ATESPACES
               value: factory
             - name: FACTORY_BROKER_ENDPOINT
