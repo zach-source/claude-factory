@@ -6177,9 +6177,12 @@ const DASH_DYN_DENY = [
   '$X -u root --$Y -rf /',
 ]
 
-test.each(DASH_DYN_DENY)('denyReason denies a dynamic flag-shaped word before rm: %s (claude-factory-cwt9)', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBe(REASON)
-})
+test.each(DASH_DYN_DENY)(
+  'denyReason denies a dynamic flag-shaped word before rm: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBe(REASON)
+  },
+)
 
 test('denyReason denies a glob flag word before rm (claude-factory-cwt9)', () => {
   expect(denyReason('env -* -rf /', '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
@@ -6205,13 +6208,16 @@ test.each(['$X -u root --flag=$V src', '$MAKE -j$N all'])(
   },
 )
 
-test.each(['env', 'xargs', '$X'])('denyReason scans a long run of dynamic flag words fast: %s (claude-factory-cwt9)', head => {
-  const cmd = head + ' -$A'.repeat(2000)
-  const t = Date.now()
-  const r = denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
-  expect(Date.now() - t).toBeLessThan(1000)
-  expect(r).not.toBe(LONG_COMMAND_REASON)
-})
+test.each(['env', 'xargs', '$X'])(
+  'denyReason scans a long run of dynamic flag words fast: %s (claude-factory-cwt9)',
+  head => {
+    const cmd = head + ' -$A'.repeat(2000)
+    const t = Date.now()
+    const r = denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
+    expect(Date.now() - t).toBeLessThan(1000)
+    expect(r).not.toBe(LONG_COMMAND_REASON)
+  },
+)
 
 const DYN_LATER_KEEP = ['echo $X -u root $Y -rf /', 'git -C $Y status']
 
