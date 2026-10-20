@@ -39,6 +39,15 @@ const AC1 = [
   'X=$B bash -c "$y"',
   'env A=$B bash -c "$y"',
   'nohup ~/x bash -c "$y"',
+  'bash -c$y',
+  'bash -lc$y',
+  'bash -ec$y',
+  'sh -c$y',
+  'zsh -c$y',
+  'dash -c$y',
+  'bash -x -c$y',
+  'env bash -c$y',
+  `bash -c${BT}echo x${BT}`,
 ].map(c => SET + c)
 test.each(AC1)('3FRD AC1 denies %s', cmd => {
   expect(run(cmd)).toBeDefined()
