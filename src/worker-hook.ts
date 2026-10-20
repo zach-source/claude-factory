@@ -2021,8 +2021,9 @@ function wrapperReadingsDeny(
   }
   // claude-factory-cwt9: the lexer drops a substitution, so `-$(y)` or `-E$(y)` reads as `-` or `-E`.
   // The dropped text can be a command word. A recursive flag and a risky target after the dash
-  // word then mean rm. A plain -r after a real dash word is safe: `xargs -0 -r ls /` is common.
-  // After a dynamic dash word, a plain -r denies when a risky operand follows.
+  // word: after a lone dash or a dynamic dash word, any risky operand denies. After a real dash
+  // word, a recursive flag and a risky target deny. A plain -r after a real dash word is safe:
+  // `xargs -0 -r ls /` is common.
   const dashHidesRm = (j: number): boolean => {
     const nx = words[j + 1]
     if (nx === undefined) return false
@@ -2039,12 +2040,10 @@ function wrapperReadingsDeny(
       rmTargets(words.slice(j)).some(t => riskyTarget(t, root))
     )
       return true
-    // A plain -r, or a bare tail with r after a lone dash (`-$(y)r` lexes as `-` `r`),
-    // is recursive only when the first operand is risky.
+    // A plain -r is recursive only when the first operand is risky.
     // `xargs -0 -r ls /` has the operand `ls`, so it stays allowed.
-    const tail = words[j] === '-' && /^[A-Za-z]*[rR][A-Za-z]*$/.test(nx)
-    if (!tail && !/^-[A-Za-z]*[rR]/.test(nx)) return false
-    const first = words.slice(tail ? j + 2 : j + 1).find(x => !x.startsWith('-'))
+    if (!/^-[A-Za-z]*[rR]/.test(nx)) return false
+    const first = words.slice(j + 1).find(x => !x.startsWith('-'))
     return first !== undefined && riskyTarget(first, root)
   }
   const xargsFlags = (j: number): void => {
@@ -7723,7 +7722,14 @@ function replaceGluedSubstitutions(command: string, fill = ' '): string {
     const end = substitutionEnd(command, from)
     const before = from > 0 ? command[from - 1]! : ' '
     const after = end < command.length ? command[end]! : ' '
-    if ((/[\s(]/.test(before) && /[\s)]/.test(after)) || (fill !== ' ' && before === '=')) {
+    const wordStart =
+      Math.max(
+        command.lastIndexOf(' ', from),
+        command.lastIndexOf('\n', from),
+        command.lastIndexOf('\t', from),
+      ) + 1
+    const assign = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/.test(command.slice(wordStart, from))
+    if ((/[\s(]/.test(before) && /[\s)]/.test(after)) || (fill !== ' ' && assign)) {
       from = command.indexOf('$(', from + 2)
       continue
     }

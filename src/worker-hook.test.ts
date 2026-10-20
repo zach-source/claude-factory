@@ -6241,6 +6241,10 @@ const DASH_DYN_DENY = [
   'xargs -0$(y) foo -rf /home',
   'xargs -n1$(y) a b -rf /home',
   'xargs -I$(y) REPL -rf /home',
+  'sudo --user=$(y) foo -rf /home',
+  'sudo --group=$(y) foo -rf /home',
+  'sudo --user=$(y) foo /etc/passwd',
+  'xargs --max-args=$(y) foo -rf /home',
 ]
 
 test.each(DASH_DYN_DENY)(
