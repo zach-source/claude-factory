@@ -8012,12 +8012,12 @@ test.each([
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
 })
 const N = '${X:-${IFS}}'
-test.each([
-  String.raw`rm${N}${'${Y:-\\${}'}${N}-rf${N}/${N}}`,
-  `rm${N}\${Y:-'\${'}${N}-rf${N}/${N}}`,
-])('claude-factory-dnw1: a nested default and a hidden dollar-brace in one word: rm %s', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
-})
+test.each([String.raw`rm${N}${'${Y:-\\${}'}${N}-rf${N}/${N}}`, `rm${N}\${Y:-'\${'}${N}-rf${N}/${N}}`])(
+  'claude-factory-dnw1: a nested default and a hidden dollar-brace in one word: rm %s',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
 test.each([
   String.raw`git${N}${'${Y:-\\${}'}${N}push${N}origin${N}main${N}}`,
   `git${N}\${Y:-'\${'}${N}push${N}origin${N}main${N}}`,
