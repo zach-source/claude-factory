@@ -514,6 +514,46 @@ const MAX_SHELL_DEPTH = 32
 // are zsh precommand modifiers: the next word is the command, and they take no flags
 // (claude-factory-563n).
 // claude-factory-tyz6: a lone `-` is a zsh precommand modifier. zsh runs the next word as the command.
+// claude-factory-tswp: programs that run their operand command but are not in WRAPPERS.
+// WRAPPERS feeds realCommand, so these words get only deny-only readings.
+const RUNNER_WRAPPERS = new Set([
+  'stdbuf',
+  'ionice',
+  'caffeinate',
+  'doas',
+  'flock',
+  'watch',
+  'setsid',
+  'taskset',
+  'chrt',
+  'parallel',
+  'chroot',
+  'strace',
+  'ltrace',
+  'busybox',
+  'arch',
+  'sandbox-exec',
+  'dtruss',
+  'unbuffer',
+  'unshare',
+  'nsenter',
+  'systemd-run',
+  'firejail',
+  'runuser',
+  'pkexec',
+  'setpriv',
+  'prlimit',
+  'numactl',
+  'faketime',
+  'proxychains',
+  'proxychains4',
+  'torsocks',
+  'cpulimit',
+  'catchsegv',
+  'chpst',
+  'sg',
+])
+
 const WRAPPERS = new Set([
   'sudo',
   'command',
@@ -1332,7 +1372,7 @@ function findExecRmDeny(cmdIn: string[]): boolean {
       if (isRecursiveRm(cmd, k)) return true
       continue
     }
-    if (WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
+    if (WRAPPERS.has(b) || RUNNER_WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
       for (let j = k + 1; j < cmd.length; j++) {
         if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
       }
@@ -2008,6 +2048,10 @@ function wrapperReadingsDeny(
       work.push(() => xargsFlags(i + 1))
       return
     }
+    if (RUNNER_WRAPPERS.has(b)) {
+      work.push(() => runner(i + 1))
+      return
+    }
     const r = rmFindReading(words.slice(i), root, other)
     if (r.deny) found = true
     if (r.rm) rm = true
@@ -2024,6 +2068,25 @@ function wrapperReadingsDeny(
     }
     work.push(() => xargsFlags(j + 1))
     work.push(() => xargsFlags(j + 2))
+  }
+  // claude-factory-tswp: every later word of a runner can be the command head.
+  const runner = (j: number): void => {
+    const key = 'runner:' + j
+    if (seenFlag.has(key)) return
+    seenFlag.add(key)
+    const w = words[j]
+    if (w === undefined) return
+    if (w === '--') {
+      work.push(() => head(j + 1))
+      return
+    }
+    if (w.startsWith('-') && w !== '-') {
+      work.push(() => runner(j + 1))
+      work.push(() => runner(j + 2))
+      return
+    }
+    work.push(() => head(j))
+    work.push(() => runner(j + 1))
   }
   const flags = (name: string, j: number): void => {
     const key = name + ':' + j
