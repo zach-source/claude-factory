@@ -82,6 +82,7 @@ const DENIED = [
   '>f sudo /bin/r(m) -rf /',
   '{fd}>f sudo /bin/r(m) -rf /',
   'nohup /bin/r(m) -rf /',
+  'timeout --kill-after=1 5 /bin/r(m)',
   '"eval" /bin/r(m) -rf /',
   'find . -name x -exec /bin/r(m) -rf / ;',
 ]
