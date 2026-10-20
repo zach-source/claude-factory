@@ -7639,6 +7639,8 @@ test.each([
   ["x=1 trap 'git push origin main' EXIT"],
   ["trap 'eval git push origin main' EXIT"],
   ["trap 'rm -rf /' EXIT"],
+  ["trap '-x; git push origin main' EXIT"],
+  ["trap '-; git push origin main' EXIT"],
 ])('denyReason denies a trap action that holds a guarded command (claude-factory-81tz): %s', cmd => {
   expect(denyReason(cmd)).toBeDefined()
 })

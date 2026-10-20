@@ -5982,6 +5982,9 @@ function anyShellReason(
       // claude-factory-81tz: the trap action is a script the shell runs later. Read it like an eval script.
       let k = j + 1
       while (k < words.length && words[k]!.startsWith('-') && words[k] !== '-') {
+        // zsh has no trap options: it runs "-x; cmd" as a script.
+        const o = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+        if (o) return o
         k++
         if (words[k - 1] === '--') break
       }
