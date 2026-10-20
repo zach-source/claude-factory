@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -5852,7 +5852,7 @@ const SFT4_ALLOW = [
   "env -S 'sh' -c 'echo x'",
   'for f in *.ts; do echo $f; done',
   "SH=sh; $SH -c 'echo x'",
-  "/bin/s? -c 'echo x'",
+  "/bin/[b]ash -c 'echo x'",
   '$EDITOR file.txt',
   '$CC -c foo.c',
   'cc -c *.c',
@@ -8625,6 +8625,120 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('dir/')).toBe('')
 })
 
+// claude-factory-clcc: a glob char in a command word hides the real command (bash and zsh expand it)
+const CLCC_DYNAMIC = [
+  '/bin/[r]m -rf /',
+  '/bin/r? -rf /',
+  '/bin/r* -rf /',
+  'r?m -rf /',
+  '[r]m -rf /',
+  'r[m] -rf /',
+  '/bin/r[m] x',
+  'sudo /bin/r? -rf /',
+  'sudo -u root /bin/r? -rf /',
+  'env /bin/r? -rf /',
+  'A=1 /bin/r? -rf /',
+  'nice -n 5 /bin/r? -rf /',
+  'time /bin/r? -rf /',
+  'time -p /bin/r? -rf /',
+  'nohup /bin/r? -rf /',
+  'timeout 5 /bin/r? -rf /',
+  'exec /bin/r? -rf /',
+  'command /bin/r? -rf /',
+  'if /bin/r? -rf /; then ls; fi',
+  'while /bin/r? -rf /; do ls; done',
+  '! /bin/r? -rf /',
+  'coproc /bin/r? -rf /',
+  'exec -a x /bin/r? -rf /',
+  'command -p /bin/r? -rf /',
+  'env -i /bin/r? -rf /',
+  'sudo -- /bin/r? -rf /',
+  'X=a* /bin/r? -rf /',
+  'true && /bin/r? -rf /',
+  '/bin/[rs][mh] -c ../x',
+  '/bin/[ms]* -c x',
+  'find . -exec /bin/r? -rf / ;',
+  'find . -execdir /bin/r* -rf / ;',
+  'find . -ok /bin/r? -rf / ;',
+  'find . -okdir /bin/r? -rf / ;',
+  'find . -exec /bin/r? -rf {} +',
+]
+const CLCC_ANY = [
+  '(/bin/r? -rf /)',
+  'x=$(/bin/r? -rf /)',
+  'echo a | /bin/r? -rf /',
+  'cd /tmp; /bin/r* -rf /',
+  'eval "/bin/r? -rf /"',
+  'sh -c "/bin/r? -rf /"',
+  'case x in x) /bin/r? -rf /;; esac',
+  'case x in x) /bin/r*;; esac',
+  'case x in x) echo a; /bin/r*;; esac',
+  'case x in\nx)\n/bin/r*\n;;\nesac',
+  '"case" x in; /bin/r*',
+  '\\case x in; /bin/r*',
+  'case $x in a*) echo y;; [bc]) echo z;; esac',
+  'case $x in (a*) echo y;; esac',
+  'case x in x) echo a; /bin/r*;; /bin/r*) ;; esac',
+  'case /bin/rm in /bin/r*) /bin/r*;; esac',
+  'case x in x) (/bin/r*);; /bin/r*) ;; esac',
+  'case x in (x) echo a; /bin/r*;; (/bin/r*) ;; esac',
+  'case x in x) echo a; /bin/r*;& /bin/r*) ;; esac',
+  'case x in\nx)\necho a\n/bin/r*\n;;\n/bin/r*)\n;;\nesac',
+]
+const CLCC_ALLOW = [
+  'ls *.md',
+  'echo [x]',
+  'echo "?"',
+  '[ -f x ]',
+  '[[ -f x ]]',
+  '! [ -f x ]',
+  'builtin [ -f x ]',
+  'if [ -f x ]; then ls; fi',
+  'for f in *.md; do echo $f; done',
+  'bun test src/*.test.ts',
+  'ls [ab]*.md',
+  'grep "a.*b" x',
+  'git log -- "*.md"',
+  'find . -name "*.md" -exec ls {} +',
+  'xargs -I {} cp {} dest',
+  'rm -f a.tmp',
+]
+
+test.each(CLCC_DYNAMIC)('denyReason denies a glob command word %j (claude-factory-clcc)', cmd => {
+  expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test.each(CLCC_ANY)('denyReason denies a nested glob command word %j (claude-factory-clcc)', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+test.each(CLCC_ALLOW)('denyReason allows %j (claude-factory-clcc: glob in an operand)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test.each(['[rs][mh] -c ../x', 'cd /bin; [rs][mh] -c ../x', 'cd /bin && [rs][mh] -c ../x'])(
+  'denyReason denies %j when the cwd holds only a file named sh (claude-factory-clcc.10)',
+  cmd => {
+    const old = process.cwd()
+    const dir = mkdtempSync(join(tmpdir(), 'clcc10-'))
+    writeFileSync(join(dir, 'sh'), '')
+    process.chdir(dir)
+    try {
+      expect(denyReason(cmd)).toBeDefined()
+    } finally {
+      process.chdir(old)
+      rmSync(dir, { recursive: true })
+    }
+  },
+)
+
+test.each(['/bin/r? -c x', '/bin/[r]m -c -rf /', 'B[1]=2 /bin/r? -rf /'])(
+  'denyReason denies %j (claude-factory-clcc: -c and assignment exemptions stay narrow)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
 // claude-factory-upag: a quoted or escaped assignment name is the command in bash and zsh.
 test.each([
   String.raw`"d"=1/rm -r ./d`,
@@ -9614,7 +9728,8 @@ const ALLOW_PWY0: string[] = [
   '$x acme.txt',
   '$HOME/.local/bin/claude plugin test mod',
   '"$ROOT/bin/factory" report x 2 ready "rm -rf rows"',
-  '/bin/s? -c x',
+  // /bin/s? also matches su and ss on Linux, so it would deny there (claude-factory-clcc.10).
+  '/bin/[s]h -c x',
   'env --unset "$X" --chdir /tmp make test',
 ]
 test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
