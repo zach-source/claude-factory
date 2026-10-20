@@ -6908,9 +6908,34 @@ function denyAtScan(
       if (vars.has(m[1]!)) return DYNAMIC_VERB_REASON
     }
   }
+  // miqy.15: a write whose name comes from an expansion is unreadable, so every variable head denies.
+  const dynName = (x: string): boolean => /^[^=]*[$`]/.test(x)
+  const NAME_WRITERS = [
+    'declare',
+    'typeset',
+    'local',
+    'readonly',
+    'export',
+    'read',
+    'mapfile',
+    'readarray',
+    'getopts',
+    'eval',
+  ]
+  let dynWriteCache: boolean | undefined
+  const dynWrite = (): boolean =>
+    (dynWriteCache ??= segs.some(ws =>
+      ws.some((w, k) => {
+        const b = baseWord(w)
+        if (NAME_WRITERS.includes(b)) return ws.slice(k + 1).some(dynName)
+        if (b === 'printf') return ws.slice(k + 1).some((x, j, a) => a[j - 1] === '-v' && dynName(x))
+        return false
+      }),
+    ))
   const scanValue = (name: string, rest: string[]): string | undefined => {
+    if (dynWrite()) return DYNAMIC_VERB_REASON
     const n = mentions(name)
-    if (n === 0 && !IMPLICIT_VARS.has(name)) return undefined
+    if (n === 0 && !vars.has(name) && !IMPLICIT_VARS.has(name)) return undefined
     const value = vars.get(name)
     if (
       n !== 1 ||
@@ -7026,7 +7051,14 @@ function denyAtScan(
       } else {
         // The head may name a set variable. ${!Y} names another one, so any set name denies.
         const opName = varOpName(cmd[0]!)
-        if (opName && (vars.has(opName) || mentions(opName) >= 2 || cmd[0]!.startsWith('${!')))
+        if (
+          opName &&
+          (IMPLICIT_VARS.has(opName) ||
+            vars.has(opName) ||
+            mentions(opName) >= 2 ||
+            cmd[0]!.startsWith('${!') ||
+            dynWrite())
+        )
           return DYNAMIC_VERB_REASON
       }
     }
