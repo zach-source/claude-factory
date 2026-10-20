@@ -1226,6 +1226,11 @@ function isRecursiveRm(words: string[], start = 0): boolean {
   for (let k = start + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '--') return false
+    if (BRACE_LIST_WORD.test(w)) {
+      // claude-factory-gj9l: pieces can join with the text outside the braces ({-,}r). A - with r or R in the word counts.
+      if (bracePieceRecursive(w) || (w.includes('-') && /[rR]/.test(w))) return true
+      if (!w.startsWith('-')) continue
+    }
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
       continue
@@ -1260,8 +1265,18 @@ const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
  */
 function findExecRmDeny(cmdIn: string[]): boolean {
   const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
+  let braceScanned = false
   for (let i = 0; i < cmd.length; i++) {
-    if (!FIND_EXEC_WORDS.has(cmd[i]!) && !globActionWord(cmd[i]!)) continue
+    if (!FIND_EXEC_WORDS.has(cmd[i]!) && !globActionWord(cmd[i]!)) {
+      // gj9l: a brace word can expand to an exec word plus a wrapper. Scan the rest once.
+      if (!braceScanned && BRACE_LIST_WORD.test(cmd[i]!)) {
+        braceScanned = true
+        for (let j = i + 1; j < cmd.length; j++) {
+          if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
+        }
+      }
+      continue
+    }
     const k = i + 1
     if (k >= cmd.length) continue
     const b = baseWord(cmd[k]!)
@@ -1658,6 +1673,48 @@ function realCommandStart(words: string[], from: number, memo: Map<number, numbe
   return out
 }
 
+// claude-factory-gj9l: deny-only. In a find command, a brace-list word can become the -exec action or the rm word.
+// This function does not expand braces.
+// (A) The word can be the action when rm with recursive flags follows it.
+// (B) The word can hold rm when it has the letters r and m in order.
+//     Deny if recursive flags follow it, or if a piece of the word is one.
+// The function scans each flag run one time, so the cost is O(n).
+function bracePieceRecursive(w: string): boolean {
+  return w.split(/[{},]/).some(p => recursiveFlag(p) || p.startsWith('--rec'))
+}
+
+function findBraceRmDeny(cmd: string[]): boolean {
+  let clearUntil = 0
+  const recursive = (j: number): boolean => {
+    if (j < clearUntil) return false
+    if (isRecursiveRm(cmd, j)) return true
+    let k = j + 1
+    while (k < cmd.length) {
+      const c = cmd[k]!
+      const redirect = RM_REDIRECT_WORD.exec(c)
+      if (redirect) {
+        if (redirect[1] === '') {
+          const next = cmd[k + 1] ?? '-'
+          if (next === '--' || !next.startsWith('-')) k++
+        }
+      } else if (!c.startsWith('-') && !BRACE_LIST_WORD.test(c)) break
+      k++
+    }
+    clearUntil = k
+    return false
+  }
+  for (let i = 1; i < cmd.length; i++) {
+    const w = cmd[i]!
+    const isExec = w === '-exec' || w === '-execdir'
+    if (!isExec && !BRACE_LIST_WORD.test(w)) continue
+    if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && recursive(i + 1)) return true
+    if (isExec || !hasLettersInOrder(w, 'rm')) continue
+    if (recursive(i)) return true
+    if (bracePieceRecursive(w)) return true
+  }
+  return false
+}
+
 function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolean>): boolean {
   if (!cmd.length) return false
   const b = baseWord(cmd[0]!)
@@ -1672,7 +1729,7 @@ function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolea
       })
     )
   }
-  if (b === 'find' && findExecRmDeny(cmd)) return true
+  if (b === 'find' && (findBraceRmDeny(cmd) || findExecRmDeny(cmd))) return true
   return false
 }
 
@@ -1814,7 +1871,7 @@ function rmFindReading(
     return { deny: false, rm: true }
   }
   if (b === 'find') {
-    if (findExecRmDeny(cmd)) return { deny: true, rm: false }
+    if (findBraceRmDeny(cmd) || findExecRmDeny(cmd)) return { deny: true, rm: false }
     for (let i = 0; i < cmd.length; i++) {
       if (!findExecWord(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
@@ -7351,10 +7408,12 @@ function recordVarWrites(words: string[], vars: VarTable): void {
 }
 
 // claude-factory-miqy.8: an operator or zsh form also runs the split value of its name.
-const VAR_OP_REF = /^\$(?:=([A-Za-z_]\w*)|\{[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)[\s\S]*\})$/
+// claude-factory-bc1u: also the brace-less flag run ($~X, $=~X) and the glued subscript ($X[1,2]).
+const VAR_OP_REF =
+  /^\$(?:[=~^]+([A-Za-z_]\w*)(?:[[:][\s\S]*)?|\{[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)[\s\S]*\}|([A-Za-z_]\w*)\[[\s\S]*)$/
 function varOpName(w: string): string | undefined {
   const m = VAR_OP_REF.exec(w)
-  return m ? (m[1] ?? m[2]) : undefined
+  return m ? (m[1] ?? m[2] ?? m[3]) : undefined
 }
 
 // claude-factory-piqf: a head word that glues text to the expansion of a set name runs the split
@@ -8148,13 +8207,14 @@ function denyAtScan(
           if (i + 1 < cmd.length && globCommandWord(cmd[i + 1]!, cmd[i + 2])) return DYNAMIC_VERB_REASON
         }
       }
-      if (findExecRmDeny(cmd)) return REASON
+      if (findBraceRmDeny(cmd) || findExecRmDeny(cmd)) return REASON
     }
     // claude-factory-j471: a redirect word (`>f find ...`, `find -exec >f rm ...`) can hide the
     // find word or the slot head. Read the segment again without its redirect words.
     if (words.some(w => /[<>]/.test(w))) {
       const c2 = realCommand(dropRedirectWords(words))
-      if (c2.length && baseWord(c2[0]!) === 'find' && findExecRmDeny(c2)) return REASON
+      if (c2.length && baseWord(c2[0]!) === 'find' && (findBraceRmDeny(c2) || findExecRmDeny(c2)))
+        return REASON
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
