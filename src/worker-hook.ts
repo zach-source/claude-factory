@@ -884,8 +884,8 @@ function commentHazard(cmd: string, i: number, hasWord: boolean, info: SegInfo, 
   if (HAZARD_RE.test(line) && (line.includes('`') || /\S/.test(cmd.slice(e + 1)))) info.comment = true
   else hz.clearTo = e
 }
-function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz): void {
-  if (info.heredoc || prevRaw(cmd, i) === '<') return
+function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: boolean): void {
+  if (info.heredoc || afterLt) return
   let j = i + 1
   while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
   if (cmd[j] !== '<') return
@@ -1061,7 +1061,7 @@ function segments(
       continue
     }
     if (info && c === '#') commentHazard(cmd, i, hasWord, info, hz)
-    if (info && c === '<') heredocHazard(cmd, i, info, hz)
+    if (info && c === '<') heredocHazard(cmd, i, info, hz, afterRedir && prevRaw(cmd, i) === '<')
     if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) {
       endSeg()
       i++
