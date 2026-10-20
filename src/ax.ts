@@ -295,6 +295,9 @@ const gitlabRule = (host: string, uri?: (key: string) => string) => ({
   },
 })
 
+/** GitHub owners whose repos need their own vault key (the App's installation on that account); the Basic key adds `_BASIC` */
+const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
+
 /**
  * a worker's EgressPolicy: HTTPS to Anthropic and GitHub, plus the rig's own rules, and nothing else. With FACTORY_AX_VAULT=<vault> the gateway
  * swaps the placeholder in each auth header for that agent-vault vault's credential: `ANTHROPIC` (a Claude OAuth token),
@@ -312,21 +315,39 @@ export function egressPolicy(
   extra: Egress[] = [],
   gate = process.env.FACTORY_AX_PKG_GATE,
   gitlabHost?: string,
+  githubOwner?: string,
   githubKey = 'GITHUB_BASIC',
 ) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
-  const rule = (hostnames: string[], header: string, prefix: string, key: string, port?: number) => ({
+  const rule = (
+    hostnames: string[],
+    header: string,
+    prefix: string,
+    key: string,
+    port?: number,
+    pathPrefixes?: string[],
+  ) => ({
     https: {
       hostnames,
       ...(port && { ports: { numbers: [port] } }),
+      ...(pathPrefixes && { pathPrefixes }),
       ...(vault && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
     },
   })
+  const own = githubOwner && Object.hasOwn(GITHUB_OWNER_KEYS, githubOwner) && GITHUB_OWNER_KEYS[githubOwner]
+  const apiHosts = ['api.github.com', 'uploads.github.com']
   return {
     rules: [
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
-      rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'GITHUB'),
-      rule(['github.com'], 'Authorization', 'Basic ', githubKey),
+      rule(apiHosts, 'Authorization', 'Bearer ', own || 'GITHUB'),
+      rule(['github.com'], 'Authorization', 'Basic ', own ? `${own}_BASIC` : githubKey),
+      // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live)
+      ...(vault && githubKey === 'GITHUB_BASIC'
+        ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
+            rule(apiHosts, 'Authorization', 'Bearer ', key, undefined, [`/repos/${owner}/`]),
+            rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`]),
+          ])
+        : []),
       ...(gitlabHost ? [gitlabRule(gitlabHost, vault ? uri : undefined)] : []),
       // the binary caches the image's Nix installs tools and a repo's devenv from; their packages are signed. And
       // Nix's global flake registry, which the worker user has no cached copy of: turning it off in nix.conf would
@@ -346,12 +367,20 @@ export function egressPolicy(
  * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
  * One try: the tick that launched the task does not wait, the next ones try again.
  */
-export function createPolicy(task: string, extra: Egress[] = [], gitlabHost?: string, githubKey?: string) {
+export function createPolicy(
+  task: string,
+  extra: Egress[] = [],
+  gitlabHost?: string,
+  githubOwner?: string,
+  githubKey?: string,
+) {
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(
     [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
     {
-      stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost, githubKey))),
+      stdin: Buffer.from(
+        JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey)),
+      ),
       timeout: 30_000,
     },
   )
@@ -582,7 +611,8 @@ export async function launchManager(image: string, args: string[], { tries = 24,
   const name = managerTask()
   launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
   for (let i = 0; i < tries; i++) {
-    if (createPolicy(name, managerEgress(), undefined, managerGithubKey())) return { name, policy: true }
+    if (createPolicy(name, managerEgress(), undefined, undefined, managerGithubKey()))
+      return { name, policy: true }
     await Bun.sleep(waitMs)
   }
   return { name, policy: false }
