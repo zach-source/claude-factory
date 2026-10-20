@@ -6303,6 +6303,47 @@ function shellAliasReason(
  * It is for a `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` assignment, not a `cd`.
  * It seeds this call's own `ghConfigMovedSoFar`.
  */
+// claude-factory-miqy: bash splits an unquoted `$X` into words. So a command word `$X` runs X's value.
+// This table holds each NAME=value the command text sets. The table stores undefined for a value the hook cannot read.
+// The hook reads a visible value as the command. A name with no visible set stays allowed.
+type VarTable = Map<string, string | undefined>
+const VAR_REF = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/
+const VAR_UNREADABLE = /[$`\\;&|<>()"'*?[\]{}~!#]/
+
+function recordVarWrites(words: string[], vars: VarTable): void {
+  const b = baseWord(words[0] ?? '')
+  const set = (name: string, value: string | undefined) => vars.set(name, value)
+  if (b === 'for' && words[1]) set(words[1], undefined)
+  if (b === 'read' || b === 'mapfile' || b === 'readarray' || b === 'printf' || b === 'getopts') {
+    for (const w of words.slice(1)) if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+  }
+  const declares = ['export', 'declare', 'typeset', 'local', 'readonly'].includes(b)
+  let i = 0
+  while (i < words.length && (/^[A-Za-z_]\w*\+?=/.test(words[i]!) || (i === 0 && declares))) {
+    if (i > 0 || !declares) {
+      const m = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(words[i]!)!
+      set(m[1]!, m[2] ? undefined : m[3]!)
+    }
+    i++
+  }
+  if (declares) {
+    for (const w of words.slice(1)) {
+      const m = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(w)
+      if (m) set(m[1]!, m[2] ? undefined : m[3]!)
+      else if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+    }
+  }
+}
+
+function varRefName(w: string): string | undefined {
+  const m = VAR_REF.exec(w)
+  return m ? (m[1] ?? m[2]) : undefined
+}
+
+function shellQuoteWord(w: string): string {
+  return /^[\w./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`
+}
+
 function denyAt(
   command: string,
   root: string | undefined,
@@ -6382,6 +6423,7 @@ function denyAtScan(
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
   let subIdx = 0
+  const vars: VarTable = new Map()
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
   const scanSubs = (upTo: number): string | undefined => {
@@ -6437,6 +6479,37 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
+    recordVarWrites(words, vars)
+    // The older dynamic-word scan keeps its own reason when it denies first.
+    if (
+      cmd.length &&
+      vars.size &&
+      !anyDynamicCommandReason(words) &&
+      !(personOnly?.length && anyDynamicLiveApplyReason(words, personOnly))
+    ) {
+      const hb = baseWord(cmd[0]!)
+      const scanValue = (name: string, rest: string[]): string | undefined => {
+        if (!vars.has(name)) return undefined
+        const value = vars.get(name)
+        if (value === undefined || vars.has('IFS') || VAR_UNREADABLE.test(value)) {
+          return DYNAMIC_VERB_REASON
+        }
+        const text = [...value.split(/\s+/).filter(Boolean), ...rest.map(shellQuoteWord)].join(' ')
+        return denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      }
+      const headName = varRefName(cmd[0]!)
+      if (headName) {
+        const r = scanValue(headName, cmd.slice(1))
+        if (r) return r
+      }
+      if (hb === 'eval' || /^(?:[a-z]*sh)$/.test(hb)) {
+        for (const w of cmd.slice(1)) {
+          const n = varRefName(w)
+          const r = n ? scanValue(n, []) : undefined
+          if (r) return r
+        }
+      }
+    }
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words

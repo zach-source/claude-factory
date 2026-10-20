@@ -7626,3 +7626,39 @@ test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repe
   },
   30_000,
 )
+
+// claude-factory-miqy: a lone dynamic command word runs the value of a variable set in the same text.
+const MIQY_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const MIQY_DENY: Array<[string, string]> = [
+  ['X="rm -rf /"; $X', REASON],
+  ['X="rm -rf /"; ${X}', REASON],
+  ['X="rm -rf /" && $X', REASON],
+  ['X="rm -rf /"\n$X', REASON],
+  ['export X="rm -rf /"; $X', REASON],
+  ['declare X="rm -rf /"; $X', REASON],
+  ['X=rm; $X -rf /', REASON],
+  ['X="rm -rf"; $X /', REASON],
+  ['X="rm -rf /"; sudo $X', REASON],
+  ['X="rm -rf /"; timeout 5 $X', REASON],
+  ['X="rm -rf /"; eval $X', REASON],
+  ['X="rm -rf /"; bash -c "$X"', REASON],
+  ['X="git push origin main"; $X', PUSH_REASON],
+  ['X="git push"; $X origin main', PUSH_REASON],
+  ['X=; $X rm -rf /', REASON],
+  ['X=$(cat f); $X', DYNAMIC_VERB_REASON],
+  ['X="rm *"; $X', DYNAMIC_VERB_REASON],
+  ['X=rm; X+=" -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['for X in "rm -rf /"; do $X; done', DYNAMIC_VERB_REASON],
+  ['printf -v X "rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X="rm,-rf,/"; IFS=,; $X', DYNAMIC_VERB_REASON],
+]
+test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
+  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
+})
+
+test.each(['$EDITOR a.txt', '$X', 'echo $X', 'X="ls -l"; $X', 'X=1; echo $X', 'X="rm -rf /"; echo $X'])(
+  'denyReason allows %j (claude-factory-miqy)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
+  },
+)
