@@ -2026,15 +2026,11 @@ function wrapperReadingsDeny(
   const dashHidesRm = (j: number): boolean => {
     const nx = words[j + 1]
     if (nx === undefined) return false
-    // claude-factory-cwt9.7: a dash word with a dynamic part can hide a command word and its
-    // operands. A recursive flag anywhere after it and a risky operand mean rm.
+    // claude-factory-cwt9.11: a dash word with a dynamic part, or a lone dash, can hide a command
+    // word. The literal rm rule denies any risky operand, so deny any risky operand after it.
+    // This tests no flag, so a new spelling of a recursive flag cannot get past it.
     if (words[j] === '-' || DYN_CHARS.test(words[j]!)) {
-      const rest = words.slice(j + 1)
-      if (
-        rest.some(x => /^-[A-Za-z]*[rR]/.test(x) || x.startsWith('--rec')) &&
-        rest.some(x => !x.startsWith('-') && riskyTarget(x, root))
-      )
-        return true
+      if (words.slice(j + 1).some(x => !x.startsWith('-') && riskyTarget(x, root))) return true
     }
     if (
       nx !== '-r' &&
@@ -7718,7 +7714,7 @@ function substitutionEnd(command: string, from: number): number {
 // with a space or paren on both sides is a whole word and stays, but the scan goes into its body.
 // The body of a glued $( ) is read again and added as an extra line, so a glued $( ) inside it is
 // read too.
-function replaceGluedSubstitutions(command: string): string {
+function replaceGluedSubstitutions(command: string, fill = ' '): string {
   let out = ''
   let last = 0
   const extra: string[] = []
@@ -7727,14 +7723,14 @@ function replaceGluedSubstitutions(command: string): string {
     const end = substitutionEnd(command, from)
     const before = from > 0 ? command[from - 1]! : ' '
     const after = end < command.length ? command[end]! : ' '
-    if (/[\s(]/.test(before) && /[\s)]/.test(after)) {
+    if ((/[\s(]/.test(before) && /[\s)]/.test(after)) || (fill !== ' ' && before === '=')) {
       from = command.indexOf('$(', from + 2)
       continue
     }
-    out += command.slice(last, from) + ' '
+    out += command.slice(last, from) + fill
     last = end
     const body = command.slice(from + 2, command[end - 1] === ')' ? end - 1 : end)
-    const inner = body.includes('$(') ? replaceGluedSubstitutions(body) : body
+    const inner = body.includes('$(') ? replaceGluedSubstitutions(body, fill) : body
     if (inner !== body) extra.push(inner)
     from = command.indexOf('$(', end)
   }
@@ -7945,6 +7941,15 @@ function denyAtScan(
   if (unglued !== command) {
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+  }
+  // claude-factory-cwt9.12: the lexer drops a glued substitution, so `-E$(y)` reads as `-E`. Read the
+  // command again with each one as the text `$_`, so the word stays dynamic. It has fewer "$(" too.
+  if (command.includes('$(')) {
+    const kept = replaceGluedSubstitutions(command, '$_')
+    if (kept !== command) {
+      const split = denyAt(kept, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
   }
   if (unglued.includes('$')) {
     const raw = replaceGluedExpansions(unglued)

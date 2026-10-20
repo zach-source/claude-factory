@@ -6221,6 +6221,26 @@ const DASH_DYN_DENY = [
   'sudo -$(y) -u root -rf /home',
   'sudo -$(y) -n foo -rf /home',
   'sudo -$(y) foo --recursive /home',
+  'sudo -$(y) foo --r /home',
+  'sudo -$(y) foo --re /home',
+  'xargs -$(y) foo --r /home',
+  'xargs -$(y) --re /home',
+  'sudo -${Y} foo --re /home',
+  'env -$Y foo --r /home',
+  'env -$Y --r /home',
+  'env -u root -$Y ls -d /',
+  'env -$Y rm /home/x',
+  'env -$Y rm ../x',
+  'sudo -$Y rm /home/x',
+  'sudo -$Y rm ../x',
+  'xargs -$Y rm /home/x',
+  'xargs -$Y rm ../x',
+  'nice -n 5 -$Y rm /home/x',
+  'sudo -E$(y) foo -rf /home',
+  'sudo -E$(y) x -rf /home',
+  'xargs -0$(y) foo -rf /home',
+  'xargs -n1$(y) a b -rf /home',
+  'xargs -I$(y) REPL -rf /home',
 ]
 
 test.each(DASH_DYN_DENY)(
@@ -6236,8 +6256,10 @@ test('denyReason denies a glob flag word before rm (claude-factory-cwt9)', () =>
 
 test.each([
   'env -$Y ls',
-  'env -u root -$Y ls -d /',
   'env -u root -$Y src',
+  'env -$Y ls -R src',
+  'xargs -$N grep -r foo src',
+  'env -$Y cat src/a',
   'nice -n$N make all',
   'xargs -$N echo',
   'env -i -$Y',
