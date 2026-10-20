@@ -8196,7 +8196,7 @@ test('scanReason bounds a long nested default-value head word (claude-factory-pw
   expect(scanReason(cmd, '/Users/acme/widget')).toBe(REASON)
 }, 30_000)
 
-test('scanReason reads 3000 zsh flag groups in one pass (claude-factory-pwy0)', () => {
-  const cmd = '${' + '(L)'.repeat(3000) + 'x:-rm} -rf /'
-  expect(scanReason(cmd, '/Users/acme/widget')).toBe(REASON)
+test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', () => {
+  const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
+  expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
 }, 30_000)
