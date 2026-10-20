@@ -1305,6 +1305,8 @@ const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
  * A NAME=value head is not read here. assignmentReadingsDeny reads it. If the head is rm, `isRecursiveRm` reads it. If the head is a
  * wrapper (sudo, env, nice, timeout, xargs ...), the scan reads every later word once for an rm
  * word. Then it returns, because each later slot is a part of the range that it read.
+ * claude-factory-t1n8: a head word that contains `{}` counts as both rm and a wrapper, because
+ * find replaces `{}` with the matched path.
  *
  * claude-factory-lbn: this function reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
  * `isRecursiveRm(cmd, k)` starts right after the rm word and stops at the first non-flag word.
@@ -1328,11 +1330,13 @@ function findExecRmDeny(cmdIn: string[]): boolean {
     const k = i + 1
     if (k >= cmd.length) continue
     const b = baseWord(cmd[k]!)
-    if (b === 'rm') {
+    // claude-factory-t1n8: find replaces {} in any word with the path, so the head can be rm or a wrapper.
+    const ph = cmd[k]!.includes('{}')
+    if (b === 'rm' || ph) {
       if (isRecursiveRm(cmd, k)) return true
-      continue
+      if (!ph) continue
     }
-    if (WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
+    if (ph || WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
       for (let j = k + 1; j < cmd.length; j++) {
         if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
       }
