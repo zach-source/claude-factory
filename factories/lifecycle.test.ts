@@ -172,9 +172,9 @@ test('a deploy or rollout brief for a rig whose goal names owner-only steps carr
 // claude-factory-960: release always names the pull request, so deploy parks before any worker starts
 // (AC1), wakes on a merge/close/activity mail or the 8h backstop (AC3/AC4), and still routes every
 // outcome exactly as today once a worker does run (AC4); a release with no link starts deploy at once (AC5).
-test('queue reporting ready with a pull request link parks deploy with no worker (claude-factory-960 AC1)', () => {
+test('release reporting ready with a pull request link parks deploy with no worker (claude-factory-960 AC1)', () => {
   const actor = createActor(compile(ship)).start()
-  actor.send({ type: 'GOTO', node: 'queue', at: 0 })
+  actor.send({ type: 'GOTO', node: 'release', at: 0 })
   const { seq } = actor.getSnapshot().context
   actor.send({ type: 'DONE', seq, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
   const s = actor.getSnapshot()
@@ -197,7 +197,7 @@ test('a merge or close mail wakes a parked deploy, which then routes every outco
   ]
   for (const { outcome, next } of cases) {
     const actor = createActor(compile(ship)).start()
-    actor.send({ type: 'GOTO', node: 'queue', at: 0 })
+    actor.send({ type: 'GOTO', node: 'release', at: 0 })
     const released = actor.getSnapshot().context.seq
     actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
     expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'waiting'])
@@ -211,7 +211,7 @@ test('a merge or close mail wakes a parked deploy, which then routes every outco
 
 test("a worker's own blocked report at deploy still parks as today, after the pre-launch park woke it (claude-factory-960 AC4)", () => {
   const actor = createActor(compile(ship)).start()
-  actor.send({ type: 'GOTO', node: 'queue', at: 0 })
+  actor.send({ type: 'GOTO', node: 'release', at: 0 })
   const released = actor.getSnapshot().context.seq
   actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
   actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
@@ -223,9 +223,9 @@ test("a worker's own blocked report at deploy still parks as today, after the pr
   expect(isPrWait(s.context.log.at(-1))).toBe(false) // a real worker report, not the pre-launch park
 })
 
-test('queue reporting ready with no pull request link starts deploy at once (claude-factory-960 AC5)', () => {
+test('release reporting ready with no pull request link starts deploy at once (claude-factory-960 AC5)', () => {
   const actor = createActor(compile(ship)).start()
-  actor.send({ type: 'GOTO', node: 'queue', at: 0 })
+  actor.send({ type: 'GOTO', node: 'release', at: 0 })
   const { seq } = actor.getSnapshot().context
   actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 'shipping, nothing to link', at: 1000 })
   const s = actor.getSnapshot()
@@ -364,7 +364,7 @@ test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for sec
     expect(check.prompt).toContain(needle)
   expect(check.prompt).not.toContain('mark it ready')
   expect(check.prompt).toContain('ship marks it ready')
-  expect(ship.nodes.queue.prompt).toContain('mark it ready')
+  expect(ship.nodes.release.prompt).toContain('mark it ready')
   expect(check.agent).toContain('{judge_model}')
   expect((lifecycle as Factory).nodes.quick!.agent).toBeUndefined()
 })

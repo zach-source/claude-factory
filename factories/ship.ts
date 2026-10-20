@@ -52,16 +52,21 @@ export default {
       timeoutMin: 75,
       prompt: `You own this rig's ship queue. Read it first: \`factory ship <rig>\` prints the open beads labeled ship, oldest handoff first, with the pull request, the run and the age of each. The first line is the next pull request to merge. Each bead's metadata holds ship_pr and ship_branch. Change nothing before you have read it all.
 1. Keep the NEXT pull request current: merge origin/main into its branch (a merge commit, pushed to the branch). Never rebase and never force-push. Resolve a conflict only when the fix is small and plain; re-run the tests after any merge that changed something. Check the others against main and against the next one with \`git merge-tree\`.
-2. Prepare the release of the NEXT pull request only: add the changelog entry and the version bump the repo's conventions call for, update the pull request description with the plan's summary, the verification evidence and a rollback plan, and mark it ready with \`gh pr ready\`. You are the only station that marks a pull request ready. Wait for CI and read every failing check.
-3. A pull request that needs changes (a conflict you cannot resolve, a red check you cannot fix by a merge, review changes requested, or a failed deploy to fix forward) goes back to a work run. Write the evidence in a bead comment (\`bd comment <bead> "<evidence>"\`), then run \`bd update <bead> --remove-label ship --add-label factory --add-label station:implement\`. The factory starts a new run at implement for that bead on the same branch, and that run hands the pull request back when it is approved.
-Report ready when the next pull request is ready and CI is green: name it first, then every other open queued pull request, and list every owner-only step the queue needs in one list, each with its exact command. Report again when you changed the queue (for example, sent one back) and a pass may find more to do. Report empty when no open bead carries the label ship.`,
-      next: { ready: 'deploy', again: 'queue', empty: 'done' },
+2. A pull request that needs changes (a conflict you cannot resolve, a red check you cannot fix by a merge, review changes requested, or a failed deploy to fix forward) goes back to a work run. Write the evidence in a bead comment (\`bd comment <bead> "<evidence>"\`), then run \`bd update <bead> --remove-label ship --add-label factory --add-label station:implement\`. The factory starts a new run at implement for that bead on the same branch, and that run hands the pull request back when it is approved.
+Report ready when the next pull request is current with main and has no conflict: name it first, then every other open queued pull request, and list every owner-only step the queue needs in one list, each with its exact command. Report again when you changed the queue (for example, sent one back) and a pass may find more to do. Report empty when no open bead carries the label ship.`,
+      next: { ready: 'release', again: 'queue', empty: 'done' },
+    },
+    release: {
+      timeoutMin: 60,
+      prompt: `Prepare the release of the NEXT pull request only: the one your inbox names, or the first line of \`factory ship <rig>\`. Add the changelog entry and the version bump the repo's conventions call for, update the pull request description with the plan's summary, the verification evidence and a rollback plan, and mark it ready with \`gh pr ready\`. You are the only station that marks a pull request ready. Wait for CI and read every failing check.
+Report ready when the pull request is ready and CI is green, and give its link. Report changes when it needs changes: write the evidence in a bead comment first, and the queue station sends it back to a work run.`,
+      next: { ready: 'deploy', changes: 'queue' },
     },
     deploy: {
       runner: LAPTOP,
       retries: 1,
       timeoutMin: 90,
-      // the arrival carries the pull request link (queue always names it): the tick waits for the
+      // the arrival carries the pull request link (release always names it): the tick waits for the
       // merge, the close, or new activity on that pull request, and spawns no worker until then
       awaitsPr: true,
       prompt: `Ship the pull request queue named once a person has merged it: their merge is the approval, and you never merge it yourself (never merge a pull request, whatever its state). First check what is already done (merged? tagged? deployed?) and do only what is not.

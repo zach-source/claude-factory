@@ -29,33 +29,43 @@ test('ship validates, compiles and starts at queue', () => {
 })
 
 test('queue -> deploy -> soak -> queue -> done', () => {
-  const { visited, snapshot } = walk(ship, ['ready', 'deployed', 'healthy', 'empty'])
-  expect(visited).toEqual(['queue', 'deploy', 'soak', 'queue', 'done'])
+  const { visited, snapshot } = walk(ship, ['ready', 'ready', 'deployed', 'healthy', 'empty'])
+  expect(visited).toEqual(['queue', 'release', 'deploy', 'soak', 'queue', 'done'])
   expect(snapshot.context.error).toBeNull()
 })
 
 test('a failed deploy rolls back, gets a postmortem, and returns to the queue', () => {
-  const { visited } = walk(ship, ['ready', 'failed', 'recovered', 'filed', 'empty'])
-  expect(visited).toEqual(['queue', 'deploy', 'rollback', 'postmortem', 'queue', 'done'])
+  const { visited } = walk(ship, ['ready', 'ready', 'failed', 'recovered', 'filed', 'empty'])
+  expect(visited).toEqual(['queue', 'release', 'deploy', 'rollback', 'postmortem', 'queue', 'done'])
 })
 
 test('deploy changes, hold, refresh and published return to the queue', () => {
   for (const outcome of ['changes', 'hold', 'refresh', 'published'])
-    expect(walk(ship, ['ready', outcome]).visited, outcome).toEqual(['queue', 'deploy', 'queue'])
+    expect(walk(ship, ['ready', 'ready', outcome]).visited, outcome).toEqual([
+      'queue',
+      'release',
+      'deploy',
+      'queue',
+    ])
 })
 
 test('a soak that resolves goes to the postmortem; a soak that regresses rolls back', () => {
-  expect(walk(ship, ['ready', 'deployed', 'resolved', 'filed']).visited.slice(2)).toEqual([
+  expect(walk(ship, ['ready', 'ready', 'deployed', 'resolved', 'filed']).visited.slice(3)).toEqual([
     'soak',
     'postmortem',
     'queue',
   ])
-  expect(walk(ship, ['ready', 'deployed', 'regressed', 'recovered']).visited.slice(2)).toEqual([
+  expect(walk(ship, ['ready', 'ready', 'deployed', 'regressed', 'recovered']).visited.slice(3)).toEqual([
     'soak',
     'rollback',
     'postmortem',
   ])
-  expect(walk(ship, ['ready', 'deployed', 'unsure']).visited.slice(2)).toEqual(['soak', 'soak'])
+  expect(walk(ship, ['ready', 'ready', 'deployed', 'unsure']).visited.slice(3)).toEqual(['soak', 'soak'])
+})
+
+test('only the release station marks a PR ready: the worker hook allows gh pr ready nowhere else', () => {
+  for (const [id, node] of Object.entries(ship.nodes))
+    expect(node.prompt.includes('gh pr ready'), id).toBe(id === 'release')
 })
 
 test('queue can ask for another pass', () => {
