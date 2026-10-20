@@ -163,3 +163,15 @@ test.each([
 ])('4IOD.12 keeps the allow for %s', cmd => {
   expect(run(cmd)).toBeUndefined()
 })
+
+// claude-factory-4iod.14: a brace body gets the readings main added after the first PR: assignment
+// prefix, wrapper flags, nested repeat count and the cd then rm pair.
+test.each([
+  'repeat 1 { A+=x rm -rf /; }',
+  'if [[ 1 ]] { env -u X rm -rf /; }',
+  '{ true } always { sudo -u acme rm -rf / }',
+  'repeat 1 { repeat 2 rm -rf /; }',
+  'while [[ 1 ]] { cd /; rm x; }',
+])('4IOD.14 denies %s', cmd => {
+  expect(run(cmd)).toBe(REASON)
+})
