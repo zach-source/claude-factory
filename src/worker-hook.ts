@@ -1310,11 +1310,75 @@ function realCommandInfo(words: string[]): { cmd: string[]; dynamicRepeatCount: 
 }
 
 /**
+ * claude-factory-pwy0: read a command word as the shell reads it when every variable is unset
+ * (and every `:+` variable is set), the worst case for a deny-only rule. `${n:-X}`, `${n-X}`,
+ * `${n:=X}`, `${n=X}`, `${n:+X}` and `${n+X}` give X, which expands in turn. Any other `${...}`
+ * and each `$name`, `$1` or `$?` give the empty string. Returns undefined when the word has no
+ * `$`, or holds a `$` this function cannot read (such as `$(`) or an unclosed `${`.
+ * One pass with an explicit stack: O(length).
+ */
+const EXPAND_NAME = /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/
+const EXPAND_OP = /^(?::[-=+]|[-=+])/
+function expandedCommandWord(w: string): string | undefined {
+  if (!w.includes('$')) return undefined
+  const stack: Array<{ keep: boolean; buf: string }> = [{ keep: true, buf: '' }]
+  let i = 0
+  while (i < w.length) {
+    const c = w[i]!
+    const top = stack[stack.length - 1]!
+    if (c === '}' && stack.length > 1) {
+      stack.pop()
+      if (top.keep) stack[stack.length - 1]!.buf += top.buf
+      i++
+      continue
+    }
+    if (c !== '$') {
+      top.buf += c
+      i++
+      continue
+    }
+    const next = w[i + 1]
+    if (next === '{') {
+      const rest = w.slice(i + 2, i + 2 + 400)
+      const nm = EXPAND_NAME.exec(rest)
+      const op = nm ? EXPAND_OP.exec(rest.slice(nm[0].length)) : null
+      if (nm && op) {
+        stack.push({ keep: true, buf: '' })
+        i += 2 + nm[0].length + op[0].length
+      } else {
+        stack.push({ keep: false, buf: '' })
+        i += 2
+      }
+      continue
+    }
+    const m =
+      next === undefined
+        ? null
+        : /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*#?$!-])/.exec(w.slice(i + 1, i + 1 + 400))
+    if (!m) return undefined
+    i += 1 + m[0].length
+  }
+  return stack.length === 1 ? stack[0]!.buf : undefined
+}
+
+/** claude-factory-pwy0: baseWord of `w`, or of its expanded reading when that reads rm or find. */
+function rmFindBase(w: string): string {
+  const b = baseWord(w)
+  if (b === 'rm' || b === 'find') return b
+  const e = expandedCommandWord(w)
+  if (e !== undefined) {
+    const eb = baseWord(e)
+    if (eb === 'rm' || eb === 'find') return eb
+  }
+  return b
+}
+
+/**
  * claude-factory-21ux: true when an rm or find-exec-rm rule denies the command that starts at `cmd[0]`.
  * `rm` is true when `cmd[0]` is an rm word that the rule did not deny.
  */
 function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean; rm: boolean } {
-  const b = baseWord(cmd[0]!)
+  const b = rmFindBase(cmd[0]!)
   if (b === 'rm') {
     if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
     return { deny: false, rm: true }
@@ -1322,7 +1386,7 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
   if (b === 'find') {
     for (let i = 0; i < cmd.length; i++) {
       if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) {
+      if (i + 1 < cmd.length && rmFindBase(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) {
         return { deny: true, rm: false }
       }
     }
@@ -6534,6 +6598,12 @@ function denyAtScan(
     const readings = wrapperReadingsDeny(words, root)
     if (readings.deny) return REASON
     if (readings.rm) hasRm = true
+    // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
+    if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
+      const dropped = wrapperReadingsDeny(dropRedirectWords(words), root)
+      if (dropped.deny) return REASON
+      if (dropped.rm) hasRm = true
+    }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
     // flag, which only moves the one command it wraps: anyGitReason's and anyShellReason's own

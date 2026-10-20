@@ -7672,14 +7672,10 @@ test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
 })
 
-test(
-  'denyReason bounds a long nested default-value head word (claude-factory-pwy0)',
-  () => {
-    const n = 200_000 / 5
-    const cmd = '${a:-'.repeat(n) + '}'.repeat(n) + ' -rf /'
-    const t0 = Date.now()
-    denyReason(cmd, '/Users/acme/widget')
-    expect(Date.now() - t0).toBeLessThan(1000)
-  },
-  30_000,
-)
+test('denyReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {
+  const n = 200_000 / 5
+  const cmd = '${a:-'.repeat(n) + '}'.repeat(n) + ' -rf /'
+  const t0 = Date.now()
+  denyReason(cmd, '/Users/acme/widget')
+  expect(Date.now() - t0).toBeLessThan(1000)
+}, 30_000)
