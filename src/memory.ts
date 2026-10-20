@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { rmSafe } from './home-guard'
 import type { PrState } from './prs'
 
 // A factory's shared memory: what its workers learned, tiered so a brief stays short and a search finds
@@ -1499,7 +1500,7 @@ export function pendingSkills(dir: string) {
 export function installSkill(dir: string, name: string) {
   if (!isSkillName(name) || !pendingSkills(dir).some(p => p.name === name))
     throw new Error(`no proposed skill ${name}: factory skills lists them`)
-  rmSync(join(skillsDir(dir), name), { recursive: true, force: true })
+  rmSafe(join(skillsDir(dir), name), { recursive: true, force: true })
   if (existsSync(join(skillSources(dir), name)))
     cpSync(join(skillSources(dir), name), join(skillsDir(dir), name), { recursive: true })
 }
@@ -1508,7 +1509,7 @@ export function installSkill(dir: string, name: string) {
 export function rejectSkill(dir: string, name: string, why: string) {
   if (!isSkillName(name) || !pendingSkills(dir).some(p => p.name === name))
     throw new Error(`no proposed skill ${name}: factory skills lists them`)
-  rmSync(join(skillSources(dir), name), { recursive: true, force: true })
+  rmSafe(join(skillSources(dir), name), { recursive: true, force: true })
   if (existsSync(join(skillsDir(dir), name)))
     cpSync(join(skillsDir(dir), name), join(skillSources(dir), name), { recursive: true })
   return add(dir, {
