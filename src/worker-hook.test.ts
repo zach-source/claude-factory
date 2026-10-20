@@ -6659,6 +6659,25 @@ test.each(DENY_WMSR_CAPPED)('denyReason denies %j (capped, wmsr)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
+// claude-factory-wmsr.35: an escaped < before << does not make a here-string.
+const WMSR35_BODY = "\ndon't\nEOF\ngit push origin main"
+const DENY_WMSR_ESCAPED_LT = [
+  'cat \\<<<EOF',
+  "cat \\<<<'EOF'",
+  'echo \\<<<EOF',
+  'cat x\\<<<EOF',
+  'cat \\<\\<<<EOF',
+  'cat \\<\\\n<<EOF',
+].map(r => r + WMSR35_BODY)
+test.each(DENY_WMSR_ESCAPED_LT)('denyReason denies %j (escaped <, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_ESCAPED_LT = ['cat <<<"it\'s"', 'cat <\\\n<<x\necho "it\'s"']
+test.each(ALLOW_WMSR_ESCAPED_LT)('denyReason allows %j (here-string, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
+})
+
 // A # right after a brace or a redirect char can start a comment in a shell.
 const DENY_WMSR_COMMENT_PREV = [
   `echo a >#it's\n${WM}`,
