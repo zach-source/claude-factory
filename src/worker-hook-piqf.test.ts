@@ -25,6 +25,10 @@ const DENY = [
   "X='h -c'; s${X} 'rm -rf /'",
   "X=' -c'; sh${X} 'rm -rf /'",
   "X=' api -X PUT repos/o/r/branches/main/protection'; gh${X}",
+  // zsh split forms
+  "X=' push origin HEAD:main'; git$=X",
+  "X=' push origin HEAD:main'; git${=X}",
+  "X=' push origin HEAD:main'; git$~X",
   // unreadable sets
   'for X in "git push origin HEAD:main"; do git${X}; done',
   'X=$(echo " push origin HEAD:main"); git${X}',
@@ -46,6 +50,7 @@ const DENY = [
   'X=/x; $X/bin/rm -rf /',
 ]
 const ALLOW = [
+  'ls$~x acme.txt',
   'HOME=/x; ${HOME%/}/bin/tool',
   '${PAGER:-less} README.md',
   'X=/x; ${X}/bin/tool',
