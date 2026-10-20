@@ -715,6 +715,12 @@ const J471_DENY = [
   '>f find / -ok rm -rf {} \\;',
   '>f find / -exec rm -rf {} \\;',
   'find / -exec 2>&1 env rm -rf {} \\;',
+  '/usr/bin/time -l find / -exec >f rm -rf {} \\;',
+  '/usr/bin/time -l find / -ok >f sudo rm -rf {} \\;',
+  '/usr/bin/time -h find / -exec 2>&1 rm -rf {} \\;',
+  'nice --adjustment=5 find / -exec >f rm -rf {} \\;',
+  'env --ignore-environment find / -exec >f rm -rf {} \\;',
+  'xargs -n 1 find / -exec >f rm -rf {} \\;',
 ]
 for (const cmd of J471_DENY) {
   test(`denyReason denies ${cmd} (claude-factory-j471)`, () => {

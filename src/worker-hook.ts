@@ -1155,7 +1155,8 @@ const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
  * Scans from different slots do not overlap. The wrapper scan runs at most once. So the whole
  * function costs O(n), not O(n^2).
  */
-function findExecRmDeny(cmd: string[]): boolean {
+function findExecRmDeny(cmdIn: string[]): boolean {
+  const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
   for (let i = 0; i < cmd.length; i++) {
     if (!FIND_EXEC_WORDS.has(cmd[i]!)) continue
     const k = i + 1
