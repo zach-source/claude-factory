@@ -884,8 +884,8 @@ function commentHazard(cmd: string, i: number, hasWord: boolean, info: SegInfo, 
   if (HAZARD_RE.test(line) && (line.includes('`') || /\S/.test(cmd.slice(e + 1)))) info.comment = true
   else hz.clearTo = e
 }
-function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz): void {
-  if (info.heredoc || prevRaw(cmd, i) === '<') return
+function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: boolean): void {
+  if (info.heredoc || afterLt) return
   let j = i + 1
   while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
   if (cmd[j] !== '<') return
@@ -1061,7 +1061,7 @@ function segments(
       continue
     }
     if (info && c === '#') commentHazard(cmd, i, hasWord, info, hz)
-    if (info && c === '<') heredocHazard(cmd, i, info, hz)
+    if (info && c === '<') heredocHazard(cmd, i, info, hz, afterRedir && prevRaw(cmd, i) === '<')
     if ((c === '&' && cmd[i + 1] === '&') || (c === '|' && cmd[i + 1] === '|')) {
       endSeg()
       i++
@@ -2009,8 +2009,21 @@ function wrapperReadingsDeny(
   // word then mean rm. This check skips a plain -r: `xargs -0 -r ls /` is common and safe.
   const dashHidesRm = (j: number): boolean => {
     const nx = words[j + 1]
-    if (nx === undefined || nx === '-r' || nx === '-R') return false
-    return isRecursiveRm(words, j) && rmTargets(words.slice(j)).some(t => riskyTarget(t, root))
+    if (nx === undefined) return false
+    if (
+      nx !== '-r' &&
+      nx !== '-R' &&
+      isRecursiveRm(words, j) &&
+      rmTargets(words.slice(j)).some(t => riskyTarget(t, root))
+    )
+      return true
+    // A plain -r, or a bare tail with r after a lone dash (`-$(y)r` lexes as `-` `r`),
+    // is recursive only when the first operand is risky.
+    // `xargs -0 -r ls /` has the operand `ls`, so it stays allowed.
+    const tail = words[j] === '-' && /^[A-Za-z]*[rR][A-Za-z]*$/.test(nx)
+    if (!tail && !/^-[A-Za-z]*[rR]/.test(nx)) return false
+    const first = words.slice(tail ? j + 2 : j + 1).find(x => !x.startsWith('-'))
+    return first !== undefined && riskyTarget(first, root)
   }
   const xargsFlags = (j: number): void => {
     const key = 'xargs:' + j

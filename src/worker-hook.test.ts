@@ -6187,6 +6187,22 @@ const DASH_DYN_DENY = [
   'nohup -$Y -rf /',
   'exec -$Y -rf /',
   'time -$Y -rf /',
+  'xargs -$(y) -r /home',
+  'xargs -$(y) -r -f /home',
+  'xargs -$(y) -R -f /home',
+  'xargs -$(y) -r -f ../x',
+  'xargs -0$(y) -r -f /home',
+  'sudo -$(y) -r -f /home',
+  'sudo -$(y) -R /home',
+  'sudo -$Y -R /home',
+  'xargs -$(y)r -f /home',
+  'xargs -$(y)rf /home',
+  'sudo -$(y)r -f /home',
+  'sudo -$(y)rf /home',
+  'xargs -${Y}r -f /home',
+  'xargs -${Y}rf /home',
+  'sudo -${Y}r -f /home',
+  'sudo -${Y}rf /home',
 ]
 
 test.each(DASH_DYN_DENY)(
@@ -6209,6 +6225,9 @@ test.each([
   'env -i -$Y',
   'git log -$N',
   'grep -$F x /',
+  'xargs -0 -r ls /',
+  'xargs -0 -r -n1 echo /',
+  'sudo -E ls -R /',
 ])('denyReason keeps allowing a dynamic flag-shaped word without rm: %s (claude-factory-cwt9)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
@@ -6730,6 +6749,25 @@ const DENY_WMSR_CAPPED = [
 ]
 test.each(DENY_WMSR_CAPPED)('denyReason denies %j (capped, wmsr)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+// claude-factory-wmsr.35: an escaped < before << does not make a here-string.
+const WMSR35_BODY = "\ndon't\nEOF\ngit push origin main"
+const DENY_WMSR_ESCAPED_LT = [
+  'cat \\<<<EOF',
+  "cat \\<<<'EOF'",
+  'echo \\<<<EOF',
+  'cat x\\<<<EOF',
+  'cat \\<\\<<<EOF',
+  'cat \\<\\\n<<EOF',
+].map(r => r + WMSR35_BODY)
+test.each(DENY_WMSR_ESCAPED_LT)('denyReason denies %j (escaped <, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_ESCAPED_LT = ['cat <<<"it\'s"', 'cat <\\\n<<x\necho "it\'s"']
+test.each(ALLOW_WMSR_ESCAPED_LT)('denyReason allows %j (here-string, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
 })
 
 // A # right after a brace or a redirect char can start a comment in a shell.
