@@ -3772,6 +3772,9 @@ const DENY_EBMM_ROOT = [
   'cp x /Users/widget/.config/g*/.',
   'tee -a /Users/widget/.config/g*/config',
   'tee -a /Users/widget/.gitconfi{g,}',
+  'tee -a ~widget/.config/g*/config',
+  'cp x ~widget/.config/g*/.',
+  'tee -a ~widget/.config/git/c*',
 ]
 const DENY_EBMM_ANY = [
   'tee -a ~/.gitconfi{g,}',
@@ -3779,6 +3782,8 @@ const DENY_EBMM_ANY = [
   'tee -a ~/.gitconfi{g,{h,i}}',
   'tee -a ~/.{gitconfig,x}',
   'tee -a /Users/*/.gitc*',
+  'tee -a /home/*/.gitc*',
+  'tee -a /home/acme/.gitc*',
   'tee -a ~/.gitc*',
 ]
 test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
@@ -3788,14 +3793,17 @@ test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push
   },
 )
 
-test.each(['tee -a /home/wid*/.gitc*', 'tee -a ~widget/.gitc*', 'tee -a /home/widget/.config/g*/config'])(
-  'denyReason denies %j from the gate home dir (claude-factory-ebmm)',
-  cmd => {
-    const gate = { ...GLOBAL_GIT_CONFIG_GATE, homeDir: () => '/home/widget' }
-    expect(denyReason(cmd, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
-    expect(denyReason(`${cmd}; git push`, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
-  },
-)
+test.each([
+  'tee -a /home/wid*/.gitc*',
+  'tee -a ~widget/.gitc*',
+  'tee -a /home/widget/.config/g*/config',
+  'tee -a ~widget/.config/g*/config',
+  'cp x ~widget/.config/g*/.',
+])('denyReason denies %j from the gate home dir (claude-factory-ebmm)', cmd => {
+  const gate = { ...GLOBAL_GIT_CONFIG_GATE, homeDir: () => '/home/widget' }
+  expect(denyReason(cmd, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
+  expect(denyReason(`${cmd}; git push`, '/r/acme/widget', undefined, gate)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
 
 test('denyReason denies a glob under XDG_CONFIG_HOME (claude-factory-ebmm)', () => {
   const old = process.env.XDG_CONFIG_HOME
@@ -3817,6 +3825,9 @@ test.each([
   'find . -name x -exec tee {} +',
   'tee /Users/widget/r/acme/widget/out.txt',
   'echo ${HOME}',
+  'mkdir -p {a,b}',
+  'touch {a,b}',
+  'cp -r x {a,b}',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
 })

@@ -2583,7 +2583,7 @@ const GLOBAL_GIT_CONFIG_SAMPLES = [
 // gate, from os.homedir() and from the first two segments of root (for example /Users/<user>).
 // XDG_CONFIG_HOME adds its own git/config path. A `~<user>` form is added for each home.
 function globalGitConfigSamples(root: string | undefined, gate: HookGate | undefined): string[] {
-  const homes = new Set<string>()
+  const homes = new Set<string>(['/home/acme', '/Users/acme'])
   try {
     homes.add((gate?.homeDir ?? homedir)())
   } catch {}
@@ -2593,23 +2593,34 @@ function globalGitConfigSamples(root: string | undefined, gate: HookGate | undef
   for (const h of homes) {
     if (!h || h === '/') continue
     const user = h.split('/').pop()!
-    out.push(`${h}/.gitconfig`, `${h}/.config/git/config`, `${h}/.config/git`, `${h}/.config/git/`)
-    if (user) out.push(`~${user}/.gitconfig`)
+    for (const base of user ? [h, `~${user}`] : [h])
+      out.push(
+        `${base}/.gitconfig`,
+        `${base}/.config/git/config`,
+        `${base}/.config/git`,
+        `${base}/.config/git/`,
+      )
   }
   const xdg = process.env.XDG_CONFIG_HOME
   if (xdg) out.push(`${xdg}/git/config`)
   return out
 }
 
-// claude-factory-ebmm: a brace group with a comma or `..` expands in the shell. Each such group
-// becomes `*`, innermost first, so the glob test sees every spelling. `{}`, a lone `{` and `${` stay.
-function collapseBraces(w: string): string {
-  let prev: string
-  do {
-    prev = w
-    w = w.replace(/\{[^{}]*(?:,|\.\.)[^{}]*\}/g, '*')
-  } while (w !== prev)
-  return w
+// claude-factory-ebmm: a `..` group becomes `*`. A comma group expands to each alternative, innermost
+// first. Over BRACE_CAP alternatives the word becomes `*` (fail closed). `{}`, a lone `{` and `${` stay.
+const BRACE_CAP = 64
+function expandBraces(w: string): string[] {
+  w = w.replace(/\{[^{}]*\.\.[^{}]*\}/g, '*')
+  const m = /\{([^{}]*,[^{}]*)\}/.exec(w)
+  if (!m) return [w]
+  const pre = w.slice(0, m.index)
+  const post = w.slice(m.index + m[0].length)
+  const out: string[] = []
+  for (const a of m[1]!.split(',')) {
+    out.push(...expandBraces(pre + a + post))
+    if (out.length > BRACE_CAP) return ['*']
+  }
+  return out
 }
 
 // claude-factory-ty8y: commands that read their operands. A reader writes only through a redirect.
@@ -2643,10 +2654,10 @@ const READER_COMMANDS = new Set([
 const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
 
 function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanState): boolean {
-  const w = collapseBraces(word.replace(/^["']+|["']+$/g, ''))
-  if (!/[*?[]/.test(w)) return false
   // claude-factory-ty8y.24, 267o: globCanMatch collapses star runs and fails closed over the star cap.
-  return globCanMatch(w, samples, state)
+  return expandBraces(word.replace(/^["']+|["']+$/g, '')).some(w =>
+    /[*?[]/.test(w) ? globCanMatch(w, samples, state) : GLOBAL_GIT_CONFIG_FILE_RE.test(w),
+  )
 }
 
 type OperandSkip = 'none' | 'reader' | 'operands'
