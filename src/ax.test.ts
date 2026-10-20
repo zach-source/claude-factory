@@ -51,7 +51,7 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller'])
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'ready'])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
@@ -213,6 +213,17 @@ test("a task's phase is read from ax get, and a deleted task has none", () => {
   expect(ax.phase('t')).toBeNull()
   writeFileSync(join(dir, 'get'), 'metadata:\n  name: t\nstatus:\n  phase: Suspended\n  actor: t\n')
   expect(ax.phase('t')).toBe('Suspended')
+})
+
+test('a Pending task that waits for a free worker is queued; another Pending one is not', () => {
+  const ready = (reason: string) =>
+    `status:\n  phase: Pending\n  conditions:\n    - type: Ready\n      status: "False"\n      reason: ${reason}\n`
+  writeFileSync(join(dir, 'get'), ready('WaitingForCapacity'))
+  expect(ax.state('t')).toEqual({ phase: 'Pending', queued: true })
+  writeFileSync(join(dir, 'get'), ready('ImagePullBackOff'))
+  expect(ax.state('t')).toEqual({ phase: 'Pending', queued: false })
+  writeFileSync(join(dir, 'get'), ready('WaitingForCapacity').replace('Pending', 'Running'))
+  expect(ax.state('t').queued).toBe(false)
 })
 
 const AS_WORKER = [
@@ -1386,4 +1397,311 @@ test('a GitLab rig gets placeholders and a second extraHeader; a GitHub rig keep
   } finally {
     delete process.env.FACTORY_AX_VAULT
   }
+})
+
+test('the manager lease refuses only a live manager task, and never inside it', () => {
+  const t = 'f-manager'
+  for (const p of ['Running', 'Pending', 'Suspended'])
+    expect(ax.managerRefusal(p, {}, t)).toMatch(/f-manager.*factory attach.*factory say <text>/)
+  for (const p of ['Failed', 'Terminating', null]) expect(ax.managerRefusal(p, {}, t)).toBeUndefined()
+  expect(ax.managerRefusal('Running', { FACTORY_IN_AX: '1' }, t)).toBeUndefined()
+})
+
+test('remoteManager skips AX with no cluster and refuses a running manager', () => {
+  const saved = { ...process.env }
+  try {
+    delete process.env.FACTORY_IN_AX
+    delete process.env.FACTORY_AX_CONTEXT
+    expect(ax.remoteManager()).toBeUndefined()
+    process.env.FACTORY_AX_CONTEXT = 'c'
+    // the fake ax reads its subcommand at $3: drop the --context pair
+    const noctx = join(dir, 'ax-noctx')
+    writeFileSync(noctx, `#!/bin/sh\nshift 2\nexec ${fake} \"$@\"\n`)
+    chmodSync(noctx, 0o755)
+    process.env.FACTORY_AX = noctx
+    writeFileSync(join(dir, 'get'), 'status:\n  phase: Running\n')
+    expect(ax.remoteManager()).toMatch(/factory attach/)
+    rmSync(join(dir, 'get'))
+    expect(ax.remoteManager()).toBeUndefined() // not found: no manager task
+  } finally {
+    process.env = saved
+  }
+})
+
+test('attach reads the manager pane and say sends its text base64, so ax flags in it survive', () => {
+  writeFileSync(join(dir, 'ssh'), 'pane text')
+  expect(ax.attachRead()).toBe('pane text')
+  expect(logged()[0]).toMatch(/ssh f-manager -- .*herdr pane read w1:p1 --lines 60/)
+  const text = 'do it --context x -a evil "$(id)" \'q\''
+  ax.say(text)
+  const line = logged()[1]!
+  expect(line).not.toContain('--context x')
+  expect(line).toContain(Buffer.from(text).toString('base64'))
+})
+
+test('launchManager applies the manager task with its command and env, then retries the policy until the actor shows', async () => {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, {
+      FACTORY_MAX_RUNS: '16',
+      FACTORY_AX_VAULT: 'v1',
+      FACTORY_AX_MANAGER_AX_SERVER: 'http://ax.example.svc:8080',
+      FACTORY_AX_MANAGER_ROUTER: 'http://router.example.svc',
+      FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
+    })
+    delete process.env.FACTORY_AX_IMAGE
+    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], { waitMs: 0 })
+    expect(r).toEqual({ name: 'f-manager', policy: true })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
+    expect(task.spec.image).toBe('mgr@sha256:abc')
+    expect(task.spec.debug).toBe(true)
+    expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
+    const env = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env).toMatchObject({
+      FACTORY_IN_AX: '1',
+      FACTORY_HOME: '/workspace/w/home',
+      FACTORY_CA: 'CA-PEM',
+      FACTORY_MAX_RUNS: '16',
+      FACTORY_AX_VAULT: 'v1',
+      CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
+      GH_TOKEN: 'placeholder',
+    })
+    expect(env.FACTORY_AX_IMAGE).toBeUndefined()
+    expect(env.FACTORY_REPO).toBeUndefined()
+    expect(env.FACTORY_OUTBOX).toBeUndefined()
+    expect(env.AX_SERVER).toBe('http://ax.example.svc:8080')
+    expect(env.FACTORY_POLICY_BROKER).toBe('http://broker.example.svc:8080')
+    expect(env.AX_ROUTER).toBe('router.example.svc:80')
+    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules
+    expect(
+      rules.some((x: { https?: { hostnames: string[] } }) => x.https?.hostnames.includes('claude.ai')),
+    ).toBe(true)
+    expect(rules.slice(-3)).toEqual([
+      { http: { hostnames: ['ax.example.svc'], ports: { numbers: [8080] } } },
+      { http: { hostnames: ['router.example.svc'], ports: { numbers: [80] } } },
+      { http: { hostnames: ['broker.example.svc'], ports: { numbers: [8080] } } },
+    ])
+    expect(logged().filter(l => l.includes('create egress-policy f-manager')).length).toBe(2) // refused once, then in
+  } finally {
+    process.env = saved
+  }
+})
+
+test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
+  expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_ROUTER: 'http://r.example.svc' })).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['r.example.svc'], port: 80, http: true },
+  ])
+})
+
+test('FACTORY_AX_GITHUB_KEYS maps owners to vault keys, and a bad entry is an error', () => {
+  expect(ax.parseGithubKeys(undefined)).toEqual({})
+  expect(ax.parseGithubKeys('other-owner=GITHUB_OO,third=GITHUB_T')).toEqual({
+    'other-owner': 'GITHUB_OO',
+    third: 'GITHUB_T',
+  })
+  expect(ax.githubKeyOf('Other-Owner', 'other-owner=GITHUB_OO')).toBe('GITHUB_OO')
+  expect(ax.githubKeyOf('acme', 'other-owner=GITHUB_OO')).toBeUndefined()
+  for (const bad of ['other-owner', 'bad owner=K', '-x=K', 'a=lower', 'a=K=K', 'a/b=K'])
+    expect(() => ax.parseGithubKeys(bad)).toThrow('FACTORY_AX_GITHUB_KEYS')
+})
+
+test("a worker's GitHub rules use the owner's keys on all paths, and unmapped stay the same", () => {
+  const rules = ax.egressPolicy('factory', [], undefined, undefined, 'GITHUB_OO').rules as {
+    https: {
+      hostnames: string[]
+      pathPrefixes?: string[]
+      effects: { replaceHeaders: { credentialUri: string }[] }
+    }
+  }[]
+  expect(rules[1]!.https.hostnames).toEqual(['api.github.com', 'uploads.github.com'])
+  expect(rules[1]!.https.effects.replaceHeaders[0]!.credentialUri).toBe(
+    'ate-secret://agent-vault/factory/GITHUB_OO',
+  )
+  expect(rules[2]!.https.effects.replaceHeaders[0]!.credentialUri).toBe(
+    'ate-secret://agent-vault/factory/GITHUB_OO_BASIC',
+  )
+  expect(rules.some(r => r.https.pathPrefixes)).toBe(false)
+  expect(ax.egressPolicy('factory', [], undefined, undefined, undefined)).toEqual(ax.egressPolicy('factory'))
+})
+
+test("the manager's policy adds path-prefixed GitHub rules for each mapped owner", () => {
+  const extra = ax.managerEgress({ FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO' })
+  expect(extra.slice(1)).toEqual([
+    {
+      hosts: ['github.com'],
+      key: 'GITHUB_OO_BASIC',
+      header: 'Authorization',
+      prefix: 'Basic ',
+      pathPrefixes: ['/other-owner/'],
+    },
+    {
+      hosts: ['api.github.com'],
+      key: 'GITHUB_OO',
+      header: 'Authorization',
+      prefix: 'Bearer ',
+      pathPrefixes: ['/repos/other-owner/'],
+    },
+  ])
+  const rules = ax.egressPolicy('factory', extra).rules
+  expect(rules[1]).toEqual(ax.egressPolicy('factory').rules[1]) // the default rules stay
+  expect(rules as unknown[]).toContainEqual({
+    https: {
+      hostnames: ['api.github.com'],
+      pathPrefixes: ['/repos/other-owner/'],
+      effects: {
+        replaceHeaders: [
+          {
+            header: 'Authorization',
+            prefix: 'Bearer ',
+            credentialUri: 'ate-secret://agent-vault/factory/GITHUB_OO',
+          },
+        ],
+      },
+    },
+  })
+  expect(ax.managerEnv({ FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO' })).toMatchObject({
+    FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO',
+  })
+  const gate = { FACTORY_AX_PKG_GATE: 'http://gate.example.svc:8080', FACTORY_AX_CAPABILITIES: 'CHOWN' }
+  expect(ax.managerEnv(gate)).toMatchObject(gate)
+  expect(ax.managerEnv({ FACTORY_AX_CAPABILITIES: '' })).toMatchObject({ FACTORY_AX_CAPABILITIES: '' })
+  expect(ax.managerEnv({})).not.toHaveProperty('FACTORY_AX_CAPABILITIES')
+  expect(ax.managerEnv({ FACTORY_BROKER_TOKEN: 'tok' })).toMatchObject({ FACTORY_BROKER_TOKEN: 'tok' })
+})
+
+test('FACTORY_AX_ENV goes to the manager task as inline JSON, read from the file on the laptop', () => {
+  const file = join(dir, 'ax-env.json')
+  writeFileSync(file, '{"BAZELRC":"remote"}')
+  expect(ax.managerEnv({ FACTORY_AX_ENV: file }).FACTORY_AX_ENV).toBe('{"BAZELRC":"remote"}')
+  expect(ax.managerEnv({ FACTORY_AX_ENV: ' {"A":"1"}' }).FACTORY_AX_ENV).toBe('{"A":"1"}')
+  expect(ax.readAxEnv('{"A":"1"}')).toEqual({ A: '1' })
+  expect(ax.readAxEnv(file)).toEqual({ BAZELRC: 'remote' })
+  // a bad value fails without echoing its content
+  expect(() => ax.readAxEnv('{"SECRET":"hunter2"')).toThrow(/^(?!.*hunter2)/)
+  expect(() => ax.readAxEnv(join(dir, 'missing.json'))).toThrow('FACTORY_AX_ENV')
+})
+
+// a fake curl: records the call and the body, answers by path
+const curl = join(dir, 'curl')
+writeFileSync(
+  curl,
+  `#!/bin/sh
+printf 'curl %s\\n' "$*" >> ${calls}
+case "$*" in
+  *PUT*) cat > ${dir}/policy; printf 'created\\n201' ;;
+  */ca*) printf 'CA-FROM-BROKER\\n200' ;;
+  */ax-ready*) cat ${dir}/ready ;;
+  *) printf 'no\\n502' ;;
+esac
+`,
+)
+chmodSync(curl, 0o755)
+
+test('with FACTORY_POLICY_BROKER set, the policy and the CA go to the broker and kubectl is not run', () => {
+  process.env.FACTORY_CURL = curl
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080/'
+  try {
+    expect(ax.egressCA()).toBe('CA-FROM-BROKER')
+    expect(ax.createPolicy('f-r1-1')).toBe(true)
+    expect(logged()).toEqual([
+      'curl -sS -m 30 -X GET -w \\n%{http_code} http://broker.example.svc:8080/ca',
+      'curl -sS -m 30 -X PUT --data-binary @- -w \\n%{http_code} http://broker.example.svc:8080/policy/factory/f-r1-1',
+    ])
+    expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy())
+    process.env.FACTORY_CURL = 'false'
+    expect(ax.createPolicy('f-r1-1')).toBe(false)
+    expect(() => ax.egressCA()).toThrow('the egress gateway')
+  } finally {
+    delete process.env.FACTORY_CURL
+    delete process.env.FACTORY_POLICY_BROKER
+  }
+})
+
+test('with FACTORY_POLICY_BROKER set, unavailable asks GET /ax-ready and does not run kubectl', () => {
+  process.env.FACTORY_CURL = curl
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+  try {
+    writeFileSync(join(dir, 'ready'), 'ready\n\n200')
+    expect(ax.unavailable()).toBeUndefined()
+    expect(logged()).toEqual([
+      'curl -sS -m 6 -X GET -w \\n%{http_code} http://broker.example.svc:8080/ax-ready',
+    ])
+    writeFileSync(join(dir, 'ready'), 'AX executor unavailable: not ready\n\n503')
+    expect(ax.unavailable()).toBe('AX executor unavailable: not ready')
+    writeFileSync(join(dir, 'ready'), 'oops\n500')
+    expect(ax.unavailable()).toContain('could not be observed')
+    process.env.FACTORY_CURL = 'false'
+    expect(ax.unavailable()).toContain('could not be observed')
+  } finally {
+    rmSync(join(dir, 'ready'), { force: true })
+    delete process.env.FACTORY_CURL
+    delete process.env.FACTORY_POLICY_BROKER
+  }
+})
+
+test('routerAddress gives host:port of the router URL, port 80 by default, and nothing for a non-URL', () => {
+  expect(ax.routerAddress('http://r.example.svc')).toBe('r.example.svc:80')
+  expect(ax.routerAddress('http://r.example.svc:8081')).toBe('r.example.svc:8081')
+  expect(ax.routerAddress('r.example.svc:80')).toBeUndefined()
+  expect(ax.routerAddress(undefined)).toBeUndefined()
+})
+
+test('rewriteHomeCmd rewrites the laptop home in run state files only, with the path escaped for sed', () => {
+  const cmd = ax.rewriteHomeCmd('/home/u/factory.d/')
+  expect(cmd).toContain('-name run.json -o -name track.json -o -name state.json -o -name inbox.jsonl')
+  expect(cmd).toContain("'s/\\/home\\/u\\/factory\\.d\\([^A-Za-z0-9_.-]\\|$\\)/\\/workspace\\/w\\/home\\1/g'")
+  expect(cmd).not.toContain('prompts')
+  expect(ax.rewriteHomeCmd('')).toBe(':')
+  // run it for real on a fixture
+  const d = mkdtempSync(join(tmpdir(), 'rw-'))
+  mkdirSync(join(d, 'runs', 'r1', 'prompts'), { recursive: true })
+  const run = join(d, 'runs', 'r1', 'run.json')
+  writeFileSync(run, '{"a":"/home/u/factory.d/runs/r1/x","b":"/home/u/factoryXd/y","c":"/home/u/factory.d"}')
+  const brief = join(d, 'runs', 'r1', 'prompts', 'p.md')
+  writeFileSync(brief, '/home/u/factory.d/runs')
+  const r = Bun.spawnSync(['sh', '-c', ax.rewriteHomeCmd('/home/u/factory.d', d)])
+  expect(r.exitCode).toBe(0)
+  expect(readFileSync(run, 'utf8')).toBe(`{"a":"${d}/runs/r1/x","b":"/home/u/factoryXd/y","c":"${d}"}`)
+  expect(readFileSync(brief, 'utf8')).toBe('/home/u/factory.d/runs')
+})
+
+test('managerEgress adds the rig egress entry for a beads remote host once, and no other rig host', () => {
+  const dolt = {
+    hosts: ['dolt.example.svc'],
+    port: 3307,
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+  }
+  const other = { hosts: ['other.example.svc'] }
+  const rigs = [
+    { egress: [dolt, other], beadsRemote: { url: 'http://dolt.example.svc:3307/db' } },
+    { egress: [dolt], beadsRemote: { url: 'http://dolt.example.svc:3307/db2' } },
+    { egress: [other] },
+  ]
+  const out = ax.managerEgress({}, rigs)
+  expect(out).toEqual([{ hosts: ['claude.ai'] }, dolt])
+  const rule = ax.egressPolicy('v1', out).rules.at(-1)
+  expect(rule).toEqual({
+    https: {
+      hostnames: ['dolt.example.svc'],
+      ports: { numbers: [3307] },
+      effects: {
+        replaceHeaders: [
+          {
+            header: 'Authorization',
+            prefix: 'Basic ',
+            credentialUri: 'ate-secret://agent-vault/v1/DOLT_BASIC',
+          },
+        ],
+      },
+    },
+  })
+  expect(ax.managerEgress({}, [{ beadsRemote: { url: 'not a url' } }])).toEqual([{ hosts: ['claude.ai'] }])
 })

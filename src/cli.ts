@@ -105,6 +105,20 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import * as managerhost from './managerhost'
+import * as migrate from './migrate'
+import {
+  bdEnv,
+  httpsRemote,
+  inAx,
+  isLaptopPane,
+  mapRigs,
+  mapRunRepo,
+  mapRunWorktree,
+  stationRunnerName,
+  syncRepos,
+} from './axrepos'
+import * as broker from './broker'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -301,6 +315,24 @@ function writeJson(path: string, value: unknown) {
   durable(`${path}.tmp`, JSON.stringify(value, null, 2), 'w')
   renameSync(`${path}.tmp`, path) // atomic: a reader never sees half a snapshot
 }
+/** `factory manager --ax [args]`: run the manager as the long-lived AX task (claude-factory-192.2) */
+async function launchAxManager(args: string[]) {
+  const image = process.env.FACTORY_AX_MANAGER_IMAGE
+  if (!image)
+    fail('FACTORY_AX_MANAGER_IMAGE is not set: name the manager image (Dockerfile.worker, target manager)')
+  const m = ax.remoteManager()
+  if (m) fail(m)
+  const { name, policy } = await ax.launchManager(image!, args, { rigs: rawRigs() })
+  console.log(
+    `the manager runs in AX task ${name}${policy ? '' : ' (its egress policy is NOT created: the task has no egress; check the AX controller)'}`,
+  )
+  console.log('attach with `factory attach`, steer with `factory say <text>`')
+}
+/** refuse to run a manager or a tick here while the AX manager task lives (claude-factory-192.6) */
+const lease = () => {
+  const m = ax.remoteManager()
+  if (m) fail(m)
+}
 const fail = (msg: string): never => {
   throw new Error(msg)
 }
@@ -383,6 +415,8 @@ type TaskSide = {
   egress?: ax.Egress[]
   /** the rig origin's host when it is GitLab, for the egress policy's rule */
   gitlabHost?: string
+  /** the vault key of the rig owner's GitHub token (FACTORY_AX_GITHUB_KEYS) */
+  githubKey?: string
   policy: boolean
   put?: string[]
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
@@ -461,7 +495,10 @@ type DoltConn = { host: string; port: number; database: string; user: string; tl
  * `bd sql`: bd drops the connection after 10 s, mid-fetch on a large store, and the merge never happens
  */
 export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?: DoltConn) {
-  if (!r) return ['bd', 'dolt', way]
+  // ponytail: in the AX task bd holds an embedded store and no Dolt server, so there is no SQL path to the remote's user:
+  // plain `bd dolt push|pull` runs with DOLT_REMOTE_USER from env.json (axrepos). A pull conflict stops with bd's own
+  // error, where the laptop's pullResolving keeps the VM's row; the manager reports it and a person resolves it
+  if (!r || inAx()) return ['bd', 'dolt', way]
   if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
   if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
   const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
@@ -515,11 +552,11 @@ function syncRigBeads(
   way: 'push' | 'pull',
   r = rigOf(run.repo)?.beadsRemote,
 ) {
-  const show = r ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
+  const show = r && !inAx() ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
   // the server's own user; its password, if it has one, as bd takes it
   const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
-  const p = Bun.spawnSync(rigBeadsSync(r, way, conn), { cwd: run.worktree, env })
+  const p = Bun.spawnSync(rigBeadsSync(r, way, conn), { cwd: run.worktree, env: bdEnv(run.repo, env) })
   // ponytail: only the issues table's conflicts are said on the issue; labels and the rest just take the VM's
   if (r && way === 'pull' && p.exitCode === 0)
     for (const { id, text } of overwritten(p.stdout.toString()))
@@ -536,12 +573,17 @@ async function syncRigBeadsBounded(
   r: Rig['beadsRemote'],
 ) {
   const timeoutMs = syncTimeoutMs()
-  const show = r ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
+  const show =
+    r && !inAx() ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
   if (show?.timedOut)
     return { code: null, out: '', err: timedOutText(`beads ${way}`, timeoutMs), timedOut: true }
   const conn = show?.code === 0 ? (JSON.parse(show.out) as DoltConn) : undefined
   const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
-  const p = await runBounded(rigBeadsSync(r, way, conn), { cwd: run.worktree, env, timeoutMs })
+  const p = await runBounded(rigBeadsSync(r, way, conn), {
+    cwd: run.worktree,
+    env: bdEnv(run.repo, env),
+    timeoutMs,
+  })
   if (p.timedOut) return { ...p, err: timedOutText(`beads ${way}`, timeoutMs) }
   if (r && way === 'pull' && p.code === 0)
     for (const { id, text } of overwritten(p.out))
@@ -566,9 +608,12 @@ async function syncAsRemoteUser(rig: Rig) {
  */
 function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const task = ax.taskOf(pane)
-  const phase = ax.phase(task)
+  const { phase, queued } = ax.state(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
-  if (phase === 'Pending') return { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
+  if (phase === 'Pending')
+    return queued
+      ? { status: 'pending', agent: 'ax', pending: 'waiting for a free AX worker', queued }
+      : { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
   if (phase === 'Suspended') return { status: 'suspended', agent: 'ax' }
   // gone, and why, kept next to the task's other files; `failed` carries it into the attempt's FAIL reason
   // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
@@ -581,7 +626,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
-    if (!ax.createPolicy(task, side.egress, side.gitlabHost))
+    if (!ax.createPolicy(task, side.egress, side.gitlabHost, side.githubKey))
       return { status: 'pending', agent: 'ax', pending: 'egress policy not created' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
@@ -681,7 +726,7 @@ const herdrRunner: Runner = {
   launch: launchPane,
   info: (_run, pane) => paneInfo(pane),
   deliver: (pane, text) => (herdr('agent', 'prompt', pane, text), true),
-  close: pane => void Bun.spawnSync([HERDR(), 'pane', 'close', pane]), // gone already is fine
+  close: pane => void (herdrInstalled() && Bun.spawnSync([HERDR(), 'pane', 'close', pane])), // gone already is fine
   phase: pane => paneInfo(pane)?.status ?? null,
 }
 
@@ -854,7 +899,13 @@ const runIds = () =>
     : []
 function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
-  return existsSync(file) ? readJson(file) : fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
+  if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
+  const run: Run = readJson(file)
+  // a run the laptop made names the laptop's repo and worktree paths: in the AX task they are the rig's clone
+  // and a worktree under the factory home (launchTask revives it)
+  return inAx()
+    ? { ...run, repo: mapRunRepo(rawRigs(), run.repo), worktree: mapRunWorktree(rawRigs(), run) }
+    : run
 }
 /** complete lines only: a writer may be mid-append */
 const inboxLines = (id: string) => {
@@ -1081,9 +1132,17 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
   `[factory] Your pane closed and this session was resumed. Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
 
-/** where a station's workers run: the station's own runner, else the rig's */
+/** where a station's workers run: the station's own runner, else the rig's. In the AX manager, never a local one. */
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
-  runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+  runners[
+    stationRunnerName(
+      inAx(),
+      def.nodes[node]?.runner,
+      rigOf(run.repo)?.runner,
+      DEFAULT_RUNNER,
+      name => runners[name]?.local ?? true,
+    )
+  ] ?? runners[DEFAULT_RUNNER]!
 
 /**
  * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
@@ -1182,11 +1241,11 @@ function launchPane({ run, def, node, c, session, file }: Job) {
 }
 
 /** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
-export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
+export { httpsRemote }
 
 /**
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
- * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
+ * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file or JSON) adds to its env.
  */
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
@@ -1197,6 +1256,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  // a laptop run's worktree is not in the task yet: make it from the branch, as a gc'd one is
+  if (inAx() && !existsSync(run.worktree)) reviveWorktree(run)
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1218,10 +1279,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     .trim()
   if (unmerged) Bun.spawnSync(['git', '-C', run.worktree, 'checkout', 'HEAD', '--', ...unmerged.split('\n')])
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
-  const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
+  const env = process.env.FACTORY_AX_ENV ? ax.readAxEnv(process.env.FACTORY_AX_ENV) : {}
   const name = ax.taskName(run.id, c.seq)
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
+  const githubKey = origin?.forge === 'github' ? ax.githubKeyOf(origin.owner) : undefined
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
     `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
@@ -1286,7 +1348,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     seq: c.seq,
     egress: rig?.egress,
     ...(gitlabHost && { gitlabHost }),
-    policy: ax.createPolicy(name, rig?.egress, gitlabHost),
+    ...(githubKey && { githubKey }),
+    policy: ax.createPolicy(name, rig?.egress, gitlabHost, githubKey),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
@@ -1856,6 +1919,13 @@ function facts(run: Run, c: Ctx, now: number): Pick<Row, 'inMin' | 'quietMin' | 
 }
 
 const progressFile = (run: Run) => join(runDir(run.id), 'progress.json')
+/** when an attempt's AX task was last seen waiting for capacity: {seq, at} */
+const queuedFile = (run: Run) => join(runDir(run.id), 'queued.json')
+const queuedOf = (run: Run) =>
+  existsSync(queuedFile(run)) ? readJson<{ seq: number; at: number }>(queuedFile(run)) : undefined
+/** an attempt's clock starts when it stops waiting for AX capacity: a full pool never spends the station's time */
+export const attemptStart = (startedAt: number, seq: number, q?: { seq: number; at: number }) =>
+  q?.seq === seq ? Math.max(startedAt, q.at) : startedAt
 const progressOf = (run: Run) =>
   existsSync(progressFile(run)) ? readJson<Progress>(progressFile(run)) : undefined
 
@@ -1922,10 +1992,20 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
   }
+  // a herdr pane in the AX manager came from the laptop: its session is not here. Start a fresh worker on
+  // AX. HANDOFF spends no attempt and clears the pane.
+  if (isLaptopPane(inAx(), c.pane)) {
+    send({ type: 'HANDOFF', seq: c.seq, summary: 'worker moved to AX: relaunched fresh' })
+    return 'moved to AX'
+  }
   const runner = runnerOf(c.pane)
   const info = runner.info(run, c.pane)
   if (runner.name === 'ax' && info?.status === 'pending' && holdUnavailableAx(c, send))
     return 'AX executor unavailable'
+  if (info?.queued) {
+    writeJson(queuedFile(run), { seq: c.seq, at: now })
+    return 'queued for AX capacity'
+  }
   // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
@@ -2069,7 +2149,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   if (stall === 'nudge') seen.nudged = true
   if (seen !== prev || stall === 'nudge') writeJson(progressFile(run), seen)
   const due = deadline(
-    now - c.startedAt,
+    now - attemptStart(c.startedAt, c.seq, queuedOf(run)),
     timeoutMin,
     status === 'working' || isAsking, // waiting on the manager's answer is work: warned, not failed
     (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(TIME_UP)),
@@ -3102,8 +3182,8 @@ function reap(rows: Row[]) {
     return [{ ...run, isOver: r.node === 'done' || r.node === 'aborted', pane: r.pane }]
   })
   const { workspaces, panes } = reapable(runs, herdrPanes())
-  for (const ws of workspaces) Bun.spawnSync([HERDR(), 'workspace', 'close', ws])
-  for (const pane of panes) Bun.spawnSync([HERDR(), 'pane', 'close', pane])
+  for (const ws of workspaces) herdrInstalled() && Bun.spawnSync([HERDR(), 'workspace', 'close', ws])
+  for (const pane of panes) herdrInstalled() && Bun.spawnSync([HERDR(), 'pane', 'close', pane])
   for (const what of [...workspaces.map(w => `workspace ${w}`), ...panes.map(p => `pane ${p}`)])
     console.error(`${new Date().toISOString()} reaped ${what}`)
 }
@@ -3970,7 +4050,7 @@ function linearLabeled(repo: string): { id: string }[] {
       '-n',
       '0',
     ],
-    { cwd: repo, env: process.env, timeout: 60_000 },
+    { cwd: repo, env: bdEnv(repo), timeout: 60_000 },
   )
   if (p.exitCode !== 0) throw new Error(`bd list: ${p.stderr.toString().trim().split('\n')[0] || 'failed'}`)
   const out = p.stdout.toString().trim()
@@ -4002,7 +4082,7 @@ function stripFactoryLabel(repo: string, ids: string[]): { stripped: number; uns
   for (const id of ids) {
     const p = Bun.spawnSync(['bd', 'label', 'remove', id, 'factory'], {
       cwd: repo,
-      env: process.env,
+      env: bdEnv(repo),
       timeout: 30_000,
     })
     if (p.exitCode === 0) stripped++
@@ -4082,7 +4162,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
         if (!since || Date.parse(issue.updatedAt) > since) mine.push(issue.ref)
       } else if (dest === undefined) unrouted++
     }
-    const env = syncEnv(apiKey, rig.linear!.team)
+    const env = bdEnv(rig.repo, syncEnv(apiKey, rig.linear!.team))
     const needsCheck = mine.length > 0 || retry.length > 0 || !!baseline
     const beforeIds = baseline ?? (needsCheck ? linearLabeled(rig.repo).map(b => b.id) : [])
     const before = new Set(beforeIds)
@@ -4396,6 +4476,8 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
 export type Rig = {
   name: string
   repo: string
+  /** https clone URL; in the AX task `factory repos sync` clones it to the rig's repo there (src/axrepos.ts) */
+  remote?: string
   factory: string
   maxRuns?: number
   sweeps?: string[]
@@ -4532,7 +4614,62 @@ function linearMail(now: number): (Mail & { run: string })[] {
   if (changed) writeJson(linearToldFile(), told)
   return mail
 }
-const rigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+/** `factory repos sync`: clone or fetch each rig's repo in the AX task and bootstrap its beads store; the problems, one per line */
+const reposSync = (): string[] => {
+  if (!inAx()) fail('factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1)')
+  return syncRepos(rawRigs(), HOME)
+}
+
+const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** `factory migrate-to-ax [--dry-run] [--force] [--keep N]`: see docs/remote-runner.md, Move the factory to AX */
+async function migrateToAx(args: string[]) {
+  if (inAx()) fail('factory migrate-to-ax runs on the laptop')
+  const dry = args.includes('--dry-run')
+  const force = args.includes('--force')
+  const k = args.indexOf('--keep')
+  const keep = k >= 0 ? Number(args[k + 1]) : 50
+  if (!Number.isInteger(keep) || keep < 0)
+    fail('usage: factory migrate-to-ax [--dry-run] [--force] [--keep N]')
+  const origin = (repo: string) => {
+    const r = Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin'], { stderr: 'ignore' })
+    return r.exitCode === 0 ? r.stdout.toString().trim() : undefined
+  }
+  const p = migrate.plan(HOME, keep, origin)
+  console.log(migrate.describe(p))
+  if (p.refusal) fail(p.refusal)
+  if (p.rigsError) fail(p.rigsError)
+  if (dry) return console.log('dry run: nothing written, nothing sent')
+  const task = ax.managerTask()
+  const phase = ax.phase(task)
+  if (phase !== 'Running')
+    fail(`the manager task ${task} is ${phase ?? 'not there'}: run factory manager --ax first`)
+  if (!force && ax.managerHomeUsed())
+    fail(`the manager's home in ${task} already holds a factory: use --force to write over it`)
+  const dir = mkdtempSync(join(tmpdir(), 'factory-migrate-'))
+  const out = join(dir, 'migrate.tgz')
+  console.log(`packed ${migrate.mb(migrate.pack(HOME, p, out))}; sending to ${task}`)
+  const b64 = readFileSync(out).toString('base64')
+  const parts = Math.ceil(b64.length / ax.PUT_PART)
+  for (let i = 0; i < parts; i++) {
+    const chunk = b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART)
+    let r = ax.put(task, 'migrate.tgz', i, parts, chunk)
+    for (let t = 0; !r.ok && t < 3; t++) {
+      await sleepMs(2000)
+      r = ax.put(task, 'migrate.tgz', i, parts, chunk)
+    }
+    if (!r.ok) fail(`part ${i + 1} of ${parts} did not arrive: ${r.err}`)
+    if ((i + 1) % 50 === 0) console.log(`sent ${i + 1} of ${parts}`)
+  }
+  ax.unpackMigration('migrate.tgz', HOME)
+  rmSafe(dir, { recursive: true, force: true })
+  console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
+}
+
+/** rigs.json as written: on the laptop, the repo paths are the laptop's */
+const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+/** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
+const rigs = (): Rig[] => mapRigs(rawRigs())
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
 /** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
@@ -6636,6 +6773,9 @@ const usage = `factory — herdr software factories on xstate
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
+  attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
+                                     (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
+  say <text...>                      type text and Enter into the AX manager's pane
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
@@ -6778,6 +6918,7 @@ if (import.meta.main && !outboxCmd)
         await fork(args[0], args[1], args.slice(2).join(' '))
         break
       case 'tick':
+        lease()
         console.log(JSON.stringify(await tick(true)))
         break
       case 'beads':
@@ -6789,11 +6930,48 @@ if (import.meta.main && !outboxCmd)
       case 'sync':
         await syncPass()
         break
+      case 'broker':
+        broker.main(args)
+        break
       case 'manager':
+        if (args[0] === 'host') {
+          await managerhost.host(args.slice(1), { prepare: reposSync })
+          break
+        }
+        if (args[0] === '--ax') {
+          await launchAxManager(args.slice(1))
+          break
+        }
+        lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
       case 'home':
         console.log(HOME)
+        break
+      case 'repos': {
+        if (args[0] !== 'sync') fail('usage: factory repos sync')
+        const problems = reposSync()
+        if (problems.length) fail(problems.join('\n'))
+        console.log(`repos in place under ${process.env.FACTORY_REPOS ?? '/workspace/w/repos'}`)
+        break
+      }
+      case 'migrate-to-ax':
+        await migrateToAx(args)
+        break
+      case 'attach': {
+        const follow = args[0] === '--follow'
+        if (args.length > (follow ? 1 : 0)) fail('usage: factory attach [--follow]')
+        for (;;) {
+          const pane = ax.attachRead()
+          console.log(follow ? `\x1b[2J\x1b[H${pane}` : pane)
+          if (!follow) break
+          await new Promise(r => setTimeout(r, 3000))
+        }
+        break
+      }
+      case 'say':
+        if (!args.length) fail('usage: factory say <text...>')
+        ax.say(args.join(' '))
         break
       case 'stop': {
         if (halted()) fail(`already ${halted()!.state}`)
@@ -7035,6 +7213,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'loop': {
+        lease()
         const ms = args[0] === '--interval' ? Number(args[1]) : 5000
         if (!(ms >= 1000)) fail('usage: factory loop [--interval ms], at least 1000')
         await loop(ms)
@@ -7369,7 +7548,7 @@ if (import.meta.main && !outboxCmd)
             fail(
               `${rig.repo} is already rig ${taken.name}: redefine it under that name, or rig rm ${taken.name} first`,
             )
-          writeJson(rigsFile(), [...rigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
+          writeJson(rigsFile(), [...rawRigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
           console.log(
             `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}${rig.runner ? `, workers run by ${rig.runner}` : ''}`,
           )
@@ -7384,7 +7563,7 @@ if (import.meta.main && !outboxCmd)
             )
           writeJson(
             rigsFile(),
-            rigs().filter(r => r.name !== name),
+            rawRigs().filter(r => r.name !== name),
           )
           console.log(`removed rig ${name}: nothing new starts there; its runs carry on`)
         } else if (sub === 'list') {

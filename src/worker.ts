@@ -20,7 +20,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { rmSafe } from './home-guard'
 
-const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
+export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
 const outbox = () => process.env.FACTORY_OUTBOX ?? join(own(), 'outbox.jsonl')
 const prompts = () => join(own(), 'prompts')
@@ -125,6 +125,38 @@ async function sentFile(name: string, { waitMs = 2000, tries = 300 } = {}) {
 const bdEnv = () => ({ ...process.env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' })
 
 /**
+ * a bd store in `dir`, bootstrapped once: from a Dolt `remote` (written as the store's sync.remote), else from the
+ * refs/dolt of the git `origin`. It is the worker's store, and the AX manager's, one per rig (src/axrepos.ts)
+ */
+export function bootstrapBeads(
+  dir: string,
+  remote: string | undefined,
+  origin: string,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  if (existsSync(join(dir, '.beads', 'embeddeddolt'))) return
+  rmSafe(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  // a rig's shared Dolt remote (FACTORY_BEADS_REMOTE), else the repo's GitHub origin
+  if (remote) {
+    mkdirSync(join(dir, '.beads'), { recursive: true })
+    writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(remote)}\n`)
+  }
+  for (const cmd of [
+    ['git', 'init', '-q', '.'],
+    ...(remote ? [] : [['git', 'remote', 'add', 'origin', origin]]),
+    [process.env.FACTORY_BD ?? 'bd', 'bootstrap', '-y'],
+  ]) {
+    const p = Bun.spawnSync(cmd, {
+      cwd: dir,
+      env: { ...env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' },
+      stderr: 'pipe',
+    })
+    if (p.exitCode !== 0) throw new Error(`beads in the VM: ${cmd.join(' ')}: ${p.stderr.toString().trim()}`)
+  }
+}
+
+/**
  * the rig's beads in the VM, when the run has some (FACTORY_BEADS): a clone of the store the laptop syncs to
  * the repo's GitHub origin (refs/dolt/data), in a directory of its own, since the repo's .beads config names
  * the laptop's server; the agent's bd finds it through BEADS_DIR. A resumed task keeps it
@@ -136,24 +168,7 @@ export function setupBeads() {
   // Dolt sends its user and password as an Authorization header, which the egress gateway replaces with the
   // vault's: the VM holds only this placeholder (DOLT_REMOTE_USER comes in the rig's env)
   if (remote) process.env.DOLT_REMOTE_PASSWORD ??= 'placeholder'
-  if (!existsSync(join(dir, '.beads', 'embeddeddolt'))) {
-    rmSafe(dir, { recursive: true, force: true })
-    mkdirSync(dir, { recursive: true })
-    // a rig's shared Dolt remote (FACTORY_BEADS_REMOTE), else the repo's GitHub origin
-    if (remote) {
-      mkdirSync(join(dir, '.beads'), { recursive: true })
-      writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(remote)}\n`)
-    }
-    for (const cmd of [
-      ['git', 'init', '-q', '.'],
-      ...(remote ? [] : [['git', 'remote', 'add', 'origin', process.env.FACTORY_REPO!]]),
-      [process.env.FACTORY_BD ?? 'bd', 'bootstrap', '-y'],
-    ]) {
-      const p = Bun.spawnSync(cmd, { cwd: dir, env: bdEnv(), stderr: 'pipe' })
-      if (p.exitCode !== 0)
-        throw new Error(`beads in the VM: ${cmd.join(' ')}: ${p.stderr.toString().trim()}`)
-    }
-  }
+  bootstrapBeads(dir, remote, process.env.FACTORY_REPO!)
   Object.assign(process.env, { ...bdEnv(), BEADS_DIR: join(dir, '.beads') })
 }
 
@@ -865,7 +880,7 @@ const home = () => `/home/${WORKER_USER}`
  * again as WORKER_USER and exit with it. The actor's / and /workspace are 0700, so a user could exec nothing, and
  * the workspace is root's. Without the capabilities (a task from an AX without spec.capabilities) serve stays root
  */
-function asWorker() {
+export function asWorker() {
   if (process.getuid?.() !== 0) return
   localhost()
   const ws = dirname(own())
@@ -908,22 +923,26 @@ export function excludeScratch(dir: string) {
   writeFileSync(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.scratch/\n`)
 }
 
+/** trust the egress gateway's CA (FACTORY_CA): write it and point every TLS client at it */
+export function trustCA() {
+  if (!process.env.FACTORY_CA) return
+  const ca = join(own(), 'egress-ca.crt')
+  writeFileSync(ca, process.env.FACTORY_CA)
+  // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
+  Object.assign(process.env, {
+    NODE_EXTRA_CA_CERTS: ca,
+    GIT_SSL_CAINFO: ca,
+    SSL_CERT_FILE: ca,
+    NIX_SSL_CERT_FILE: ca,
+  })
+}
+
 /**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
 export async function setup({ tries = 60, waitMs = 5000 } = {}) {
-  if (process.env.FACTORY_CA) {
-    const ca = join(own(), 'egress-ca.crt')
-    writeFileSync(ca, process.env.FACTORY_CA)
-    // the gateway re-signs every HTTPS host the VM may reach, so its CA is the only root needed
-    Object.assign(process.env, {
-      NODE_EXTRA_CA_CERTS: ca,
-      GIT_SSL_CAINFO: ca,
-      SSL_CERT_FILE: ca,
-      NIX_SSL_CERT_FILE: ca,
-    })
-  }
+  trustCA()
   localhost()
   // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
   // replaces) go in the home rc, which every workspace reads
