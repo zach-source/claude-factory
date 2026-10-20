@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { codexWorker } from './cli'
+import { axCodexRefused, codexWorker } from './cli'
 import { command } from './harness'
 
 // claude-factory-x0b9: a codex worker gets the guard, the rules and a context limit in its own CODEX_HOME
@@ -29,12 +29,19 @@ function fixture(maxContextK = 200) {
   const dir = join(tmp, 'run', 'codex', 'implement')
   const run = { id: 'r1', worktree: join(tmp, 'wt') }
   const make = (agent = 'codex --dangerously-bypass-approvals-and-sandbox', o = {}) =>
-    codexWorker(run, { maxContextK }, 'implement', agent, { personOnlyContexts: ['acme'] }, {
-      hookFile: join(ROOT, 'src', 'worker-hook.ts'),
-      userHome: user,
-      dir,
-      ...o,
-    })
+    codexWorker(
+      run,
+      { maxContextK },
+      'implement',
+      agent,
+      { personOnlyContexts: ['acme'] },
+      {
+        hookFile: join(ROOT, 'src', 'worker-hook.ts'),
+        userHome: user,
+        dir,
+        ...o,
+      },
+    )
   return { tmp, user, dir, mine, make, run }
 }
 
@@ -140,4 +147,10 @@ test('a codex launch refuses without the hook file and when the agent command tu
     expect(() => f.make(`codex ${bad}`)).toThrow('keeps the deny hook on')
   for (const ok of ['-m o3', '--disable multi_agent', '-c model_reasoning_effort=high', '--enable hooks'])
     expect(() => f.make(`codex ${ok}`)).not.toThrow()
+})
+
+test('the ax runner refuses codex and still takes claude and pi', () => {
+  expect(() => axCodexRefused('codex -m o3')).toThrow('claude-factory-72dq')
+  expect(() => axCodexRefused('claude')).not.toThrow()
+  expect(() => axCodexRefused('pi')).not.toThrow()
 })

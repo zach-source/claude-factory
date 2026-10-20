@@ -1246,6 +1246,12 @@ export { httpsRemote }
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
  * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
  */
+/** the VM has no codex guard yet: no deny hook, so no codex worker there (claude-factory-72dq) */
+export function axCodexRefused(agent: string) {
+  if (harnessOf(agent) === 'codex')
+    fail(`the ax runner does not run codex workers yet: they would have no deny hook (claude-factory-72dq)`)
+}
+
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
   if (unavailable) fail(unavailable)
@@ -1254,7 +1260,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
-  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  if (!harness) fail(`the ax runner runs claude or pi workers, not "${agent}"`)
+  axCodexRefused(agent)
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1759,7 +1766,10 @@ const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_
 
 /** the reason a codex agent command turns a guard part off, or undefined */
 function codexGuardOff(agent: string): string | undefined {
-  const w = agent.trim().split(/\s+/).flatMap(s => (/^--[\w-]+=/.test(s) ? s.split(/=(.*)/s).slice(0, 2) : [s]))
+  const w = agent
+    .trim()
+    .split(/\s+/)
+    .flatMap(s => (/^--[\w-]+=/.test(s) ? s.split(/=(.*)/s).slice(0, 2) : [s]))
   for (let i = 0; i < w.length; i++) {
     const next = (w[i + 1] ?? '').replace(/\s/g, '')
     if (w[i] === '--ignore-user-config') return w[i]
@@ -6285,7 +6295,8 @@ async function defineRig(
   if (remote && mcp !== undefined)
     fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
   if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
+    fail(`--agent for the ${rig.runner} runner is claude or pi (not "${agent}")`)
+  if (remote && agent !== undefined) axCodexRefused(agent)
   if (egress?.length) {
     if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
     let parsed: Egress[] | undefined
