@@ -1118,10 +1118,13 @@ function recursiveFlag(w: string): boolean {
   return false
 }
 
+/** A redirect word. Group 1 is the glued target: empty when the target is the next word. */
+const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s
+
 /**
  * `words` is an rm command and its args. `words[start]` is the rm word itself.
  * This function returns true when `words` asks for a recursive delete.
- * It stops at the first `--` word or the first non-flag word.
+ * It skips redirect words and their targets. It stops at the first `--` word or the first other non-flag word.
  *
  * claude-factory-lbn: this function reads `words` by index. It does not call
  * `words.slice(start + 1)`. The find branch below calls this function once for each
@@ -1134,6 +1137,15 @@ function isRecursiveRm(words: string[], start = 0): boolean {
     if (w === '--') return false
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
+      continue
+    }
+    // claude-factory-g4l4: the shell takes a redirect word out of the rm args, so flags after it still count.
+    const redirect = RM_REDIRECT_WORD.exec(w)
+    if (redirect) {
+      if (redirect[1] === '') {
+        const next = words[k + 1] ?? '-'
+        if (next === '--' || !next.startsWith('-')) k++
+      }
       continue
     }
     return false
@@ -1165,13 +1177,13 @@ function rmTargets(words: string[]): string[] {
 
 /**
  * Checks rm target `t` for risk.
- * A `$` expansion, a glob char (`*`, `?`, `[`), or a leading `~` makes `t` risky.
+ * A `$` expansion, a glob char (`*`, `?`, `[`), a brace (`{`, a list that hides a path), or a leading `~` makes `t` risky.
  * A path that resolves outside `root` also makes `t` risky, when the caller passes `root`.
  * `root` itself counts as outside, so `rm <root>` is risky too.
  * When the caller omits `root`, an absolute path or a path with a `..` segment is risky instead.
  */
 function riskyTarget(t: string, root?: string): boolean {
-  if (/[$*?[]/.test(t) || t.startsWith('~')) return true
+  if (/[$*?[{]/.test(t) || t.startsWith('~')) return true
   if (root === undefined) return t.startsWith('/') || t.split('/').includes('..')
   const base = root.endsWith('/') ? root.slice(0, -1) : root
   const resolved = resolvePath(base, t)
@@ -1576,11 +1588,81 @@ function assignmentReadingsDeny(words: string[], root: string | undefined, state
 }
 
 /**
+ * claude-factory-pwy0: what the other segments of a command hold. A variable set in one segment
+ * can put flags or the letters rm into a dynamic command word in another.
+ */
+type OtherSegs = { flags: boolean; rmfind: boolean }
+const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false }
+const DYN_CHARS = /[$`*?[]/
+const DYN_FLAG_TEXT = /(?<![-:])-[A-Za-z]*[rR]|:--[A-Za-z]*[rR]|--rec|-delete|-exec|-ok/
+const DYN_FLAG_WORDS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir'])
+
+function hasLettersInOrder(w: string, letters: string): boolean {
+  let k = 0
+  for (let i = 0; i < w.length && k < letters.length; i++) if (w[i]!.toLowerCase() === letters[k]) k++
+  return k === letters.length
+}
+
+/**
+ * claude-factory-pwy0: one fail-closed rule for a dynamic command word `cmd[start]` (it holds
+ * `$`, a backtick or a glob character, and its base word is not rm or find). No model of shell
+ * expansion: it denies when the word can run rm or find with flags, or rm on a risky target.
+ * A: the word cannot be read (open `${`, `${!`, backtick, `$(`).
+ * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
+ * C: another segment holds flag text (a variable there can put flags in the word).
+ * D: the word may read as rm or find, and a target is risky or a default value holds a path.
+ * Returns rm: true when D holds but no target is risky, for the cd + rm rule. O(length).
+ */
+function dynamicHeadDeny(
+  cmd: string[],
+  start: number,
+  root: string | undefined,
+  other: OtherSegs,
+): { deny: boolean; rm: boolean } {
+  const w = cmd[start]!
+  // The lexer cuts a word at a zsh flag group `${(L)`; denyAt reads that command again without it.
+  const bal = w.endsWith('${') ? w.slice(0, -2) : w
+  if (w.includes('`') || w.includes('${!') || bal.split('{').length > bal.split('}').length)
+    return { deny: true, rm: false }
+  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags) return { deny: true, rm: false }
+  if (start === 0) {
+    for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
+  }
+  if (!(other.rmfind || hasLettersInOrder(w, 'rm') || hasLettersInOrder(w, 'find')))
+    return { deny: false, rm: false }
+  const dflt = /\$\{[^}:=+-]*:?[-=+]/.exec(w)
+  if (dflt) {
+    const rest = w.slice(dflt.index + dflt[0].length)
+    if (rest.includes('/') || rest.includes('~') || rest.includes('..')) return { deny: true, rm: false }
+  }
+  let afterDashDash = false
+  for (let k = start + 1; k < cmd.length; k++) {
+    const t = cmd[k]!
+    if (start > 0 && (t === ';' || t === '+')) break
+    if (!afterDashDash && t === '--') {
+      afterDashDash = true
+      continue
+    }
+    if (!afterDashDash && t.startsWith('-')) continue
+    if (riskyTarget(t, root)) return { deny: true, rm: false }
+  }
+  return { deny: false, rm: true }
+}
+
+/**
  * claude-factory-21ux: true when an rm or find-exec-rm rule denies the command that starts at `cmd[0]`.
  * `rm` is true when `cmd[0]` is an rm word that the rule did not deny.
  */
-function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+function rmFindReading(
+  cmd: string[],
+  root: string | undefined,
+  other: OtherSegs = NO_OTHER_SEGS,
+): { deny: boolean; rm: boolean } {
   const b = baseWord(cmd[0]!)
+  if (b !== 'rm' && b !== 'find' && DYN_CHARS.test(cmd[0]!)) {
+    const d = dynamicHeadDeny(cmd, 0, root, other)
+    if (d.deny || d.rm) return d
+  }
   if (b === 'rm') {
     if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
     return { deny: false, rm: true }
@@ -1588,7 +1670,11 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
   if (b === 'find') {
     for (let i = 0; i < cmd.length; i++) {
       if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) {
+      if (i + 1 >= cmd.length) continue
+      const next = cmd[i + 1]!
+      if (baseWord(next) === 'rm') {
+        if (isRecursiveRm(cmd, i + 1)) return { deny: true, rm: false }
+      } else if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny) {
         return { deny: true, rm: false }
       }
     }
@@ -1610,7 +1696,11 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
  * The caller then sets hasRm, for the cd + rm rule.
  * Each (index, wrapper) state runs once, so the walk has O(n) states.
  */
-function wrapperReadingsDeny(words: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+function wrapperReadingsDeny(
+  words: string[],
+  root: string | undefined,
+  other: OtherSegs = NO_OTHER_SEGS,
+): { deny: boolean; rm: boolean } {
   const n = words.length
   const seenHead = new Set<number>()
   const seenFlag = new Set<string>()
@@ -1634,7 +1724,7 @@ function wrapperReadingsDeny(words: string[], root: string | undefined): { deny:
       work.push(() => xargsFlags(i + 1))
       return
     }
-    const r = rmFindReading(words.slice(i), root)
+    const r = rmFindReading(words.slice(i), root, other)
     if (r.deny) found = true
     if (r.rm) rm = true
   }
@@ -1827,6 +1917,48 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
     return
   }
   if (firstSingle >= 0) anchors.push(firstSingle)
+}
+
+/**
+ * claude-factory-2a3i: reads the word after each dynamic command word as a possible rm or find.
+ * Returns 'deny' for a recursive or risky rm, or a find -exec/-execdir rm. Returns 'rm' for an
+ * allowed rm (the caller then applies the rm + cd rule). Returns undefined otherwise.
+ * One slice for each anchor. commandAnchors caps the anchors.
+ */
+function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | undefined {
+  let result: 'rm' | undefined
+  const anchors = commandAnchors(words).slice()
+  // A find -exec, -execdir, -ok or -okdir slot is a command slot too. The scan is monotone in the
+  // start index, so the smallest dynamic slot gives the result of all of them. No cap needed.
+  for (let i = 0; i + 1 < words.length; i++) {
+    if (!/^-(exec|execdir|ok|okdir)$/.test(words[i]!)) continue
+    if (!dynamicCommandWord(words[i + 1]!)) continue
+    anchors.push(i + 1)
+    break
+  }
+  for (const a of anchors) {
+    const head = words[a]!
+    if (!dynamicCommandWord(head)) continue
+    // A `{` or `}` word is a group marker, and realCommand strips it. A `name()` word is a function
+    // definition. definesFunction denies it with its own reason.
+    if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
+    // The head can expand to a wrapper with value flags or operands (`-u root`, `-n 5`, `5`). So
+    // scan forward over every rm word. An rm word can be a flag value, so the real rm can come
+    // later. The first rm word gets the full rule. Each later rm word gets the recursive-flag rule.
+    // One pass for each anchor: O(n).
+    let first = true
+    for (let k = a + 1; k < words.length; k++) {
+      if (baseWord(words[k]!) !== 'rm') continue
+      if (isRecursiveRm(words, k)) return 'deny'
+      if (!first) continue
+      first = false
+      const rest = realCommand(words.slice(k))
+      if (!rest.length || baseWord(rest[0]!) !== 'rm') continue
+      if (isRecursiveRm(rest) || rmTargets(rest).some(t => riskyTarget(t, root))) return 'deny'
+      result = 'rm'
+    }
+  }
+  return result
 }
 
 function commandAnchors(words: string[]): number[] {
@@ -6597,6 +6729,86 @@ function shellAliasReason(
   return undefined
 }
 
+// claude-factory-j1ki: the shell splits an unquoted expansion that is glued to other text in one
+// word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
+// the real command. This returns the words with each such expansion read as a word break, or
+// undefined when no word holds a glued expansion. A whole-word expansion ($X, ${X}) is not glued.
+const GLUED_EXPANSION_RE = /\$(?:\{[^}]*\}|\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
+function splitGluedExpansions(words: string[]): string[] | undefined {
+  let out: string[] | undefined
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    const parts = w.includes('$') ? w.split(GLUED_EXPANSION_RE).filter(p => p !== '') : [w]
+    // No part, or one part equal to the word: the word is one whole expansion, or holds none.
+    if (parts.length === 0 || (parts.length === 1 && parts[0] === w)) {
+      out?.push(w)
+      continue
+    }
+    // A word that is one expansion plus nothing else gives parts.length 0 above. A word with one
+    // expansion and one literal part gives parts.length 1 with parts[0] !== w, and is glued.
+    if (!out) out = words.slice(0, i)
+    out.push(...parts)
+  }
+  return out
+}
+
+// claude-factory-j1ki.9: segments() drops quotes, so splitGluedExpansions cannot see where a bare
+// $NAME ends when a quote or a backslash follows it. This reads the raw text instead.
+const GLUED_BARE_NAME_RE = /\$[A-Za-z_][A-Za-z0-9_]*(?=["'\\])/g
+
+// claude-factory-j1ki.10: returns the index after the close paren of the "$(" at `from`. The close
+// paren is found by depth, and quotes and backslashes in the body are skipped. A body with no
+// close paren runs to the end of the text (fail closed).
+function substitutionEnd(command: string, from: number): number {
+  let depth = 0
+  let q = ''
+  for (let k = from + 1; k < command.length; k++) {
+    const c = command[k]!
+    if (q) {
+      if (c === '\\' && q === '"') k++
+      else if (c === q) q = ''
+      continue
+    }
+    if (c === '\\') k++
+    else if (c === "'" || c === '"') q = c
+    else if (c === '(') depth++
+    else if (c === ')' && --depth === 0) return k + 1
+  }
+  return command.length
+}
+
+// claude-factory-j1ki.10/.14/.15: returns `command` with each $( ) that sits glued to other text
+// read as a space. A double quote next to the $( ) counts as glue, so "rm"$(x)"-r" is read. A $( )
+// with a space or paren on both sides is a whole word and stays, but the scan goes into its body.
+// The body of a glued $( ) is read again and added as an extra line, so a glued $( ) inside it is
+// read too.
+function replaceGluedSubstitutions(command: string): string {
+  let out = ''
+  let last = 0
+  const extra: string[] = []
+  let from = command.indexOf('$(')
+  while (from !== -1) {
+    const end = substitutionEnd(command, from)
+    const before = from > 0 ? command[from - 1]! : ' '
+    const after = end < command.length ? command[end]! : ' '
+    if (/[\s(]/.test(before) && /[\s)]/.test(after)) {
+      from = command.indexOf('$(', from + 2)
+      continue
+    }
+    out += command.slice(last, from) + ' '
+    last = end
+    const body = command.slice(from + 2, command[end - 1] === ')' ? end - 1 : end)
+    const inner = body.includes('$(') ? replaceGluedSubstitutions(body) : body
+    if (inner !== body) extra.push(inner)
+    from = command.indexOf('$(', end)
+  }
+  return out + command.slice(last) + extra.map(e => '\n' + e).join('')
+}
+
+function quoteWord(w: string): string {
+  return "'" + w.replace(/'/g, "'\\''") + "'"
+}
+
 /**
  * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
  * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
@@ -6630,7 +6842,26 @@ function denyAt(
 ): string | undefined {
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
-  const late: { reason?: string } = {}
+  // claude-factory-pwy0: the lexer splits a word at the `(` of a zsh flag group, `${(L)x:-rm}`.
+  // Read the command again without the flag groups. This is deny-only: only the rm reason counts.
+  if (command.includes('${(')) {
+    const bare = command.replace(/\$\{(?:\([^()]*\))+/g, '${')
+    if (bare !== command) {
+      const r = denyAt(
+        bare,
+        root,
+        personOnly,
+        gate,
+        depth,
+        state,
+        movedBefore,
+        ghConfigMovedBefore,
+        aliasStack,
+      )
+      if (r === REASON) return r
+    }
+  }
+  const late: { reason?: string; glued?: string } = {}
   return (
     denyAtScan(
       command,
@@ -6643,7 +6874,9 @@ function denyAt(
       ghConfigMovedBefore,
       late,
       aliasStack,
-    ) ?? late.reason
+    ) ??
+    late.glued ??
+    late.reason
   )
 }
 
@@ -6656,7 +6889,7 @@ function denyAtScan(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
-  late: { reason?: string },
+  late: { reason?: string; glued?: string },
   aliasStack: readonly string[],
 ): string | undefined {
   if (!command) return undefined
@@ -6694,30 +6927,44 @@ function denyAtScan(
   const segs = segments(command, quoteInfo, subs)
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
+  // command substitution glued to text. Read the command again with each such substitution as a
+  // space. This text has fewer "$(" than the source, so the recursion ends.
+  let unglued = command.includes('$(') ? replaceGluedSubstitutions(command) : command
+  if (unglued.includes('$')) unglued = unglued.replace(GLUED_BARE_NAME_RE, ' ')
+  if (unglued !== command) {
+    const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+    if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+  }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
   let ambiguousAssignment = false
   let subIdx = 0
+  // claude-factory-pwy0: per-segment flag text and rm/find text, so a dynamic word reads the others.
+  const segFlag = segs.map(sg => DYN_FLAG_TEXT.test(sg.join(' ')))
+  const segRmFind = segs.map(sg => /rm|find/i.test(sg.join(' ')))
+  const flagCount = segFlag.filter(Boolean).length
+  const rmFindCount = segRmFind.filter(Boolean).length
+  const otherSegs = (i: number): OtherSegs => ({
+    flags: flagCount - (segFlag[i] ? 1 : 0) > 0,
+    rmfind: rmFindCount - (segRmFind[i] ? 1 : 0) > 0,
+  })
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
   const scanSubs = (upTo: number): string | undefined => {
     for (; subIdx < subs.length && subs[subIdx]!.at <= upTo; subIdx++) {
       const body = subs[subIdx]!.body
       if (isCatHeredoc(body)) continue
-      const r = denyAt(
-        cleanSubstitutionBody(body),
-        root,
-        personOnly,
-        g,
-        depth + 1,
-        state,
-        movedSoFar,
-        ghConfigMovedSoFar,
-      )
-      // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
-      if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
-      else if (r) return r
+      // claude-factory-j1dr: the cleaner may blank quotes in a false comment or here-document, so
+      // the raw body is read too. This only adds a deny reading.
+      const clean = cleanSubstitutionBody(body)
+      for (const text of clean === body ? [body] : [clean, body]) {
+        const r = denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+        // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
+        if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
+        else if (r) return r
+      }
     }
     return undefined
   }
@@ -6740,6 +6987,20 @@ function denyAtScan(
       )
       if (aliased) return aliased
     }
+    const splitWords = splitGluedExpansions(words)
+    if (splitWords?.length) {
+      const split = denyAt(
+        splitWords.map(quoteWord).join(' '),
+        root,
+        personOnly,
+        g,
+        depth + 1,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
     if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
     if (!ambiguousAssignment && hasAmbiguousAssignmentPrefix(words)) ambiguousAssignment = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
@@ -6751,7 +7012,8 @@ function denyAtScan(
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
-    if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
+    if (setsDangerousGitConfigEnv(words) || (splitWords && setsDangerousGitConfigEnv(splitWords)))
+      hasDangerousConfigEnv = true
     if (assignmentReadingsDeny(words, root, state)) return state.work < 0 ? SCAN_BUDGET_REASON : REASON
     // claude-factory-mmc9.25: realCommand skips only an ASCII NAME=. For each word with =, read
     // the word and the command after it. This sets hasRm and hasCd for the rm and cd pair check.
@@ -6848,6 +7110,11 @@ function denyAtScan(
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
+    // claude-factory-2a3i: a dynamic command word can expand to `command`, `sudo` or `env`, so the
+    // word after it can be the real rm or find. Deny-only: cmd, b and operandSkip stay unchanged.
+    const dynRm = dynamicHeadRmReading(words, root)
+    if (dynRm === 'deny') return REASON
+    if (dynRm === 'rm') hasRm = true
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
@@ -6865,20 +7132,31 @@ function denyAtScan(
       }
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
-    const readings = wrapperReadingsDeny(words, root)
+    const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
     if (readings.deny) return REASON
     if (readings.rm) hasRm = true
+    // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
+    if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
+      const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
+      if (dropped.deny) return REASON
+      if (dropped.rm) hasRm = true
+    }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
     // flag, which only moves the one command it wraps: anyGitReason's and anyShellReason's own
     // `moved` accumulator reads those, and this segment's own cd/pushd/popd/chdir word, through
     // their own forward scan). This check runs after the checks above, so it affects only a
     // later segment's push, never this one.
-    if (hasDirChangeWord(words)) movedSoFar = true
+    if (splitWords) {
+      const splitBase = baseWord(realCommand(splitWords)[0] ?? '')
+      if (splitBase === 'rm') hasRm = true
+      else if (splitBase === 'cd') hasCd = true
+    }
+    if (hasDirChangeWord(words) || (splitWords && hasDirChangeWord(splitWords))) movedSoFar = true
     // claude-factory-bemr: the same rule, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
     // assignment anywhere in this segment. It carries into every later segment's gh alias
     // lookup, the same way movedSoFar does above for a git alias lookup.
-    if (hasGhConfigEnvWord(words)) ghConfigMovedSoFar = true
+    if (hasGhConfigEnvWord(words) || (splitWords && hasGhConfigEnvWord(splitWords))) ghConfigMovedSoFar = true
   }
   const tailReason = scanSubs(Infinity)
   if (tailReason) return tailReason
