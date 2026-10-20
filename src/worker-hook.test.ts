@@ -2720,6 +2720,55 @@ test.each([
   expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
 })
 
+// claude-factory-g4l4: a redirect word between rm and its -r flag must not hide the recursive rm.
+const G4L4_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
+test.each([
+  'rm 2>o -r src',
+  'rm >o -r src',
+  'rm 2>&1 -r src',
+  'rm <o -r src',
+  'rm -f 2>o -r src',
+  'sudo -u rm rm 2>o -r src',
+  'rm &>o -r src',
+  'rm 2> o -r src',
+  'rm {x}>o -r src',
+  'rm >|o -r src',
+  'rm <<<x -r src',
+  'rm 2>o 2> p -r src',
+  'rm 2> -r src',
+  'rm 2>o -R src',
+  'rm 2>o --recursive src',
+  'rm 2>o -fr src',
+  'nice rm 2>o -r src',
+  'time -l rm 2>o -r src',
+  'find . -exec rm 2>o -r {} \\;',
+  'rm 2> -- -r src',
+  'rm > -- -r src',
+  'rm &> -- -rf src',
+  'rm << -- -r src',
+  'nice rm 2> -- -r src',
+  'find . -exec rm 2> -- -r {} \\;',
+])('denyReason denies %j (claude-factory-g4l4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, G4L4_GATE)).toBe(REASON)
+})
+
+test.each([
+  'rm 2>o a.txt',
+  'ls 2>o -R',
+  'rm 2>o -f a.txt',
+  'rm 2>o -- -r',
+  'find . -exec rm 2>o {} \\;',
+  'rm a.txt 2>o',
+  'rm 2> -- a.txt',
+])('denyReason allows %j (claude-factory-g4l4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, G4L4_GATE)).toBeUndefined()
+})
+
 // claude-factory-59pp.13: segments() strips quotes, so a quoted word like a redirect must not hide the verb.
 test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () => {
   expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
@@ -5605,6 +5654,94 @@ const DTR2_ALLOW = [
 test.each(DTR2_ALLOW)('denyReason allows a harmless repeat word: %s (claude-factory-dtr2)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
+
+const DYN_RM_DENY = [
+  '$N rm -rf /',
+  'X=command; $X rm -rf /',
+  '"$X" rm -rf /',
+  '${X} rm -rf /',
+  '$X -p rm -rf /',
+  '$X -- rm -rf /',
+  '$X sudo rm -rf /',
+  '$X command rm -rf /',
+  '$X /bin/rm -rf /',
+  '$X rm ../x',
+  '$X rm -r x',
+  '$X find . -exec rm -r {} +',
+  '$X find / -execdir rm -rf {} \\;',
+  'sudo $X rm -rf /',
+  'env $X rm -rf /',
+  'sudo -E $X rm -rf /',
+  'env -v $X rm -rf /',
+  'timeout 5 $X rm -rf /',
+  'nice -n 5 $X rm -rf /',
+  'if true; then $X rm -rf /; fi',
+  'echo x | $X rm -rf /',
+  '$X rm a; cd /x',
+  'cd /x; $X rm a',
+  '$X -u root rm -rf /',
+  '$X -C 5 rm -rf /',
+  '$X -n 5 rm -rf /',
+  '$X 5 rm -rf /',
+  '$X -k 5 5 rm -rf /',
+  '$X -u root $Y rm -rf /',
+  '$X -u find rm -rf /',
+  'X=env; $X -u find rm -rf /',
+  '$X -C find rm -rf /',
+  '$X -u find /bin/rm -rf /',
+  '$X find rm -rf /',
+  '$X -u rm rm -r src',
+  'X=env; $X -u rm rm -r src',
+  '$X -u rm -- rm -r src',
+  '$X -u rm rm -rf src',
+  '$X -u rm =rm -r src',
+  '$X -C rm rm -r src',
+  '$X -u rm sudo rm -r src',
+  '$X -u rm find src -exec rm -r {} +',
+  'find . -exec $X rm -rf / {} \\;',
+  'find . -exec $X rm -r src {} \\;',
+  'find . -exec $X rm {} +',
+  'find . -exec ${X} rm -rf {} +',
+  'find . -exec "$X" rm -rf {} +',
+  'find . -execdir $X rm -rf {} +',
+  'find . -exec $X -u rm rm -r src {} +',
+  'find . -exec $X -u + rm -rf / {} \\;',
+  'sudo find . -exec $X rm -rf {} +',
+  'find . -name x -exec $X rm -rf / {} \\;',
+  'find . -exec $X rm -rf / {} \\; -print',
+  'find . \\( -exec $X rm -rf / {} \\; \\)',
+  'X=env; find . -exec $X rm -rf / {} \\;',
+]
+
+test.each(DYN_RM_DENY)(
+  'denyReason denies rm behind a dynamic command word: %s (claude-factory-2a3i)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+const DYN_RM_KEEP = [
+  '$N ls',
+  'echo $N rm',
+  'echo $N rm -rf /',
+  '$N rm a',
+  '$N rm build/x',
+  '"$PY" -c "print(1)"',
+  '$X ls -d /',
+  'echo rm -rf /',
+  'find . -exec $X ls {} +',
+]
+
+test.each(DYN_RM_KEEP)('denyReason keeps allowing a harmless dynamic word: %s (claude-factory-2a3i)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test.each(['$(echo command) rm -rf /', '$N git push origin main', 'rm -rf /', '$X =rm -rf /'])(
+  'denyReason keeps denying: %s (claude-factory-2a3i)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
 
 test.each([
   ['=rm', 'rm'],
