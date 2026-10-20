@@ -3814,7 +3814,17 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = fals
     const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS, undefined, skipBlank)
     const verb = vi >= 0 ? tail[vi]! : undefined
     const subRest = vi >= 0 ? tail.slice(vi + 1) : []
-    const sub = skipBlank ? subRest.find(w => !isBlankWord(w)) : subRest[0]
+    // claude-factory-qbtz.2: the sub word can follow a flag, so find it the way the verb is found.
+    const subScan = firstVerbIndex(subRest, KUBECTL_VALUE_FLAGS, undefined, skipBlank)
+    const sub = subScan.index >= 0 ? subRest[subScan.index] : undefined
+    const subSet =
+      verb === 'rollout'
+        ? KUBECTL_ROLLOUT_MUTATING
+        : verb === 'auth'
+          ? KUBECTL_AUTH_MUTATING
+          : verb === 'certificate'
+            ? KUBECTL_CERTIFICATE_MUTATING
+            : undefined
     // claude-factory-p43v.6: a dynamic verb hides the real kubectl command. A dynamic sub word
     // hides the real rollout, auth or certificate action. This guard fails closed on either one,
     // the same way it fails closed on a listed verb or sub name.
@@ -3830,6 +3840,15 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = fals
               : verb === 'certificate'
                 ? !!sub && (dynamicWord(sub) || KUBECTL_CERTIFICATE_MUTATING.has(sub))
                 : KUBECTL_MUTATING_VERBS.has(verb)
+    if (!mutating && subSet && subScan.uncertain) {
+      for (const w of subRest) {
+        if (w === '--') break
+        if (subSet.has(w) || dynamicWord(w)) {
+          mutating = true
+          break
+        }
+      }
+    }
     if (!mutating && uncertain) {
       mutating =
         hasMutatingWordBeforeDashDash(tail, KUBECTL_MUTATING_VERBS) ||
