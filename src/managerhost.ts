@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { sq } from './harness'
+import { backup, restore, type BackupCfg, type Outcome } from './homebackup'
 import * as worker from './worker'
 
 /**
@@ -46,8 +47,65 @@ export function lastSession(json: string): string | undefined {
  * home with rigs.json and no marker is a hand-made one: yes, unless a migration archive is on the volume, since
  * its unpack writes rigs.json before it ends. An empty home waits for `factory migrate-to-ax`
  */
-export const homeReady = (f: { migrated: boolean; fresh: boolean; hasRigs: boolean; archive: boolean }) =>
-  f.migrated || f.fresh || (f.hasRigs && !f.archive)
+export const homeReady = (f: {
+  migrated: boolean
+  fresh: boolean
+  hasRigs: boolean
+  archive: boolean
+  /** home/.restoring: a restore did not end, so the home may hold half a checkout */
+  restoring?: boolean
+}) => !f.restoring && (f.migrated || f.fresh || (f.hasRigs && !f.archive))
+
+/** restore an empty home from the backup branch (192.9); logs what it did and never throws. True when a retry can help */
+export function restoreStep(
+  cfg: BackupCfg,
+  log: (m: string) => void,
+  run: (c: BackupCfg) => Outcome = restore,
+) {
+  if (!cfg.remote) return false
+  try {
+    const o = run(cfg)
+    if (o.restored) log(`restored ${o.restored}`)
+    else if (o.error) log(`restore failed: ${o.error}`)
+    else
+      log(`restore: ${o.skipped}${o.skipped === 'no backup' ? '; waiting for `factory migrate-to-ax`' : ''}`)
+    return !!o.error
+  } catch (e) {
+    log(`restore failed: ${(e as Error).message}`)
+    return true
+  }
+}
+
+/**
+ * Wait until the home is ready and no restore is pending. Try a failed restore again each cycle, also with
+ * FACTORY_AX_FRESH=1. A manager that starts empty over a good backup would push the deletes on top of it.
+ */
+export async function awaitHome(ready: () => boolean, step: () => boolean, sleep: () => Promise<unknown>) {
+  let retry = step()
+  while (!ready() || retry) {
+    await sleep()
+    if (retry) retry = step()
+  }
+}
+
+/** one backup; backup() takes the tick lock for the snapshot only. A failure is logged and the host loop goes on */
+export function backupStep(
+  cfg: BackupCfg,
+  ready: boolean,
+  lock: () => (() => void) | null,
+  log: (m: string) => void,
+  run: (c: BackupCfg, ready: boolean, lock: () => (() => void) | null) => Outcome = backup,
+) {
+  if (!cfg.remote) return
+  try {
+    const o = run(cfg, ready, lock)
+    if (o.skipped === 'lock') log('backup skipped: a tick holds the lock')
+    else if (o.error) log(o.error.startsWith('backup refused') ? o.error : `backup failed: ${o.error}`)
+    else if (o.changed) log(`backup ${o.sha}`)
+  } catch (e) {
+    log(`backup failed: ${(e as Error).message}`)
+  }
+}
 
 export const HOST_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? 'w1:p1'
 
@@ -101,7 +159,11 @@ async function bringUp(args: string[], home: string, log: (m: string) => void, s
 
 export async function host(
   args: string[],
-  { everyMs = 30_000, prepare }: { everyMs?: number; prepare?: () => string[] } = {},
+  {
+    everyMs = 30_000,
+    prepare,
+    lock = () => () => {},
+  }: { everyMs?: number; prepare?: () => string[]; lock?: () => (() => void) | null } = {},
 ) {
   if (process.env.FACTORY_IN_AX !== '1') throw new Error('factory manager host runs only inside the AX task')
   const home = process.env.FACTORY_HOME
@@ -121,19 +183,38 @@ export async function host(
       migrated: existsSync(join(home, '.migrated')),
       fresh: process.env.FACTORY_AX_FRESH === '1',
       hasRigs: existsSync(join(home, 'rigs.json')),
+      restoring: existsSync(join(home, '.restoring')),
       archive:
         existsSync(join(worker.own(), 'migrate.tgz')) || existsSync(join(worker.own(), 'put', 'migrate.tgz')),
     })
+  // the backup keeps FACTORY_HOME at <workspace>/home; any other home is not backed up
+  const bcfg: BackupCfg = {
+    ws: dirname(home),
+    remote: basename(home) === 'home' ? process.env.FACTORY_AX_BACKUP_REMOTE : undefined,
+    branch: process.env.FACTORY_AX_BACKUP_BRANCH || 'manager-home',
+  }
+  if (process.env.FACTORY_AX_BACKUP_REMOTE && !bcfg.remote)
+    log('backup off: FACTORY_HOME is not <workspace>/home')
+  const backupMs = Number(process.env.FACTORY_AX_BACKUP_EVERY) || 600_000
   if (!ready()) log('waiting for `factory migrate-to-ax` (or FACTORY_AX_FRESH=1) before the manager starts')
-  // ponytail: no timeout: an empty home waits until the laptop migrates it
-  while (!ready()) await Bun.sleep(everyMs)
+  // ponytail: no timeout: an empty home waits until the laptop migrates it. A restore that failed is tried again
+  await awaitHome(
+    ready,
+    () => restoreStep(bcfg, log),
+    () => Bun.sleep(everyMs),
+  )
   // the rig repos and their beads stores, before the manager reads them; a failure is logged, and the manager still starts
   for (const problem of prepare?.() ?? []) log(`repos sync: ${problem}`)
   await bringUp(args, home, log, session())
   // ponytail: polls every 30 s with no backoff. A manager that exits inside a live herdr is not restarted
   // (superviseManager restarts its Claude); a herdr that keeps dying restarts every 30 s
+  let lastBackup = Date.now()
   for (;;) {
     await Bun.sleep(everyMs)
+    if (Date.now() - lastBackup >= backupMs) {
+      lastBackup = Date.now()
+      backupStep(bcfg, ready(), lock, log)
+    }
     const n = paneCount()
     const action = decide({ herdrUp: n >= 0, panes: Math.max(n, 0) })
     if (action === 'none') continue
