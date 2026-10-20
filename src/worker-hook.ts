@@ -2619,32 +2619,41 @@ function globalGitConfigSamples(root: string | undefined, gate: HookGate | undef
   return out
 }
 
-// claude-factory-ebmm: a `..` group becomes `*`. A comma group expands to each alternative, innermost
-// first. Over BRACE_CAP alternatives the word becomes `*` (fail closed). `{}`, a lone `{` and `${` stay.
+// claude-factory-ebmm: a comma or `..` group expands to each alternative, innermost first, with one cap
+// (BRACE_CAP) for the whole word. Over the cap each group becomes a glob that keeps its characters, so
+// the literal text stays. `{}`, a lone `{` and `${` stay.
 const BRACE_CAP = 64
+const INT_RE = /^-?\d+$/
 function rangeToComma(a: string, b: string): string | undefined {
-  if (/^-?\d+$/.test(a) && /^-?\d+$/.test(b)) {
+  const n: string[] = []
+  if (INT_RE.test(a) && INT_RE.test(b)) {
     const x = Number(a)
     const y = Number(b)
     if (Math.abs(y - x) >= BRACE_CAP) return undefined
-    const n: string[] = []
-    for (let i = x; x <= y ? i <= y : i >= y; i += x <= y ? 1 : -1) n.push(String(i))
-    return n.length > 1 ? `{${n.join(',')}}` : n[0]
-  }
-  if (a.length === 1 && b.length === 1) {
+    const padded = /^-?0\d/.test(a) || /^-?0\d/.test(b)
+    const pad = padded ? Math.max(a.replace('-', '').length, b.replace('-', '').length) : 0
+    for (let i = x; x <= y ? i <= y : i >= y; i += x <= y ? 1 : -1)
+      n.push((i < 0 ? '-' : '') + String(Math.abs(i)).padStart(pad, '0'))
+  } else if (a.length === 1 && b.length === 1) {
     const x = a.charCodeAt(0)
     const y = b.charCodeAt(0)
     if (Math.abs(y - x) >= BRACE_CAP) return undefined
-    const n: string[] = []
     for (let i = x; x <= y ? i <= y : i >= y; i += x <= y ? 1 : -1) n.push(String.fromCharCode(i))
-    return n.length > 1 ? `{${n.join(',')}}` : n[0]
-  }
-  return undefined
+    if (n.some(c => !/[A-Za-z0-9]/.test(c))) return undefined
+  } else return undefined
+  return n.length > 1 ? `{${n.join(',')}}` : n[0]
 }
 
-// One worklist and one cap for the whole word, so nested groups cannot cost 2^n.
+function groupToGlob(alts: string): string {
+  return /^[\w.-]+(,[\w.-]+)*$/.test(alts) ? `[${[...new Set(alts.replace(/,/g, ''))].join('')}]*` : '*'
+}
+
 function expandBraces(w: string): string[] {
-  w = w.replace(/\{([^{}.,]+)\.\.([^{}.,]+)\}/g, (all, a: string, b: string) => rangeToComma(a, b) ?? '*')
+  w = w.replace(/\{([^{}.,]+)\.\.([^{}.,]+)\}/g, (_all, a: string, b: string) => {
+    const r = rangeToComma(a, b)
+    if (r !== undefined) return r
+    return INT_RE.test(a) && INT_RE.test(b) ? '[-0-9]*' : '*'
+  })
   w = w.replace(/\{[^{}]*\.\.[^{}]*\}/g, '*')
   const todo = [w]
   const out: string[] = []
@@ -2658,7 +2667,14 @@ function expandBraces(w: string): string[] {
       const post = cur.slice(m.index + m[0].length)
       for (const a of m[1]!.split(',')) todo.push(pre + a + post)
     }
-    if (todo.length + out.length > BRACE_CAP) return ['*']
+    if (todo.length + out.length > BRACE_CAP) {
+      let c = w
+      for (let prev = ''; prev !== c;) {
+        prev = c
+        c = c.replace(/\{([^{}]*,[^{}]*)\}/g, (_all, alts: string) => groupToGlob(alts))
+      }
+      return [c]
+    }
   }
   return out
 }
