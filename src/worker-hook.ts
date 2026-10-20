@@ -7643,7 +7643,10 @@ function denyAtScan(
     // claude-factory-p43v.5: a dynamic word, with no git or gh word of its own before it, can
     // still hide a verb or subcommand that anyGitReason and anyGhReason never see, because no
     // literal git or gh word ever starts this segment.
-    const dynamicCmdFound = anyDynamicCommandReason(words)
+    // claude-factory-lpiu: a redirect word (`$G >f push`) is no flag, so read the words again
+    // without redirects. This only adds denials.
+    const dynamicCmdFound =
+      anyDynamicCommandReason(words) ?? anyDynamicCommandReason(dropRedirectWords(words))
     if (dynamicCmdFound) return dynamicCmdFound
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can

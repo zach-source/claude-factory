@@ -5737,6 +5737,30 @@ test.each(JSY0_ALLOW)('denyReason allows a harmless = word: %s (claude-factory-j
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
+const LPIU_DENY = [
+  '$G >f push origin main',
+  '$G 2>&1 push origin main',
+  '$G > f push origin main',
+  '$G >f $V origin main',
+  'sudo $G >f push origin main',
+  '=git >f push origin main',
+  '=git 2>/dev/null push origin main',
+  '=git >f -C /tmp push origin main',
+]
+
+test.each(LPIU_DENY)(
+  'denyReason denies a redirect after a dynamic command word: %s (claude-factory-lpiu)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+const LPIU_ALLOW = ['ls >f', '$G >f', 'cp $A $B', 'cp $A >f $B', '$G >f status', 'echo $X >push']
+
+test.each(LPIU_ALLOW)('denyReason allows a harmless redirect: %s (claude-factory-lpiu)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
 // claude-factory-6sz8: zsh expands =X to the path of X in every word position. A guard must read
 // =rm as rm, =sudo as sudo and so on.
 const SZ8_DENY = [
