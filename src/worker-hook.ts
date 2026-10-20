@@ -918,7 +918,9 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: b
   j++
   while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
   if (cmd[j] === '<') return
-  const nl = cmd.indexOf('\n', j)
+  // claude-factory-1r7x.8: a newline after an odd run of backslashes is a continuation. The command line goes on.
+  let nl = cmd.indexOf('\n', j)
+  while (nl > 0 && /(?:^|[^\\])(?:\\\\)*\\$/.test(cmd.slice(j, nl))) nl = cmd.indexOf('\n', nl + 1)
   if (nl < 0 || !/\S/.test(cmd.slice(nl + 1))) return
   if (++hz.checks > 32) {
     info.heredoc = true
@@ -1029,11 +1031,15 @@ function segments(
   // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
   // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
   let exemptPrev: boolean = false
+  let closePrev = false
   const hz: Hz = { clearTo: -1, checks: 0, last: -2, quoted: [] }
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
     const wasExempt: boolean = exemptPrev
     exemptPrev = false
+    // claude-factory-1r7x.7: true when the last char closed a group, a substitution or a backtick. A `(` right after it still glues to the word.
+    const afterClose: boolean = closePrev
+    closePrev = false
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir: boolean = redirPrev
     redirPrev = false
@@ -1118,7 +1124,7 @@ function segments(
         }
         if (
           info &&
-          hasWord &&
+          (hasWord || afterClose) &&
           !info.globCode &&
           !(wasExempt && '$<>'.includes(prev)) &&
           !(wasExempt && prev === '=' && (word === '=' || cur.every(shellAssignmentWord))) &&
@@ -1153,6 +1159,7 @@ function segments(
         endWord()
         cur.push(')')
       }
+      if (c === ')') closePrev = true
       endSeg()
       continue
     }
@@ -1173,6 +1180,7 @@ function segments(
         hasWord = true
       }
       inBacktick = !inBacktick
+      if (!inBacktick) closePrev = true
       endSeg()
       continue
     }
@@ -8220,6 +8228,20 @@ function denyAtScan(
         // piqf read this glued head and allowed it (no IFS, a path value), so the late deny skips it.
         const h0 = cmd[0]!
         if (/\$(?:\{[^}]*\}|[A-Za-z_]\w*)\//.test(h0) && !/[`]|\$\(/.test(h0)) headValueRead = true
+      }
+    }
+    {
+      // claude-factory-xbr1: skipSudoFlags skips a $=X or ${=X} word as NAME=value, and wrapper
+      // value slots skip $X. A skipped word that expands a set name may split into a command.
+      const skipped = words.slice(0, words.length - cmd.length)
+      let k = 0
+      while (k < skipped.length && /^[A-Za-z_]\w*\+?=/.test(skipped[k]!)) k++
+      for (const w of skipped.slice(k)) {
+        for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
+          const n = m[1]!
+          if (IMPLICIT_VARS.has(n) || vars.has(n) || mentions(n) >= 2 || m[0].startsWith('${!') || dynWrite())
+            late.reason ??= DYNAMIC_VERB_REASON
+        }
       }
     }
     if (!cmd.length) continue
