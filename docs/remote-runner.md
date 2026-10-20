@@ -227,7 +227,7 @@ factory rig add web ~/repos/web --runner ax                   # rigs.json: "runn
 # a codex rig also needs its host and its vault key (OPENAI in the vault): --agent "codex" --egress api.openai.com=OPENAI
 ```
 
-Only that rig's new workers become AX tasks, and only at stations without a `runner` of their own: a station with `runner: herdr` (lifecycle's baseline, deploy, soak, rollback, incident and monitor, which read or change production) keeps its workers in panes, where the laptop's kubectl and network are. A worker already running in a pane stays there, and `--runner herdr` switches the rig back. `FACTORY_AX` points at a different `ax` binary.
+Only that rig's new workers become AX tasks, and only at stations without a `runner` of their own: a station with `runner: herdr` (lifecycle's baseline, incident and rollback, and ship's deploy, soak and rollback, which read or change production) keeps its workers in panes, where the laptop's kubectl and network are. A worker already running in a pane stays there, and `--runner herdr` switches the rig back. `FACTORY_AX` points at a different `ax` binary.
 
 ### Shared AX controller availability
 
