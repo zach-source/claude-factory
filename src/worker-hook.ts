@@ -1579,8 +1579,8 @@ function assignmentReadingsDeny(words: string[], root: string | undefined, state
  * claude-factory-pwy0: what the other segments of a command hold. A variable set in one segment
  * can put flags or the letters rm into a dynamic command word in another.
  */
-type OtherSegs = { flags: boolean; rmfind: boolean }
-const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false }
+type OtherSegs = { flags: boolean; rmfind: boolean; ifs: boolean }
+const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false, ifs: false }
 const DYN_CHARS = /[$`*?[]/
 const DYN_FLAG_TEXT = /(?<![-:])-[A-Za-z]*[rR]|:--[A-Za-z]*[rR]|--rec|-delete|-exec|-ok/
 const DYN_FLAG_WORDS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir'])
@@ -1597,7 +1597,8 @@ function hasLettersInOrder(w: string, letters: string): boolean {
  * expansion: it denies when the word can run rm or find with flags, or rm on a risky target.
  * A: the word cannot be read (open `${`, `${!`, backtick, `$(`).
  * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
- * C: another segment holds flag text (a variable there can put flags in the word).
+ * C: another segment holds flag text (a variable there can put flags in the word), or sets IFS
+ * (holds IFS, or a name that starts with I and a dollar), which splits a value into words (k8iz).
  * D: the word may read as rm or find, and a target is risky or a default value holds a path.
  * Returns rm: true when D holds but no target is risky, for the cd + rm rule. O(length).
  */
@@ -1612,7 +1613,8 @@ function dynamicHeadDeny(
   const bal = w.endsWith('${') ? w.slice(0, -2) : w
   if (w.includes('`') || w.includes('${!') || bal.split('{').length > bal.split('}').length)
     return { deny: true, rm: false }
-  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags) return { deny: true, rm: false }
+  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags || other.ifs)
+    return { deny: true, rm: false }
   if (start === 0) {
     for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
   }
@@ -6870,11 +6872,14 @@ function denyAtScan(
   // claude-factory-pwy0: per-segment flag text and rm/find text, so a dynamic word reads the others.
   const segFlag = segs.map(sg => DYN_FLAG_TEXT.test(sg.join(' ')))
   const segRmFind = segs.map(sg => /rm|find/i.test(sg.join(' ')))
+  const segIfs = segs.map(sg => /IFS|\bI\$/.test(sg.join(' ')))
+  const ifsCount = segIfs.filter(Boolean).length
   const flagCount = segFlag.filter(Boolean).length
   const rmFindCount = segRmFind.filter(Boolean).length
   const otherSegs = (i: number): OtherSegs => ({
     flags: flagCount - (segFlag[i] ? 1 : 0) > 0,
     rmfind: rmFindCount - (segRmFind[i] ? 1 : 0) > 0,
+    ifs: ifsCount - (segIfs[i] ? 1 : 0) > 0,
   })
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.

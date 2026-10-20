@@ -8480,12 +8480,19 @@ test.each(['IFS=_; y=m_-rf_/; r$y', 'y=rm_-rf_/; IFS=_; $y', 'y=m_-rf_/; z=FS; e
   },
 )
 
-test('denyReason denies a default-value command word with an earlier IFS (claude-factory-k8iz)', () => {
-  expect(denyReason('y=m_-rf_/; z=FS; export I$z=_; r${RM:-r} $y', '/Users/acme/widget')).toBeDefined()
-})
-
-test.each(['$EDITOR acme.txt', '$x ls'])('denyReason allows %j (claude-factory-k8iz)', cmd => {
-  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+const DENY_K8IZ: string[] = [
+  'IFS=_; y=rm_../acme.txt; $y',
+  'y=rm_../acme.txt; IFS=_; $y',
+  'IFS=_; y=m_../acme.txt; r$y',
+  'z=FS; export I$z=_; y=m_../acme.txt; r$y',
+  'IFS=_; y=rm_/etc/hosts; $y',
+  'y=rm_/; IFS=_; $y',
+  'IFS=_; read y; $y',
+  'z=FS; declare I$z=_; y=m_../acme.txt; r$y',
+  'z=FS; printf -v I$z _; y=m_../acme.txt; r$y',
+]
+test.each(DENY_K8IZ)('denyReason denies %j (claude-factory-k8iz)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
 })
 
 test('scanReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {
