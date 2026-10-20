@@ -2052,6 +2052,9 @@ function wrapperReadingsDeny(
       return
     }
     if (WRAPPER_VALUE_FLAGS[name]?.has(w)) {
+      // A dynamic value word can split into the value and a command word (Y='x ls'; env -u $Y).
+      const v = words[j + 1]
+      if (v !== undefined && DYN_CHARS.test(v)) work.push(() => head(j + 1))
       work.push(() => flags(name, j + 2))
       return
     }
@@ -2406,6 +2409,9 @@ function commandAnchors(words: string[]): number[] {
         break
       }
       if (valueFlags?.has(w)) {
+        // A brace list in the value slot expands into extra words; one can be the command.
+        const v = words[j + 1]
+        if (v !== undefined && BRACE_LIST_WORD.test(v)) anchors.push(j + 1)
         j += 2
         continue
       }
