@@ -5654,6 +5654,29 @@ test.each(DENY_DQ_SUBST)('denyReason denies %j (double-quoted substitution)', (c
   expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
 })
 
+// claude-factory-j1dr: the cleaned reading of a double-quoted substitution blanks quotes in a false
+// comment or here-document. The raw body is read too, so a quoted command word still denies.
+const DENY_J1DR = [
+  `echo "$(echo $(true)#x ; 'g'it push origin main)"`,
+  `echo "$(cat <<E"O"F\nx\nEOF\n'g'it push origin main\n)"`,
+  `echo "$(echo <(true)#x ; 'g'it push origin main)"`,
+  `echo "$(echo >(true)#x ; 'g'it push origin main)"`,
+  `echo "$(echo =(true)#x ; 'g'it push origin main)"`,
+  `echo "$(echo $((1<<2))\n'g'it push origin main\n2\n)"`,
+]
+const ALLOW_J1DR = [
+  'echo "$(diff <(echo a) <(echo b))"',
+  'echo "$(echo $((1<<2)))"',
+  `git commit -m "$(cat <<EOF\nit's ok\nEOF\n)"`,
+  `echo "$(true # it's\n)"; echo hi`,
+]
+test.each(DENY_J1DR)('denyReason denies %j (j1dr)', (cmd) => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeTruthy()
+})
+test.each(ALLOW_J1DR)('denyReason allows %j (j1dr)', (cmd) => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeUndefined()
+})
+
 // claude-factory-mozp: a backslash at the end of a comment line is literal in a shell, so the next
 // line runs as a command. segments() joins the lines, so the guard must deny the comment line.
 const BS = '\\'
