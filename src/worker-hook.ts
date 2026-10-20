@@ -1433,13 +1433,13 @@ function wrapperAssignmentOperand(w: string): boolean {
 function gluedAtCommandSlot(head: string[]): boolean {
   const last = head.length - 1
   if (last < 0) return false
-  if (commandAnchors(head).includes(last)) return true
-  if (/^(-(exec|execdir|ok|okdir)|eval)$/.test(head[last - 1] ?? '')) return true
-  let i = 0
-  // {name}> and {name}< name an fd; >&- closes one and takes no operand
-  while (i < last && /^((\d*|\{[A-Za-z_]\w*\})[<>]|&>)/.test(head[i]!))
-    i += /^((\d*|\{[A-Za-z_]\w*\})[<>]+&?|&>>?)[|!]?$/.test(head[i]!) ? 2 : 1
-  return i === last
+  const anchors = commandAnchors(head)
+  const a = anchors[0]
+  if (a === undefined || anchors.includes(last)) return true
+  const w = head[a]!
+  if (!/^[\w./+][\w./+-]*$/.test(w) || LEAD_WRAPPERS.has(baseWord(w)) || baseWord(w) === 'eval') return true
+  for (let k = a + 1; k < last; k++) if (/^-(exec|execdir|ok|okdir)$/.test(head[k]!)) return true
+  return false
 }
 
 // claude-factory-mmc9: true when the shell reads `w` as a prefix assignment, not as the command.

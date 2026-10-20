@@ -71,6 +71,19 @@ const DENIED = [
   'bash -c "/bin/r(m) -rf /"',
   'eval "/bin/r(m) x"',
   'ls; /bin/r(m) x',
+  'eval -- /bin/r(m) -rf /',
+  'eval -- /bin/g(i)t push origin main',
+  'eval >f /bin/g(i)t push origin main',
+  'eval 2>/dev/null /bin/r(m) -rf /',
+  '- /bin/r(m) -rf /',
+  '>f A=1 /bin/r(m) -rf /',
+  'A=1 >f /bin/r(m) -rf /',
+  'sudo >f /bin/r(m) -rf /',
+  '>f sudo /bin/r(m) -rf /',
+  '{fd}>f sudo /bin/r(m) -rf /',
+  'nohup /bin/r(m) -rf /',
+  '"eval" /bin/r(m) -rf /',
+  'find . -name x -exec /bin/r(m) -rf / ;',
 ]
 test.each(DENIED)('denies a glob group in the command word: %s', cmd => {
   expect(run(cmd)).toBe(DYNAMIC_VERB_REASON)
@@ -107,6 +120,13 @@ const ALLOWED = [
   "python3 <<'EOF'\nprint(\"don't\")\nEOF",
   '"$PY" -c \'print(1)\'',
   '/bin/r(m)',
+  'echo a(b) c',
+  'ls *.@(js|ts) -l',
+  'x >f /bin/g(i)t push',
+  'sudo ls a(b) c',
+  'find . -name a(b) -print',
+  'eval echo hi',
+  'python3 <<EOF\nx = len(a) + 1\nEOF',
 ]
 test.each(ALLOWED)('allows a harmless paren: %s', cmd => {
   expect(run(cmd)).toBeUndefined()
