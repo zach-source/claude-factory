@@ -7483,6 +7483,13 @@ const ALIAS_DEFINE_DENY = [
   'ls ${galiases[M]}; eval g',
   'aliases=x cat y; eval g',
   "alias ll='ls > out'",
+  "n=ali; set -A ${n}ases g 'echo PWNED'; eval g",
+  "n=ali; set -A ${n}ases g 'echo PWNED'; echo $(g)",
+  'n=ali; typeset "${n}ases[g]=echo PWNED"; eval g',
+  "n=ali; noglob typeset ${n}ases[g]='echo PWNED'; eval g",
+  'n=ali; read -r "${n}ases[g]" <<< \'echo PWNED\'; eval g',
+  "n=BASH_ALI; printf -v \"${n}ASES[g]\" '%s' 'echo PWNED'; eval g",
+  'n=ali; print -v "${n}ases[g]" \'echo PWNED\'; eval g',
 ]
 const ALIAS_DEFINE_ALLOW = [
   "alias ll='ls -l'",
@@ -7497,6 +7504,9 @@ const ALIAS_DEFINE_ALLOW = [
   'bd search alias',
   'bun test src/worker-hook.test.ts -t alias',
   'git log --grep=alias',
+  '/abs/bin/factory report run-x 5 approve "Fix the alias guard"',
+  '/abs/bin/factory memory search "shell alias"',
+  './bin/factory memory search "alias"',
 ]
 
 test.each(ALIAS_DEFINE_DENY)(
