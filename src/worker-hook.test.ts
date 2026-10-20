@@ -8490,6 +8490,7 @@ const DENY_DNAF = [
   "find . -exe* rm -rf / ';'",
   "find . -execdi? rm -rf / ';'",
   "find . ?exec rm -rf / ';'",
+  "find . *xec rm -rf / ';'",
   "find . [-]exec rm -rf / ';'",
   'find . -name x -exe? rm -rf {} +',
   "find . -exe? /bin/rm -rf x ';'",
