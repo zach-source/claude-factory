@@ -4710,7 +4710,8 @@ function runGitFacts(ids: string[]): migrate.RunGit[] {
     if (head.exitCode !== 0) continue
     const sha = head.stdout.toString().trim()
     const def = defaultRef(run.repo)
-    if (!def) fail(`${run.repo} has no origin/HEAD or origin/main, so migrate cannot tell what is merged.`)
+    if (!def)
+      return fail(`${run.repo} has no origin/HEAD or origin/main, so migrate cannot tell what is merged.`)
     const within = (ref: string) => g(run.repo, 'merge-base', '--is-ancestor', sha, ref).exitCode === 0
     out.push({
       id,
