@@ -7856,6 +7856,61 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('dir/')).toBe('')
 })
 
+// claude-factory-563n: zsh reads `noglob` and `nocorrect` as precommand modifiers. The next word is
+// the command. The hook must skip them like `sudo`.
+const DENY_ZSH_PRECOMMAND = [
+  'noglob rm -rf /',
+  'nocorrect rm -rf /',
+  'nocorrect A=x rm -rf /',
+  'A=x nocorrect rm -rf /',
+  'A=x noglob rm -rf /',
+  'sudo nocorrect rm -rf /',
+  'nocorrect sudo rm -rf /',
+  'nocorrect noglob rm -rf /',
+  'builtin noglob rm -rf /',
+  'exec nocorrect rm -rf /',
+  '/bin/noglob rm -rf /',
+  '\\noglob rm -rf /',
+  'if nocorrect rm -rf /; then :; fi',
+  'echo x && noglob rm -rf /',
+  '{ nocorrect rm -rf /; }',
+  '{ noglob rm -rf /; }',
+  'noglob { rm -rf /; }',
+  'repeat 1 { noglob rm -rf /; }',
+]
+
+test.each(DENY_ZSH_PRECOMMAND)('denyReason denies %j (claude-factory-563n: zsh precommand modifier)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each(['G=git V=push; nocorrect $G $V origin main', 'G=git V=push; noglob $G $V origin main'])(
+  'denyReason denies %j with DYNAMIC_VERB_REASON (claude-factory-563n)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason keeps the alias, push and merge reasons behind a zsh precommand modifier (claude-factory-563n)', () => {
+  expect(denyReason('nocorrect A=x gp origin main', '/x', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
+  expect(denyReason('noglob gp origin main', '/x', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
+  expect(denyReason('nocorrect git push origin main', '/x', undefined, P43V_GATE)).toBe(PUSH_REASON)
+  expect(denyReason('nocorrect gh pr merge 1')).toBe(MERGE_REASON)
+})
+
+test.each(['noglob ls *.ts', 'nocorrect ls', 'noglob git status', 'echo noglob', 'nocorrect'])(
+  'denyReason allows %j (claude-factory-563n)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
+test.each(['nocorrect A+=x rm -rf /', 'nocorrect A[1]=x rm -rf /'])(
+  'denyReason denies %j (claude-factory-563n)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(REASON)
+  },
+)
+
 // claude-factory-fmeu: a brace group is a shell-prefix word. The command inside it still runs.
 const DENY_BRACE_GROUP_REASON = [
   '{ rm -rf /; }',
@@ -8141,7 +8196,7 @@ test('scanReason bounds a long nested default-value head word (claude-factory-pw
   expect(scanReason(cmd, '/Users/acme/widget')).toBe(REASON)
 }, 30_000)
 
-test('scanReason reads 1000 zsh flag groups in one pass (claude-factory-pwy0)', () => {
-  const cmd = '${' + '(L)'.repeat(1000) + 'x:-rm} -rf /'
+test('scanReason reads 3000 zsh flag groups in one pass (claude-factory-pwy0)', () => {
+  const cmd = '${' + '(L)'.repeat(3000) + 'x:-rm} -rf /'
   expect(scanReason(cmd, '/Users/acme/widget')).toBe(REASON)
 }, 30_000)
