@@ -252,6 +252,47 @@ The manager runs in the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another n
 
 `ax ssh` has no stdin and no PTY. So `factory attach` shows a snapshot and does not give you a keyboard. A real `herdr attach` waits for stdin and a PTY in `ax ssh`.
 
+### Move the factory to AX
+
+This section moves a running laptop factory to the manager task. The task needs the rig repos, the beads stores and the factory home. Use this runbook.
+
+#### Repos and beads in the task
+
+`rigs.json` holds the laptop's repo paths. In the task, `FACTORY_IN_AX=1` maps each rig's repo to `${FACTORY_REPOS:-/workspace/w/repos}/<rig name>`. The laptop is not changed. Runs that the laptop made have laptop paths in `run.json`. The task maps those paths to the same clones.
+
+A rig can have a `remote` field: its https clone URL. `factory repos sync` clones every rig's `remote` that is missing, and fetches the others. It changes `git@` and `ssh://` GitHub URLs to https. The gateway puts the GitHub credential in. A rig with no `remote` and no clone is an error, and the command names the rig. `factory manager host` runs `factory repos sync` before it starts the manager. A failure goes into `manager-host.log` and does not stop the manager.
+
+`factory repos sync` also makes the beads store of each rig that has a `.beads`. It uses the same steps as the worker (see Beads in the VM). The store is in `FACTORY_HOME/beads/<rig name>`. bd uses it through `BEADS_DIR`, with `BEADS_DOLT_SHARED_SERVER=0`. The store comes from the rig's `beadsRemote`, or from the `refs/dolt` of the GitHub origin. The laptop-side `bd dolt push` and `bd dolt pull` in the task use that store.
+
+Limits:
+
+- With a `beadsRemote`, the task runs plain `bd dolt push` and `bd dolt pull`. The laptop uses SQL on its Dolt server, and the task has no Dolt server. The laptop's rule for a pull conflict (keep the worker's row, and comment the other on the issue) does not run in the task. A conflict stops the pull with bd's own error.
+- A store is made once. Later syncs pull; they do not make it again.
+- A run that the laptop made keeps the laptop's worktree path. The task has no such worktree. A worker on AX does not need it.
+
+#### Steps
+
+1. Stop the laptop manager. Stop `factory loop` and `factory tick` too.
+2. Run `factory migrate-to-ax --dry-run`. It prints what moves, the size, and what stays. It writes nothing and sends nothing. If it stops with a list of runs, those runs have a worker in a herdr pane on the laptop. A pane cannot move. Finish or abort those runs, or let them reach a station boundary (a gate or a wait). Then run the dry run again.
+3. Run `factory manager --ax`. The task starts. Its host sees an empty home and waits for the migration. It does not start the manager yet. For a new factory with no migration, set `FACTORY_AX_FRESH=1` on the laptop before this step.
+4. Run `factory migrate-to-ax`. It packs a tar.gz, sends it in parts to the task with `put`, and unpacks it into `FACTORY_HOME` as the worker user. The unpack writes `FACTORY_HOME/.migrated` last. The host sees the marker, runs `factory repos sync`, and starts the manager.
+5. Run `factory attach`. The board shows the same runs as the laptop did.
+
+#### What moves
+
+- `rigs.json`, with a `remote` added to each rig (the https form of `git remote get-url origin` in its repo). `repo` stays as written.
+- `decisions.json`, `dispatch.json`, `metrics.jsonl`, `manager-sessions.json`, `memory/`, `launch/`, and the small top-level files.
+- The directories of all live runs. For finished runs (done or aborted), only the newest 50 move. `--keep N` changes the number. Their records in `metrics.jsonl` are already written.
+
+These stay on the laptop: `tick.lock`, `bin`, `devenv/`, the backups of `rigs.json`, and any other top-level file over 5 MB. The dry run names them.
+
+#### Safety
+
+- The command refuses to send into a home that holds a factory (`rigs.json`, `runs/` or `.migrated`). `--force` overrides this. Use it only when no manager runs in the task.
+- The host does not start the manager while the home is empty, or while a migration archive is on the volume.
+- Runs on `ax://` workers move with no change. Their workers keep running while the move happens.
+- The upload is `PUT_PART` bytes of base64 for each `ax ssh` call, because `ax ssh` has no stdin. A home of 100 MB sends in about 1500 calls. A part that fails is sent again 3 times. Then the command stops. Run it again, because a part sent twice does no harm.
+
 ### Policy broker
 
 The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the TLS call to it with grpc-status 14. So the manager cannot create a worker egress policy or read the gateway CA with `kubectl ate`. The policy broker does these two jobs for it.

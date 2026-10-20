@@ -569,7 +569,13 @@ export function remoteManager(): string | undefined {
 }
 
 /** the laptop's knobs the manager task needs to launch its own workers */
-const MANAGER_PASS = ['FACTORY_MAX_RUNS', 'FACTORY_AX_IMAGE', 'FACTORY_AX_VAULT', 'FACTORY_AX_ATESPACE']
+const MANAGER_PASS = [
+  'FACTORY_MAX_RUNS',
+  'FACTORY_AX_FRESH',
+  'FACTORY_AX_IMAGE',
+  'FACTORY_AX_VAULT',
+  'FACTORY_AX_ATESPACE',
+]
 
 /**
  * the in-cluster addresses the manager's VM uses, read on the laptop and given at launch (none is committed): the AX
@@ -654,5 +660,42 @@ export const say = (text: string) =>
       'sh',
       '-c',
       `herdr pane send-text ${MANAGER_PANE()} "$(echo ${Buffer.from(text, 'utf8').toString('base64')} | base64 -d)" && herdr pane send-keys ${MANAGER_PANE()} Enter`,
+    ]),
+  )
+
+/** the manager task's factory home: `managerEnv` sets FACTORY_HOME to it */
+export const MANAGER_HOME = `${WS}/home`
+/** the manager's working dir in the task (the task command and its herdr panes start there) */
+export const MANAGER_CWD = WS
+/** the manager Claude's project dir in the task: CLAUDE_CONFIG_DIR, then the slug of MANAGER_CWD */
+export const MANAGER_PROJECT = `${WS}/claude/projects/${MANAGER_CWD.replace(/[^A-Za-z0-9]/g, '-')}`
+
+/**
+ * whether the manager's FACTORY_HOME already holds a factory (rigs.json, runs or the .migrated marker), so a
+ * migration refuses to write over it. A command in the VM, as the worker user
+ */
+export const managerHomeUsed = () =>
+  must(
+    managerCmd([
+      'sh',
+      '-c',
+      `cd ${MANAGER_HOME} 2>/dev/null && { [ -e rigs.json ] || [ -e runs ] || [ -e .migrated ]; } && echo used || echo empty`,
+    ]),
+  ).trim() === 'used'
+
+/**
+ * unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home, then
+ * write .migrated: `factory manager host` waits for that marker before it starts the manager
+ */
+export const unpackMigration = (name: string) =>
+  must(
+    managerCmd([
+      'sh',
+      '-c',
+      // the manager's Claude memory and transcripts (migrate.CLAUDE_STAGE) go to its project dir before the marker
+      `set -e; mkdir -p ${MANAGER_HOME}; tar -xzf ${OWN}/${name} -C ${MANAGER_HOME}; ` +
+        `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
+        `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
+        `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
     ]),
   )
