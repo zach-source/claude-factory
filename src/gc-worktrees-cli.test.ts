@@ -1216,3 +1216,52 @@ test('MIG-c: a failed fetch stops migrate-to-ax and names the repo', () => {
   expect(out.err).toContain('could not fetch origin')
   expect(out.err).toContain(repo)
 })
+
+// --- migrate-to-ax: the merged-before-move marker (claude-factory-192.12.8) ---
+
+/** a live run whose head is on origin/main and whose origin branch is gone */
+function mergedGoneRun() {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'working', merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  git(origin, 'branch', '-D', branch)
+  return { id, repo, marker: join(runDir(id), 'merged-before-move') }
+}
+const fakeAxNotFound = () => {
+  mkdirSync(bin, { recursive: true })
+  const path = join(bin, 'ax-notfound')
+  writeFileSync(path, '#!/bin/sh\necho "task not found" >&2\nexit 1\n')
+  chmodSync(path, 0o755)
+  return { FACTORY_AX: path }
+}
+
+test('MIG-d: --dry-run names the recreate and writes no marker', () => {
+  const t = mergedGoneRun()
+  const out = factory(['migrate-to-ax', '--dry-run'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain(t.id)
+  expect(existsSync(t.marker)).toBe(false)
+})
+
+test('MIG-e: a real migrate writes the marker before the manager-task check stops it', () => {
+  const t = mergedGoneRun()
+  const out = factory(['migrate-to-ax'], fakeAxNotFound())
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('not there')
+  expect(existsSync(t.marker)).toBe(true)
+})
+
+test('MIG-f: a refused migrate writes no marker', () => {
+  const t = mergedGoneRun()
+  const other = freshId('ship')
+  const { worktree } = writeRun(t.repo, other, { outcome: 'working' })
+  writeFileSync(join(worktree, 'more.txt'), 'm')
+  git(worktree, 'add', 'more.txt')
+  git(worktree, 'commit', '-q', '-m', 'unpushed')
+  const out = factory(['migrate-to-ax'], fakeAxNotFound())
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('not on origin')
+  expect(existsSync(t.marker)).toBe(false)
+})
