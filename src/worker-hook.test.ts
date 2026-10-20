@@ -5848,8 +5848,8 @@ test('denyReason denies a bd command behind a dynamic shell word (claude-factory
   expect(denyReason('env -i "`echo sh`" -c \'bd create x\'')).toBe(BEADS_ACTOR_REASON)
 })
 
-  "env -S 'sh' -c 'echo x'",
 const SFT4_ALLOW = [
+  "env -S 'sh' -c 'echo x'",
   'for f in *.ts; do echo $f; done',
   "SH=sh; $SH -c 'echo x'",
   "/bin/[b]ash -c 'echo x'",
