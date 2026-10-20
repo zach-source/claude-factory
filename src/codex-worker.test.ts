@@ -64,7 +64,8 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   expect(readlinkSync(join(f.dir, 'auth.json'))).toBe(join(f.user, 'auth.json'))
   const toml = readFileSync(join(f.dir, 'config.toml'), 'utf8')
   expect(toml).toContain('model_auto_compact_token_limit = 400000')
-  expect(toml).toContain(`[projects.${JSON.stringify(f.run.worktree)}]\ntrust_level = "trusted"`)
+  expect(toml).not.toContain('trust_level')
+  expect(toml).not.toContain('[projects')
   expect(toml).not.toContain('leak')
   const pre = JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks.PreToolUse
   expect(pre).toHaveLength(2)

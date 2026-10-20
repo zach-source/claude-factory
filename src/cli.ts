@@ -1825,8 +1825,7 @@ export function codexWorker(
   })
   writeFileSync(
     join(dir, 'config.toml'),
-    `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
-      `[projects.${JSON.stringify(run.worktree)}]\ntrust_level = "trusted"\n`,
+    `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n`,
   )
   const id = commitIdentity(HOME)
   writeFileSync(
