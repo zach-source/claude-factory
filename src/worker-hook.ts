@@ -4185,8 +4185,9 @@ function dynamicWord(w: string): boolean {
   // claude-factory-jsy0: zsh EQUALS expands a leading =cmd to the command path.
   return REFSPEC_UNSAFE.test(w) || w.startsWith('~') || /^=[^=]/.test(w)
 }
-// claude-factory-teku: a head `$_`, or a zsh form such as `${(@)_}` or `${=_}`.
-const LAST_ARG_HEAD = /\$(?:_|\{(?:\([^)]*\))?[^A-Za-z0-9_}]*_)(?![A-Za-z0-9_])/
+// claude-factory-teku: a head `$_`, or a zsh form such as `${=_}`. segments() ends a word at `(`,
+// so `${(@)_}` leaves the word `${`. Deny that cut word too.
+const LAST_ARG_HEAD = /\$(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9_])|\$\{["']?$/
 
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
 // `{}` as not dynamic. Three sites use it, not `dynamicWord`: `commandAnchors`, and the `cmd[0]`
