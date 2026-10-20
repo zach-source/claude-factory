@@ -10286,3 +10286,25 @@ test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{f
     expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
   },
 )
+
+test.each([
+  'env -u $Y -rf /',
+  'nice -n $N -rf /',
+  'env -C $D -rf /',
+  'time -o $F -rf /',
+  'exec -a $A -rf /',
+  'env -u x* -rf /',
+])('denyReason denies %j (claude-factory-mndr dynamic value word)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+test('denyReason denies a brace list in a wrapper value slot (claude-factory-mndr)', () => {
+  expect(denyReason('env -u {x,rm} -rf /', '/Users/acme/widget')).toBeTruthy()
+})
+
+test.each(['env -u X -rf /', 'env -u X ls', 'env -u A make', 'env -u $Y ls', 'env -u $Y make', 'env -u $Y git status'])(
+  'denyReason keeps allowing %j (claude-factory-mndr)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  },
+)
