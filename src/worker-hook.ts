@@ -102,6 +102,13 @@ export const SHELL_ALIAS_REASON =
   'that runs git or gh, or that this hook cannot read. The hook cannot check what the alias does. ' +
   'Type the full git or gh command, with no alias. Do not retry this exact command.'
 
+// claude-factory-mn2y
+export const SHELL_ALIAS_DEFINE_REASON =
+  'The factory denies this command: it defines a shell alias (alias, an aliases[...] or BASH_ALIASES ' +
+  'write, or a dynamic command word) and also runs more. An eval, trap, source, substitution or ' +
+  'sourced file reads the new alias after this hook ran. Define no alias; type the full command. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-1zr5
 export const SHELL_ALIAS_READ_REASON =
   'The factory denies this command: the hook cannot read the Claude Code shell-snapshot folder, so it ' +
@@ -434,6 +441,10 @@ interface ScanState {
   stdinDeferred: boolean
   globalGitConfig: boolean
   gitWord: boolean
+  /** claude-factory-mn2y: set when any segment, at any depth, may define a shell alias. */
+  aliasWrite: boolean
+  /** claude-factory-mn2y: set when a builtin or unknown command has an expansion argument. A name built from it may write the aliases table. */
+  dynArg: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
   substFallbacks: number
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
@@ -4366,6 +4377,84 @@ function dynamicCommandWord(w: string): boolean {
   return w !== '{}' && dynamicWord(w)
 }
 
+// claude-factory-mn2y: external programs cannot change the parent shell's alias table. Never add
+// a shell builtin (echo, print, printf, read, typeset, :) to this list.
+const ALIAS_SAFE_COMMANDS = new Set([
+  'grep',
+  'egrep',
+  'fgrep',
+  'rg',
+  'git',
+  'gh',
+  'bd',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'sed',
+  'awk',
+  'jq',
+  'sort',
+  'bun',
+  'ls',
+  'diff',
+  'kubectl',
+  'docker',
+])
+
+// claude-factory-mn2y: a command word with a slash and no expansion is an external program.
+function externalProgram(w: string): boolean {
+  return ALIAS_SAFE_COMMANDS.has(w) || (w.includes('/') && !/[$`]/.test(w))
+}
+
+// claude-factory-mn2y: any expansion in an argument can build a parameter name (set -A $n'ases').
+const NAME_BUILT = /[$`]/
+
+// claude-factory-mn2y: a name-building argument of a command that is not provably external.
+function segmentDynArg(words: string[]): boolean {
+  const first = commandAnchors(words)[0]
+  if (
+    first === undefined ||
+    externalProgram(words[first]!) ||
+    words[first] === 'echo' ||
+    words[first] === 'cd' ||
+    words[first]!.startsWith('#')
+  )
+    return false
+  return words.some((w, i) => i > first && NAME_BUILT.test(w))
+}
+
+// claude-factory-mn2y: true when this segment may define a shell alias.
+// W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
+// W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
+function segmentMayDefineAlias(words: string[]): boolean {
+  const anchors = commandAnchors(words)
+  const first = anchors[0]
+  const safe = first !== undefined && externalProgram(words[first]!)
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (!/alias/i.test(w)) continue
+    if (safe && i > first! && !/[$`]/.test(w)) continue
+    return true
+  }
+  for (const a of anchors) {
+    if (!dynamicCommandWord(words[a]!)) continue
+    for (let i = a + 1; i < words.length; i++) {
+      if (/^[^-=]+=/.test(words[i]!) || /[$`]/.test(words[i]!)) return true
+    }
+  }
+  return false
+}
+
+// claude-factory-mn2y: the raw text has no expansion, substitution or brace, and every segment
+// is an alias command.
+function plainAliasOnly(command: string): boolean {
+  const raw = command.replace(/\\\r?\n/g, '')
+  if (/[$`()<>{}]/.test(raw)) return false
+  const segs = segments(raw)
+  return segs.length > 0 && segs.every(w => w[0] === 'alias')
+}
+
 /**
  * Removes a leading `refs/heads/` or `heads/` from `ref`.
  * After this, `refs/heads/main`, `heads/main` and `main` compare equal.
@@ -6712,6 +6801,8 @@ export function scanReason(
     stdinDeferred: false,
     globalGitConfig: false,
     gitWord: false,
+    aliasWrite: false,
+    dynArg: false,
     substFallbacks: 0,
     work: budget,
   }
@@ -6721,12 +6812,23 @@ export function scanReason(
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
-  if (!state.headPush) return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+  // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
+  // trap, source or substitution reads it after this hook ran. Deny unless the command is only
+  // plain alias segments.
+  // A name built from an expansion can write the aliases table (set -A ${n}ases g ...), so an
+  // expansion argument plus a second segment or a substitution counts as a write too.
+  const dynWrite = state.dynArg && /[;&|\n`]|\$\(|<\(/.test(command) && !plainAliasOnly(command)
+  if (state.aliasWrite && !plainAliasOnly(command)) return SHELL_ALIAS_DEFINE_REASON
+  if (!state.headPush) {
+    if (state.stdinDeferred) return SHELL_STDIN_REASON
+    return dynWrite ? SHELL_ALIAS_DEFINE_REASON : undefined
+  }
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
   // inside a .git-named path. cwdInsideGitDir reads gate.cwd, not the command text, so it also
   // denies a write this guard's own word scan cannot read, such as a shell-variable target.
   if (state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd)) return PUSH_REASON
+  if (dynWrite) return SHELL_ALIAS_DEFINE_REASON
   return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
 }
 
@@ -6959,12 +7061,49 @@ function shellQuoteWord(w: string): string {
 // word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
 // the real command. This returns the words with each such expansion read as a word break, or
 // undefined when no word holds a glued expansion. A whole-word expansion ($X, ${X}) is not glued.
-const GLUED_EXPANSION_RE = /\$(?:\{[^}]*\}|\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
-function splitGluedExpansions(words: string[]): string[] | undefined {
+const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
+// claude-factory-dnw1: a ${...} span ends at its matching close brace, so a nested default
+// (${X:-${IFS}}) is one expansion. Only a "${" adds depth: a bare "{" in a default is literal. Each
+// span becomes $@ for the split. An unclosed span ends at the first "}" (or after "${" when none),
+// so no word after it is dropped. segments() drops quotes and backslashes, so the depth reading
+// cannot tell an escaped or single-quoted "${" from a real one. The caller also reads with byDepth
+// false (the first "}" ends the span, and a stray "}" left over is a word break) and denies if
+// either reading denies. The stray break covers a word where an escaped "${" fools the depth
+// reading and a nested default fools the first-close reading. replaceGluedExpansions reads the raw
+// text, where quotes and backslashes are visible, and is the reading that does not depend on them.
+function flattenBraceExpansions(w: string, byDepth: boolean): string {
+  let out = ''
+  for (let i = 0; i < w.length;) {
+    if (w[i] !== '$' || w[i + 1] !== '{') {
+      // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
+      out += !byDepth && w[i] === '}' ? '$@' : w[i]
+      i++
+      continue
+    }
+    let depth = 0
+    let end = -1
+    for (let j = i + 1; byDepth && j < w.length; j++) {
+      if (w[j] === '{' && w[j - 1] === '$') depth++
+      else if (w[j] === '}' && --depth === 0) {
+        end = j
+        break
+      }
+    }
+    if (end < 0) end = w.indexOf('}', i)
+    out += '$@'
+    i = (end < 0 ? i + 1 : end) + 1
+  }
+  return out
+}
+function splitGluedExpansions(words: string[], byDepth = true): string[] | undefined {
   let out: string[] | undefined
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    const parts = w.includes('$') ? w.split(GLUED_EXPANSION_RE).filter(p => p !== '') : [w]
+    const parts = w.includes('$')
+      ? flattenBraceExpansions(w, byDepth)
+          .split(GLUED_EXPANSION_RE)
+          .filter(p => p !== '')
+      : [w]
     // No part, or one part equal to the word: the word is one whole expansion, or holds none.
     if (parts.length === 0 || (parts.length === 1 && parts[0] === w)) {
       out?.push(w)
@@ -7029,6 +7168,69 @@ function replaceGluedSubstitutions(command: string): string {
     from = command.indexOf('$(', end)
   }
   return out + command.slice(last) + extra.map(e => '\n' + e).join('')
+}
+
+// claude-factory-dnw1.9: segments() drops quotes and backslashes, so the readings above cannot tell
+// an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
+// ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
+// becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
+// replaces only the "${".
+function replaceGluedExpansions(command: string): string {
+  let out = ''
+  let q = ''
+  const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (q) {
+      if (c === '\\' && q === '"') {
+        out += c + (command[i + 1] ?? '')
+        i++
+        continue
+      }
+      if (c === q) q = ''
+      out += c
+      continue
+    }
+    if (c === '\\') {
+      out += c + (command[i + 1] ?? '')
+      i++
+      continue
+    }
+    if (c === "'" || c === '"') {
+      q = c
+      out += c
+      continue
+    }
+    if (c !== '$') {
+      out += c
+      continue
+    }
+    let end = i + 1
+    const n = command[i + 1]
+    if (n === '{') {
+      let depth = 0
+      end = -1
+      for (let j = i + 1; j < command.length; j++) {
+        if (command[j] === '{' && command[j - 1] === '$') depth++
+        else if (command[j] === '}' && --depth === 0) {
+          end = j + 1
+          break
+        }
+      }
+      if (end < 0) end = i + 2
+    } else if (n !== undefined && /[A-Za-z_]/.test(n)) {
+      while (end < command.length && /[A-Za-z0-9_]/.test(command[end]!)) end++
+    } else if (n !== undefined && /[0-9@*#?$!-]/.test(n)) end++
+    else {
+      out += c
+      continue
+    }
+    if (isSpace(command[i - 1]) && isSpace(command[end])) {
+      out += command.slice(i, end)
+    } else out += ' '
+    i = end - 1
+  }
+  return out
 }
 
 function quoteWord(w: string): string {
@@ -7167,6 +7369,13 @@ function denyAtScan(
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
   }
+  if (unglued.includes('$')) {
+    const raw = replaceGluedExpansions(unglued)
+    if (raw !== unglued) {
+      const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
+  }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
@@ -7304,6 +7513,8 @@ function denyAtScan(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
+    if (!state.aliasWrite && segmentMayDefineAlias(words)) state.aliasWrite = true
+    if (!state.dynArg && segmentDynArg(words)) state.dynArg = true
     if (aliasTable) {
       const aliased = shellAliasReason(
         words,
@@ -7320,9 +7531,10 @@ function denyAtScan(
       if (aliased) return aliased
     }
     const splitWords = splitGluedExpansions(words)
-    if (splitWords?.length) {
+    for (const sw of [splitWords, splitGluedExpansions(words, false)]) {
+      if (!sw?.length) continue
       const split = denyAt(
-        splitWords.map(quoteWord).join(' '),
+        sw.map(quoteWord).join(' '),
         root,
         personOnly,
         g,
