@@ -918,6 +918,11 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: b
       if (hazard && (/\S/.test(cmd.slice(e + 1)) || (!quoted && /\$\(|`/.test(body)))) info.heredoc = true
       return
     }
+    // claude-factory-wmsr.37: in a backtick body, a line that starts with the delimiter plus a backtick ends the body early.
+    if (hazard && (dash ? line.replace(/^\t+/, '') : line).startsWith(delim)) {
+      info.heredoc = true
+      return
+    }
     p = e + 1
   }
   info.heredoc = true
