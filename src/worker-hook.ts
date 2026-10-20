@@ -2495,8 +2495,8 @@ function xargsHidesOperand(words: string[]): boolean {
 }
 
 // claude-factory-l43b: a redirect word starts with an optional fd number, then < or >.
-const REDIRECT_WORD = /^\d*[<>]/
-const REDIRECT_OPERATOR = /^\d*(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
+const REDIRECT_WORD = /^(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})[<>]/
+const REDIRECT_OPERATOR = /^(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
 
 /** Returns how many leading redirect words (and their targets) `words` has. */
 function leadingRedirects(words: string[]): number {
@@ -3011,7 +3011,7 @@ function hasGitWordIn(words: string[]): boolean {
 // Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
 // A word that holds only the operator matches in full, such as a bare `>` or `>>`.
 // The caller then reads the next word as the target.
-const REDIRECT_PREFIX_RE = /^(?:\d+|&)?(?:<>|>>?\|?)/
+const REDIRECT_PREFIX_RE = /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})?(?:<>|>>?\|?)/
 
 // claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
 // `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
@@ -7715,6 +7715,18 @@ function denyAtScan(
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
+    }
+    // claude-factory-sdur: a redirect word (`>f`, `{fd}>f`) is not the command or an -exec word.
+    // Read the segment again without redirect words. Deny-only.
+    if (words.some(w => /[<>]/.test(w))) {
+      const noRedir = dropRedirectWords(words)
+      if (noRedir.length !== words.length) {
+        const real = realCommand(noRedir)
+        if (rmFindDeny(real, root)) return REASON
+        const base = baseWord(real[0] ?? '')
+        if (base === 'rm') hasRm = true
+        else if (base === 'cd') hasCd = true
+      }
     }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir

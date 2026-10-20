@@ -9312,3 +9312,62 @@ test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', 
   const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
   expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
 }, 30_000)
+
+// claude-factory-sdur: a bash {NAME}> fd-name redirect word is a redirect word at every reader.
+test.each(['X=rm; {fd}> f $X -rf ./x'])(
+  'denyReason denies %j (claude-factory-sdur dropRedirectWords)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  },
+)
+
+test.each([
+  'echo x {fd}>~/.gitconfig',
+  'echo x {fd}> ~/.gitconfig',
+  'echo x {a[1]}>~/.gitconfig',
+  'echo x {a[b[0]]}>~/.gitconfig',
+])('denyReason denies %j (claude-factory-sdur REDIRECT_PREFIX_RE)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
+})
+
+test.each(['echo x | {fd}> f $SH', 'echo x | {fd}> f $SH -s'])(
+  'denyReason denies %j (claude-factory-sdur leadingRedirects)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(SHELL_ALIAS_DEFINE_REASON)
+  },
+)
+
+test.each([
+  '{fd}>f rm -rf /',
+  '{fd}>f find / -exec rm -rf {} \\;',
+  'find / -exec {fd}>f rm -rf {} \\;',
+  'find / -exec rm {fd}>f -rf {} \\;',
+  '>f rm -rf ./x',
+  '2>&1 rm -rf /',
+  '<f rm -rf /',
+  '&>f rm -rf /',
+  '>!f rm -rf /',
+  '> f rm -rf /',
+  'command >f rm -rf /',
+  'env >f rm -rf /',
+  'find / -exec 2>/dev/null rm -rf {} +',
+  'find / -exec > f rm -rf {} +',
+])('denyReason denies %j (claude-factory-sdur redirect re-read)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+test.each(['cd .. && >f rm x', 'cd .. ; 2>/dev/null rm x', 'cd .. ; command >f rm x', '>f cd .. ; rm x'])(
+  'denyReason denies %j (claude-factory-sdur cd and rm pair)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  },
+)
+
+test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{fd}>f echo hi'])(
+  'denyReason keeps allowing %j (claude-factory-sdur)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  },
+)
