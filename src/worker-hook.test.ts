@@ -13,6 +13,7 @@ import {
   denyReason,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
+  ASSIGNMENT_PREFIX_REASON,
   FUNCTION_DEF_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
@@ -2659,6 +2660,60 @@ test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () 
   expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
 })
 
+// claude-factory-zsj0: a flag between `pr` or `repo` and the sub word must not hide the sub word.
+test.each([
+  'gh pr -R o/r merge 1',
+  'gh pr --repo=o/r merge 1',
+  'gh pr --repo o/r merge 1',
+  'gh pr -Ro/r merge 1',
+  'gh pr -R o/r -R o/r merge 1',
+  'gh -R o/r pr -R o/r merge 1',
+  'gh pr -R o/r >f merge 1',
+  'gh pr --bogus x merge 1',
+  'gh pr --bogus merge 1',
+  'gh repo --bogus x sync',
+  'gh repo -R o/r sync',
+])('denyReason denies %j with MERGE_REASON (claude-factory-zsj0)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+test.each(['gh pr -R o/r ready 1', 'gh pr --bogus x ready 1'])(
+  'denyReason denies %j at implement, allows at release (claude-factory-zsj0)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(READY_REASON)
+    expect(denyReason(cmd, '/root/repo', undefined, { ...AMP_LIVE_GATE, station: 'release' })).toBeUndefined()
+  },
+)
+
+test('denyReason allows gh pr -R o/r ready --undo 1 (claude-factory-zsj0)', () => {
+  expect(denyReason('gh pr -R o/r ready --undo 1', '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
+
+test.each(['gh pr -R o/r $X 1', 'gh repo --repo=o/r $X'])(
+  'denyReason denies dynamic sub word %j (claude-factory-zsj0)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test.each(['gh pr -R o/r checkout 5 && git push o HEAD', 'gh pr --bogus x checkout 5 && git push o HEAD'])(
+  'denyReason denies %j (claude-factory-zsj0)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(PUSH_REASON)
+  },
+)
+
+test.each([
+  'gh pr -R o/r view 1',
+  'gh pr --repo=o/r view 1',
+  'gh pr -Ro/r view 1',
+  'gh pr -R merge view 1',
+  'gh pr --repo merge view 1',
+  'gh pr -R o/r list',
+])('denyReason allows %j (claude-factory-zsj0)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
+
 // claude-factory-59pp.14: git and kubectl take the verb from the same slot.
 test.each([
   'git >/dev/null push origin main',
@@ -3716,6 +3771,40 @@ test('denyReason scans a many-star glob fast and denies it (claude-factory-ty8y.
     GLOBAL_GIT_CONFIG_REASON,
   )
   expect(performance.now() - t2).toBeLessThan(1000)
+})
+
+// claude-factory-267o: wordNamesHead shares the star collapse and the fail-closed cap.
+test('denyReason tests a many-star write target fast (claude-factory-267o)', () => {
+  const run = (cmd: string) => {
+    const t = performance.now()
+    const r = denyReason(cmd, '/r/acme/widget', undefined, GIT_ADMIN_PATH_GATE)
+    return { r, ms: performance.now() - t }
+  }
+  const stars = '*'.repeat(8000)
+  const a1 = run(`echo x > H${stars}x; printf x >> ~/.gitconfig; git push`)
+  expect(a1.r).toBe(GLOBAL_GIT_CONFIG_REASON)
+  expect(a1.ms).toBeLessThan(1000)
+  const a2 = run(`echo x > H${stars}x; git push`)
+  expect(a2.r).toBeUndefined()
+  expect(a2.ms).toBeLessThan(1000)
+  const a3 = run(`echo x > H${stars}; git push`)
+  expect(a3.r).toBe(PUSH_REASON)
+  expect(a3.ms).toBeLessThan(1000)
+  const a4 = run(`cat H${'*?'.repeat(4000)}; git push`)
+  expect(a4.r).toBe(PUSH_REASON)
+  expect(a4.ms).toBeLessThan(1000)
+})
+
+test.each([
+  ['cat a*b*b*b*b*b; git push', PUSH_REASON],
+  ['cat a*b*c*d*e; git push', undefined],
+  ['echo x > H*; git push', PUSH_REASON],
+  ['echo x > HE?D; git push', PUSH_REASON],
+  ['echo x > H[E]AD; git push', PUSH_REASON],
+  ['echo x > out*.log', undefined],
+  ['echo x > out*.log; git push', undefined],
+])('denyReason glob cap row %s (claude-factory-267o)', (cmd, want) => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GIT_ADMIN_PATH_GATE)).toBe(want)
 })
 
 // ty8y.9-11: a git segment that writes through its operands, a directory operand, the <> redirect.
@@ -5387,6 +5476,70 @@ test.each(SZ8_ALLOW)('denyReason allows a harmless = word: %s (claude-factory-6s
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
+// zsh `repeat N cmd` runs cmd N times in the same segment. Bash prints "command not found".
+const DTR2_DENY = [
+  'repeat 1 rm -rf /',
+  'repeat 1 =rm -rf /',
+  'repeat 1+1 rm -rf /',
+  'repeat x=2 rm -rf /',
+  'repeat 1 sudo rm -rf /',
+  'repeat 1 repeat 1 rm -rf /',
+  'repeat 1 A=1 rm -rf /',
+  'repeat 1 do rm -rf /; done',
+  'if true; then repeat 1 rm -rf /; fi',
+  'time repeat 1 rm -rf /',
+  '! repeat 1 rm -rf /',
+  'echo x | repeat 1 rm -rf /',
+  'repeat 1 xargs rm -rf < f',
+  'repeat 1 timeout 5 rm -rf /',
+  'repeat 1 $G $V origin main',
+  'echo x | repeat 1 $SH',
+  'repeat $N echo hi',
+  'repeat ${N} ls',
+  'repeat `n` ls',
+  'repeat ~ ls',
+  'repeat $N rm -rf /',
+  'repeat "$(cat f)" rm -rf /',
+]
+
+test.each(DTR2_DENY)('denyReason denies a zsh repeat command: %s (claude-factory-dtr2)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+test.each(['repeat $N echo hi', 'repeat ${N} ls', 'repeat ~ ls'])(
+  'denyReason names a dynamic repeat count: %s (claude-factory-dtr2)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+const DTR2_PIN = [
+  'repeat 2 git push origin main',
+  'repeat 1 eval "rm -rf /"',
+  'repeat 1 sh -c "rm -rf /"',
+  'repeat 1 git checkout main && git push o HEAD',
+  'repeat 1 BEADS_ACTOR=x bd create t',
+]
+
+test.each(DTR2_PIN)('denyReason keeps denying: %s (claude-factory-dtr2)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+const DTR2_ALLOW = [
+  'echo repeat 1',
+  'repeat 1 ls',
+  'repeat 3 echo hi',
+  'repeat 1 git status',
+  'repeat',
+  'repeat 1',
+  'ls repeat 1 rm',
+  'repeat 1 rm x',
+]
+
+test.each(DTR2_ALLOW)('denyReason allows a harmless repeat word: %s (claude-factory-dtr2)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
 test.each([
   ['=rm', 'rm'],
   ['=RM', 'rm'],
@@ -5899,6 +6052,30 @@ test('denyReason denies env -i with 30 stacked eval words and a push in under 1 
   expect(ms).toBeLessThan(1000)
   expect(reason).toBe(PUSH_REASON)
 }, 30000)
+
+test('denyReason denies 16 eval levels around many = words and rm targets, then rm -rf /, in under 2 s (claude-factory-mmc9.26)', () => {
+  const body = 'a= '.repeat(1365) + 'rm -f ' + 'x '.repeat(2048)
+  const cmd = ('eval '.repeat(16) + body).slice(0, 8192 - '; rm -rf /'.length) + '; rm -rf /'
+  const t0 = performance.now()
+  const reason = denyReason(cmd, process.cwd(), ['acme'], { ...CBAI_GATE, gitAliases: () => new Map() })
+  const ms = performance.now() - t0
+  expect(reason).toBe(REASON)
+  expect(ms).toBeLessThan(2000)
+}, 60000)
+
+for (const [name, body] of [
+  ['a=/rm x600 then x words', 'a=/rm '.repeat(600) + 'x '.repeat(4000)],
+  ['a=/rm -- x4000', 'a=/rm -- '.repeat(4000)],
+] as const) {
+  test(`denyReason denies 32 eval levels around ${name} in under 2 s (claude-factory-mmc9.27)`, () => {
+    const cmd = ('eval '.repeat(32) + body).slice(0, 8192 - '; rm -rf /'.length) + '; rm -rf /'
+    const t0 = performance.now()
+    const reason = denyReason(cmd, process.cwd(), ['acme'], { ...CBAI_GATE, gitAliases: () => new Map() })
+    const ms = performance.now() - t0
+    expect([REASON, SCAN_BUDGET_REASON]).toContain(reason!)
+    expect(ms).toBeLessThan(2000)
+  }, 60000)
+}
 
 test('denyReason gives env -i with 30 stacked eval words and echo the n=2 verdict in under 1 s (claude-factory-cbai)', () => {
   const { reason, ms } = cbaiTimed(cbaiEvalI(CBAI_N, 'echo hi'))
@@ -7084,13 +7261,7 @@ test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (c
 })
 
 const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
-test.each([
-  'bin/factory gc --dry-run',
-  'FACTORY_HOME=/t /abs/bin/factory gc',
-  'A+=1 /abs/bin/factory gc',
-  'B[1]=2 /abs/bin/factory gc',
-  'C[k]+=3 /abs/bin/factory gc',
-])(
+test.each(['bin/factory gc --dry-run', 'FACTORY_HOME=/t /abs/bin/factory gc', 'A+=1 /abs/bin/factory gc'])(
   'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
   cmd => {
     expect(
@@ -7130,7 +7301,7 @@ test.each(['git push origin feature', 'git status', 'ls -la', 'rm -i notes.txt',
   },
 )
 
-test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x'))(
+test.each(SNAP_DENY_ALIAS.filter(c => c !== 'bad x' && !/^[A-Za-z]\[/.test(c)))(
   'denyReason allows %j when shellAliases is unset or empty, as before (claude-factory-1zr5)',
   cmd => {
     const pre = denyReason(cmd, '/w', undefined, snapGate())
@@ -7358,6 +7529,254 @@ test.each(['Git status', 'Gh pr view 1', 'Git log --oneline'])(
   },
 )
 
+// claude-factory-mmc9: zsh and bash read NAME+=value as an assignment. zsh also reads
+// NAME[sub]=value and NAME[sub]+=value. The hook must skip these words and read the real command.
+const MMC9_DENY = [
+  'A+=x rm -rf /',
+  'A+= rm -rf /',
+  'A=x B+=y rm -rf /',
+  'A+=x sudo rm -rf /',
+  'A+=x xargs rm -rf',
+  'A+=x\\\n rm -rf /',
+  'A[k]=x rm -rf /',
+  'A[k]+=x rm -rf /',
+  'A[1]=x rm -rf /',
+  'A[a[1]]=x rm -rf /',
+  "A['k y']=x rm -rf /",
+  'A["k]"]=x rm -rf /',
+  'sudo A+=x rm -rf /',
+  'env A+=x rm -rf /',
+  'env a.b=1 rm -rf /',
+  'é=x rm -rf /',
+  'Aé+=x rm -rf /',
+  'é[1]=x rm -rf /',
+  'Ａ=x rm -rf /',
+  'Aा=x rm -rf /',
+  'Aิ=x rm -rf /',
+  'Ⅰ=x rm -rf /',
+  '٣=x rm -rf /',
+  'Ⓐ=x rm -rf /',
+  'AⒶ=x rm -rf /',
+  '\u{1F130}=x rm -rf /',
+  'ा=x rm -rf /',
+  'ͅ=x rm -rf /',
+  '٣[1]=x rm -rf /',
+]
+
+test.each(MMC9_DENY)('denyReason denies %j (claude-factory-mmc9, assignment forms)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+const MMC9_DYNAMIC = [
+  'A+=x $',
+  'A+=x $G $V origin main',
+  'A[k]+=x $G $V origin main',
+  'A+=x sudo -Z $P $G $V origin main',
+]
+
+test.each(MMC9_DYNAMIC)('denyReason denies %j as a dynamic verb (claude-factory-mmc9)', cmd => {
+  expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+})
+
+const MMC9_SUBSCRIPT_FLAG = [
+  'A[(r)x]=x rm -rf /',
+  'A[(r)x]+=x rm -rf /',
+  'A[(x]=x rm -rf /',
+  'Ⓐ[(r)x]=x rm -rf /',
+  '٣[(r)x]=x rm -rf /',
+  'typeset -a A; A[(r)x]=x rm -rf /',
+]
+
+test.each(MMC9_SUBSCRIPT_FLAG)('denyReason denies %j (claude-factory-mmc9.6, subscript flag)', cmd => {
+  expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason allows ls A[(r)x] (claude-factory-mmc9.6)', () => {
+  expect(denyReason('ls A[(r)x]')).toBeUndefined()
+})
+
+test('denyReason denies A+=x $K apply with personOnly acme (claude-factory-mmc9)', () => {
+  expect(denyReason('A+=x $K apply -f x.yaml', undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test('denyReason keeps its verdict on A+=x gh and git forms (claude-factory-mmc9)', () => {
+  const gate: HookGate = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+  expect(denyReason('A+=x gh pr merge 1')).toBe(MERGE_REASON)
+  expect(denyReason('A+=x git push origin main', undefined, undefined, gate)).toBe(PUSH_REASON)
+})
+
+test.each(['$G=x $V o main', '$G+=x $V o main', '${A}+=x $G $V o main'])(
+  'denyReason keeps denying the dynamic head %j (claude-factory-mmc9)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test.each(['A+=x ls', 'A+=x bd list --all', 'echo A+=x', 'git commit -m A+=x', 'ls A[k]=x'])(
+  'denyReason allows %j (claude-factory-mmc9, not a hidden command)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
+test.each([
+  'env -i A+=x sh -c "bd create t"',
+  'env -i a.b=1 sh -c "bd create t"',
+  'env -i A[k]=x bd create t',
+])('denyReason denies %j (claude-factory-mmc9, env assignment forms)', cmd => {
+  expect(denyReason(cmd)).toBe(BEADS_ACTOR_REASON)
+})
+
+test.each(
+  ['nice', 'time', 'nohup', 'exec', 'command', 'builtin']
+    .map(w => `${w} ./d=1/rm -r ./d`)
+    .concat(['nice -n 5 ./d=1/rm -r ./d', 'sudo nice ./d=1/rm -r ./d']),
+)('denyReason denies %j (claude-factory-mmc9.10, only sudo and env read NAME=v as assignment)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each([
+  'sudo timeout 5 ./d=1/rm -r ./d',
+  'env timeout 5 ./d=1/rm -r ./d',
+  'sudo xargs ./d=1/rm -r ./d',
+  'env xargs ./d=1/rm -r ./d',
+  'sudo A=1 timeout 5 ./d=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.11, timeout and xargs clear the wrapper flag)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each([
+  'sudo /tmp/d=1/rm -r ./d',
+  'sudo /tmp/d=1/rm -rf /',
+  'sudo -u root /tmp/d=1/rm -r ./d',
+  'sudo A=1 /tmp/d=1/rm -r ./d',
+  'sudo -- ./d=1/rm -r ./d',
+  'sudo -u root -- ./d=1/rm -r ./d',
+  'sudo -- /tmp/d=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.19, sudo runs this word as the command)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each(['sudo A=1 ls', 'sudo /tmp/d=1/ls -la'])(
+  'denyReason allows %j (claude-factory-mmc9.19, the word is an assignment, not the command)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
+test.each([
+  'sudo ~/d=1/rm -r ./d',
+  'sudo ~/d=1/rm -rf /',
+  'sudo ~root/d=1/rm -r ./d',
+  'sudo ~+/d=1/rm -r ./d',
+  'sudo $HOME/d=1/rm -r ./d',
+  'sudo ${HOME}/d=1/rm -r ./d',
+  'sudo $D=1/rm -r ./d',
+  'sudo -u root ~/d=1/rm -r ./d',
+  'sudo A=1 ~/d=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.20, the shell expands the word before sudo reads it)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+// The home guard from origin/main denies this row first, with its own reason.
+test('denyReason denies a quoted home word before /d=1/rm under sudo (claude-factory-mmc9.20)', () => {
+  expect(denyReason('sudo "$HOME"/d=1/rm -r ./d')).not.toBeNull()
+})
+
+test.each([
+  'A+=x B+=y rm -rf /',
+  'A+=x sudo B+=y rm -rf /',
+  'sudo -E A+=1 rm -rf /',
+  'sudo -- A=1 rm -rf /',
+  'A=1 time B=2/rm -r ./d',
+  '/usr/bin/time A=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.22, both readings of a word with =)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each(['FOO=bar ls -la', 'make A=1 -j4', 'git -c a=b status', 'rm -f a=b', 'time ls'])(
+  'denyReason allows %j (claude-factory-mmc9.22, no rm under either reading)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
+test.each(['cd .. && A+=1 rm foo', 'cd .. && sudo A+=1 rm foo', 'A+=1 cd ..; rm foo'])(
+  'denyReason denies %j (claude-factory-mmc9.25, rm and cd under a non-ASCII-name assignment)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(REASON)
+  },
+)
+
+const MMC9_13_WRAPPERS = ['nice', 'nohup', 'exec', 'command', 'builtin', 'timeout 5', 'xargs']
+test.each(
+  MMC9_13_WRAPPERS.flatMap(w => ['A=1/rm -r ./d', 'A+=1/rm -r ./d', 'é=1/rm -r ./d'].map(c => `${w} ${c}`)),
+)('denyReason denies %j (claude-factory-mmc9.13, a word with = after a wrapper is the command)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each([
+  'A+=x ls',
+  'é=x',
+  'A[1]=x',
+  'A[1]=x; echo ok',
+  'echo A+=x',
+  'ls A[(r)x]',
+  'sudo timeout 5 ls',
+  'env a.b=1 ls',
+])('denyReason allows %j (claude-factory-mmc9.13, assignment only at a shell-prefix position)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test.each(['nice A=1 $G $V origin main', 'nohup -- A=1 $G $V origin main', 'env A=1 $G $V origin main'])(
+  'denyReason keeps denying %j (claude-factory-mmc9.15, commandAnchors skips the operand fail-closed)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test.each([
+  'sudo ./d=1/rm -r ./d',
+  'env /tmp/d=1/rm -r ./d',
+  'env -- ./d=1/rm -r ./d',
+  'A=1/rm -r ./d',
+  'env A+=1/rm -r ./d',
+  'sudo A+=1/rm -r ./d',
+  'é=1/rm -r ./d',
+  'Ⓐ=1/rm -r ./d',
+  'A²=1/rm -r ./d',
+  'A[k]=1/rm -r ./d',
+  'time A=1/rm -r ./d',
+  'time -p é=1/rm -r ./d',
+  'time -- é=1/rm -r ./d',
+  'time -p Ⓐ=1/rm -r ./d',
+  'time -p A[k]=1/rm -r ./d',
+  '/usr/bin/time A+=1/rm -r ./d',
+  '/usr/bin/time é=1/rm -r ./d',
+  '/usr/bin/time A=1/rm -r ./d',
+  '\\time A=1/rm -r ./d',
+  '"time" A=1/rm -r ./d',
+  'tim""e A+=1/rm -r ./d',
+])('denyReason denies %j (claude-factory-mmc9.22, a word with = is the command or an assignment)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each([
+  'é=x ls',
+  'A[k]=x ls',
+  'time A[k]=x ls',
+  'B[1]=2 /abs/bin/factory gc',
+  'C[k]+=3 /abs/bin/factory gc',
+  'B[1]=/x gp origin main',
+  'C[k]+=/x gp origin main',
+  'A[a]b]=/x gp origin main',
+  'time -p é=1 /abs/bin/factory gc',
+  '/usr/bin/time A+=1 /abs/bin/factory gc',
+  'tim""e A+=1 /abs/bin/factory gc',
+])('denyReason denies %j (claude-factory-mmc9.14, ambiguous assignment prefix)', cmd => {
+  expect(denyReason(cmd)).toBe(ASSIGNMENT_PREFIX_REASON)
+})
+
 // claude-factory-4i60.14: the baseWord cache returns the uncached value for every input
 const BASE_WORD_TABLE = ['\\rm', '/bin/SH', 'Git', '/usr/bin/\u017Ftat', '', 'dir/', 'a/b/GH', '\\\\x']
 
@@ -7459,3 +7878,102 @@ test.each([
 ])('denyReason allows %j (claude-factory-aylh)', cmd => {
   expect(denyReason(cmd, '/x')).toBeUndefined()
 })
+
+// claude-factory-21ux: a wrapper flag that realCommand does not know must not hide an rm or a
+// find -exec rm. Each flag word reads as a bare flag or as a flag with a value word.
+const DENY_21UX: string[] = [
+  '/usr/bin/time -l rm -rf /',
+  '/usr/bin/time -v rm -rf /',
+  'time -v rm -rf /',
+  '/usr/bin/time -a -o f rm -rf /',
+  'time -al rm -rf /',
+  'time -of rm -rf /',
+  'time --output f rm -rf /',
+  'time --output=f rm -rf /',
+  'time --verbose rm -rf /',
+  'time -q rm -rf /',
+  'nice -5 rm -rf /',
+  'nice -10 rm -rf /',
+  'nice -n5 rm -rf /',
+  'nice --adjustment=5 rm -rf /',
+  'nice --adjustment 5 rm -rf /',
+  'env -v rm -rf /',
+  'env -iv rm -rf /',
+  'env --ignore-environment rm -rf /',
+  'env --unset X rm -rf /',
+  'env --chdir /x rm -rf /',
+  'timeout --foreground 5 rm -rf /',
+  'timeout -v 5 rm -rf /',
+  'timeout --signal=KILL 5 rm -rf /',
+  'timeout --signal KILL 5 rm -rf /',
+  'timeout -sKILL 5 rm -rf /',
+  'timeout --kill-after 1 5 rm -rf /',
+  'timeout --preserve-status 5 rm -rf /',
+  'timeout 1e1 rm -rf /',
+  'timeout inf rm -rf /',
+  'exec -cl rm -rf /',
+  'sudo -E rm -rf /',
+  'nice -5 time -l rm -rf /',
+  'env -v timeout -v 5 rm -rf /',
+  'time -l find . -exec rm -r {} +',
+  'cd /x; time -l rm a',
+  'env - rm -rf /',
+  'time -l env - rm -rf /',
+  'env a.b=1 rm -rf /',
+  'sudo 1A=x rm -rf /',
+  'env -i a.b=1 rm -rf /',
+  'xargs -n 1 rm -rf /',
+  'xargs -I {} rm -rf {}',
+  'xargs -L 1 rm -rf /',
+  'env -- a.b=1 rm -rf /',
+  'env -i -- a.b=1 rm -rf /',
+  'env -u X -- 1A=x rm -rf /',
+  'sudo -- 1A=x rm -rf /',
+  'env -- - rm -rf /',
+  'env -i -- - rm -rf /',
+  'env -iu X -- - rm -rf /',
+  'env -- - a.b=1 rm -rf /',
+]
+test.each(DENY_21UX)('denyReason denies %j (claude-factory-21ux)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+const ALLOW_21UX: string[] = [
+  'time ls',
+  'time -p ls',
+  '/usr/bin/time -l ls',
+  '/usr/bin/time -v make',
+  'nice -5 ls',
+  'env -v ls',
+  'timeout --foreground 5 bun test',
+  'timeout -v 5 ls',
+  'timeout 5 rm a',
+  'time -l rm a',
+  'time -l',
+  'command -v rm',
+  'cd x && command -v rm',
+  'cd x; command -v rm',
+  'cd x; command -V rm',
+  'env FOO=1 ls',
+  'env a.b=1 ls',
+  'env -- - ls',
+  'xargs -n 1 echo',
+]
+// Accepted over-deny: 'time -l echo rm -rf /' denies. The flag can take echo as its value.
+test.each(ALLOW_21UX)('denyReason allows %j (claude-factory-21ux)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+})
+
+test('denyReason keeps the push reason behind time -l (claude-factory-21ux)', () => {
+  expect(denyReason('time -l git push origin main')).toBe(denyReason('git push origin main'))
+})
+
+test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repeat(1300) + 'a']])(
+  'denyReason bounds a long unknown-flag chain (claude-factory-21ux)',
+  cmd => {
+    const t0 = Date.now()
+    denyReason(cmd)
+    expect(Date.now() - t0).toBeLessThan(1000)
+  },
+  30_000,
+)

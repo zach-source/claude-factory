@@ -152,6 +152,7 @@ import {
   timedOutText,
   type SyncEntry,
 } from './sync'
+import { rmSafe } from './home-guard'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -1573,6 +1574,7 @@ export const HAIKU = 'claude-haiku-5-5'
  * It compacts well past the handoff limit too, only as a backstop.
  * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
  * One plugin stays in: `asd-ste100`, so the worker still writes in ASD-STE100; `disableBundledSkills` keeps its skill alone.
+ * `keep` adds more plugins by name (the enabledPlugins key before `@`): FACTORY_WORKER_PLUGINS, comma-separated.
  * `hooks.PreToolUse` keeps the user's own entries first and adds the deny-rm hook last (claude-factory-cr6, claude-factory-99d).
  */
 export const workerSettings = (
@@ -1585,8 +1587,12 @@ export const workerSettings = (
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
   personOnly?: string[],
   branches?: string[],
+  keep: string[] = [],
 ) => {
-  const ste = Object.entries(user.enabledPlugins ?? {}).filter(([k, v]) => v && k.startsWith('asd-ste100@'))
+  const names = ['asd-ste100', ...keep]
+  const ste = Object.entries(user.enabledPlugins ?? {}).filter(
+    ([k, v]) => v && names.includes(k.split('@')[0]!),
+  )
   const hooks: Record<string, unknown[]> = {
     ...user.hooks,
     PreToolUse: [
@@ -1675,7 +1681,11 @@ export function workerFlags(
     home,
     contexts?.length || branches?.length ? `worker-settings-${rig!.name}.json` : 'worker-settings.json',
   )
-  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches)
+  const keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches, keep)
   const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
   const prompt = join(home, 'worker-system.md')
@@ -2377,14 +2387,14 @@ function hold(name: string): (() => void) | null {
       if (pid ? isAlive(pid) : Date.now() - statSync(dir).mtimeMs < 120_000) return null
       // ponytail: two takers of a dead holder's lock can race, and a reused pid looks alive; holders
       // rarely die, flock if either bites
-      rmSync(dir, { recursive: true, force: true })
+      rmSafe(dir, { recursive: true, force: true })
       mkdirSync(dir)
     } catch {
       return null // the holder let go meanwhile, or another taker won: the next try gets it
     }
   }
   writeFileSync(join(dir, 'pid'), String(process.pid))
-  return () => rmSync(dir, { recursive: true, force: true })
+  return () => rmSafe(dir, { recursive: true, force: true })
 }
 
 const trackOf = (id: string, saved?: Saved): Track => {
@@ -3203,7 +3213,7 @@ function gcPass(days: number, dryRun: boolean) {
       writeJson(listFile, [...new Set([...old, ...current])])
     }
     appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(r.id)) + '\n')
-    for (const p of r.paths) rmSync(join(runDir(r.id), p), { recursive: true, force: true })
+    for (const p of r.paths) rmSafe(join(runDir(r.id), p), { recursive: true, force: true })
   }
   for (const pane of plan.launch) rmSync(join(launchDir(), `${pane}.sh`), { force: true })
 }
@@ -3540,7 +3550,7 @@ function snapshotWorktree(path: string, runId: string): string {
     git(path, 'update-ref', `refs/factory-gc/${runId}`, commit)
     return commit
   } finally {
-    rmSync(indexDir, { recursive: true, force: true })
+    rmSafe(indexDir, { recursive: true, force: true })
   }
 }
 
@@ -4263,7 +4273,7 @@ async function createRun(
     writeJson(pinned, def)
   } catch (err) {
     herdr('worktree', 'remove', '--workspace', ws, '--force') // fresh, nothing in it yet
-    rmSync(runDir(id), { recursive: true, force: true })
+    rmSafe(runDir(id), { recursive: true, force: true })
     throw new Error(
       `${relative(worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
     )
@@ -5636,14 +5646,15 @@ async function labelPass() {
         } else if (action === 'rework' && runId) {
           const node = live.find(r => r.id === runId)!.node
           const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
-          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
+          // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
           forge.unlabel(pr, reworkLabels(pr))
+          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
           forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
+          forge.unlabel(pr, reworkLabels(pr))
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
           busy.push(rig.name)
-          forge.unlabel(pr, reworkLabels(pr))
           forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
         }
@@ -7427,7 +7438,7 @@ if (import.meta.main && !outboxCmd)
         else if (existsSync(run.worktree)) git(run.repo, 'worktree', 'remove', run.worktree)
         // its record outlives it: metrics count removed runs too
         appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
-        rmSync(runDir(run.id), { recursive: true })
+        rmSafe(runDir(run.id), { recursive: true })
         console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
         break
       }
