@@ -1557,6 +1557,7 @@ test("the manager's policy adds path-prefixed GitHub rules for each mapped owner
   expect(ax.managerEnv({ FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO' })).toMatchObject({
     FACTORY_AX_GITHUB_KEYS: 'other-owner=GITHUB_OO',
   })
+  expect(ax.managerEnv({ FACTORY_BROKER_TOKEN: 'tok' })).toMatchObject({ FACTORY_BROKER_TOKEN: 'tok' })
 })
 
 // a fake curl: records the call and the body, answers by path

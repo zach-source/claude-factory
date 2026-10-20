@@ -338,6 +338,16 @@ Limits:
 - A rule that names the broker (`FACTORY_BROKER_HOSTS`, default `factory-policy-broker.factory-broker.svc`) or a wildcard hostname is refused with 400.
 - The broker logs one line for each call.
 
+`PUT` and `DELETE /policy/...` need `Authorization: Bearer <token>`, compared in constant time with `FACTORY_BROKER_TOKEN`. With no token set, the broker refuses them with 503. The `GET` routes need no token. Create the Secret before you apply the manifest, and give the same value to the laptop:
+
+```sh
+TOKEN=$(openssl rand -hex 32)
+kubectl -n factory-broker create secret generic factory-broker-token --from-literal=token=$TOKEN
+export FACTORY_BROKER_TOKEN=$TOKEN   # on the laptop; the manager task gets it from there
+```
+
+The gateway cannot add the header for the manager: it injects a vault value into HTTPS only, and the broker rule is plain HTTP. So the token is in the manager task env (`FACTORY_BROKER_TOKEN`) and the manager sends it with `curl`. It is not logged.
+
 `deploy/broker.yaml` has a NetworkPolicy that admits ingress on the broker port only from the `ate-system` namespace, where the egress gateway runs. The VM traffic leaves through the gateway. The policy selects the namespace, not the gateway pods, because their labels are not in this repo.
 
 Use in the manager task:

@@ -93,6 +93,11 @@ spec:
             # the manager task name; the broker never changes its policy. Match FACTORY_AX_MANAGER on the laptop
             - name: FACTORY_AX_MANAGER
               value: f-manager
+            # the shared bearer token; create the Secret first (docs/remote-runner.md, Policy broker). Without it
+            # the broker refuses every policy write with 503
+            - name: FACTORY_BROKER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: factory-broker-token, key: token }
             # the vault a policy may name; the broker refuses a credential from any other
             - name: FACTORY_AX_VAULT
               value: ${FACTORY_AX_VAULT}

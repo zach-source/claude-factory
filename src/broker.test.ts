@@ -13,10 +13,21 @@ const setup = (
     const r = reply(argv)
     return { code: r.code, out: r.out ?? '', err: r.err ?? '' }
   }
-  return { calls, c: configFrom({ FACTORY_BROKER_ENDPOINT: 'api.example.svc:443', ...env }, run) }
+  return {
+    calls,
+    c: configFrom(
+      { FACTORY_BROKER_ENDPOINT: 'api.example.svc:443', FACTORY_BROKER_TOKEN: TOKEN, ...env },
+      run,
+    ),
+  }
 }
-const req = (method: string, path: string, body?: string) =>
-  new Request(`http://broker.example.svc${path}`, { method, body })
+const TOKEN = 'test-bearer'
+const req = (method: string, path: string, body?: string, auth: string | null = `Bearer ${TOKEN}`) =>
+  new Request(`http://broker.example.svc${path}`, {
+    method,
+    body,
+    headers: auth === null ? {} : { authorization: auth },
+  })
 const POLICY = JSON.stringify({ rules: [{ https: { hostnames: ['a.example.com'] } }] })
 
 test('route accepts a served atespace and an actor that is not the manager', () => {
@@ -196,4 +207,28 @@ test('PUT accepts the policy that egressPolicy builds', async () => {
     )
     expect(res.status).toBe(200)
   }
+})
+
+test('policy writes need the bearer token; the GET routes do not', async () => {
+  const { calls, c } = setup()
+  for (const method of ['PUT', 'DELETE']) {
+    const path = '/policy/factory/f-r1-1'
+    expect((await handle(req(method, path, POLICY, null), c)).status).toBe(401)
+    expect((await handle(req(method, path, POLICY, 'Bearer wrong-token'), c)).status).toBe(401)
+    expect((await handle(req(method, path, POLICY, `Bearer ${TOKEN}x`), c)).status).toBe(401)
+    expect((await handle(req(method, path, POLICY, `Basic ${TOKEN}`), c)).status).toBe(401)
+  }
+  expect(calls).toEqual([])
+  expect((await handle(req('PUT', '/policy/factory/f-r1-1', POLICY), c)).status).toBe(200)
+  const open = setup(undefined, { FACTORY_BROKER_TOKEN: '' }).c
+  expect((await handle(req('GET', '/healthz', undefined, null), open)).status).toBe(200)
+})
+
+test('policy writes are refused with 503 when the broker has no token', async () => {
+  const { calls, c } = setup(undefined, { FACTORY_BROKER_TOKEN: '' })
+  const res = await handle(req('PUT', '/policy/factory/f-r1-1', POLICY), c)
+  expect(res.status).toBe(503)
+  expect(await res.text()).toContain('FACTORY_BROKER_TOKEN')
+  expect((await handle(req('DELETE', '/policy/factory/f-r1-1'), c)).status).toBe(503)
+  expect(calls).toEqual([])
 })

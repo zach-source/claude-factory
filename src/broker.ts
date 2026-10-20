@@ -3,6 +3,7 @@
 // CA), so it asks this broker, which holds a Kubernetes ServiceAccount token that ate-api accepts.
 // See docs/remote-runner.md, Policy broker.
 
+import { timingSafeEqual } from 'node:crypto'
 import { keyHosts } from './ax-hosts'
 import { CONTROLLER_UNKNOWN, controllerReadiness } from './ax-ready'
 
@@ -20,6 +21,8 @@ export type Config = {
   /** the `kubectl ate` prefix, with the token file and, when set, the endpoint */
   ate: string[]
   kubectl: string
+  /** the shared bearer token that policy writes need; unset or empty, they are refused */
+  token?: string
   /** the agent-vault vault a policy may name; unset, no policy may carry a credential */
   vault?: string
   /** the hosts each vault key may go to (ax-hosts.ts) */
@@ -49,6 +52,7 @@ export const configFrom = (env: Record<string, string | undefined>, run: Run = s
   return {
     atespaces: (env.FACTORY_BROKER_ATESPACES ?? 'factory').split(',').filter(Boolean),
     manager: env.FACTORY_AX_MANAGER ?? 'f-manager',
+    token: env.FACTORY_BROKER_TOKEN,
     vault: env.FACTORY_AX_VAULT,
     keys: keyHosts(env.FACTORY_AX_GITHUB_KEYS, env.FACTORY_BROKER_KEY_HOSTS),
     hosts: (env.FACTORY_BROKER_HOSTS ?? 'factory-policy-broker.factory-broker.svc')
@@ -88,6 +92,16 @@ async function body(req: Request) {
   if (Number(req.headers.get('content-length') ?? 0) > MAX_BODY) return null
   const raw = await req.text()
   return raw.length > MAX_BODY ? null : raw
+}
+
+/** 503 when the broker has no token (fail closed), 401 when the header is not `Bearer <token>`, else null */
+export function authRefusal(header: string | null, token?: string) {
+  if (!token) return { status: 503, error: 'FACTORY_BROKER_TOKEN is not set; policy writes are refused' }
+  const got = Buffer.from(header?.startsWith('Bearer ') ? header.slice(7) : '')
+  const want = Buffer.from(token)
+  return got.length === want.length && timingSafeEqual(got, want)
+    ? null
+    : { status: 401, error: 'a bearer token is required' }
 }
 
 /** every value of `field` anywhere in `v`, however deep */
@@ -160,6 +174,8 @@ export async function handle(req: Request, c: Config): Promise<Response> {
     const why = p.code === 0 ? controllerReadiness(p.out) : CONTROLLER_UNKNOWN
     return why ? text(503, why + '\n') : text(200, 'ready\n')
   }
+  const denied = authRefusal(req.headers.get('authorization'), c.token)
+  if (denied) return text(denied.status, denied.error + '\n')
   const target = [r.actor, '-a', r.atespace]
   if (r.op === 'delete') {
     const p = await c.run([...c.ate, 'delete', 'egress-policy', ...target])

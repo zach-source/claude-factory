@@ -241,6 +241,11 @@ function broker(method: string, path: string, body?: string, seconds = 30) {
       '-X',
       method,
       ...(body === undefined ? [] : ['--data-binary', '@-']),
+      // ponytail: the token is on curl's argv, which only the manager's own VM sees. The gateway injects
+      // a vault value into HTTPS only, and the broker rule is plain HTTP, so it cannot add this header
+      ...(process.env.FACTORY_BROKER_TOKEN
+        ? ['-H', `Authorization: Bearer ${process.env.FACTORY_BROKER_TOKEN}`]
+        : []),
       '-w',
       '\\n%{http_code}',
       `${BROKER()}${path}`,
@@ -589,6 +594,8 @@ const MANAGER_PASS = [
   'FACTORY_AX_VAULT',
   'FACTORY_AX_ATESPACE',
   'FACTORY_AX_GITHUB_KEYS',
+  // the broker's shared token: the gateway cannot inject it into the plain-HTTP broker rule
+  'FACTORY_BROKER_TOKEN',
 ]
 
 /**
