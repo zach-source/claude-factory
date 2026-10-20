@@ -727,6 +727,33 @@ test("a rig's shared Dolt remote is what the VM's beads clone from, with only a 
   }
 })
 
+test("a rig with no Dolt remote bootstraps its beads from the git origin through a sync.remote config", () => {
+  const own = join(dir, 'own-beads-origin')
+  const bd = join(dir, 'bd-boot-origin')
+  // like bd 1.3.0: no .beads/config.yaml, no workspace
+  writeFileSync(
+    bd,
+    `#!/bin/sh\n[ -f .beads/config.yaml ] || { printf '%s\\n' 'Error: No active beads workspace found.' >&2; exit 1; }\ncat .beads/config.yaml >> ${join(dir, 'bd-boot-origin.log')}\nmkdir -p .beads/embeddeddolt\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  delete process.env.FACTORY_BEADS_REMOTE
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_REPO: 'https://github.com/acme/widget.git',
+    FACTORY_BD: bd,
+  })
+  try {
+    worker.setupBeads()
+    expect(readFileSync(join(dir, 'bd-boot-origin.log'), 'utf8')).toBe(
+      'sync.remote: "git+https://github.com/acme/widget.git"\n',
+    )
+  } finally {
+    process.env = saved
+  }
+})
+
 test("a cached devenv becomes the worker's environment, keeping the VM's places and CA", () => {
   const own = join(dir, 'own-devenv')
   const repo = join(dir, 'repo-devenv')
