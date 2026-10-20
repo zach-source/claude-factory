@@ -94,6 +94,11 @@ const DENIED = [
   'script -q /dev/null /bin/r(m) -rf /',
   'stdbuf -o0 /bin/g(i)t push origin main',
   'stdbuf -o0 /bin/r(m) -rf /',
+  'cd /etc/profiles/per-user/u/bin; caffeinate g(i)t push origin main',
+  'caffeinate g(i)t push --force origin main',
+  'arch -arm64 g(i)t push origin main',
+  'script -q /dev/null g(i)t push origin main',
+  'python3 <<EOF\nx = len(a) + 1\nEOF',
 ]
 test.each(DENIED)('denies a glob group in the command word: %s', cmd => {
   expect(run(cmd)).toBe(DYNAMIC_VERB_REASON)
@@ -132,10 +137,10 @@ const ALLOWED = [
   '/bin/r(m)',
   'echo a(b) c',
   'ls *.@(js|ts) -l',
+  'ls src/*.@(js|ts) -l',
   'sudo ls a(b) c',
   'find . -name a(b) -print',
   'eval echo hi',
-  'python3 <<EOF\nx = len(a) + 1\nEOF',
 ]
 test.each(ALLOWED)('allows a harmless paren: %s', cmd => {
   expect(run(cmd)).toBeUndefined()

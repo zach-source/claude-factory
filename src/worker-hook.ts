@@ -1430,18 +1430,22 @@ function wrapperAssignmentOperand(w: string): boolean {
  * It returns true if the word is a command anchor, or if no anchor exists.
  * It returns true if the first anchor is not a plain literal, or is `eval`.
  * It returns true if a `find -exec` word (or -execdir, -ok, -okdir) comes before the word.
- * It returns true if the word holds a slash, because an unknown wrapper such as
- * `caffeinate /bin/r(m)` can run a path.
+ * It returns true if the first anchor is not in GLUED_ARG_SAFE, because an unknown wrapper such as
+ * `caffeinate g(i)t` can run the word.
  * The function returns false for a glued `(` in a plain argument, for example `ls a(b)`.
  */
+// claude-factory-5hjj.14: commands that never run an argument.
+const GLUED_ARG_SAFE = new Set(
+  'ls echo printf cat grep rg head tail wc file stat du diff sort uniq cut tr find'.split(' '),
+)
 function gluedAtCommandSlot(head: string[]): boolean {
   const last = head.length - 1
   if (last < 0) return false
   const anchors = commandAnchors(head)
   const a = anchors[0]
-  if (a === undefined || anchors.includes(last) || head[last]!.includes('/')) return true
+  if (a === undefined || anchors.includes(last)) return true
   const w = head[a]!
-  if (!/^[\w./+][\w./+-]*$/.test(w) || baseWord(w) === 'eval') return true
+  if (!/^[\w./+][\w./+-]*$/.test(w) || !GLUED_ARG_SAFE.has(baseWord(w))) return true
   for (let k = a + 1; k < last; k++) if (/^-(exec|execdir|ok|okdir)$/.test(head[k]!)) return true
   return false
 }
