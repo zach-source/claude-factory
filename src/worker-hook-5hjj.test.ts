@@ -89,6 +89,12 @@ const DENIED = [
   '"eval" /bin/r(m) -rf /',
   'find . -name x -exec /bin/r(m) -rf / ;',
   'x >f /bin/g(i)t push',
+  'find . -name a(b) -print',
+  "find . -exe? /bin/r(m) -rf / ';'",
+  "find . -exe[c] /bin/r(m) -rf / ';'",
+  "find . -exe* /bin/r(m) -rf / ';'",
+  "find . -ok? /bin/r(m) -rf / ';'",
+  "find . -exe? /bin/g(i)t push origin main ';'",
   'caffeinate /bin/g(i)t push origin main',
   'caffeinate /bin/r(m) -rf /',
   'arch -arm64 /bin/g(i)t push origin main',
@@ -155,7 +161,6 @@ const ALLOWED = [
   'ls *.@(js|ts) -l',
   'ls src/*.@(js|ts) -l',
   '/bin/ls a(b)',
-  'find . -name a(b) -print',
   'eval echo hi',
 ]
 test.each(ALLOWED)('allows a harmless paren: %s', cmd => {

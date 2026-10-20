@@ -1034,7 +1034,14 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
           // claude-factory-5hjj: a glued `(` (`/bin/r(m)`, `/bin/@(r)m`) is a glob group in the
           // word. It is not a function pair, `a=(` or `<(`.
           // A call such as `print(1)` in an interpreter body has nothing after the group, so it passes.
-          if (info && hasWord && !wasExempt && !info.funcDef && !groupEndsCommand(cmd, i)) {
+          if (
+            info &&
+            hasWord &&
+            !wasExempt &&
+            !info.funcDef &&
+            !(prev === '{' && cmd[i - 2] === '$') &&
+            !groupEndsCommand(cmd, i)
+          ) {
             ;(info.glued ??= new Set()).add(cur)
           }
           endWord()
@@ -1484,7 +1491,7 @@ function wrapperAssignmentOperand(w: string): boolean {
 
 // claude-factory-5hjj.14: commands that never run an argument.
 const GLUED_ARG_SAFE = new Set(
-  'ls echo printf cat grep rg head tail wc file stat du diff sort uniq cut tr find'.split(' '),
+  'ls echo printf cat grep rg head tail wc file stat du diff sort uniq cut tr'.split(' '),
 )
 /**
  * claude-factory-5hjj: `head` ends with the word that has a glued `(`.
@@ -1496,7 +1503,6 @@ const GLUED_ARG_SAFE = new Set(
  * It returns true if the word is a command anchor.
  * It returns true if head[0] is not in GLUED_ARG_SAFE. This denies a PATH= prefix, env, sudo and
  * an unknown wrapper such as `caffeinate g(i)t`.
- * It returns true if a `find -exec` word (or -execdir, -ok, -okdir) comes before the word.
  * The function returns false for a glued `(` in a plain argument, for example `ls a(b)`.
  */
 function gluedAtCommandSlot(head: string[], first: boolean): boolean {
@@ -1507,7 +1513,6 @@ function gluedAtCommandSlot(head: string[], first: boolean): boolean {
   const anchors = commandAnchors(head)
   if (anchors.includes(last)) return true
   if (!GLUED_ARG_SAFE.has(head[0]!.replace(/^\/(usr\/)?bin\//, ''))) return true
-  for (let k = 1; k < last; k++) if (/^-(exec|execdir|ok|okdir)$/.test(head[k]!)) return true
   return false
 }
 
