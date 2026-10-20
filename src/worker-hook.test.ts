@@ -721,6 +721,74 @@ test(
   FIND_MS,
 )
 
+// claude-factory-j471: a wrapper word, an -ok/-okdir word or a redirect word in a find exec slot
+// must not hide a recursive rm.
+const J471_DENY = [
+  'find / -exec sudo rm -rf {} \\;',
+  'find / -exec env rm -rf {} \\;',
+  'find . -exec nice rm -rf {} \\;',
+  'find . -exec nohup rm -rf {} \\;',
+  'find . -exec command rm -rf {} \\;',
+  'find . -exec timeout 5 rm -rf {} \\;',
+  'find . -exec sudo -u root rm -rf {} \\;',
+  'find . -exec /usr/bin/time -l rm -rf {} \\;',
+  'sudo find / -exec env rm -rf {} \\;',
+  'find . -execdir env rm -r {} +',
+  'find / -ok rm -rf {} \\;',
+  'find / -okdir rm -rf {} \\;',
+  'find / -ok sudo rm -rf {} \\;',
+  'find . -name x -okdir env rm -r {} +',
+  'find / -exec >f sudo rm -rf {} \\;',
+  'find / -exec >f rm -rf {} \\;',
+  '>f find / -ok rm -rf {} \\;',
+  '>f find / -exec rm -rf {} \\;',
+  'find / -exec 2>&1 env rm -rf {} \\;',
+  '/usr/bin/time -l find / -exec >f rm -rf {} \\;',
+  '/usr/bin/time -l find / -ok >f sudo rm -rf {} \\;',
+  '/usr/bin/time -h find / -exec 2>&1 rm -rf {} \\;',
+  'nice --adjustment=5 find / -exec >f rm -rf {} \\;',
+  'env --ignore-environment find / -exec >f rm -rf {} \\;',
+  'xargs -n 1 find / -exec >f rm -rf {} \\;',
+]
+for (const cmd of J471_DENY) {
+  test(`denyReason denies ${cmd} (claude-factory-j471)`, () => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  })
+}
+
+const J471_ALLOW = [
+  'find / -exec ls {} \\;',
+  'find . -exec env FOO=1 cat {} \\;',
+  'find . -exec rm {} +',
+  'find . -exec env rm {} +',
+  'find . -exec sudo rm -f {} +',
+  'find . -ok ls {} \\;',
+  'find . -exec git rm -r --cached {} +',
+  'echo x > out.txt',
+  'find . -name rm -exec ls {} \\;',
+]
+for (const cmd of J471_ALLOW) {
+  test(`denyReason allows ${cmd} (claude-factory-j471)`, () => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  })
+}
+
+test(
+  'scanReason allows a 200000-word find -exec env scan, fast (claude-factory-j471)',
+  () => {
+    expect(scanReason('find . ' + '-exec env '.repeat(FIND_N))).toBeUndefined()
+  },
+  FIND_MS,
+)
+
+test(
+  'scanReason denies a 200000-word find -ok env scan with rm -rf at the end (claude-factory-j471)',
+  () => {
+    expect(scanReason('find . ' + '-ok env '.repeat(FIND_N) + '-ok env rm -rf x')).toBe(REASON)
+  },
+  FIND_MS,
+)
+
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
 // claude-factory-3f2z.2: `cwd` sets the filesystem cwd of the spawned hook process. It does not

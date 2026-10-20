@@ -1153,6 +1153,41 @@ function isRecursiveRm(words: string[], start = 0): boolean {
   return false
 }
 
+const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+
+/**
+ * claude-factory-j471: true when `cmd`, a find command, runs a recursive rm in an exec slot.
+ * A slot word is `-exec`, `-execdir`, `-ok` or `-okdir`. The word after the slot is the head.
+ * A NAME=value head is not read here. assignmentReadingsDeny reads it. If the head is rm, `isRecursiveRm` reads it. If the head is a
+ * wrapper (sudo, env, nice, timeout, xargs ...), the scan reads every later word once for an rm
+ * word. Then it returns, because each later slot is a part of the range that it read.
+ *
+ * claude-factory-lbn: this function reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
+ * `isRecursiveRm(cmd, k)` starts right after the rm word and stops at the first non-flag word.
+ * Scans from different slots do not overlap. The wrapper scan runs at most once. So the whole
+ * function costs O(n), not O(n^2).
+ */
+function findExecRmDeny(cmdIn: string[]): boolean {
+  const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
+  for (let i = 0; i < cmd.length; i++) {
+    if (!FIND_EXEC_WORDS.has(cmd[i]!)) continue
+    const k = i + 1
+    if (k >= cmd.length) continue
+    const b = baseWord(cmd[k]!)
+    if (b === 'rm') {
+      if (isRecursiveRm(cmd, k)) return true
+      continue
+    }
+    if (WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
+      for (let j = k + 1; j < cmd.length; j++) {
+        if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
+      }
+      return false
+    }
+  }
+  return false
+}
+
 /**
  * Returns the operands of an rm command. `words[0]` is the rm word itself.
  * An operand is a non-flag word before a `--`, or any word after a `--`
@@ -1546,12 +1581,7 @@ function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolea
       })
     )
   }
-  if (b === 'find') {
-    for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return true
-    }
-  }
+  if (b === 'find' && findExecRmDeny(cmd)) return true
   return false
 }
 
@@ -1668,15 +1698,12 @@ function rmFindReading(
     return { deny: false, rm: true }
   }
   if (b === 'find') {
+    if (findExecRmDeny(cmd)) return { deny: true, rm: false }
     for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 >= cmd.length) continue
+      if (!FIND_EXEC_WORDS.has(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
-      if (baseWord(next) === 'rm') {
-        if (isRecursiveRm(cmd, i + 1)) return { deny: true, rm: false }
-      } else if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny) {
+      if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny)
         return { deny: true, rm: false }
-      }
     }
   }
   return { deny: false, rm: false }
@@ -7125,15 +7152,13 @@ function denyAtScan(
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'find') {
-      // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
-      // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
-      // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a
-      // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
-      // O(n), not O(n^2).
-      for (let i = 0; i < cmd.length; i++) {
-        if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-        if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
-      }
+      if (findExecRmDeny(cmd)) return REASON
+    }
+    // claude-factory-j471: a redirect word (`>f find ...`, `find -exec >f rm ...`) can hide the
+    // find word or the slot head. Read the segment again without its redirect words.
+    if (words.some(w => /[<>]/.test(w))) {
+      const c2 = realCommand(dropRedirectWords(words))
+      if (c2.length && baseWord(c2[0]!) === 'find' && findExecRmDeny(c2)) return REASON
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
