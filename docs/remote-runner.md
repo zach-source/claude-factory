@@ -311,7 +311,10 @@ AX keeps the workspace of a task only across suspend and resume. A new task, for
 
 Owner steps (the factory does not do them):
 
-1. Make a private GitHub repository. It must belong to the owner of the token in the vault key `GITHUB_BASIC` (see "Keys"). The backup holds run journals and transcripts. Keep the repository private.
+1. Make a private GitHub repository. The backup holds run journals and transcripts. Keep the repository private.
+   Do not install the GitHub App on it. Every worker task has the App token (`GITHUB_BASIC`). A worker can then push to the backup, and the next restore writes its files.
+   Put a fine-grained token in the vault key `GITHUB_BASIC_MANAGER`. It needs read and write on the backup repository and on the rig repositories the manager syncs.
+   When `FACTORY_AX_BACKUP_REMOTE` is set, `factory manager --ax` gives the manager task that key for `github.com`. Worker tasks keep `GITHUB_BASIC`.
 2. On the laptop, set `FACTORY_AX_BACKUP_REMOTE` to its https URL. Do not put a key in the URL. Optional: `FACTORY_AX_BACKUP_BRANCH` (default `manager-home`) and `FACTORY_AX_BACKUP_EVERY` in ms (default 600000).
 3. Run `factory manager --ax`. The task gets the variables.
 

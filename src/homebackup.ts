@@ -43,6 +43,16 @@ const SECRETS = [
   /xox[bpsa]-[A-Za-z0-9-]{10,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /Authorization:\s*(Basic|Bearer)\s+[A-Za-z0-9+/=._-]{20,}/i,
+  /:\/\/[^\s/:@]+:[^\s/@]+@/, // URL userinfo
+  /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./, // JWT
+  /sk-proj-[A-Za-z0-9_-]{20,}/,
+  /lin_api_[A-Za-z0-9]{20,}/,
+  /glpat-[A-Za-z0-9_-]{20,}/,
+  /AIza[0-9A-Za-z_-]{35}/,
+  /ops_[A-Za-z0-9+/=_-]{30,}/,
+  /npm_[A-Za-z0-9]{36}/,
+  /xapp-[A-Za-z0-9-]{10,}/,
+  /PRIVATE-TOKEN:\s*\S{16,}/i,
 ]
 /** whether a file holds a token shape. Only a yes or no: the match never leaves this function */
 export const secretFile = (b: Buffer) => {
@@ -57,7 +67,7 @@ function git(
   cfg: BackupCfg,
   args: string[],
   timeout = 120_000,
-  o: { tree?: string; env?: Record<string, string> } = {},
+  o: { tree?: string; env?: Record<string, string>; input?: string } = {},
 ) {
   const p = Bun.spawnSync(
     [
@@ -76,11 +86,18 @@ function git(
       'commit.gpgsign=false',
       ...args,
     ],
-    { env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...o.env }, timeout, stdout: 'pipe', stderr: 'pipe' },
+    {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...o.env },
+      timeout,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      ...(o.input !== undefined && { stdin: Buffer.from(o.input) }),
+    },
   )
   return {
     ok: p.exitCode === 0,
     code: p.exitCode,
+    buf: p.stdout as Buffer,
     out: p.stdout.toString().trim(),
     err: clean(p.stderr.toString()),
   }
@@ -210,6 +227,8 @@ export function backup(
   }
   if (!ready) return fail('backup refused: home is not ready')
   if (existsSync(RESTORING(cfg.ws))) return fail('backup refused: a restore is not finished')
+  // a nested repo would be saved as one gitlink, with none of its files
+  if (existsSync(join(cfg.ws, 'home', '.git'))) return fail('backup refused: home/.git exists (nested repo)')
   let sha = ''
   let dirty = false
   const release = lock()
@@ -235,20 +254,24 @@ export function backup(
     }
     const add = git(cfg, ['add', '-A', '--', ...pathspecs(cfg.ws)])
     if (!add.ok) return fail(`git add: ${add.err}`)
-    const staged = git(cfg, ['diff', '--cached', '--name-only', '--diff-filter=d', '-z'])
-      .out.split('\0')
-      .filter(Boolean)
-    const regular = (n: string) => {
-      try {
-        return lstatSync(join(cfg.ws, n)).isFile()
-      } catch {
-        return false
-      }
+    // the staged blobs are what leaves the VM: scan them, not the work tree file
+    const raw = git(cfg, ['diff', '--cached', '--raw', '--no-renames', '--diff-filter=d', '-z']).out.split(
+      '\0',
+    )
+    const staged: { path: string; blob: string }[] = []
+    for (let i = 0; i + 1 < raw.length; i += 2) {
+      const m = /^:\d+ (\d+) \S+ (\S+) /.exec(raw[i]!)
+      if (m && m[1]!.startsWith('100')) staged.push({ path: raw[i + 1]!, blob: m[2]! }) // regular files, no gitlink
     }
-    const bad = staged.filter(n => regular(n) && secretFile(readFileSync(join(cfg.ws, n))))
+    const blobs = (list: { blob: string }[]) => {
+      const r = git(cfg, ['cat-file', '--batch'], 120_000, { input: list.map(s => s.blob).join('\n') + '\n' })
+      if (!r.ok) throw new Error(`git cat-file: ${r.err}`) // an unread blob is not a clean one
+      return r.buf
+    }
+    const bad = staged.length && secretFile(blobs(staged)) ? staged.filter(s => secretFile(blobs([s]))) : []
     if (bad.length) {
       git(cfg, ['reset', '-q'])
-      return fail(`backup refused: secret-like text in ${bad.join(', ')}`)
+      return fail(`backup refused: secret-like text in ${bad.map(s => s.path).join(', ')}`)
     }
     dirty = git(cfg, ['diff', '--cached', '--quiet']).ok === false
     if (dirty) {
@@ -292,6 +315,17 @@ export function restore(cfg: BackupCfg): Outcome {
     const f = git(cfg, ['fetch', '-q', cfg.remote, `refs/heads/${cfg.branch}`], PUSH_MS)
     if (!f.ok) return { error: `git fetch: ${f.err.split('\n').at(-1)}` }
     const sha = git(cfg, ['rev-parse', 'FETCH_HEAD']).out
+    // a branch that holds a path the backup excludes (login files, Claude hooks, home/bin) is not ours: write nothing
+    const names = git(cfg, ['ls-tree', '-r', '--name-only', '-z', sha])
+    if (!names.ok) return { error: `git ls-tree: ${names.err}` }
+    const ign = git(cfg, ['check-ignore', '--no-index', '-v', '-z', '--stdin'], 120_000, { input: names.out })
+    if (ign.code !== 0 && ign.code !== 1) return { error: `git check-ignore: ${ign.err}` }
+    const f4 = ign.out.split('\0')
+    const hit: string[] = []
+    // -v -z prints source, line, pattern, path; the memory rule is the backup's own, not an exclude
+    for (let i = 0; i + 3 < f4.length; i += 4) if (f4[i + 2] !== '/home/memory/') hit.push(f4[i + 3]!)
+    if (hit.length)
+      return { error: `restore refused: the branch holds excluded paths: ${hit.slice(0, 5).join(', ')}` }
     // the marker stays until the last step: a crash in between makes the next call restore again
     writeFileSync(RESTORING(cfg.ws), `${sha}\n`)
     const c = git(cfg, ['checkout', '-q', '-f', '-B', cfg.branch, sha])

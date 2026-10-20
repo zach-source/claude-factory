@@ -396,3 +396,60 @@ test('a backup with no change makes no commit; backup.json records the last run'
   expect(backupAge(join(ws, 'home'), Date.parse(j.at) + 5000)).toBe(5000)
   expect(backupAge(tmp(), Date.now())).toBeUndefined()
 })
+
+test('restore refuses a branch that holds excluded paths and writes nothing', () => {
+  const r = remote()
+  const src = workspace()
+  expect(backup(cfg(src, r), true).error).toBeUndefined()
+  // a worker pushes a tree with Claude hooks and a bin on top of the good branch
+  const w = tmp()
+  sh('clone', '-q', '-b', 'manager-home', r, w)
+  put(join(w, 'claude', 'settings.json'), '{"hooks":{}}')
+  put(join(w, 'home', 'bin', 'factory'), '#!/bin/sh')
+  sh('-C', w, ...G, 'add', '-Af', '.')
+  sh('-C', w, ...G, 'commit', '-q', '-m', 'x')
+  sh('-C', w, 'push', '-q', 'origin', 'manager-home')
+  const ws = empty()
+  const out = restore(cfg(ws, r))
+  expect(out.restored).toBeUndefined()
+  expect(out.error).toContain('claude/settings.json')
+  expect(existsSync(join(ws, 'claude', 'settings.json'))).toBe(false)
+  expect(existsSync(join(ws, 'home', '.restoring'))).toBe(false)
+  expect(existsSync(join(ws, 'home', 'rigs.json'))).toBe(false)
+})
+
+test('secretFile finds URL userinfo, JWT and the other vendor token shapes', () => {
+  const hit = [
+    'https://bob:hunter2pass@example.com/x',
+    'eyJ' + 'a'.repeat(12) + '.eyJ' + 'b'.repeat(12) + '.sig',
+    'sk-proj-' + 'a'.repeat(30),
+    'lin_api_' + 'a'.repeat(30),
+    'glpat-' + 'a'.repeat(24),
+    'AIza' + 'a'.repeat(35),
+    'ops_' + 'a'.repeat(40),
+    'npm_' + 'a'.repeat(36),
+    'xapp-1-ABCDEFGHIJ',
+    'PRIVATE-TOKEN: ' + 'a'.repeat(20),
+  ]
+  for (const s of hit) expect(secretFile(Buffer.from('x ' + s + ' y'))).toBe(true)
+  expect(secretFile(Buffer.from('see https://example.com/a and user@host'))).toBe(false)
+})
+
+test('the scan reads the staged blob: a token in a binary memory file stops the backup', () => {
+  const r = remote()
+  const ws = workspace()
+  put(join(ws, 'home', 'memory', 'b.bin'), 'a\0b ghp_' + 'a'.repeat(36))
+  const out = backup(cfg(ws, r), true)
+  expect(out.error).toContain('home/memory/b.bin')
+  expect(out.error).not.toContain('ghp_')
+  expect(sh('--git-dir', r, 'branch', '--list')).toBe('')
+})
+
+test('a nested repo at home/.git is refused, not saved as a gitlink', () => {
+  const r = remote()
+  const ws = workspace()
+  sh('init', '-q', join(ws, 'home'))
+  const out = backup(cfg(ws, r), true)
+  expect(out.error).toContain('home/.git')
+  expect(sh('--git-dir', r, 'branch', '--list')).toBe('')
+})
