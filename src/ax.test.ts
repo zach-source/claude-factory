@@ -215,6 +215,17 @@ test("a task's phase is read from ax get, and a deleted task has none", () => {
   expect(ax.phase('t')).toBe('Suspended')
 })
 
+test('a Pending task that waits for a free worker is queued; another Pending one is not', () => {
+  const ready = (reason: string) =>
+    `status:\n  phase: Pending\n  conditions:\n    - type: Ready\n      status: "False"\n      reason: ${reason}\n`
+  writeFileSync(join(dir, 'get'), ready('WaitingForCapacity'))
+  expect(ax.state('t')).toEqual({ phase: 'Pending', queued: true })
+  writeFileSync(join(dir, 'get'), ready('ImagePullBackOff'))
+  expect(ax.state('t')).toEqual({ phase: 'Pending', queued: false })
+  writeFileSync(join(dir, 'get'), ready('WaitingForCapacity').replace('Pending', 'Running'))
+  expect(ax.state('t').queued).toBe(false)
+})
+
 const AS_WORKER = [
   'setpriv',
   '--reuid=worker',

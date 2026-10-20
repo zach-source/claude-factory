@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: an AX worker task that waited for a free worker (`WaitingForCapacity`) used up its station's time, so a full pool failed the attempt with "worker never started on AX" and spent the run's tries. The factory now shows such a run as `queued for AX capacity`, and the station's clock starts when the task leaves the queue.
 - Fixed: the AX manager task did not get `FACTORY_AX_PKG_GATE` or `FACTORY_AX_CAPABILITIES`, so its workers had no pkg-gate and ran as root. It also got `FACTORY_AX_ENV` as a path to a file on the laptop. `factory manager --ax` now passes the two variables, and reads the `FACTORY_AX_ENV` file on the laptop and sends the JSON. `FACTORY_AX_ENV` can be a path or JSON (a value that starts with `{`). The content is not logged.
 - Fixed: in the AX manager, a run the laptop made kept the laptop's worktree path, and the launch of its worker ran `git -C` and the beads sync in a directory that was not there. The run's worktree is now `FACTORY_HOME/worktrees/<run id>` (`mapRunWorktree`), and the launch recreates it from the run's branch if it is missing.
 - Fixed: in the AX manager, a station with no remote runner (its own, its rig's and the default all local) kept the local one, and the tick sent a `HANDOFF` for its worker every time. The station now falls back to the `ax` runner.

@@ -608,9 +608,12 @@ async function syncAsRemoteUser(rig: Rig) {
  */
 function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const task = ax.taskOf(pane)
-  const phase = ax.phase(task)
+  const { phase, queued } = ax.state(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
-  if (phase === 'Pending') return { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
+  if (phase === 'Pending')
+    return queued
+      ? { status: 'pending', agent: 'ax', pending: 'waiting for a free AX worker', queued }
+      : { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
   if (phase === 'Suspended') return { status: 'suspended', agent: 'ax' }
   // gone, and why, kept next to the task's other files; `failed` carries it into the attempt's FAIL reason
   // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
@@ -1907,6 +1910,13 @@ function facts(run: Run, c: Ctx, now: number): Pick<Row, 'inMin' | 'quietMin' | 
 }
 
 const progressFile = (run: Run) => join(runDir(run.id), 'progress.json')
+/** when an attempt's AX task was last seen waiting for capacity: {seq, at} */
+const queuedFile = (run: Run) => join(runDir(run.id), 'queued.json')
+const queuedOf = (run: Run) =>
+  existsSync(queuedFile(run)) ? readJson<{ seq: number; at: number }>(queuedFile(run)) : undefined
+/** an attempt's clock starts when it stops waiting for AX capacity: a full pool never spends the station's time */
+export const attemptStart = (startedAt: number, seq: number, q?: { seq: number; at: number }) =>
+  q?.seq === seq ? Math.max(startedAt, q.at) : startedAt
 const progressOf = (run: Run) =>
   existsSync(progressFile(run)) ? readJson<Progress>(progressFile(run)) : undefined
 
@@ -1983,6 +1993,10 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const info = runner.info(run, c.pane)
   if (runner.name === 'ax' && info?.status === 'pending' && holdUnavailableAx(c, send))
     return 'AX executor unavailable'
+  if (info?.queued) {
+    writeJson(queuedFile(run), { seq: c.seq, at: now })
+    return 'queued for AX capacity'
+  }
   // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
@@ -2126,7 +2140,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   if (stall === 'nudge') seen.nudged = true
   if (seen !== prev || stall === 'nudge') writeJson(progressFile(run), seen)
   const due = deadline(
-    now - c.startedAt,
+    now - attemptStart(c.startedAt, c.seq, queuedOf(run)),
     timeoutMin,
     status === 'working' || isAsking, // waiting on the manager's answer is work: warned, not failed
     (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(TIME_UP)),

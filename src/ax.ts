@@ -159,6 +159,8 @@ export function manifest(l: Launch) {
 
 /** a task's phase from `ax get task` (YAML): Pending, Running, Suspended, Failed, Terminating; null when gone */
 export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1] ?? null
+/** a task that waits for a free worker in the pool: AX puts it on no full worker (Ready reason WaitingForCapacity) */
+export const isCapacityWait = (yaml: string) => /^\s+reason:\s*"?WaitingForCapacity\b/m.test(yaml)
 
 /** Pending tasks cannot start while the shared controller is down; preserve them instead of retrying. */
 export function unavailable(): string | undefined {
@@ -476,9 +478,13 @@ export const launch = (l: Launch) => {
   return `ax://${l.name}`
 }
 export function phase(task: string) {
+  return state(task).phase
+}
+/** a task's phase and whether it waits for capacity, from one `ax get task`; phase null when gone */
+export function state(task: string) {
   const r = ax(['get', 'task', task])
-  if (r.ok) return phaseOf(r.out)
-  if (/not ?found/i.test(r.err)) return null
+  if (r.ok) return { phase: phaseOf(r.out), queued: phaseOf(r.out) === 'Pending' && isCapacityWait(r.out) }
+  if (/not ?found/i.test(r.err)) return { phase: null, queued: false }
   throw new Error(`ax get task: ${r.err}`)
 }
 /**

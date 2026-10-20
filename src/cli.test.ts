@@ -11,6 +11,7 @@ import {
   clipReport,
   CONFIG_SYNC,
   deadline,
+  attemptStart,
   haltStep,
   helpedHint,
   idle,
@@ -91,6 +92,15 @@ test('a worker still working at its time limit is warned once and given half aga
   expect(deadline(61 * min, 60, true, false)).toBe('warn')
   expect(deadline(75 * min, 60, true, true)).toBeNull() // warned, still inside the grace
   expect(deadline(91 * min, 60, true, true)).toBe('fail')
+})
+
+test('time an AX task waits for a free worker does not count against the station', () => {
+  const min = 60_000
+  expect(attemptStart(0, 3, undefined)).toBe(0)
+  expect(attemptStart(0, 3, { seq: 3, at: 120 * min })).toBe(120 * min) // queued 2 h, then started
+  expect(deadline(121 * min - attemptStart(0, 3, { seq: 3, at: 120 * min }), 60, true, false)).toBeNull()
+  expect(attemptStart(0, 3, { seq: 2, at: 120 * min })).toBe(0) // an earlier attempt's queue time is not this one's
+  expect(attemptStart(10 * min, 3, { seq: 3, at: 5 * min })).toBe(10 * min)
 })
 
 test("a repo's own copy loads without this project and says how it is changed", async () => {
