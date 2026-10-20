@@ -468,6 +468,15 @@ export const DEEP_COMMAND_REASON =
   'The factory denies this command: it nests more than 32 eval or sh -c levels, and the factory ' +
   'cannot check a command this deep in time. Run the inner command directly. Do not retry this exact command.'
 
+// claude-factory-ieqm: cost bound. A zsh short form can chain ]] words. Each one adds a rescan.
+// More than SHORT_CHAIN_MAX ]] words after the first one deny (fail closed).
+const SHORT_CHAIN_MAX = 8
+export const SHORT_CHAIN_REASON = `The factory denies this command: it has more than ${SHORT_CHAIN_MAX} ]] words after a zsh short form, and the factory cannot check a chain this long in time. Split the command. Do not retry this exact command.`
+
+// claude-factory-ieqm: denyAt gives this reason when a word after ]] cannot be quoted for a rescan.
+export const SHORT_FORM_REASON =
+  'The factory denies this command: a word after ]] has a quote or expansion that the factory cannot read, so it cannot check the command that follows. Write the command plainly, or use if [[ ... ]]; then cmd; fi. Do not retry this exact command.'
+
 // claude-factory-epz: the recursion limit for denyAt's eval/sh -c levels. 16 is too low: the
 // claude-factory-25z.17 STACKED_EVAL tests use 24 levels, and need their old REASON or
 // LIVE_REASON verdict. 32 keeps those tests green. At 32, a 4000-level stacked-eval `rm` form is a
@@ -1135,6 +1144,8 @@ function isRecursiveRm(words: string[], start = 0): boolean {
   for (let k = start + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '--') return false
+    // claude-factory-ieqm: zsh passes a `]]` word as a plain argument, and GNU rm moves a later flag to the front.
+    if (w === ']]') continue
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
       continue
@@ -6860,6 +6871,16 @@ function denyAt(
   )
 }
 
+// Reads the rm or cd command of a segment: REASON for a risky rm, else 'rm', 'cd' or null.
+function rmCdBookkeeping(cmd: string[], root: string | undefined): string | null {
+  const base = cmd.length ? baseWord(cmd[0]!) : ''
+  if (base === 'rm') {
+    if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
+    return 'rm'
+  }
+  return base === 'cd' ? 'cd' : null
+}
+
 function denyAtScan(
   command: string,
   root: string | undefined,
@@ -7082,6 +7103,33 @@ function denyAtScan(
       ghConfigMovedSoFar,
     )
     if (shellReason) return shellReason
+    // claude-factory-ieqm: zsh runs a command that follows a `]]` word in the same segment
+    // (`if [[ 1 ]] rm -rf /`), but realCommand reads `[[` as the command. Scan every word after the
+    // first `]]` as a new command. A later `]]` is a plain argument in zsh, so the tail keeps it.
+    // The recursive denyAt reads a later `]]` the same way. SHORT_CHAIN_MAX denies a long chain.
+    const shortAt = words.indexOf(']]', 1)
+    if (shortAt > 0 && shortAt + 1 < words.length) {
+      const piece = words.slice(shortAt + 1)
+      if (piece.filter(w => w === ']]').length > SHORT_CHAIN_MAX) return SHORT_CHAIN_REASON
+      const quoted = piece.map(aliasWordText)
+      if (quoted.some(w => w === null)) return SHORT_FORM_REASON
+      const tailReason = denyAt(
+        quoted.join(' '),
+        root,
+        personOnly,
+        gate,
+        depth + 1,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
+      if (tailReason === HEREDOC_REASON || tailReason === COMMENT_REASON) late.reason ??= tailReason
+      else if (tailReason) return tailReason
+      const rmCd = rmCdBookkeeping(realCommand(piece), root)
+      if (rmCd === REASON) return REASON
+      if (rmCd === 'rm') hasRm = true
+      else if (rmCd === 'cd') hasCd = true
+    }
     // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
     const stdinShell = shellStdinReason(words, state)
     if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true
