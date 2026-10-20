@@ -4243,7 +4243,13 @@ const NAME_BUILT = /[$`]/
 // claude-factory-mn2y: a name-building argument of a command that is not provably external.
 function segmentDynArg(words: string[]): boolean {
   const first = commandAnchors(words)[0]
-  if (first === undefined || externalProgram(words[first]!) || words[first] === 'echo' || words[first]!.startsWith('#')) return false
+  if (
+    first === undefined ||
+    externalProgram(words[first]!) ||
+    words[first] === 'echo' ||
+    words[first]!.startsWith('#')
+  )
+    return false
   return words.some((w, i) => i > first && NAME_BUILT.test(w))
 }
 
