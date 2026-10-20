@@ -14,6 +14,7 @@ const RM = 'r' + 'm'
 
 const DENIED = [
   '/bin/r(m|"))") -rf /',
+  '/bin/r(m|\\)) -rf /',
   '/bin/r(m|");") -rf /',
   "/bin/r(m|')|') -rf /",
   '>| x /bin/r(m) -rf /',
