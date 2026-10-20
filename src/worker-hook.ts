@@ -4228,27 +4228,28 @@ const ALIAS_SAFE_COMMANDS = new Set([
   'bun',
   'ls',
   'diff',
+  'kubectl',
+  'docker',
 ])
 
-// claude-factory-mn2y: true when this segment may define a shell alias.
-// W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
-// W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
+// claude-factory-mn2y: a command word with a slash and no expansion is an external program.
 function externalProgram(w: string): boolean {
   return ALIAS_SAFE_COMMANDS.has(w) || (w.includes('/') && !/[$`]/.test(w))
 }
 
-// claude-factory-mn2y: a word whose name part comes from an expansion: a letter next to an
-// expansion (${n}ases, ali${n}), or an expansion that starts a word and is followed by = or [.
-// A plain "$x" or $(date) argument does not match.
-const NAME_BUILT = /[A-Za-z_]\$[{A-Za-z_]|[A-Za-z_]`|\$\{[^}]*\}[A-Za-z_[]|^"?\$(\{[^}]*\}|\w+)[=[]/
+// claude-factory-mn2y: any expansion in an argument can build a parameter name (set -A $n'ases').
+const NAME_BUILT = /[$`]/
 
 // claude-factory-mn2y: a name-building argument of a command that is not provably external.
 function segmentDynArg(words: string[]): boolean {
   const first = commandAnchors(words)[0]
-  if (first === undefined || externalProgram(words[first]!)) return false
+  if (first === undefined || externalProgram(words[first]!) || words[first] === 'echo' || words[first]!.startsWith('#')) return false
   return words.some((w, i) => i > first && NAME_BUILT.test(w))
 }
 
+// claude-factory-mn2y: true when this segment may define a shell alias.
+// W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
+// W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
 function segmentMayDefineAlias(words: string[]): boolean {
   const anchors = commandAnchors(words)
   const first = anchors[0]
@@ -6580,8 +6581,8 @@ export function scanReason(
   const dynWrite = state.dynArg && /[;&|\n`]|\$\(|<\(/.test(command) && !plainAliasOnly(command)
   if (state.aliasWrite && !plainAliasOnly(command)) return SHELL_ALIAS_DEFINE_REASON
   if (!state.headPush) {
-    if (dynWrite) return SHELL_ALIAS_DEFINE_REASON
-    return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+    if (state.stdinDeferred) return SHELL_STDIN_REASON
+    return dynWrite ? SHELL_ALIAS_DEFINE_REASON : undefined
   }
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
