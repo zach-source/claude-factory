@@ -537,7 +537,7 @@ export const beads = (repo: string, actor: string) => ({
   /** the open beads in the ship queue, oldest `ship_at` first */
   shipQueue: (): Bead[] => {
     const out = must(bd(repo, actor, 'list', '-l', SHIP, '--status', 'open', '--json', '-n', '0'), 'list')
-    return out === 'null' ? [] : shipOrder(JSON.parse(out))
+    return out === 'null' ? [] : shipOrder((JSON.parse(out) as Bead[]).filter(b => b.labels?.includes(SHIP)))
   },
   /** a revived run takes its bead back from closed or deferred */
   reopen: (id: string) => {

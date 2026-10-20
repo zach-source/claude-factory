@@ -94,8 +94,14 @@ test('shipQueue lists open ship beads oldest ship_at first and marks the first n
     writeFileSync(
       f.list,
       JSON.stringify([
-        bead('fx-2', { metadata: { ship_at: '2026-10-20T02:00:00Z', ship_pr: 'p2', ship_run: 'r2' } }),
-        bead('fx-1', { metadata: { ship_at: '2026-10-20T01:00:00Z', ship_pr: 'p1', ship_run: 'r1' } }),
+        bead('fx-2', {
+          labels: ['ship'],
+          metadata: { ship_at: '2026-10-20T02:00:00Z', ship_pr: 'p2', ship_run: 'r2' },
+        }),
+        bead('fx-1', {
+          labels: ['ship'],
+          metadata: { ship_at: '2026-10-20T01:00:00Z', ship_pr: 'p1', ship_run: 'r1' },
+        }),
       ]),
     )
     const q = beads(tmpdir(), 'a').shipQueue()
