@@ -27,6 +27,15 @@ function fixture(maxContextK = 200) {
   const mine = { matcher: 'Bash', hooks: [{ type: 'command', command: 'person-hook' }] }
   writeFileSync(join(user, 'hooks.json'), JSON.stringify({ hooks: { PreToolUse: [mine] } }))
   const dir = join(tmp, 'run', 'codex', 'implement')
+  // a fake codex: prints the features table kept in features.txt
+  const codexBin = join(tmp, 'codex')
+  const features = join(tmp, 'features.txt')
+  writeFileSync(
+    features,
+    'hooks stable true\nunified_exec stable true\n' +
+      ['shell_snapshot', 'multi_agent', 'code_mode'].map(x => `${x} stable false\n`).join(''),
+  )
+  writeFileSync(codexBin, `#!/bin/sh\ncat '${features}'\n`, { mode: 0o755 })
   const run = { id: 'r1', worktree: join(tmp, 'wt') }
   const make = (agent = 'codex --dangerously-bypass-approvals-and-sandbox', o = {}) =>
     codexWorker(
@@ -39,10 +48,11 @@ function fixture(maxContextK = 200) {
         hookFile: join(ROOT, 'src', 'worker-hook.ts'),
         userHome: user,
         dir,
+        codexBin,
         ...o,
       },
     )
-  return { tmp, user, dir, mine, make, run }
+  return { tmp, user, dir, mine, make, run, features, codexBin }
 }
 
 test('a codex worker home holds four files, the guard last, and the launch line names it', () => {
@@ -136,6 +146,8 @@ test('a codex launch refuses without the hook file and when the agent command tu
     '--disable hooks',
     '--disable=hooks',
     '-c features.hooks=false',
+    '--disable codex_hooks',
+    '-c features.codex_hooks=false',
     '--config features.hooks=false',
     '-c features.unified_exec=true',
     '--config features.unified_exec=true',
@@ -154,6 +166,26 @@ test('a codex launch refuses without the hook file and when the agent command tu
     expect(() => f.make(`codex ${bad}`)).toThrow('keeps the deny hook on')
   for (const ok of ['-m o3', '--disable multi_agent', '-c model_reasoning_effort=high', '--enable hooks'])
     expect(() => f.make(`codex ${ok}`)).not.toThrow()
+})
+
+test('a codex launch refuses when codex reports a guard that is not in force', () => {
+  const f = fixture()
+  const set = (hooks: boolean, on = '') =>
+    writeFileSync(
+      f.features,
+      `hooks stable ${hooks}\n` +
+        ['shell_snapshot', 'multi_agent', 'code_mode'].map(x => `${x} stable ${x === on}\n`).join(''),
+    )
+  set(false)
+  expect(() => f.make()).toThrow('feature check')
+  for (const on of ['shell_snapshot', 'multi_agent', 'code_mode']) {
+    set(true, on)
+    expect(() => f.make()).toThrow('feature check')
+  }
+  writeFileSync(f.features, 'shell_snapshot stable false\n') // hooks line missing
+  expect(() => f.make()).toThrow('feature check')
+  writeFileSync(f.codexBin, '#!/bin/sh\nexit 3\n', { mode: 0o755 })
+  expect(() => f.make()).toThrow('feature check')
 })
 
 test('the ax runner refuses codex and still takes claude and pi', () => {

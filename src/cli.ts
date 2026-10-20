@@ -1763,6 +1763,10 @@ export function workerFlags(
 
 // codex features the guard needs off: each one lets a command run with no PreToolUse hook (claude-factory-x0b9)
 const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
+// codex_hooks is the legacy alias of hooks: turning it off turns the hooks off
+const CODEX_HOOKS = ['hooks', 'codex_hooks']
+// 0.160.1 ignores --disable unified_exec (features list keeps it true), so the launch probe cannot check it
+const CODEX_PROBED = CODEX_UNGUARDED.filter(f => f !== 'unified_exec')
 
 /** the reason a codex agent command turns a guard part off, or undefined */
 function codexGuardOff(agent: string): string | undefined {
@@ -1775,13 +1779,13 @@ function codexGuardOff(agent: string): string | undefined {
   for (let i = 0; i < w.length; i++) {
     const next = (w[i + 1] ?? '').replace(/\s/g, '')
     if (w[i] === '--ignore-user-config') return w[i]
-    if (w[i] === '--disable' && next === 'hooks') return '--disable hooks'
+    if (w[i] === '--disable' && CODEX_HOOKS.includes(next)) return `--disable ${next}`
     if (w[i] === '--enable' && CODEX_UNGUARDED.includes(next)) return `--enable ${next}`
   }
   // -c/--config values in dotted, joined (-cfeatures.x=y) or table form (features={x=y}); fail closed on any match
   const on = CODEX_UNGUARDED.join('|')
   const re = new RegExp(
-    `features\\.hooks=false|features\\.(${on})=true|features=\\{[^}]*(hooks=false|(${on})=true)`,
+    `features\\.(hooks|codex_hooks)=false|features\\.(${on})=true|features=\\{[^}]*((hooks|codex_hooks)=false|(${on})=true)`,
   )
   const m = text.replace(/\s/g, '').match(re)
   if (m) return `-c ${m[0]}`
@@ -1799,7 +1803,7 @@ export function codexWorker(
   node: string,
   agent: string,
   rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches'>,
-  o: { hookFile?: string; userHome?: string; dir?: string } = {},
+  o: { hookFile?: string; userHome?: string; dir?: string; codexBin?: string } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
   if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
@@ -1836,12 +1840,29 @@ export function codexWorker(
   const link = join(dir, 'auth.json')
   rmSync(link, { force: true })
   if (existsSync(auth)) symlinkSync(auth, link)
+  const extra =
+    ' --enable hooks --dangerously-bypass-hook-trust' +
+    CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
+    ' --disable apps --disable memories'
+  // ask codex what is on with these flags and this home: fail closed on a guard that is not in force
+  const probe = Bun.spawnSync([o.codexBin ?? 'codex', ...extra.trim().split(' '), 'features', 'list'], {
+    env: { ...process.env, CODEX_HOME: dir },
+  })
+  const on = new Map<string, string>()
+  for (const l of probe.stdout.toString().split('\n')) {
+    const c = l.trim().split(/\s+/)
+    if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
+  }
+  const bad =
+    probe.exitCode !== 0
+      ? 'codex features list failed'
+      : on.get('hooks') !== 'true'
+        ? 'hooks is not on'
+        : CODEX_PROBED.find(f => on.get(f) !== 'false')
+  if (bad) fail(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
   return {
     env: { CODEX_HOME: dir, CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
-    extra:
-      ' --enable hooks --dangerously-bypass-hook-trust' +
-      CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
-      ' --disable apps --disable memories',
+    extra,
   }
 }
 
