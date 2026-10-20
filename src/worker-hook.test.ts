@@ -2745,6 +2745,79 @@ test.each(DENY_AMP_RM)('denyReason denies %j (claude-factory-59pp, rm after &>)'
   expect(denyReason(cmd, '/root/repo', undefined, AMP_GATE)).toBeDefined()
 })
 
+// claude-factory-7xmz: a redirect word before the command word hides rm from realCommand.
+const DENY_REDIR_RM = [
+  '{a[b[0]]}>f rm -rf /',
+  '{a[0][1]}>f rm -rf /',
+  '>/dev/null rm -rf /',
+  '2>&1 rm -rf /',
+  '>&2 rm -rf /',
+  '</dev/null rm -rf /',
+  '> /dev/null rm -rf /',
+  '&>/dev/null rm -rf /',
+  '>|f rm -rf /',
+  '2>>f rm -rf /',
+  '<<<x rm -rf /',
+  '>/dev/null rm /etc/passwd',
+  '>f rm -r acme',
+  'sudo >/dev/null rm -rf /',
+  'env >f rm -rf /',
+  'nice 2>&1 rm -rf /',
+  'nohup >f rm -rf /',
+  'timeout 5 >f rm -rf /',
+  'command >f rm -rf /',
+  'exec 2>&1 rm -rf /',
+  'X=1 >f rm -rf /',
+  '>f X=1 rm -rf /',
+  'sudo -u root >f env >g rm -rf /',
+  'find / -exec >/dev/null rm -rf {} \\;',
+  'find / -execdir 2>&1 rm -rf {} +',
+  '>f find / -exec rm -rf {} \\;',
+  'rm >f -r acme',
+  'rm 2>&1 -rf acme',
+  'cd /x; >f rm -f y',
+  '>f cd /x; rm -f y',
+  '{x}>f rm -rf /',
+  '>&| f rm -rf /',
+  '>&! f rm -rf /',
+  '>>&| f rm -rf /',
+  '>>&! f rm -rf /',
+  '>&|f rm -rf /',
+  '1>&| f rm -rf /',
+  'sudo >&! f rm -rf /',
+  'find / -exec >&! f rm -rf {} \\;',
+  '>! f rm -rf /',
+  '>>| f rm -rf /',
+  '{a[0]}>f rm -rf /',
+  '{a[x+1]}>f rm -rf /',
+  'repeat 1 { 2>/dev/null rm -rf / }',
+  'repeat 1 {2>&1 rm -rf / }',
+  'repeat 1 { >/dev/null rm -rf / }',
+]
+
+test.each(DENY_REDIR_RM)('denyReason denies %j (claude-factory-7xmz, redirect word before rm)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+const ALLOW_REDIR_RM = [
+  'echo x > out.txt',
+  'cat < acme.txt',
+  'rm acme.txt 2>/dev/null',
+  '>/dev/null rm acme.txt',
+  'rm acme',
+  "echo '>x' rm -rf /",
+  '>/dev/null echo rm -rf /',
+  'ls >&2 | wc -l',
+  'cmd 2>&1 | grep x',
+  'echo x >&2',
+  'echo {a,b} {c,d}',
+  'echo {a[0]} x',
+]
+
+test.each(ALLOW_REDIR_RM)('denyReason allows %j (claude-factory-7xmz, redirect word)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
 // claude-factory-59pp.10: the live gate sets ghAliases and gitAliases. With them, a redirect word at
 // the gh verb slot must not hide the real verb.
 const AMP_LIVE_GATE = {
@@ -5660,6 +5733,30 @@ const JSY0_ALLOW = [
 ]
 
 test.each(JSY0_ALLOW)('denyReason allows a harmless = word: %s (claude-factory-jsy0)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+const LPIU_DENY = [
+  '$G >f push origin main',
+  '$G 2>&1 push origin main',
+  '$G > f push origin main',
+  '$G >f $V origin main',
+  'sudo $G >f push origin main',
+  '=git >f push origin main',
+  '=git 2>/dev/null push origin main',
+  '=git >f -C /tmp push origin main',
+]
+
+test.each(LPIU_DENY)(
+  'denyReason denies a redirect after a dynamic command word: %s (claude-factory-lpiu)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+const LPIU_ALLOW = ['ls >f', '$G >f', 'cp $A $B', 'cp $A >f $B', '$G >f status', 'echo $X >push']
+
+test.each(LPIU_ALLOW)('denyReason allows a harmless redirect: %s (claude-factory-lpiu)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
