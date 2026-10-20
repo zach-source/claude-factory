@@ -6743,6 +6743,28 @@ test.each(ALLOW_WMSR_BT_TERM)('denyReason allows %j (commit message heredoc, wms
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
 })
 
+// claude-factory-wmsr.36: in an unquoted body a shell removes backslash-newline first, so a
+// joined line can end the body.
+const DENY_WMSR_JOINED_DELIM = [
+  "cat <<EOF\ndon't\nEO\\\nF\ngit push origin main\nEOF",
+  "cat <<EOF\ndon't\nEOF\\\n\ngit push origin main\nEOF",
+  "cat <<EOF\ndon't\nE\\\nO\\\nF\ngit push origin main\nEOF",
+  "cat <<-EOF\ndon't\n\tEO\\\nF\ngit push origin main\nEOF",
+  "bash <<EOF\ndon't\nEO\\\nF\ngit push origin main\nEOF",
+  "x=$(cat <<EOF\ndon't\nEO\\\nF\ngit push origin main\nEOF\n)",
+  'cat <<EOF\na \\\nb\nEOF',
+]
+test.each(DENY_WMSR_JOINED_DELIM)('denyReason denies %j (joined terminator, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_JOINED_DELIM = ["'EOF'", '\\EOF', '"EOF"'].map(
+  d => `cat <<${d}\ndon't\nEO\\\nF\necho hi\nEOF`,
+)
+test.each(ALLOW_WMSR_JOINED_DELIM)('denyReason allows %j (quoted delimiter, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
+})
+
 // A # right after a brace or a redirect char can start a comment in a shell.
 const DENY_WMSR_COMMENT_PREV = [
   `echo a >#it's\n${WM}`,
