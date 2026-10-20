@@ -791,6 +791,51 @@ for (const cmd of J471_ALLOW) {
   })
 }
 
+// claude-factory-t1n8: find puts the matched path in the {} slot, so {} can be the command word.
+const T1N8_DENY = [
+  'find /usr/bin/env -exec {} rm -rf / {} \\;',
+  'find . -exec {} rm -rf / \\;',
+  'find . -exec {} rm -r src \\;',
+  'find . -execdir {} rm -rf / \\;',
+  'find . -ok {} rm -rf / \\;',
+  'find . -okdir {} rm -rf / \\;',
+  'find /bin/rm -exec {} -rf / \\;',
+  'find /bin/rm -exec {} -r src \\;',
+  'find . -exec {} sudo rm -rf / \\;',
+  'find . -exec {} -u root rm -rf / \\;',
+  'find . -exec {} -n 5 rm -r src \\;',
+  'find . -exec "{}" rm -rf / \\;',
+  "find . -exec '{}' rm -rf / \\;",
+  'find . -exec \\{\\} rm -rf / \\;',
+  'sudo find . -exec {} rm -rf / \\;',
+  'find . -exec {} rm -rf / +',
+  'find . -exec ls {} \\; -exec {} rm -rf / \\;',
+]
+for (const cmd of T1N8_DENY) {
+  test(`denyReason denies ${cmd} (claude-factory-t1n8)`, () => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  })
+}
+
+const T1N8_ALLOW = [
+  'find . -exec ls {} +',
+  'find . -exec sudo ls {} +',
+  'find . -exec env ls {} +',
+  'find . -exec {} \\;',
+  "find . -name '*.sh' -exec {} \\;",
+  'find . -exec {} --version \\;',
+  'find . -exec {} src \\;',
+  'find . -exec {} rm x \\;',
+  'find /bin/rm -exec {} / \\;',
+  'xargs -I {} cp {} dest',
+  'find . -exec cp {} /Users/acme/widget/x \\;',
+]
+for (const cmd of T1N8_ALLOW) {
+  test(`denyReason allows ${cmd} (claude-factory-t1n8)`, () => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  })
+}
+
 test(
   'scanReason allows a 200000-word find -exec env scan, fast (claude-factory-j471)',
   () => {
