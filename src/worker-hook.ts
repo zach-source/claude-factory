@@ -552,6 +552,29 @@ const RUNNER_WRAPPERS = new Set([
   'catchsegv',
   'chpst',
   'sg',
+  'gstdbuf',
+  'gtimeout',
+  'gnice',
+  'gnohup',
+  'genv',
+  'gchroot',
+  'script',
+  'ssh-agent',
+  'fakeroot',
+  'eatmydata',
+  'xvfb-run',
+  'direnv',
+  'nix',
+  'bwrap',
+  'chronic',
+  'ifne',
+  'systemd-inhibit',
+  'cgexec',
+  'trickle',
+  'nocache',
+  'sem',
+  'lckdo',
+  'xcrun',
 ])
 
 const WRAPPERS = new Set([
@@ -2076,10 +2099,6 @@ function wrapperReadingsDeny(
     seenFlag.add(key)
     const w = words[j]
     if (w === undefined) return
-    if (w === '--') {
-      work.push(() => head(j + 1))
-      return
-    }
     if (w.startsWith('-') && w !== '-') {
       work.push(() => runner(j + 1))
       work.push(() => runner(j + 2))
@@ -2418,6 +2437,8 @@ function commandAnchors(words: string[]): number[] {
   }
   if (i >= words.length) return []
   let base = baseWord(words[i]!)
+  // claude-factory-tswp: any later word of a runner can be the command. Deny-only readings use this.
+  if (RUNNER_WRAPPERS.has(base)) return words.slice(i, i + MAX_COMMAND_ANCHORS).map((_, k) => i + k)
   if (!LEAD_WRAPPERS.has(base)) return [i]
 
   const anchors: number[] = []
@@ -8420,7 +8441,7 @@ function denyAtScan(
       state.ifsLate = true
     }
     // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
-    if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
+    if (words.some(w => /[<>]/.test(w))) {
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
