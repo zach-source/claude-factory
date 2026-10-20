@@ -6631,8 +6631,10 @@ function recordVarWrites(words: string[], vars: VarTable): void {
   // miqy.21: a glued read -aNAME (also -raNAME) writes NAME, after an IFS=, prefix too.
   if (words.some(w => baseWord(w) === 'read')) {
     for (const w of words) {
-      const a = /^-[A-Za-z]*a([A-Za-z_]\w*)$/.exec(w)
-      if (a) set(a[1]!, undefined)
+      // miqy.23: the split of flags and name is unknown (-raarr), so mark every possible name.
+      if (/^-[A-Za-z]*a[A-Za-z_]\w*$/.test(w)) {
+        for (const m of w.matchAll(/a(?=([A-Za-z_]\w*)$)/g)) set(m[1]!, undefined)
+      }
     }
   }
   const declares = ['export', 'declare', 'typeset', 'local', 'readonly'].includes(b)
@@ -6954,16 +6956,16 @@ function denyAtScan(
           // An eval script with no "=" writes nothing, so it is no dynamic-name write.
           // miqy.20: an eval script that names a writer word counts too.
           if (b === 'eval') {
-            return ws
-              .slice(k + 1)
-              .some(
-                x =>
-                  dynName(x) &&
-                  (x.includes('=') ||
-                    /(?:^|[\s;&|({])(?:declare|typeset|local|readonly|export|read|mapfile|readarray|getopts|printf|print|vared)\b/.test(
-                      x,
-                    )),
+            // miqy.22: join the args and drop quotes and backslashes, as eval does.
+            const args = ws.slice(k + 1)
+            if (!args.some(dynName)) return false
+            const j = args.join(' ').replace(/["'\\]/g, '')
+            return (
+              j.includes('=') ||
+              /(?:^|[\s;&|({])(?:declare|typeset|local|readonly|export|read|mapfile|readarray|getopts|printf|print|vared)\b/.test(
+                j,
               )
+            )
           }
           if (NAME_WRITERS.includes(b)) return ws.slice(k + 1).some(dynName)
           if (b === 'printf' || b === 'print') {

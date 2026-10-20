@@ -8429,6 +8429,15 @@ const MIQY_DENY: Array<[string, string]> = [
   ['IFS=, read -aXY; $XY', DYNAMIC_VERB_REASON],
   ['IFS=, read -raXY; sudo $XY', DYNAMIC_VERB_REASON],
   ['read -aXY; $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'printf -v' '${A}Y \"rm -rf /\"'; $XY", DYNAMIC_VERB_REASON],
+  ['A=X; eval \'\\printf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'"printf" -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'p\\rintf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'printf -v' '${A}Y \"git push origin main\"'; $XY", DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; $arr', DYNAMIC_VERB_REASON],
+  ['rray=ls; read -rarray; $rray', DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; sudo $arr', DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; eval $arr', DYNAMIC_VERB_REASON],
 ]
 test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
