@@ -8579,6 +8579,7 @@ const MMC9_DENY = [
   'ा=x rm -rf /',
   'ͅ=x rm -rf /',
   '٣[1]=x rm -rf /',
+  '{ A+=x rm -rf /; }',
 ]
 
 test.each(MMC9_DENY)('denyReason denies %j (claude-factory-mmc9, assignment forms)', cmd => {
