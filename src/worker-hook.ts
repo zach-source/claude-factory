@@ -6613,8 +6613,20 @@ function recordVarWrites(words: string[], vars: VarTable): void {
   const set = (name: string, value: string | undefined) =>
     vars.set(name, vars.has(name) && vars.get(name) !== value ? undefined : value)
   if (b === 'for' && words[1]) set(words[1], undefined)
-  if (b === 'read' || b === 'mapfile' || b === 'readarray' || b === 'printf' || b === 'getopts') {
-    for (const w of words.slice(1)) if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+  if (
+    b === 'read' ||
+    b === 'mapfile' ||
+    b === 'readarray' ||
+    b === 'printf' ||
+    b === 'print' ||
+    b === 'getopts'
+  ) {
+    for (const w of words.slice(1)) {
+      if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+      // miqy.18: a glued -vNAME writes NAME.
+      const g = /^-v([A-Za-z_]\w*)$/.exec(w)
+      if (g) set(g[1]!, undefined)
+    }
   }
   const declares = ['export', 'declare', 'typeset', 'local', 'readonly'].includes(b)
   let i = 0
@@ -6657,6 +6669,8 @@ function varOpName(w: string): string | undefined {
 // claude-factory-miqy.12: count the raw-text mentions of NAME that are not a pure read (the plain and braced forms).
 // A write form the table does not know still shows as a mention, so the head check fails closed.
 const MENTION_COUNTERS = new WeakMap<VarTable, (name: string) => number>()
+// miqy.17: a nested level inherits the outer level's dynamic-name write check.
+const DYNWRITE_CHECKS = new WeakMap<VarTable, () => boolean>()
 // claude-factory-miqy.13: names the shell sets itself. A head of one of them denies.
 const IMPLICIT_VARS = new Set([
   '_',
@@ -6923,15 +6937,25 @@ function denyAtScan(
     'eval',
   ]
   let dynWriteCache: boolean | undefined
+  const inheritedDyn = outerVars && DYNWRITE_CHECKS.get(outerVars)
   const dynWrite = (): boolean =>
-    (dynWriteCache ??= segs.some(ws =>
-      ws.some((w, k) => {
-        const b = baseWord(w)
-        if (NAME_WRITERS.includes(b)) return ws.slice(k + 1).some(dynName)
-        if (b === 'printf') return ws.slice(k + 1).some((x, j, a) => a[j - 1] === '-v' && dynName(x))
-        return false
-      }),
-    ))
+    (dynWriteCache ??=
+      (inheritedDyn ? inheritedDyn() : false) ||
+      segs.some(ws =>
+        ws.some((w, k) => {
+          const b = baseWord(w)
+          // An eval script with no "=" writes nothing, so it is no dynamic-name write.
+          if (b === 'eval') return ws.slice(k + 1).some(x => x.includes('=') && dynName(x))
+          if (NAME_WRITERS.includes(b)) return ws.slice(k + 1).some(dynName)
+          if (b === 'printf' || b === 'print') {
+            return ws
+              .slice(k + 1)
+              .some((x, j, a) => (a[j - 1] === '-v' && dynName(x)) || (/^-v./.test(x) && dynName(x.slice(2))))
+          }
+          return false
+        }),
+      ))
+  DYNWRITE_CHECKS.set(vars, dynWrite)
   const scanValue = (name: string, rest: string[]): string | undefined => {
     if (dynWrite()) return DYNAMIC_VERB_REASON
     const n = mentions(name)

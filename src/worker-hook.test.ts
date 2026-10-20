@@ -8408,6 +8408,16 @@ const MIQY_DENY: Array<[string, string]> = [
   ['echo "rm -rf /"; ${_:0}', DYNAMIC_VERB_REASON],
   ['echo "rm -rf /"; sudo ${_%x}', DYNAMIC_VERB_REASON],
   ['echo "rm -rf /"; eval ${_%x}', DYNAMIC_VERB_REASON],
+  ['A=X; declare "${A}Y=rm -rf /"; echo "$($XY)"', DYNAMIC_VERB_REASON],
+  ['A=X; export "${A}Y=rm -rf /"; bash -c \'$XY\'', DYNAMIC_VERB_REASON],
+  ["A=X; eval \"${A}Y='rm -rf /'\"; eval '$XY'", DYNAMIC_VERB_REASON],
+  ['A=X; export "${A}Y=git push origin main"; bash -c \'$XY\'', DYNAMIC_VERB_REASON],
+  ['X=ls; printf -vX "rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['printf -vXY "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; printf -v"${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; print -v "${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; print -v"${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['print -vXY "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
 ]
 test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
