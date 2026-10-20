@@ -8119,6 +8119,18 @@ const MIQY_DENY: Array<[string, string]> = [
   ['X="rm -rf /"; bash -c "true; $X"', REASON],
   ['X="git push origin main"; eval \'true; $X\'', PUSH_REASON],
   ['export X="git push origin main"; bash -c \'true && $X\'', PUSH_REASON],
+  ['X="rm -rf /"; ${X%x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X#x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X:0}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X^^}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X//x/y}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X:+$X}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X[@]}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; Y=X; ${!Y}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${=X}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; $=X', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${(z)X}', DYNAMIC_VERB_REASON],
+  ['X="git push origin main"; ${X%x}', DYNAMIC_VERB_REASON],
 ]
 test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
@@ -8128,6 +8140,9 @@ test.each([
   'for h in a b; do ssh $h uptime; done',
   'for h in a b; do fish $h; done',
   'X="git push origin main"; ssh host $X',
+  '${EDITOR:-vi} a.txt',
+  '${X%x}',
+  '${HOME%/}/bin/tool',
   '$EDITOR a.txt',
   '$X',
   'echo $X',

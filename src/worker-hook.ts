@@ -6619,6 +6619,13 @@ function recordVarWrites(words: string[], vars: VarTable): void {
   }
 }
 
+// claude-factory-miqy.8: an operator or zsh form also runs the split value of its name.
+const VAR_OP_REF = /^\$(?:=([A-Za-z_]\w*)|\{[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)[\s\S]*\})$/
+function varOpName(w: string): string | undefined {
+  const m = VAR_OP_REF.exec(w)
+  return m ? (m[1] ?? m[2]) : undefined
+}
+
 function varRefName(w: string): string | undefined {
   const m = VAR_REF.exec(w)
   return m ? (m[1] ?? m[2]) : undefined
@@ -6736,6 +6743,12 @@ function denyAtScan(
   const vars: VarTable = new Map(outerVars)
   // claude-factory-miqy: collect every write first. A set after the use still counts.
   for (const w of segs) recordVarWrites(w, vars)
+  // The lexer splits ${(z)X} at the parens, so read the raw text: a zsh flag form of a set name denies.
+  if (vars.size > 0) {
+    for (const m of command.matchAll(/\$\{[!=~^]*\([^)]*\)([A-Za-z_]\w*)/g)) {
+      if (vars.has(m[1]!)) return DYNAMIC_VERB_REASON
+    }
+  }
   const scanValue = (name: string, rest: string[]): string | undefined => {
     if (!vars.has(name)) return undefined
     const value = vars.get(name)
@@ -6830,6 +6843,10 @@ function denyAtScan(
       if (headName) {
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
+      } else {
+        // The head may name a set variable. ${!Y} names another one, so any set name denies.
+        const opName = varOpName(cmd[0]!)
+        if (opName && (vars.has(opName) || cmd[0]!.startsWith('${!'))) return DYNAMIC_VERB_REASON
       }
     }
     if (!cmd.length) continue
