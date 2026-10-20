@@ -2884,7 +2884,7 @@ function gitCoreWorktreeOutside(words: string[], root: string | undefined): bool
       break
     }
     if (w.startsWith('-') && w !== '-') {
-      if (!w.includes('=') && GIT_CONFIG_VALUE_FLAGS.has(w)) i++
+      if (!w.includes('=') && gitConfigTakesValue(w)) i++
       continue
     }
     operands.push(w)
@@ -4816,7 +4816,27 @@ function gitDashCKeyDynamic(tail: string[]): boolean {
 
 // claude-factory-zl5.21: `git config` flags that take a value word of their own. The operand
 // search below steps past them, the same way `GIT_PUSH_VALUE_FLAGS` does for `git push`.
-const GIT_CONFIG_VALUE_FLAGS = new Set(['-f', '--file', '-t', '--type', '--default'])
+const GIT_CONFIG_VALUE_FLAGS = new Set([
+  '-f',
+  '--file',
+  '--blob',
+  '-t',
+  '--type',
+  '--default',
+  '--comment',
+  '--value',
+  '--url',
+])
+
+// claude-factory-v5iw: git accepts a unique prefix of a long flag (`--comm`) and a short cluster
+// (`-zf`), so both forms take a value word too. A long prefix of one letter or more that starts a
+// value flag takes the next word. So does a cluster whose first `f` or `t` is its last letter. Git
+// gives the rest of a cluster to the first `f` or `t`, so in `-ft` and `-tf` the next word is the key.
+function gitConfigTakesValue(w: string): boolean {
+  if (GIT_CONFIG_VALUE_FLAGS.has(w)) return true
+  if (w.startsWith('--')) return w.length >= 3 && [...GIT_CONFIG_VALUE_FLAGS].some(f => f.startsWith(w))
+  return /^-[a-eg-su-zA-Z]*[ft]$/.test(w)
+}
 
 /**
  * True when `configArgs`, the arguments of a `git config` call after the `config` word, sets a
@@ -4847,7 +4867,7 @@ function gitConfigKeyValue(configArgs: string[]): { name: string; value: string 
     }
     if (w.startsWith('-') && w !== '-') {
       if (w.includes('=')) continue
-      if (GIT_CONFIG_VALUE_FLAGS.has(w)) i++
+      if (gitConfigTakesValue(w)) i++
       continue
     }
     operands.push(w)
