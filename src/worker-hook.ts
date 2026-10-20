@@ -2015,7 +2015,8 @@ function wrapperReadingsDeny(
   }
   // claude-factory-cwt9: the lexer drops a substitution, so `-$(y)` or `-E$(y)` reads as `-` or `-E`.
   // The dropped text can be a command word. A recursive flag and a risky target after the dash
-  // word then mean rm. This check skips a plain -r: `xargs -0 -r ls /` is common and safe.
+  // word then mean rm. A plain -r after a real dash word is safe: `xargs -0 -r ls /` is common.
+  // After a dynamic dash word, a plain -r denies when a risky operand follows.
   const dashHidesRm = (j: number): boolean => {
     const nx = words[j + 1]
     if (nx === undefined) return false
@@ -2024,7 +2025,7 @@ function wrapperReadingsDeny(
     if (words[j] === '-' || DYN_CHARS.test(words[j]!)) {
       const rest = words.slice(j + 1)
       if (
-        rest.some(x => /^-[A-Za-z]*[rR]/.test(x) || x === '--recursive') &&
+        rest.some(x => /^-[A-Za-z]*[rR]/.test(x) || x.startsWith('--rec')) &&
         rest.some(x => !x.startsWith('-') && riskyTarget(x, root))
       )
         return true

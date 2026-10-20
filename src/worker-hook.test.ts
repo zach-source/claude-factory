@@ -6161,6 +6161,13 @@ test.each(DYN_LATER_DENY)(
 
 // claude-factory-cwt9: a flag-shaped word with a dynamic character can split into "-" plus a command word.
 const DASH_DYN_DENY = [
+  'sudo -$(y) foo --recur /home',
+  'sudo -$(y) foo --rec /home',
+  'xargs -$(y) foo --recu /home',
+  'sudo -${Y} foo --recur /home',
+  'sudo -$(y) --rec /home',
+  'xargs -$(y) --recur /home',
+  'xargs -$(y) -I R --rec /home',
   'env -u root -$Y -rf /',
   'env -$Y -rf /',
   'sudo -$Y -rf /',
