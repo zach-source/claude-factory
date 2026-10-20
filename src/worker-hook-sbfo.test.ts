@@ -38,7 +38,8 @@ test('AC1: eval -- hides nothing', () => {
 })
 
 test('AC2: harmless eval -- rows stay allowed', () => {
-  for (const row of ['eval -- echo ok', 'eval -- - - echo ok', 'eval --', 'eval -- ls -- -rf']) expect(run(row), row).toBeUndefined()
+  for (const row of ['eval -- echo ok', 'eval -- - - echo ok', 'eval --', 'eval -- ls -- -rf'])
+    expect(run(row), row).toBeUndefined()
 })
 
 test('AC3: parity with and without --', () => {
