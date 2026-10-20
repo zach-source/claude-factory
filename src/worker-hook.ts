@@ -1274,6 +1274,8 @@ function isRecursiveRm(words: string[], start = 0): boolean {
   for (let k = start + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '--') return false
+    // claude-factory-wpka: a nested brace with no inner comma ({-r,{}}) fails BRACE_LIST_WORD. Fail closed, no expansion.
+    if (/\{[^}]*\{/.test(w) && w.includes('-') && /[rR]/.test(w)) return true
     if (BRACE_LIST_WORD.test(w)) {
       // claude-factory-gj9l: pieces can join with the text outside the braces ({-,}r). A - with r or R in the word counts.
       if (bracePieceRecursive(w) || (w.includes('-') && /[rR]/.test(w))) return true

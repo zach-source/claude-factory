@@ -10197,6 +10197,10 @@ const DENY_WPKA = [
   "find . {-exec,rm,-{r,x}} ../o ';'",
   "find . -exec {rm,{--,x}r} ../o ';'",
   "find . {-exec,rm,-r,{}} ';'",
+  "find . -exec rm {-r,{}} ';'",
+  "find . {-exec,rm} {-r,{}} ';'",
+  "find . -exec {rm,-f} {-r,{x}} ../o ';'",
+  "find . {-exec,rm,-f,{}} {-r,{}} ';'",
 ]
 test.each(DENY_WPKA)('denyReason denies %j (claude-factory-wpka)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
