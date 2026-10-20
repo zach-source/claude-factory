@@ -8473,13 +8473,12 @@ test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
 })
 
-test.each([
-  'IFS=_; y=m_-rf_/; r$y',
-  'y=rm_-rf_/; IFS=_; $y',
-  'y=m_-rf_/; z=FS; export I$z=_; r$y',
-])('denyReason denies a variable set in an earlier segment %j (claude-factory-k8iz)', cmd => {
-  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
-})
+test.each(['IFS=_; y=m_-rf_/; r$y', 'y=rm_-rf_/; IFS=_; $y', 'y=m_-rf_/; z=FS; export I$z=_; r$y'])(
+  'denyReason denies a variable set in an earlier segment %j (claude-factory-k8iz)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  },
+)
 
 test('denyReason denies a default-value command word with an earlier IFS (claude-factory-k8iz)', () => {
   expect(denyReason('y=m_-rf_/; z=FS; export I$z=_; r${RM:-r} $y', '/Users/acme/widget')).toBeDefined()
