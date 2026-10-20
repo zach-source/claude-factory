@@ -99,6 +99,20 @@ test('queue sends a PR that needs changes back to implement through the existing
   )
 })
 
+test('a run ships 30 PRs in a row without a stuck step budget', () => {
+  const round = ['ready', 'ready', 'deployed', 'healthy']
+  const outcomes = [...Array(30).keys()].flatMap(() => round)
+  const { visited, snapshot } = walk(ship, [...outcomes, 'empty'])
+  expect(snapshot.context.error).toBeNull()
+  expect(visited.at(-1)).toBe('done')
+})
+
+test('a PR closed unmerged leaves the queue before the hold, and soak reads the bead for earlier rollbacks', () => {
+  expect(ship.nodes.deploy.prompt).toContain('--remove-label ship')
+  expect(ship.nodes.deploy.prompt).toContain('bd defer <bead>')
+  expect(ship.nodes.soak.prompt).toContain("the bead's comments")
+})
+
 test('queue names the next PR first and lists every owner-only step in one list', () => {
   expect(ship.nodes.queue.prompt).toContain('name it first')
   expect(ship.nodes.queue.prompt).toContain('every owner-only step the queue needs in one list')

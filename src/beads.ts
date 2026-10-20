@@ -523,12 +523,15 @@ export const beads = (repo: string, actor: string) => ({
    * The call removes the `factory`, `factory:*` and `station:*` labels, so dispatch skips the bead.
    * It adds the `ship` label and the metadata `ship_at` and `ship_run`.
    * It sets `ship_branch` and `ship_pr` only when the bead has none: a rework run keeps the first PR.
+   * The comment goes first. The update marks the handoff done, so a retry after a failed comment still updates.
    * A retried tick with the same `runId` changes nothing. A failed `bd show` throws.
    */
   ship: (id: string, runId: string, to: { pr: string; branch: string }) => {
     bd(repo, actor, 'unclaim', id)
     const b = lookupBead(repo, actor, id)
     if (b?.metadata?.ship_run === runId) return
+    // the comment first: the update below marks the handoff done, so a failed comment retries whole
+    must(bd(repo, actor, 'comment', id, `handed off to ship (run ${runId})`), 'comment')
     const old = (b?.labels ?? []).filter(
       l => l === LABEL || l.startsWith('factory:') || l.startsWith('station:'),
     )
@@ -550,7 +553,11 @@ export const beads = (repo: string, actor: string) => ({
       ),
       'update',
     )
-    must(bd(repo, actor, 'comment', id, `handed off to ship (run ${runId})`), 'comment')
+  },
+  /** removes a bead from the ship queue and defers it. Its PR closed unmerged, so nothing is left to ship. */
+  unship: (id: string, reason: string) => {
+    must(bd(repo, actor, 'update', id, '--remove-label', SHIP), 'update')
+    return must(bd(repo, actor, 'defer', id, '--reason', reason), 'defer')
   },
   /** the open beads in the ship queue, oldest `ship_at` first */
   shipQueue: (): Bead[] => {

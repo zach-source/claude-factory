@@ -190,9 +190,9 @@ test('release reporting ready with a pull request link parks deploy with no work
 test('a merge or close mail wakes a parked deploy, which then routes every outcome as today (claude-factory-960 AC4)', () => {
   const cases: { outcome: string; next: [string, string] }[] = [
     { outcome: 'deployed', next: ['soak', 'waiting'] },
-    { outcome: 'published', next: ['queue', 'working'] },
-    { outcome: 'changes', next: ['queue', 'working'] },
-    { outcome: 'hold', next: ['queue', 'working'] },
+    { outcome: 'published', next: ['queue', 'waiting'] },
+    { outcome: 'changes', next: ['queue', 'waiting'] },
+    { outcome: 'hold', next: ['queue', 'waiting'] },
     { outcome: 'failed', next: ['rollback', 'working'] },
   ]
   for (const { outcome, next } of cases) {

@@ -2340,6 +2340,25 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   }
 }
 
+/**
+ * The run's own PR among the links its reports cite. One link is that PR. With several, a report may cite
+ * a sibling PR, so the answer is the link whose head branch is the run's; no match records none, and the
+ * ship run finds the PR from ship_branch.
+ */
+export function shipPrOf(
+  links: string[],
+  branch: string,
+  headOf: (url: string) => string | null = url => {
+    const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'headRefName', '-q', '.headRefName'], {
+      timeout: 20_000,
+    })
+    return p.exitCode === 0 ? p.stdout.toString().trim() : null
+  },
+) {
+  if (links.length < 2) return links[0] ?? ''
+  return links.find(url => headOf(url) === branch) ?? ''
+}
+
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
 export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
   const b = beads(run.repo, actorOf(run.id))
@@ -2360,7 +2379,8 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
     // A ship edge hands the approved PR to the rig's ship run (claude-factory-rtuw). It runs before
     // the open-children branch: approval is the end, and the ship run needs the bead open and queued.
     if (node === 'done' && typeof edge === 'object' && edge.ship) {
-      const url = [...c.log].reverse().flatMap(e => [...prsIn(e.summary), ...mrsIn(e.summary)])[0] ?? ''
+      const links = [...c.log].reverse().flatMap(e => [...prsIn(e.summary), ...mrsIn(e.summary)])
+      const url = shipPrOf([...new Set(links)], run.branch)
       b.ship(id, run.id, { pr: url, branch: run.branch })
       // a parked ship run wakes on mail; one that is not live is started by the next shipPass
       for (const s of liveShipRuns().filter(s => s.run.repo === run.repo))
@@ -5835,18 +5855,25 @@ async function labelPass() {
           }
     try {
       const labeled = forge.list()
-      const shipped = labeled.some(pr => labelAction(pr) === 'rework')
+      const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
         ? beads(rig.repo, 'factory').shipQueue()
         : []
       for (const pr of labeled) {
         const action = labelAction(pr)
         const queuedBead = action === 'rework' ? queuedOwner(pr, shipped) : undefined
+        // a queued PR closed unmerged leaves the queue: the ship run would loop on it as the next PR
+        if (action === 'close') {
+          const closed = queuedOwner(pr, shipped)
+          if (closed) beads(rig.repo, 'factory').unship(closed.id, `${pr.url} was closed unmerged`)
+        }
         if (queuedBead) {
           // the rig's ship run owns a queued PR: it hears of the label, and no rework run starts
           const text = `[factory] ${pr.url} (${queuedBead.id}) was ${asksOf(pr)}. Treat it as changes needed: follow your rework steps.`
           forge.unlabel(pr, reworkLabels(pr))
-          for (const s of liveShipRuns().filter(s => s.run.repo === rig.repo))
-            post(s.run.id, { type: 'MAIL', from: 'factory', to: s.node, text })
+          const ships = liveShipRuns().filter(s => s.run.repo === rig.repo)
+          for (const s of ships) post(s.run.id, { type: 'MAIL', from: 'factory', to: s.node, text })
+          // no live ship run to hear it: the bead keeps the ask, and the next ship run reads it
+          if (!ships.length) beads(rig.repo, 'factory').comment(queuedBead.id, text)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)
           continue
         }
@@ -6246,8 +6273,10 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   const preview = await loadFactory(factorySource(spec!, root))
   if (at && !preview.nodes[at])
     fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
-  if (preview.name === 'ship' && liveShipRuns().some(s => s.run.repo === root))
-    fail(`rig ${rigOf(root)?.name ?? root} already has a live ship run: one ship run for each rig`)
+  if (preview.name === 'ship')
+    fail(
+      `only the runner starts a ship run, once for each rig with a queue: see factory ship ${rigOf(root)?.name ?? root}`,
+    )
   const linked = beadFor(root, goal, { isOwnerOk })
   const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
   if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })

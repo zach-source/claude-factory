@@ -89,7 +89,8 @@ test("waiting names each rig's next PR and lists every owner-only step once, in 
   expect(text.match(/Owner steps/g)).toHaveLength(1)
   expect(text).toContain('1. kubectl rollout restart deploy/w -n a\n     run s1 · rig web · 1.0h')
   expect(text).toContain('3. terraform apply')
-  expect(text).not.toContain('factory mail s1') // an owner step is not also a per-run block
+  expect(text).toContain('→ factory mail s1 deploy')
+  expect(text.match(/factory mail s1/g)).toHaveLength(1) // an owner step is not also a per-run block
   expect(waiting([], now, { web: queue('https://x/pull/7', 'w-1') })).toContain('next to merge')
 })
 

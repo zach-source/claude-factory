@@ -71,6 +71,24 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
     .sort((a, b) => ORDER.indexOf(hold(a)!) - ORDER.indexOf(hold(b)!))
   const steps = held.filter(r => ownerStep(r))
   const others = held.filter(r => !ownerStep(r))
+  const whyOf = (r: Row) => {
+    const h = hold(r)!
+    const why =
+      r.gate?.question ??
+      (h === 'needs you'
+        ? `its worker waits on a prompt in pane ${r.pane}`
+        : (r.error ?? r.last?.summary ?? ''))
+    return why.replace(/\s+/g, ' ').trim()
+  }
+  const answerOf = (r: Row) =>
+    r.gate
+      ? `factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`
+      : hold(r) === 'parked'
+        ? `factory mail ${r.id} ${r.node} "<what changed>"`
+        : hold(r) === 'stuck'
+          ? `factory retry ${r.id}`
+          : `herdr pane read ${r.pane}`
+  const prsOf = (flat: string) => [...new Set(flat.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/g) ?? [])]
   const queued = Object.entries(queues).filter(([, q]) => q.length)
   if (!held.length && !queued.length) return 'nothing waits on you'
   const rigs = [...new Set([...others.map(r => r.rig ?? '(no rig)'), ...queued.map(([rig]) => rig)])]
@@ -86,20 +104,9 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
         .filter(r => (r.rig ?? '(no rig)') === rig)
         .map(r => {
           const h = hold(r)!
-          const why =
-            r.gate?.question ??
-            (h === 'needs you'
-              ? `its worker waits on a prompt in pane ${r.pane}`
-              : (r.error ?? r.last?.summary ?? ''))
-          const flat = why.replace(/\s+/g, ' ').trim()
-          const prs = [...new Set(flat.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/g) ?? [])]
-          const answer = r.gate
-            ? `factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`
-            : h === 'parked'
-              ? `factory mail ${r.id} ${r.node} "<what changed>"`
-              : h === 'stuck'
-                ? `factory retry ${r.id}`
-                : `herdr pane read ${r.pane}`
+          const flat = whyOf(r)
+          const prs = prsOf(flat)
+          const answer = answerOf(r)
           const t = h === 'parked' ? r.last?.at : r.since
           return [
             `  ${r.id} ${r.node} · ${h}${t ? ` ${ago(now - t)}` : ''}${r.bead ? ` · ${r.bead}` : ''}`,
@@ -114,9 +121,13 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
     blocks.push(
       [
         `Owner steps (${steps.length}):`,
-        ...steps.map(
-          (r, i) =>
-            `  ${i + 1}. ${ownerStep(r)}\n     run ${r.id} · rig ${r.rig ?? '(no rig)'} · ${ago(now - (r.last?.at ?? r.since ?? now))}`,
+        ...steps.map((r, i) =>
+          [
+            `  ${i + 1}. ${ownerStep(r)}`,
+            `     run ${r.id} · rig ${r.rig ?? '(no rig)'} · ${ago(now - (r.last?.at ?? r.since ?? now))}`,
+            ...prsOf(whyOf(r)).map(p => `     ${p}`),
+            `     → ${answerOf(r)}`,
+          ].join('\n'),
         ),
       ].join('\n'),
     )

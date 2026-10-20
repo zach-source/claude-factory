@@ -54,13 +54,13 @@ export default {
 1. Keep the NEXT pull request current: merge origin/main into its branch (a merge commit, pushed to the branch). Never rebase and never force-push. Resolve a conflict only when the fix is small and plain; re-run the tests after any merge that changed something. Check the others against main and against the next one with \`git merge-tree\`.
 2. A pull request that needs changes (a conflict you cannot resolve, a red check you cannot fix by a merge, review changes requested, or a failed deploy to fix forward) goes back to a work run. Write the evidence in a bead comment (\`bd comment <bead> "<evidence>"\`), then run \`bd update <bead> --remove-label ship --add-label factory --add-label station:implement\`. The factory starts a new run at implement for that bead on the same branch, and that run hands the pull request back when it is approved.
 Report ready when the next pull request is current with main and has no conflict: name it first, then every other open queued pull request, and list every owner-only step the queue needs in one list, each with its exact command. Report again when you changed the queue (for example, sent one back) and a pass may find more to do. Report empty when no open bead carries the label ship.`,
-      next: { ready: 'release', again: 'queue', empty: 'done' },
+      next: { ready: 'release', again: { to: 'queue', delayMin: 1 }, empty: 'done' },
     },
     release: {
       timeoutMin: 60,
       prompt: `Prepare the release of the NEXT pull request only: the one your inbox names, or the first line of \`factory ship <rig>\`. Add the changelog entry and the version bump the repo's conventions call for, update the pull request description with the plan's summary, the verification evidence and a rollback plan, and mark it ready with \`gh pr ready\`. You are the only station that marks a pull request ready. Wait for CI and read every failing check.
 Report ready when the pull request is ready and CI is green, and give its link. Report changes when it needs changes: write the evidence in a bead comment first, and the queue station sends it back to a work run.`,
-      next: { ready: 'deploy', changes: 'queue' },
+      next: { ready: 'deploy', changes: { to: 'queue', delayMin: 1 } },
     },
     deploy: {
       runner: LAPTOP,
@@ -69,27 +69,27 @@ Report ready when the pull request is ready and CI is green, and give its link. 
       // the arrival carries the pull request link (release always names it): the tick waits for the
       // merge, the close, or new activity on that pull request, and spawns no worker until then
       awaitsPr: true,
-      prompt: `Ship the pull request queue named once a person has merged it: their merge is the approval, and you never merge it yourself (never merge a pull request, whatever its state). First check what is already done (merged? tagged? deployed?) and do only what is not.
+      prompt: `Ship the pull request that the queue named, once a person has merged it: their merge is the approval, and you never merge it yourself (never merge a pull request, whatever its state). First check what is already done (merged? tagged? deployed?) and do only what is not.
 A merge approves the change it carries, not an owner-only step (see House rules): a hand-run kubectl or helm apply, an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential change. Do every other step, then park with "parked, waiting on: <the owner step and the exact command>" and a \`Question:\` line asking the person to run it or to approve you running it.
-Not merged yet: if a person requested changes or left comments asking for them, report changes with every point they raised and the evidence in a bead comment; if a person closed it unmerged, report hold with their reason, if any; otherwise report blocked with the pull request link and what it waits for (the merge, or a required check or queue), so the person is asked; you are woken when it changes. If your inbox says a new pull request joined the queue, report refresh.
+Not merged yet: if a person requested changes or left comments asking for them, report changes with every point they raised and the evidence in a bead comment; if a person closed it unmerged, take it out of the queue first (\`bd update <bead> --remove-label ship\`, then \`bd defer <bead>\`) and report hold with their reason, if any; otherwise report blocked with the pull request link and what it waits for (the merge, or a required check or queue), so the person is asked; you are woken when it changes. If your inbox says a new pull request joined the queue, report refresh.
 Merged: record the production baseline it will be compared against (error rate, latency, saturation and cost signals) from the window just before the merge, since a GitOps repo may already be rolling it out, tag or publish when the repo's conventions call for it, run or watch the deploy pipeline to the end, verify the rollout (for example kubectl rollout status) and run a smoke check.
 Report deployed with the version, the time and the baseline; published when the release has no running service to watch (a library, a CLI, a docs-only or test-only change, or a change to .factory/ only, which runs started from now on follow), after you close its bead with \`bd close <bead>\`; failed when the rollout did not complete.`,
       next: {
         deployed: { to: 'soak', delayMin: 15 },
-        published: 'queue',
+        published: { to: 'queue', delayMin: 1 },
         failed: 'rollback',
-        changes: 'queue',
-        hold: 'queue',
-        refresh: 'queue',
+        changes: { to: 'queue', delayMin: 1 },
+        hold: { to: 'queue', delayMin: 1 },
+        refresh: { to: 'queue', delayMin: 1 },
       },
     },
     soak: {
       runner: LAPTOP,
       timeoutMin: 30,
       prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only.
-Report healthy when it holds, after you close its bead with \`bd close <bead>\`; resolved instead when this run went through a rollback, so it gets a postmortem; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
+Report healthy when it holds, after you close its bead with \`bd close <bead>\`; resolved instead when a rollback went before this soak, so it gets a postmortem: this ship run's own rollback, or one that the bead's comments (\`bd show <bead>\`) or its work run's incident report describe; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
       next: {
-        healthy: 'queue',
+        healthy: { to: 'queue', delayMin: 1 },
         resolved: 'postmortem',
         unsure: { to: 'soak', delayMin: 15 },
         regressed: 'rollback',
@@ -108,7 +108,7 @@ Report recovered with what you did, the evidence of recovery, the revert pull re
       timeoutMin: 45,
       prompt: `Write the blameless postmortem from the journal: impact, timeline, root cause, contributing factors, what went well, and the action items. File each action item that needs work (missing tests, alerts, runbooks, guardrails) as separate work for a person to prioritize. When the factory itself let this happen (a station that missed it, a prompt, a rule, a gate), file the change to .factory/ the same way, for a person to prioritize.
 Then send the released bead back to a work run to fix forward: \`bd update <bead> --remove-label ship --add-label factory --add-label station:plan\`, with the evidence in a bead comment. Your summary is the postmortem.`,
-      next: { filed: 'queue' },
+      next: { filed: { to: 'queue', delayMin: 1 } },
     },
   },
 } satisfies Factory

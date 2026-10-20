@@ -43,15 +43,15 @@ test('ship hands a bead to the queue: unclaims, relabels, keeps the first branch
     b.ship('fx-1', 'run-1', { pr: 'https://x/pull/1', branch: 'factory/run-1' })
     const calls = readFileSync(f.log, 'utf8').trim().split('\n')
     expect(calls[0]).toBe('unclaim fx-1 --actor factory/run-1')
-    expect(calls[2]).toContain(
+    expect(calls[3]).toContain(
       '--remove-label factory --remove-label factory:lifecycle --remove-label station:review',
     )
-    expect(calls[2]).toContain('--add-label ship')
-    expect(calls[2]).toContain('--set-metadata ship_run=run-1')
-    expect(calls[2]).toContain('--set-metadata ship_branch=factory/run-1')
-    expect(calls[2]).toContain('--set-metadata ship_pr=https://x/pull/1')
-    expect(calls[2]).toMatch(/--set-metadata ship_at=\S+/)
-    expect(calls[3]).toContain('comment fx-1 handed off to ship')
+    expect(calls[3]).toContain('--add-label ship')
+    expect(calls[3]).toContain('--set-metadata ship_run=run-1')
+    expect(calls[3]).toContain('--set-metadata ship_branch=factory/run-1')
+    expect(calls[3]).toContain('--set-metadata ship_pr=https://x/pull/1')
+    expect(calls[3]).toMatch(/--set-metadata ship_at=\S+/)
+    expect(calls[2]).toContain('comment fx-1 handed off to ship')
 
     // a retried tick: this run already handed it off
     writeFileSync(
@@ -81,6 +81,39 @@ test('ship hands a bead to the queue: unclaims, relabels, keeps the first branch
     expect(again).toContain('--set-metadata ship_run=run-2')
     expect(again).not.toContain('ship_branch')
     expect(again).not.toContain('ship_pr')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('ship comments before it updates, so a failed comment retries the whole handoff', () => {
+  const f = fakeBd('fake-bd-ship-order')
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    writeFileSync(f.show, JSON.stringify([{ id: 'fx-1', title: 't', labels: ['factory'] }]))
+    writeFileSync(f.log, '')
+    beads(tmpdir(), 'factory/run-1').ship('fx-1', 'run-1', { pr: '', branch: 'b' })
+    const verbs = readFileSync(f.log, 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => l.split(' ')[0])
+    expect(verbs.indexOf('comment')).toBeLessThan(verbs.indexOf('update'))
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('unship drops the ship label and defers the bead', () => {
+  const f = fakeBd('fake-bd-unship')
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    writeFileSync(f.log, '')
+    beads(tmpdir(), 'factory').unship('fx-1', 'closed unmerged')
+    const calls = readFileSync(f.log, 'utf8').trim().split('\n')
+    expect(calls[0]).toContain('update fx-1 --remove-label ship')
+    expect(calls[1]).toContain('defer fx-1 --reason closed unmerged')
   } finally {
     process.env.PATH = path
   }

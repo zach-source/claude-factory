@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { track, type Track } from './cli'
+import { shipPrOf, track, type Track } from './cli'
 import { hasShipEdge, type Ctx, type Factory } from './machine'
 
 const PR = 'https://github.com/acme/widget/pull/42'
@@ -48,6 +48,15 @@ const fakeBd = (name: string, labels: string[]) => {
   chmodSync(join(bin, 'bd'), 0o755)
   return { bin, calls: () => readFileSync(log, 'utf8').trim().split('\n'), show }
 }
+
+test('shipPrOf: one link is the PR; with several it is the one whose head is the run branch', () => {
+  const [a, b] = [`${PR}1`, `${PR}2`]
+  expect(shipPrOf([a], 'factory/run-1')).toBe(a)
+  expect(shipPrOf([], 'factory/run-1')).toBe('')
+  const headOf = (url: string) => (url === b ? 'factory/run-1' : 'factory/other')
+  expect(shipPrOf([a, b], 'factory/run-1', headOf)).toBe(b)
+  expect(shipPrOf([a, b], 'factory/none', headOf)).toBe('')
+})
 
 test('a run that ends on a ship edge hands its bead to ship: open, relabeled, never closed or deferred', () => {
   const f = fakeBd('fake-bd-track-ship', ['factory', 'station:review'])

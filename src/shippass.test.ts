@@ -149,12 +149,12 @@ test('a live ship run holds no slot, but a work run still does', () => {
   expect(factory(['start', 'lifecycle', 'a', 'more work'], env).err).toContain('runs are busy')
 })
 
-test('factory start ship refuses a second live ship run on the rig', () => {
+test('factory start ship is refused: only the runner starts a ship run', () => {
   const [a] = setup([{ name: 'a', queued: true }])
   factory(['beads'])
   expect(runs()).toHaveLength(1)
   const out = factory(['start', 'ship', 'a', 'again'])
   expect(out.code).not.toBe(0)
-  expect(out.err).toContain('already has a live ship run')
+  expect(out.err).toContain('only the runner starts a ship run')
   expect(runs().filter(r => r.repo === a!.repo)).toHaveLength(1)
 })
