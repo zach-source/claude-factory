@@ -1587,7 +1587,7 @@ const EXPAND_FLAGS = /(?:\([^()]*\))*[!=~^]*/y
 const EXPAND_NAME = /(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/y
 const EXPAND_SUB = /(?:\[[^\]]*\])?/y
 const EXPAND_OP = /(?::[-=+]|[-=+])/y
-const EXPAND_VAR = /(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*#?$!-])/y
+const EXPAND_VAR = /[=~^]*(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*#?$!-])/y
 function stickyAt(re: RegExp, w: string, at: number): number {
   re.lastIndex = at
   const m = re.exec(w)
