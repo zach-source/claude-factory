@@ -27,6 +27,7 @@ import {
   MERGE_REASON,
   PUSH_DIR_REASON,
   PUSH_REASON,
+  QUOTED_ASSIGNMENT_REASON,
   GLOBAL_GIT_CONFIG_REASON,
   READY_REASON,
   REASON,
@@ -3032,6 +3033,114 @@ test.each([
   'gh pr -R o/r list',
 ])('denyReason allows %j (claude-factory-zsj0)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
+
+// claude-factory-t1xo: cobra skips an empty word and a lone `-` at the verb and sub word slots.
+// A value flag still takes such a word as its value.
+test.each([
+  "gh pr '' merge 1",
+  "gh '' pr merge 1",
+  'gh pr - merge 1',
+  'gh - pr merge 1',
+  "gh pr -R o/r '' merge 1",
+  'gh pr -R o/r - merge 1',
+  "gh repo '' sync",
+  'gh repo - sync',
+  "gh pr '' merge 1 >/dev/null",
+  'gh pr -R - merge 1',
+  "gh pr -R '' merge 1",
+  "gh '' - pr '' merge 1",
+])('denyReason denies %j with MERGE_REASON (claude-factory-t1xo)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
+})
+
+test.each(["gh pr '' ready 1", 'gh pr - ready 1'])(
+  'denyReason denies %j at implement, allows at release (claude-factory-t1xo)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(READY_REASON)
+    expect(denyReason(cmd, '/root/repo', undefined, { ...AMP_LIVE_GATE, station: 'release' })).toBeUndefined()
+  },
+)
+
+test("denyReason denies gh pr '' checkout 5 && git push o HEAD (claude-factory-t1xo)", () => {
+  expect(denyReason("gh pr '' checkout 5 && git push o HEAD", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(
+    PUSH_REASON,
+  )
+})
+
+test.each(["gh alias '' set co 'pr merge'", 'gh alias - set co x', "gh '' alias set co x"])(
+  'denyReason denies %j with ALIAS_REASON (claude-factory-t1xo)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(ALIAS_REASON)
+  },
+)
+
+test.each([
+  "kubectl --context acme '' apply -f x.yaml",
+  'kubectl --context acme - apply -f x.yaml',
+  "kubectl '' --context acme apply -f x.yaml",
+  'kubectl - --context acme delete -f x.yaml',
+  "kubectl --context acme rollout '' restart deploy/w",
+  'kubectl --context acme rollout - restart deploy/w',
+  'helm --kube-context acme - upgrade r c',
+  "helm --kube-context acme '' upgrade r c",
+  "ko '' apply -f config/",
+  'ko - apply -f config/',
+])('denyReason denies %j with LIVE_REASON (claude-factory-t1xo)', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+})
+
+test.each([
+  "kubectl --context acme '' get pods",
+  'kubectl --context acme get pods',
+  'kubectl --context acme rollout - status deploy/w',
+  'kubectl --context dev apply -f -',
+])('denyReason allows %j with personOnly acme (claude-factory-t1xo)', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
+})
+
+test.each([
+  "gh pr '' view 1",
+  'gh pr -R - view merge',
+  "gh pr -R '' view merge",
+  'gh pr -R o/r view 1',
+  'gh pr -R o/r list',
+  'gh pr - view 1',
+])('denyReason allows %j (claude-factory-t1xo)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+})
+
+test.each(["git '' push o main", 'git - push o main'])(
+  'denyReason leaves %j alone: real git rejects it (claude-factory-t1xo)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeUndefined()
+  },
+)
+
+test('denyReason scans blank words in a stacked eval and a deep alias chain fast (claude-factory-t1xo)', () => {
+  const t = performance.now()
+  const evalCmd = `${'eval '.repeat(32)}gh '' pr '' merge 1 >f`
+  expect(denyReason(evalCmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBeDefined()
+  const entries: [string, string][] = Array.from({ length: 10 }, (_, i) => [`b${i}`, `b${i + 1} ''`])
+  const gate: HookGate = { ghAliases: () => new Map(entries), gitAliases: () => new Map() }
+  denyReason("gh '' b0 5 >f", '/root/repo', undefined, gate)
+  expect(performance.now() - t).toBeLessThan(5000)
+})
+
+// claude-factory-t1xo.5: the blank pass must not multiply the alias recursion.
+test('denyReason walks a lone - alias chain with redirects fast (claude-factory-t1xo.5)', () => {
+  const entries: [string, string][] = Array.from({ length: 10 }, (_, i) => [`b${i}`, `b${i + 1} - >f`])
+  const gate: HookGate = { ghAliases: () => new Map(entries), gitAliases: () => new Map() }
+  const t = performance.now()
+  denyReason('gh b0 - 5 >f', '/root/repo', undefined, gate)
+  denyReason(`${'eval '.repeat(32)}gh b0 - 5 >f; gh pr merge 5`, '/root/repo', undefined, gate)
+  expect(performance.now() - t).toBeLessThan(1000)
+})
+
+test('denyReason denies a quoted alias chain with ALIAS_USE_REASON (claude-factory-t1xo.5)', () => {
+  const entries: [string, string][] = Array.from({ length: 3 }, (_, i) => [`b${i}`, `b${i + 1} ''`])
+  const gate: HookGate = { ghAliases: () => new Map(entries), gitAliases: () => new Map() }
+  expect(denyReason('gh b0 5', '/root/repo', undefined, gate)).toBe(ALIAS_USE_REASON)
 })
 
 // claude-factory-59pp.14: git and kubectl take the verb from the same slot.
@@ -8513,6 +8622,76 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('\\rm')).toBe('rm')
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
+})
+
+// claude-factory-upag: a quoted or escaped assignment name is the command in bash and zsh.
+test.each([
+  String.raw`"d"=1/rm -r ./d`,
+  String.raw`'d'=1/rm -r ./d`,
+  String.raw`d"="1/rm -r ./d`,
+  String.raw`d\=1/rm -r ./d`,
+  String.raw`"d=1"/rm -r ./d`,
+  String.raw`"d"=1/rm -rf /`,
+  String.raw`A=1 "d"=1/rm -r ./d`,
+  String.raw`if "d"=1/rm -r ./d; then :; fi; ls`,
+  String.raw`ls; "d"=1/rm -r ./d`,
+  String.raw`bash -c '"d"=1/rm -r ./d'`,
+  String.raw`nice "d"=1/rm -r ./d`,
+  String.raw`sudo "d"=1/rm -r ./d`,
+  String.raw`env "d"=1/rm -r ./d`,
+])('denyReason denies a quoted assignment name as the command: %j', cmd => {
+  expect(denyReason(cmd, '/root/repo')).toBe(QUOTED_ASSIGNMENT_REASON)
+})
+
+// The allow list leaves out `d\<newline>=1/rm -r ./d`. Bash runs it as `d=1/rm -r ./d`, which the fail-closed
+// assignmentReadingsDeny (mmc9.22/.25) denies as a possible rm. The person chose to keep that deny.
+test.each([
+  'A=1 ls',
+  'A="x y" ls',
+  "A='x' ls",
+  String.raw`echo "d"=1 'x'=2 d\=3`,
+  'd=1/x',
+  String.raw`d=\1/x`,
+  'git commit -m "a=b"',
+  'ls "A"',
+  '"ls" -a',
+  'env A=1 ls',
+  "env -S 'A=1 ls'",
+])('denyReason allows a real assignment or a plain word: %j', cmd => {
+  expect(denyReason(cmd, '/root/repo')).toBeUndefined()
+})
+
+test.each(['A=1 ll', "A=1 B='x y' ll -a"])('denyReason allows %j with a shell alias table', cmd => {
+  const gate = snapGate(() => new Map([['ll', 'ls -l']]))
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+})
+
+test.each([
+  ['n', 'nice', String.raw`n "d"=1/rm -r ./d`],
+  ['i', 'if', String.raw`i "d"=1/rm -r ./d; then :; fi`],
+  ['x', 'A=1', String.raw`x "d"=1/rm -r ./d`],
+  ['n', 'nice', String.raw`n "d"=$H/rm -r ./d`],
+  ['n', 'nice', String.raw`n "d"=1/r* -r ./d`],
+  ['x', 'A=1', String.raw`x "d"=~/rm -r ./d`],
+  ['x', '"d"=1/rm', 'x -r ./d'],
+  ['x', "'d'=1/rm -r ./d", 'x'],
+  ['x', String.raw`d\=1/rm`, 'x -r ./d'],
+  ['x', 'A=1 "d"=1/rm', 'x -r ./d'],
+  ['x', 'nice "d"=1/rm', 'x -r ./d'],
+])('denyReason denies a quoted assignment name after alias %s=%s', (name, value, cmd) => {
+  const gate = snapGate(() => new Map([[name, value]]))
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(QUOTED_ASSIGNMENT_REASON)
+})
+
+test.each([
+  ['ll', 'ls -l', String.raw`ll "d"=1/rm`],
+  ['x', 'ls', String.raw`x "d"=1/rm`],
+  ['n', 'nice', String.raw`n d=1/rm`],
+  ['x', 'A=1 ls', 'x'],
+  ['x', 'echo "d"=1', 'x'],
+])('denyReason allows alias %s=%s with no live quoted name: %j', (name, value, cmd) => {
+  const gate = snapGate(() => new Map([[name, value]]))
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
 })
 
 // claude-factory-tyz6: zsh reads a lone - in command position as a precommand modifier, so the next word is the command.
