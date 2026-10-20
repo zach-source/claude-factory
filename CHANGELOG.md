@@ -418,6 +418,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook did not read a word cut at a substitution after a dynamic command word and its wrapper flags. In `$X -u root $(cat f) ../x` with `X=env`, the shell runs `env -u root rm ../x`. The hook now denies a later word that ends in `$`, holds a backtick, or is `(` after `<` (claude-factory-hevt).
 - Fixed: the worker hook did not see a quote hidden in a here-document inside a backtick substitution. A shell ends such a body at a line with the delimiter and a closing backtick. The hook looked for an exact delimiter line, found a later one, and skipped the check. The hook now denies when a body line starts with the delimiter but is not equal to it (claude-factory-wmsr.37).
 - Fixed: the worker hook let `sudo ${=X}` run the value of a set name. In `X="git push origin main"; sudo ${=X}`, zsh splits the value and sudo runs it. The hook took `${=X}` for a `NAME=value` word and skipped it. A wrapper can skip a word. The hook now denies that word if it expands a set name. Examples: `sudo -u $X` and `nice -n ${=X}`. (claude-factory-xbr1)
+- Tests: the worker hook tests now pin nine `xargs` value-flag rows that run `rm` (for example `xargs -J {} rm -rf {}` and `xargs -L 1 rm -rf`) as denied. They also pin three safe `xargs` rows as allowed. No hook code changed. (claude-factory-uyln.1)
 
 ## 0.13.0 (2026-10-18)
 

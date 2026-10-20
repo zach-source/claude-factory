@@ -10286,3 +10286,26 @@ test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{f
     expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
   },
 )
+
+const UYLN_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+
+test.each([
+  'echo / | xargs -I {} rm -rf {}',
+  'echo / | xargs -J {} rm -rf {}',
+  'echo / | xargs --replace {} rm -rf {}',
+  'echo / | xargs -0 -I {} rm -rf {}',
+  'echo / | xargs -P 4 -I {} rm -r {}',
+  'echo / | xargs -L 1 rm -rf',
+  'echo / | xargs -E x -I {} rm -rf {}',
+  'echo / | xargs -I {} sudo rm -rf {}',
+  'echo / | xargs -I {} find {} -exec rm -rf {} +',
+])('denyReason denies %j (claude-factory-uyln.1, xargs value flags)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, UYLN_GATE)).toBe(REASON)
+})
+
+test.each(['ls | xargs -I {} cp {} dest', 'ls | xargs -I {} cat {}', 'ls | xargs -I {} delete {}'])(
+  'denyReason allows %j (claude-factory-uyln.1, xargs value flags)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, UYLN_GATE)).toBeUndefined()
+  },
+)
