@@ -143,6 +143,13 @@ test('a codex launch refuses without the hook file and when the agent command tu
     '--enable shell_snapshot',
     '--enable multi_agent',
     '--enable code_mode',
+    '-c "features.hooks=false"',
+    "'--ignore-user-config'",
+    "--disable 'hooks'",
+    '-cfeatures.hooks=false',
+    "-c 'features={hooks=false}'",
+    "-c 'features={ unified_exec = true }'",
+    "-c 'features.hooks = false'",
   ])
     expect(() => f.make(`codex ${bad}`)).toThrow('keeps the deny hook on')
   for (const ok of ['-m o3', '--disable multi_agent', '-c model_reasoning_effort=high', '--enable hooks'])

@@ -1766,7 +1766,9 @@ const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_
 
 /** the reason a codex agent command turns a guard part off, or undefined */
 function codexGuardOff(agent: string): string | undefined {
-  const w = agent
+  // drop shell quotes and backslashes first: codex sees '--ignore-user-config' as the bare flag
+  const text = agent.replace(/['"\\]/g, '')
+  const w = text
     .trim()
     .split(/\s+/)
     .flatMap(s => (/^--[\w-]+=/.test(s) ? s.split(/=(.*)/s).slice(0, 2) : [s]))
@@ -1775,11 +1777,14 @@ function codexGuardOff(agent: string): string | undefined {
     if (w[i] === '--ignore-user-config') return w[i]
     if (w[i] === '--disable' && next === 'hooks') return '--disable hooks'
     if (w[i] === '--enable' && CODEX_UNGUARDED.includes(next)) return `--enable ${next}`
-    if (w[i] === '-c' || w[i] === '--config') {
-      if (next === 'features.hooks=false') return `${w[i]} ${next}`
-      if (CODEX_UNGUARDED.some(f => next === `features.${f}=true`)) return `${w[i]} ${next}`
-    }
   }
+  // -c/--config values in dotted, joined (-cfeatures.x=y) or table form (features={x=y}); fail closed on any match
+  const on = CODEX_UNGUARDED.join('|')
+  const re = new RegExp(
+    `features\\.hooks=false|features\\.(${on})=true|features=\\{[^}]*(hooks=false|(${on})=true)`,
+  )
+  const m = text.replace(/\s/g, '').match(re)
+  if (m) return `-c ${m[0]}`
 }
 
 /**
