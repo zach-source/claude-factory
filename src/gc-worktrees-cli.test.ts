@@ -9,7 +9,16 @@
 // tests. The origin's URL is rewritten with `insteadOf` so it reads as github.com to the forge
 // check in cli.ts, while `git fetch`/`push` still reach the real local bare repo.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createActor } from 'xstate'
@@ -1043,4 +1052,216 @@ test('w: a failing "git worktree remove" scrubs URL userinfo from the journaled 
   const errLine = lines.find(l => l.type === 'error' && l.run === id)
   expect(errLine).toBeDefined()
   expect(errLine.reason).toContain('https://github.com/acme/widget.git')
+})
+
+// --- claude-factory-192.12: a laptop-made run in the AX manager (FACTORY_IN_AX=1) ---
+
+/** the AX manager's view of a run the laptop made: the laptop's repo is gone, the rig's clone is under
+ * FACTORY_REPOS, and the worktree is not there. A fake kubectl says the AX controller is ready, so a tick
+ * reaches spawn(); FACTORY_AX_IMAGE stays unset, so launchTask stops there with a message that names it. */
+function axVm(name: string, origin: string) {
+  const repos = join(dir, 'vm-repos')
+  mkdirSync(repos, { recursive: true })
+  git(dir, 'clone', '--quiet', origin, join(repos, name))
+  const kubectl = join(bin, 'kubectl-ready')
+  mkdirSync(bin, { recursive: true })
+  const ready = JSON.stringify({
+    metadata: { generation: 1 },
+    spec: { replicas: 1 },
+    status: { observedGeneration: 1, readyReplicas: 1, availableReplicas: 1 },
+  })
+  writeFileSync(kubectl, `#!/bin/sh\nprintf '%s' '${ready}'\n`)
+  chmodSync(kubectl, 0o755)
+  return {
+    vmRepo: join(repos, name),
+    env: {
+      FACTORY_IN_AX: '1',
+      FACTORY_REPOS: repos,
+      FACTORY_KUBECTL: kubectl,
+      FACTORY_HERDR: noPanes(),
+      FACTORY_GC: '0',
+      CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+    },
+  }
+}
+const readRaw = (id: string) => JSON.parse(readFileSync(join(runDir(id), 'run.json'), 'utf8'))
+const patchRaw = (id: string, patch: Record<string, unknown>) =>
+  writeFileSync(join(runDir(id), 'run.json'), JSON.stringify({ ...readRaw(id), ...patch }))
+const BOGUS = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+const rowOf = (out: { out: string }, id: string) =>
+  JSON.parse(out.out).runs.find((r: { id: string }) => r.id === id)
+
+/** a run as the laptop wrote it, moved to the AX manager: the laptop's worktree is not in the VM */
+function laptopRun(opts: { merged: boolean; base?: string; gone?: boolean }) {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'working', merged: opts.merged })
+  const mainSha = git(repo, 'rev-parse', 'main')
+  writeRigs([{ name: 'r1', repo }])
+  if (opts.base) patchRaw(id, { base: opts.base })
+  git(repo, 'worktree', 'remove', '--force', worktree)
+  if (opts.gone) {
+    git(origin, 'branch', '-D', branch) // gc'd after the merge: gone from origin and the laptop, before the VM clones
+    git(repo, 'branch', '-D', branch)
+  }
+  return { repo, origin, id, branch, mainSha, laptopWorktree: worktree, vm: axVm('r1', origin) }
+}
+
+test('AX-a: spawn of a laptop run with no worktree makes it from origin/<branch> before brief() and keeps a valid base', () => {
+  const t = laptopRun({ merged: false })
+  const base = t.mainSha
+  patchRaw(t.id, { base })
+  const out = factory(['tick'], t.vm.env)
+  expect(out.code).toBe(0)
+  const row = rowOf(out, t.id)
+  const vmWorktree = join(home, 'worktrees', t.id)
+  expect(existsSync(vmWorktree)).toBe(true)
+  expect(readFileSync(join(vmWorktree, `${t.id}.txt`), 'utf8')).toBe(t.id)
+  expect(row.error).not.toContain('cannot change to')
+  expect(row.error).not.toContain('Invalid revision range')
+  expect(row.error).toContain('FACTORY_AX_IMAGE') // brief() ran; launchTask is the next step
+  expect(readRaw(t.id).base).toBe(base) // a valid base stays
+})
+
+test('AX-b: a gone branch of a merged laptop run is made from origin/<default>, and a base the VM lacks is reset in run.json only', () => {
+  const t = laptopRun({ merged: true, base: BOGUS, gone: true })
+  writeFileSync(join(runDir(t.id), 'merged-before-move'), '') // migrate-to-ax wrote the proof
+  const before = readRaw(t.id)
+  const out = factory(['tick'], t.vm.env)
+  expect(out.code).toBe(0)
+  const row = rowOf(out, t.id)
+  const vmWorktree = join(home, 'worktrees', t.id)
+  expect(row.error).not.toContain('cannot change to')
+  expect(row.error).not.toContain('Invalid revision range')
+  expect(row.error).toContain('FACTORY_AX_IMAGE')
+  expect(git(vmWorktree, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(t.branch)
+  expect(git(vmWorktree, 'rev-parse', 'HEAD')).toBe(git(t.vm.vmRepo, 'rev-parse', 'origin/main'))
+  const after = readRaw(t.id)
+  expect(after.base).toBe(git(vmWorktree, 'rev-parse', 'HEAD'))
+  expect({ ...after, base: undefined }).toEqual({ ...before, base: undefined }) // no mapped path written
+  expect(out.err).toContain(t.id) // the recreate and the base reset are logged
+})
+
+test('AX-c: a run with gc.json and no branch still fails with the gc message, and never falls back to origin/<default>', () => {
+  const t = laptopRun({ merged: true, gone: true })
+  writeFileSync(join(runDir(t.id), 'gc.json'), '{}')
+  const out = factory(['tick'], t.vm.env)
+  expect(out.code).toBe(0)
+  const row = rowOf(out, t.id)
+  expect(row.error).toContain('gc')
+  expect(row.error).toContain(t.branch)
+  expect(existsSync(join(home, 'worktrees', t.id))).toBe(false)
+})
+
+test('AX-d: a laptop run with no merge marker and a gone branch fails naming the branch, and makes no worktree', () => {
+  const t = laptopRun({ merged: false, gone: true })
+  const out = factory(['tick'], t.vm.env)
+  expect(out.code).toBe(0)
+  const row = rowOf(out, t.id)
+  expect(row.error).toContain(t.branch)
+  expect(row.error).not.toContain('FACTORY_AX_IMAGE')
+  expect(existsSync(join(home, 'worktrees', t.id))).toBe(false)
+})
+
+test('AX-e: a base the VM lacks resets to the fork point of a run with commits on a live origin branch, not to HEAD', () => {
+  const t = laptopRun({ merged: false, base: BOGUS })
+  const out = factory(['tick'], t.vm.env)
+  expect(out.code).toBe(0)
+  const vmWorktree = join(home, 'worktrees', t.id)
+  expect(readRaw(t.id).base).toBe(t.mainSha)
+  expect(git(vmWorktree, 'rev-parse', 'HEAD')).not.toBe(t.mainSha)
+})
+
+// --- migrate-to-ax --dry-run: the git checks (claude-factory-192.12.4) ---
+
+test('MIG-a: a live run with an unpushed commit stops migrate-to-ax', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree } = writeRun(repo, id, { outcome: 'working' })
+  writeRigs([{ name: 'r1', repo }])
+  writeFileSync(join(worktree, 'more.txt'), 'm')
+  git(worktree, 'add', 'more.txt')
+  git(worktree, 'commit', '-q', '-m', 'unpushed')
+  const out = factory(['migrate-to-ax', '--dry-run'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('not on origin')
+  expect(out.err).toContain(id)
+})
+
+test('MIG-b: a branch deleted upstream with a stale local origin ref stops migrate-to-ax', () => {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'working' })
+  writeRigs([{ name: 'r1', repo }])
+  git(repo, 'config', 'fetch.prune', 'false') // a global fetch.prune would hide a missing --prune
+  git(repo, 'fetch', '--quiet', 'origin') // the stale ref origin/<branch> exists here
+  git(origin, 'branch', '-D', branch)
+  const out = factory(['migrate-to-ax', '--dry-run'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('not on origin')
+})
+
+test('MIG-c: a failed fetch stops migrate-to-ax and names the repo', () => {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  writeRun(repo, id, { outcome: 'working' })
+  writeRigs([{ name: 'r1', repo }])
+  renameSync(origin, `${origin}.moved`)
+  const out = factory(['migrate-to-ax', '--dry-run'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('could not fetch origin')
+  expect(out.err).toContain(repo)
+})
+
+// --- migrate-to-ax: the merged-before-move marker (claude-factory-192.12.8) ---
+
+/** a live run whose head is on origin/main and whose origin branch is gone */
+function mergedGoneRun() {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'working', merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  git(origin, 'branch', '-D', branch)
+  return { id, repo, marker: join(runDir(id), 'merged-before-move') }
+}
+const fakeAxNotFound = () => {
+  mkdirSync(bin, { recursive: true })
+  const path = join(bin, 'ax-notfound')
+  writeFileSync(path, '#!/bin/sh\necho "task not found" >&2\nexit 1\n')
+  chmodSync(path, 0o755)
+  return { FACTORY_AX: path }
+}
+
+test('MIG-d: --dry-run names the recreate and writes no marker', () => {
+  const t = mergedGoneRun()
+  const out = factory(['migrate-to-ax', '--dry-run'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain(t.id)
+  expect(existsSync(t.marker)).toBe(false)
+})
+
+test('MIG-e: a real migrate writes the marker before the manager-task check stops it', () => {
+  const t = mergedGoneRun()
+  const out = factory(['migrate-to-ax'], fakeAxNotFound())
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('not there')
+  expect(existsSync(t.marker)).toBe(true)
+})
+
+test('MIG-f: a refused migrate writes no marker', () => {
+  const t = mergedGoneRun()
+  const other = freshId('ship')
+  const { worktree } = writeRun(t.repo, other, { outcome: 'working' })
+  writeFileSync(join(worktree, 'more.txt'), 'm')
+  git(worktree, 'add', 'more.txt')
+  git(worktree, 'commit', '-q', '-m', 'unpushed')
+  const out = factory(['migrate-to-ax'], fakeAxNotFound())
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('not on origin')
+  expect(existsSync(t.marker)).toBe(false)
 })

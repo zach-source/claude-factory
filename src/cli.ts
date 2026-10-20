@@ -114,6 +114,7 @@ import {
   isLaptopPane,
   mapRigs,
   mapRunRepo,
+  isLaptopRun,
   mapRunWorktree,
   stationRunnerName,
   syncRepos,
@@ -1183,6 +1184,21 @@ function reviveWorktree(run: Run) {
   const ref = `refs/factory-gc/${run.id}`
   const snapshot = verify(ref)
   const gcRemoved = existsSync(join(runDir(run.id), 'gc.json'))
+  // a laptop run merged before the move: its branch is gone from origin. Start from the default branch
+  const def = defaultRef(run.repo)
+  // proof of the merge: migrate-to-ax saw the head in origin/<default> and wrote this marker (claude-factory-192.12.5)
+  const provenMerged = existsSync(join(runDir(run.id), migrate.MERGED_MARKER))
+  if (
+    inAx() &&
+    !gcRemoved &&
+    def &&
+    provenMerged &&
+    isLaptopRun(rawRigs(), readJson<Run>(join(runDir(run.id), 'run.json')))
+  ) {
+    git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, def)
+    console.error(`run ${run.id}: branch ${run.branch} is gone; worktree recreated from ${def}`)
+    return
+  }
   fail(
     gcRemoved
       ? `factory gc --worktrees removed ${run.worktree} and deleted its branch ${run.branch}. ` +
@@ -1193,10 +1209,49 @@ function reviveWorktree(run: Run) {
   )
 }
 
+/** the repo's default branch on origin (origin/HEAD), else origin/main; undefined when the ref is not there */
+function defaultRef(repo: string) {
+  const sym = Bun.spawnSync(['git', '-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  const ref = sym.exitCode === 0 ? sym.stdout.toString().trim() : 'origin/main'
+  const ok = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+  return ok.exitCode === 0 ? ref : undefined
+}
+
+/**
+ * In the AX manager, a laptop run's base can be a commit only the laptop has (never pushed), so `base..HEAD`
+ * fails in brief(). Make the base the merge-base of the worktree's HEAD and the default branch. Only `base`
+ * changes in run.json: the file keeps the laptop's paths, which loadRun maps each time.
+ */
+function resetMissingBase(run: Run) {
+  if (!run.base || !existsSync(run.worktree)) return
+  const known = Bun.spawnSync([
+    'git',
+    '-C',
+    run.worktree,
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    `${run.base}^{commit}`,
+  ])
+  const def = defaultRef(run.repo)
+  if (known.exitCode === 0 || !def) return
+  const base = Bun.spawnSync(['git', '-C', run.worktree, 'merge-base', 'HEAD', def])
+  if (base.exitCode !== 0) return
+  const file = join(runDir(run.id), 'run.json')
+  const was = run.base
+  run.base = base.stdout.toString().trim()
+  writeJson(file, { ...readJson<Run>(file), base: run.base })
+  console.error(
+    `run ${run.id}: base ${was} is not in this clone; base reset to ${run.base} (merge-base with ${def})`,
+  )
+}
+
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
-  // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
-  if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
+  // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first.
+  // In the AX manager the runner is remote, but brief() reads the worktree here, so it needs it too
+  if ((runnerOfStation(run, def, node).local || inAx()) && !existsSync(run.worktree)) reviveWorktree(run)
+  if (inAx()) resetMissingBase(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   const full = () => brief(run, def, node, c, c.mail[node] ?? [])
   // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
@@ -1637,6 +1692,7 @@ export const HAIKU = 'claude-haiku-5-5'
  * It compacts well past the handoff limit too, only as a backstop.
  * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
  * One plugin stays in: `asd-ste100`, so the worker still writes in ASD-STE100; `disableBundledSkills` keeps its skill alone.
+ * `keep` adds more plugins by name (the enabledPlugins key before `@`): FACTORY_WORKER_PLUGINS, comma-separated.
  * `hooks.PreToolUse` keeps the user's own entries first and adds the deny-rm hook last (claude-factory-cr6, claude-factory-99d).
  */
 export const workerSettings = (
@@ -1649,8 +1705,12 @@ export const workerSettings = (
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
   personOnly?: string[],
   branches?: string[],
+  keep: string[] = [],
 ) => {
-  const ste = Object.entries(user.enabledPlugins ?? {}).filter(([k, v]) => v && k.startsWith('asd-ste100@'))
+  const names = ['asd-ste100', ...keep]
+  const ste = Object.entries(user.enabledPlugins ?? {}).filter(
+    ([k, v]) => v && names.includes(k.split('@')[0]!),
+  )
   const hooks: Record<string, unknown[]> = {
     ...user.hooks,
     PreToolUse: [
@@ -1739,7 +1799,11 @@ export function workerFlags(
     home,
     contexts?.length || branches?.length ? `worker-settings-${rig!.name}.json` : 'worker-settings.json',
   )
-  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches)
+  const keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches, keep)
   const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
   const prompt = join(home, 'worker-system.md')
@@ -4613,6 +4677,55 @@ const reposSync = (): string[] => {
 
 const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
 
+/**
+ * the git facts of each live run for migrate.gitRefusal and gitNotes: its head (the worktree's, else its branch's)
+ * against origin/<branch> and origin/<default>, uncommitted changes, and whether its base is on an origin ref.
+ * Fetches origin once per repo. A run with no head or no run.json has nothing local to lose and gets no entry
+ */
+function runGitFacts(ids: string[]): migrate.RunGit[] {
+  const g = (repo: string, ...a: string[]) => Bun.spawnSync(['git', '-C', repo, ...a], { stderr: 'ignore' })
+  const fetched = new Set<string>()
+  const out: migrate.RunGit[] = []
+  for (const id of ids) {
+    const f = join(HOME, 'runs', id, 'run.json')
+    if (!existsSync(f)) continue
+    const run = readJson<Run>(f)
+    if (!fetched.has(run.repo)) {
+      fetched.add(run.repo)
+      // --prune: a stale origin/<branch> of a branch deleted upstream must not count as pushed
+      const fetch = Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', '--prune', 'origin'], {
+        env: GIT_NETWORK_ENV,
+        timeout: GIT_NETWORK_TIMEOUT_MS,
+        stderr: 'ignore',
+      })
+      if (fetch.exitCode !== 0)
+        fail(
+          `could not fetch origin in ${run.repo}, so migrate cannot tell what is pushed. Fix access, then run this again.`,
+        )
+    }
+    const hasTree = existsSync(run.worktree)
+    const head = hasTree
+      ? g(run.worktree, 'rev-parse', '--verify', '--quiet', 'HEAD')
+      : g(run.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${run.branch}`)
+    if (head.exitCode !== 0) continue
+    const sha = head.stdout.toString().trim()
+    const def = defaultRef(run.repo)
+    if (!def)
+      return fail(`${run.repo} has no origin/HEAD or origin/main, so migrate cannot tell what is merged.`)
+    const within = (ref: string) => g(run.repo, 'merge-base', '--is-ancestor', sha, ref).exitCode === 0
+    out.push({
+      id,
+      branch: run.branch,
+      onOrigin: within(`origin/${run.branch}`),
+      merged: within(def),
+      dirty: hasTree && g(run.worktree, 'status', '--porcelain').stdout.toString().trim() !== '',
+      baseOnOrigin:
+        !run.base || g(run.repo, 'branch', '-r', '--contains', run.base).stdout.toString().trim() !== '',
+    })
+  }
+  return out
+}
+
 /** `factory migrate-to-ax [--dry-run] [--force] [--keep N]`: see docs/remote-runner.md, Move the factory to AX */
 async function migrateToAx(args: string[]) {
   if (inAx()) fail('factory migrate-to-ax runs on the laptop')
@@ -4627,8 +4740,19 @@ async function migrateToAx(args: string[]) {
     return r.exitCode === 0 ? r.stdout.toString().trim() : undefined
   }
   const p = migrate.plan(HOME, keep, origin)
+  const live = p.runs.filter(id => {
+    const f = join(HOME, 'runs', id, 'state.json')
+    return migrate.runFacts(id, readFileSync(f, 'utf8'), 0).live
+  })
+  const facts = runGitFacts(live)
+  p.gitRefusal = migrate.gitRefusal(facts)
+  p.gitNotes = migrate.gitNotes(facts)
+  if (!dry && !p.gitRefusal && !p.refusal && !p.rigsError)
+    for (const id of migrate.mergedIds(facts))
+      writeFileSync(join(HOME, 'runs', id, migrate.MERGED_MARKER), '')
   console.log(migrate.describe(p))
   if (p.refusal) fail(p.refusal)
+  if (p.gitRefusal) fail(p.gitRefusal)
   if (p.rigsError) fail(p.rigsError)
   if (dry) return console.log('dry run: nothing written, nothing sent')
   const task = ax.managerTask()
@@ -5774,14 +5898,15 @@ async function labelPass() {
         } else if (action === 'rework' && runId) {
           const node = live.find(r => r.id === runId)!.node
           const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
-          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
+          // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
           forge.unlabel(pr, reworkLabels(pr))
+          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
           forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
+          forge.unlabel(pr, reworkLabels(pr))
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
           busy.push(rig.name)
-          forge.unlabel(pr, reworkLabels(pr))
           forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
         }

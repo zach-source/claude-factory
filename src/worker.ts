@@ -125,8 +125,8 @@ async function sentFile(name: string, { waitMs = 2000, tries = 300 } = {}) {
 const bdEnv = () => ({ ...process.env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' })
 
 /**
- * a bd store in `dir`, bootstrapped once: from a Dolt `remote` (written as the store's sync.remote), else from the
- * refs/dolt of the git `origin`. It is the worker's store, and the AX manager's, one per rig (src/axrepos.ts)
+ * a bd store in `dir`, bootstrapped once. config.yaml always holds sync.remote: the Dolt `remote`, else git+`origin`,
+ * and the origin must then hold refs/dolt/data. It is the worker's store, and the AX manager's, one per rig (src/axrepos.ts)
  */
 export function bootstrapBeads(
   dir: string,
@@ -137,11 +137,15 @@ export function bootstrapBeads(
   if (existsSync(join(dir, '.beads', 'embeddeddolt'))) return
   rmSafe(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
-  // a rig's shared Dolt remote (FACTORY_BEADS_REMOTE), else the repo's GitHub origin
-  if (remote) {
-    mkdirSync(join(dir, '.beads'), { recursive: true })
-    writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(remote)}\n`)
+  // bd bootstraps an empty store, and exits 0, from an origin with no refs/dolt/data: refuse that
+  if (!remote) {
+    const ls = Bun.spawnSync(['git', 'ls-remote', origin, 'refs/dolt/data'], { env, stderr: 'pipe' })
+    if (ls.exitCode !== 0 || !ls.stdout.toString().trim())
+      throw new Error(`beads in the VM: ${origin} has no refs/dolt/data, set the rig's beadsRemote`)
   }
+  mkdirSync(join(dir, '.beads'), { recursive: true })
+  const syncRemote = remote ?? `git+${origin}`
+  writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(syncRemote)}\n`)
   for (const cmd of [
     ['git', 'init', '-q', '.'],
     ...(remote ? [] : [['git', 'remote', 'add', 'origin', origin]]),

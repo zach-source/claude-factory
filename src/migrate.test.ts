@@ -6,6 +6,8 @@ import { homeReady } from './managerhost'
 import {
   claudeFiles,
   describe,
+  gitNotes,
+  gitRefusal,
   localLiveRuns,
   migratedRigs,
   pack,
@@ -142,4 +144,41 @@ test("pack carries the manager's Claude memory and session transcripts, with eac
   expect(names.match(/manager-sessions\.json/g)).toHaveLength(1)
   const sessions = Bun.spawnSync(['tar', '-xzOf', out, 'manager-sessions.json']).stdout.toString()
   expect(JSON.parse(sessions)).toEqual([{ session: 's1', cwd: '/workspace/w' }])
+})
+
+const clean = {
+  id: 'r1',
+  branch: 'factory/r1',
+  onOrigin: true,
+  merged: true,
+  dirty: false,
+  baseOnOrigin: true,
+}
+
+test('gitRefusal refuses unpushed or dirty live runs and names each', () => {
+  expect(gitRefusal([clean])).toBeUndefined()
+  expect(gitRefusal([{ ...clean, onOrigin: false, merged: false }])).toContain('r1 (factory/r1)')
+  expect(gitRefusal([{ ...clean, dirty: true }])).toContain('uncommitted')
+  const two = gitRefusal([
+    { ...clean, onOrigin: false, merged: false },
+    { ...clean, id: 'r2', branch: 'factory/r2', dirty: true },
+  ])
+  expect(two).toContain('r1')
+  expect(two).toContain('r2')
+})
+
+test('gitRefusal lets a merged run with no origin branch, or a pushed unmerged one, move', () => {
+  expect(gitRefusal([{ ...clean, onOrigin: false, merged: true }])).toBeUndefined()
+  expect(gitRefusal([{ ...clean, onOrigin: true, merged: false }])).toBeUndefined()
+})
+
+test('gitNotes names a recreated run and a base reset, and refuses nothing', () => {
+  expect(gitNotes([clean])).toEqual([])
+  const notes = gitNotes([
+    { ...clean, onOrigin: false, merged: true },
+    { ...clean, id: 'r2', baseOnOrigin: false },
+  ]).join('\n')
+  expect(notes).toMatch(/r1.*recreated from origin/)
+  expect(notes).toMatch(/r2.*base reset/)
+  expect(gitRefusal([{ ...clean, baseOnOrigin: false }])).toBeUndefined()
 })
