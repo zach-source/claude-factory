@@ -2658,8 +2658,8 @@ test.each([
 const G4L4_GATE = {
   headOf: () => 'factory/x',
   originHead: () => 'main',
-  ghAliases: () => new Map<string, string[]>(),
-  gitAliases: () => new Map<string, string[]>(),
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
 }
 test.each([
   'rm 2>o -r src',
