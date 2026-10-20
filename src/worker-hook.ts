@@ -4872,10 +4872,11 @@ function segmentMayGlobSubst(words: string[]): boolean {
       return true
     }
     if (w === 'setopt' || w === 'unsetopt') {
-      if (bare.slice(i + 1).some(a => a === '-m' || /[$`*?[{]/.test(a))) return true
+      if (bare.slice(i + 1).some(a => /^-[^-]*m/.test(a) || /[^A-Za-z0-9_+-]/.test(a))) return true
     } else if (w === 'set') {
       const rest = bare.slice(i + 1)
-      if (rest.some((a, j) => (a === '-o' || a === '+o') && /[$`{]/.test(rest[j + 1] ?? ''))) return true
+      if (rest.some((a, j) => /^[-+][A-Za-z]*o/.test(a) && /[^A-Za-z0-9_]/.test(rest[j + 1] ?? '')))
+        return true
     }
   }
   return false
@@ -7798,6 +7799,9 @@ function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
 }
 
+// claude-factory-iufy: $~x, ${~x}, ${^~x}; any ${( flag group with a later ~ is denied unparsed.
+const TILDE_EXPANSION = /\$\{?(?:[\^=~#+])*~|\$\{\([\s\S]*~/
+
 /**
  * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
  * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
@@ -7818,8 +7822,6 @@ function quoteWord(w: string): string {
  * It is for a `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` assignment, not a `cd`.
  * It seeds this call's own `ghConfigMovedSoFar`.
  */
-const TILDE_EXPANSION = /\$\{?(?:\([^)]*\)|[\^=~#+])*~/
-
 function denyAt(
   command: string,
   root: string | undefined,
