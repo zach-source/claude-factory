@@ -2352,6 +2352,14 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
     if (node === 'done' && typeof edge === 'object' && edge.ship) {
       const url = [...c.log].reverse().flatMap(e => [...prsIn(e.summary), ...mrsIn(e.summary)])[0] ?? ''
       b.ship(id, run.id, { pr: url, branch: run.branch })
+      // a parked ship run wakes on mail; one that is not live is started by the next shipPass
+      for (const s of liveShipRuns().filter(s => s.run.repo === run.repo))
+        post(s.run.id, {
+          type: 'MAIL',
+          from: 'factory',
+          to: s.node,
+          text: `${id} joined the ship queue: ${url || 'no pull request link'} (run ${run.id}).`,
+        })
     }
     // open children, however the run ended: what is left is theirs to start, so the bead stays open
     // rather than deferred out of sight (dispatch skips it, so it does not come straight back)
@@ -2457,6 +2465,55 @@ const trackOf = (id: string, saved?: Saved): Track => {
       }
 }
 
+/** the repos that need a new ship run: a non-empty queue and no live ship run (claude-factory-rtuw) */
+export const shipStarts = (repos: string[], queued: (repo: string) => number, live: ReadonlySet<string>) =>
+  repos.filter(r => !live.has(r) && queued(r) > 0)
+
+/** the live ship runs: the runner's own flag, or the id a ship run gets from its factory name */
+const liveShipRuns = () =>
+  runIds().flatMap(id => {
+    try {
+      const { run, value } = current(id)
+      const ended = ['done', 'aborted'].includes(where(value)[0])
+      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0] }] : []
+    } catch {
+      return [] // removed mid-pass
+    }
+  })
+
+/**
+ * Starts one ship run for each rig whose ship queue holds a bead and which has no live ship run.
+ * A ship run takes no room: it counts against FACTORY_MAX_RUNS and the rig's maxRuns never
+ * (claude-factory-rtuw), so this does not call assertRoom. The beads pass calls it.
+ */
+async function shipPass() {
+  if (halted()) return
+  const live = new Set(liveShipRuns().map(s => s.run.repo))
+  const byRepo = new Map(rigs().map(r => [r.repo, r]))
+  const queues = new Map<string, number>()
+  const queued = (repo: string) => {
+    try {
+      if (!hasBeads(repo)) return 0
+      if (!queues.has(repo)) queues.set(repo, beads(repo, 'factory').shipQueue().length)
+    } catch (err) {
+      console.error(`${new Date().toISOString()} ship queue for ${repo}: ${(err as Error).message}`)
+    }
+    return queues.get(repo) ?? 0
+  }
+  for (const repo of shipStarts([...byRepo.keys()], queued, live)) {
+    const rig = byRepo.get(repo)!
+    try {
+      const preview = await loadFactory(factorySource('ship', repo))
+      if (preview.name !== 'ship') throw new Error(`its ship factory is named '${preview.name}', not 'ship'`)
+      const goal = `Ship rig ${rig.name}'s queue: factory ship ${rig.name} lists the pull requests, next to merge first.`
+      const { run } = await createTracked('ship', preview.name, repo, goal, undefined, undefined, true)
+      console.log(`${new Date().toISOString()} ship for rig ${rig.name} → ${run.id}`)
+    } catch (err) {
+      console.error(`${new Date().toISOString()} ship for rig ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+}
+
 /**
  * every run's beads, out of the tick: under load one bd call can take a minute, and launching, nudging and
  * failing workers must not wait on it. Mirrors reports, heartbeats claims, settles finished runs, then
@@ -2508,6 +2565,7 @@ async function beadsPass() {
         // removed mid-pass
       }
     }
+    await shipPass()
     await linearPass()
     await dispatch()
     await labelPass()
@@ -4300,7 +4358,7 @@ async function createRun(
   spec: string,
   repo: string,
   goal: string,
-  { id, bead, from }: { id: string; bead?: string; from?: { run: Run; saved: Saved } },
+  { id, bead, from, ship }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true },
 ) {
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
@@ -4346,6 +4404,7 @@ async function createRun(
     worktree,
     ...(from && { forkedFrom: from.run.id }),
     ...(bead && { bead }),
+    ...(ship && { ship }),
   }
   // the source's worker stays the source's: the fork launches its own
   const snapshot = from
@@ -4367,12 +4426,13 @@ async function createTracked(
   goal: string,
   bead?: string,
   from?: { run: Run; saved: Saved },
+  ship?: true,
 ) {
   const id = `${name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`
   const b = beads(repo, actorOf(id))
   if (bead && !b.claim(bead)) fail(`${bead} is already claimed by another worker`)
   try {
-    return await createRun(spec, repo, goal, { id, bead, from })
+    return await createRun(spec, repo, goal, { id, bead, from, ship })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
     if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
@@ -5973,6 +6033,7 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   const held: (string | undefined)[] = []
   for (const id of runIds()) {
     const { run, value } = current(id)
+    if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
     const [node, sub] = where(value)
     const n = (await loadFactory(run.factory)).nodes[node]
     const s = slot(n, sub)
@@ -6136,6 +6197,8 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   const preview = await loadFactory(factorySource(spec!, root))
   if (at && !preview.nodes[at])
     fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
+  if (preview.name === 'ship' && liveShipRuns().some(s => s.run.repo === root))
+    fail(`rig ${rigOf(root)?.name ?? root} already has a live ship run: one ship run for each rig`)
   const linked = beadFor(root, goal, { isOwnerOk })
   const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
   if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
