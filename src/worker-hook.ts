@@ -1536,7 +1536,7 @@ function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolea
   }
   if (b === 'find') {
     for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+      if (!findExecWord(cmd[i]!)) continue
       if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return true
     }
   }
@@ -1584,6 +1584,9 @@ const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false }
 const DYN_CHARS = /[$`*?[]/
 const DYN_FLAG_TEXT = /(?<![-:])-[A-Za-z]*[rR]|:--[A-Za-z]*[rR]|--rec|-delete|-exec|-ok/
 const DYN_FLAG_WORDS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir'])
+// A glob word such as -exe? can match a file named -exec, so find runs it as an action.
+const globActionWord = (w: string): boolean => /^[-*?[]/.test(w) && /[*?[]/.test(w)
+const findExecWord = (w: string): boolean => w === '-exec' || w === '-execdir' || globActionWord(w)
 
 function hasLettersInOrder(w: string, letters: string): boolean {
   let k = 0
@@ -1614,7 +1617,8 @@ function dynamicHeadDeny(
     return { deny: true, rm: false }
   if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags) return { deny: true, rm: false }
   if (start === 0) {
-    for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
+    for (let k = 1; k < cmd.length; k++)
+      if (DYN_FLAG_WORDS.has(cmd[k]!) || globActionWord(cmd[k]!)) return { deny: true, rm: false }
   }
   if (!(other.rmfind || hasLettersInOrder(w, 'rm') || hasLettersInOrder(w, 'find')))
     return { deny: false, rm: false }
@@ -1657,7 +1661,7 @@ function rmFindReading(
   }
   if (b === 'find') {
     for (let i = 0; i < cmd.length; i++) {
-      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+      if (!findExecWord(cmd[i]!)) continue
       if (i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
       if (baseWord(next) === 'rm') {
@@ -7048,7 +7052,7 @@ function denyAtScan(
       // new scan only at its own `rm` word. The scans do not overlap. So the whole loop costs
       // O(n), not O(n^2).
       for (let i = 0; i < cmd.length; i++) {
-        if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+        if (!findExecWord(cmd[i]!)) continue
         if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
       }
     }
