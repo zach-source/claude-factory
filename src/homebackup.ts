@@ -116,8 +116,15 @@ function bundleMemory(ws: string): string | undefined {
   const bad = files(mem).filter(f => secretFile(readFileSync(f)))
   if (bad.length) return `backup refused: secret-like text in ${bad.map(f => relative(ws, f)).join(', ')}`
   // the bundle carries every commit, so a token in an old commit counts even when the work tree is clean
-  const hist = Bun.spawnSync(['git', '-C', mem, 'log', '--all', '-p', '--format='], { stdout: 'pipe' })
-  if (hist.exitCode === 0 && secretFile(Buffer.from(hist.stdout)))
+  const hist = Bun.spawnSync(
+    ['git', '-C', mem, 'log', '--all', '-p', '--text', '--no-textconv', '--format='],
+    {
+      stdout: 'pipe',
+      maxBuffer: 1 << 30,
+    },
+  )
+  if (hist.exitCode !== 0) return 'backup refused: cannot scan the history of home/memory'
+  if (secretFile(Buffer.from(hist.stdout)))
     return 'backup refused: secret-like text in the history of home/memory'
   const refs = Bun.spawnSync(['git', '-C', mem, 'for-each-ref', '--format=%(objectname) %(refname)'])
   const state = refs.stdout.toString()
@@ -270,20 +277,27 @@ export function backup(
  */
 export function restore(cfg: BackupCfg): Outcome {
   if (!cfg.remote) return { skipped: 'no remote' }
-  if (homeUsed(cfg.ws)) return { skipped: 'used' }
+  const bundle = join(cfg.ws, 'home', BUNDLE)
+  const mem = join(cfg.ws, 'home', 'memory')
+  // a restore that failed after the checkout left the files but no memory clone and no marker: finish it
+  const pending =
+    existsSync(bundle) && !existsSync(join(mem, '.git')) && !existsSync(join(cfg.ws, 'home', '.migrated'))
+  if (homeUsed(cfg.ws) && !pending) return { skipped: 'used' }
   try {
     init(cfg)
-    const tip = remoteTip(cfg)
-    if (tip === null) return { skipped: 'no backup' }
-    if (typeof tip === 'object') return { error: tip.error }
-    const f = git(cfg, ['fetch', '-q', cfg.remote, `refs/heads/${cfg.branch}`], PUSH_MS)
-    if (!f.ok) return { error: `git fetch: ${f.err.split('\n').at(-1)}` }
-    const sha = git(cfg, ['rev-parse', 'FETCH_HEAD']).out
-    const c = git(cfg, ['checkout', '-q', '-f', '-B', cfg.branch, sha])
-    if (!c.ok) return { error: `git checkout: ${c.err}` }
-    const bundle = join(cfg.ws, 'home', BUNDLE)
-    const mem = join(cfg.ws, 'home', 'memory')
-    if (existsSync(bundle) && !existsSync(mem)) {
+    let sha: string
+    if (pending) sha = git(cfg, ['rev-parse', 'HEAD']).out
+    else {
+      const tip = remoteTip(cfg)
+      if (tip === null) return { skipped: 'no backup' }
+      if (typeof tip === 'object') return { error: tip.error }
+      const f = git(cfg, ['fetch', '-q', cfg.remote, `refs/heads/${cfg.branch}`], PUSH_MS)
+      if (!f.ok) return { error: `git fetch: ${f.err.split('\n').at(-1)}` }
+      sha = git(cfg, ['rev-parse', 'FETCH_HEAD']).out
+      const c = git(cfg, ['checkout', '-q', '-f', '-B', cfg.branch, sha])
+      if (!c.ok) return { error: `git checkout: ${c.err}` }
+    }
+    if (existsSync(bundle) && !existsSync(join(mem, '.git'))) {
       const k = Bun.spawnSync(['git', 'clone', '-q', bundle, mem], { stderr: 'pipe' })
       if (k.exitCode !== 0) return { error: `git clone memory: ${clean(k.stderr.toString())}` }
       Bun.spawnSync(['git', '-C', mem, 'remote', 'remove', 'origin'])

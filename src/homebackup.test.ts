@@ -242,6 +242,45 @@ test('a token in an old memory commit stops the backup even when the work tree i
   expect(Bun.spawnSync(['git', '--git-dir', r, 'rev-parse', '--verify', 'manager-home']).exitCode).not.toBe(0)
 })
 
+test('a token in a binary blob of an old memory commit stops the backup', () => {
+  const r = remote()
+  const a = workspace()
+  const mem = join(a, 'home', 'memory')
+  const g = (...x: string[]) => sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', ...x)
+  sh('-C', mem, 'init', '-q')
+  writeFileSync(
+    join(mem, 'x.bin'),
+    Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from('ghp_' + 'a'.repeat(36))]),
+  )
+  g('add', '-A')
+  g('commit', '-q', '-m', 'one')
+  g('rm', '-q', 'x.bin')
+  g('commit', '-q', '-m', 'two')
+  expect(backup(cfg(a, r), true).error).toContain('history of home/memory')
+  expect(Bun.spawnSync(['git', '--git-dir', r, 'rev-parse', '--verify', 'manager-home']).exitCode).not.toBe(0)
+})
+
+test('a memory dir that blocks the clone is an error, and a retry finishes the restore', () => {
+  const r = remote()
+  const a = workspace()
+  const mem = join(a, 'home', 'memory')
+  sh('-C', mem, 'init', '-q')
+  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'add', '-A')
+  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-q', '-m', 'one')
+  expect(backup(cfg(a, r), true).error).toBeUndefined()
+  const b = empty()
+  put(join(b, 'home', 'memory', 'old.md'), 'stale')
+  const out = restore(cfg(b, r))
+  expect(out.restored).toBeUndefined()
+  expect(out.error).toBeDefined()
+  expect(existsSync(join(b, 'home', '.migrated'))).toBe(false)
+  // rigs.json is there now, but the restore is still open: the next call must not say "used"
+  rmSync(join(b, 'home', 'memory'), { recursive: true, force: true })
+  const again = restore(cfg(b, r))
+  expect(again.restored).toBeDefined()
+  expect(readFileSync(join(b, 'home', 'memory', 'a.md'), 'utf8')).toBe('note')
+})
+
 test('a failing remote is an error in restore, an empty remote is "no backup"', () => {
   const ws = empty()
   const out = restore(cfg(ws, join(tmp(), 'missing.git')))
