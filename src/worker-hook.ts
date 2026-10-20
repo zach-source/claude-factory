@@ -456,6 +456,8 @@ interface ScanState {
   stdinDeferred: boolean
   /** k8iz: set when the late dollar-word deny fired, so a stdin-shell reason can win over it. */
   ifsLate: boolean
+  /** claude-factory-clcc: set when a glob char sits in a command word. denyReason returns DYNAMIC_VERB_REASON after SHELL_STDIN_REASON. */
+  globDeferred: boolean
   /** claude-factory-4iod: set when a brace body reads as a risky rm. denyReason returns REASON after the older reasons. */
   bodyDeny: boolean
   /** claude-factory-3frd: set when a word after a sh -c cluster holds a dollar or backtick. scanReason returns SH_DYNAMIC_SCRIPT_REASON last. */
@@ -6186,6 +6188,56 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
   'api',
 ])
 
+/**
+ * claude-factory-clcc: bash and zsh expand a glob in the command word, so `/bin/[r]m -rf /` runs
+ * rm. A word is a glob command word when it holds `*`, `?` or a `[..]` pair. A lone `[` or `[[`
+ * is not a glob. An array assignment (`A[1]=x`) is not a command word. A glob that can match a
+ * shell name and is followed by `-c` stays allowed only when every file it matches is a shell:
+ * the shell scan then reads that script. The shell runs the first match.
+ */
+function globCommandWord(w: string, next?: string): boolean {
+  if (!/[*?]/.test(w) && !/\[[\s\S]*\]/.test(w)) return false
+  if (/^[A-Za-z_][A-Za-z0-9_]*\[[\s\S]*\]\+?=/.test(w)) return false
+  if (next === '-c' && globMatchesShellName(w)) return false
+  return true
+}
+
+const ROOT_BIN_DIRS = new Set(['/bin', '/usr/bin', '/sbin', '/usr/sbin'])
+
+function globMatchesShellName(g: string): boolean {
+  const slash = g.lastIndexOf('/')
+  const dir = slash < 0 ? '.' : g.slice(0, slash) || '/'
+  // claude-factory-clcc.10: only a fixed root-owned dir. A relative glob depends on a cwd that an
+  // earlier cd can change, and a writable dir can change between this check and the run.
+  if (!ROOT_BIN_DIRS.has(dir)) return false
+  const leaf = g.slice(slash + 1)
+  let re = ''
+  for (let i = 0; i < leaf.length; i++) {
+    const c = leaf[i]!
+    if (c === '*') re += '.*'
+    else if (c === '?') re += '.'
+    else if (c === '[') {
+      const j = leaf.indexOf(']', i + 1)
+      if (j < 0) return false
+      re += leaf.slice(i, j + 1).replace(/^\[!/, '[^')
+      i = j
+    } else re += c.replace(/[.+^${}()|\\]/g, '\\$&')
+  }
+  try {
+    const r = new RegExp('^' + re + '$')
+    // The shell runs the first match, so every match must be a shell.
+    const hits = readdirSync(dir).filter(n => r.test(n) && (leaf.startsWith('.') || !n.startsWith('.')))
+    return hits.length > 0 && hits.every(n => SHELL_NAMES.has(n))
+  } catch {
+    return false
+  }
+}
+
+/** True when a glob command word sits at any command anchor of `words`. */
+function anyGlobCommandWord(words: string[]): boolean {
+  return commandAnchors(words).some(a => globCommandWord(words[a]!, words[a + 1]))
+}
+
 // claude-factory-38jm: a brace word with a comma or a `..` range.
 const BRACE_LIST_WORD = /\{[^{}]*(,|\.\.)[^{}]*\}/
 
@@ -7079,6 +7131,7 @@ export function scanReason(
     stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     stdinDeferred: false,
     ifsLate: false,
+    globDeferred: false,
     bodyDeny: false,
     dynamicScript: false,
     globalGitConfig: false,
@@ -7091,7 +7144,13 @@ export function scanReason(
     work: budget,
   }
   const deferred = () =>
-    state.stdinDeferred ? SHELL_STDIN_REASON : state.dynamicScript ? SH_DYNAMIC_SCRIPT_REASON : undefined
+    state.stdinDeferred
+      ? SHELL_STDIN_REASON
+      : state.dynamicScript
+        ? SH_DYNAMIC_SCRIPT_REASON
+        : state.globDeferred
+          ? DYNAMIC_VERB_REASON
+          : undefined
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) {
@@ -8012,6 +8071,10 @@ function denyAtScan(
       anyDynamicCommandReason(words, state.braceWords) ??
       anyDynamicCommandReason(dropRedirectWords(words), state.braceWords)
     if (dynamicCmdFound) return dynamicCmdFound
+    // claude-factory-clcc: deferred, so a more specific reason (a shell that reads stdin) wins.
+    // claude-factory-clcc.11: no case-pattern skip. A glob case pattern denies (accepted over-deny),
+    // because a body command can repeat a pattern word.
+    if (anyGlobCommandWord(words)) state.globDeferred = true
     // claude-factory-25z.14: the same scan, for a sh/bash/zsh/dash/eval word a wrapper with flag
     // args (`sudo -u`, `nice -n`, `timeout -s`) or an unknown wrapper (`watch`, `find -exec`) can
     // push past position 0. This recurses into the script it runs, covering both guards above.
@@ -8079,6 +8142,12 @@ function denyAtScan(
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'find') {
+      // claude-factory-clcc: a glob char in the word after -exec, -execdir, -ok or -okdir can expand to rm.
+      for (let i = 0; i < cmd.length; i++) {
+        if (cmd[i] === '-exec' || cmd[i] === '-execdir' || cmd[i] === '-ok' || cmd[i] === '-okdir') {
+          if (i + 1 < cmd.length && globCommandWord(cmd[i + 1]!, cmd[i + 2])) return DYNAMIC_VERB_REASON
+        }
+      }
       if (findExecRmDeny(cmd)) return REASON
     }
     // claude-factory-j471: a redirect word (`>f find ...`, `find -exec >f rm ...`) can hide the
@@ -8089,7 +8158,9 @@ function denyAtScan(
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
-    if (readings.deny) return REASON
+    // claude-factory-clcc: a glob command word keeps its own reason when this reading denies it.
+    if (readings.deny)
+      return anyGlobCommandWord(words.filter(w => !w.includes('$'))) ? DYNAMIC_VERB_REASON : REASON
     if (readings.rm) hasRm = true
     // k8iz: this reading is late, so a specific reason (push, alias, here-document) wins.
     if (
@@ -8151,7 +8222,8 @@ function denyAtScan(
   if (backtickBesidePush(command)) return PUSH_REASON
   if (definesFunction) return FUNCTION_DEF_REASON
   if (quotedAssign) return QUOTED_ASSIGNMENT_REASON
-  if (ambiguousAssignment) return ASSIGNMENT_PREFIX_REASON
+  // claude-factory-clcc: a glob command word keeps its own reason, as in the stdin deferral.
+  if (ambiguousAssignment) return state.globDeferred ? DYNAMIC_VERB_REASON : ASSIGNMENT_PREFIX_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
