@@ -10186,6 +10186,31 @@ test.each([
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
 })
 
+test.each([
+  "find . {-exec,rm,--r} / ';'",
+  "find . {-exec,rm,--re} / ';'",
+  "find . {-exec,rm,--r} x ';'",
+  "find . -exec rm --r x ';'",
+  "find . -exec rm --re x ';'",
+  'rm --r foo',
+  'rm --re foo',
+  'rm --recu foo',
+  'rm --recursiv foo',
+  'rm --rec=x foo',
+])('denyReason denies %j (claude-factory-a5b0)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+test.each([
+  'rm -- --r',
+  'rm --force foo',
+  'rm --dir foo',
+  'rm --verbose foo',
+  "find . -exec rm -f x ';'",
+])('denyReason allows %j (claude-factory-a5b0 -ok)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
 test('denyReason reads 3000 brace words after find in one pass (claude-factory-gj9l)', () => {
   expect(scanReason('find . ' + '-{rm,x} '.repeat(3000), '/Users/acme/widget')).toBe(REASON)
   expect(scanReason('find . ' + '{-exec,rm} '.repeat(3000) + '-rf /', '/Users/acme/widget')).toBe(REASON)
