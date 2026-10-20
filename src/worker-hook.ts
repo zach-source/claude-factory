@@ -2049,6 +2049,7 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   // own. Without this skip, n stacked eval words cost about 2^n work.
   let evalScanned = false
   let slotEnd = 0
+  let trapEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
@@ -2064,14 +2065,16 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       // here would change that reason to the BEADS_ACTOR one (claude-factory-38jm AC4).
       const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
       if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
-    } else if (bw === 'trap') {
+    } else if (bw === 'trap' && k >= trapEnd) {
       // claude-factory-81tz.2: the trap action and the dash words before it are scripts. Read them like eval.
+      // claude-factory-81tz.4: trapEnd skips a trap word inside an earlier walk, so the scan stays O(n).
       let a = k + 1
       while (a < words.length && words[a]!.startsWith('-') && words[a] !== '-') {
         if (stringNamesBdCommand(words[a]!, state, depth + 1)) return true
         a++
         if (words[a - 1] === '--') break
       }
+      trapEnd = a
       if (a < words.length && stringNamesBdCommand(words[a]!, state, depth + 1)) return true
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true

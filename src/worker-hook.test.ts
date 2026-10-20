@@ -8121,6 +8121,19 @@ test('denyReason bounds a long dash-led trap chain (claude-factory-81tz.3)', () 
 }, 30_000)
 
 test.each([
+  ['env -i sh -c "trap ' + '-/trap '.repeat(1000) + 'x"'],
+  ['env -i sh -c "eval trap ' + '-/trap '.repeat(1000) + 'x"'],
+])(
+  'denyReason bounds a long trap chain in the bd scan (claude-factory-81tz.4)',
+  cmd => {
+    const t0 = Date.now()
+    denyReason(cmd)
+    expect(Date.now() - t0).toBeLessThan(100)
+  },
+  30_000,
+)
+
+test.each([
   ["source <(echo 'git push origin main')"],
   [". <(echo 'git push origin main')"],
   ["source =(echo 'git push origin main')"],
