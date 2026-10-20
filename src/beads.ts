@@ -187,11 +187,16 @@ export function backlogOf(
   const isQueued = (x: Bead) => heads.has(x.id) || (!x.assignee && heads.has(parentOf(x) ?? ''))
   const inQueue = [...ready, ...waiting].filter(isQueued)
   const queuedIds = new Set(inQueue.map(x => x.id))
+  // a bead handed to ship is in the ship queue, not unqueued
+  const notShipped = (x: Bead) => !x.labels?.includes(SHIP)
   return {
     queued: inQueue.map(slim),
-    unqueued: [...unqueued, ...waiting.filter(x => !queuedIds.has(x.id) && !x.labels?.includes(LABEL))].map(
-      slim,
-    ),
+    unqueued: [
+      ...unqueued,
+      ...waiting.filter(x => !queuedIds.has(x.id) && !x.labels?.includes(LABEL)),
+    ]
+      .filter(notShipped)
+      .map(slim),
   }
 }
 

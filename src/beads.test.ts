@@ -16,6 +16,12 @@ import {
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 
+test('a bead handed to ship is not listed as unqueued', () => {
+  const shipped = bead('ap-6', { labels: ['ship'], status: 'open' })
+  const out = backlogOf([], [shipped, bead('ap-7')], [], [shipped, bead('ap-7')])
+  expect(out.unqueued.map(b => b.id)).toEqual(['ap-7'])
+})
+
 test('only top-level beads no run holds are dispatched, up to the room left', () => {
   const ready = [
     ...[bead('fx-1'), bead('fx-1.1', { parent: 'fx-1' }), bead('fx-2'), bead('fx-5', { assignee: 'zach' })],

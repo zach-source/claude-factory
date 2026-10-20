@@ -5754,6 +5754,10 @@ export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: 
       r.log.some(e => [...prsIn(e.summary), ...mrsIn(e.summary)].includes(pr.url)),
   )?.id
 
+/** the queued bead whose PR this is: ship owns it, so no rework run may start on it (claude-factory-rtuw) */
+export const queuedOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, queue: Bead[]) =>
+  queue.find(b => b.metadata?.ship_branch === pr.headRefName || (!!pr.url && b.metadata?.ship_pr === pr.url))
+
 /**
  * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
  * aborts the live run it belongs to; `conflict` or `rework` mails that run's station (so two workers never
@@ -5820,8 +5824,19 @@ async function labelPass() {
           }
     try {
       const labeled = forge.list()
+      const shipped = labeled.some(pr => labelAction(pr) === 'rework') ? beads(rig.repo, 'factory').shipQueue() : []
       for (const pr of labeled) {
         const action = labelAction(pr)
+        const queuedBead = action === 'rework' ? queuedOwner(pr, shipped) : undefined
+        if (queuedBead) {
+          // the rig's ship run owns a queued PR: it hears of the label, and no rework run starts
+          const text = `[factory] ${pr.url} (${queuedBead.id}) was ${asksOf(pr)}. Treat it as changes needed: follow your rework steps.`
+          forge.unlabel(pr, reworkLabels(pr))
+          for (const s of liveShipRuns().filter(s => s.run.repo === rig.repo))
+            post(s.run.id, { type: 'MAIL', from: 'factory', to: s.node, text })
+          console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)
+          continue
+        }
         const runId = prOwner(pr, live)
         if (action === 'close') {
           forge.close(pr, `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`)

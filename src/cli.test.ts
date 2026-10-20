@@ -25,6 +25,7 @@ import {
   parsePkgGateAllowlist,
   parsePkgGateMinDays,
   prOwner,
+  queuedOwner,
   loadFactory,
   ownCopy,
   paramsOf,
@@ -108,7 +109,7 @@ test("a repo's own copy loads without this project and says how it is changed", 
   compile(def)
   // what reads or changes production needs the laptop, whatever runner the rig sends its workers to
   const pinned = Object.keys(def.nodes).filter(id => def.nodes[id]!.runner === 'herdr')
-  expect(pinned.sort()).toEqual(['baseline', 'deploy', 'incident', 'rollback', 'soak'])
+  expect(pinned.sort()).toEqual(['baseline', 'incident', 'rollback'])
 })
 
 test("a rig has room under its own cap and the town's", () => {
@@ -218,7 +219,7 @@ params: { exec_model: m }
 nodes:
   a11y:
     prompt: Check the change's accessibility.
-    next: { pass: release, fix: implement }
+    next: { pass: security, fix: implement }
   review:
     next: { approve: a11y }
 `,
@@ -231,7 +232,7 @@ nodes:
     security: 'security',
   })
   expect(def.nodes.review!.prompt).toContain('Review') // unnamed fields stay the base's
-  expect(def.nodes.a11y!.next.pass).toBe('release')
+  expect(def.nodes.a11y!.next.pass).toBe('security')
   expect(def.params).toMatchObject({ exec_model: 'm', judge_model: expect.any(String) })
 })
 
@@ -306,6 +307,15 @@ test('a labeled PR belongs to the live run whose branch it is or whose reports l
   expect(prOwner({ url, headRefName: 'fix/x' }, live)).toBe('b')
   expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'factory/a' }, live)).toBe('a')
   expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'fix/x' }, live)).toBeUndefined()
+})
+
+test('a queued PR belongs to the ship queue: its branch or its link names the bead', () => {
+  const pull = 'https://github.com/o/r/pull/4'
+  const queue = [{ id: 'b-1', title: 't', metadata: { ship_branch: 'factory/run-1', ship_pr: pull } }]
+  expect(queuedOwner({ url: 'https://x/9', headRefName: 'factory/run-1' }, queue)?.id).toBe('b-1')
+  expect(queuedOwner({ url: pull, headRefName: 'other' }, queue)?.id).toBe('b-1')
+  expect(queuedOwner({ url: 'https://x/9', headRefName: 'other' }, queue)).toBeUndefined()
+  expect(queuedOwner({ url: '', headRefName: 'other' }, [{ id: 'b-2', title: 't', metadata: { ship_pr: '' } }])).toBeUndefined()
 })
 
 // the wake rules of claude-factory-960, now decided by watchDecide (src/watch.ts, claude-factory-5wav)
