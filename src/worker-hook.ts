@@ -1431,22 +1431,26 @@ const GLUED_ARG_SAFE = new Set(
 /**
  * claude-factory-5hjj: `head` ends with the word that has a glued `(`.
  * The function returns false only if the word is provably an argument. Otherwise it returns true.
- * It returns true if the word is a command anchor, or if no anchor exists.
- * It returns true if the first anchor is not a plain literal, or is `eval`.
- * It returns true if a `find -exec` word (or -execdir, -ok, -okdir) comes before the word.
- * It returns true if the first anchor is not in GLUED_ARG_SAFE, because an unknown wrapper such as
+ * It returns true unless the head is in the first segment of the whole command (`first`). An
+ * earlier segment can change PATH, an alias or a hash.
+ * It returns true unless head[0] is a plain literal and every other head word has only plain, glob
+ * and flag characters. A `$` or a backtick denies.
+ * It returns true if head[0] is not the first command anchor (a PATH= prefix, env, sudo), or if the
+ * word is a command anchor.
+ * It returns true if head[0] is not in GLUED_ARG_SAFE, because an unknown wrapper such as
  * `caffeinate g(i)t` can run the word.
+ * It returns true if a `find -exec` word (or -execdir, -ok, -okdir) comes before the word.
  * The function returns false for a glued `(` in a plain argument, for example `ls a(b)`.
  */
-function gluedAtCommandSlot(head: string[]): boolean {
+function gluedAtCommandSlot(head: string[], first: boolean): boolean {
   const last = head.length - 1
   if (last < 0) return false
+  if (!first || !/^[\w./+][\w./+-]*$/.test(head[0]!)) return true
+  if (!head.every((x, k) => k === 0 || /^[\w./+=*?@![\]-]+$/.test(x))) return true
   const anchors = commandAnchors(head)
-  const a = anchors[0]
-  if (a === undefined || anchors.includes(last)) return true
-  const w = head[a]!
-  if (!/^[\w./+][\w./+-]*$/.test(w) || !GLUED_ARG_SAFE.has(w.replace(/^\/(usr\/)?bin\//, ''))) return true
-  for (let k = a + 1; k < last; k++) if (/^-(exec|execdir|ok|okdir)$/.test(head[k]!)) return true
+  if (anchors[0] !== 0 || anchors.includes(last)) return true
+  if (!GLUED_ARG_SAFE.has(head[0]!.replace(/^\/(usr\/)?bin\//, ''))) return true
+  for (let k = 1; k < last; k++) if (/^-(exec|execdir|ok|okdir)$/.test(head[k]!)) return true
   return false
 }
 
@@ -6893,7 +6897,8 @@ function denyAtScan(
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
     // claude-factory-5hjj: a glob group glued to a command word hides the command from every scan.
-    if (quoteInfo.glued?.has(words) && gluedAtCommandSlot(words.slice(0, -1))) return DYNAMIC_VERB_REASON
+    if (quoteInfo.glued?.has(words) && gluedAtCommandSlot(words.slice(0, -1), depth === 0 && segIdx === 0))
+      return DYNAMIC_VERB_REASON
     if (setsDangerousGitConfigEnv(words) || (splitWords && setsDangerousGitConfigEnv(splitWords)))
       hasDangerousConfigEnv = true
     if (assignmentReadingsDeny(words, root, state)) return state.work < 0 ? SCAN_BUDGET_REASON : REASON

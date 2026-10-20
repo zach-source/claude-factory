@@ -102,6 +102,19 @@ const DENIED = [
   'arch -arm64 g(i)t push origin main',
   'script -q /dev/null g(i)t push origin main',
   'python3 <<EOF\nx = len(a) + 1\nEOF',
+  'PATH=.scratch/bin ls /bin/g(i)t push origin main',
+  'env PATH=.scratch/bin ls /bin/r(m) -rf /',
+  'sudo PATH=.scratch/bin ls /bin/r(m) -rf /',
+  'export PATH=.scratch/bin; ls /bin/r(m) -rf /',
+  'typeset -x PATH=.scratch/bin; ls /bin/r(m) -rf /',
+  'alias cat=eval\ncat /bin/g(i)t push origin main',
+  'hash cat=.scratch/bin/x; cat /bin/g(i)t push origin main',
+  'source .scratch/a.zsh; ls /bin/r(m) -rf /',
+  'ls ${PATH::=.scratch/bin} /bin/r(m) -rf /',
+  'export PATH=x && ls /bin/r(m) -rf /',
+  'export PATH=x | ls /bin/r(m) -rf /',
+  'sudo ls a(b) c',
+  'cd src && ls *.@(js|ts) -l',
 ]
 test.each(DENIED)('denies a glob group in the command word: %s', cmd => {
   expect(run(cmd)).toBe(DYNAMIC_VERB_REASON)
@@ -142,7 +155,6 @@ const ALLOWED = [
   'ls *.@(js|ts) -l',
   'ls src/*.@(js|ts) -l',
   '/bin/ls a(b)',
-  'sudo ls a(b) c',
   'find . -name a(b) -print',
   'eval echo hi',
 ]
