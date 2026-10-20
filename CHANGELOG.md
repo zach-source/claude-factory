@@ -371,6 +371,7 @@ minor release may change the factory format, the CLI or the run state.
 - Tests: new rows pin how the worker hook reads `sudo` NAME=value words before an option, such as `sudo A=1 -u root rm -rf /` and `sudo A=1 -- ./d=1/rm -r ./d`. The hook denies these rows. `sudo A=1 -u root ls` stays allowed. The fix came with claude-factory-aylh (claude-factory-p6wn).
 - Fixed: the worker hook did not deny a quoted `git push` inside a double-quoted substitution when a false comment or here-document hid it. Example: `echo "$(echo <(true)#x ; 'g'it push origin main)"`. The cleaner blanked the quote characters, so the hook read the wrong words. The hook now also reads the raw body. This adds a deny reading only (claude-factory-j1dr).
 - Fixed: the worker hook did not deny an `rm` with a brace list that hides a path outside the root. Example: `rm {,../}x` and `rm {x,/etc/passwd}` ran unchecked, because the shell expands the list before `rm` runs. The hook now treats a `{` in an `rm` target as risky, like a glob character. This adds a deny only (claude-factory-q462).
+- Fixed: the worker hook did not deny a command word `$_`. Example: `: rm; $_ -rf /`. The shell sets `$_` to the last argument of the previous command, so it can hold any command. The hook now denies `$_` and `${_...}` at a command position, also behind `sudo`, `env` and `command`. `echo $_` and `cd "$_"` stay allowed. This adds a deny only (claude-factory-teku).
 
 ## 0.13.0 (2026-10-18)
 

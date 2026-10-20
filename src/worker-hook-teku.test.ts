@@ -20,8 +20,15 @@ const AC1 = [
   ': git; $_ push origin main',
 ]
 const AC2 = [': rm; sudo $_ -rf /', ': rm; env $_ -rf /', ': rm; command $_ -rf /']
-const AC3 = [": 'rm -rf /'; eval \"$_\"", ": 'rm -rf /'; bash -c \"$_\""]
-const AC4 = ['echo $_', 'echo x; echo $_', 'mkdir -p d && cd "$_"', 'ls $_', 'cp a "$_x"', "printf '%s' \"${_x}\""]
+const AC3 = [': \'rm -rf /\'; eval "$_"', ': \'rm -rf /\'; bash -c "$_"']
+const AC4 = [
+  'echo $_',
+  'echo x; echo $_',
+  'mkdir -p d && cd "$_"',
+  'ls $_',
+  'cp a "$_x"',
+  'printf \'%s\' "${_x}"',
+]
 
 test('a head $_ is denied', () => {
   for (const c of AC1) expect(run(c), c).toBe(DYNAMIC_VERB_REASON)

@@ -4181,6 +4181,7 @@ const dynamicPushWord = (w: string): boolean => REFSPEC_UNSAFE.test(w) || /[()]/
 //
 // A word with text between `{` and `}`, for example `{push,}`, continues to match
 // `REFSPEC_UNSAFE`. It stays dynamic in the two functions.
+const LAST_ARG_HEAD = /\$(?:_|\{_)(?![A-Za-z0-9_])/
 function dynamicWord(w: string): boolean {
   // claude-factory-jsy0: zsh EQUALS expands a leading =cmd to the command path.
   return REFSPEC_UNSAFE.test(w) || w.startsWith('~') || /^=[^=]/.test(w)
@@ -5732,6 +5733,9 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
     // brace list or range at a command anchor can hide the whole command. `{}` alone (xargs -I) has
     // no comma and no `..`, so it stays allowed.
     if (BRACE_LIST_WORD.test(words[a]!)) return DYNAMIC_VERB_REASON
+    // claude-factory-teku: `$_` is the last argument of the previous command, so it can hold any
+    // command, and no NAME=value in the text sets it. It is never a legitimate command head.
+    if (LAST_ARG_HEAD.test(words[a]!)) return DYNAMIC_VERB_REASON
     const cmd = words.slice(a)
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
