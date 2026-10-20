@@ -5646,14 +5646,15 @@ async function labelPass() {
         } else if (action === 'rework' && runId) {
           const node = live.find(r => r.id === runId)!.node
           const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
-          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
+          // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
           forge.unlabel(pr, reworkLabels(pr))
+          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
           forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
+          forge.unlabel(pr, reworkLabels(pr))
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
           busy.push(rig.name)
-          forge.unlabel(pr, reworkLabels(pr))
           forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
         }
