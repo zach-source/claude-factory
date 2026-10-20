@@ -823,6 +823,8 @@ const T1N8_DENY = [
   'find /bin/rm -exec sudo {} -r src \\;',
   'find /bin/rm -exec sudo {} -rf / +',
   'find /bin/rm -execdir sudo {} -rf / \\;',
+  'find /bin/rm -{exec,ok} {} -rf / \\;',
+  'find /bin/rm -{exec,ok} sudo {} -rf / \\;',
 ]
 for (const cmd of T1N8_DENY) {
   test(`denyReason denies ${cmd} (claude-factory-t1n8)`, () => {
