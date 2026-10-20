@@ -19,7 +19,9 @@ const AC1 = [
   ": 'rm -rf /'; $_",
   ': git; $_ push origin main',
 ]
-const ZSH = ['${(@)_}', '${=_}', '${^_}', '${~_}', '${^^_}', '${(P)_}', '$=_', '$~_', '$^_', '$^^=_'].map(h => `: rm; ${h} -rf /`)
+const ZSH = ['${(@)_}', '${=_}', '${^_}', '${~_}', '${^^_}', '${(P)_}', '$=_', '$~_', '$^_', '$^^=_'].map(
+  h => `: rm; ${h} -rf /`,
+)
 AC1.push(...ZSH)
 const AC2 = [': rm; sudo $_ -rf /', ': rm; env $_ -rf /', ': rm; command $_ -rf /']
 const AC3 = [': \'rm -rf /\'; eval "$_"', ': \'rm -rf /\'; bash -c "$_"']
