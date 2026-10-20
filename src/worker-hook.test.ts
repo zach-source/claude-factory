@@ -9145,6 +9145,20 @@ const BC1U_FLAG_SUB: string[] = [
   'X="git push origin main"; $=X[(w)1,-1]',
   'X=bd; $~X[(w)1] init',
 ]
+const BC1U_MOD: string[] = [
+  'X="git push origin main"; $=X:l',
+  'X="git push origin main"; $=~X:l',
+  'X="git push origin main"; $=X[1,-1]:l',
+  'X="git push origin main"; $=X:s/a/a/',
+  'X="git push origin main"; command $=X:l',
+]
+test.each(BC1U_MOD)('denyReason denies %j (claude-factory-bc1u.6)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+test.each(['$=X:l', 'X=a; echo $=X:l', 'echo $=X:l'])('denyReason allows %j (claude-factory-bc1u.6)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
+})
+
 test.each(BC1U_FLAG_SUB)('denyReason denies %j (claude-factory-bc1u.3)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(DYNAMIC_VERB_REASON)
 })
