@@ -7772,7 +7772,9 @@ function denyAtScan(
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
-    if (readings.deny) return REASON
+    // claude-factory-clcc: a glob command word keeps its own reason when this reading denies it.
+    if (readings.deny)
+      return anyGlobCommandWord(words.filter(w => !w.includes('$'))) ? DYNAMIC_VERB_REASON : REASON
     if (readings.rm) hasRm = true
     // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
     if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
@@ -7802,7 +7804,8 @@ function denyAtScan(
   if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
   if (definesFunction) return FUNCTION_DEF_REASON
-  if (ambiguousAssignment) return ASSIGNMENT_PREFIX_REASON
+  // claude-factory-clcc: a glob command word keeps its own reason, as in the stdin deferral.
+  if (ambiguousAssignment) return state.globDeferred ? DYNAMIC_VERB_REASON : ASSIGNMENT_PREFIX_REASON
   return hasRm && hasCd ? REASON : undefined
 }
 
