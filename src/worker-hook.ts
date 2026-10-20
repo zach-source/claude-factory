@@ -6997,24 +6997,24 @@ function gluedHeadReason(
   mentions: (name: string) => number,
   dynWrite: () => boolean,
 ): boolean {
-  const names = [...head.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)].map(m => m[1]!)
+  const names = [...head.matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(m => m[1]!)
   if (!names.length) return false
   if (dynWrite()) return true
-  const setNames = names.filter(n => vars.has(n) || IMPLICIT_VARS.has(n))
+  const opsOf = (n: string): string[] =>
+    [...head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))].map(m => m[1]!)
+  const setNames = names.filter(n => vars.has(n) || IMPLICIT_VARS.has(n) || mentions(n) > opsOf(n).length)
   if (!setNames.length) return false
   if (vars.has('IFS')) return true
   let end = -1
-  for (const m of head.matchAll(GLUED_EXPANSION_RE)) end = m.index! + m[0].length
-  if (end < 0) return true
+  for (const m of head.matchAll(/\$\{[^}]*\}|\$[A-Za-z_]\w*/g)) end = m.index! + m[0].length
+  if (end < 0 || head[end] !== '/') return true
   for (const n of setNames) {
     const value = vars.get(n)
-    if (IMPLICIT_VARS.has(n) || /\s/.test(value) || VAR_UNREADABLE.test(value)) return true
-    let ops = 0
-    for (const m of head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))) {
-      if (/[\s$\`'"\\*?[]/.test(m[1]!)) return true
-      ops++
-    }
-    if (mentions(n) > 1 + ops) return true
+    if (typeof value !== 'string' || IMPLICIT_VARS.has(n) || /\s/.test(value) || VAR_UNREADABLE.test(value))
+      return true
+    const ops = opsOf(n)
+    if (ops.some(o => /[\s$\`'"\\*?[]/.test(o))) return true
+    if (mentions(n) > 1 + ops.length) return true
   }
   return false
 }
