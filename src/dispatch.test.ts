@@ -386,6 +386,8 @@ function fakeGh() {
     'if [ -n "$GH_FAIL" ]; then echo "gh: rate limited" >&2; exit 1; fi',
     'case "$*" in',
     '  *--head*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi;;',
+    '  *--remove-label*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi;;',
+    '  *"--search label:"*) if [ -n "$GH_LABELED" ]; then printf \'%s\' "$GH_LABELED"; exit 0; fi;;',
     'esac',
     'printf \'%s\' "$GH_JSON"',
   ].join('\n')
@@ -1523,6 +1525,35 @@ test('factory:<name> picks that named factory; station:<name> still starts it th
   expect(runDirs()).toHaveLength(1)
   expect(pinnedFactoryName()).toBe('release')
   expect(gotosOf(runDirs()[0]!)).toMatchObject([{ type: 'GOTO', node: 'deploy' }])
+})
+
+test('a conflict label that cannot come off mails its run once, not every pass', () => {
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory'] }])
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  const id = runDirs()[0]!
+  const pr = {
+    number: 7,
+    url: 'https://github.com/o/r/pull/7',
+    headRefName: `factory/${id}`,
+    baseRefName: 'main',
+    isCrossRepository: false,
+    labels: [{ name: 'conflict' }],
+  }
+  const inbox = join(phome, 'runs', id, 'inbox.jsonl')
+  const mails = () =>
+    (existsSync(inbox) ? readFileSync(inbox, 'utf8') : '')
+      .split('\n')
+      .filter(l => l.includes('was labeled conflict')).length
+  const pass = (env: Record<string, string>) => {
+    rmSync(join(phome, 'labels.stamp'), { force: true })
+    return pfactory(['beads'], { GH_JSON: '[]', GH_LABELED: JSON.stringify([pr]), ...env })
+  }
+  pass({ GH_FAIL_EDIT: '1' })
+  pass({ GH_FAIL_EDIT: '1' })
+  expect(mails()).toBe(0) // the label stayed on: no mail, so the next pass cannot repeat one
+  pass({})
+  expect(mails()).toBe(1)
+  expect(readFileSync(ghCallsLog, 'utf8')).toContain('--remove-label conflict')
 })
 
 test('station:<name> with no factory:<name> label keeps the rig factory (A4 control)', () => {
