@@ -474,8 +474,21 @@ export const DEEP_COMMAND_REASON =
 // 31 ms deny, far inside the 10 s hook timeout.
 const MAX_SHELL_DEPTH = 32
 
-// wrapper commands whose own name we skip to find the command they run
-const WRAPPERS = new Set(['sudo', 'command', 'builtin', 'exec', 'env', 'nice', 'nohup', 'time'])
+// wrapper commands whose own name we skip to find the command they run. `noglob` and `nocorrect`
+// are zsh precommand modifiers: the next word is the command, and they take no flags
+// (claude-factory-563n).
+const WRAPPERS = new Set([
+  'sudo',
+  'command',
+  'builtin',
+  'exec',
+  'env',
+  'nice',
+  'nohup',
+  'time',
+  'noglob',
+  'nocorrect',
+])
 
 /**
  * the lowercase basename of a command word: drops a leading backslash (`\rm`) and any path
@@ -6564,6 +6577,86 @@ function shellAliasReason(
   return undefined
 }
 
+// claude-factory-j1ki: the shell splits an unquoted expansion that is glued to other text in one
+// word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
+// the real command. This returns the words with each such expansion read as a word break, or
+// undefined when no word holds a glued expansion. A whole-word expansion ($X, ${X}) is not glued.
+const GLUED_EXPANSION_RE = /\$(?:\{[^}]*\}|\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
+function splitGluedExpansions(words: string[]): string[] | undefined {
+  let out: string[] | undefined
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    const parts = w.includes('$') ? w.split(GLUED_EXPANSION_RE).filter(p => p !== '') : [w]
+    // No part, or one part equal to the word: the word is one whole expansion, or holds none.
+    if (parts.length === 0 || (parts.length === 1 && parts[0] === w)) {
+      out?.push(w)
+      continue
+    }
+    // A word that is one expansion plus nothing else gives parts.length 0 above. A word with one
+    // expansion and one literal part gives parts.length 1 with parts[0] !== w, and is glued.
+    if (!out) out = words.slice(0, i)
+    out.push(...parts)
+  }
+  return out
+}
+
+// claude-factory-j1ki.9: segments() drops quotes, so splitGluedExpansions cannot see where a bare
+// $NAME ends when a quote or a backslash follows it. This reads the raw text instead.
+const GLUED_BARE_NAME_RE = /\$[A-Za-z_][A-Za-z0-9_]*(?=["'\\])/g
+
+// claude-factory-j1ki.10: returns the index after the close paren of the "$(" at `from`. The close
+// paren is found by depth, and quotes and backslashes in the body are skipped. A body with no
+// close paren runs to the end of the text (fail closed).
+function substitutionEnd(command: string, from: number): number {
+  let depth = 0
+  let q = ''
+  for (let k = from + 1; k < command.length; k++) {
+    const c = command[k]!
+    if (q) {
+      if (c === '\\' && q === '"') k++
+      else if (c === q) q = ''
+      continue
+    }
+    if (c === '\\') k++
+    else if (c === "'" || c === '"') q = c
+    else if (c === '(') depth++
+    else if (c === ')' && --depth === 0) return k + 1
+  }
+  return command.length
+}
+
+// claude-factory-j1ki.10/.14/.15: returns `command` with each $( ) that sits glued to other text
+// read as a space. A double quote next to the $( ) counts as glue, so "rm"$(x)"-r" is read. A $( )
+// with a space or paren on both sides is a whole word and stays, but the scan goes into its body.
+// The body of a glued $( ) is read again and added as an extra line, so a glued $( ) inside it is
+// read too.
+function replaceGluedSubstitutions(command: string): string {
+  let out = ''
+  let last = 0
+  const extra: string[] = []
+  let from = command.indexOf('$(')
+  while (from !== -1) {
+    const end = substitutionEnd(command, from)
+    const before = from > 0 ? command[from - 1]! : ' '
+    const after = end < command.length ? command[end]! : ' '
+    if (/[\s(]/.test(before) && /[\s)]/.test(after)) {
+      from = command.indexOf('$(', from + 2)
+      continue
+    }
+    out += command.slice(last, from) + ' '
+    last = end
+    const body = command.slice(from + 2, command[end - 1] === ')' ? end - 1 : end)
+    const inner = body.includes('$(') ? replaceGluedSubstitutions(body) : body
+    if (inner !== body) extra.push(inner)
+    from = command.indexOf('$(', end)
+  }
+  return out + command.slice(last) + extra.map(e => '\n' + e).join('')
+}
+
+function quoteWord(w: string): string {
+  return "'" + w.replace(/'/g, "'\\''") + "'"
+}
+
 /**
  * denyReason's own body, with `depth` added (claude-factory-epz). `depth` is the number of
  * eval/sh -c recursion levels already taken to reach `command`. anyShellReason passes
@@ -6597,7 +6690,7 @@ function denyAt(
 ): string | undefined {
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
-  const late: { reason?: string } = {}
+  const late: { reason?: string; glued?: string } = {}
   return (
     denyAtScan(
       command,
@@ -6610,7 +6703,9 @@ function denyAt(
       ghConfigMovedBefore,
       late,
       aliasStack,
-    ) ?? late.reason
+    ) ??
+    late.glued ??
+    late.reason
   )
 }
 
@@ -6623,7 +6718,7 @@ function denyAtScan(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
-  late: { reason?: string },
+  late: { reason?: string; glued?: string },
   aliasStack: readonly string[],
 ): string | undefined {
   if (!command) return undefined
@@ -6661,6 +6756,15 @@ function denyAtScan(
   const segs = segments(command, quoteInfo, subs)
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
+  // command substitution glued to text. Read the command again with each such substitution as a
+  // space. This text has fewer "$(" than the source, so the recursion ends.
+  let unglued = command.includes('$(') ? replaceGluedSubstitutions(command) : command
+  if (unglued.includes('$')) unglued = unglued.replace(GLUED_BARE_NAME_RE, ' ')
+  if (unglued !== command) {
+    const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+    if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+  }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
@@ -6707,6 +6811,20 @@ function denyAtScan(
       )
       if (aliased) return aliased
     }
+    const splitWords = splitGluedExpansions(words)
+    if (splitWords?.length) {
+      const split = denyAt(
+        splitWords.map(quoteWord).join(' '),
+        root,
+        personOnly,
+        g,
+        depth + 1,
+        state,
+        movedSoFar,
+        ghConfigMovedSoFar,
+      )
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
     if (!definesFunction && namesFunctionDefinition(words)) definesFunction = true
     if (!ambiguousAssignment && hasAmbiguousAssignmentPrefix(words)) ambiguousAssignment = true
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
@@ -6718,7 +6836,8 @@ function denyAtScan(
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
-    if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
+    if (setsDangerousGitConfigEnv(words) || (splitWords && setsDangerousGitConfigEnv(splitWords)))
+      hasDangerousConfigEnv = true
     if (assignmentReadingsDeny(words, root, state)) return state.work < 0 ? SCAN_BUDGET_REASON : REASON
     // claude-factory-mmc9.25: realCommand skips only an ASCII NAME=. For each word with =, read
     // the word and the command after it. This sets hasRm and hasCd for the rm and cd pair check.
@@ -6841,11 +6960,16 @@ function denyAtScan(
     // `moved` accumulator reads those, and this segment's own cd/pushd/popd/chdir word, through
     // their own forward scan). This check runs after the checks above, so it affects only a
     // later segment's push, never this one.
-    if (hasDirChangeWord(words)) movedSoFar = true
+    if (splitWords) {
+      const splitBase = baseWord(realCommand(splitWords)[0] ?? '')
+      if (splitBase === 'rm') hasRm = true
+      else if (splitBase === 'cd') hasCd = true
+    }
+    if (hasDirChangeWord(words) || (splitWords && hasDirChangeWord(splitWords))) movedSoFar = true
     // claude-factory-bemr: the same rule, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
     // assignment anywhere in this segment. It carries into every later segment's gh alias
     // lookup, the same way movedSoFar does above for a git alias lookup.
-    if (hasGhConfigEnvWord(words)) ghConfigMovedSoFar = true
+    if (hasGhConfigEnvWord(words) || (splitWords && hasGhConfigEnvWord(splitWords))) ghConfigMovedSoFar = true
   }
   const tailReason = scanSubs(Infinity)
   if (tailReason) return tailReason
