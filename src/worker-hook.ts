@@ -6993,21 +6993,14 @@ function varOpName(w: string): string | undefined {
 // is a head path such as ${HOME%/}/bin/tool: a literal "/" follows the last expansion, so the word
 // stays one path. Then every set name must hold a plain value with no space and no IFS, and may
 // have only its one write and the op-form reads in this word.
-function gluedHeadReason(
-  head: string,
-  vars: VarTable,
-  mentions: (name: string) => number,
-  dynWrite: () => boolean,
-): boolean {
+function gluedHeadReason(head: string, vars: VarTable, mentions: (name: string) => number): boolean {
   const names = [...head.matchAll(/\$\{?[=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)].map(m => m[1]!)
   if (!names.length) return false
-  if (dynWrite()) return true
   const opsOf = (n: string): string[] =>
     [...head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))].map(m => m[1]!)
-  const zsOf = (n: string): number => [...head.matchAll(new RegExp(`\\$\\{?[=~^]+(?:\\([^)]*\\))?${n}\\b`, 'g'))].length
-  const setNames = names.filter(
-    n => vars.has(n) || IMPLICIT_VARS.has(n) || mentions(n) > opsOf(n).length + zsOf(n),
-  )
+  const zsOf = (n: string): number =>
+    [...head.matchAll(new RegExp(`\\$\\{?[=~^]+(?:\\([^)]*\\))?${n}\\b`, 'g'))].length
+  const setNames = names.filter(n => vars.has(n) || mentions(n) > opsOf(n).length + zsOf(n))
   if (!setNames.length) return false
   if (vars.has('IFS')) return true
   let end = -1
@@ -7587,7 +7580,7 @@ function denyAtScan(
       if (headName) {
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
-      } else if (gluedHeadReason(cmd[0]!, vars, mentions, dynWrite)) {
+      } else if (gluedHeadReason(cmd[0]!, vars, mentions)) {
         // A later real command reason wins over this broad one.
         late.reason ??= DYNAMIC_VERB_REASON
       } else {
