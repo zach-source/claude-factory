@@ -3013,7 +3013,7 @@ function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanS
     bare = bare.replace(/\$\{[^{}]*\}/g, '')
   }
   if (
-    !/[*?[{]/.test(bare.replace(/\{\}/g, '')) ||
+    !/[*?[{]/.test(w.replace(/\$\{[A-Za-z_]\w*\}/g, '').replace(/\{\}/g, '')) ||
     (w.includes('$') && /^[/*]*$/.test(bare.replace(/\$[A-Za-z_]\w*/g, '')))
   )
     return false
