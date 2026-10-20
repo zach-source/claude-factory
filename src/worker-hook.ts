@@ -1661,8 +1661,10 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
   ) {
     return { deny: true, rm: false }
   }
-  // IFS in a dollar word splits it at run time, and the split can follow a default value of rm: deny.
-  if (b !== 'rm' && cmd[0]!.includes('$') && /\bIFS\b/.test(cmd[0]!)) return { deny: true, rm: false }
+  // IFS splits a word with a default value at run time, so the default can be rm: deny.
+  if (b !== 'rm' && /\$\{[!=~^]*\w+[^}]*[-=+]/.test(cmd[0]!) && /\bIFS\b/.test(cmd[0]!)) {
+    return { deny: true, rm: false }
+  }
   if (b === 'rm') {
     if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
     return { deny: false, rm: true }
