@@ -6587,7 +6587,7 @@ function denyAtScan(
       return DYNAMIC_VERB_REASON
     }
     const text = [...value.split(/\s+/).filter(Boolean), ...rest.map(shellQuoteWord)].join(' ')
-    return denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar, [], vars)
+    return denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
   }
   const varsGuard = (words: string[], cmd: string[]): boolean =>
     cmd.length > 0 &&
