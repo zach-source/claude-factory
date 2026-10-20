@@ -1435,7 +1435,9 @@ function gluedAtCommandSlot(head: string[]): boolean {
   if (commandAnchors(head).includes(last)) return true
   if (/^-(exec|execdir|ok|okdir)$/.test(head[last - 1] ?? '')) return true
   let i = 0
-  while (i < last && /^(\d*[<>]|&>)/.test(head[i]!)) i += /^(\d*[<>]+\|?|&>>?\|?)&?-?$/.test(head[i]!) ? 2 : 1
+  // {name}> and {name}< name an fd; >&- closes one and takes no operand
+  while (i < last && /^((\d*|\{[A-Za-z_]\w*\})[<>]|&>)/.test(head[i]!))
+    i += /^((\d*|\{[A-Za-z_]\w*\})[<>]+\|?|&>>?\|?)&?$/.test(head[i]!) ? 2 : 1
   return i === last
 }
 
