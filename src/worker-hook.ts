@@ -291,6 +291,12 @@ export const SHELL_STDIN_REASON =
   'read that script. Run the commands directly, or run a script file with a literal name. ' +
   'Do not retry this exact command.'
 
+// claude-factory-3frd: a dollar or backtick word after a literal sh -c cluster.
+export const SH_DYNAMIC_SCRIPT_REASON =
+  'The factory denies this command: a sh, bash, zsh or dash -c call has a word after -c that holds ' +
+  '$ or a backtick. The shell expands it at run time, so the guard cannot read the script. Run the ' +
+  'commands directly, with literal words. Do not retry this exact command.'
+
 // claude-factory-38jm: reason for a dynamic word in the option slot of a shell call.
 export const SH_DYNAMIC_FLAG_REASON =
   'The factory denies this command: a word in the option slot of a sh, bash, zsh or dash call ' +
@@ -442,6 +448,8 @@ interface ScanState {
   stdinFed: boolean
   /** claude-factory-l43b: set when a shell reads stdin. denyReason returns SHELL_STDIN_REASON last, so a more specific reason from the same command wins. */
   stdinDeferred: boolean
+  /** claude-factory-3frd: set when a word after a sh -c cluster holds a dollar or backtick. scanReason returns SH_DYNAMIC_SCRIPT_REASON last. */
+  dynamicScript: boolean
   globalGitConfig: boolean
   gitWord: boolean
   /** claude-factory-mn2y: set when any segment, at any depth, may define a shell alias. */
@@ -491,6 +499,7 @@ const MAX_SHELL_DEPTH = 32
 // wrapper commands whose own name we skip to find the command they run. `noglob` and `nocorrect`
 // are zsh precommand modifiers: the next word is the command, and they take no flags
 // (claude-factory-563n).
+// claude-factory-tyz6: a lone `-` is a zsh precommand modifier. zsh runs the next word as the command.
 const WRAPPERS = new Set([
   'sudo',
   'command',
@@ -502,6 +511,7 @@ const WRAPPERS = new Set([
   'time',
   'noglob',
   'nocorrect',
+  '-',
 ])
 
 /**
@@ -808,6 +818,8 @@ type SegInfo = {
   funcDef?: boolean
   // claude-factory-wmsr: a here-document that segments() cannot read with certainty
   heredoc?: boolean
+  // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
+  gluedRedir?: boolean
 }
 
 const HAZARD_RE = /['"`\\]/
@@ -894,7 +906,14 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz): void {
  * The split reading (dash) comes first. The joined reading (bash, zsh) follows it and keeps &> in
  * its own word, so the words after the redirect stay with the command.
  */
-function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin = false): string[][] {
+const FD_PREFIX_RE = /^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\})$/
+function segments(
+  cmd: string,
+  info?: SegInfo,
+  subs?: DqSubstitution[],
+  ampJoin = false,
+  cutRedir = false,
+): string[][] {
   const segs: string[][] = []
   let sawAmpGt = false
   let cur: string[] = []
@@ -1077,6 +1096,12 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
+    // claude-factory-4a4o: bash and zsh start a redirect at an unquoted < or > inside a word, so
+    // `rm>f -rf /` runs rm. The default reading keeps one word. The cut reading ends the word here.
+    if ((c === '<' || c === '>') && hasWord && !/[<>]/.test(word) && !FD_PREFIX_RE.test(word)) {
+      if (info) info.gluedRedir = true
+      if (cutRedir) endWord()
+    }
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
@@ -1085,7 +1110,15 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
   endSeg()
   const out = segs.filter(s => s.length > 0)
   if (sawAmpGt && !ampJoin)
-    out.push(...segments(cmd, { dollarQuote: false, state: info?.state, deep: info?.deep }, undefined, true))
+    out.push(
+      ...segments(
+        cmd,
+        { dollarQuote: false, state: info?.state, deep: info?.deep },
+        undefined,
+        true,
+        cutRedir,
+      ),
+    )
   return out
 }
 
@@ -1193,7 +1226,7 @@ const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
 function findExecRmDeny(cmdIn: string[]): boolean {
   const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
   for (let i = 0; i < cmd.length; i++) {
-    if (!FIND_EXEC_WORDS.has(cmd[i]!)) continue
+    if (!FIND_EXEC_WORDS.has(cmd[i]!) && !globActionWord(cmd[i]!)) continue
     const k = i + 1
     if (k >= cmd.length) continue
     const b = baseWord(cmd[k]!)
@@ -1649,6 +1682,9 @@ const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false }
 const DYN_CHARS = /[$`*?[]/
 const DYN_FLAG_TEXT = /(?<![-:])-[A-Za-z]*[rR]|:--[A-Za-z]*[rR]|--rec|-delete|-exec|-ok/
 const DYN_FLAG_WORDS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir'])
+// A glob word such as -exe? can match a file named -exec, so find runs it as an action.
+const globActionWord = (w: string): boolean => /^[-*?[]/.test(w) && /[*?[]/.test(w)
+const findExecWord = (w: string): boolean => w === '-exec' || w === '-execdir' || globActionWord(w)
 
 function hasLettersInOrder(w: string, letters: string): boolean {
   let k = 0
@@ -1664,6 +1700,8 @@ function hasLettersInOrder(w: string, letters: string): boolean {
  * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
  * C: another segment holds flag text (a variable there can put flags in the word).
  * D: the word may read as rm or find, and a target is risky or a default value holds a path.
+ * E (0xw4): a later dynamic word is followed by recursive flags (the head can be env or sudo).
+ * F (0xw4): a risky target follows the first later dynamic word.
  * Returns rm: true when D holds but no target is risky, for the cd + rm rule. O(length).
  */
 function dynamicHeadDeny(
@@ -1679,8 +1717,34 @@ function dynamicHeadDeny(
     return { deny: true, rm: false }
   if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags) return { deny: true, rm: false }
   if (start === 0) {
-    for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
+    for (let k = 1; k < cmd.length; k++)
+      if (DYN_FLAG_WORDS.has(cmd[k]!) || globActionWord(cmd[k]!)) return { deny: true, rm: false }
   }
+  // claude-factory-0xw4: the head can expand to env, sudo or command with value flags (-u root),
+  // so a later dynamic word can be rm. Deny-only; never sets rm.
+  let later = 0
+  for (let k = start + 1; k < cmd.length; k++) {
+    const t = cmd[k]!
+    if (start > 0 && (t === ';' || t === '+')) break
+    if (t[0] === '-' || !DYN_CHARS.test(t)) continue
+    if (!later) later = k
+    if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
+  }
+  const riskyFrom = (from: number): boolean => {
+    let afterDashDash = false
+    for (let k = from; k < cmd.length; k++) {
+      const t = cmd[k]!
+      if (start > 0 && (t === ';' || t === '+')) break
+      if (!afterDashDash && t === '--') {
+        afterDashDash = true
+        continue
+      }
+      if (!afterDashDash && t.startsWith('-')) continue
+      if (riskyTarget(t, root)) return true
+    }
+    return false
+  }
+  if (later && riskyFrom(later + 1)) return { deny: true, rm: false }
   if (!(other.rmfind || hasLettersInOrder(w, 'rm') || hasLettersInOrder(w, 'find')))
     return { deny: false, rm: false }
   const dflt = /\$\{[^}:=+-]*:?[-=+]/.exec(w)
@@ -1688,17 +1752,7 @@ function dynamicHeadDeny(
     const rest = w.slice(dflt.index + dflt[0].length)
     if (rest.includes('/') || rest.includes('~') || rest.includes('..')) return { deny: true, rm: false }
   }
-  let afterDashDash = false
-  for (let k = start + 1; k < cmd.length; k++) {
-    const t = cmd[k]!
-    if (start > 0 && (t === ';' || t === '+')) break
-    if (!afterDashDash && t === '--') {
-      afterDashDash = true
-      continue
-    }
-    if (!afterDashDash && t.startsWith('-')) continue
-    if (riskyTarget(t, root)) return { deny: true, rm: false }
-  }
+  if (riskyFrom(start + 1)) return { deny: true, rm: false }
   return { deny: false, rm: true }
 }
 
@@ -1723,7 +1777,7 @@ function rmFindReading(
   if (b === 'find') {
     if (findExecRmDeny(cmd)) return { deny: true, rm: false }
     for (let i = 0; i < cmd.length; i++) {
-      if (!FIND_EXEC_WORDS.has(cmd[i]!) || i + 1 >= cmd.length) continue
+      if (!findExecWord(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
       if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny)
         return { deny: true, rm: false }
@@ -2498,8 +2552,8 @@ function xargsHidesOperand(words: string[]): boolean {
 }
 
 // claude-factory-l43b: a redirect word starts with an optional fd number, then < or >.
-const REDIRECT_WORD = /^\d*[<>]/
-const REDIRECT_OPERATOR = /^\d*(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
+const REDIRECT_WORD = /^(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})[<>]/
+const REDIRECT_OPERATOR = /^(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
 
 /** Returns how many leading redirect words (and their targets) `words` has. */
 function leadingRedirects(words: string[]): number {
@@ -3244,7 +3298,7 @@ function hasGitWordIn(words: string[]): boolean {
 // Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
 // A word that holds only the operator matches in full, such as a bare `>` or `>>`.
 // The caller then reads the next word as the target.
-const REDIRECT_PREFIX_RE = /^(?:\d+|&)?(?:<>|>>?\|?)/
+const REDIRECT_PREFIX_RE = /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})?(?:<>|>>?\|?)/
 
 // claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
 // `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
@@ -3611,6 +3665,7 @@ function firstVerbIndex(
   words: string[],
   valueFlags: Set<string>,
   noValueFlags?: Set<string>,
+  skipBlank = false,
 ): { index: number; uncertain: boolean } {
   let uncertain = false
   for (let i = 0; i < words.length; i++) {
@@ -3625,9 +3680,18 @@ function firstVerbIndex(
       uncertain = true
       continue
     }
+    // claude-factory-t1xo: cobra stripFlags skips an empty word and a lone `-` when it looks for a
+    // sub command. A value flag above already took its value word, so this skip runs at the
+    // word slot only. Only the cobra tools (gh, kubectl, ko, helm) ask for it.
+    if (skipBlank && isBlankWord(w)) continue
     return { index: i, uncertain }
   }
   return { index: -1, uncertain }
+}
+
+/** claude-factory-t1xo: true for an empty word or a lone `-`, which cobra skips at a sub command slot. */
+function isBlankWord(w: string): boolean {
+  return w === '' || w === '-'
 }
 
 /**
@@ -3711,19 +3775,22 @@ function contextDenied(ctx: string | undefined, personOnly: string[]): boolean {
  * takes a value word. An unknown flag must not hide a mutating verb that follows it.
  */
 function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
-  return (
-    liveApplyDeniedOn(cmd, personOnly) ||
-    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly)) === true
-  )
+  const scan = (skipBlank: boolean): boolean =>
+    liveApplyDeniedOn(cmd, personOnly, skipBlank) ||
+    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly, skipBlank)) ===
+      true
+  // claude-factory-t1xo: the second pass skips a blank word at the verb and sub slots, like cobra.
+  return scan(false) || (cmd.slice(1).some(isBlankWord) && scan(true))
 }
 
-function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
+function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = false): boolean {
   const b = baseWord(cmd[0]!)
   const tail = cmd.slice(1)
   if (b === 'kubectl') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, KUBECTL_VALUE_FLAGS, undefined, skipBlank)
     const verb = vi >= 0 ? tail[vi]! : undefined
-    const sub = vi >= 0 ? tail[vi + 1] : undefined
+    const subRest = vi >= 0 ? tail.slice(vi + 1) : []
+    const sub = skipBlank ? subRest.find(w => !isBlankWord(w)) : subRest[0]
     // claude-factory-p43v.6: a dynamic verb hides the real kubectl command. A dynamic sub word
     // hides the real rollout, auth or certificate action. This guard fails closed on either one,
     // the same way it fails closed on a listed verb or sub name.
@@ -3758,7 +3825,7 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
     return cluster !== undefined && (unknownFlagValue(cluster) || personOnly.includes(cluster))
   }
   if (b === 'ko') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, KO_VALUE_FLAGS, undefined, skipBlank)
     // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
     let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || KO_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, KO_MUTATING_VERBS)
@@ -3767,7 +3834,7 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
     return contextDenied(ctx, personOnly)
   }
   if (b === 'helm') {
-    const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS)
+    const { index: vi, uncertain } = firstVerbIndex(tail, HELM_VALUE_FLAGS, undefined, skipBlank)
     // claude-factory-p43v.6: a dynamic verb fails closed, the same as a listed mutating verb.
     let mutating = vi >= 0 && (dynamicWord(tail[vi]!) || HELM_MUTATING_VERBS.has(tail[vi]!))
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, HELM_MUTATING_VERBS)
@@ -4327,10 +4394,13 @@ function ghReason(
   ghConfigMoved = false,
   aliasDepth = 0,
 ): string | undefined {
-  return (
-    ghReasonOn(cmd.slice(1), gate, state, ghConfigMoved, aliasDepth) ??
-    scanWithoutRedirects(cmd, dropped => ghReasonOn(dropped, gate, state, ghConfigMoved, aliasDepth))
-  )
+  const pass = (skipBlank: boolean): string | undefined =>
+    ghReasonOn(cmd.slice(1), gate, state, ghConfigMoved, aliasDepth, skipBlank) ??
+    scanWithoutRedirects(cmd, dropped =>
+      ghReasonOn(dropped, gate, state, ghConfigMoved, aliasDepth, skipBlank),
+    )
+  // claude-factory-t1xo: the second pass skips a blank word at the verb and sub slots, like cobra.
+  return pass(false) ?? (cmd.slice(1).some(isBlankWord) ? pass(true) : undefined)
 }
 
 /**
@@ -4354,17 +4424,25 @@ function ghReasonOn(
   state: ScanState,
   ghConfigMoved: boolean,
   aliasDepth: number,
+  skipBlank = false,
 ): string | undefined {
-  const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
+  if (spendWork(state, tail.join(' ').length + 1)) return SCAN_BUDGET_REASON
+  const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS, undefined, skipBlank)
   const verb = vi >= 0 ? tail[vi] : undefined
   // claude-factory-zsj0: a flag after `pr` or `repo` must not become the sub word.
   const rest = vi >= 0 ? tail.slice(vi + 1) : []
   const subScan =
     verb === 'pr' || verb === 'repo'
-      ? firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+      ? firstVerbIndex(rest, GH_SUB_VALUE_FLAGS, undefined, skipBlank)
       : { index: -1, uncertain: false }
   const sub =
-    verb === 'pr' || verb === 'repo' ? (subScan.index >= 0 ? rest[subScan.index] : undefined) : rest[0]
+    verb === 'pr' || verb === 'repo'
+      ? subScan.index >= 0
+        ? rest[subScan.index]
+        : undefined
+      : skipBlank
+        ? rest.find(w => !isBlankWord(w))
+        : rest[0]
   // claude-factory-p43v: a dynamic verb word can hide the real gh command. The same risk applies
   // at the git verb slot, where dynamicWord denies it. A dynamic sub word under pr, repo or alias
   // can hide the real merge, sync, ready, checkout or alias-set call, and this guard denies both
@@ -4378,7 +4456,10 @@ function ghReasonOn(
   // Skip this when the verb search itself is uncertain.
   // `firstVerbIndex` then does not know if `verb` is the real word.
   // The uncertain-fallback word scans below still cover that case, the same as before.
-  if (!uncertain && verb !== undefined && !GH_BUILTIN_VERBS.has(verb)) {
+  // claude-factory-t1xo.5: the blank-skipping pass resolves the alias only when it skipped a blank
+  // before the verb. Otherwise pass 1 already resolved it, and its recursion ran both passes.
+  const aliasAlreadyDone = skipBlank && !tail.slice(0, Math.max(vi, 0)).some(isBlankWord)
+  if (!uncertain && verb !== undefined && !GH_BUILTIN_VERBS.has(verb) && !aliasAlreadyDone) {
     if (ghConfigMoved) return ALIAS_USE_REASON
     if (aliasDepth > MAX_ALIAS_DEPTH) return ALIAS_USE_REASON
     const table = gate.ghAliases?.()
@@ -4425,7 +4506,10 @@ function ghReasonOn(
     }
     return undefined
   }
-  if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
+  if (verb === 'alias') {
+    const first = rest.findIndex(w => !isBlankWord(w))
+    return ghAliasDenied(skipBlank && first > 0 ? rest.slice(first) : rest)
+  }
   // claude-factory-zsj0: an unknown flag before the sub word can hide it. Scan the words, fail closed.
   // This does not depend on the top-level `uncertain`: an extra flag must not switch it off.
   if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
@@ -6703,6 +6787,7 @@ function anyShellReason(
   let nc = -1
   let nd = -1
   let scriptNc = -1
+  let dynChecked = -1
   let scriptK = 0
   let scriptMoved = false
   let slotEnd = 0
@@ -6769,6 +6854,18 @@ function anyShellReason(
       }
       if (nc >= nd) continue
       const literal = SHELL_NAMES.has(baseWord(words[j]!))
+      // claude-factory-3frd: only a literal shell name before the -c cluster makes it a shell call.
+      if (dynChecked !== nc) {
+        dynChecked = nc
+        if (isShCCluster(words[nc]!) && words.slice(0, nc).some(w => SHELL_NAMES.has(baseWord(w)))) {
+          for (let d = nc; d < words.length; d++) {
+            if (/[$`]/.test(words[d]!)) {
+              state.dynamicScript = true
+              break
+            }
+          }
+        }
+      }
       if (scriptNc === nc && scriptMoved === moved) {
         if (literal) j = scriptK
         continue
@@ -6822,6 +6919,8 @@ function anyShellReason(
     }
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
+      // bash eval has no options, and zsh eval skips every leading `-` word, also after `--`: drop each one, none is the script head.
+      while (rest.length && ['--', '-'].includes(rest[0]!.replace(/["'\\]/g, ''))) rest.shift()
       if (rest.length) {
         const r = denyAt(
           rest.join(' '),
@@ -7059,6 +7158,7 @@ export function scanReason(
     gitAdminPath: false,
     stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     stdinDeferred: false,
+    dynamicScript: false,
     globalGitConfig: false,
     gitWord: false,
     aliasWrite: false,
@@ -7066,6 +7166,8 @@ export function scanReason(
     substFallbacks: 0,
     work: budget,
   }
+  const deferred = () =>
+    state.stdinDeferred ? SHELL_STDIN_REASON : state.dynamicScript ? SH_DYNAMIC_SCRIPT_REASON : undefined
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
@@ -7081,15 +7183,16 @@ export function scanReason(
   if (state.aliasWrite && !plainAliasOnly(command)) return SHELL_ALIAS_DEFINE_REASON
   if (!state.headPush) {
     if (state.stdinDeferred) return SHELL_STDIN_REASON
-    return dynWrite ? SHELL_ALIAS_DEFINE_REASON : undefined
+    return dynWrite ? SHELL_ALIAS_DEFINE_REASON : deferred()
   }
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
   // inside a .git-named path. cwdInsideGitDir reads gate.cwd, not the command text, so it also
   // denies a write this guard's own word scan cannot read, such as a shell-variable target.
   if (state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd)) return PUSH_REASON
+  if (state.stdinDeferred) return SHELL_STDIN_REASON
   if (dynWrite) return SHELL_ALIAS_DEFINE_REASON
-  return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+  return deferred()
 }
 
 // claude-factory-1zr5: the most alias expansions one word can chain through. A longer chain denies.
@@ -7244,6 +7347,35 @@ const VAR_OP_REF = /^\$(?:=([A-Za-z_]\w*)|\{[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)[
 function varOpName(w: string): string | undefined {
   const m = VAR_OP_REF.exec(w)
   return m ? (m[1] ?? m[2]) : undefined
+}
+
+// claude-factory-piqf: a head word that glues text to the expansion of a set name runs the split
+// value (X=' -rf /'; rm${X}). The guard does not read that value, so it denies. The one exception
+// is a head path such as ${HOME%/}/bin/tool: a literal "/" follows the last expansion, so the word
+// stays one path. Then every set name must hold a plain value with no space and no IFS, and may
+// have only its one write and the op-form reads in this word.
+function gluedHeadReason(head: string, vars: VarTable, mentions: (name: string) => number): boolean {
+  const names = [...head.matchAll(/\$\{?[=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)].map(m => m[1]!)
+  if (!names.length) return false
+  const opsOf = (n: string): string[] =>
+    [...head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))].map(m => m[1]!)
+  const zsOf = (n: string): number =>
+    [...head.matchAll(new RegExp(`\\$\\{?[=~^]+(?:\\([^)]*\\))?${n}\\b`, 'g'))].length
+  const setNames = names.filter(n => mentions(n) > opsOf(n).length + zsOf(n))
+  if (!setNames.length) return false
+  if (vars.has('IFS')) return true
+  let end = -1
+  for (const m of head.matchAll(/\$\{[^}]*\}|\$[=~^]*[A-Za-z_]\w*/g)) end = m.index! + m[0].length
+  if (head[end] !== '/') return true
+  for (const n of setNames) {
+    const value = vars.get(n)
+    if (typeof value !== 'string' || IMPLICIT_VARS.has(n) || /\s/.test(value) || VAR_UNREADABLE.test(value))
+      return true
+    const ops = opsOf(n)
+    if (ops.some(o => /[\s$\`'"\\*?[]/.test(o))) return true
+    if (mentions(n) > 1 + ops.length) return true
+  }
+  return false
 }
 
 // claude-factory-miqy.12: count the raw-text mentions of NAME that are not a pure read (the plain and braced forms).
@@ -7584,6 +7716,11 @@ function denyAtScan(
     state,
   }
   const segs = segments(command, quoteInfo, subs)
+  // claude-factory-4a4o: a redirect glued to a word is a second reading. It only adds segments.
+  if (quoteInfo.gluedRedir && !quoteInfo.deep)
+    segs.push(
+      ...segments(command, { dollarQuote: false, state, deep: quoteInfo.deep }, undefined, false, true),
+    )
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
@@ -7809,6 +7946,9 @@ function denyAtScan(
       if (headName) {
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
+      } else if (gluedHeadReason(cmd[0]!, vars, mentions)) {
+        // A later real command reason wins over this broad one.
+        late.reason ??= DYNAMIC_VERB_REASON
       } else {
         // The head may name a set variable. ${!Y} names another one, so any set name denies.
         const opName = varOpName(cmd[0]!)
@@ -7948,6 +8088,18 @@ function denyAtScan(
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
+    }
+    // claude-factory-sdur: a redirect word (`>f`, `{fd}>f`) is not the command or an -exec word.
+    // Read the segment again without redirect words. Deny-only.
+    if (words.some(w => /[<>]/.test(w))) {
+      const noRedir = dropRedirectWords(words)
+      if (noRedir.length !== words.length) {
+        const real = realCommand(noRedir)
+        if (rmFindDeny(real, root)) return REASON
+        const base = baseWord(real[0] ?? '')
+        if (base === 'rm') hasRm = true
+        else if (base === 'cd') hasCd = true
+      }
     }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
