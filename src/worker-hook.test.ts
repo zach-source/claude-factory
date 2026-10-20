@@ -10302,9 +10302,13 @@ test('denyReason denies a brace list in a wrapper value slot (claude-factory-mnd
   expect(denyReason('env -u {x,rm} -rf /', '/Users/acme/widget')).toBeTruthy()
 })
 
-test.each(['env -u X -rf /', 'env -u X ls', 'env -u A make', 'env -u $Y ls', 'env -u $Y make', 'env -u $Y git status'])(
-  'denyReason keeps allowing %j (claude-factory-mndr)',
-  cmd => {
-    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
-  },
-)
+test.each([
+  'env -u X -rf /',
+  'env -u X ls',
+  'env -u A make',
+  'env -u $Y ls',
+  'env -u $Y make',
+  'env -u $Y git status',
+])('denyReason keeps allowing %j (claude-factory-mndr)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
