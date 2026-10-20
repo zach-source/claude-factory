@@ -9779,18 +9779,12 @@ test.each(['$X[1,-1]', '$X[1] a.txt'])('denyReason denies %j (claude-factory-bc1
   expect(got === DYNAMIC_VERB_REASON || got === REASON).toBe(true)
 })
 
-test.each([
-  '$~X',
-  'eval $~X',
-  '$^foo a.txt',
-  '$X[(w)1] a.txt',
-  'echo $X[(w)1]',
-  'echo $~X',
-  'X=rm; echo $~X',
-  'X=(a b); echo $X[1]',
-])('denyReason allows %j (claude-factory-bc1u)', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
-})
+test.each(['$^foo a.txt', '$X[(w)1] a.txt', 'echo $X[(w)1]', 'X=(a b); echo $X[1]'])(
+  'denyReason allows %j (claude-factory-bc1u)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
+  },
+)
 
 test.each([
   ["trap 'git push origin main' EXIT"],
@@ -9995,7 +9989,6 @@ const ALLOW_PWY0: string[] = [
   'echo ${RM:-rm} -rf /',
   'ls ${x}rm',
   '${(L)x:-ls} acme.txt',
-  'ls$~x acme.txt',
   '$x acme.txt',
   '$HOME/.local/bin/claude plugin test mod',
   '"$ROOT/bin/factory" report x 2 ready "rm -rf rows"',

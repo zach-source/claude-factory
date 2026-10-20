@@ -318,6 +318,15 @@ export const SH_DYNAMIC_FLAG_REASON =
 // A check for one literal verb, such as push, cannot match an unexpanded word. Every check after
 // it then reads the wrong verb, or no verb at all.
 
+// claude-factory-iufy: a tilde expansion (${~x}, $~x) or the GLOB_SUBST option makes zsh read a
+// variable value as a glob. A glob qualifier in that value, such as *(e:cmd:), runs code that this
+// guard cannot read.
+export const GLOB_SUBST_REASON =
+  'The factory denies this command: a tilde expansion ($~x or ${~x}) or the GLOB_SUBST option ' +
+  'makes zsh read a variable value as a glob. A glob qualifier in that value runs code that the ' +
+  'guard cannot read. Write the glob in the command text, and do not turn on globsubst. Do not ' +
+  'retry this exact command.'
+
 export const DYNAMIC_VERB_REASON =
   'The factory denies this command: a word at the command or subcommand slot holds a shell ' +
   'expansion ($, a backtick, a glob, a brace, or a leading ~). The shell expands this word at ' +
@@ -4848,6 +4857,31 @@ function segmentMayDefineAlias(words: string[]): boolean {
   return false
 }
 
+// claude-factory-iufy: true when this segment may turn on GLOB_SUBST.
+// (a) a word names globsubst (case and _ ignored); (b) setopt/unsetopt with -m or a pattern or
+// expansion argument; (c) set -o/+o with an expansion; (d) an options[...] or options= write.
+function segmentMayGlobSubst(words: string[]): boolean {
+  const first = commandAnchors(words)[0]
+  const safe = first !== undefined && externalProgram(words[first]!)
+  const bare = words.map(w => w.replace(/['"\\]/g, ''))
+  for (let i = 0; i < bare.length; i++) {
+    const w = bare[i]!
+    const dyn = /[$`]/.test(w)
+    if (w.toLowerCase().replace(/_/g, '').includes('globsubst')) {
+      if (safe && i > first! && !dyn) continue
+      return true
+    }
+    if (/^options(\[|=|\+=)/.test(w) && dyn) return true
+    if (w === 'setopt' || w === 'unsetopt') {
+      if (bare.slice(i + 1).some(a => a === '-m' || /[$`*?[]/.test(a))) return true
+    } else if (w === 'set') {
+      const rest = bare.slice(i + 1)
+      if (rest.some((a, j) => (a === '-o' || a === '+o') && /[$`]/.test(rest[j + 1] ?? ''))) return true
+    }
+  }
+  return false
+}
+
 // claude-factory-mn2y: the raw text has no expansion, substitution or brace, and every segment
 // is an alias command.
 function plainAliasOnly(command: string): boolean {
@@ -7785,6 +7819,8 @@ function quoteWord(w: string): string {
  * It is for a `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` assignment, not a `cd`.
  * It seeds this call's own `ghConfigMovedSoFar`.
  */
+const TILDE_EXPANSION = /\$\{?(?:\([^)]*\)|[\^=~#+])*~/
+
 function denyAt(
   command: string,
   root: string | undefined,
@@ -7820,7 +7856,7 @@ function denyAt(
       if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }
   }
-  const late: { reason?: string; glued?: string } = {}
+  const late: { reason?: string; glued?: string; glob?: string } = {}
   return (
     denyAtScan(
       command,
@@ -7836,7 +7872,8 @@ function denyAt(
       outerVars,
     ) ??
     late.glued ??
-    late.reason
+    late.reason ??
+    late.glob
   )
 }
 
@@ -7849,7 +7886,7 @@ function denyAtScan(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
-  late: { reason?: string; glued?: string },
+  late: { reason?: string; glued?: string; glob?: string },
   aliasStack: readonly string[],
   outerVars?: VarTable,
 ): string | undefined {
@@ -7912,6 +7949,9 @@ function denyAtScan(
   }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
+  if (TILDE_EXPANSION.test(command.replace(/\\\r?\n/g, '').replace(/['"\\]/g, ''))) {
+    late.glob ??= GLOB_SUBST_REASON
+  }
   let definesFunction = quoteInfo.funcDef
   let quotedAssign = false
   let ambiguousAssignment = false
@@ -8065,6 +8105,7 @@ function denyAtScan(
     const words = segs[segIdx]!
     if (!state.aliasWrite && segmentMayDefineAlias(words)) state.aliasWrite = true
     if (!state.dynArg && segmentDynArg(words)) state.dynArg = true
+    if (segmentMayGlobSubst(words)) late.glob ??= GLOB_SUBST_REASON
     if (aliasTable) {
       const aliased = shellAliasReason(
         words,

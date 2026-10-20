@@ -50,7 +50,6 @@ const DENY = [
   'X=/x; $X/bin/rm -rf /',
 ]
 const ALLOW = [
-  'ls$~x acme.txt',
   'HOME=/x; ${HOME%/}/bin/tool',
   '${PAGER:-less} README.md',
   'X=/x; ${X}/bin/tool',

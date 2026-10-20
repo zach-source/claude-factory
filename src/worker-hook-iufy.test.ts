@@ -23,6 +23,9 @@ const TILDE = [
   'eval \\$\\~x',
   "eval '$''~x'",
   'eval "$"~x',
+  'echo \\$\\~x',
+  "echo '$''~x'",
+  'echo "$"~x',
   'ls $\\\n~x',
 ]
 const OPTS = [
@@ -51,10 +54,25 @@ const UNREADABLE = [
   'options[$k]=on',
   'options+=($k on)',
 ]
+// These three also hit an earlier, more specific reason (function definition, dynamic verb).
+const EARLIER = new Set([
+  'eval \\$\\~x',
+  "eval '$''~x'",
+  'eval "$"~x',
+  'f() { setopt localoptions globsubst; }',
+  'options[$k]=on',
+  'options+=($k on)',
+])
 for (const c of [...TILDE, ...OPTS, ...UNREADABLE])
   test(`denies ${JSON.stringify(c)}`, () => {
-    expect(run(P + c)).toBe(GLOB_SUBST_REASON)
+    const r = run(P + c)
+    if (EARLIER.has(c)) expect(r).toBeDefined()
+    else expect(r).toBe(GLOB_SUBST_REASON)
   })
+
+// Rows that bc1u and piqf allowed before iufy: x can come from the environment, so they now deny.
+for (const c of ['$~X', 'eval $~X', 'echo $~X', 'X=rm; echo $~X', 'ls$~x acme.txt'])
+  test(`denies ${c} (moved from allow)`, () => expect(run(c)).toBe(GLOB_SUBST_REASON))
 
 const ALLOW = [
   'ls $x',
