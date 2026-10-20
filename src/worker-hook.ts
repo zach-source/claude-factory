@@ -1135,9 +1135,10 @@ function isRecursiveRm(words: string[], start = 0, brace = false): boolean {
   for (let k = start + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '--') return false
-    if (brace && BRACE_LIST_WORD.test(w) && !w.startsWith('-')) {
-      if (bracePieceRecursive(w)) return true
-      continue
+    if (brace && BRACE_LIST_WORD.test(w)) {
+      // claude-factory-gj9l: pieces can join with the text outside the braces ({-,}r). A - with r or R in the word counts.
+      if (bracePieceRecursive(w) || (w.includes('-') && /[rR]/.test(w))) return true
+      if (!w.startsWith('-')) continue
     }
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true

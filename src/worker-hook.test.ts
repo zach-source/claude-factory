@@ -8642,6 +8642,12 @@ const DENY_GJ9L = [
   "find . {x,-exec} rm {-rf,y} / ';'",
   "find . {-exec,rm} -f {-r,x} / ';'",
   "find . -exec rm -f {-r,x} / ';'",
+  "find . -exec rm {-,}r / ';'",
+  "find . {-exec,rm} {-,}r / ';'",
+  "find . -execdir rm {-,}R / ';'",
+  "find . -exec rm {-f,-}r / ';'",
+  "find . -exec rm --re{c,c}ursive / ';'",
+  "find . -exec rm --rec{u,u} / ';'",
 ]
 test.each(DENY_GJ9L)('denyReason denies %j (claude-factory-gj9l)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
