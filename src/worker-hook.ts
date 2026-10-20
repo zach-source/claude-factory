@@ -6596,7 +6596,9 @@ const VAR_UNREADABLE = /[$`\\;&|<>()"'*?[\]{}~!#]/
 
 function recordVarWrites(words: string[], vars: VarTable): void {
   const b = baseWord(words[0] ?? '')
-  const set = (name: string, value: string | undefined) => vars.set(name, value)
+  // miqy.9: a name set twice with different values is unreadable.
+  const set = (name: string, value: string | undefined) =>
+    vars.set(name, vars.has(name) && vars.get(name) !== value ? undefined : value)
   if (b === 'for' && words[1]) set(words[1], undefined)
   if (b === 'read' || b === 'mapfile' || b === 'readarray' || b === 'printf' || b === 'getopts') {
     for (const w of words.slice(1)) if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
@@ -6611,10 +6613,23 @@ function recordVarWrites(words: string[], vars: VarTable): void {
     i++
   }
   if (declares) {
+    // miqy.10: a flag (-n, -l, -u ...) can change what the name holds, so its names are unreadable.
+    const flagged = words.slice(1).some(w => /^[-+][A-Za-z]/.test(w))
     for (const w of words.slice(1)) {
       const m = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(w)
-      if (m) set(m[1]!, m[2] ? undefined : m[3]!)
+      if (m) set(m[1]!, m[2] || flagged ? undefined : m[3]!)
       else if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+    }
+  }
+  // miqy.11: env/sudo NAME=value words are readable. Any other write inside a word (an eval script) is not.
+  const wraps = b === 'env' || b === 'sudo'
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k]!
+    const lead = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(w)
+    if (lead && k >= i && wraps) set(lead[1]!, lead[2] ? undefined : lead[3]!)
+    for (const m of w.matchAll(/(?:^|[\s;&|({])([A-Za-z_]\w*)\+?=/g)) {
+      const handled = m.index === 0 && (k < i || declares || wraps)
+      if (!handled) vars.set(m[1]!, undefined)
     }
   }
 }
@@ -6743,6 +6758,8 @@ function denyAtScan(
   const vars: VarTable = new Map(outerVars)
   // claude-factory-miqy: collect every write first. A set after the use still counts.
   for (const w of segs) recordVarWrites(w, vars)
+  // miqy.11: ${NAME:=v} and ${NAME=v} write a name the lexer does not show as a write.
+  for (const m of command.matchAll(/\$\{([A-Za-z_]\w*):?=/g)) vars.set(m[1]!, undefined)
   // The lexer splits ${(z)X} at the parens, so read the raw text: a zsh flag form of a set name denies.
   if (vars.size > 0) {
     for (const m of command.matchAll(/\$\{[!=~^]*\([^)]*\)([A-Za-z_]\w*)/g)) {

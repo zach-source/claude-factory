@@ -8131,6 +8131,16 @@ const MIQY_DENY: Array<[string, string]> = [
   ['X="rm -rf /"; $=X', DYNAMIC_VERB_REASON],
   ['X="rm -rf /"; ${(z)X}', DYNAMIC_VERB_REASON],
   ['X="git push origin main"; ${X%x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; $X; X=ls', DYNAMIC_VERB_REASON],
+  ['X="git push origin main"; $X; X=true', DYNAMIC_VERB_REASON],
+  ['for X in "rm -rf /"; do $X; done; X=ls', DYNAMIC_VERB_REASON],
+  ['declare -n R=X; X="rm -rf /"; $R', DYNAMIC_VERB_REASON],
+  ['declare -l X="GIT PUSH ORIGIN MAIN"; $X', DYNAMIC_VERB_REASON],
+  [': ${X:=rm}; $X -rf /', DYNAMIC_VERB_REASON],
+  [': ${X="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['eval \'X="rm -rf /"\'; $X', DYNAMIC_VERB_REASON],
+  ['{ X="rm -rf /"; }; $X', DYNAMIC_VERB_REASON],
+  ['env X="rm -rf /" bash -c \'$X\'', REASON],
 ]
 test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
