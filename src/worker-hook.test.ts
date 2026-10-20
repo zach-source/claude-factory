@@ -10330,3 +10330,24 @@ test.each([
 ])('denyReason keeps allowing %j (claude-factory-mndr)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
 })
+
+test.each(['env -u$Y -rf /', 'env --unset=$Y -rf /', 'nice -n$N -rf /', 'env -u$(echo x rm) -rf /'])(
+  'denyReason denies a glued dynamic flag %j (claude-factory-mndr.7)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeTruthy()
+  },
+)
+
+test.each(['env {FOO=x,rm} -rf /', 'env -i {FOO=x,rm} -rf /'])(
+  'denyReason denies a brace list with = in an operand slot %j (claude-factory-mndr.8)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test.each(['env -u$Y ls', 'nice -n5 make', 'env -i make', 'env FOO={x,rm} -rf /', 'env FOO=bar make'])(
+  'denyReason keeps allowing %j (claude-factory-mndr.7/.8)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  },
+)

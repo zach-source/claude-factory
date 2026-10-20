@@ -1588,7 +1588,10 @@ function skipWrapperFlags(wrapperName: string, words: string[]): string[] {
 // `--name=value` flag. `commandAnchors` reads such a word through its own dash-flag branch, in
 // place of this one.
 function wrapperAssignmentOperand(w: string): boolean {
-  return w[0] !== '-' && w.indexOf('=') > 0
+  // claude-factory-mndr.8: a brace list before the `=` expands into words, so one can be the command.
+  const eq = w.indexOf('=')
+  const brace = w.indexOf('{')
+  return w[0] !== '-' && eq > 0 && !(brace >= 0 && brace < eq && BRACE_LIST_WORD.test(w))
 }
 
 // claude-factory-5hjj.14: commands that never run an argument.
@@ -2062,6 +2065,8 @@ function wrapperReadingsDeny(
       work.push(() => flags(name, j + 1))
       return
     }
+    // claude-factory-mndr.7: a glued dynamic flag can split into a command word.
+    if (DYN_CHARS.test(w)) work.push(() => head(j))
     work.push(() => flags(name, j + 1))
     work.push(() => flags(name, j + 2))
   }
@@ -2431,6 +2436,8 @@ function commandAnchors(words: string[]): number[] {
         continue
       }
       if (w.startsWith('-') && w !== '-') {
+        // claude-factory-mndr.7: a glued dynamic flag can split into a command word.
+        if (w.endsWith('$') || w.includes('`')) anchors.push(j)
         j++
         mayBeValue = true
         continue
