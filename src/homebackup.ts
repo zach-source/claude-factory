@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { claudeFiles } from './migrate'
 
@@ -30,6 +30,8 @@ export const EXCLUDES = [
   '/home/devenv/',
   '/home/herdr.log',
   '/home/backup.json',
+  '/home/manager-host.log',
+  '/home/.restoring',
   'worktrees/',
 ]
 
@@ -51,14 +53,19 @@ export const secretFile = (b: Buffer) => {
 const GIT_DIR = (ws: string) => join(ws, 'backup.git')
 const clean = (s: string) => s.replace(/\/\/[^/@\s]+@/g, '//').trim() // a URL's userinfo never reaches a log
 
-function git(cfg: BackupCfg, args: string[], timeout = 120_000) {
+function git(
+  cfg: BackupCfg,
+  args: string[],
+  timeout = 120_000,
+  o: { tree?: string; env?: Record<string, string> } = {},
+) {
   const p = Bun.spawnSync(
     [
       'git',
       '--git-dir',
       GIT_DIR(cfg.ws),
       '--work-tree',
-      cfg.ws,
+      o.tree ?? cfg.ws,
       '-c',
       'user.name=factory',
       '-c',
@@ -69,7 +76,7 @@ function git(cfg: BackupCfg, args: string[], timeout = 120_000) {
       'commit.gpgsign=false',
       ...args,
     ],
-    { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, timeout, stdout: 'pipe', stderr: 'pipe' },
+    { env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...o.env }, timeout, stdout: 'pipe', stderr: 'pipe' },
   )
   return {
     ok: p.exitCode === 0,
@@ -79,9 +86,10 @@ function git(cfg: BackupCfg, args: string[], timeout = 120_000) {
   }
 }
 
-/** The memory store is its own git repo (migrate copies its .git). The outer git would see a gitlink. */
-const memoryRepo = (ws: string) => existsSync(join(ws, 'home', 'memory', '.git'))
-const BUNDLE = 'memory.bundle'
+/** the memory store can be a git repo (the dream makes one). The backup keeps it as plain files */
+const memDir = (ws: string) => join(ws, 'home', 'memory')
+const DREAM_AT = (ws: string) => join(ws, 'home', 'memory-dream.at')
+const RESTORING = (ws: string) => join(ws, 'home', '.restoring')
 
 function init(cfg: BackupCfg) {
   if (!existsSync(GIT_DIR(cfg.ws))) {
@@ -92,51 +100,42 @@ function init(cfg: BackupCfg) {
   git(cfg, ['symbolic-ref', 'HEAD', `refs/heads/${cfg.branch}`])
   const x = join(GIT_DIR(cfg.ws), 'info')
   mkdirSync(x, { recursive: true })
-  const rules = [...(cfg.excludes ?? EXCLUDES), ...(memoryRepo(cfg.ws) ? ['/home/memory/'] : [])]
+  // memory goes in through its own index (snapshotMemory), never as a nested repo or a gitlink
+  const rules = [...(cfg.excludes ?? EXCLUDES), '/home/memory/']
   writeFileSync(join(x, 'exclude'), rules.join('\n') + '\n')
 }
 
 const PUSH_MS = 600_000
 
-/** every regular file under d, .git excluded */
-function files(d: string): string[] {
-  return readdirSync(d, { withFileTypes: true }).flatMap(e =>
-    e.name === '.git' ? [] : e.isDirectory() ? files(join(d, e.name)) : e.isFile() ? [join(d, e.name)] : [],
-  )
-}
-
 /**
- * Put the history of the memory repo in home/memory.bundle. Write it only when the refs changed, because
- * each bundle run gives different bytes. Scan the memory files for secrets first.
- * The backup does not save uncommitted memory files. Returns an error text, or undefined.
+ * Put the memory work tree in the main index as plain files. A second index takes the files (the memory
+ * .gitignore applies, a nested .git never counts), then its tree replaces home/memory/ in the main index.
+ * Only the files leave the VM, so the secret scan of the staged files covers memory too.
+ * Also keeps home/memory-dream.at: the time of the last "dream:" commit, for restore. Returns an error text.
  */
-function bundleMemory(ws: string): string | undefined {
-  if (!memoryRepo(ws)) return undefined
-  const mem = join(ws, 'home', 'memory')
-  const bad = files(mem).filter(f => secretFile(readFileSync(f)))
-  if (bad.length) return `backup refused: secret-like text in ${bad.map(f => relative(ws, f)).join(', ')}`
-  // the bundle carries every commit, so a token in an old commit counts even when the work tree is clean
-  const hist = Bun.spawnSync(
-    ['git', '-C', mem, 'log', '--all', '-p', '--text', '--no-textconv', '--format='],
-    {
+function snapshotMemory(cfg: BackupCfg): string | undefined {
+  const mem = memDir(cfg.ws)
+  if (existsSync(join(mem, '.git'))) {
+    const l = Bun.spawnSync(['git', '-C', mem, 'log', '-1', '--grep=^dream:', '--format=%at'], {
       stdout: 'pipe',
-      maxBuffer: 1 << 30,
-    },
-  )
-  if (hist.exitCode !== 0) return 'backup refused: cannot scan the history of home/memory'
-  if (secretFile(Buffer.from(hist.stdout)))
-    return 'backup refused: secret-like text in the history of home/memory'
-  const refs = Bun.spawnSync(['git', '-C', mem, 'for-each-ref', '--format=%(objectname) %(refname)'])
-  const state = refs.stdout.toString()
-  const marker = join(ws, 'home', `${BUNDLE}.refs`)
-  if (!state.trim()) return undefined // no commit yet: nothing to bundle
-  if (existsSync(marker) && readFileSync(marker, 'utf8') === state && existsSync(join(ws, 'home', BUNDLE)))
-    return undefined
-  // ponytail: each ref change stores a whole new bundle. Push the memory refs to their own remote ref if the branch grows too big
-  const b = Bun.spawnSync(['git', '-C', mem, 'bundle', 'create', '-q', join(ws, 'home', BUNDLE), '--all'])
-  if (b.exitCode !== 0) return `git bundle: ${clean(b.stderr.toString())}`
-  writeFileSync(marker, state)
-  return undefined
+    })
+    const at = l.stdout.toString().trim()
+    const had = existsSync(DREAM_AT(cfg.ws)) ? readFileSync(DREAM_AT(cfg.ws), 'utf8').trim() : ''
+    if (l.exitCode === 0 && at && at !== had) writeFileSync(DREAM_AT(cfg.ws), at + '\n')
+  }
+  const rm = git(cfg, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', 'home/memory'])
+  if (!rm.ok) return `git rm memory: ${rm.err}`
+  if (!existsSync(mem)) return undefined
+  const idx = join(GIT_DIR(cfg.ws), 'mem.index')
+  rmSync(idx, { force: true })
+  const env = { GIT_INDEX_FILE: idx }
+  const add = git(cfg, ['add', '-A', '.'], 120_000, { tree: mem, env })
+  if (!add.ok) return `git add memory: ${add.err}`
+  const t = git(cfg, ['write-tree'], 120_000, { env })
+  if (!t.ok) return `git write-tree: ${t.err}`
+  rmSync(idx, { force: true })
+  const rt = git(cfg, ['read-tree', '--prefix=home/memory/', t.out])
+  return rt.ok ? undefined : `git read-tree: ${rt.err}`
 }
 
 /** the remote branch tip: a sha, null when the branch is absent, or an error text */
@@ -147,8 +146,10 @@ function remoteTip(cfg: BackupCfg): string | null | { error: string } {
   return p.code === 2 ? null : { error: `git ls-remote: ${p.err.split('\n').at(-1)}` }
 }
 
-/** the factory home's state in the workspace: used when it holds rigs.json, runs or the .migrated marker */
-const homeUsed = (ws: string) => ['rigs.json', 'runs', '.migrated'].some(f => existsSync(join(ws, 'home', f)))
+/** the factory home's state in the workspace: used when it holds rigs.json, runs or the .migrated marker.
+ * A restore that did not end leaves home/.restoring: the home is not used then */
+const homeUsed = (ws: string) =>
+  !existsSync(RESTORING(ws)) && ['rigs.json', 'runs', '.migrated'].some(f => existsSync(join(ws, 'home', f)))
 
 export type Outcome = {
   sha?: string
@@ -208,6 +209,7 @@ export function backup(
     return o
   }
   if (!ready) return fail('backup refused: home is not ready')
+  if (existsSync(RESTORING(cfg.ws))) return fail('backup refused: a restore is not finished')
   let sha = ''
   let dirty = false
   const release = lock()
@@ -225,8 +227,12 @@ export function backup(
         git(cfg, ['reset', '-q'])
       }
     }
-    const mem = bundleMemory(cfg.ws)
-    if (mem) return fail(mem)
+    // memory first: it also writes home/memory-dream.at, which the add below picks up
+    const mem = snapshotMemory(cfg)
+    if (mem) {
+      git(cfg, ['reset', '-q'])
+      return fail(mem)
+    }
     const add = git(cfg, ['add', '-A', '--', ...pathspecs(cfg.ws)])
     if (!add.ok) return fail(`git add: ${add.err}`)
     const staged = git(cfg, ['diff', '--cached', '--name-only', '--diff-filter=d', '-z'])
@@ -277,32 +283,57 @@ export function backup(
  */
 export function restore(cfg: BackupCfg): Outcome {
   if (!cfg.remote) return { skipped: 'no remote' }
-  const bundle = join(cfg.ws, 'home', BUNDLE)
-  const mem = join(cfg.ws, 'home', 'memory')
-  // a restore that failed after the checkout left the files but no memory clone and no marker: finish it
-  const pending =
-    existsSync(bundle) && !existsSync(join(mem, '.git')) && !existsSync(join(cfg.ws, 'home', '.migrated'))
-  if (homeUsed(cfg.ws) && !pending) return { skipped: 'used' }
+  if (homeUsed(cfg.ws)) return { skipped: 'used' }
   try {
     init(cfg)
-    let sha: string
-    if (pending) sha = git(cfg, ['rev-parse', 'HEAD']).out
-    else {
-      const tip = remoteTip(cfg)
-      if (tip === null) return { skipped: 'no backup' }
-      if (typeof tip === 'object') return { error: tip.error }
-      const f = git(cfg, ['fetch', '-q', cfg.remote, `refs/heads/${cfg.branch}`], PUSH_MS)
-      if (!f.ok) return { error: `git fetch: ${f.err.split('\n').at(-1)}` }
-      sha = git(cfg, ['rev-parse', 'FETCH_HEAD']).out
-      const c = git(cfg, ['checkout', '-q', '-f', '-B', cfg.branch, sha])
-      if (!c.ok) return { error: `git checkout: ${c.err}` }
-    }
-    if (existsSync(bundle) && !existsSync(join(mem, '.git'))) {
-      const k = Bun.spawnSync(['git', 'clone', '-q', bundle, mem], { stderr: 'pipe' })
-      if (k.exitCode !== 0) return { error: `git clone memory: ${clean(k.stderr.toString())}` }
-      Bun.spawnSync(['git', '-C', mem, 'remote', 'remove', 'origin'])
+    const tip = remoteTip(cfg)
+    if (tip === null) return { skipped: 'no backup' }
+    if (typeof tip === 'object') return { error: tip.error }
+    const f = git(cfg, ['fetch', '-q', cfg.remote, `refs/heads/${cfg.branch}`], PUSH_MS)
+    if (!f.ok) return { error: `git fetch: ${f.err.split('\n').at(-1)}` }
+    const sha = git(cfg, ['rev-parse', 'FETCH_HEAD']).out
+    // the marker stays until the last step: a crash in between makes the next call restore again
+    writeFileSync(RESTORING(cfg.ws), `${sha}\n`)
+    const c = git(cfg, ['checkout', '-q', '-f', '-B', cfg.branch, sha])
+    if (!c.ok) return { error: `git checkout: ${c.err}` }
+    const mem = memDir(cfg.ws)
+    if (existsSync(mem)) {
+      // memory is plain files in the backup: make it a repo again, dated by the last dream, so the next dream reads the journal from there
+      const at = existsSync(DREAM_AT(cfg.ws)) ? readFileSync(DREAM_AT(cfg.ws), 'utf8').trim() : ''
+      const date = /^\d+$/.test(at) ? `${at} +0000` : ''
+      const env = { ...process.env, ...(date ? { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } : {}) }
+      const g = (...a: string[]) =>
+        Bun.spawnSync(
+          [
+            'git',
+            '-C',
+            mem,
+            '-c',
+            'user.name=factory',
+            '-c',
+            'user.email=factory@localhost',
+            '-c',
+            'commit.gpgsign=false',
+            ...a,
+          ],
+          { env, stderr: 'pipe' },
+        )
+      const steps = [
+        g('init', '-q'),
+        g('add', '-A'),
+        g(
+          'commit',
+          '-q',
+          '--allow-empty',
+          '-m',
+          `${date ? 'dream: restored from' : 'restore:'} backup ${sha}`,
+        ),
+      ]
+      const bad = steps.find(p => p.exitCode !== 0)
+      if (bad) return { error: `git memory: ${clean(bad.stderr.toString())}` }
     }
     writeFileSync(join(cfg.ws, 'home', '.migrated'), `restored ${sha}\n`)
+    rmSync(RESTORING(cfg.ws))
     return { restored: sha }
   } catch (e) {
     return { error: clean((e as Error).message) }

@@ -47,8 +47,14 @@ export function lastSession(json: string): string | undefined {
  * home with rigs.json and no marker is a hand-made one: yes, unless a migration archive is on the volume, since
  * its unpack writes rigs.json before it ends. An empty home waits for `factory migrate-to-ax`
  */
-export const homeReady = (f: { migrated: boolean; fresh: boolean; hasRigs: boolean; archive: boolean }) =>
-  f.migrated || f.fresh || (f.hasRigs && !f.archive)
+export const homeReady = (f: {
+  migrated: boolean
+  fresh: boolean
+  hasRigs: boolean
+  archive: boolean
+  /** home/.restoring: a restore did not end, so the home may hold half a checkout */
+  restoring?: boolean
+}) => !f.restoring && (f.migrated || f.fresh || (f.hasRigs && !f.archive))
 
 /** restore an empty home from the backup branch (192.9); logs what it did and never throws. True when a retry can help */
 export function restoreStep(
@@ -177,6 +183,7 @@ export async function host(
       migrated: existsSync(join(home, '.migrated')),
       fresh: process.env.FACTORY_AX_FRESH === '1',
       hasRigs: existsSync(join(home, 'rigs.json')),
+      restoring: existsSync(join(home, '.restoring')),
       archive:
         existsSync(join(worker.own(), 'migrate.tgz')) || existsSync(join(worker.own(), 'put', 'migrate.tgz')),
     })

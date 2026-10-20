@@ -115,6 +115,7 @@ test('AC2: each exclude rule is needed', () => {
     '/home/devenv/': 'home/devenv/x',
     '/home/herdr.log': 'home/herdr.log',
     '/home/backup.json': 'home/backup.json',
+    '/home/manager-host.log': 'home/manager-host.log',
     'worktrees/': 'home/runs/r1/worktrees/acme/f.txt',
   }
   for (const [rule, file] of Object.entries(probes)) {
@@ -195,90 +196,145 @@ test('AC6: no remote and no branch fall back without an error', () => {
   expect(existsSync(join(ws, 'home', '.migrated'))).toBe(false)
 })
 
-test('a memory repo with a commit is backed up as a bundle and restored as a repo', () => {
+const G = ['-c', 'user.name=t', '-c', 'user.email=t@x']
+const memGit = (ws: string, ...x: string[]) => sh('-C', join(ws, 'home', 'memory'), ...G, ...x)
+const tree = (r: string) => sh('--git-dir', r, 'ls-tree', '-r', '--name-only', 'manager-home').split('\n')
+const pushed = (r: string) =>
+  Bun.spawnSync(['git', '--git-dir', r, 'rev-parse', '--verify', 'manager-home']).exitCode === 0
+
+test('AC10: a memory repo with commits, uncommitted notes and a .gitignore backs up as plain files', () => {
   const r = remote()
   const a = workspace()
-  const mem = join(a, 'home', 'memory')
-  sh('-C', mem, 'init', '-q')
-  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'add', '-A')
-  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-q', '-m', 'one')
+  memGit(a, 'init', '-q')
+  put(join(a, 'home', 'memory', '.gitignore'), 'skip.md\n')
+  memGit(a, 'add', '-A')
+  memGit(a, 'commit', '-q', '-m', 'one')
+  put(join(a, 'home', 'memory', 'new.md'), 'uncommitted')
+  put(join(a, 'home', 'memory', 'skip.md'), 'ignored')
   const out = backup(cfg(a, r), true)
   expect(out.error).toBeUndefined()
-  const files = sh('--git-dir', r, 'ls-tree', '-r', '--name-only', 'manager-home').split('\n')
-  expect(files).toContain('home/memory.bundle')
-  expect(files.some(f => f.startsWith('home/memory/'))).toBe(false)
-  // no change in the repo: the bundle is not written again, so no new commit
-  expect(backup(cfg(a, r), true).changed).toBe(false)
+  const files = tree(r)
+  expect(files).toContain('home/memory/a.md')
+  expect(files).toContain('home/memory/new.md')
+  expect(files).toContain('home/memory/.gitignore')
+  expect(files).not.toContain('home/memory/skip.md')
+  expect(files.some(f => f.includes('.git/') || f.endsWith('memory.bundle'))).toBe(false)
   const b = empty()
   expect(restore(cfg(b, r)).restored).toBe(out.sha)
-  expect(readFileSync(join(b, 'home', 'memory', 'a.md'), 'utf8')).toBe('note')
-  expect(sh('-C', join(b, 'home', 'memory'), 'log', '--format=%s')).toBe('one')
+  expect(readFileSync(join(b, 'home', 'memory', 'new.md'), 'utf8')).toBe('uncommitted')
+  expect(existsSync(join(b, 'home', 'memory', 'skip.md'))).toBe(false)
+  // the next backup from the restored home pushes on top
+  put(join(b, 'home', 'memory', 'more.md'), 'm')
+  expect(backup(cfg(b, r), true).error).toBeUndefined()
 })
 
-test('a secret in a memory repo file stops the backup', () => {
+test('AC11: plain memory files, then git init, then a second backup, then restore', () => {
   const r = remote()
   const a = workspace()
-  const mem = join(a, 'home', 'memory')
-  sh('-C', mem, 'init', '-q')
-  put(join(mem, 'leak.md'), 'ghp_' + 'a'.repeat(36))
-  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'add', '-A')
-  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-q', '-m', 'one')
-  expect(backup(cfg(a, r), true).error).toContain('home/memory/leak.md')
-})
-
-test('a token in an old memory commit stops the backup even when the work tree is clean', () => {
-  const r = remote()
-  const a = workspace()
-  const mem = join(a, 'home', 'memory')
-  const g = (...x: string[]) => sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', ...x)
-  sh('-C', mem, 'init', '-q')
-  put(join(mem, 'leak.md'), 'ghp_' + 'a'.repeat(36))
-  g('add', '-A')
-  g('commit', '-q', '-m', 'one')
-  put(join(mem, 'leak.md'), 'clean')
-  g('commit', '-q', '-am', 'two')
-  const out = backup(cfg(a, r), true)
-  expect(out.error).toContain('history of home/memory')
-  expect(Bun.spawnSync(['git', '--git-dir', r, 'rev-parse', '--verify', 'manager-home']).exitCode).not.toBe(0)
-})
-
-test('a token in a binary blob of an old memory commit stops the backup', () => {
-  const r = remote()
-  const a = workspace()
-  const mem = join(a, 'home', 'memory')
-  const g = (...x: string[]) => sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', ...x)
-  sh('-C', mem, 'init', '-q')
-  writeFileSync(
-    join(mem, 'x.bin'),
-    Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from('ghp_' + 'a'.repeat(36))]),
-  )
-  g('add', '-A')
-  g('commit', '-q', '-m', 'one')
-  g('rm', '-q', 'x.bin')
-  g('commit', '-q', '-m', 'two')
-  expect(backup(cfg(a, r), true).error).toContain('history of home/memory')
-  expect(Bun.spawnSync(['git', '--git-dir', r, 'rev-parse', '--verify', 'manager-home']).exitCode).not.toBe(0)
-})
-
-test('a memory dir that blocks the clone is an error, and a retry finishes the restore', () => {
-  const r = remote()
-  const a = workspace()
-  const mem = join(a, 'home', 'memory')
-  sh('-C', mem, 'init', '-q')
-  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'add', '-A')
-  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-q', '-m', 'one')
   expect(backup(cfg(a, r), true).error).toBeUndefined()
+  expect(tree(r)).toContain('home/memory/a.md')
+  memGit(a, 'init', '-q')
+  memGit(a, 'add', '-A')
+  memGit(a, 'commit', '-q', '-m', 'one')
+  put(join(a, 'home', 'memory', 'b.md'), 'b')
+  const out = backup(cfg(a, r), true)
+  expect(out.error).toBeUndefined()
+  expect(tree(r).filter(f => f.startsWith('home/memory'))).toEqual(['home/memory/a.md', 'home/memory/b.md'])
   const b = empty()
-  put(join(b, 'home', 'memory', 'old.md'), 'stale')
-  const out = restore(cfg(b, r))
-  expect(out.restored).toBeUndefined()
-  expect(out.error).toBeDefined()
-  expect(existsSync(join(b, 'home', '.migrated'))).toBe(false)
-  // rigs.json is there now, but the restore is still open: the next call must not say "used"
-  rmSync(join(b, 'home', 'memory'), { recursive: true, force: true })
-  const again = restore(cfg(b, r))
-  expect(again.restored).toBeDefined()
+  expect(restore(cfg(b, r)).restored).toBe(out.sha)
+  expect(existsSync(join(b, 'home', 'memory', '.git'))).toBe(true)
   expect(readFileSync(join(b, 'home', 'memory', 'a.md'), 'utf8')).toBe('note')
+  expect(readFileSync(join(b, 'home', 'memory', 'b.md'), 'utf8')).toBe('b')
+})
+
+test('AC12: a token in an old memory commit is not in the remote tree, a token in a work tree file stops the push', () => {
+  const r = remote()
+  const a = workspace()
+  const token = 'ghp_' + 'a'.repeat(36)
+  memGit(a, 'init', '-q')
+  put(join(a, 'home', 'memory', 'leak.md'), token)
+  memGit(a, 'add', '-A')
+  memGit(a, 'commit', '-q', '-m', 'one')
+  put(join(a, 'home', 'memory', 'leak.md'), 'clean')
+  memGit(a, 'commit', '-q', '-am', 'two')
+  expect(backup(cfg(a, r), true).error).toBeUndefined()
+  const g = Bun.spawnSync(['git', '--git-dir', r, 'grep', '-q', token, 'manager-home'])
+  expect(g.exitCode).toBe(1) // 1 means no blob holds the token
+})
+
+test('AC12: a token in a work tree memory file, binary too, stops the backup and names the file', () => {
+  for (const body of [
+    Buffer.from('ghp_' + 'a'.repeat(36)),
+    Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from('ghp_' + 'a'.repeat(36))]),
+  ]) {
+    const r = remote()
+    const a = workspace()
+    memGit(a, 'init', '-q')
+    writeFileSync(join(a, 'home', 'memory', 'x.bin'), body)
+    const out = backup(cfg(a, r), true)
+    expect(out.error).toContain('home/memory/x.bin')
+    expect(pushed(r)).toBe(false)
+  }
+})
+
+test('AC13: a restore marker makes restore run again, and blocks a backup until it ends', () => {
+  const r = remote()
+  const out = backup(cfg(workspace(), r), true)
+  const b = empty()
+  put(join(b, 'home', 'rigs.json'), 'part') // a crash after a part checkout
+  put(join(b, 'home', '.restoring'), '')
+  expect(backup(cfg(b, remote()), true).error).toContain('restore')
+  expect(restore(cfg(b, r)).restored).toBe(out.sha)
+  expect(existsSync(join(b, 'home', '.restoring'))).toBe(false)
+  expect(readFileSync(join(b, 'home', 'rigs.json'), 'utf8')).toBe('[{"name":"acme"}]')
+  // no marker, rigs.json there: the home counts as used again
+  expect(restore(cfg(b, r)).skipped).toBe('used')
+})
+
+test('AC13: a failed restore keeps the marker, and the home is not ready', () => {
+  const r = remote()
+  const out = backup(cfg(workspace(), r), true)
+  const b = empty()
+  put(join(b, 'home', 'memory', '.git'), 'not a repo') // the memory step fails after the checkout
+  const got = restore(cfg(b, r))
+  expect(got.error).toBeDefined()
+  expect(existsSync(join(b, 'home', '.restoring'))).toBe(true)
+  rmSync(join(b, 'home', 'memory', '.git'))
+  expect(restore(cfg(b, r)).restored).toBe(out.sha)
+})
+
+test('AC14: after a restore the last dream commit time equals home/memory-dream.at', () => {
+  const r = remote()
+  const a = workspace()
+  memGit(a, 'init', '-q')
+  memGit(a, 'add', '-A')
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_DATE: '2026-01-02T03:04:05Z',
+    GIT_COMMITTER_DATE: '2026-01-02T03:04:05Z',
+  }
+  const c = Bun.spawnSync(
+    ['git', '-C', join(a, 'home', 'memory'), ...G, 'commit', '-q', '-m', 'dream: notes'],
+    { env },
+  )
+  expect(c.exitCode).toBe(0)
+  expect(backup(cfg(a, r), true).error).toBeUndefined()
+  const at = readFileSync(join(a, 'home', 'memory-dream.at'), 'utf8').trim()
+  expect(at).toBe(String(Date.parse('2026-01-02T03:04:05Z') / 1000))
+  const b = empty()
+  expect(restore(cfg(b, r)).restored).toBeDefined()
+  expect(sh('-C', join(b, 'home', 'memory'), 'log', '-1', '--grep=^dream:', '--format=%at')).toBe(at)
+  // a backup of the restored home keeps the value
+  expect(backup(cfg(b, r), true).error).toBeUndefined()
+  expect(readFileSync(join(b, 'home', 'memory-dream.at'), 'utf8').trim()).toBe(at)
+})
+
+test('AC15: manager-host.log is not in the tree', () => {
+  const r = remote()
+  const a = workspace()
+  put(join(a, 'home', 'manager-host.log'), 'line')
+  expect(backup(cfg(a, r), true).error).toBeUndefined()
+  expect(tree(r)).not.toContain('home/manager-host.log')
 })
 
 test('a failing remote is an error in restore, an empty remote is "no backup"', () => {
