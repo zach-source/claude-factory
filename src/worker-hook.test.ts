@@ -27,6 +27,7 @@ import {
   MERGE_REASON,
   PUSH_DIR_REASON,
   PUSH_REASON,
+  QUOTED_ASSIGNMENT_REASON,
   GLOBAL_GIT_CONFIG_REASON,
   READY_REASON,
   REASON,
@@ -8622,6 +8623,76 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('\\rm')).toBe('rm')
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
+})
+
+// claude-factory-upag: a quoted or escaped assignment name is the command in bash and zsh.
+test.each([
+  String.raw`"d"=1/rm -r ./d`,
+  String.raw`'d'=1/rm -r ./d`,
+  String.raw`d"="1/rm -r ./d`,
+  String.raw`d\=1/rm -r ./d`,
+  String.raw`"d=1"/rm -r ./d`,
+  String.raw`"d"=1/rm -rf /`,
+  String.raw`A=1 "d"=1/rm -r ./d`,
+  String.raw`if "d"=1/rm -r ./d; then :; fi; ls`,
+  String.raw`ls; "d"=1/rm -r ./d`,
+  String.raw`bash -c '"d"=1/rm -r ./d'`,
+  String.raw`nice "d"=1/rm -r ./d`,
+  String.raw`sudo "d"=1/rm -r ./d`,
+  String.raw`env "d"=1/rm -r ./d`,
+])('denyReason denies a quoted assignment name as the command: %j', cmd => {
+  expect(denyReason(cmd, '/root/repo')).toBe(QUOTED_ASSIGNMENT_REASON)
+})
+
+// The allow list leaves out `d\<newline>=1/rm -r ./d`. Bash runs it as `d=1/rm -r ./d`, which the fail-closed
+// assignmentReadingsDeny (mmc9.22/.25) denies as a possible rm. The person chose to keep that deny.
+test.each([
+  'A=1 ls',
+  'A="x y" ls',
+  "A='x' ls",
+  String.raw`echo "d"=1 'x'=2 d\=3`,
+  'd=1/x',
+  String.raw`d=\1/x`,
+  'git commit -m "a=b"',
+  'ls "A"',
+  '"ls" -a',
+  'env A=1 ls',
+  "env -S 'A=1 ls'",
+])('denyReason allows a real assignment or a plain word: %j', cmd => {
+  expect(denyReason(cmd, '/root/repo')).toBeUndefined()
+})
+
+test.each(['A=1 ll', "A=1 B='x y' ll -a"])('denyReason allows %j with a shell alias table', cmd => {
+  const gate = snapGate(() => new Map([['ll', 'ls -l']]))
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
+})
+
+test.each([
+  ['n', 'nice', String.raw`n "d"=1/rm -r ./d`],
+  ['i', 'if', String.raw`i "d"=1/rm -r ./d; then :; fi`],
+  ['x', 'A=1', String.raw`x "d"=1/rm -r ./d`],
+  ['n', 'nice', String.raw`n "d"=$H/rm -r ./d`],
+  ['n', 'nice', String.raw`n "d"=1/r* -r ./d`],
+  ['x', 'A=1', String.raw`x "d"=~/rm -r ./d`],
+  ['x', '"d"=1/rm', 'x -r ./d'],
+  ['x', "'d'=1/rm -r ./d", 'x'],
+  ['x', String.raw`d\=1/rm`, 'x -r ./d'],
+  ['x', 'A=1 "d"=1/rm', 'x -r ./d'],
+  ['x', 'nice "d"=1/rm', 'x -r ./d'],
+])('denyReason denies a quoted assignment name after alias %s=%s', (name, value, cmd) => {
+  const gate = snapGate(() => new Map([[name, value]]))
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBe(QUOTED_ASSIGNMENT_REASON)
+})
+
+test.each([
+  ['ll', 'ls -l', String.raw`ll "d"=1/rm`],
+  ['x', 'ls', String.raw`x "d"=1/rm`],
+  ['n', 'nice', String.raw`n d=1/rm`],
+  ['x', 'A=1 ls', 'x'],
+  ['x', 'echo "d"=1', 'x'],
+])('denyReason allows alias %s=%s with no live quoted name: %j', (name, value, cmd) => {
+  const gate = snapGate(() => new Map([[name, value]]))
+  expect(denyReason(cmd, '/root/repo', undefined, gate)).toBeUndefined()
 })
 
 // claude-factory-tyz6: zsh reads a lone - in command position as a precommand modifier, so the next word is the command.

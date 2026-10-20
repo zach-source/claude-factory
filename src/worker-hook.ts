@@ -274,6 +274,13 @@ export const FUNCTION_DEF_REASON =
   'run it with bash or zsh. A heredoc write of the function is also denied. Do not retry this ' +
   'exact command.'
 
+// claude-factory-upag
+export const QUOTED_ASSIGNMENT_REASON =
+  'The factory denies this command: a word has a quote or a backslash before its first =. Bash ' +
+  'and zsh run such a word as a command. They do not read it as a NAME=value assignment. The ' +
+  'guard cannot tell which command runs. Write the assignment with no quote in the name, or call ' +
+  'the command by a plain path. Do not retry this exact command.'
+
 // claude-factory-zl5.33
 export const XARGS_REASON =
   'The factory denies this command: xargs runs right before a git or gh word. xargs can append ' +
@@ -815,6 +822,7 @@ type SegInfo = {
   funcDef?: boolean
   // claude-factory-wmsr: a here-document that segments() cannot read with certainty
   heredoc?: boolean
+  quotedNames?: Map<string[], number[]>
   // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
   gluedRedir?: boolean
 }
@@ -921,10 +929,19 @@ function segments(
   const parens: boolean[] = []
   // claude-factory-p43v.2: true between an unquoted opening backtick and its closing one.
   let inBacktick = false
+  let nameRaw = false
+  let sawEq = false
   const endWord = () => {
+    if (hasWord && nameRaw && word.includes('=') && info?.quotedNames) {
+      const m = info.quotedNames.get(cur)
+      if (m) m.push(cur.length)
+      else info.quotedNames.set(cur, [cur.length])
+    }
     if (hasWord) cur.push(word)
     word = ''
     hasWord = false
+    nameRaw = false
+    sawEq = false
   }
   const endSeg = () => {
     endWord()
@@ -979,6 +996,7 @@ function segments(
     }
     if (c === "'" || c === '"') {
       quote = c
+      if (!sawEq) nameRaw = true
       hasWord = true
       continue
     }
@@ -993,6 +1011,7 @@ function segments(
         exemptPrev = wasExempt
         continue
       }
+      if (!sawEq) nameRaw = true
       word += cmd[++i]
       hasWord = true
       continue
@@ -1093,6 +1112,7 @@ function segments(
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
+    if (c === '=') sawEq = true
     // claude-factory-4a4o: bash and zsh start a redirect at an unquoted < or > inside a word, so
     // `rm>f -rf /` runs rm. The default reading keeps one word. The cut reading ends the word here.
     if ((c === '<' || c === '>') && hasWord && !/[<>]/.test(word) && !FD_PREFIX_RE.test(word)) {
@@ -6597,7 +6617,7 @@ function anyShellReason(
         ...segments(envSplitCommentCut(val)).flat(),
         ...words.slice(span.end),
       ]
-      const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
+      const line = argv.map(requoteWord).join(' ')
       return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
     }
     if (shellSlotWord(words[j]!)) {
@@ -6968,9 +6988,22 @@ const MAX_SHELL_ALIAS_DEPTH = 10
 // claude-factory-1zr5: writes one segment word back as shell text, so a rescan reads the same word.
 // A word with a $, backtick, glob or similar char stays bare, so the dynamic-word checks still see it.
 // A bare word that also holds a space or an operator char cannot be written safely: null.
-function aliasWordText(w: string): string | null {
+function aliasWordText(w: string, marked = false): string | null {
+  if (marked && /[$`*?[{~\\!]/.test(w)) {
+    // claude-factory-upag: keep the mark. Quote the name part only, so the rest stays dynamic.
+    const eq = w.indexOf('=')
+    const rest = eq < 0 ? w : w.slice(eq)
+    const bad = /[$`*?[{~\\!\s;&|<>()#'"]/.test(w.slice(0, Math.max(eq, 0)))
+    if (eq <= 0 || bad || /[\s;&|<>()#'"]/.test(rest)) return null
+    return `'${w.slice(0, eq)}'${rest}`
+  }
   if (/[$`*?[{~\\!]/.test(w)) return /[\s;&|<>()#'"]/.test(w) ? null : w
-  return `'${w.replace(/'/g, `'\\''`)}'`
+  if (marked) return `'${w.replace(/'/g, `'\\''`)}'`
+  return requoteWord(w)
+}
+function requoteWord(w: string): string {
+  const name = /^[A-Za-z_][A-Za-z0-9_]*=/.exec(w)?.[0] ?? ''
+  return `${name}'${w.slice(name.length).replace(/'/g, `'\\''`)}'`
 }
 
 /**
@@ -6993,6 +7026,7 @@ function shellAliasReason(
   state: ScanState,
   moved: boolean,
   ghMoved: boolean,
+  marks?: readonly number[],
 ): string | undefined {
   let end = words.length
   const first = words.findIndex(w => !/^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/.test(w))
@@ -7011,7 +7045,7 @@ function shellAliasReason(
     if (value === null || value === undefined) return SHELL_ALIAS_REASON
     if (stack.length >= MAX_SHELL_ALIAS_DEPTH) return SHELL_ALIAS_REASON
     if (spendWork(state, value.length + words.length)) return SCAN_BUDGET_REASON
-    const info = { dollarQuote: false }
+    const info: SegInfo = { dollarQuote: false, quotedNames: new Map() }
     const expansion = segments(value, info)
     if (info.dollarQuote) return SHELL_ALIAS_REASON
     if (name !== 'git' && name !== 'gh') {
@@ -7023,12 +7057,18 @@ function shellAliasReason(
       )
       if (runsGit) return SHELL_ALIAS_REASON
     }
-    const parts = expansion.length ? expansion.map(seg => [...seg]) : [[]]
-    parts[0] = [...words.slice(0, i), ...parts[0]!]
-    parts[parts.length - 1] = [...parts[parts.length - 1]!, ...words.slice(i + 1)]
+    // claude-factory-upag: a word marked as a quoted assignment name stays single-quoted whole,
+    // so the rescan marks it again.
+    const before = words.slice(0, i).map((w, k) => aliasWordText(w, marks?.includes(k)))
+    const after = words.slice(i + 1).map((w, k) => aliasWordText(w, marks?.includes(i + 1 + k)))
+    const parts = (expansion.length ? expansion : [[]]).map(seg => {
+      const m = info.quotedNames?.get(seg)
+      return seg.map((w, k) => aliasWordText(w, m?.includes(k)))
+    })
+    parts[0] = [...before, ...parts[0]!]
+    parts[parts.length - 1] = [...parts[parts.length - 1]!, ...after]
     const texts: string[] = []
-    for (const part of parts) {
-      const quoted = part.map(aliasWordText)
+    for (const quoted of parts) {
       if (quoted.includes(null)) return SHELL_ALIAS_REASON
       texts.push(quoted.join(' '))
     }
@@ -7481,6 +7521,7 @@ function denyAtScan(
     dollarQuote: false,
     funcDef: false,
     state,
+    quotedNames: new Map(),
   }
   const segs = segments(command, quoteInfo, subs)
   // claude-factory-4a4o: a redirect glued to a word is a second reading. It only adds segments.
@@ -7509,6 +7550,7 @@ function denyAtScan(
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
   let definesFunction = quoteInfo.funcDef
+  let quotedAssign = false
   let ambiguousAssignment = false
   let subIdx = 0
   const vars: VarTable = new Map(outerVars)
@@ -7657,6 +7699,7 @@ function denyAtScan(
         state,
         movedSoFar,
         ghConfigMovedSoFar,
+        quoteInfo.quotedNames?.get(words),
       )
       if (aliased) return aliased
     }
@@ -7688,7 +7731,18 @@ function denyAtScan(
     if (xargsHidesOperand(words)) return XARGS_REASON
     if (setsDangerousGitConfigEnv(words) || (splitWords && setsDangerousGitConfigEnv(splitWords)))
       hasDangerousConfigEnv = true
-    if (assignmentReadingsDeny(words, root, state)) return state.work < 0 ? SCAN_BUDGET_REASON : REASON
+    // claude-factory-upag: a quoted assignment name keeps its own reason where assignmentReadingsDeny
+    // would deny the same word first.
+    const marks = quoteInfo.quotedNames?.get(words)
+    if (marks) {
+      const probe = [...words]
+      for (const k of marks) probe[k] = '\u0000'
+      if (realCommand(probe).length > realCommand(words).length) quotedAssign = true
+    }
+    if (assignmentReadingsDeny(words, root, state)) {
+      if (quotedAssign) return QUOTED_ASSIGNMENT_REASON
+      return state.work < 0 ? SCAN_BUDGET_REASON : REASON
+    }
     // claude-factory-mmc9.25: realCommand skips only an ASCII NAME=. For each word with =, read
     // the word and the command after it. This sets hasRm and hasCd for the rm and cd pair check.
     {
@@ -7888,6 +7942,7 @@ function denyAtScan(
   if (hasDangerousConfigEnv && (state.gitWord || commandHasGitWord(command))) return PUSH_REASON
   if (backtickBesidePush(command)) return PUSH_REASON
   if (definesFunction) return FUNCTION_DEF_REASON
+  if (quotedAssign) return QUOTED_ASSIGNMENT_REASON
   if (ambiguousAssignment) return ASSIGNMENT_PREFIX_REASON
   return hasRm && hasCd ? REASON : undefined
 }
