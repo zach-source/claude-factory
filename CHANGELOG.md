@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: the alias guard (claude-factory-mn2y) denied `ssh $h uptime` and `fish $h` in a command with a second segment, so main failed the miqy allow rows. `ssh` and `fish` are now on `ALIAS_SAFE_COMMANDS`: a child process cannot change the parent shell's alias table.
 - Fixed: the label pass mailed a run (or started a rework run) before it took the `conflict` or `rework` label off. When `gh pr edit --remove-label` failed, every pass mailed again: one run got 305 copies in 11 hours. The label now comes off first, and a failed removal sends nothing.
 - New: `FACTORY_WORKER_PLUGINS` (comma-separated plugin names, the `enabledPlugins` key before `@`) keeps those plugins in a worker's settings, next to `asd-ste100`. A plugin must also be enabled in the user's settings. Example: `FACTORY_WORKER_PLUGINS=ponytail`.
 - New: a `manager` target in `Dockerfile.worker`, for the image of the AX manager task (claude-factory-192.1). It builds on the worker image and adds `herdr`, `dolt`, the `ax` CLI and the mod (`/opt/factory/mod`), and sets `FACTORY_IN_AX=1`. A build with no `--target` still makes the worker image. `TARGET=manager hack/push-worker.sh` pushes it as `factory-manager`.
