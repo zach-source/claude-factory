@@ -644,11 +644,20 @@ test.each(BEADS_ACTOR_SPLIT_STRING_DENY)('denyReason denies %s (claude-factory-i
 // fails open. The command's `rm -rf` then runs unchecked.
 //
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
+//
+// The limit is FIND_MS, not 500 ms: the linear scan takes about 280 ms on a laptop and 280 to 560 ms
+// on a shared CI runner, so 500 ms failed CI at random. The O(n^2) scan above takes about 11 s, so
+// 2000 ms still fails it by more than 5x.
 const FIND_N = 200000
+const FIND_MS = 2000
 
-test('scanReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)', () => {
-  expect(scanReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)',
+  () => {
+    expect(scanReason('find . ' + '-exec '.repeat(FIND_N) + '; rm -rf x')).toBe(REASON)
+  },
+  FIND_MS,
+)
 
 // claude-factory-dts: the same over-8192-character command denies with LONG_COMMAND_REASON
 // through denyReason, on every rig.
@@ -660,17 +669,29 @@ test('denyReason denies the same 200000-word find -exec scan with LONG_COMMAND_R
 // checks baseWord(cmd[i + 1]) === 'rm' before the slice (the bead's own first proposal).
 // The slice itself costs O(n), not the check before it. Each rm here carries no recursive flag.
 // So the command must stay allowed.
-test('scanReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)', () => {
-  expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
-}, 500)
+test(
+  'scanReason allows a 200000-word find -exec rm scan, fast, no recursive flag (claude-factory-lbn)',
+  () => {
+    expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N))).toBeUndefined()
+  },
+  FIND_MS,
+)
 
-test('scanReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)', () => {
-  expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies a 200000-word find -exec rm scan with a recursive rm at the end (claude-factory-lbn)',
+  () => {
+    expect(scanReason('find . ' + '-exec rm '.repeat(FIND_N) + '-exec rm -rf x')).toBe(REASON)
+  },
+  FIND_MS,
+)
 
-test('scanReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)', () => {
-  expect(scanReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies a 200000-word find -execdir scan with a recursive rm at the end (claude-factory-lbn)',
+  () => {
+    expect(scanReason('find . ' + '-execdir '.repeat(FIND_N) + '-execdir rm -rf x \\;')).toBe(REASON)
+  },
+  FIND_MS,
+)
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
@@ -7975,6 +7996,9 @@ test('claude-factory-dnw1: a bare brace in a glued default still denies git push
     denyReason('git${IFS}${X:-{}${IFS}push${IFS}origin${IFS}main', '/root/repo', undefined, J1KI_GATE),
   ).toBe(PUSH_REASON)
 })
+test('claude-factory-dnw1: a bare brace does not hide a later close brace', () => {
+  expect(denyReason('rm${X:-{}${IFS}-rf${IFS}/}', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
 test('claude-factory-dnw1: an unclosed glued default keeps the words after it', () => {
   expect(denyReason('rm${X:-${IFS}-rf${IFS}/', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })
@@ -8248,6 +8272,38 @@ const DENY_21UX: string[] = [
 ]
 test.each(DENY_21UX)('denyReason denies %j (claude-factory-21ux)', cmd => {
   expect(denyReason(cmd)).toBe(REASON)
+})
+
+const DENY_P6WN: string[] = [
+  'sudo A=1 -u root rm -rf /',
+  'sudo A=1 -E rm -rf /',
+  'sudo A=1 -i rm -rf /',
+  'sudo A=1 -- rm -rf /',
+  'sudo A=1 -- ./d=1/rm -r ./d',
+  'sudo A=1 -u root -- ./d=1/rm -r ./d',
+  'sudo ./d=1/x -u root rm -rf /',
+  'sudo A=1 -u root B=2 -g wheel rm -rf /',
+  'sudo A=1 -u root -- rm -rf /',
+  'sudo A=1 -u root env rm -rf /',
+  'sudo A=1 -u root timeout 5 rm -rf /',
+  'sudo -u root A=1 rm -rf /',
+  'sudo A=1 rm -rf /',
+]
+test.each(DENY_P6WN)('denyReason denies %j (claude-factory-p6wn)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+const ALLOW_P6WN: string[] = [
+  'sudo -u root A=1 ls',
+  'sudo A=1 -u root ls',
+  'sudo A=1 -- ls',
+  'sudo -- A=1 ls',
+  'sudo A=1 -- ./d=1/ls -l',
+  'sudo A=1 -u root -- ./d=1/ls -l',
+  'env A=1 -- B=2 ls',
+]
+test.each(ALLOW_P6WN)('denyReason allows %j (claude-factory-p6wn)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
 })
 
 const ALLOW_21UX: string[] = [
