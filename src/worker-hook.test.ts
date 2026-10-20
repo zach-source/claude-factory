@@ -3828,8 +3828,29 @@ test.each([
   'mkdir -p {a,b}',
   'touch {a,b}',
   'cp -r x {a,b}',
+  'touch {1..3}',
+  'mkdir -p {a..c}',
+  'cp x {1..2}',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+
+test.each(['tee -a ~/.gitconfi{f..h}', `tee -a ~/.gitconfi{g,}${'{a,b}'.repeat(7)}`])(
+  'denyReason denies %j (claude-factory-ebmm.5, .6)',
+  cmd => {
+    expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+  },
+)
+
+test('denyReason scans many nested brace groups fast (claude-factory-ebmm.4)', () => {
+  for (const cmd of [
+    `tee -a x ${'{a,b}'.repeat(30)}; git push origin HEAD:main`,
+    `tee -a ~/.gitconfi{g,}${'{,}'.repeat(30)}`,
+  ]) {
+    const t = performance.now()
+    denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
+    expect(performance.now() - t).toBeLessThan(1000)
+  }
 })
 
 test('denyReason scans a many-star glob fast and denies it (claude-factory-ty8y.24)', () => {

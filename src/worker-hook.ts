@@ -2609,16 +2609,43 @@ function globalGitConfigSamples(root: string | undefined, gate: HookGate | undef
 // claude-factory-ebmm: a `..` group becomes `*`. A comma group expands to each alternative, innermost
 // first. Over BRACE_CAP alternatives the word becomes `*` (fail closed). `{}`, a lone `{` and `${` stay.
 const BRACE_CAP = 64
+function rangeToComma(a: string, b: string): string | undefined {
+  if (/^-?\d+$/.test(a) && /^-?\d+$/.test(b)) {
+    const x = Number(a)
+    const y = Number(b)
+    if (Math.abs(y - x) >= BRACE_CAP) return undefined
+    const n: string[] = []
+    for (let i = x; x <= y ? i <= y : i >= y; i += x <= y ? 1 : -1) n.push(String(i))
+    return n.length > 1 ? `{${n.join(',')}}` : n[0]
+  }
+  if (a.length === 1 && b.length === 1) {
+    const x = a.charCodeAt(0)
+    const y = b.charCodeAt(0)
+    if (Math.abs(y - x) >= BRACE_CAP) return undefined
+    const n: string[] = []
+    for (let i = x; x <= y ? i <= y : i >= y; i += x <= y ? 1 : -1) n.push(String.fromCharCode(i))
+    return n.length > 1 ? `{${n.join(',')}}` : n[0]
+  }
+  return undefined
+}
+
+// One worklist and one cap for the whole word, so nested groups cannot cost 2^n.
 function expandBraces(w: string): string[] {
+  w = w.replace(/\{([^{}.,]+)\.\.([^{}.,]+)\}/g, (all, a: string, b: string) => rangeToComma(a, b) ?? '*')
   w = w.replace(/\{[^{}]*\.\.[^{}]*\}/g, '*')
-  const m = /\{([^{}]*,[^{}]*)\}/.exec(w)
-  if (!m) return [w]
-  const pre = w.slice(0, m.index)
-  const post = w.slice(m.index + m[0].length)
+  const todo = [w]
   const out: string[] = []
-  for (const a of m[1]!.split(',')) {
-    out.push(...expandBraces(pre + a + post))
-    if (out.length > BRACE_CAP) return ['*']
+  while (todo.length) {
+    const cur = todo.pop()!
+    const m = /\{([^{}]*,[^{}]*)\}/.exec(cur)
+    if (!m) {
+      out.push(cur)
+    } else {
+      const pre = cur.slice(0, m.index)
+      const post = cur.slice(m.index + m[0].length)
+      for (const a of m[1]!.split(',')) todo.push(pre + a + post)
+    }
+    if (todo.length + out.length > BRACE_CAP) return ['*']
   }
   return out
 }
