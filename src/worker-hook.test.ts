@@ -7856,6 +7856,188 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('dir/')).toBe('')
 })
 
+// claude-factory-j1ki: the shell splits an unquoted expansion (${IFS}, $IFS, ${X}, $(...)) that is
+// glued to other text into word breaks. The guard must read the split words.
+const J1KI_GATE = {
+  headOf: (d?: string) => (d === '/root/repo' ? 'factory/x' : 'main'),
+  originHead: () => 'main',
+}
+const J1KI_REASON_ROWS = [
+  'rm${IFS}-rf${IFS}/',
+  'rm$IFS-rf$IFS/',
+  '${IFS}rm${IFS}-rf${IFS}/',
+  'rm${IFS%?}-rf${IFS%?}/',
+  'rm${IFS:0:1}-rf${IFS:0:1}/',
+  'rm${=IFS}-rf${=IFS}/',
+  'rm$=IFS-rf$=IFS/',
+  'rm${X}-rf${X}/',
+  'rm$1-rf$1/',
+  'rm$@-rf$@/',
+  'rm${IFS}../x',
+  'rm$(echo " ")-rf$(echo " ")/',
+  'sudo rm${IFS}-rf${IFS}/',
+  'env rm${IFS}-rf${IFS}/',
+  'X=1 rm${IFS}-rf${IFS}/',
+  'cd /x; rm${IFS}-rf${IFS}/',
+  'true && rm${IFS}-rf${IFS}/',
+  'find . -exec rm${IFS}-rf {} +',
+  'find${IFS}.${IFS}-exec${IFS}rm${IFS}-rf${IFS}{}${IFS}+',
+  "rm$( (printf ' ') )-rf /",
+  'rm$(printf "%s" "$(printf " ")")-rf /',
+  "rm$(printf '%s' \"$(printf ' ')\")-rf /",
+]
+const J1KI_PUSH_ROWS = [
+  'git${IFS}push${IFS}origin${IFS}main',
+  'git$IFS"push"$IFS"origin"$IFS"main"',
+  "git$IFS'push'$IFS'origin'$IFS'main'",
+  'git$IFS\\push$IFS\\origin$IFS\\main',
+]
+const J1KI_MERGE_ROWS = ['gh${IFS}pr${IFS}merge${IFS}1']
+const J1KI_DYNAMIC_ROWS = ['gh$IFS"pr"$IFS"merge"${IFS}1', 'gh$IFS"pr"$IFS"merge"$IFS1']
+const J1KI_ALIAS_ROWS = [
+  'export$IFS"HOME=/x"; gh co 5',
+  'export${IFS}GH_CONFIG_DIR=/x; gh co 5',
+  'export${IFS}HOME=/x; gh co 5',
+]
+const J1KI_MOVE_ROWS = ['cd${IFS}/x; git push', 'cd$IFS/x && git push origin HEAD', 'pushd${IFS}/x; git push']
+// claude-factory-j1ki.12 to .15: security review rows.
+const J1KI_REASON_ROWS2 = [
+  'cd${IFS}/x; rm ./f',
+  'cd /x; rm${IFS}./f',
+  'cd${IFS}/x; rm${IFS}./f',
+  'rm${IFS}./f; cd${IFS}/x',
+  "echo $(rm$(printf ' ')-r ./d)",
+  "x=$(rm$(printf ' ')-r ./d)",
+  "echo $(:; rm$(printf ' ')-r ./d)",
+  "x=$(echo $(rm$(printf ' ')-r ./d))",
+  '"rm"$(printf \' \')"-r" ./d',
+  '"rm"$(printf \' \')"-r"$(printf \' \')"./d"',
+]
+const J1KI_PUSH_ROWS2 = [
+  'export${IFS}GIT_CONFIG_GLOBAL=/x; git push origin HEAD',
+  'export${IFS}GIT_CONFIG_GLOBAL=/x && git push origin HEAD',
+  'export${IFS}GIT_CONFIG_GLOBAL=/x\ngit push origin HEAD',
+  'export${IFS}GIT_CONFIG_SYSTEM=/x; git push origin HEAD',
+  "export${IFS}GIT_CONFIG_PARAMETERS='x'; git push origin HEAD",
+  'export${IFS}HOME=/x; git push origin HEAD',
+  'declare${IFS}-x${IFS}GIT_CONFIG_GLOBAL=/x; git push origin HEAD',
+  "x=$(git$(printf ' ')push$(printf ' ')origin$(printf ' ')main)",
+  '"git"$(printf \' \')"push"$(printf \' \')"origin"$(printf \' \')"main"',
+]
+test.each(J1KI_REASON_ROWS2)('claude-factory-j1ki.12-15: %s denies with REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(J1KI_PUSH_ROWS2)('claude-factory-j1ki.12-15: %s denies with PUSH_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+test.each([
+  'export${IFS}PATH=/x; git status',
+  'cd /x && ls',
+  'rm ./f',
+  'echo $(date)',
+  'echo "$(date)"',
+  'git commit -m "a$(date)b"',
+  'echo "a"$(date) "b"',
+])('claude-factory-j1ki.12-15: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
+const J1KI_ALLOW_ROWS = [
+  'ls ${IFS}',
+  'echo a${X}b',
+  'echo${IFS}hi',
+  'ls$IFS-la',
+  '$HOME/.local/bin/claude plugin test mod',
+  '"$ROOT/bin/factory" report x 2 ready s',
+  'git commit -m "a ${X} b"',
+  'git -C "$WT"/sub status',
+  'ls build/a${X}b 2>/dev/null',
+  'find "$D"/x -name y -delete',
+  'echo a$(date)b',
+]
+test.each(J1KI_REASON_ROWS)('claude-factory-j1ki: %s denies with REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(J1KI_PUSH_ROWS)('claude-factory-j1ki: %s denies with PUSH_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+test.each(J1KI_MERGE_ROWS)('claude-factory-j1ki: %s denies with MERGE_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(MERGE_REASON)
+})
+test.each(J1KI_DYNAMIC_ROWS)('claude-factory-j1ki: %s denies with DYNAMIC_VERB_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+test.each(J1KI_ALIAS_ROWS)('claude-factory-j1ki: %s denies with ALIAS_USE_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, BEMR_GATE)).toBe(ALIAS_USE_REASON)
+})
+test.each(J1KI_MOVE_ROWS)('claude-factory-j1ki: %s denies with PUSH_DIR_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_DIR_REASON)
+})
+test.each(J1KI_ALLOW_ROWS)('claude-factory-j1ki: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
+test('claude-factory-j1ki: a 1000-word segment of glued words returns fast', () => {
+  const cmd = 'echo ' + Array.from({ length: 1000 }, () => 'a${X}b').join(' ')
+  expect(cmd.length).toBeLessThan(8192)
+  const t = Date.now()
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+  expect(Date.now() - t).toBeLessThan(1000)
+})
+
+// claude-factory-563n: zsh reads `noglob` and `nocorrect` as precommand modifiers. The next word is
+// the command. The hook must skip them like `sudo`.
+const DENY_ZSH_PRECOMMAND = [
+  'noglob rm -rf /',
+  'nocorrect rm -rf /',
+  'nocorrect A=x rm -rf /',
+  'A=x nocorrect rm -rf /',
+  'A=x noglob rm -rf /',
+  'sudo nocorrect rm -rf /',
+  'nocorrect sudo rm -rf /',
+  'nocorrect noglob rm -rf /',
+  'builtin noglob rm -rf /',
+  'exec nocorrect rm -rf /',
+  '/bin/noglob rm -rf /',
+  '\\noglob rm -rf /',
+  'if nocorrect rm -rf /; then :; fi',
+  'echo x && noglob rm -rf /',
+  '{ nocorrect rm -rf /; }',
+  '{ noglob rm -rf /; }',
+  'noglob { rm -rf /; }',
+  'repeat 1 { noglob rm -rf /; }',
+]
+
+test.each(DENY_ZSH_PRECOMMAND)('denyReason denies %j (claude-factory-563n: zsh precommand modifier)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test.each(['G=git V=push; nocorrect $G $V origin main', 'G=git V=push; noglob $G $V origin main'])(
+  'denyReason denies %j with DYNAMIC_VERB_REASON (claude-factory-563n)',
+  cmd => {
+    expect(denyReason(cmd, '/x', undefined, P43V_GATE)).toBe(DYNAMIC_VERB_REASON)
+  },
+)
+
+test('denyReason keeps the alias, push and merge reasons behind a zsh precommand modifier (claude-factory-563n)', () => {
+  expect(denyReason('nocorrect A=x gp origin main', '/x', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
+  expect(denyReason('noglob gp origin main', '/x', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
+  expect(denyReason('nocorrect git push origin main', '/x', undefined, P43V_GATE)).toBe(PUSH_REASON)
+  expect(denyReason('nocorrect gh pr merge 1')).toBe(MERGE_REASON)
+})
+
+test.each(['noglob ls *.ts', 'nocorrect ls', 'noglob git status', 'echo noglob', 'nocorrect'])(
+  'denyReason allows %j (claude-factory-563n)',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
+test.each(['nocorrect A+=x rm -rf /', 'nocorrect A[1]=x rm -rf /'])(
+  'denyReason denies %j (claude-factory-563n)',
+  cmd => {
+    expect(denyReason(cmd)).toBe(REASON)
+  },
+)
+
 // claude-factory-fmeu: a brace group is a shell-prefix word. The command inside it still runs.
 const DENY_BRACE_GROUP_REASON = [
   '{ rm -rf /; }',
