@@ -7086,6 +7086,35 @@ function varOpName(w: string): string | undefined {
   return m ? (m[1] ?? m[2]) : undefined
 }
 
+// claude-factory-piqf: a head word that glues text to the expansion of a set name runs the split
+// value (X=' -rf /'; rm${X}). The guard does not read that value, so it denies. The one exception
+// is a head path such as ${HOME%/}/bin/tool: a literal "/" follows the last expansion, so the word
+// stays one path. Then every set name must hold a plain value with no space and no IFS, and may
+// have only its one write and the op-form reads in this word.
+function gluedHeadReason(head: string, vars: VarTable, mentions: (name: string) => number): boolean {
+  const names = [...head.matchAll(/\$\{?[=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)].map(m => m[1]!)
+  if (!names.length) return false
+  const opsOf = (n: string): string[] =>
+    [...head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))].map(m => m[1]!)
+  const zsOf = (n: string): number =>
+    [...head.matchAll(new RegExp(`\\$\\{?[=~^]+(?:\\([^)]*\\))?${n}\\b`, 'g'))].length
+  const setNames = names.filter(n => mentions(n) > opsOf(n).length + zsOf(n))
+  if (!setNames.length) return false
+  if (vars.has('IFS')) return true
+  let end = -1
+  for (const m of head.matchAll(/\$\{[^}]*\}|\$[=~^]*[A-Za-z_]\w*/g)) end = m.index! + m[0].length
+  if (head[end] !== '/') return true
+  for (const n of setNames) {
+    const value = vars.get(n)
+    if (typeof value !== 'string' || IMPLICIT_VARS.has(n) || /\s/.test(value) || VAR_UNREADABLE.test(value))
+      return true
+    const ops = opsOf(n)
+    if (ops.some(o => /[\s$\`'"\\*?[]/.test(o))) return true
+    if (mentions(n) > 1 + ops.length) return true
+  }
+  return false
+}
+
 // claude-factory-miqy.12: count the raw-text mentions of NAME that are not a pure read (the plain and braced forms).
 // A write form the table does not know still shows as a mention, so the head check fails closed.
 const MENTION_COUNTERS = new WeakMap<VarTable, (name: string) => number>()
@@ -7654,6 +7683,9 @@ function denyAtScan(
       if (headName) {
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
+      } else if (gluedHeadReason(cmd[0]!, vars, mentions)) {
+        // A later real command reason wins over this broad one.
+        late.reason ??= DYNAMIC_VERB_REASON
       } else {
         // The head may name a set variable. ${!Y} names another one, so any set name denies.
         const opName = varOpName(cmd[0]!)
