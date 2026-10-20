@@ -4430,6 +4430,8 @@ const ALIAS_SAFE_COMMANDS = new Set([
   'diff',
   'kubectl',
   'docker',
+  'ssh',
+  'fish',
 ])
 
 // claude-factory-mn2y: a command word with a slash and no expansion is an external program.
