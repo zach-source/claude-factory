@@ -1887,6 +1887,14 @@ function dynamicHeadDeny(
   }
   // claude-factory-0xw4: the head can expand to env, sudo or command with value flags (-u root),
   // so a later dynamic word can be rm. Deny-only; never sets rm.
+  // claude-factory-hevt: segments() cuts a word at a substitution, so a later word that ends in $,
+  // holds a backtick, or is ( after < cannot be read: the real target sits in the next segment. Deny.
+  for (let k = start + 1; k < cmd.length; k++) {
+    const t = cmd[k]!
+    if (start > 0 && (t === ';' || t === '+')) break
+    if (t.endsWith('$') || t.includes('`') || (t === '(' && cmd[k - 1] === '<'))
+      return { deny: true, rm: false }
+  }
   let later = 0
   for (let k = start + 1; k < cmd.length; k++) {
     const t = cmd[k]!
@@ -1920,6 +1928,7 @@ function dynamicHeadDeny(
   if (riskyFrom(start + 1)) return { deny: true, rm: false }
   return { deny: false, rm: true }
 }
+export { dynamicHeadDeny as dynamicHeadDenyForTest }
 
 /**
  * claude-factory-21ux: true when an rm or find-exec-rm rule denies the command that starts at `cmd[0]`.
