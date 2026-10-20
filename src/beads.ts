@@ -72,7 +72,8 @@ export const goalOf = (b: Bead) =>
     .join('\n\n')
 
 /** a bead handed to ship keeps its PR: a rework run pushes to that branch and opens no new PR */
-export const shipBranchOf = (b: Bead) => (b.metadata?.ship_branch ? String(b.metadata.ship_branch) : undefined)
+export const shipBranchOf = (b: Bead) =>
+  b.metadata?.ship_branch ? String(b.metadata.ship_branch) : undefined
 const shipRework = (b: Bead) => {
   const branch = shipBranchOf(b)
   return (
@@ -191,10 +192,7 @@ export function backlogOf(
   const notShipped = (x: Bead) => !x.labels?.includes(SHIP)
   return {
     queued: inQueue.map(slim),
-    unqueued: [
-      ...unqueued,
-      ...waiting.filter(x => !queuedIds.has(x.id) && !x.labels?.includes(LABEL)),
-    ]
+    unqueued: [...unqueued, ...waiting.filter(x => !queuedIds.has(x.id) && !x.labels?.includes(LABEL))]
       .filter(notShipped)
       .map(slim),
   }

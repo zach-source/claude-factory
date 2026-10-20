@@ -72,7 +72,7 @@ test('gates stay: deploy never merges, waits on the PR and parks on owner-only s
   expect(ship.rules).toContain("a worker's own comment never counts as approval")
   for (const [id, node] of Object.entries(ship.nodes)) {
     expect(node.prompt, id).not.toMatch(/gh pr merge|--admin|git push --force|--force-with-lease/)
-    expect(node.gate, id).toBeUndefined()
+    expect((node as { gate?: unknown }).gate, id).toBeUndefined()
   }
 })
 

@@ -315,7 +315,9 @@ test('a queued PR belongs to the ship queue: its branch or its link names the be
   expect(queuedOwner({ url: 'https://x/9', headRefName: 'factory/run-1' }, queue)?.id).toBe('b-1')
   expect(queuedOwner({ url: pull, headRefName: 'other' }, queue)?.id).toBe('b-1')
   expect(queuedOwner({ url: 'https://x/9', headRefName: 'other' }, queue)).toBeUndefined()
-  expect(queuedOwner({ url: '', headRefName: 'other' }, [{ id: 'b-2', title: 't', metadata: { ship_pr: '' } }])).toBeUndefined()
+  expect(
+    queuedOwner({ url: '', headRefName: 'other' }, [{ id: 'b-2', title: 't', metadata: { ship_pr: '' } }]),
+  ).toBeUndefined()
 })
 
 // the wake rules of claude-factory-960, now decided by watchDecide (src/watch.ts, claude-factory-5wav)

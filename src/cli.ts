@@ -85,7 +85,7 @@ import {
 } from './sweeps'
 import * as gatebrief from './gatebrief'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
-import { tokens, waiting } from './sidebar'
+import { shipLines, tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
@@ -865,7 +865,9 @@ export function ownCopy(template: string, name: string) {
 export function reworkBase(repo: string, branch: string) {
   Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', branch], { timeout: 30_000 })
   const ref = `origin/${branch}`
-  return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0 ? ref : undefined
+  return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
+    ? ref
+    : undefined
 }
 
 /**
@@ -5301,7 +5303,16 @@ async function dispatch() {
         }
         let run, def
         try {
-          ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id, undefined, undefined, shipBranchOf(bead)))
+          ;({ run, def } = await createTracked(
+            spec,
+            name,
+            rig.repo,
+            goalOf(bead),
+            bead.id,
+            undefined,
+            undefined,
+            shipBranchOf(bead),
+          ))
         } catch (err) {
           if (/already claimed/.test((err as Error).message)) {
             skips.set(bead.id, 'claimed elsewhere')
@@ -5824,7 +5835,9 @@ async function labelPass() {
           }
     try {
       const labeled = forge.list()
-      const shipped = labeled.some(pr => labelAction(pr) === 'rework') ? beads(rig.repo, 'factory').shipQueue() : []
+      const shipped = labeled.some(pr => labelAction(pr) === 'rework')
+        ? beads(rig.repo, 'factory').shipQueue()
+        : []
       for (const pr of labeled) {
         const action = labelAction(pr)
         const queuedBead = action === 'rework' ? queuedOwner(pr, shipped) : undefined
@@ -6771,6 +6784,28 @@ async function status(id: string | undefined) {
     for (const e of id ? c.log : c.log.slice(-1))
       console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${e.summary.replace(/\s+/g, ' ').slice(0, 160)}`)
   }
+  if (!id) {
+    const ships = liveShipRuns()
+    for (const [rig, queue] of Object.entries(shipQueues())) {
+      const repo = rigs().find(r => r.name === rig)!.repo
+      const live = ships.find(s => s.run.repo === repo)
+      const lines = shipLines(queue, live && { id: live.run.id, node: live.node })
+      if (lines.length) console.log(`rig ${rig}\n${lines.join('\n')}`)
+    }
+  }
+}
+
+/** each rig's ship queue, the next PR first; a rig whose bd cannot be read is left out */
+function shipQueues() {
+  const out: Record<string, Bead[]> = {}
+  for (const rig of rigs()) {
+    try {
+      if (hasBeads(rig.repo)) out[rig.name] = beads(rig.repo, 'factory').shipQueue()
+    } catch (err) {
+      console.error(`ship queue for ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+  return out
 }
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
@@ -7433,7 +7468,7 @@ if (import.meta.main && !outboxCmd)
             return row(run, def, value, c, agentOf(def, value, c))
           }),
         )
-        console.log(waiting(rows, Date.now()))
+        console.log(waiting(rows, Date.now(), shipQueues()))
         break
       }
       case 'report': {
