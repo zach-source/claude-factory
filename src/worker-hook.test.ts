@@ -2706,6 +2706,55 @@ test.each([
   expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
 })
 
+// claude-factory-g4l4: a redirect word between rm and its -r flag must not hide the recursive rm.
+const G4L4_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
+test.each([
+  'rm 2>o -r src',
+  'rm >o -r src',
+  'rm 2>&1 -r src',
+  'rm <o -r src',
+  'rm -f 2>o -r src',
+  'sudo -u rm rm 2>o -r src',
+  'rm &>o -r src',
+  'rm 2> o -r src',
+  'rm {x}>o -r src',
+  'rm >|o -r src',
+  'rm <<<x -r src',
+  'rm 2>o 2> p -r src',
+  'rm 2> -r src',
+  'rm 2>o -R src',
+  'rm 2>o --recursive src',
+  'rm 2>o -fr src',
+  'nice rm 2>o -r src',
+  'time -l rm 2>o -r src',
+  'find . -exec rm 2>o -r {} \\;',
+  'rm 2> -- -r src',
+  'rm > -- -r src',
+  'rm &> -- -rf src',
+  'rm << -- -r src',
+  'nice rm 2> -- -r src',
+  'find . -exec rm 2> -- -r {} \\;',
+])('denyReason denies %j (claude-factory-g4l4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, G4L4_GATE)).toBe(REASON)
+})
+
+test.each([
+  'rm 2>o a.txt',
+  'ls 2>o -R',
+  'rm 2>o -f a.txt',
+  'rm 2>o -- -r',
+  'find . -exec rm 2>o {} \\;',
+  'rm a.txt 2>o',
+  'rm 2> -- a.txt',
+])('denyReason allows %j (claude-factory-g4l4)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, G4L4_GATE)).toBeUndefined()
+})
+
 // claude-factory-59pp.13: segments() strips quotes, so a quoted word like a redirect must not hide the verb.
 test("denyReason denies gh --repo '>x' pr merge 1 (claude-factory-59pp.13)", () => {
   expect(denyReason("gh --repo '>x' pr merge 1", '/root/repo', undefined, AMP_LIVE_GATE)).toBe(MERGE_REASON)
