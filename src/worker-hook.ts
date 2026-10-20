@@ -2173,7 +2173,9 @@ const MAX_COMMAND_ANCHORS = 16
 
 // claude-factory-tswp.9: a runner word at `at` makes each later word a possible command.
 function runnerAnchors(words: string[], at: number, anchors: number[]): number[] {
-  for (let k = at; k < words.length && anchors.length < MAX_COMMAND_ANCHORS; k++) anchors.push(k)
+  let k = at
+  for (; k < words.length && anchors.length < MAX_COMMAND_ANCHORS; k++) anchors.push(k)
+  if (k < words.length) scanForFirstDynamicPair(words, k, anchors)
   return anchors
 }
 

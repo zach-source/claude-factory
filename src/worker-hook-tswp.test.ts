@@ -127,6 +127,18 @@ const DENY = [
   'sudo doas {git,push} origin main',
 ]
 
+const rep = (n: number, w: string) => Array(n).fill(w).join(' ')
+DENY.push(
+  `${rep(9, 'stdbuf -o0')} {rm,} -rf /`,
+  `${rep(9, 'stdbuf -o0')} $X $Y`,
+  `${rep(9, 'stdbuf -o0')} {sh,-c} 'rm -rf /'`,
+  `${rep(9, 'stdbuf -o0')} {git,push} origin main`,
+  `${rep(9, 'taskset 1')} {r,}m -rf /`,
+  `${rep(17, 'doas')} {rm,} -rf /`,
+  `nice ${rep(17, 'doas')} {rm,} -rf /`,
+  `stdbuf -o0 ${rep(5, '-o0 -e0 -i0')} {rm,} -rf /`,
+)
+
 test.each(DENY)('denyReason denies %j (claude-factory-tswp)', cmd => {
   expect(run(cmd)).toBeString()
 })
@@ -147,6 +159,7 @@ const ALLOW = [
   'doas ls',
   'setsid ls',
   'nohup bun test',
+  `${rep(9, 'stdbuf -o0')} ls`,
 ]
 
 test.each(ALLOW)('denyReason allows %j (claude-factory-tswp)', cmd => {
