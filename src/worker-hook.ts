@@ -7394,10 +7394,12 @@ function recordVarWrites(words: string[], vars: VarTable): void {
 }
 
 // claude-factory-miqy.8: an operator or zsh form also runs the split value of its name.
-const VAR_OP_REF = /^\$(?:=([A-Za-z_]\w*)|\{[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)[\s\S]*\})$/
+// claude-factory-bc1u: also the brace-less flag run ($~X, $=~X) and the glued subscript ($X[1,2]).
+const VAR_OP_REF =
+  /^\$(?:[=~^]+([A-Za-z_]\w*)(?:[[:][\s\S]*)?|\{[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)[\s\S]*\}|([A-Za-z_]\w*)\[[\s\S]*)$/
 function varOpName(w: string): string | undefined {
   const m = VAR_OP_REF.exec(w)
-  return m ? (m[1] ?? m[2]) : undefined
+  return m ? (m[1] ?? m[2] ?? m[3]) : undefined
 }
 
 // claude-factory-piqf: a head word that glues text to the expansion of a set name runs the split
