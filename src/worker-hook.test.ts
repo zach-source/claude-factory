@@ -7475,10 +7475,14 @@ const ALIAS_DEFINE_DENY = [
   "typeset aliases[g]='git push origin main'; eval g",
   "galiases[M]=main; eval 'git push origin M'",
   "BASH_ALIASES[g]='git push origin main'; eval g",
-  ": ${aliases[g]::=git push origin main}; eval g",
+  ': ${aliases[g]::=git push origin main}; eval g',
   "A=alias; $A g='git push origin main'; eval g",
   "A=al; ${A}ias g='git push origin main'; eval g",
   "A=alias; builtin $A g='git push origin main'; eval g",
+  'cat $aliases; eval g',
+  'ls ${galiases[M]}; eval g',
+  'aliases=x cat y; eval g',
+  "alias ll='ls > out'",
 ]
 const ALIAS_DEFINE_ALLOW = [
   "alias ll='ls -l'",
@@ -7495,17 +7499,20 @@ const ALIAS_DEFINE_ALLOW = [
   'git log --grep=alias',
 ]
 
-test.each(ALIAS_DEFINE_DENY)('denyReason denies a command that defines an alias and runs more: %s (claude-factory-mn2y)', cmd => {
-  expect(denyReason(cmd, '/w', undefined, snapGate())).toBeDefined()
-  expect(
-    denyReason(
-      cmd,
-      '/w',
-      undefined,
-      snapGate(() => new Map()),
-    ),
-  ).toBeDefined()
-})
+test.each(ALIAS_DEFINE_DENY)(
+  'denyReason denies a command that defines an alias and runs more: %s (claude-factory-mn2y)',
+  cmd => {
+    expect(denyReason(cmd, '/w', undefined, snapGate())).toBeDefined()
+    expect(
+      denyReason(
+        cmd,
+        '/w',
+        undefined,
+        snapGate(() => new Map()),
+      ),
+    ).toBeDefined()
+  },
+)
 
 test.each(["alias g='echo acme'; eval g", "alias ll='ls -l'; ll"])(
   'denyReason gives the alias-define reason: %s (claude-factory-mn2y)',
