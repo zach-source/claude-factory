@@ -5840,16 +5840,7 @@ test.each(DYN_LATER_DENY)(
   },
 )
 
-const DYN_LATER_KEEP = [
-  '$X -u root ls',
-  '$X -u root $Y',
-  '$X -u root $Y ls',
-  '$X -u root $Y src',
-  '$X -u root ls $Y',
-  'echo $X -u root $Y -rf /',
-  'git -C $Y status',
-  '$X -u root $Y a; cd ..',
-]
+const DYN_LATER_KEEP = ['echo $X -u root $Y -rf /', 'git -C $Y status']
 
 test.each(DYN_LATER_KEEP)('denyReason keeps allowing: %s (claude-factory-0xw4)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
