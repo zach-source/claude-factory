@@ -10186,6 +10186,32 @@ test.each([
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
 })
 
+// claude-factory-wpka: a nested brace in a find brace word hides the rm recursive flag.
+const DENY_WPKA = [
+  "find . {-exec,rm,{--,x}r} ../o ';'",
+  "find . {-exec,rm,{--,x}rec} ../o ';'",
+  "find . {-exec,rm,{--,x}recursive} ../o ';'",
+  "find . {-exec,rm,--{r,x}} ../o ';'",
+  "find . {-exec,rm,--{recursive,x}} ../o ';'",
+  "find . {-exec,rm,{-,x}r} ../o ';'",
+  "find . {-exec,rm,-{r,x}} ../o ';'",
+  "find . -exec {rm,{--,x}r} ../o ';'",
+  "find . {-exec,rm,-r,{}} ';'",
+]
+test.each(DENY_WPKA)('denyReason denies %j (claude-factory-wpka)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+const ALLOW_WPKA = [
+  "find . {-exec,rm,-f} ../o ';'",
+  'find . -name {a,{b,c}} -print',
+  'find . -name {form,{x,y}} -exec grep -r foo {} +',
+  "find . {-exec,rm} -f x ';'",
+]
+test.each(ALLOW_WPKA)('denyReason allows %j (claude-factory-wpka)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
 test('denyReason reads 3000 brace words after find in one pass (claude-factory-gj9l)', () => {
   expect(scanReason('find . ' + '-{rm,x} '.repeat(3000), '/Users/acme/widget')).toBe(REASON)
   expect(scanReason('find . ' + '{-exec,rm} '.repeat(3000) + '-rf /', '/Users/acme/widget')).toBe(REASON)
