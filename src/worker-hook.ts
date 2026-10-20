@@ -8135,7 +8135,7 @@ function denyAtScan(
         for (const h of [w, words[s] ?? '']) {
           const hb = baseWord(h)
           if (hb === 'rm') hasRm = true
-          else if (hb === 'cd') hasCd = true
+          else if (DIR_CHANGE_WORDS.has(hb)) hasCd = true
         }
       }
     }
@@ -8147,7 +8147,7 @@ function denyAtScan(
       const inner = wrapperReadingsDeny(body, root, otherSegs(segIdx))
       if (inner.deny) state.bodyDeny = true
       if (inner.rm) hasRm = true
-      if (baseWord(realCommand(body)[0] ?? '') === 'cd') hasCd = true
+      if (DIR_CHANGE_WORDS.has(baseWord(realCommand(body)[0] ?? ''))) hasCd = true
     }
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
@@ -8315,14 +8315,14 @@ function denyAtScan(
       if (b2 === 'rm') {
         if (isRecursiveRm(c2) || rmTargets(c2).some(t => riskyTarget(t, root))) return REASON
         hasRm = true
-      } else if (b2 === 'cd') {
+      } else if (DIR_CHANGE_WORDS.has(b2)) {
         hasCd = true
       }
     }
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
-    } else if (b === 'cd') {
+    } else if (DIR_CHANGE_WORDS.has(b)) {
       hasCd = true
     } else if (b === 'find') {
       // claude-factory-clcc: a glob char in the word after -exec, -execdir, -ok or -okdir can expand to rm.
@@ -8380,7 +8380,7 @@ function denyAtScan(
         if (rmFindDeny(real, root)) return REASON
         const base = baseWord(real[0] ?? '')
         if (base === 'rm') hasRm = true
-        else if (base === 'cd') hasCd = true
+        else if (DIR_CHANGE_WORDS.has(base)) hasCd = true
       }
     }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
@@ -8392,7 +8392,7 @@ function denyAtScan(
     if (splitWords) {
       const splitBase = baseWord(realCommand(splitWords)[0] ?? '')
       if (splitBase === 'rm') hasRm = true
-      else if (splitBase === 'cd') hasCd = true
+      else if (DIR_CHANGE_WORDS.has(splitBase)) hasCd = true
     }
     if (hasDirChangeWord(words) || (splitWords && hasDirChangeWord(splitWords))) movedSoFar = true
     // claude-factory-bemr: the same rule, for a GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME
