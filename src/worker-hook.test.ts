@@ -8620,3 +8620,44 @@ test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', 
   const cmd = '${' + '(L)'.repeat(2700) + 'x:-ls} acme.txt'
   expect(scanReason(cmd, '/Users/acme/widget')).toBeUndefined()
 }, 30_000)
+
+// claude-factory-gj9l: a brace word in a find command can hold the -exec action and the rm word.
+const DENY_GJ9L = [
+  "find . {-exec,rm} -rf / ';'",
+  "find . {-exec,rm,-rf} / ';'",
+  "find . {-print,-exec} rm -rf / ';'",
+  "find . -exec {rm,-rf} / ';'",
+  "find . -exec {/bin/rm,-rf} / ';'",
+  "find . -exec r{m,} -rf / ';'",
+  "find . -exe{c..c} rm -rf / ';'",
+  "find . {-exec,/bin/rm} -rf / ';'",
+  "find . {-execdir,rm} -r x ';'",
+  "find {.,-exec,rm,-rf,/,';'}",
+  'find . -name x {-exec,rm} -rf {} +',
+  "time -l find . {-exec,rm} -rf x ';'",
+  "a=1 find . {-exec,rm} -rf x ';'",
+  "find . {-exec,rm} -r{,f} x ';'",
+  "find . {-exec,rm} --recursive x ';'",
+]
+test.each(DENY_GJ9L)('denyReason denies %j (claude-factory-gj9l)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+const ALLOW_GJ9L = [
+  'find . -name x -exec rm -f {} +',
+  'find . -exec ls {} +',
+  'find . -name {a,b} -print',
+  "find . -name '{a,b}' -exec rm -f {} +",
+  "find . {-exec,rm} -f x ';'",
+  'find . -name {form,x} -exec grep -r foo {} +',
+  "find . -exec echo {a,b} ';'",
+  'find src/{a,b} -name x',
+]
+test.each(ALLOW_GJ9L)('denyReason allows %j (claude-factory-gj9l)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
+test('denyReason reads 3000 brace words after find in one pass (claude-factory-gj9l)', () => {
+  expect(denyReason('find . ' + '-{rm,x} '.repeat(3000), '/Users/acme/widget')).toBeUndefined()
+  expect(denyReason('find . ' + '{-exec,rm} '.repeat(3000) + '-rf /', '/Users/acme/widget')).toBe(REASON)
+}, 30_000)
