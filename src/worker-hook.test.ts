@@ -9140,6 +9140,15 @@ test.each([
 })
 
 // claude-factory-bc1u: a brace-less zsh flag run or a glued subscript is an operator head of a set name.
+const BC1U_FLAG_SUB: string[] = [
+  'X=bd; $X[(w)1] init',
+  'X="git push origin main"; $=X[(w)1,-1]',
+  'X=bd; $~X[(w)1] init',
+]
+test.each(BC1U_FLAG_SUB)('denyReason denies %j (claude-factory-bc1u.3)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+
 const BC1U_DENY: string[] = [
   'X="git push origin main"; $=~X',
   'X="git push origin main"; $~=X',
@@ -9178,6 +9187,8 @@ test.each([
   'eval $~X',
   '$^foo a.txt',
   '$X[1] a.txt',
+  '$X[(w)1] a.txt',
+  'echo $X[(w)1]',
   'echo $~X',
   'X=rm; echo $~X',
   'X=(a b); echo $X[1]',
