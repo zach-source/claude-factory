@@ -2941,12 +2941,15 @@ function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanS
   // claude-factory-ebmm.23: collapse /<part>/.. (a glob part too) and a leading /.., as the shell does.
   // A brace part can be empty, so it is not collapsed. A `..` left in a word that starts with /, ~ or $
   // (a home prefix, or a brace part before it) can name the home's parent or a sibling: fail closed.
+  const rooted = /^[/~$]/.test(w) || (w[0] === '{' && /[{,][/~$]/.test(w))
+  if (rooted && w.split('/').slice(0, -1).some(p => /[{}[\]?*,]/.test(p) && p.includes('.') && /^[.{},[]/.test(p)))
+    return true
   if (w.includes('..')) {
     for (let prev = ''; prev !== w;) {
       prev = w
-      w = w.replace(/\/(?!\.\.?(?:\/|$))[^/{]+\/\.\.(?=\/|$)/, '').replace(/^\/(?:\.\.(?:\/|$))+/, '/')
+      w = w.replace(/\/(?!\.\.?(?:\/|$))[^/{},]+\/\.\.(?=\/|$)/, '').replace(/^\/(?:\.\.(?:\/|$))+/, '/')
     }
-    if (/^[/~$]/.test(w) && /(?:^|\/)\.\.(?:\/|$)/.test(w)) return true
+    if (rooted && /(?:^|\/)\.\.(?:\/|$)/.test(w)) return true
   }
   const toks = tokenizeGlob(w)
   // claude-factory-ty8y.24, 267o: star runs collapse, and more than MAX_GLOB_STARS fails closed.
