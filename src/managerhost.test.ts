@@ -27,17 +27,9 @@ test('AC7: a backup step logs its result, never throws, and skips while the tick
   const cfg = { ws: '/w', remote: 'r', branch: 'b' }
   expect(() => backupStep(cfg, true, free, log, boom)).not.toThrow()
   expect(lines.at(-1)).toBe('backup failed: disk full')
-  let released = 0
-  backupStep(
-    cfg,
-    true,
-    () => () => void released++,
-    log,
-    () => ({ sha: 'abc', changed: true }),
-  )
-  expect(released).toBe(1)
+  backupStep(cfg, true, free, log, () => ({ sha: 'abc', changed: true }))
   expect(lines.at(-1)).toBe('backup abc')
-  backupStep(cfg, true, () => null, log, boom)
+  backupStep(cfg, true, free, log, () => ({ skipped: 'lock' }))
   expect(lines.at(-1)).toBe('backup skipped: a tick holds the lock')
   backupStep(cfg, false, free, log, () => ({ error: 'backup refused: home is not ready' }))
   expect(lines.at(-1)).toBe('backup refused: home is not ready')
@@ -50,17 +42,18 @@ test('AC1/AC6: the restore step logs what it did and never throws', () => {
   const lines: string[] = []
   const log = (m: string) => lines.push(m)
   const cfg = { ws: '/w', remote: 'r', branch: 'b' }
-  restoreStep({ ...cfg, remote: undefined }, log, () => ({ skipped: 'no remote' }))
+  expect(restoreStep({ ...cfg, remote: undefined }, log, () => ({ skipped: 'no remote' }))).toBe(false)
   expect(lines).toEqual([])
-  restoreStep(cfg, log, () => ({ restored: 'abc' }))
+  expect(restoreStep(cfg, log, () => ({ restored: 'abc' }))).toBe(false)
   expect(lines.at(-1)).toBe('restored abc')
-  restoreStep(cfg, log, () => ({ skipped: 'no backup' }))
+  expect(restoreStep(cfg, log, () => ({ skipped: 'no backup' }))).toBe(false)
   expect(lines.at(-1)).toContain('no backup')
-  restoreStep(cfg, log, () => ({ error: 'x' }))
+  expect(restoreStep(cfg, log, () => ({ error: 'x' }))).toBe(true)
   expect(lines.at(-1)).toBe('restore failed: x')
-  restoreStep(cfg, log, () => {
+  const r = restoreStep(cfg, log, () => {
     throw new Error('y')
   })
+  expect(r).toBe(true)
   expect(lines.at(-1)).toBe('restore failed: y')
 })
 

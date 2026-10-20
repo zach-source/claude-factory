@@ -317,12 +317,13 @@ Owner steps (the factory does not do them):
 
 How it works:
 
-- The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It holds `tick.lock` during the snapshot. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
+- The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It holds `tick.lock` during the snapshot and frees it before the push. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
 - The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log` and `worktrees/`.
 - A file that holds a token shape (GitHub, Anthropic, AWS, Slack, a private key, an Authorization header) stops the backup. `home/backup.json` names the file, not the text.
 - The host does not back up while the home is not ready. An empty home never replaces a good backup.
-- When the host starts with an empty home (no `rigs.json`, `runs/` or `.migrated`), it fetches the branch and writes `.migrated`. The manager then starts and resumes the last session. A used home is never changed. If there is no remote or no branch, the host waits for `factory migrate-to-ax` as before.
-- Look at `home/backup.json` (`at`, `sha`, `error`), `manager-host.log` and `factory status` in the task (the backup age).
+- When the host starts with an empty home (no `rigs.json`, `runs/` or `.migrated`), it fetches the branch and writes `.migrated`. The manager then starts and resumes the last session. A used home is never changed. If the fetch fails (network or auth), the host tries again each cycle. If there is no remote or no branch, the host waits for `factory migrate-to-ax` as before.
+- `home/memory` is a git repo. The snapshot keeps its history in `home/memory.bundle`, and restore clones it. Memory files that are not committed are not saved.
+- Look at `home/backup.json` (`at`, `sha`, `error`), `manager-host.log` and `factory status` in the task (the backup age and the last error).
 
 To test (owner only, it changes the live system): run `ax delete task f-manager`. Then run `factory manager --ax` with the new image. The manager must come back with the same runs, memory and session, with no migration from the laptop.
 

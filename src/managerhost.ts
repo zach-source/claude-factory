@@ -50,43 +50,42 @@ export function lastSession(json: string): string | undefined {
 export const homeReady = (f: { migrated: boolean; fresh: boolean; hasRigs: boolean; archive: boolean }) =>
   f.migrated || f.fresh || (f.hasRigs && !f.archive)
 
-/** restore an empty home from the backup branch (192.9); logs what it did and never throws */
+/** restore an empty home from the backup branch (192.9); logs what it did and never throws. True when a retry can help */
 export function restoreStep(
   cfg: BackupCfg,
   log: (m: string) => void,
   run: (c: BackupCfg) => Outcome = restore,
 ) {
-  if (!cfg.remote) return
+  if (!cfg.remote) return false
   try {
     const o = run(cfg)
     if (o.restored) log(`restored ${o.restored}`)
     else if (o.error) log(`restore failed: ${o.error}`)
     else
       log(`restore: ${o.skipped}${o.skipped === 'no backup' ? '; waiting for `factory migrate-to-ax`' : ''}`)
+    return !!o.error
   } catch (e) {
     log(`restore failed: ${(e as Error).message}`)
+    return true
   }
 }
 
-/** one backup under the tick lock (a tick writes state files); a failure is logged and the host loop goes on */
+/** one backup; backup() takes the tick lock for the snapshot only. A failure is logged and the host loop goes on */
 export function backupStep(
   cfg: BackupCfg,
   ready: boolean,
   lock: () => (() => void) | null,
   log: (m: string) => void,
-  run: (c: BackupCfg, ready: boolean) => Outcome = backup,
+  run: (c: BackupCfg, ready: boolean, lock: () => (() => void) | null) => Outcome = backup,
 ) {
   if (!cfg.remote) return
-  const release = lock()
-  if (!release) return log('backup skipped: a tick holds the lock')
   try {
-    const o = run(cfg, ready)
-    if (o.error) log(o.error.startsWith('backup refused') ? o.error : `backup failed: ${o.error}`)
+    const o = run(cfg, ready, lock)
+    if (o.skipped === 'lock') log('backup skipped: a tick holds the lock')
+    else if (o.error) log(o.error.startsWith('backup refused') ? o.error : `backup failed: ${o.error}`)
     else if (o.changed) log(`backup ${o.sha}`)
   } catch (e) {
     log(`backup failed: ${(e as Error).message}`)
-  } finally {
-    release()
   }
 }
 
@@ -178,10 +177,13 @@ export async function host(
   if (process.env.FACTORY_AX_BACKUP_REMOTE && !bcfg.remote)
     log('backup off: FACTORY_HOME is not <workspace>/home')
   const backupMs = Number(process.env.FACTORY_AX_BACKUP_EVERY) || 600_000
-  restoreStep(bcfg, log)
+  let retry = restoreStep(bcfg, log)
   if (!ready()) log('waiting for `factory migrate-to-ax` (or FACTORY_AX_FRESH=1) before the manager starts')
-  // ponytail: no timeout: an empty home waits until the laptop migrates it
-  while (!ready()) await Bun.sleep(everyMs)
+  // ponytail: no timeout: an empty home waits until the laptop migrates it. A restore that failed is tried again
+  while (!ready()) {
+    await Bun.sleep(everyMs)
+    if (retry && !ready()) retry = restoreStep(bcfg, log)
+  }
   // the rig repos and their beads stores, before the manager reads them; a failure is logged, and the manager still starts
   for (const problem of prepare?.() ?? []) log(`repos sync: ${problem}`)
   await bringUp(args, home, log, session())

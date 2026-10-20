@@ -105,7 +105,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
-import { backupAge } from './homebackup'
+import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
@@ -6631,8 +6631,10 @@ async function status(id: string | undefined) {
     )
   if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
     const age = backupAge(HOME, Date.now())
+    const err = backupError(HOME)
     console.log(
-      age === undefined ? 'home backup: none yet' : `home backup: ${Math.round(age / 60_000)} min ago`,
+      (age === undefined ? 'home backup: none yet' : `home backup: ${Math.round(age / 60_000)} min ago`) +
+        (err ? `; last run failed: ${err}` : ''),
     )
   }
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')

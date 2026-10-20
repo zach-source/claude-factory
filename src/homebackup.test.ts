@@ -167,7 +167,8 @@ test('AC4: an unready home never pushes, and a rejected push never forces', () =
   expect(sh('--git-dir', r, 'rev-parse', 'manager-home')).toBe(good)
   // someone else moved the branch: a second workspace with the same remote has diverged history
   const other = workspace()
-  expect(backup(cfg(other, r), true).error).toBeDefined()
+  expect(backup(cfg(other, remote()), true).error).toBeUndefined() // local history, not the remote's
+  expect(backup(cfg(other, r), true).error).toContain('git push')
   expect(sh('--git-dir', r, 'rev-parse', 'manager-home')).toBe(good)
 })
 
@@ -192,6 +193,84 @@ test('AC6: no remote and no branch fall back without an error', () => {
   const out = restore(cfg(ws, remote()))
   expect(out.skipped).toBe('no backup')
   expect(existsSync(join(ws, 'home', '.migrated'))).toBe(false)
+})
+
+test('a memory repo with a commit is backed up as a bundle and restored as a repo', () => {
+  const r = remote()
+  const a = workspace()
+  const mem = join(a, 'home', 'memory')
+  sh('-C', mem, 'init', '-q')
+  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'add', '-A')
+  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-q', '-m', 'one')
+  const out = backup(cfg(a, r), true)
+  expect(out.error).toBeUndefined()
+  const files = sh('--git-dir', r, 'ls-tree', '-r', '--name-only', 'manager-home').split('\n')
+  expect(files).toContain('home/memory.bundle')
+  expect(files.some(f => f.startsWith('home/memory/'))).toBe(false)
+  // no change in the repo: the bundle is not written again, so no new commit
+  expect(backup(cfg(a, r), true).changed).toBe(false)
+  const b = empty()
+  expect(restore(cfg(b, r)).restored).toBe(out.sha)
+  expect(readFileSync(join(b, 'home', 'memory', 'a.md'), 'utf8')).toBe('note')
+  expect(sh('-C', join(b, 'home', 'memory'), 'log', '--format=%s')).toBe('one')
+})
+
+test('a secret in a memory repo file stops the backup', () => {
+  const r = remote()
+  const a = workspace()
+  const mem = join(a, 'home', 'memory')
+  sh('-C', mem, 'init', '-q')
+  put(join(mem, 'leak.md'), 'ghp_' + 'a'.repeat(36))
+  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'add', '-A')
+  sh('-C', mem, '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-q', '-m', 'one')
+  expect(backup(cfg(a, r), true).error).toContain('home/memory/leak.md')
+})
+
+test('a failing remote is an error in restore, an empty remote is "no backup"', () => {
+  const ws = empty()
+  const out = restore(cfg(ws, join(tmp(), 'missing.git')))
+  expect(out.error).toBeDefined()
+  expect(out.skipped).toBeUndefined()
+  expect(restore(cfg(ws, remote())).skipped).toBe('no backup')
+  // a remote that works after the failure restores
+  const r = remote()
+  expect(backup(cfg(workspace(), r), true).error).toBeUndefined()
+  expect(restore(cfg(ws, r)).restored).toBeDefined()
+})
+
+test('a first backup after a skipped restore goes on top of the remote branch', () => {
+  const r = remote()
+  const first = backup(cfg(workspace(), r), true)
+  const b = workspace() // migrated by hand: no local history, the remote has a branch
+  put(join(b, 'home', 'memory', 'new.md'), 'n')
+  const out = backup(cfg(b, r), true)
+  expect(out.error).toBeUndefined()
+  expect(sh('--git-dir', r, 'rev-parse', 'manager-home')).toBe(out.sha!)
+  expect(sh('--git-dir', r, 'merge-base', '--is-ancestor', first.sha!, out.sha!)).toBe('')
+})
+
+test('the lock is free during the push, and a held lock skips the backup', () => {
+  const r = remote()
+  const ws = workspace()
+  expect(backup(cfg(ws, r), true, () => null).skipped).toBe('lock')
+  let pushedAtRelease: boolean | undefined
+  const out = backup(cfg(ws, r), true, () => () => {
+    pushedAtRelease =
+      Bun.spawnSync(['git', '--git-dir', r, 'rev-parse', '--verify', 'manager-home']).exitCode === 0
+  })
+  expect(out.error).toBeUndefined()
+  expect(pushedAtRelease).toBe(false) // released before the push
+  expect(sh('--git-dir', r, 'rev-parse', 'manager-home')).toBe(out.sha!)
+})
+
+test('the file and byte counts come from the tree', () => {
+  const r = remote()
+  const ws = workspace()
+  const out = backup(cfg(ws, r), true)
+  expect(out.error).toBeUndefined()
+  const j = JSON.parse(readFileSync(join(ws, 'home', 'backup.json'), 'utf8'))
+  expect(j.files).toBeGreaterThan(0)
+  expect(j.bytes).toBeGreaterThan(0)
 })
 
 test('a backup with no change makes no commit; backup.json records the last run', () => {
