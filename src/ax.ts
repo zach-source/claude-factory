@@ -75,9 +75,11 @@ export function parseEgress(spec: string): Egress {
 
 export type Launch = {
   name: string
-  /** an https remote the VM clones, and the run's branch, already pushed */
-  repo: string
-  branch: string
+  /** an https remote the VM clones, and the run's branch, already pushed; a manager task has neither */
+  repo?: string
+  branch?: string
+  /** what the task runs; a worker's `factory worker serve [--model m]` when absent */
+  command?: string[]
   image: string
   /** the brief in the task's env; without it, the laptop sends brief.md once the task runs */
   brief?: string
@@ -109,17 +111,19 @@ export function manifest(l: Launch) {
     metadata,
     spec: {
       image: l.image,
-      command: ['factory', 'worker', 'serve', ...(l.model ? ['--model', l.model] : [])],
+      command: l.command ?? ['factory', 'worker', 'serve', ...(l.model ? ['--model', l.model] : [])],
       env: Object.entries({
         ...l.env,
-        FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
-        FACTORY_REPO: l.repo,
-        FACTORY_BRANCH: l.branch,
-        // AX v0.3.1's Workspace has no files: a short brief rides in the env
-        ...(l.brief !== undefined && { FACTORY_BRIEF: l.brief }),
-        FACTORY_HARNESS: l.harness ?? 'claude',
-        ...(l.provider && { FACTORY_PROVIDER: l.provider }),
-        ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+        ...(!l.command && {
+          FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
+          FACTORY_REPO: l.repo,
+          FACTORY_BRANCH: l.branch,
+          // AX v0.3.1's Workspace has no files: a short brief rides in the env
+          ...(l.brief !== undefined && { FACTORY_BRIEF: l.brief }),
+          FACTORY_HARNESS: l.harness ?? 'claude',
+          ...(l.provider && { FACTORY_PROVIDER: l.provider }),
+          ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+        }),
       }).map(([name, value]) => ({
         name,
         value,
@@ -197,10 +201,10 @@ export type Poll = {
   egress?: { since: number; tries: number; last: string }
 }
 
-function ax(args: string[], stdin?: string) {
+function ax(args: string[], stdin?: string, timeout = 30_000) {
   const p = Bun.spawnSync([AX(), ...context(), '-a', ATESPACE(), ...args], {
     stdin: stdin ? Buffer.from(stdin) : undefined,
-    timeout: 30_000, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
+    timeout, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
   })
   return {
     ok: p.exitCode === 0,
@@ -487,3 +491,144 @@ export function remove(task: string) {
   ax(['delete', 'task', task])
   ax(['delete', 'workspace', task])
 }
+
+/** the AX task the manager runs in; it is the one-manager lease (docs/remote-runner.md, Attach to the AX manager) */
+export const managerTask = () => process.env.FACTORY_AX_MANAGER ?? 'f-manager'
+const MANAGER_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? 'w1:p1'
+
+/** why this process must not run a manager or tick: the manager task lives, and this is not inside it */
+export function managerRefusal(phase: string | null, env: Record<string, string | undefined>, task: string) {
+  if (env.FACTORY_IN_AX === '1' || !['Running', 'Pending', 'Suspended'].includes(phase ?? ''))
+    return undefined
+  return `the factory manager runs in AX task ${task} (${phase}): attach with \`factory attach\`, steer with \`factory say <text>\``
+}
+
+/**
+ * ponytail: the task is the lease, one `ax get task` with a 5 s timeout. Only with a cluster configured
+ * (FACTORY_AX_CONTEXT), and an unreachable AX does not block: a laptop with no cluster must still work. The
+ * ceiling: AX down while the manager runs lets the laptop start a second one; a lease record would close it
+ */
+export function remoteManager(): string | undefined {
+  if (process.env.FACTORY_IN_AX === '1' || !process.env.FACTORY_AX_CONTEXT) return undefined
+  const task = managerTask()
+  const r = ax(['get', 'task', task], undefined, 5_000)
+  if (r.ok) return managerRefusal(phaseOf(r.out), process.env, task)
+  if (!/not ?found/i.test(r.err))
+    console.error(`warning: AX unreachable, manager lease not checked: ${r.err}`)
+  return undefined
+}
+
+/** the laptop's knobs the manager task needs to launch its own workers */
+const MANAGER_PASS = [
+  'FACTORY_MAX_RUNS',
+  'FACTORY_AX_FRESH',
+  'FACTORY_AX_IMAGE',
+  'FACTORY_AX_VAULT',
+  'FACTORY_AX_ATESPACE',
+]
+
+/** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
+export function managerEnv(env: Record<string, string | undefined> = process.env) {
+  return {
+    FACTORY_IN_AX: '1',
+    FACTORY_HOME: `${WS}/home`,
+    // its Claude sessions on the volume, so `--resume` finds them after a restart
+    CLAUDE_CONFIG_DIR: `${WS}/claude`,
+    ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
+  }
+}
+
+/**
+ * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
+ * and the AX server, which its ax runner talks to. ponytail: AX_SERVER only; a rig's hosts stay with the workers
+ */
+export function managerEgress(axServer = process.env.AX_SERVER): Egress[] {
+  const u = (() => {
+    try {
+      return axServer ? new URL(axServer) : null
+    } catch {
+      return null
+    }
+  })()
+  return [
+    { hosts: ['claude.ai'] },
+    ...(u?.hostname
+      ? [
+          {
+            hosts: [u.hostname],
+            ...(u.port ? { port: Number(u.port) } : u.protocol === 'http:' && { port: 80 }),
+          },
+        ]
+      : []),
+  ]
+}
+
+/**
+ * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
+ * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
+ */
+export async function launchManager(image: string, args: string[], { tries = 24, waitMs = 5000 } = {}) {
+  const name = managerTask()
+  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
+  for (let i = 0; i < tries; i++) {
+    if (createPolicy(name, managerEgress())) return { name, policy: true }
+    await Bun.sleep(waitMs)
+  }
+  return { name, policy: false }
+}
+
+/** a command in the manager's VM, as the worker user when the task drops to it (same rule as the worker's) */
+const managerCmd = (argv: string[]) => ['ssh', managerTask(), '--', ...asWorker(argv)]
+
+/** the manager pane's recent text; `ax ssh` has no TTY or stdin, so this is a snapshot, not herdr attach */
+export const attachRead = () => must(managerCmd(['herdr', 'pane', 'read', MANAGER_PANE(), '--lines', '60']))
+
+/**
+ * type `text` and Enter into the manager pane. The text travels base64 and the VM decodes it: ax parses -a, -n,
+ * --server and --context anywhere on its line, and base64 has no quote, so no shell string is built from the text
+ */
+export const say = (text: string) =>
+  must(
+    managerCmd([
+      'sh',
+      '-c',
+      `herdr pane send-text ${MANAGER_PANE()} "$(echo ${Buffer.from(text, 'utf8').toString('base64')} | base64 -d)" && herdr pane send-keys ${MANAGER_PANE()} Enter`,
+    ]),
+  )
+
+/** the manager task's factory home: `managerEnv` sets FACTORY_HOME to it */
+export const MANAGER_HOME = `${WS}/home`
+/** the manager's working dir in the task (the task command and its herdr panes start there) */
+export const MANAGER_CWD = WS
+/** the manager Claude's project dir in the task: CLAUDE_CONFIG_DIR, then the slug of MANAGER_CWD */
+export const MANAGER_PROJECT = `${WS}/claude/projects/${MANAGER_CWD.replace(/[^A-Za-z0-9]/g, '-')}`
+
+/**
+ * whether the manager's FACTORY_HOME already holds a factory (rigs.json, runs or the .migrated marker), so a
+ * migration refuses to write over it. A command in the VM, as the worker user
+ */
+export const managerHomeUsed = () =>
+  must(
+    managerCmd([
+      'sh',
+      '-c',
+      `cd ${MANAGER_HOME} 2>/dev/null && { [ -e rigs.json ] || [ -e runs ] || [ -e .migrated ]; } && echo used || echo empty`,
+    ]),
+  ).trim() === 'used'
+
+/**
+ * unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home, then
+ * write .migrated: `factory manager host` waits for that marker before it starts the manager
+ */
+export const unpackMigration = (name: string) =>
+  must(
+    managerCmd([
+      'sh',
+      '-c',
+      // the manager's Claude memory and transcripts (migrate.CLAUDE_STAGE) go to its project dir before the marker
+      `set -e; mkdir -p ${MANAGER_HOME}; tar -xzf ${OWN}/${name} -C ${MANAGER_HOME}; ` +
+        `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
+        `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
+        `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
+    ]),
+  )

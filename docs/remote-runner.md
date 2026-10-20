@@ -234,3 +234,80 @@ Only that rig's new workers become AX tasks, and only at stations without a `run
 Before a new AX launch or explicit `factory retry`, the laptop reads `ax-system/ax-controller` with `kubectl` in `FACTORY_AX_CONTEXT`. It must have ready and available replicas at its current observed generation. An unavailable controller, unreadable status, or failed observation holds the launch and refuses the retry before it resets the attempt budget. The query has a five-second request timeout and a six-second process timeout. The laptop identity needs permission to read this Deployment.
 
 Existing pending workers are retained while that check fails; their station deadlines do not produce another failed attempt during the outage. The manager receives the reason once per run and reason. Running-worker collection and cleanup continue. When readiness returns, normal station deadlines and retry policy apply; this does not extend an attempt's deadline.
+
+### Run the manager in AX
+
+`factory manager --ax [manager args...]` starts the manager as the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another name). Run it on the laptop. It applies one Workspace and one Task, then creates the task's egress policy.
+
+- Set `FACTORY_AX_MANAGER_IMAGE` to the manager image (`Dockerfile.worker`, target `manager`). The command stops with an error if it is not set.
+- The command stops if the task already runs. The task is the one-manager lease (see Attach to the AX manager).
+- The task has `spec.debug: true`, so `factory attach` and `factory say` can reach it.
+- The task runs `factory manager host <manager args>`. The task env has `FACTORY_IN_AX=1`, `FACTORY_HOME=/workspace/w/home` and `CLAUDE_CONFIG_DIR=/workspace/w/claude`. Both directories are on the workspace volume, which stays across a suspend.
+- The task env also holds the vault placeholders and `FACTORY_CA`, as a worker gets them. The laptop passes `FACTORY_MAX_RUNS`, `FACTORY_AX_IMAGE`, `FACTORY_AX_VAULT` and `FACTORY_AX_ATESPACE` to the task when they are set.
+- The egress policy has the worker defaults (Anthropic, GitHub, the Nix caches), `claude.ai`, and the host of `AX_SERVER` when it is set. The command tries to create the policy for 2 minutes, because the actor appears a short time after the apply.
+
+`factory manager host` runs inside the task. It stops unless `FACTORY_IN_AX=1`. It does these steps:
+
+1. It becomes the worker user, installs the gateway CA, and makes `FACTORY_HOME`.
+2. It starts herdr with no terminal attached. herdr needs a terminal, so `script` gives it one of 200 columns and 50 rows.
+3. It waits up to 60 seconds for `herdr pane list` to answer. Then it types `factory manager <args>` into the first pane (`w1:p1`).
+4. Every 30 seconds it checks herdr. If herdr is gone, it starts herdr and the manager again. It adds `--resume <session>` when `manager-sessions.json` in `FACTORY_HOME` names a session.
+
+Each restart is one line in `FACTORY_HOME/manager-host.log`.
+
+Limits:
+
+- The check runs every 30 seconds with no backoff. A herdr that dies again and again restarts every 30 seconds.
+- If the manager exits but herdr stays up, the host does nothing. `factory manager` restarts its own Claude.
+- The pane is always 200 columns wide.
+
+### Attach to the AX manager
+
+The manager runs in the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another name). That task is the lease. While it is Running, Pending or Suspended, `factory manager`, `factory tick` and `factory loop` on the laptop stop and print how to attach. Inside the task, `FACTORY_IN_AX=1` turns the check off. The check runs only when `FACTORY_AX_CONTEXT` is set. If AX does not answer, the laptop prints a warning and runs. A laptop with no cluster must keep working.
+
+- `factory attach` prints the manager pane once. `factory attach --follow` prints it again every 3 seconds. Press Ctrl-C to stop. The manager keeps running.
+- `factory say <text...>` types the text and Enter into the manager pane. The text travels as base64, because `ax` reads `-a`, `-n`, `--server` and `--context` anywhere on its command line.
+- `FACTORY_AX_MANAGER_PANE` sets the pane id (default `w1:p1`, the first pane of a fresh herdr session). Use the id that `herdr pane list` shows in the task.
+
+`ax ssh` has no stdin and no PTY. So `factory attach` shows a snapshot and does not give you a keyboard. A real `herdr attach` waits for stdin and a PTY in `ax ssh`.
+
+### Move the factory to AX
+
+This section moves a running laptop factory to the manager task. The task needs the rig repos, the beads stores and the factory home. Use this runbook.
+
+#### Repos and beads in the task
+
+`rigs.json` holds the laptop's repo paths. In the task, `FACTORY_IN_AX=1` maps each rig's repo to `${FACTORY_REPOS:-/workspace/w/repos}/<rig name>`. The laptop is not changed. Runs that the laptop made have laptop paths in `run.json`. The task maps those paths to the same clones.
+
+A rig can have a `remote` field: its https clone URL. `factory repos sync` clones every rig's `remote` that is missing, and fetches the others. It changes `git@` and `ssh://` GitHub URLs to https. The gateway puts the GitHub credential in. A rig with no `remote` and no clone is an error, and the command names the rig. `factory manager host` runs `factory repos sync` before it starts the manager. A failure goes into `manager-host.log` and does not stop the manager.
+
+`factory repos sync` also makes the beads store of each rig that has a `.beads`. It uses the same steps as the worker (see Beads in the VM). The store is in `FACTORY_HOME/beads/<rig name>`. bd uses it through `BEADS_DIR`, with `BEADS_DOLT_SHARED_SERVER=0`. The store comes from the rig's `beadsRemote`, or from the `refs/dolt` of the GitHub origin. The laptop-side `bd dolt push` and `bd dolt pull` in the task use that store.
+
+Limits:
+
+- With a `beadsRemote`, the task runs plain `bd dolt push` and `bd dolt pull`. The laptop uses SQL on its Dolt server, and the task has no Dolt server. The laptop's rule for a pull conflict (keep the worker's row, and comment the other on the issue) does not run in the task. A conflict stops the pull with bd's own error.
+- A store is made once. Later syncs pull; they do not make it again.
+- A run that the laptop made keeps the laptop's worktree path. The task has no such worktree. A worker on AX does not need it.
+
+#### Steps
+
+1. Stop the laptop manager. Stop `factory loop` and `factory tick` too.
+2. Run `factory migrate-to-ax --dry-run`. It prints what moves, the size, and what stays. It writes nothing and sends nothing. If it stops with a list of runs, those runs have a worker in a herdr pane on the laptop. A pane cannot move. Finish or abort those runs, or let them reach a station boundary (a gate or a wait). Then run the dry run again.
+3. Run `factory manager --ax`. The task starts. Its host sees an empty home and waits for the migration. It does not start the manager yet. For a new factory with no migration, set `FACTORY_AX_FRESH=1` on the laptop before this step.
+4. Run `factory migrate-to-ax`. It packs a tar.gz, sends it in parts to the task with `put`, and unpacks it into `FACTORY_HOME` as the worker user. The unpack writes `FACTORY_HOME/.migrated` last. The host sees the marker, runs `factory repos sync`, and starts the manager.
+5. Run `factory attach`. The board shows the same runs as the laptop did.
+
+#### What moves
+
+- `rigs.json`, with a `remote` added to each rig (the https form of `git remote get-url origin` in its repo). `repo` stays as written.
+- `decisions.json`, `dispatch.json`, `metrics.jsonl`, `manager-sessions.json`, `memory/`, `launch/`, and the small top-level files.
+- The directories of all live runs. For finished runs (done or aborted), only the newest 50 move. `--keep N` changes the number. Their records in `metrics.jsonl` are already written.
+
+These stay on the laptop: `tick.lock`, `bin`, `devenv/`, the backups of `rigs.json`, and any other top-level file over 5 MB. The dry run names them.
+
+#### Safety
+
+- The command refuses to send into a home that holds a factory (`rigs.json`, `runs/` or `.migrated`). `--force` overrides this. Use it only when no manager runs in the task.
+- The host does not start the manager while the home is empty, or while a migration archive is on the volume.
+- Runs on `ax://` workers move with no change. Their workers keep running while the move happens.
+- The upload is `PUT_PART` bytes of base64 for each `ax ssh` call, because `ax ssh` has no stdin. A home of 100 MB sends in about 1500 calls. A part that fails is sent again 3 times. Then the command stops. Run it again, because a part sent twice does no harm.

@@ -4,6 +4,7 @@
 // become runs. Claiming decides who owns work; everything else is best-effort bookkeeping.
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { bdEnv } from './axrepos'
 import { runBounded, syncTimeoutMs, timedOutText } from './sync'
 
 export type Bead = {
@@ -183,7 +184,7 @@ const isOrphanChild = (b: Bead, linked: Set<string>, parents?: Map<string, Bead>
 export const byId = (all: Bead[]) => new Map(all.map(b => [b.id, b]))
 
 function bd(repo: string, actor: string, ...args: string[]) {
-  const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo, env: process.env })
+  const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo, env: bdEnv(repo) })
   const out = p.stdout.toString().trim()
   const stderr = p.stderr.toString().trim()
   return { isOk: p.exitCode === 0, out, err: stderr || out, stderr }
@@ -528,7 +529,7 @@ export const beads = (repo: string, actor: string) => ({
    */
   sync: async () => {
     const timeoutMs = syncTimeoutMs()
-    const env = process.env
+    const env = bdEnv(repo)
     const list = await runBounded(['bd', 'dolt', 'remote', 'list', '--actor', actor], {
       cwd: repo,
       env,

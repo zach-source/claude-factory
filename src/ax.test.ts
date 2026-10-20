@@ -1387,3 +1387,91 @@ test('a GitLab rig gets placeholders and a second extraHeader; a GitHub rig keep
     delete process.env.FACTORY_AX_VAULT
   }
 })
+
+test('the manager lease refuses only a live manager task, and never inside it', () => {
+  const t = 'f-manager'
+  for (const p of ['Running', 'Pending', 'Suspended'])
+    expect(ax.managerRefusal(p, {}, t)).toMatch(/f-manager.*factory attach.*factory say <text>/)
+  for (const p of ['Failed', 'Terminating', null]) expect(ax.managerRefusal(p, {}, t)).toBeUndefined()
+  expect(ax.managerRefusal('Running', { FACTORY_IN_AX: '1' }, t)).toBeUndefined()
+})
+
+test('remoteManager skips AX with no cluster and refuses a running manager', () => {
+  const saved = { ...process.env }
+  try {
+    delete process.env.FACTORY_IN_AX
+    delete process.env.FACTORY_AX_CONTEXT
+    expect(ax.remoteManager()).toBeUndefined()
+    process.env.FACTORY_AX_CONTEXT = 'c'
+    // the fake ax reads its subcommand at $3: drop the --context pair
+    const noctx = join(dir, 'ax-noctx')
+    writeFileSync(noctx, `#!/bin/sh\nshift 2\nexec ${fake} \"$@\"\n`)
+    chmodSync(noctx, 0o755)
+    process.env.FACTORY_AX = noctx
+    writeFileSync(join(dir, 'get'), 'status:\n  phase: Running\n')
+    expect(ax.remoteManager()).toMatch(/factory attach/)
+    rmSync(join(dir, 'get'))
+    expect(ax.remoteManager()).toBeUndefined() // not found: no manager task
+  } finally {
+    process.env = saved
+  }
+})
+
+test('attach reads the manager pane and say sends its text base64, so ax flags in it survive', () => {
+  writeFileSync(join(dir, 'ssh'), 'pane text')
+  expect(ax.attachRead()).toBe('pane text')
+  expect(logged()[0]).toMatch(/ssh f-manager -- .*herdr pane read w1:p1 --lines 60/)
+  const text = 'do it --context x -a evil "$(id)" \'q\''
+  ax.say(text)
+  const line = logged()[1]!
+  expect(line).not.toContain('--context x')
+  expect(line).toContain(Buffer.from(text).toString('base64'))
+})
+
+test('launchManager applies the manager task with its command and env, then retries the policy until the actor shows', async () => {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, {
+      FACTORY_MAX_RUNS: '16',
+      FACTORY_AX_VAULT: 'v1',
+      AX_SERVER: 'http://ax.example.private:8080',
+    })
+    delete process.env.FACTORY_AX_IMAGE
+    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], { waitMs: 0 })
+    expect(r).toEqual({ name: 'f-manager', policy: true })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
+    expect(task.spec.image).toBe('mgr@sha256:abc')
+    expect(task.spec.debug).toBe(true)
+    expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
+    const env = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env).toMatchObject({
+      FACTORY_IN_AX: '1',
+      FACTORY_HOME: '/workspace/w/home',
+      FACTORY_CA: 'CA-PEM',
+      FACTORY_MAX_RUNS: '16',
+      FACTORY_AX_VAULT: 'v1',
+      CLAUDE_CODE_OAUTH_TOKEN: 'placeholder',
+      GH_TOKEN: 'placeholder',
+    })
+    expect(env.FACTORY_AX_IMAGE).toBeUndefined()
+    expect(env.FACTORY_REPO).toBeUndefined()
+    expect(env.FACTORY_OUTBOX).toBeUndefined()
+    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.map(
+      (x: { https: { hostnames: string[]; ports?: unknown } }) => x.https,
+    )
+    expect(rules.some((h: { hostnames: string[] }) => h.hostnames.includes('claude.ai'))).toBe(true)
+    expect(rules.at(-1)).toEqual({ hostnames: ['ax.example.private'], ports: { numbers: [8080] } })
+    expect(logged().filter(l => l.includes('create egress-policy f-manager')).length).toBe(2) // refused once, then in
+  } finally {
+    process.env = saved
+  }
+})
+
+test('managerEgress names the AX server only when AX_SERVER is a URL', () => {
+  expect(ax.managerEgress(undefined)).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress('not a url')).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress('https://ax.x.io')).toEqual([{ hosts: ['claude.ai'] }, { hosts: ['ax.x.io'] }])
+})
