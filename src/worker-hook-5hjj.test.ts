@@ -83,7 +83,7 @@ const GITCONFIG_DENIED = [
   'echo x >&! ~/.gitconfig',
 ]
 test.each(GITCONFIG_DENIED)('denies a clobber redirect to the global git config: %s', cmd => {
-  expect(run(cmd)).not.toBeNull()
+  expect(run(cmd)).toBeTruthy()
 })
 
 const ALLOWED = [
