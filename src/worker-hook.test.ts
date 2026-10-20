@@ -7966,6 +7966,18 @@ test('claude-factory-dnw1: glued nested default git push denies with PUSH_REASON
     denyReason('git${X:-${IFS}}push${X:-${IFS}}origin${X:-${IFS}}main', '/root/repo', undefined, J1KI_GATE),
   ).toBe(PUSH_REASON)
 })
+// A bare "{" in a default is literal in bash (words: rm { -rf /), so it must not add depth.
+test('claude-factory-dnw1: a bare brace in a glued default still denies rm', () => {
+  expect(denyReason('rm${IFS}${X:-{}${IFS}-rf${IFS}/', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test('claude-factory-dnw1: a bare brace in a glued default still denies git push', () => {
+  expect(
+    denyReason('git${IFS}${X:-{}${IFS}push${IFS}origin${IFS}main', '/root/repo', undefined, J1KI_GATE),
+  ).toBe(PUSH_REASON)
+})
+test('claude-factory-dnw1: an unclosed glued default keeps the words after it', () => {
+  expect(denyReason('rm${X:-${IFS}-rf${IFS}/', '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
 test.each(['echo ${X:-${HOME}}x', 'ls ${A:-${B}}/c', 'echo ${X:-x}y'])(
   'claude-factory-dnw1: %s stays allowed',
   cmd => {

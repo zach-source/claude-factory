@@ -6583,8 +6583,9 @@ function shellAliasReason(
 // undefined when no word holds a glued expansion. A whole-word expansion ($X, ${X}) is not glued.
 const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/g
 // claude-factory-dnw1: a ${...} span ends at its matching close brace, so a nested default
-// (${X:-${IFS}}) is one expansion. Each span becomes $@ for the split. An unclosed span runs to the
-// end of the word (fail closed).
+// (${X:-${IFS}}) is one expansion. Only a "${" adds depth: a bare "{" in a default is literal. Each
+// span becomes $@ for the split. An unclosed span ends at the first "}" (or after "${" when none),
+// so no word after it is dropped.
 function flattenBraceExpansions(w: string): string {
   let out = ''
   for (let i = 0; i < w.length;) {
@@ -6593,13 +6594,17 @@ function flattenBraceExpansions(w: string): string {
       continue
     }
     let depth = 0
-    let j = i + 1
-    for (; j < w.length; j++) {
-      if (w[j] === '{') depth++
-      else if (w[j] === '}' && --depth === 0) break
+    let end = -1
+    for (let j = i + 1; j < w.length; j++) {
+      if (w[j] === '{' && w[j - 1] === '$') depth++
+      else if (w[j] === '}' && --depth === 0) {
+        end = j
+        break
+      }
     }
+    if (end < 0) end = w.indexOf('}', i)
     out += '$@'
-    i = j + 1
+    i = (end < 0 ? i + 1 : end) + 1
   }
   return out
 }
