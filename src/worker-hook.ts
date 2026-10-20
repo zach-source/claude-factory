@@ -6589,7 +6589,8 @@ const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]
 // cannot tell an escaped or single-quoted "${" from a real one. The caller also reads with byDepth
 // false (the first "}" ends the span, and a stray "}" left over is a word break) and denies if
 // either reading denies. The stray break covers a word where an escaped "${" fools the depth
-// reading and a nested default fools the first-close reading.
+// reading and a nested default fools the first-close reading. replaceGluedExpansions reads the raw
+// text, where quotes and backslashes are visible, and is the reading that does not depend on them.
 function flattenBraceExpansions(w: string, byDepth: boolean): string {
   let out = ''
   for (let i = 0; i < w.length;) {
