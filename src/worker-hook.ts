@@ -65,6 +65,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join as joinPath, posix, resolve as resolvePath } from 'node:path'
+import { homeReason } from './home-guard'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -1277,9 +1278,19 @@ function wrapperAssignmentOperand(w: string): boolean {
 
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
 function realCommand(words: string[]): string[] {
+  return realCommandInfo(words).cmd
+}
+
+// claude-factory-dtr2: zsh runs `repeat N cmd` as `cmd`, N times, in the same segment.
+// This walk removes `repeat` and the count word. It reads the rest as the command.
+// `dynamicRepeatCount` is true if the count word is dynamic. The caller must deny that case.
+// `segments()` can split one quoted `$(...)` count into several words.
+// Then the removed word is only a part of the count.
+function realCommandInfo(words: string[]): { cmd: string[]; dynamicRepeatCount: boolean } {
   let w = words
+  let dynamicRepeatCount = false
   for (;;) {
-    if (!w.length) return w
+    if (!w.length) return { cmd: w, dynamicRepeatCount }
     const head = w[0]!
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(head)) {
       w = w.slice(1)
@@ -1290,6 +1301,11 @@ function realCommand(words: string[]): string[] {
       continue
     }
     const b = baseWord(head)
+    if (b === 'repeat') {
+      if (w.length > 1 && dynamicWord(w[1]!)) dynamicRepeatCount = true
+      w = w.slice(2)
+      continue
+    }
     if (WRAPPERS.has(b)) {
       w = skipWrapperFlags(b, w.slice(1))
       continue
@@ -1304,8 +1320,130 @@ function realCommand(words: string[]): string[] {
       while (w.length && w[0]!.startsWith('-')) w = w.slice(1)
       continue
     }
-    return w
+    return { cmd: w, dynamicRepeatCount }
   }
+}
+
+/**
+ * claude-factory-21ux: true when an rm or find-exec-rm rule denies the command that starts at `cmd[0]`.
+ * `rm` is true when `cmd[0]` is an rm word that the rule did not deny.
+ */
+function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+  const b = baseWord(cmd[0]!)
+  if (b === 'rm') {
+    if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
+    return { deny: false, rm: true }
+  }
+  if (b === 'find') {
+    for (let i = 0; i < cmd.length; i++) {
+      if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
+      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) {
+        return { deny: true, rm: false }
+      }
+    }
+  }
+  return { deny: false, rm: false }
+}
+
+/**
+ * claude-factory-21ux: realCommand stops at a wrapper flag that it does not know.
+ * In `/usr/bin/time -l rm -rf /`, the command word then looks like `-l`, and rm is hidden.
+ * This function walks the same prefix as realCommand.
+ * It reads each unknown wrapper flag two ways: as a bare flag (skip one word),
+ * and as a flag with a value word (skip two words).
+ * It reads the `timeout` duration two ways: one word of any shape, or no word.
+ * Each command word that a reading reaches gets the rm and find rule.
+ * This function never changes `cmd`, so no operandSkip rule relaxes.
+ *
+ * It can only add a denial. `rm` is true when a reading reaches an rm word that the rule allows.
+ * The caller then sets hasRm, for the cd + rm rule.
+ * Each (index, wrapper) state runs once, so the walk has O(n) states.
+ */
+function wrapperReadingsDeny(words: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+  const n = words.length
+  const seenHead = new Set<number>()
+  const seenFlag = new Set<string>()
+  const work: Array<() => void> = []
+  let rm = false
+  let found = false
+  const head = (i: number): void => {
+    if (i >= n || seenHead.has(i)) return
+    seenHead.add(i)
+    const w = words[i]!
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w) || RESERVED_LEADING_WORDS.has(w)) {
+      work.push(() => head(i + 1))
+      return
+    }
+    const b = baseWord(w)
+    if (WRAPPERS.has(b) || b === 'timeout') {
+      work.push(() => flags(b, i + 1))
+      return
+    }
+    if (b === 'xargs') {
+      work.push(() => xargsFlags(i + 1))
+      return
+    }
+    const r = rmFindReading(words.slice(i), root)
+    if (r.deny) found = true
+    if (r.rm) rm = true
+  }
+  const xargsFlags = (j: number): void => {
+    const key = 'xargs:' + j
+    if (seenFlag.has(key)) return
+    seenFlag.add(key)
+    const w = words[j]
+    if (w === undefined) return
+    if (!w.startsWith('-')) {
+      work.push(() => head(j))
+      return
+    }
+    work.push(() => xargsFlags(j + 1))
+    work.push(() => xargsFlags(j + 2))
+  }
+  const flags = (name: string, j: number): void => {
+    const key = name + ':' + j
+    if (seenFlag.has(key)) return
+    seenFlag.add(key)
+    const w = words[j]
+    if (w === undefined) return
+    if (name === 'command' && /^-[pvV]*[vV][pvV]*$/.test(w)) return
+    if (name === 'env' && w === '-') {
+      work.push(() => flags(name, j + 1))
+      return
+    }
+    if ((name === 'env' || name === 'sudo') && wrapperAssignmentOperand(w)) {
+      work.push(() => flags(name, j + 1))
+      return
+    }
+    if (w === '-' || !w.startsWith('-')) {
+      after(name, j)
+      return
+    }
+    if (w === '--') {
+      let k = j + 1
+      if (name === 'env' && words[k] === '-') k++
+      if (name === 'env' || name === 'sudo') while (k < n && wrapperAssignmentOperand(words[k]!)) k++
+      after(name, k)
+      return
+    }
+    if (WRAPPER_VALUE_FLAGS[name]?.has(w)) {
+      work.push(() => flags(name, j + 2))
+      return
+    }
+    if (WRAPPER_BARE_FLAGS[name]?.has(w)) {
+      work.push(() => flags(name, j + 1))
+      return
+    }
+    work.push(() => flags(name, j + 1))
+    work.push(() => flags(name, j + 2))
+  }
+  const after = (name: string, j: number): void => {
+    work.push(() => head(j))
+    if (name === 'timeout' && j < n && !words[j]!.startsWith('-')) work.push(() => head(j + 1))
+  }
+  head(0)
+  while (work.length && !found) work.pop()!()
+  return { deny: found, rm }
 }
 
 // claude-factory-p43v.21: This list contains `WRAPPERS`, plus `timeout` and `xargs`.
@@ -1460,6 +1598,10 @@ function commandAnchors(words: string[]): number[] {
     }
     if (RESERVED_LEADING_WORDS.has(w)) {
       i++
+      continue
+    }
+    if (baseWord(w) === 'repeat') {
+      i += 2
       continue
     }
     break
@@ -2229,18 +2371,11 @@ const READER_COMMANDS = new Set([
 // claude-factory-ty8y.12: commands whose operands are text (a search word, a title, a comment body).
 const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
 
-function globNamesGlobalGitConfig(word: string): boolean {
+function globNamesGlobalGitConfig(word: string, state?: ScanState): boolean {
   const w = word.replace(/^["']+|["']+$/g, '')
   if (!/[*?[]/.test(w)) return false
-  // claude-factory-ty8y.24: star runs collapse; more than 4 stars fail closed, since a backtracking match could outlast the hook timeout.
-  const collapsed = w.replace(/\*+/g, '*')
-  if (collapsed.split('*').length - 1 > 4) return true
-  try {
-    const re = globToRegExp(collapsed)
-    return GLOBAL_GIT_CONFIG_SAMPLES.some(s => re.test(s))
-  } catch {
-    return false
-  }
+  // claude-factory-ty8y.24, 267o: globCanMatch collapses star runs and fails closed over the star cap.
+  return globCanMatch(w, GLOBAL_GIT_CONFIG_SAMPLES, state)
 }
 
 type OperandSkip = 'none' | 'reader' | 'operands'
@@ -2367,6 +2502,7 @@ function globalGitConfigUse(
   words: string[],
   skip: OperandSkip,
   isCd = false,
+  state?: ScanState,
 ): 'write' | 'mention' | undefined {
   // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
   // the text config or XDG, a glob character, a brace, or a redirect operator.
@@ -2404,7 +2540,8 @@ function globalGitConfigUse(
       if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
       continue
     }
-    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate)) return 'write'
+    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate, state))
+      return 'write'
     if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
   }
   return use
@@ -2472,6 +2609,27 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${out}$`, 'i')
 }
 
+const MAX_GLOB_STARS = 4
+
+/**
+ * claude-factory-267o: returns `true` if the glob can match one of the samples.
+ * Star runs collapse to one star. A glob with more than `MAX_GLOB_STARS` stars fails closed
+ * (returns `true`), because a backtracking match can outlast the hook timeout.
+ * With a `state`, each test spends scan work. An empty budget also fails closed.
+ * A glob that is not a valid pattern matches nothing.
+ */
+function globCanMatch(glob: string, samples: readonly string[], state?: ScanState): boolean {
+  const collapsed = glob.replace(/\*+/g, '*')
+  if (collapsed.split('*').length - 1 > MAX_GLOB_STARS) return true
+  if (state && spendWork(state, collapsed.length * samples.length)) return true
+  try {
+    const re = globToRegExp(collapsed)
+    return samples.some(s => re.test(s))
+  } catch {
+    return false
+  }
+}
+
 /**
  * claude-factory-9zd5: returns `true` if the last path component of `candidate` names `HEAD`.
  * The last component is the text after the final `/`.
@@ -2483,15 +2641,9 @@ function globToRegExp(glob: string): RegExp {
  * If the last component has a glob character (`*`, `?` or `[`), the function tests the glob instead.
  * It checks whether the glob, read as a shell pattern, can match the literal name `HEAD`.
  */
-function wordNamesHead(candidate: string): boolean {
+function wordNamesHead(candidate: string, state?: ScanState): boolean {
   const last = candidate.split('/').pop() ?? candidate
-  if (/[*?[]/.test(last)) {
-    try {
-      return globToRegExp(last).test('HEAD')
-    } catch {
-      return false
-    }
-  }
+  if (/[*?[]/.test(last)) return globCanMatch(last, ['HEAD'], state)
   return last.toLowerCase() === 'head'
 }
 
@@ -2525,7 +2677,7 @@ function wordNamesHead(candidate: string): boolean {
  * R2 never skips a redirect-form word.
  * A write is a write, even inside a `git` segment's own redirect, such as `git log > HEAD`.
  */
-function namesGitAdminPath(words: string[], isGitOrGhSegment: boolean): boolean {
+function namesGitAdminPath(words: string[], isGitOrGhSegment: boolean, state?: ScanState): boolean {
   let pendingRedirectTarget = false
   for (const word of words) {
     if (GIT_NAME_RE.test(word)) return true
@@ -2555,7 +2707,7 @@ function namesGitAdminPath(words: string[], isGitOrGhSegment: boolean): boolean 
       if (isGitOrGhSegment) continue
       if (REMOTE_TRACKING_HEAD_RE.test(candidate)) continue
     }
-    if (wordNamesHead(candidate)) return true
+    if (wordNamesHead(candidate, state)) return true
   }
   return false
 }
@@ -2947,6 +3099,9 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[]): boolean {
 // claude-factory-zl5: gh's own global flags that take a value word. The verb search steps past
 // them. This matters when they come before the verb (`gh -R o/r pr merge 5`).
 const GH_VALUE_FLAGS = new Set(['-R', '--repo', '--hostname'])
+// claude-factory-zsj0: the persistent value flags of `gh pr` and `gh repo`. Cobra finds the sub
+// word past them. pflag has no long-flag prefix match, so the names are exact.
+const GH_SUB_VALUE_FLAGS = new Set(['-R', '--repo'])
 // `gh api` flags that take a value word. The endpoint search steps past them.
 // claude-factory-zl5.15: `-p` and `--preview` also take a value word. That value is a
 // comma-separated preview name list. Without this, the endpoint search read the value word as the
@@ -3515,7 +3670,14 @@ function ghReasonOn(
 ): string | undefined {
   const { index: vi, uncertain } = firstVerbIndex(tail, GH_VALUE_FLAGS)
   const verb = vi >= 0 ? tail[vi] : undefined
-  const sub = vi >= 0 ? tail[vi + 1] : undefined
+  // claude-factory-zsj0: a flag after `pr` or `repo` must not become the sub word.
+  const rest = vi >= 0 ? tail.slice(vi + 1) : []
+  const subScan =
+    verb === 'pr' || verb === 'repo'
+      ? firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+      : { index: -1, uncertain: false }
+  const sub =
+    verb === 'pr' || verb === 'repo' ? (subScan.index >= 0 ? rest[subScan.index] : undefined) : rest[0]
   // claude-factory-p43v: a dynamic verb word can hide the real gh command. The same risk applies
   // at the git verb slot, where dynamicWord denies it. A dynamic sub word under pr, repo or alias
   // can hide the real merge, sync, ready, checkout or alias-set call, and this guard denies both
@@ -3577,6 +3739,16 @@ function ghReasonOn(
     return undefined
   }
   if (verb === 'alias') return ghAliasDenied(tail.slice(vi + 1))
+  // claude-factory-zsj0: an unknown flag before the sub word can hide it. Scan the words, fail closed.
+  // This does not depend on the top-level `uncertain`: an extra flag must not switch it off.
+  if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
+    if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'sync']))) return MERGE_REASON
+    if (verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['ready']))) {
+      if (hasMutatingWordBeforeDashDash(rest, new Set(['--undo']))) return undefined
+      return gate.station === 'release' ? undefined : READY_REASON
+    }
+    if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
+  }
   if (uncertain) {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
     if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
@@ -5987,6 +6159,9 @@ export function denyReason(
   gate?: HookGate,
 ): string | undefined {
   if (command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
+  // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
+  const home = homeReason(command, gate?.readFile)
+  if (home) return home
   return scanReason(command, root, personOnly, gate)
 }
 
@@ -6274,14 +6449,16 @@ function denyAtScan(
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
-    const cmd = realCommand(words)
+    const info = realCommandInfo(words)
+    if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
+    const cmd = info.cmd
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
     // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
     const isGitOrGhSegment = b === 'git' || /^git-/.test(b) || b === 'gh'
-    if (namesGitAdminPath(words, isGitOrGhSegment)) state.gitAdminPath = true
+    if (namesGitAdminPath(words, isGitOrGhSegment, state)) state.gitAdminPath = true
     const mayTouch = segmentMayTouchGit(words)
     if (mayTouch && hasGitWordIn(words)) state.gitWord = true
     const isGitSegment = b === 'git' || /^git-/.test(b)
@@ -6297,7 +6474,12 @@ function denyAtScan(
         ? 'operands'
         : 'none'
     const configUse = mayTouch
-      ? globalGitConfigUse(words, operandSkip, b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir')
+      ? globalGitConfigUse(
+          words,
+          operandSkip,
+          b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+          state,
+        )
       : undefined
     if (configUse === 'mention') state.globalGitConfig = true
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
@@ -6363,6 +6545,10 @@ function denyAtScan(
         if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return REASON
       }
     }
+    // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
+    const readings = wrapperReadingsDeny(words, root)
+    if (readings.deny) return REASON
+    if (readings.rm) hasRm = true
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
     // flag, which only moves the one command it wraps: anyGitReason's and anyShellReason's own
