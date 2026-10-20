@@ -78,6 +78,10 @@ export function gitRefusal(runs: RunGit[]) {
   return out.length ? out.join(' ') : undefined
 }
 
+/** the marker file migrate writes in runs/<id>/ for a run whose head is merged and whose branch origin lacks */
+export const MERGED_MARKER = 'merged-before-move'
+export const mergedIds = (runs: RunGit[]) => runs.filter(r => !r.onOrigin && r.merged).map(r => r.id)
+
 /** what the task does to the runs that move: recreate a merged run's gone branch, reset a base that origin lacks */
 export const gitNotes = (runs: RunGit[]) => [
   ...runs

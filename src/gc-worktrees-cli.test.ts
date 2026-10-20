@@ -9,7 +9,16 @@
 // tests. The origin's URL is rewritten with `insteadOf` so it reads as github.com to the forge
 // check in cli.ts, while `git fetch`/`push` still reach the real local bare repo.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createActor } from 'xstate'
@@ -1117,6 +1126,7 @@ test('AX-a: spawn of a laptop run with no worktree makes it from origin/<branch>
 
 test('AX-b: a gone branch of a merged laptop run is made from origin/<default>, and a base the VM lacks is reset in run.json only', () => {
   const t = laptopRun({ merged: true, base: BOGUS, gone: true })
+  writeFileSync(join(runDir(t.id), 'merged-before-move'), '') // migrate-to-ax wrote the proof
   const before = readRaw(t.id)
   const out = factory(['tick'], t.vm.env)
   expect(out.code).toBe(0)
@@ -1142,4 +1152,66 @@ test('AX-c: a run with gc.json and no branch still fails with the gc message, an
   expect(row.error).toContain('gc')
   expect(row.error).toContain(t.branch)
   expect(existsSync(join(home, 'worktrees', t.id))).toBe(false)
+})
+
+test('AX-d: a laptop run with no merge marker and a gone branch fails naming the branch, and makes no worktree', () => {
+  const t = laptopRun({ merged: false, gone: true })
+  const out = factory(['tick'], t.vm.env)
+  expect(out.code).toBe(0)
+  const row = rowOf(out, t.id)
+  expect(row.error).toContain(t.branch)
+  expect(row.error).not.toContain('FACTORY_AX_IMAGE')
+  expect(existsSync(join(home, 'worktrees', t.id))).toBe(false)
+})
+
+test('AX-e: a base the VM lacks resets to the fork point of a run with commits on a live origin branch, not to HEAD', () => {
+  const t = laptopRun({ merged: false, base: BOGUS })
+  const out = factory(['tick'], t.vm.env)
+  expect(out.code).toBe(0)
+  const vmWorktree = join(home, 'worktrees', t.id)
+  expect(readRaw(t.id).base).toBe(t.mainSha)
+  expect(git(vmWorktree, 'rev-parse', 'HEAD')).not.toBe(t.mainSha)
+})
+
+// --- migrate-to-ax --dry-run: the git checks (claude-factory-192.12.4) ---
+
+test('MIG-a: a live run with an unpushed commit stops migrate-to-ax', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree } = writeRun(repo, id, { outcome: 'working' })
+  writeRigs([{ name: 'r1', repo }])
+  writeFileSync(join(worktree, 'more.txt'), 'm')
+  git(worktree, 'add', 'more.txt')
+  git(worktree, 'commit', '-q', '-m', 'unpushed')
+  const out = factory(['migrate-to-ax', '--dry-run'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('not on origin')
+  expect(out.err).toContain(id)
+})
+
+test('MIG-b: a branch deleted upstream with a stale local origin ref stops migrate-to-ax', () => {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'working' })
+  writeRigs([{ name: 'r1', repo }])
+  git(repo, 'fetch', '--quiet', 'origin') // the stale ref origin/<branch> exists here
+  git(origin, 'branch', '-D', branch)
+  const out = factory(['migrate-to-ax', '--dry-run'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('not on origin')
+})
+
+test('MIG-c: a failed fetch stops migrate-to-ax and names the repo', () => {
+  reset()
+  const { repo, origin } = makeRig('r1')
+  const id = freshId('ship')
+  writeRun(repo, id, { outcome: 'working' })
+  writeRigs([{ name: 'r1', repo }])
+  renameSync(origin, `${origin}.moved`)
+  const out = factory(['migrate-to-ax', '--dry-run'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('could not fetch origin')
+  expect(out.err).toContain(repo)
 })

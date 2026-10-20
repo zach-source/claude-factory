@@ -1186,10 +1186,13 @@ function reviveWorktree(run: Run) {
   const gcRemoved = existsSync(join(runDir(run.id), 'gc.json'))
   // a laptop run merged before the move: its branch is gone from origin. Start from the default branch
   const def = defaultRef(run.repo)
+  // proof of the merge: migrate-to-ax saw the head in origin/<default> and wrote this marker (claude-factory-192.12.5)
+  const provenMerged = existsSync(join(runDir(run.id), migrate.MERGED_MARKER))
   if (
     inAx() &&
     !gcRemoved &&
     def &&
+    provenMerged &&
     isLaptopRun(rawRigs(), readJson<Run>(join(runDir(run.id), 'run.json')))
   ) {
     git(run.repo, 'worktree', 'add', run.worktree, '-b', run.branch, def)
@@ -4689,11 +4692,16 @@ function runGitFacts(ids: string[]): migrate.RunGit[] {
     const run = readJson<Run>(f)
     if (!fetched.has(run.repo)) {
       fetched.add(run.repo)
-      Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin'], {
+      // --prune: a stale origin/<branch> of a branch deleted upstream must not count as pushed
+      const fetch = Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', '--prune', 'origin'], {
         env: GIT_NETWORK_ENV,
         timeout: GIT_NETWORK_TIMEOUT_MS,
         stderr: 'ignore',
       })
+      if (fetch.exitCode !== 0)
+        fail(
+          `could not fetch origin in ${run.repo}, so migrate cannot tell what is pushed. Fix access, then run this again.`,
+        )
     }
     const hasTree = existsSync(run.worktree)
     const head = hasTree
@@ -4701,8 +4709,8 @@ function runGitFacts(ids: string[]): migrate.RunGit[] {
       : g(run.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${run.branch}`)
     if (head.exitCode !== 0) continue
     const sha = head.stdout.toString().trim()
-    const sym = g(run.repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')
-    const def = sym.exitCode === 0 ? sym.stdout.toString().trim() : 'origin/main'
+    const def = defaultRef(run.repo)
+    if (!def) fail(`${run.repo} has no origin/HEAD or origin/main, so migrate cannot tell what is merged.`)
     const within = (ref: string) => g(run.repo, 'merge-base', '--is-ancestor', sha, ref).exitCode === 0
     out.push({
       id,
@@ -4738,6 +4746,9 @@ async function migrateToAx(args: string[]) {
   const facts = runGitFacts(live)
   p.gitRefusal = migrate.gitRefusal(facts)
   p.gitNotes = migrate.gitNotes(facts)
+  if (!dry && !p.gitRefusal && !p.refusal && !p.rigsError)
+    for (const id of migrate.mergedIds(facts))
+      writeFileSync(join(HOME, 'runs', id, migrate.MERGED_MARKER), '')
   console.log(migrate.describe(p))
   if (p.refusal) fail(p.refusal)
   if (p.gitRefusal) fail(p.gitRefusal)
