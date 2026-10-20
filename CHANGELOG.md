@@ -419,6 +419,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook did not see a quote hidden in a here-document inside a backtick substitution. A shell ends such a body at a line with the delimiter and a closing backtick. The hook looked for an exact delimiter line, found a later one, and skipped the check. The hook now denies when a body line starts with the delimiter but is not equal to it (claude-factory-wmsr.37).
 - Fixed: the worker hook let `sudo ${=X}` run the value of a set name. In `X="git push origin main"; sudo ${=X}`, zsh splits the value and sudo runs it. The hook took `${=X}` for a `NAME=value` word and skipped it. A wrapper can skip a word. The hook now denies that word if it expands a set name. Examples: `sudo -u $X` and `nice -n ${=X}`. (claude-factory-xbr1)
 - Fixed: the worker hook did not read the dynamic value word of a wrapper flag as a command word (claude-factory-mndr). A shell splits such a word, so `env -u $Y -rf /` can hide `rm`. The hook also reads a brace list or a command substitution in that slot as a command word.
+- Fixed: the worker hook did not read a glued dynamic wrapper flag (`env -u$Y -rf /`) or a brace list with `=` in an operand slot (`env {FOO=x,rm} -rf /`) as a possible command word. It now denies both (claude-factory-mndr.7, mndr.8).
 
 ## 0.13.0 (2026-10-18)
 

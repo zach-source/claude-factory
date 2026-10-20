@@ -2436,8 +2436,6 @@ function commandAnchors(words: string[]): number[] {
         continue
       }
       if (w.startsWith('-') && w !== '-') {
-        // claude-factory-mndr.7: a glued dynamic flag can split into a command word.
-        if (w.endsWith('$') || w.includes('`')) anchors.push(j)
         j++
         mayBeValue = true
         continue
