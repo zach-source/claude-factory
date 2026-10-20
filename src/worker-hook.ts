@@ -1435,10 +1435,9 @@ const GLUED_ARG_SAFE = new Set(
  * earlier segment can change PATH, an alias or a hash.
  * It returns true unless head[0] is a plain literal and every other head word has only plain, glob
  * and flag characters. A `$` or a backtick denies.
- * It returns true if head[0] is not the first command anchor (a PATH= prefix, env, sudo), or if the
- * word is a command anchor.
- * It returns true if head[0] is not in GLUED_ARG_SAFE, because an unknown wrapper such as
- * `caffeinate g(i)t` can run the word.
+ * It returns true if the word is a command anchor.
+ * It returns true if head[0] is not in GLUED_ARG_SAFE. This denies a PATH= prefix, env, sudo and
+ * an unknown wrapper such as `caffeinate g(i)t`.
  * It returns true if a `find -exec` word (or -execdir, -ok, -okdir) comes before the word.
  * The function returns false for a glued `(` in a plain argument, for example `ls a(b)`.
  */
@@ -1448,7 +1447,7 @@ function gluedAtCommandSlot(head: string[], first: boolean): boolean {
   if (!first || !/^[\w./+][\w./+-]*$/.test(head[0]!)) return true
   if (!head.every((x, k) => k === 0 || /^[\w./+=*?@![\]-]+$/.test(x))) return true
   const anchors = commandAnchors(head)
-  if (anchors[0] !== 0 || anchors.includes(last)) return true
+  if (anchors.includes(last)) return true
   if (!GLUED_ARG_SAFE.has(head[0]!.replace(/^\/(usr\/)?bin\//, ''))) return true
   for (let k = 1; k < last; k++) if (/^-(exec|execdir|ok|okdir)$/.test(head[k]!)) return true
   return false
