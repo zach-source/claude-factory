@@ -8033,6 +8033,30 @@ test.each(['echo ${X:-${HOME}}x', 'ls ${A:-${B}}/c', 'echo ${X:-x}y'])(
     expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
   },
 )
+test.each([String.raw`rm${'${IFS}'}\${$IFS-rf$IFS/$IFS}`, "rm${IFS}'${'$IFS-rf$IFS/$IFS}"])(
+  'claude-factory-dnw1: a hidden dollar-brace and bare IFS breaks: rm %s',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test.each([
+  String.raw`git${'${IFS}'}\${$IFS''push$IFS''origin$IFS''main$IFS}`,
+  "git${IFS}'${'$IFS''push$IFS''origin$IFS''main$IFS}",
+])('claude-factory-dnw1: a hidden dollar-brace and bare IFS breaks: git %s', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+test.each([
+  'ls $HOME/x',
+  'cp "${A}"/b c',
+  'echo \\${X}y',
+  "echo '${X}'y",
+  'echo "${X:-a b}"c',
+  'ls ${A}/b ${C}.txt',
+  'bun test src/${F}.test.ts',
+  'cat ${D}/a',
+])('claude-factory-dnw1: raw reading keeps %s allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
 test.each(J1KI_REASON_ROWS)('claude-factory-j1ki: %s denies with REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })

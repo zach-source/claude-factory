@@ -6689,6 +6689,69 @@ function replaceGluedSubstitutions(command: string): string {
   return out + command.slice(last) + extra.map(e => '\n' + e).join('')
 }
 
+// claude-factory-dnw1.9: segments() drops quotes and backslashes, so the readings above cannot tell
+// an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
+// ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
+// becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
+// replaces only the "${".
+function replaceGluedExpansions(command: string): string {
+  let out = ''
+  let q = ''
+  const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (q) {
+      if (c === '\\' && q === '"') {
+        out += c + (command[i + 1] ?? '')
+        i++
+        continue
+      }
+      if (c === q) q = ''
+      out += c
+      continue
+    }
+    if (c === '\\') {
+      out += c + (command[i + 1] ?? '')
+      i++
+      continue
+    }
+    if (c === "'" || c === '"') {
+      q = c
+      out += c
+      continue
+    }
+    if (c !== '$') {
+      out += c
+      continue
+    }
+    let end = i + 1
+    const n = command[i + 1]
+    if (n === '{') {
+      let depth = 0
+      end = -1
+      for (let j = i + 1; j < command.length; j++) {
+        if (command[j] === '{' && command[j - 1] === '$') depth++
+        else if (command[j] === '}' && --depth === 0) {
+          end = j + 1
+          break
+        }
+      }
+      if (end < 0) end = i + 2
+    } else if (n !== undefined && /[A-Za-z_]/.test(n)) {
+      while (end < command.length && /[A-Za-z0-9_]/.test(command[end]!)) end++
+    } else if (n !== undefined && /[0-9@*#?$!-]/.test(n)) end++
+    else {
+      out += c
+      continue
+    }
+    if (isSpace(command[i - 1]) && isSpace(command[end])) {
+      out += command.slice(i, end)
+    } else out += ' '
+    i = end - 1
+  }
+  return out
+}
+
 function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
 }
@@ -6800,6 +6863,13 @@ function denyAtScan(
   if (unglued !== command) {
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+  }
+  if (unglued.includes('$')) {
+    const raw = replaceGluedExpansions(unglued)
+    if (raw !== unglued) {
+      const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
   }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
