@@ -8485,9 +8485,12 @@ test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', 
 }, 30_000)
 
 // claude-factory-sdur: a bash {NAME}> fd-name redirect word is a redirect word at every reader.
-test.each(['X=rm; {fd}> f $X -rf ./x'])('denyReason denies %j (claude-factory-sdur dropRedirectWords)', cmd => {
-  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
-})
+test.each(['X=rm; {fd}> f $X -rf ./x'])(
+  'denyReason denies %j (claude-factory-sdur dropRedirectWords)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  },
+)
 
 test.each([
   'echo x {fd}>~/.gitconfig',
@@ -8495,7 +8498,9 @@ test.each([
   'echo x {a[1]}>~/.gitconfig',
   'echo x {a[b[0]]}>~/.gitconfig',
 ])('denyReason denies %j (claude-factory-sdur REDIRECT_PREFIX_RE)', cmd => {
-  expect(denyReason(cmd, '/Users/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+  expect(denyReason(cmd, '/Users/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(
+    GLOBAL_GIT_CONFIG_REASON,
+  )
 })
 
 test.each(['echo x | {fd}> f $SH', 'echo x | {fd}> f $SH -s'])(
