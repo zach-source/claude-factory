@@ -1634,7 +1634,7 @@ function dynamicHeadDeny(
   for (let k = start + 1; k < cmd.length; k++) {
     const t = cmd[k]!
     if (start > 0 && (t === ';' || t === '+')) break
-    if (t[0] === '-' || t === '{' || t === '}' || !DYN_CHARS.test(t)) continue
+    if (t[0] === '-' || !DYN_CHARS.test(t)) continue
     if (!later) later = k
     if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
   }
