@@ -8658,6 +8658,7 @@ const DENY_K8IZ: string[] = [
   "y='rm ../acme.txt' eval '$y'",
   "y='rm ../acme.txt' env bash -c '$y'",
   'y=\'rm ../acme.txt\'; echo "`$y`"',
+  'y=\'rm ../acme.txt\' echo "`$y`"',
   "for y in 'rm ../acme.txt'; do $y; done",
   'set -- rm ../acme.txt; $1',
   'cd acme && $y',

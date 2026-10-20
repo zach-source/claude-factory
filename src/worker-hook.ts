@@ -1611,9 +1611,10 @@ function hasLettersInOrder(w: string, letters: string): boolean {
  * expansion: it denies when the word can run rm or find with flags, or rm on a risky target.
  * A: the word cannot be read (open `${`, `${!`, backtick, `$(`).
  * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
- * C: another segment holds flag text (a variable there can put flags in the word), or can split a
- * value into words (k8iz): it holds IFS, builds a name with a dollar or backtick before `=`, or sets
- * a NAME= value with a quote, backslash or space.
+ * C: another segment holds flag text (a variable there can put flags in the word). Also (k8iz), a
+ * word with a dollar or backtick denies late when the text has 2+ segments, its segment starts with
+ * a NAME= or NAME+= prefix, or an outer scan had one of these. Accepted false denies:
+ * `export EDITOR=vim; $EDITOR f`, `SH=sh; $SH -c 'echo x'`, `export${IFS}PATH=/x; git status`.
  * D: the word may read as rm or find, and a target is risky or a default value holds a path.
  * Returns rm: true when D holds but no target is risky, for the cd + rm rule. O(length).
  */
