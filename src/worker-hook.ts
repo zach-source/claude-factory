@@ -317,6 +317,9 @@ export interface HookGate {
    * It does not know where the command runs.
    * So it denies nothing on that fact alone. */
   cwd?: string
+  /** claude-factory-ebmm: the home directory the global git config guard adds to its glob samples;
+   * defaults to os.homedir() */
+  homeDir?: () => string
   /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
    * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
   headOf?: (dir?: string, timeoutMs?: number) => string | undefined
@@ -2172,11 +2175,8 @@ const GLOBAL_GIT_CONFIG_FILE_RE =
 // claude-factory-ty8y: paths a glob word is tested against, to find a glob that can name the file.
 const GLOBAL_GIT_CONFIG_SAMPLES = [
   '~/.gitconfig',
-  '~acme/.gitconfig',
   '$HOME/.gitconfig',
   '${HOME}/.gitconfig',
-  '/home/acme/.gitconfig',
-  '/Users/acme/.gitconfig',
   '/etc/gitconfig',
   '~/.config/git/config',
   '~/.config/git',
@@ -2184,6 +2184,39 @@ const GLOBAL_GIT_CONFIG_SAMPLES = [
   '$XDG_CONFIG_HOME/git/config',
   '${XDG_CONFIG_HOME}/git/config',
 ]
+
+// claude-factory-ebmm: the sample list plus the real user's paths. A worker knows its home from the
+// gate, from os.homedir() and from the first two segments of root (for example /Users/<user>).
+// XDG_CONFIG_HOME adds its own git/config path. A `~<user>` form is added for each home.
+function globalGitConfigSamples(root: string | undefined, gate: HookGate | undefined): string[] {
+  const homes = new Set<string>()
+  try {
+    homes.add((gate?.homeDir ?? homedir)())
+  } catch {}
+  const m = (root ?? '').match(/^\/[^/]+\/[^/]+/)
+  if (m) homes.add(m[0])
+  const out = [...GLOBAL_GIT_CONFIG_SAMPLES]
+  for (const h of homes) {
+    if (!h || h === '/') continue
+    const user = h.split('/').pop()!
+    out.push(`${h}/.gitconfig`, `${h}/.config/git/config`, `${h}/.config/git`, `${h}/.config/git/`)
+    if (user) out.push(`~${user}/.gitconfig`)
+  }
+  const xdg = process.env.XDG_CONFIG_HOME
+  if (xdg) out.push(`${xdg}/git/config`)
+  return out
+}
+
+// claude-factory-ebmm: a brace group with a comma or `..` expands in the shell. Each such group
+// becomes `*`, innermost first, so the glob test sees every spelling. `{}`, a lone `{` and `${` stay.
+function collapseBraces(w: string): string {
+  let prev: string
+  do {
+    prev = w
+    w = w.replace(/\{[^{}]*(?:,|\.\.)[^{}]*\}/g, '*')
+  } while (w !== prev)
+  return w
+}
 
 // claude-factory-ty8y: commands that read their operands. A reader writes only through a redirect.
 const READER_COMMANDS = new Set([
@@ -2215,15 +2248,15 @@ const READER_COMMANDS = new Set([
 // claude-factory-ty8y.12: commands whose operands are text (a search word, a title, a comment body).
 const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
 
-function globNamesGlobalGitConfig(word: string): boolean {
-  const w = word.replace(/^["']+|["']+$/g, '')
+function globNamesGlobalGitConfig(word: string, samples: string[]): boolean {
+  const w = collapseBraces(word.replace(/^["']+|["']+$/g, ''))
   if (!/[*?[]/.test(w)) return false
   // claude-factory-ty8y.24: star runs collapse; more than 4 stars fail closed, since a backtracking match could outlast the hook timeout.
   const collapsed = w.replace(/\*+/g, '*')
   if (collapsed.split('*').length - 1 > 4) return true
   try {
     const re = globToRegExp(collapsed)
-    return GLOBAL_GIT_CONFIG_SAMPLES.some(s => re.test(s))
+    return samples.some(s => re.test(s))
   } catch {
     return false
   }
@@ -2353,11 +2386,14 @@ function globalGitConfigUse(
   words: string[],
   skip: OperandSkip,
   isCd = false,
+  root?: string,
+  gate?: HookGate,
 ): 'write' | 'mention' | undefined {
   // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
   // the text config or XDG, a glob character, a brace, or a redirect operator.
   if (!/config|XDG|[*?[{<>]/i.test(joinedWords(words))) return undefined
   let use: 'mention' | undefined
+  let samples: string[] | undefined
   let pending = false
   let prevWriterFlag = false
   for (const word of words) {
@@ -2390,7 +2426,7 @@ function globalGitConfigUse(
       if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
       continue
     }
-    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate)) return 'write'
+    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate, (samples ??= globalGitConfigSamples(root, gate)))) return 'write'
     if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
   }
   return use
@@ -6306,7 +6342,7 @@ function denyAtScan(
         ? 'operands'
         : 'none'
     const configUse = mayTouch
-      ? globalGitConfigUse(words, operandSkip, b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir')
+      ? globalGitConfigUse(words, operandSkip, b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir', root, gate)
       : undefined
     if (configUse === 'mention') state.globalGitConfig = true
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
