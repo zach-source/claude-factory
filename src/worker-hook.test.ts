@@ -4313,6 +4313,18 @@ const DENY_EBMM_ANY = [
   'sed -i s/a/b/ ~/.gitconfi(g|x)',
   'cp x ~/.config/g(it|x)/config',
   'echo x > ~/.gitconfi(g|x)',
+  'tee -a ~/.gitconfi${X:-g}',
+  'tee -a ~/.gitconfi${HOME:+g}',
+  'tee -a ~/.gitconfi${:-g}',
+  'tee -a ~/.gitconf${X:-i}g',
+  'tee -a ~/.git${X:-config}',
+  'tee -a ~/.gitc${X:-onfig}',
+  'tee -a $HOME/.gitconfi${X:-g}',
+  'tee -a ${HOME}/.gitconfi${X:-g}',
+  'tee -a /Users/widget/.gitconfi${X-g}',
+  'sed -i s/a/b/ ~/.gitconfi${X:-g}',
+  'tee -a ~/.gitconfi${X:-${Y:-g}}',
+  'cp x ~/.config/gi${X:-t}/config',
 ]
 test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
   'denyReason denies %j under a second fixture user (claude-factory-ebmm)',
@@ -4409,6 +4421,10 @@ test.each([
   'cp a /tmp/a.*/z',
   'mkdir -p /Users/widget/r/{src,test}/x',
   'cp x ~/r/*/y',
+  'cp x ${X%x}',
+  'cp x ${OUT:-out}/a',
+  'tee -a ${LOG:-log.txt}',
+  'echo ${X:-a} > f',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
 })
