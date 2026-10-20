@@ -5669,7 +5669,7 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length; ) {
+  for (let i = 0; i < words.length;) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
