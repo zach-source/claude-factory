@@ -8591,6 +8591,159 @@ test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repe
   30_000,
 )
 
+// claude-factory-miqy: a lone dynamic command word runs the value of a variable set in the same text.
+const MIQY_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const MIQY_DENY: Array<[string, string]> = [
+  ['X="rm -rf /"; $X', REASON],
+  ['X="rm -rf /"; ${X}', REASON],
+  ['X="rm -rf /" && $X', REASON],
+  ['X="rm -rf /"\n$X', REASON],
+  ['export X="rm -rf /"; $X', REASON],
+  ['declare X="rm -rf /"; $X', REASON],
+  ['X=rm; $X -rf /', REASON],
+  ['X="rm -rf"; $X /', REASON],
+  ['X="rm -rf /"; sudo $X', REASON],
+  ['X="rm -rf /"; timeout 5 $X', REASON],
+  ['X="rm -rf /"; eval $X', REASON],
+  ['X="rm -rf /"; bash -c "$X"', REASON],
+  ['X="git push origin main"; $X', PUSH_REASON],
+  ['X="git push"; $X origin main', PUSH_REASON],
+  ['X=; $X rm -rf /', REASON],
+  ['X=$(cat f); $X', DYNAMIC_VERB_REASON],
+  ['X="rm *"; $X', DYNAMIC_VERB_REASON],
+  ['X=rm; X+=" -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['for X in "rm -rf /"; do $X; done', DYNAMIC_VERB_REASON],
+  ['printf -v X "rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X="rm,-rf,/"; IFS=,; $X', DYNAMIC_VERB_REASON],
+  ['while :; do $X; X="rm -rf /"; done', REASON],
+  ['until false; do $X; X="rm -rf /"; done', REASON],
+  ['for i in 1 2; do $X; X="rm -rf /"; done', REASON],
+  ['X="rm -rf /"; Y="$($X)"', REASON],
+  ['X="rm -rf /"; echo "$($X)"', REASON],
+  ['X="rm -rf /"; echo "`$X`"', REASON],
+  ['X="rm -rf /"; echo "$(eval $X)"', REASON],
+  ['X="git push origin main"; echo "$($X)"', PUSH_REASON],
+  ['X="rm -rf /"; env $X', REASON],
+  ['X="rm -rf /"; command $X', REASON],
+  ['X="rm -rf /"; exec $X', REASON],
+  ['X="rm -rf /"; nohup $X', REASON],
+  ['X="rm -rf /"; eval \'true; $X\'', REASON],
+  ['X="rm -rf /"; eval \'eval $X\'', REASON],
+  ['X="rm -rf /"; bash -c "true; $X"', REASON],
+  ['X="git push origin main"; eval \'true; $X\'', PUSH_REASON],
+  ['export X="git push origin main"; bash -c \'true && $X\'', PUSH_REASON],
+  ['X="rm -rf /"; ${X%x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X#x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X:0}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X^^}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X//x/y}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X:+$X}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${X[@]}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; Y=X; ${!Y}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${=X}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; $=X', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; ${(z)X}', DYNAMIC_VERB_REASON],
+  ['X="git push origin main"; ${X%x}', DYNAMIC_VERB_REASON],
+  ['X="rm -rf /"; $X; X=ls', DYNAMIC_VERB_REASON],
+  ['X="git push origin main"; $X; X=true', DYNAMIC_VERB_REASON],
+  ['for X in "rm -rf /"; do $X; done; X=ls', DYNAMIC_VERB_REASON],
+  ['declare -n R=X; X="rm -rf /"; $R', DYNAMIC_VERB_REASON],
+  ['declare -l X="GIT PUSH ORIGIN MAIN"; $X', DYNAMIC_VERB_REASON],
+  [': ${X:=rm}; $X -rf /', DYNAMIC_VERB_REASON],
+  [': ${X="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['eval \'X="rm -rf /"\'; $X', DYNAMIC_VERB_REASON],
+  ['{ X="rm -rf /"; }; $X', DYNAMIC_VERB_REASON],
+  ['env X="rm -rf /" bash -c \'$X\'', REASON],
+  ['X=ls; X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]+=" -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[1,-1]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; declare X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; export X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; eval \'X[0]="rm -rf /"\'; $X', DYNAMIC_VERB_REASON],
+  [': ${X[0]:="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]="git push origin main"; ${X}', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]="rm -rf /"; sudo $X', DYNAMIC_VERB_REASON],
+  ['X=ls; select X in "rm -rf /"; do $X; done', DYNAMIC_VERB_REASON],
+  ['X=ls; vared X; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; : ${X::="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X=ls; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; unset X; $X', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; $_', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; ${_}', DYNAMIC_VERB_REASON],
+  ['$REPLY', DYNAMIC_VERB_REASON],
+  ['${BASH_REMATCH}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; sudo $_', DYNAMIC_VERB_REASON],
+  ['declare X\'\'Y="rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['export X\'\'Y="git push origin main"; $XY', DYNAMIC_VERB_REASON],
+  ['printf -v X\'\'Y "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['declare X\'\'Y="rm -rf /"; sudo $XY', DYNAMIC_VERB_REASON],
+  ['A=X; declare "${A}Y=rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; printf -v "${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; export "${A}Y=rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval "${A}Y=\'rm -rf /\'"; $XY', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; ${_%x}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; ${_:0}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; sudo ${_%x}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; eval ${_%x}', DYNAMIC_VERB_REASON],
+  ['A=X; declare "${A}Y=rm -rf /"; echo "$($XY)"', DYNAMIC_VERB_REASON],
+  ['A=X; export "${A}Y=rm -rf /"; bash -c \'$XY\'', DYNAMIC_VERB_REASON],
+  ["A=X; eval \"${A}Y='rm -rf /'\"; eval '$XY'", DYNAMIC_VERB_REASON],
+  ['A=X; export "${A}Y=git push origin main"; bash -c \'$XY\'', DYNAMIC_VERB_REASON],
+  ['X=ls; printf -vX "rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['printf -vXY "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; printf -v"${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; print -v "${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; print -v"${A}Y" "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['print -vXY "rm -rf /"; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "git push origin main"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; sudo $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'declare ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ["A=X; eval 'export ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ["A=X; eval 'getopts ab ${A}Y'; $XY", DYNAMIC_VERB_REASON],
+  ['A=X; eval \'print -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'printf -v ${A}Y "rm -rf /"\'; echo "$($XY)"', DYNAMIC_VERB_REASON],
+  ['IFS=, read -aXY; $XY', DYNAMIC_VERB_REASON],
+  ['IFS=, read -raXY; sudo $XY', DYNAMIC_VERB_REASON],
+  ['read -aXY; $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'printf -v' '${A}Y \"rm -rf /\"'; $XY", DYNAMIC_VERB_REASON],
+  ['A=X; eval \'\\printf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'"printf" -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ['A=X; eval \'p\\rintf -v ${A}Y "rm -rf /"\'; $XY', DYNAMIC_VERB_REASON],
+  ["A=X; eval 'printf -v' '${A}Y \"git push origin main\"'; $XY", DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; $arr', DYNAMIC_VERB_REASON],
+  ['rray=ls; read -rarray; $rray', DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; sudo $arr', DYNAMIC_VERB_REASON],
+  ['arr=ls; read -raarr; eval $arr', DYNAMIC_VERB_REASON],
+]
+test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
+  const got = denyReason(cmd, '/root/repo', undefined, MIQY_GATE)
+  // claude-factory-pwy0 reads rm text across segments first: such a row denies with the rm reason.
+  expect(got === reason || got === REASON).toBe(true)
+})
+
+test.each([
+  'for h in a b; do ssh $h uptime; done',
+  'for h in a b; do fish $h; done',
+  'X="git push origin main"; ssh host $X',
+  '${EDITOR:-vi} a.txt',
+  '${X%x}',
+  '${HOME%/}/bin/tool',
+  '$EDITOR a.txt',
+  '$X',
+  'echo $X',
+  'X="ls -l"; $X',
+  'X=1; echo $X',
+  'X="rm -rf /"; echo $X',
+  'X=(ls); echo ${X[0]}',
+  'X=ls; $X -la',
+  'X=ls; $X',
+  'echo $_',
+])('denyReason allows %j (claude-factory-miqy)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
+})
+
 test.each([
   ["trap 'git push origin main' EXIT"],
   ['trap "git push origin main" EXIT'],
@@ -8772,7 +8925,9 @@ const DENY_PWY0: string[] = [
   'FIND$x ../acme.txt',
 ]
 test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
-  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  // claude-factory-miqy: a variable write in the same command can deny first, with the dynamic reason.
+  const got = denyReason(cmd, '/Users/acme/widget')
+  expect(got === REASON || got === DYNAMIC_VERB_REASON).toBe(true)
 })
 
 const ALLOW_PWY0: string[] = [
@@ -8799,7 +8954,8 @@ test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
 test('scanReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {
   const n = 20_000
   const cmd = '${a:-'.repeat(n) + 'rm' + '}'.repeat(n) + ' -rf /'
-  expect(scanReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  const got = scanReason(cmd, '/Users/acme/widget')
+  expect(got === REASON || got === DYNAMIC_VERB_REASON).toBe(true)
 }, 30_000)
 
 test('scanReason reads 2700 zsh flag groups in one pass (claude-factory-pwy0)', () => {

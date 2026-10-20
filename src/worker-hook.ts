@@ -6349,6 +6349,7 @@ function anyShellReason(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
+  vars?: VarTable,
 ): string | undefined {
   let nc = -1
   let nd = -1
@@ -6379,7 +6380,7 @@ function anyShellReason(
       // text. denyAt would read a word such as `${FOO}` as-is and never match it to a real git
       // or gh verb; env expands it to one command word at run time, past this guard's sight.
       if (val.includes('$')) return ENV_SPLIT_VAR_REASON
-      const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+      const r = denyAt(val, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
       if (r) return r
       // claude-factory-s1fj: env inserts the split words into argv and keeps parsing the words
       // after the value. Rebuild that argv and scan it, so a shell word in the value reaches
@@ -6396,7 +6397,7 @@ function anyShellReason(
         ...words.slice(span.end),
       ]
       const line = argv.map(w => "'" + w.replace(/'/g, "'\\''") + "'").join(' ')
-      return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+      return denyAt(line, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
     }
     if (shellSlotWord(words[j]!)) {
       // claude-factory-38jm: a shell word below slotEnd is a value word of an earlier walk. Its
@@ -6430,11 +6431,22 @@ function anyShellReason(
         if (w === '--') {
           k++
           if (k < words.length)
-            found = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+            found = denyAt(
+              words[k]!,
+              root,
+              personOnly,
+              gate,
+              depth + 1,
+              state,
+              moved,
+              ghConfigMovedBefore,
+              [],
+              vars,
+            )
           break
         }
         if (w.startsWith('-')) continue
-        found = denyAt(w, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+        found = denyAt(w, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
         if (found) break
       }
       if (found) return found
@@ -6462,7 +6474,18 @@ function anyShellReason(
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {
-        const r = denyAt(rest.join(' '), root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+        const r = denyAt(
+          rest.join(' '),
+          root,
+          personOnly,
+          gate,
+          depth + 1,
+          state,
+          moved,
+          ghConfigMovedBefore,
+          [],
+          vars,
+        )
         if (r) return r
       }
       break
@@ -6786,6 +6809,118 @@ function shellAliasReason(
   return undefined
 }
 
+// claude-factory-miqy: bash splits an unquoted `$X` into words. So a command word `$X` runs X's value.
+// This table holds each NAME=value the command text sets. The table stores undefined for a value the hook cannot read.
+// The hook reads a visible value as the command. A name with no visible set stays allowed.
+type VarTable = Map<string, string | undefined>
+const VAR_REF = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/
+const VAR_UNREADABLE = /[$`\\;&|<>()"'*?[\]{}~!#]/
+
+function recordVarWrites(words: string[], vars: VarTable): void {
+  const b = baseWord(words[0] ?? '')
+  // miqy.9: a name set twice with different values is unreadable.
+  const set = (name: string, value: string | undefined) =>
+    vars.set(name, vars.has(name) && vars.get(name) !== value ? undefined : value)
+  if (b === 'for' && words[1]) set(words[1], undefined)
+  if (
+    b === 'read' ||
+    b === 'mapfile' ||
+    b === 'readarray' ||
+    b === 'printf' ||
+    b === 'print' ||
+    b === 'getopts'
+  ) {
+    for (const w of words.slice(1)) {
+      if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+      // miqy.18: a glued -vNAME writes NAME.
+      const g = /^-v([A-Za-z_]\w*)$/.exec(w)
+      if (g) set(g[1]!, undefined)
+    }
+  }
+  // miqy.21: a glued read -aNAME (also -raNAME) writes NAME, after an IFS=, prefix too.
+  if (words.some(w => baseWord(w) === 'read')) {
+    for (const w of words) {
+      // miqy.23: the split of flags and name is unknown (-raarr), so mark every possible name.
+      if (/^-[A-Za-z]*a[A-Za-z_]\w*$/.test(w)) {
+        for (const m of w.matchAll(/a(?=([A-Za-z_]\w*)$)/g)) set(m[1]!, undefined)
+      }
+    }
+  }
+  const declares = ['export', 'declare', 'typeset', 'local', 'readonly'].includes(b)
+  let i = 0
+  while (i < words.length && (/^[A-Za-z_]\w*\+?=/.test(words[i]!) || (i === 0 && declares))) {
+    if (i > 0 || !declares) {
+      const m = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(words[i]!)!
+      set(m[1]!, m[2] ? undefined : m[3]!)
+    }
+    i++
+  }
+  if (declares) {
+    // miqy.10: a flag (-n, -l, -u ...) can change what the name holds, so its names are unreadable.
+    const flagged = words.slice(1).some(w => /^[-+][A-Za-z]/.test(w))
+    for (const w of words.slice(1)) {
+      const m = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(w)
+      if (m) set(m[1]!, m[2] || flagged ? undefined : m[3]!)
+      else if (/^[A-Za-z_]\w*$/.test(w)) set(w, undefined)
+    }
+  }
+  // miqy.11: env/sudo NAME=value words are readable. Any other write inside a word (an eval script) is not.
+  const wraps = b === 'env' || b === 'sudo'
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k]!
+    const lead = /^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/.exec(w)
+    if (lead && k >= i && wraps) set(lead[1]!, lead[2] ? undefined : lead[3]!)
+    for (const m of w.matchAll(/(?:^|[\s;&|({])([A-Za-z_]\w*)\+?=/g)) {
+      const handled = m.index === 0 && (k < i || declares || wraps)
+      if (!handled) vars.set(m[1]!, undefined)
+    }
+  }
+}
+
+// claude-factory-miqy.8: an operator or zsh form also runs the split value of its name.
+const VAR_OP_REF = /^\$(?:=([A-Za-z_]\w*)|\{[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)[\s\S]*\})$/
+function varOpName(w: string): string | undefined {
+  const m = VAR_OP_REF.exec(w)
+  return m ? (m[1] ?? m[2]) : undefined
+}
+
+// claude-factory-miqy.12: count the raw-text mentions of NAME that are not a pure read (the plain and braced forms).
+// A write form the table does not know still shows as a mention, so the head check fails closed.
+const MENTION_COUNTERS = new WeakMap<VarTable, (name: string) => number>()
+// miqy.17: a nested level inherits the outer level's dynamic-name write check.
+const DYNWRITE_CHECKS = new WeakMap<VarTable, () => boolean>()
+// claude-factory-miqy.13: names the shell sets itself. A head of one of them denies.
+const IMPLICIT_VARS = new Set([
+  '_',
+  'REPLY',
+  'BASH_REMATCH',
+  'MAPFILE',
+  'OPTARG',
+  'COPROC',
+  'READLINE_LINE',
+  'reply',
+  'match',
+  'MATCH',
+])
+function countMentions(text: string, name: string): number {
+  let n = 0
+  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))) {
+    const i = m.index!
+    const pure = text[i - 1] === '$' || (text.slice(i - 2, i) === '${' && text[i + name.length] === '}')
+    if (!pure) n++
+  }
+  return n
+}
+
+function varRefName(w: string): string | undefined {
+  const m = VAR_REF.exec(w)
+  return m ? (m[1] ?? m[2]) : undefined
+}
+
+function shellQuoteWord(w: string): string {
+  return /^[\w./:=@%+,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`
+}
+
 // claude-factory-j1ki: the shell splits an unquoted expansion that is glued to other text in one
 // word (rm${IFS}-rf${IFS}/) into several words. segments() keeps it as one word, so no rule reads
 // the real command. This returns the words with each such expansion read as a word break, or
@@ -6896,6 +7031,7 @@ function denyAt(
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
   aliasStack: readonly string[] = [],
+  outerVars?: VarTable,
 ): string | undefined {
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
@@ -6933,6 +7069,7 @@ function denyAt(
       ghConfigMovedBefore,
       late,
       aliasStack,
+      outerVars,
     ) ??
     late.glued ??
     late.reason
@@ -6950,6 +7087,7 @@ function denyAtScan(
   ghConfigMovedBefore: boolean,
   late: { reason?: string; glued?: string },
   aliasStack: readonly string[],
+  outerVars?: VarTable,
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
@@ -7000,6 +7138,96 @@ function denyAtScan(
   let definesFunction = quoteInfo.funcDef
   let ambiguousAssignment = false
   let subIdx = 0
+  const vars: VarTable = new Map(outerVars)
+  const joined = command.split('\\\n').join('')
+  const inheritedCount = outerVars && MENTION_COUNTERS.get(outerVars)
+  const mentionCache = new Map<string, number>()
+  const mentions = (name: string): number => {
+    let n = mentionCache.get(name)
+    if (n === undefined) {
+      n = Math.max(countMentions(joined, name), inheritedCount ? inheritedCount(name) : 0)
+      mentionCache.set(name, n)
+    }
+    return n
+  }
+  MENTION_COUNTERS.set(vars, mentions)
+  // claude-factory-miqy: collect every write first. A set after the use still counts.
+  for (const w of segs) recordVarWrites(w, vars)
+  // miqy.11: ${NAME:=v} and ${NAME=v} write a name the lexer does not show as a write.
+  for (const m of command.matchAll(/\$\{([A-Za-z_]\w*):?=/g)) vars.set(m[1]!, undefined)
+  // The lexer splits ${(z)X} at the parens, so read the raw text: a zsh flag form of a set name denies.
+  if (vars.size > 0) {
+    for (const m of command.matchAll(/\$\{[!=~^]*\([^)]*\)([A-Za-z_]\w*)/g)) {
+      if (vars.has(m[1]!)) return DYNAMIC_VERB_REASON
+    }
+  }
+  // miqy.15: a write whose name comes from an expansion is unreadable, so every variable head denies.
+  const dynName = (x: string): boolean => /^[^=]*[$`]/.test(x)
+  const NAME_WRITERS = [
+    'declare',
+    'typeset',
+    'local',
+    'readonly',
+    'export',
+    'read',
+    'mapfile',
+    'readarray',
+    'getopts',
+    'eval',
+  ]
+  let dynWriteCache: boolean | undefined
+  const inheritedDyn = outerVars && DYNWRITE_CHECKS.get(outerVars)
+  const dynWrite = (): boolean =>
+    (dynWriteCache ??=
+      (inheritedDyn ? inheritedDyn() : false) ||
+      segs.some(ws =>
+        ws.some((w, k) => {
+          const b = baseWord(w)
+          // An eval script with no "=" writes nothing, so it is no dynamic-name write.
+          // miqy.20: an eval script that names a writer word counts too.
+          if (b === 'eval') {
+            // miqy.22: join the args and drop quotes and backslashes, as eval does.
+            const args = ws.slice(k + 1)
+            if (!args.some(dynName)) return false
+            const j = args.join(' ').replace(/["'\\]/g, '')
+            return (
+              j.includes('=') ||
+              /(?:^|[\s;&|({])(?:declare|typeset|local|readonly|export|read|mapfile|readarray|getopts|printf|print|vared)\b/.test(
+                j,
+              )
+            )
+          }
+          if (NAME_WRITERS.includes(b)) return ws.slice(k + 1).some(dynName)
+          if (b === 'printf' || b === 'print') {
+            return ws
+              .slice(k + 1)
+              .some((x, j, a) => (a[j - 1] === '-v' && dynName(x)) || (/^-v./.test(x) && dynName(x.slice(2))))
+          }
+          return false
+        }),
+      ))
+  DYNWRITE_CHECKS.set(vars, dynWrite)
+  const scanValue = (name: string, rest: string[]): string | undefined => {
+    if (dynWrite()) return DYNAMIC_VERB_REASON
+    const n = mentions(name)
+    if (n === 0 && !vars.has(name) && !IMPLICIT_VARS.has(name)) return undefined
+    const value = vars.get(name)
+    if (
+      n !== 1 ||
+      IMPLICIT_VARS.has(name) ||
+      value === undefined ||
+      vars.has('IFS') ||
+      VAR_UNREADABLE.test(value)
+    ) {
+      return DYNAMIC_VERB_REASON
+    }
+    const text = [...value.split(/\s+/).filter(Boolean), ...rest.map(shellQuoteWord)].join(' ')
+    return denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+  }
+  const varsGuard = (words: string[], cmd: string[]): boolean =>
+    cmd.length > 0 &&
+    !anyDynamicCommandReason(words) &&
+    !(personOnly?.length && anyDynamicLiveApplyReason(words, personOnly))
   // claude-factory-pwy0: per-segment flag text and rm/find text, so a dynamic word reads the others.
   const segFlag = segs.map(sg => DYN_FLAG_TEXT.test(sg.join(' ')))
   const segRmFind = segs.map(sg => /rm|find/i.test(sg.join(' ')))
@@ -7019,7 +7247,18 @@ function denyAtScan(
       // the raw body is read too. This only adds a deny reading.
       const clean = cleanSubstitutionBody(body)
       for (const text of clean === body ? [body] : [clean, body]) {
-        const r = denyAt(text, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+        const r = denyAt(
+          text,
+          root,
+          personOnly,
+          g,
+          depth + 1,
+          state,
+          movedSoFar,
+          ghConfigMovedSoFar,
+          [],
+          vars,
+        )
         // claude-factory-wmsr: a body this guard cannot read waits. A later real command reason wins.
         if (r === HEREDOC_REASON || r === COMMENT_REASON) late.reason ??= r
         else if (r) return r
@@ -7092,6 +7331,26 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
+    // The older dynamic-word scan keeps its own reason when it denies first.
+    if (varsGuard(words, cmd)) {
+      const headName = varRefName(cmd[0]!)
+      if (headName) {
+        const r = scanValue(headName, cmd.slice(1))
+        if (r) return r
+      } else {
+        // The head may name a set variable. ${!Y} names another one, so any set name denies.
+        const opName = varOpName(cmd[0]!)
+        if (
+          opName &&
+          (IMPLICIT_VARS.has(opName) ||
+            vars.has(opName) ||
+            mentions(opName) >= 2 ||
+            cmd[0]!.startsWith('${!') ||
+            dynWrite())
+        )
+          return DYNAMIC_VERB_REASON
+      }
+    }
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
@@ -7159,6 +7418,7 @@ function denyAtScan(
       state,
       movedSoFar,
       ghConfigMovedSoFar,
+      vars,
     )
     if (shellReason) return shellReason
     // claude-factory-l43b: a shell word with no -c script reads its script from stdin.
