@@ -1091,6 +1091,7 @@ function segments(
             !wasExempt &&
             !info.funcDef &&
             !(prev === '{' && cmd[i - 2] === '$') &&
+            !(prev === '[' && /^(?:\$\w+)?\[$/.test(word)) &&
             !groupEndsCommand(cmd, i)
           ) {
             ;(info.glued ??= new Set()).add(cur)
