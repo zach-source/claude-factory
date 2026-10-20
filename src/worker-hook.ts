@@ -4417,6 +4417,7 @@ function segmentDynArg(words: string[]): boolean {
     first === undefined ||
     externalProgram(words[first]!) ||
     words[first] === 'echo' ||
+    words[first] === 'cd' ||
     words[first]!.startsWith('#')
   )
     return false
