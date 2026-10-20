@@ -5978,6 +5978,19 @@ function anyShellReason(
       if (literal) j = k
       continue
     }
+    if (bw === 'trap') {
+      // claude-factory-81tz: the trap action is a script the shell runs later. Read it like an eval script.
+      let k = j + 1
+      while (k < words.length && words[k]!.startsWith('-') && words[k] !== '-') {
+        k++
+        if (words[k - 1] === '--') break
+      }
+      if (k < words.length) {
+        const r = denyAt(words[k]!, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore)
+        if (r) return r
+      }
+      continue
+    }
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
       if (rest.length) {

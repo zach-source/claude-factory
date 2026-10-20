@@ -7626,3 +7626,34 @@ test.each([['time ' + '-x '.repeat(2700) + 'rm -rf /'], ['time ' + '-x rm '.repe
   },
   30_000,
 )
+
+test.each([
+  ["trap 'git push origin main' EXIT"],
+  ['trap "git push origin main" EXIT'],
+  ['trap git\\ push\\ origin\\ main EXIT'],
+  ["trap 'git push origin main;' EXIT"],
+  ["trap 'git push origin main' INT TERM EXIT"],
+  ["trap -- 'git push origin main' EXIT"],
+  ["builtin trap 'git push origin main' EXIT"],
+  ["command trap 'git push origin main' EXIT"],
+  ["x=1 trap 'git push origin main' EXIT"],
+  ["trap 'eval git push origin main' EXIT"],
+  ["trap 'rm -rf /' EXIT"],
+])('denyReason denies a trap action that holds a guarded command (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
+
+test.each([["trap - EXIT"], ["trap -p"], ["trap 'echo hi' EXIT"], ["trap '' INT"], ['source .scratch/x.sh']])(
+  'denyReason allows a harmless trap (claude-factory-81tz): %s',
+  cmd => {
+    expect(denyReason(cmd)).toBeUndefined()
+  },
+)
+
+test.each([
+  ["source <(echo 'git push origin main')"],
+  [". <(echo 'git push origin main')"],
+  ["source =(echo 'git push origin main')"],
+])('denyReason keeps denying a source process substitution (claude-factory-81tz): %s', cmd => {
+  expect(denyReason(cmd)).toBeDefined()
+})
