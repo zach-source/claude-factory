@@ -43,6 +43,56 @@ export function runsToMove(runs: RunFacts[], keep: number) {
   return runs.filter(r => r.live || kept.has(r.id)).map(r => r.id)
 }
 
+/** git facts of one live run, read by cli.ts before the upload */
+export type RunGit = {
+  id: string
+  branch: string
+  /** the run's head is in origin/<branch> */
+  onOrigin: boolean
+  /** the run's head is in origin/<default branch> */
+  merged: boolean
+  /** the laptop worktree has uncommitted changes */
+  dirty: boolean
+  /** the run's base commit is on some origin ref */
+  baseOnOrigin: boolean
+}
+
+const named = (runs: RunGit[]) => runs.map(r => `${r.id} (${r.branch})`).join(', ')
+
+/** a live run whose work exists only on the laptop: commits on no origin ref, or uncommitted changes */
+export function gitRefusal(runs: RunGit[]) {
+  const unpushed = runs.filter(r => !r.onOrigin && !r.merged)
+  const dirty = runs.filter(r => r.dirty)
+  const out = [
+    ...(unpushed.length
+      ? [
+          `these live runs have commits that are not on origin: ${named(unpushed)}. Push them, then run this again.`,
+        ]
+      : []),
+    ...(dirty.length
+      ? [
+          `these live runs have uncommitted changes in their worktree: ${named(dirty)}. Commit or discard them, then run this again.`,
+        ]
+      : []),
+  ]
+  return out.length ? out.join(' ') : undefined
+}
+
+/** what the task does to the runs that move: recreate a merged run's gone branch, reset a base that origin lacks */
+export const gitNotes = (runs: RunGit[]) => [
+  ...runs
+    .filter(r => !r.onOrigin && r.merged)
+    .map(
+      r => `run ${r.id}: branch ${r.branch} is gone from origin: recreated from origin/<default> in the task`,
+    ),
+  ...runs
+    .filter(r => !r.baseOnOrigin)
+    .map(
+      r =>
+        `run ${r.id}: its base commit is on no origin ref: base reset in the task (merge-base with origin/<default>)`,
+    ),
+]
+
 export type Entry = { name: string; dir: boolean; bytes: number }
 
 /** a small top-level file over this size stays behind, and the plan names it */
@@ -134,6 +184,9 @@ export type Plan = {
   left: number
   bytes: number
   refusal?: string
+  /** set by cli.ts from gitRefusal and gitNotes, which need git */
+  gitRefusal?: string
+  gitNotes?: string[]
   rigsError?: string
   rigs: (RigRow & { remote?: string })[]
 }
@@ -196,6 +249,7 @@ export const describe = (p: Plan) =>
     `moves: ${p.top.join(', ')}, and ${p.runs.length} run dirs (${p.left} finished runs stay behind)`,
     `the manager's Claude: ${p.claude.length ? p.claude.map(f => basename(f)).join(', ') : 'nothing found (no memory or transcript)'}`,
     ...(p.skipped.length ? [`left behind (big or laptop-only): ${p.skipped.join(', ')}`] : []),
+    ...(p.gitNotes ?? []),
     `size before compression: ${mb(p.bytes)}`,
   ].join('\n')
 

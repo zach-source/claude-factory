@@ -4622,6 +4622,49 @@ const reposSync = (): string[] => {
 
 const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
 
+/**
+ * the git facts of each live run for migrate.gitRefusal and gitNotes: its head (the worktree's, else its branch's)
+ * against origin/<branch> and origin/<default>, uncommitted changes, and whether its base is on an origin ref.
+ * Fetches origin once per repo. A run with no head or no run.json has nothing local to lose and gets no entry
+ */
+function runGitFacts(ids: string[]): migrate.RunGit[] {
+  const g = (repo: string, ...a: string[]) => Bun.spawnSync(['git', '-C', repo, ...a], { stderr: 'ignore' })
+  const fetched = new Set<string>()
+  const out: migrate.RunGit[] = []
+  for (const id of ids) {
+    const f = join(HOME, 'runs', id, 'run.json')
+    if (!existsSync(f)) continue
+    const run = readJson<Run>(f)
+    if (!fetched.has(run.repo)) {
+      fetched.add(run.repo)
+      Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin'], {
+        env: GIT_NETWORK_ENV,
+        timeout: GIT_NETWORK_TIMEOUT_MS,
+        stderr: 'ignore',
+      })
+    }
+    const hasTree = existsSync(run.worktree)
+    const head = hasTree
+      ? g(run.worktree, 'rev-parse', '--verify', '--quiet', 'HEAD')
+      : g(run.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${run.branch}`)
+    if (head.exitCode !== 0) continue
+    const sha = head.stdout.toString().trim()
+    const sym = g(run.repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')
+    const def = sym.exitCode === 0 ? sym.stdout.toString().trim() : 'origin/main'
+    const within = (ref: string) => g(run.repo, 'merge-base', '--is-ancestor', sha, ref).exitCode === 0
+    out.push({
+      id,
+      branch: run.branch,
+      onOrigin: within(`origin/${run.branch}`),
+      merged: within(def),
+      dirty: hasTree && g(run.worktree, 'status', '--porcelain').stdout.toString().trim() !== '',
+      baseOnOrigin:
+        !run.base || g(run.repo, 'branch', '-r', '--contains', run.base).stdout.toString().trim() !== '',
+    })
+  }
+  return out
+}
+
 /** `factory migrate-to-ax [--dry-run] [--force] [--keep N]`: see docs/remote-runner.md, Move the factory to AX */
 async function migrateToAx(args: string[]) {
   if (inAx()) fail('factory migrate-to-ax runs on the laptop')
@@ -4636,8 +4679,16 @@ async function migrateToAx(args: string[]) {
     return r.exitCode === 0 ? r.stdout.toString().trim() : undefined
   }
   const p = migrate.plan(HOME, keep, origin)
+  const live = p.runs.filter(id => {
+    const f = join(HOME, 'runs', id, 'state.json')
+    return migrate.runFacts(id, readFileSync(f, 'utf8'), 0).live
+  })
+  const facts = runGitFacts(live)
+  p.gitRefusal = migrate.gitRefusal(facts)
+  p.gitNotes = migrate.gitNotes(facts)
   console.log(migrate.describe(p))
   if (p.refusal) fail(p.refusal)
+  if (p.gitRefusal) fail(p.gitRefusal)
   if (p.rigsError) fail(p.rigsError)
   if (dry) return console.log('dry run: nothing written, nothing sent')
   const task = ax.managerTask()
