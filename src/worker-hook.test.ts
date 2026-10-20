@@ -5764,10 +5764,15 @@ test.each(DYN_LATER_KEEP)('denyReason keeps allowing: %s (claude-factory-0xw4)',
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
+test('denyReason denies a later dynamic word after a risky-free dynamic head (fail-closed, claude-factory-0xw4)', () => {
+  expect(denyReason('$GIT -C $DIR log $REF', '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
 test('denyReason reads a long dynamic head command in linear time (claude-factory-0xw4)', () => {
-  const cmd = '$X ' + '$A '.repeat(20_000) + '-x '.repeat(20_000)
+  const cmd = '$X ' + '$A '.repeat(1300) + '-x '.repeat(1300)
+  expect(cmd.length).toBeLessThan(8192)
   const t = Date.now()
-  denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).not.toBe(LONG_COMMAND_REASON)
   expect(Date.now() - t).toBeLessThan(1000)
 }, 30_000)
 

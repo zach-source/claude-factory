@@ -1611,6 +1611,8 @@ function hasLettersInOrder(w: string, letters: string): boolean {
  * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
  * C: another segment holds flag text (a variable there can put flags in the word).
  * D: the word may read as rm or find, and a target is risky or a default value holds a path.
+ * E (0xw4): a later dynamic word is followed by recursive flags (the head can be env or sudo).
+ * F (0xw4): a risky target follows the first later dynamic word.
  * Returns rm: true when D holds but no target is risky, for the cd + rm rule. O(length).
  */
 function dynamicHeadDeny(
@@ -1638,9 +1640,9 @@ function dynamicHeadDeny(
     if (!later) later = k
     if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
   }
-  if (later) {
+  const riskyFrom = (from: number): boolean => {
     let afterDashDash = false
-    for (let k = later + 1; k < cmd.length; k++) {
+    for (let k = from; k < cmd.length; k++) {
       const t = cmd[k]!
       if (start > 0 && (t === ';' || t === '+')) break
       if (!afterDashDash && t === '--') {
@@ -1648,9 +1650,11 @@ function dynamicHeadDeny(
         continue
       }
       if (!afterDashDash && t.startsWith('-')) continue
-      if (riskyTarget(t, root)) return { deny: true, rm: false }
+      if (riskyTarget(t, root)) return true
     }
+    return false
   }
+  if (later && riskyFrom(later + 1)) return { deny: true, rm: false }
   if (!(other.rmfind || hasLettersInOrder(w, 'rm') || hasLettersInOrder(w, 'find')))
     return { deny: false, rm: false }
   const dflt = /\$\{[^}:=+-]*:?[-=+]/.exec(w)
@@ -1658,17 +1662,7 @@ function dynamicHeadDeny(
     const rest = w.slice(dflt.index + dflt[0].length)
     if (rest.includes('/') || rest.includes('~') || rest.includes('..')) return { deny: true, rm: false }
   }
-  let afterDashDash = false
-  for (let k = start + 1; k < cmd.length; k++) {
-    const t = cmd[k]!
-    if (start > 0 && (t === ';' || t === '+')) break
-    if (!afterDashDash && t === '--') {
-      afterDashDash = true
-      continue
-    }
-    if (!afterDashDash && t.startsWith('-')) continue
-    if (riskyTarget(t, root)) return { deny: true, rm: false }
-  }
+  if (riskyFrom(start + 1)) return { deny: true, rm: false }
   return { deny: false, rm: true }
 }
 
