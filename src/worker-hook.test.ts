@@ -10280,6 +10280,29 @@ test.each(['cd .. && >f rm x', 'cd .. ; 2>/dev/null rm x', 'cd .. ; command >f r
   },
 )
 
+test.each([
+  'pushd / ; rm x',
+  'popd ; rm x',
+  'chdir / ; rm x',
+  'pushd / && rm x',
+  'rm x ; pushd /',
+  'builtin pushd / ; rm x',
+  'command popd ; rm x',
+  '>f pushd /x; rm -f y',
+  'A+=1 pushd ..; rm foo',
+  'A+=1 popd; rm foo',
+  'A+=1 chdir ..; rm foo',
+])('denyReason denies %j (claude-factory-2xdd dir-change word and rm pair)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
+test.each(['pushd acme ; ls', 'popd ; ls', 'chdir acme ; ls', 'pushd acme', 'echo pushd ; rm x'])(
+  'denyReason keeps allowing %j (claude-factory-2xdd)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+  },
+)
+
 test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{fd}>f echo hi'])(
   'denyReason keeps allowing %j (claude-factory-sdur)',
   cmd => {

@@ -77,6 +77,9 @@ const GLUED_REASON = [
   '{ true } always {rm -rf / }',
   'repeat 1 {sudo rm -rf / }',
   'repeat 1 {cd / } ; rm x',
+  'repeat 1 {pushd / } ; rm x',
+  'repeat 1 {popd } ; rm x',
+  'repeat 1 {chdir / } ; rm x',
   'repeat 1 {{rm -rf / }}',
   'repeat 1 {=rm -rf / }',
   'repeat 1 {A=1 rm -rf / }',
@@ -173,6 +176,7 @@ test.each([
   '{ true } always { sudo -u acme rm -rf / }',
   'repeat 1 { repeat 2 rm -rf /; }',
   'while [[ 1 ]] { cd /; rm x; }',
+  'while [[ 1 ]] { pushd /; rm x; }',
 ])('4IOD.14 denies %s', cmd => {
   expect(run(cmd)).toBe(REASON)
 })
