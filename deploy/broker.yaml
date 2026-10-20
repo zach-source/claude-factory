@@ -1,5 +1,7 @@
-# The policy broker (docs/remote-runner.md, Policy broker). Set BROKER_IMAGE to the image, by digest, and apply:
-#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> envsubst '$BROKER_IMAGE' < deploy/broker.yaml | kubectl apply -f -
+# The policy broker (docs/remote-runner.md, Policy broker). Set BROKER_IMAGE to the image, by digest, and
+# FACTORY_AX_VAULT to the agent-vault vault of the workers, and apply:
+#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> FACTORY_AX_VAULT=<vault> \
+#     envsubst '$BROKER_IMAGE $FACTORY_AX_VAULT' < deploy/broker.yaml | kubectl apply -f -
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -81,7 +83,19 @@ spec:
         - name: broker
           image: ${BROKER_IMAGE}
           args: ['--port', '8080']
+          # the image runs as user bun, and the broker writes nothing to disk
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ['ALL'] }
           env:
+            # the manager task name; the broker never changes its policy. Match FACTORY_AX_MANAGER on the laptop
+            - name: FACTORY_AX_MANAGER
+              value: f-manager
+            # the vault a policy may name; the broker refuses a credential from any other
+            - name: FACTORY_AX_VAULT
+              value: ${FACTORY_AX_VAULT}
             - name: FACTORY_BROKER_ATESPACES
               value: factory
             - name: FACTORY_BROKER_ENDPOINT
@@ -114,3 +128,25 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+---
+# The manager VM's traffic leaves through the egress gateway, so only the gateway reaches the broker.
+# ponytail: the gateway pods' labels are not in this repo, so this selects their namespace (ate-system), not the pods.
+# Narrow it with a podSelector on the gateway Deployment's labels when you know them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: factory-policy-broker
+  namespace: factory-broker
+spec:
+  podSelector:
+    matchLabels:
+      app: factory-policy-broker
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ate-system
+      ports:
+        - port: 8080
+          protocol: TCP

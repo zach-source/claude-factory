@@ -4,6 +4,7 @@
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
 import { CONTROLLER_UNKNOWN, controllerReadiness } from './ax-ready'
+import { ANTHROPIC_HOSTS, GITHUB_API_HOSTS, GITHUB_GIT_HOSTS, parseGithubKeys } from './ax-hosts'
 import { sq } from './harness'
 import { WORKER_USER } from './worker'
 
@@ -65,23 +66,7 @@ export type Egress = {
   pathPrefixes?: string[]
 }
 
-const OWNER = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$/i
-/**
- * `FACTORY_AX_GITHUB_KEYS=<owner>=<KEY>[,<owner>=<KEY>...]`: for a GitHub owner, the vault holds a token `<KEY>`
- * (Bearer) and a git header `<KEY>_BASIC` (Basic) from that owner's App installation. A bad entry is an error.
- */
-export function parseGithubKeys(spec = process.env.FACTORY_AX_GITHUB_KEYS): Record<string, string> {
-  const keys: Record<string, string> = {}
-  for (const entry of (spec ?? '').split(',').filter(Boolean)) {
-    const [owner = '', key = '', ...rest] = entry.split('=')
-    if (rest.length || !OWNER.test(owner))
-      throw new Error(`FACTORY_AX_GITHUB_KEYS entry "${entry}" is <owner>=<KEY> (other-owner=GITHUB_OO)`)
-    if (!/^[A-Z][A-Z0-9_]*$/.test(key))
-      throw new Error(`FACTORY_AX_GITHUB_KEYS key "${key}" is SCREAMING_SNAKE_CASE, as agent-vault names it`)
-    keys[owner] = key
-  }
-  return keys
-}
+export { parseGithubKeys }
 
 /** the vault key of a GitHub owner's token, when FACTORY_AX_GITHUB_KEYS names one (owner names ignore case) */
 export const githubKeyOf = (owner: string, spec = process.env.FACTORY_AX_GITHUB_KEYS) =>
@@ -392,9 +377,9 @@ export function egressPolicy(
   })
   return {
     rules: [
-      rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
-      rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', githubKey ?? 'GITHUB'),
-      rule(['github.com'], 'Authorization', 'Basic ', `${githubKey ?? 'GITHUB'}_BASIC`),
+      rule(ANTHROPIC_HOSTS, 'Authorization', 'Bearer ', 'ANTHROPIC'),
+      rule(GITHUB_API_HOSTS, 'Authorization', 'Bearer ', githubKey ?? 'GITHUB'),
+      rule(GITHUB_GIT_HOSTS, 'Authorization', 'Basic ', `${githubKey ?? 'GITHUB'}_BASIC`),
       ...(gitlabHost ? [gitlabRule(gitlabHost, vault ? uri : undefined)] : []),
       // the binary caches the image's Nix installs tools and a repo's devenv from; their packages are signed. And
       // Nix's global flake registry, which the worker user has no cached copy of: turning it off in nix.conf would

@@ -334,9 +334,11 @@ Limits:
 - Only the atespaces in `FACTORY_BROKER_ATESPACES` (default `factory`).
 - Never the policy of the manager actor (`FACTORY_AX_MANAGER`, default `f-manager`). You create that policy from the laptop.
 - Atespace and actor must be RFC 1123 labels. The body must be a JSON object with `rules`, 64 KiB at most.
+- Every `credentialUri` in the body, at any depth, must be `ate-secret://agent-vault/<vault>/<KEY>` with `<vault>` equal to the broker's `FACTORY_AX_VAULT`. `<KEY>` must be a key that `egressPolicy` uses (`src/ax-hosts.ts`), and all the rule's hostnames must be hosts of that key. Set `FACTORY_AX_GITHUB_KEYS` on the broker as on the laptop for owner keys. For keys that depend on a rig (a GitLab host, a rig egress key), set `FACTORY_BROKER_KEY_HOSTS=KEY=host+host,...`. A rule with no credential is allowed.
+- A rule that names the broker (`FACTORY_BROKER_HOSTS`, default `factory-policy-broker.factory-broker.svc`) or a wildcard hostname is refused with 400.
 - The broker logs one line for each call.
 
-Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task. The broker has no caller authentication.
+`deploy/broker.yaml` has a NetworkPolicy that admits ingress on the broker port only from the `ate-system` namespace, where the egress gateway runs. The VM traffic leaves through the gateway. The policy selects the namespace, not the gateway pods, because their labels are not in this repo.
 
 Use in the manager task:
 
@@ -344,4 +346,4 @@ Use in the manager task:
 2. The manager policy gets one `http` rule for each of the three URLs. An `https` rule does not work for plain HTTP (h2c) to a service.
 3. In the VM, `FACTORY_POLICY_BROKER` makes `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before.
 
-Deploy: set `BROKER_IMAGE` to the image by digest. Run `envsubst '$BROKER_IMAGE' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image.
+Deploy: set `BROKER_IMAGE` to the image by digest. Set `FACTORY_AX_VAULT` to the vault name. Run `envsubst '$BROKER_IMAGE $FACTORY_AX_VAULT' < deploy/broker.yaml | kubectl apply -f -`. For owner keys, add `FACTORY_AX_GITHUB_KEYS` to the Deployment env. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image.

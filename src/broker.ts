@@ -3,6 +3,7 @@
 // CA), so it asks this broker, which holds a Kubernetes ServiceAccount token that ate-api accepts.
 // See docs/remote-runner.md, Policy broker.
 
+import { keyHosts } from './ax-hosts'
 import { CONTROLLER_UNKNOWN, controllerReadiness } from './ax-ready'
 
 export const MAX_BODY = 64 * 1024
@@ -19,6 +20,12 @@ export type Config = {
   /** the `kubectl ate` prefix, with the token file and, when set, the endpoint */
   ate: string[]
   kubectl: string
+  /** the agent-vault vault a policy may name; unset, no policy may carry a credential */
+  vault?: string
+  /** the hosts each vault key may go to (ax-hosts.ts) */
+  keys: Record<string, string[]>
+  /** this broker's own service hosts, which no worker policy may name */
+  hosts: string[]
 }
 
 async function spawn(argv: string[], stdin?: string) {
@@ -42,6 +49,11 @@ export const configFrom = (env: Record<string, string | undefined>, run: Run = s
   return {
     atespaces: (env.FACTORY_BROKER_ATESPACES ?? 'factory').split(',').filter(Boolean),
     manager: env.FACTORY_AX_MANAGER ?? 'f-manager',
+    vault: env.FACTORY_AX_VAULT,
+    keys: keyHosts(env.FACTORY_AX_GITHUB_KEYS, env.FACTORY_BROKER_KEY_HOSTS),
+    hosts: (env.FACTORY_BROKER_HOSTS ?? 'factory-policy-broker.factory-broker.svc')
+      .split(',')
+      .filter(Boolean),
     run,
     kubectl,
     ate: [
@@ -78,13 +90,49 @@ async function body(req: Request) {
   return raw.length > MAX_BODY ? null : raw
 }
 
-/** a policy that is not a JSON object with a rules array is not made */
-function policyText(raw: string) {
+/** every value of `field` anywhere in `v`, however deep */
+function collect(v: unknown, field: string): unknown[] {
+  if (!v || typeof v !== 'object') return []
+  return Object.entries(v).flatMap(([k, x]) => (k === field ? [x] : []).concat(collect(x, field)))
+}
+
+const URI = /^ate-secret:\/\/agent-vault\/([^/]+)\/([A-Z][A-Z0-9_]*)$/
+
+/** does the hostname name this broker (its service name, or a wildcard that would cover it)? */
+const isBroker = (h: string, own: string[]) =>
+  h.includes('*') ||
+  own.some(o => h.toLowerCase().replace(/\.$/, '') === o || h.split('.')[0] === o.split('.')[0])
+
+/**
+ * why a rule is refused, or null. A rule may not name the broker. Every `credentialUri` in it, wherever it sits,
+ * must be the factory vault's and a key whose hosts include all of the rule's hostnames: what egressPolicy builds.
+ * ponytail: no shared bearer token; the NetworkPolicy (deploy/broker.yaml) and this check cover the caller
+ */
+export function ruleRefusal(rule: unknown, c: Pick<Config, 'vault' | 'keys' | 'hosts'>): string | null {
+  const names = collect(rule, 'hostnames').flat()
+  if (names.some(h => typeof h !== 'string')) return 'hostnames are strings'
+  if ((names as string[]).some(h => isBroker(h, c.hosts))) return 'a rule names the broker'
+  for (const uri of collect(rule, 'credentialUri')) {
+    const m = typeof uri === 'string' ? URI.exec(uri) : null
+    if (!m || !c.vault || m[1] !== c.vault) return 'a credential is not from the factory vault'
+    const allowed = c.keys[m[2]!]
+    if (!allowed) return `credential key ${m[2]} is not known`
+    const bad = (names as string[]).find(h => !allowed.includes(h))
+    if (bad) return `credential key ${m[2]} does not go to ${bad}`
+  }
+  return null
+}
+
+/** the policy as text, or why it is refused: it must be a JSON object with a rules array, and each rule must pass */
+function policyText(raw: string, c: Config): { policy: string } | { error: string } {
+  const bad = { error: 'body is not an EgressPolicy (a JSON object with rules)' }
   try {
     const p = JSON.parse(raw)
-    return p && typeof p === 'object' && Array.isArray(p.rules) ? JSON.stringify(p) : null
+    if (!p || typeof p !== 'object' || !Array.isArray(p.rules)) return bad
+    const error = p.rules.map((r: unknown) => ruleRefusal(r, c)).find(Boolean)
+    return error ? { error } : { policy: JSON.stringify(p) }
   } catch {
-    return null
+    return bad
   }
 }
 
@@ -122,8 +170,9 @@ export async function handle(req: Request, c: Config): Promise<Response> {
   }
   const raw = await body(req)
   if (raw === null) return text(413, 'body too large\n')
-  const policy = policyText(raw)
-  if (!policy) return text(400, 'body is not an EgressPolicy (a JSON object with rules)\n')
+  const checked = policyText(raw, c)
+  if ('error' in checked) return text(400, checked.error + '\n')
+  const policy = checked.policy
   // ponytail: delete then create, so a repeat is not an error; the actor has no policy for a moment between them.
   // Replacing in place (update egress-policy) needs the stored version; not worth it for one writer
   await c.run([...c.ate, 'delete', 'egress-policy', ...target])

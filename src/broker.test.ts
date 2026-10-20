@@ -1,9 +1,11 @@
 import { expect, test } from 'bun:test'
+import { egressPolicy } from './ax'
 import { configFrom, handle, MAX_BODY, route, type Run } from './broker'
 
 type Call = { argv: string[]; stdin?: string }
 const setup = (
   reply: (argv: string[]) => { code: number; out?: string; err?: string } = () => ({ code: 0 }),
+  env: Record<string, string> = {},
 ) => {
   const calls: Call[] = []
   const run: Run = async (argv, stdin) => {
@@ -11,7 +13,7 @@ const setup = (
     const r = reply(argv)
     return { code: r.code, out: r.out ?? '', err: r.err ?? '' }
   }
-  return { calls, c: configFrom({ FACTORY_BROKER_ENDPOINT: 'api.example.svc:443' }, run) }
+  return { calls, c: configFrom({ FACTORY_BROKER_ENDPOINT: 'api.example.svc:443', ...env }, run) }
 }
 const req = (method: string, path: string, body?: string) =>
   new Request(`http://broker.example.svc${path}`, { method, body })
@@ -121,4 +123,77 @@ test('the atespaces and the manager come from the environment', () => {
   expect(route('PUT', '/policy/b/x', c)).toMatchObject({ op: 'put' })
   expect(route('PUT', '/policy/a/mgr', c)).toMatchObject({ status: 403 })
   expect(c.ate).toEqual(['kubectl', 'ate', '--token-file', '/var/run/secrets/ate-api/token'])
+})
+
+const withVault = (extra: Record<string, string> = {}) =>
+  setup(undefined, { FACTORY_AX_VAULT: 'fv', FACTORY_AX_GITHUB_KEYS: 'other=GITHUB_OO', ...extra })
+const rule = (hostnames: string[], key: string, vault = 'fv') => ({
+  https: {
+    hostnames,
+    effects: {
+      replaceHeaders: [
+        {
+          header: 'Authorization',
+          prefix: 'Bearer ',
+          credentialUri: `ate-secret://agent-vault/${vault}/${key}`,
+        },
+      ],
+    },
+  },
+})
+const put = (c: ReturnType<typeof setup>['c'], rules: unknown[]) =>
+  handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify({ rules })), c)
+
+test('PUT refuses a credential that goes to a foreign host', async () => {
+  const { calls, c } = withVault()
+  expect((await put(c, [rule(['evil.example.com'], 'GITHUB')])).status).toBe(400)
+  expect((await put(c, [rule(['api.github.com', 'evil.example.com'], 'GITHUB')])).status).toBe(400)
+  expect((await put(c, [rule(['api.github.com'], 'GITHUB', 'other-vault')])).status).toBe(400)
+  expect(calls).toEqual([])
+})
+
+test('PUT refuses an unknown key, a credential nested out of place, and any credential with no vault', async () => {
+  const { calls, c } = withVault()
+  expect((await put(c, [rule(['api.github.com'], 'SECRET')])).status).toBe(400)
+  const nested = {
+    https: {
+      hostnames: ['evil.example.com'],
+      extra: [{ credentialUri: 'ate-secret://agent-vault/fv/GITHUB' }],
+    },
+  }
+  expect((await put(c, [nested])).status).toBe(400)
+  expect((await put(setup().c, [rule(['api.github.com'], 'GITHUB')])).status).toBe(400)
+  expect(calls).toEqual([])
+})
+
+test('PUT refuses a rule that names the broker, and allows a rule with no credential', async () => {
+  const { calls, c } = withVault()
+  const broker = {
+    http: { hostnames: ['factory-policy-broker.factory-broker.svc'], ports: { numbers: [8080] } },
+  }
+  expect((await put(c, [broker])).status).toBe(400)
+  expect((await put(c, [{ https: { hostnames: ['factory-policy-broker'] } }])).status).toBe(400)
+  expect((await put(c, [{ https: { hostnames: ['*'] } }])).status).toBe(400)
+  expect(calls).toEqual([])
+  expect((await put(c, [{ https: { hostnames: ['dolt.example.com'] } }])).status).toBe(200)
+})
+
+test('PUT accepts the policy that egressPolicy builds', async () => {
+  const { c } = withVault({ FACTORY_BROKER_KEY_HOSTS: 'GITLAB=gl.example.com,GITLAB_BASIC=gl.example.com' })
+  const extra = [{ hosts: ['dolt.example.com'], port: 50051 }]
+  for (const [gitlab, owner] of [
+    [undefined, undefined],
+    ['gl.example.com', undefined],
+    [undefined, 'GITHUB_OO'],
+  ] as const) {
+    const res = await handle(
+      req(
+        'PUT',
+        '/policy/factory/f-r1-1',
+        JSON.stringify(egressPolicy('fv', extra, undefined, gitlab, owner)),
+      ),
+      c,
+    )
+    expect(res.status).toBe(200)
+  }
 })
