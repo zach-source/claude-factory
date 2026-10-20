@@ -2910,6 +2910,19 @@ test.each(['git push>f origin main', 'git>f push origin main'])(
 )
 
 test.each([
+  'env>f rm -rf /',
+  'sudo>f rm -rf /',
+  'find . -exec rm>f -rf {} \\;',
+  'find . -exec>f rm -rf {} \\;',
+  'true &>/dev/null rm -rf /',
+  '>f rm -rf /',
+  '> f rm -rf /',
+  '2>&1 rm -rf /',
+])('denyReason denies %j (claude-factory-4a4o.5, glued redirect after 7xmz)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, AMP_LIVE_GATE)).toBe(REASON)
+})
+
+test.each([
   'ls>f',
   'ls >f',
   'git log>f',
