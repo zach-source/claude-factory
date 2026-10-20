@@ -73,6 +73,19 @@ test.each(DENIED)('denies a glob group in the command word: %s', cmd => {
   expect(run(cmd)).toBe(DYNAMIC_VERB_REASON)
 })
 
+const GITCONFIG_DENIED = [
+  'echo x >&| ~/.gitconfig',
+  'echo x >>&| ~/.gitconfig',
+  'echo x 2>&| ~/.gitconfig',
+  'echo x >&| ~/.config/git/config',
+  'echo x >&| /Users/u/.gitconfig',
+  'echo x >! ~/.gitconfig',
+  'echo x >&! ~/.gitconfig',
+]
+test.each(GITCONFIG_DENIED)('denies a clobber redirect to the global git config: %s', cmd => {
+  expect(run(cmd)).not.toBeNull()
+})
+
 const ALLOWED = [
   'echo hi >&| f ; ls',
   'echo a(b)',

@@ -2865,7 +2865,7 @@ function hasGitWordIn(words: string[]): boolean {
 // Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
 // A word that holds only the operator matches in full, such as a bare `>` or `>>`.
 // The caller then reads the next word as the target.
-const REDIRECT_PREFIX_RE = /^(?:\d+|&)?(?:<>|>>?\|?)/
+const REDIRECT_PREFIX_RE = /^(?:\d+|&)?(?:<>|>>?&?[|!]?)/
 
 // claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
 // `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
