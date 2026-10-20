@@ -62,6 +62,7 @@ import {
   linearSourced,
   byId,
   parentOf,
+  shipQueueText,
   stationOf,
   type Bead,
 } from './beads'
@@ -6708,7 +6709,8 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
-  show <run> | backlog | prs         JSON for the manager's views
+  ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
+  show <run> | backlog | prs        JSON for the manager's views
   decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
@@ -7296,6 +7298,11 @@ if (import.meta.main && !outboxCmd)
         console.log(
           `queued ${id}${station ? ` at ${station}` : ''}: ${rigOf(root) ? 'it starts at the next dispatch' : 'make the repo a rig (factory rig add) for it to start'}`,
         )
+        break
+      }
+      case 'ship': {
+        if (!args[0]) fail('usage: factory ship <rig|repo>')
+        console.log(shipQueueText(beads(repoOf(args[0]!), 'factory').shipQueue()))
         break
       }
       case 'status':

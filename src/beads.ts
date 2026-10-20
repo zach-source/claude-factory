@@ -36,6 +36,26 @@ export type Bead = {
 export const LABEL = 'factory'
 /** a bead a station rejected: open, out of the queue until a person queues it again */
 export const REJECTED = 'rejected'
+/** a bead handed off to the rig's ship run: open, no `factory` label, so dispatch skips it */
+export const SHIP = 'ship'
+const shipAt = (b: Bead) => String(b.metadata?.ship_at ?? '')
+/** queue order: oldest handoff first */
+export const shipOrder = (bs: Bead[]) => [...bs].sort((a, b) => shipAt(a).localeCompare(shipAt(b)))
+const ago = (ms: number) => {
+  const h = Math.floor(ms / 3_600_000)
+  return h >= 24 ? `${Math.floor(h / 24)}d` : h >= 1 ? `${h}h` : `${Math.max(0, Math.floor(ms / 60_000))}m`
+}
+/** the queue as `factory ship <rig>` prints it: the next PR marked, then bead, PR, run and age */
+export const shipQueueText = (queue: Bead[], now = Date.now()) =>
+  queue.length
+    ? queue
+        .map((b, i) => {
+          const m = b.metadata ?? {}
+          const age = ago(now - Date.parse(String(m.ship_at ?? '')) || 0)
+          return `${i ? '    ' : 'next'} ${b.id} ${m.ship_pr ?? '-'} ${m.ship_run ?? '-'} ${age}`
+        })
+        .join('\n')
+    : 'ship queue empty'
 export const hasBeads = (repo: string) => existsSync(join(repo, '.beads'))
 /** the run owns its bead under this name; its workers write as `<actor>/<station>` */
 export const actorOf = (runId: string) => `factory/${runId}`
@@ -479,6 +499,45 @@ export const beads = (repo: string, actor: string) => ({
       ),
       'update',
     )
+  },
+  /**
+   * Ends a run on a ship edge. The bead stays open and loses its claim.
+   * The call removes the `factory`, `factory:*` and `station:*` labels, so dispatch skips the bead.
+   * It adds the `ship` label and the metadata `ship_at` and `ship_run`.
+   * It sets `ship_branch` and `ship_pr` only when the bead has none: a rework run keeps the first PR.
+   * A retried tick with the same `runId` changes nothing. A failed `bd show` throws.
+   */
+  ship: (id: string, runId: string, to: { pr: string; branch: string }) => {
+    bd(repo, actor, 'unclaim', id)
+    const b = lookupBead(repo, actor, id)
+    if (b?.metadata?.ship_run === runId) return
+    const old = (b?.labels ?? []).filter(
+      l => l === LABEL || l.startsWith('factory:') || l.startsWith('station:'),
+    )
+    must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        ...old.flatMap(l => ['--remove-label', l]),
+        '--add-label',
+        SHIP,
+        '--set-metadata',
+        `ship_at=${new Date().toISOString()}`,
+        '--set-metadata',
+        `ship_run=${runId}`,
+        ...(b?.metadata?.ship_branch ? [] : ['--set-metadata', `ship_branch=${to.branch}`]),
+        ...(b?.metadata?.ship_pr || !to.pr ? [] : ['--set-metadata', `ship_pr=${to.pr}`]),
+      ),
+      'update',
+    )
+    must(bd(repo, actor, 'comment', id, `handed off to ship (run ${runId})`), 'comment')
+  },
+  /** the open beads in the ship queue, oldest `ship_at` first */
+  shipQueue: (): Bead[] => {
+    const out = must(bd(repo, actor, 'list', '-l', SHIP, '--status', 'open', '--json', '-n', '0'), 'list')
+    return out === 'null' ? [] : shipOrder(JSON.parse(out))
   },
   /** a revived run takes its bead back from closed or deferred */
   reopen: (id: string) => {
