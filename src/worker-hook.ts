@@ -444,6 +444,8 @@ export interface HookGate {
  * Fix for the whole class: claude-factory-yoib (a push-time read of the effective git config).
  */
 interface ScanState {
+  /** claude-factory-k8iz: what the other segments of the enclosing scans hold; a nested eval or sh -c scan reads it. */
+  outer: OtherSegs
   branchChange: boolean
   headPush: boolean
   gitAdminPath: boolean
@@ -452,6 +454,8 @@ interface ScanState {
   stdinFed: boolean
   /** claude-factory-l43b: set when a shell reads stdin. denyReason returns SHELL_STDIN_REASON last, so a more specific reason from the same command wins. */
   stdinDeferred: boolean
+  /** k8iz: set when the late dollar-word deny fired, so a stdin-shell reason can win over it. */
+  ifsLate: boolean
   /** claude-factory-clcc: set when a glob char sits in a command word. denyReason returns DYNAMIC_VERB_REASON after SHELL_STDIN_REASON. */
   globDeferred: boolean
   /** claude-factory-4iod: set when a brace body reads as a risky rm. denyReason returns REASON after the older reasons. */
@@ -1834,8 +1838,8 @@ function assignmentReadingsDeny(words: string[], root: string | undefined, state
  * claude-factory-pwy0: what the other segments of a command hold. A variable set in one segment
  * can put flags or the letters rm into a dynamic command word in another.
  */
-type OtherSegs = { flags: boolean; rmfind: boolean }
-const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false }
+type OtherSegs = { flags: boolean; rmfind: boolean; ifs: boolean }
+const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false, ifs: false }
 const DYN_CHARS = /[$`*?[]/
 const DYN_FLAG_TEXT = /(?<![-:])-[A-Za-z]*[rR]|:--[A-Za-z]*[rR]|--rec|-delete|-exec|-ok/
 const DYN_FLAG_WORDS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir'])
@@ -1855,7 +1859,10 @@ function hasLettersInOrder(w: string, letters: string): boolean {
  * expansion: it denies when the word can run rm or find with flags, or rm on a risky target.
  * A: the word cannot be read (open `${`, `${!`, backtick, `$(`).
  * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
- * C: another segment holds flag text (a variable there can put flags in the word).
+ * C: another segment holds flag text (a variable there can put flags in the word). Also (k8iz), a
+ * word with a dollar or backtick denies late when the text has 2+ segments, its segment starts with
+ * a NAME= or NAME+= prefix, or an outer scan had one of these. Accepted false denies:
+ * `export EDITOR=vim; $EDITOR f`, `SH=sh; $SH -c 'echo x'`, `export${IFS}PATH=/x; git status`.
  * D: the word may read as rm or find, and a target is risky or a default value holds a path.
  * E (0xw4): a later dynamic word is followed by recursive flags (the head can be env or sudo).
  * F (0xw4): a risky target follows the first later dynamic word.
@@ -1872,7 +1879,8 @@ function dynamicHeadDeny(
   const bal = w.endsWith('${') ? w.slice(0, -2) : w
   if (w.includes('`') || w.includes('${!') || bal.split('{').length > bal.split('}').length)
     return { deny: true, rm: false }
-  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags) return { deny: true, rm: false }
+  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags || (other.ifs && /[$`]/.test(w)))
+    return { deny: true, rm: false }
   if (start === 0) {
     for (let k = 1; k < cmd.length; k++)
       if (DYN_FLAG_WORDS.has(cmd[k]!) || globActionWord(cmd[k]!)) return { deny: true, rm: false }
@@ -7248,6 +7256,7 @@ export function scanReason(
     gitAdminPath: false,
     stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     stdinDeferred: false,
+    ifsLate: false,
     globDeferred: false,
     bodyDeny: false,
     dynamicScript: false,
@@ -7256,6 +7265,7 @@ export function scanReason(
     aliasWrite: false,
     dynArg: false,
     substFallbacks: 0,
+    outer: NO_OTHER_SEGS,
     braceWords: new Set(),
     work: budget,
   }
@@ -7269,7 +7279,11 @@ export function scanReason(
           : undefined
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
-  if (reason) return reason
+  if (reason) {
+    if (!(state.ifsLate && state.stdinDeferred && reason === REASON)) return reason
+    const aliasDef = state.aliasWrite && !plainAliasOnly(command)
+    return aliasDef ? SHELL_ALIAS_DEFINE_REASON : SHELL_STDIN_REASON
+  }
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
@@ -7961,11 +7975,25 @@ function denyAtScan(
   // claude-factory-pwy0: per-segment flag text and rm/find text, so a dynamic word reads the others.
   const segFlag = segs.map(sg => DYN_FLAG_TEXT.test(sg.join(' ')))
   const segRmFind = segs.map(sg => /rm|find/i.test(sg.join(' ')))
+  // k8iz: a segment with IFS, a dollar or a backtick can set IFS or build a value. A NAME= with a
+  // quote, backslash or space in the value can split into words with the default IFS.
+  // Rule (k8iz): a command word with a dollar or backtick can read any value that an earlier
+  // or outer segment, a prefix assignment, a loop or `set --` gave it. So it denies when the
+  // text has 2+ segments or its own segment starts with a NAME= or NAME+= prefix.
+  // A zsh flag group cuts a word into segments, so it does not count there.
+  const ZSF = /\[\([A-Za-z]+\)/
+  const manySegs =
+    segs.length > 1 &&
+    !command.includes('${(') &&
+    (!ZSF.test(command) || segments(command.replace(/(\[)\([A-Za-z]+\)/g, '$1')).length > 1)
+  const segIfs = segs.map(sg => manySegs || /^[A-Za-z_]\w*\+?=/.test(sg[0] ?? ''))
   const flagCount = segFlag.filter(Boolean).length
   const rmFindCount = segRmFind.filter(Boolean).length
-  const otherSegs = (i: number): OtherSegs => ({
-    flags: flagCount - (segFlag[i] ? 1 : 0) > 0,
-    rmfind: rmFindCount - (segRmFind[i] ? 1 : 0) > 0,
+  const outerSegs = state.outer
+  const otherSegs = (i: number, withIfs = false): OtherSegs => ({
+    flags: outerSegs.flags || flagCount - (segFlag[i] ? 1 : 0) > 0,
+    rmfind: outerSegs.rmfind || rmFindCount - (segRmFind[i] ? 1 : 0) > 0,
+    ifs: withIfs && (outerSegs.ifs || segIfs[i]!),
   })
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
@@ -7997,6 +8025,7 @@ function denyAtScan(
     return undefined
   }
   for (let segIdx = 0; segIdx < segs.length; segIdx++) {
+    state.outer = otherSegs(segIdx, true)
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
@@ -8089,12 +8118,15 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
+    // k8iz: true when the miqy table read this pure $NAME head's value, so the late deny skips it.
+    let headValueRead = false
     // The older dynamic-word scan keeps its own reason when it denies first.
     if (varsGuard(words, cmd)) {
       const headName = varRefName(cmd[0]!)
       if (headName) {
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
+        headValueRead = vars.has(headName)
       } else if (gluedHeadReason(cmd[0]!, vars, mentions)) {
         // A later real command reason wins over this broad one.
         late.reason ??= DYNAMIC_VERB_REASON
@@ -8110,6 +8142,9 @@ function denyAtScan(
             dynWrite())
         )
           return DYNAMIC_VERB_REASON
+        // piqf read this glued head and allowed it (no IFS, a path value), so the late deny skips it.
+        const h0 = cmd[0]!
+        if (/\$(?:\{[^}]*\}|[A-Za-z_]\w*)\//.test(h0) && !/[`]|\$\(/.test(h0)) headValueRead = true
       }
     }
     if (!cmd.length) continue
@@ -8263,11 +8298,30 @@ function denyAtScan(
     if (readings.deny)
       return anyGlobCommandWord(words.filter(w => !w.includes('$'))) ? DYNAMIC_VERB_REASON : REASON
     if (readings.rm) hasRm = true
+    // k8iz: this reading is late, so a specific reason (push, alias, here-document) wins.
+    if (
+      (segIfs[segIdx] || outerSegs.ifs) &&
+      !late.reason &&
+      !headValueRead &&
+      wrapperReadingsDeny(words, root, otherSegs(segIdx, true)).deny
+    ) {
+      late.reason = REASON
+      state.ifsLate = true
+    }
     // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
     if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
+      if (
+        (segIfs[segIdx] || outerSegs.ifs) &&
+        !late.reason &&
+        !headValueRead &&
+        wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx, true)).deny
+      ) {
+        late.reason = REASON
+        state.ifsLate = true
+      }
     }
     // claude-factory-sdur: a redirect word (`>f`, `{fd}>f`) is not the command or an -exec word.
     // Read the segment again without redirect words. Deny-only.
