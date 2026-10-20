@@ -1090,6 +1090,7 @@ function segments(
       if (cmd[i + 1] === '\n') {
         // claude-factory-abmq: a continuation is not a char, so `>BSNL&1` stays one redirect.
         redirPrev = afterRedir
+        closePrev = afterClose
         i++
         exemptPrev = wasExempt
         continue

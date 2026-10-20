@@ -54,6 +54,11 @@ const DENIED = [
   `true && ls *(e:'${RM} -rf /':)`,
   `ls\nls *(e:'${RM} -rf /':)`,
   `cat <<EOF\n$(ls *(e:'${RM} -rf /':))\nEOF`,
+  "ls (a)\\\n(e:'echo RAN':)",
+  "ls $(echo a)\\\n(e:'echo RAN':)",
+  "ls `echo a`\\\n(e:'echo RAN':)",
+  "ls zq/(a|b)\\\n(e:'echo RAN':)",
+  "ls (a)\\\n\\\n(e:'echo RAN':)",
 ]
 test.each(DENIED)('denies a glob qualifier that runs code: %s', cmd => {
   expect(run(cmd)).toBe(GLOB_CODE_REASON)
