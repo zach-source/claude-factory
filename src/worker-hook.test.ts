@@ -10299,7 +10299,16 @@ test.each([
 })
 
 test('denyReason denies a brace list in a wrapper value slot (claude-factory-mndr)', () => {
-  expect(denyReason('env -u {x,rm} -rf /', '/Users/acme/widget')).toBeTruthy()
+  expect(denyReason('env -u {x,rm} -rf /', '/Users/acme/widget')).toBe(DYNAMIC_VERB_REASON)
+})
+
+test.each([
+  'env -u $(echo x rm) -rf /',
+  'env -u `echo x rm` -rf /',
+  'nice -n $(echo 1 rm) -rf /',
+  'env -C $(pwd) ls',
+])('denyReason denies a substitution value word %j (claude-factory-mndr.4)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(DYNAMIC_VERB_REASON)
 })
 
 test.each([
