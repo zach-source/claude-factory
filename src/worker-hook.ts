@@ -278,6 +278,11 @@ export const XARGS_REASON =
 // claude-factory-l43b: a shell word with no -c script reads its script from stdin, a here-string
 // or a here-document. The text that feeds it is not in this word list, so this guard cannot read
 // the script. xargs before a shell word hides its script in the same way.
+export const SH_DYNAMIC_SCRIPT_REASON =
+  'The factory denies this command: a sh, bash, zsh or dash -c call has a word after -c that holds ' +
+  '$ or a backtick. The shell expands it at run time, so the guard cannot read the script. Run the ' +
+  'commands directly, with literal words. Do not retry this exact command.'
+
 export const SHELL_STDIN_REASON =
   'The factory denies this command: a shell word (sh, bash, zsh, dash or a dynamic word) can read ' +
   'its script from a pipe, a redirect or a here-string, or xargs runs a shell. This guard cannot ' +
@@ -432,6 +437,8 @@ interface ScanState {
   stdinFed: boolean
   /** claude-factory-l43b: set when a shell reads stdin. denyReason returns SHELL_STDIN_REASON last, so a more specific reason from the same command wins. */
   stdinDeferred: boolean
+  /** claude-factory-3frd: set when a word after a sh -c cluster holds a dollar or backtick. scanReason returns SH_DYNAMIC_SCRIPT_REASON last. */
+  dynamicScript: boolean
   globalGitConfig: boolean
   gitWord: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
@@ -6361,6 +6368,14 @@ function anyShellReason(
         if (literal) j = scriptK
         continue
       }
+      if (isShCCluster(words[nc]!)) {
+        for (let d = nc + 1; d < words.length; d++) {
+          if (/[$`]/.test(words[d]!)) {
+            state.dynamicScript = true
+            break
+          }
+        }
+      }
       let k = nc + 1
       let found: string | undefined
       for (; k < words.length; k++) {
@@ -6610,24 +6625,27 @@ export function scanReason(
     gitAdminPath: false,
     stdinFed: /[|<]|>\(|=\(|\bcoproc\b/.test(command),
     stdinDeferred: false,
+    dynamicScript: false,
     globalGitConfig: false,
     gitWord: false,
     substFallbacks: 0,
     work: budget,
   }
+  const deferred = () =>
+    state.stdinDeferred ? SHELL_STDIN_REASON : state.dynamicScript ? SH_DYNAMIC_SCRIPT_REASON : undefined
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
   if (reason) return reason
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
-  if (!state.headPush) return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+  if (!state.headPush) return deferred()
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
   // inside a .git-named path. cwdInsideGitDir reads gate.cwd, not the command text, so it also
   // denies a write this guard's own word scan cannot read, such as a shell-variable target.
   if (state.branchChange || state.gitAdminPath || cwdInsideGitDir(g.cwd)) return PUSH_REASON
-  return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
+  return deferred()
 }
 
 // claude-factory-1zr5: the most alias expansions one word can chain through. A longer chain denies.
