@@ -1532,6 +1532,33 @@ function realCommandStart(words: string[], from: number, memo: Map<number, numbe
   return out
 }
 
+// claude-factory-gj9l: deny-only. In a find command, a brace-list word can become the -exec action or the rm word.
+// This function does not expand braces.
+// (A) The word can be the action when rm with recursive flags follows it.
+// (B) The word can hold rm when it has the letters r and m in order.
+//     Deny if recursive flags follow it, or if a piece of the word is one.
+// The function scans each flag run one time, so the cost is O(n).
+function findBraceRmDeny(cmd: string[]): boolean {
+  let clearUntil = 0
+  const recursive = (j: number): boolean => {
+    if (j < clearUntil) return false
+    if (isRecursiveRm(cmd, j)) return true
+    let k = j + 1
+    while (k < cmd.length && (cmd[k]!.startsWith('-') || RM_REDIRECT_WORD.test(cmd[k]!))) k++
+    clearUntil = k
+    return false
+  }
+  for (let i = 1; i < cmd.length; i++) {
+    const w = cmd[i]!
+    if (!BRACE_LIST_WORD.test(w)) continue
+    if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && recursive(i + 1)) return true
+    if (!hasLettersInOrder(w, 'rm')) continue
+    if (recursive(i)) return true
+    if (w.split(/[{},]/).some(p => recursiveFlag(p) || p.startsWith('--rec'))) return true
+  }
+  return false
+}
+
 function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolean>): boolean {
   if (!cmd.length) return false
   const b = baseWord(cmd[0]!)
@@ -1547,6 +1574,7 @@ function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolea
     )
   }
   if (b === 'find') {
+    if (findBraceRmDeny(cmd)) return true
     for (let i = 0; i < cmd.length; i++) {
       if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
       if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) return true
@@ -1668,6 +1696,7 @@ function rmFindReading(
     return { deny: false, rm: true }
   }
   if (b === 'find') {
+    if (findBraceRmDeny(cmd)) return { deny: true, rm: false }
     for (let i = 0; i < cmd.length; i++) {
       if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
       if (i + 1 >= cmd.length) continue
@@ -7101,6 +7130,7 @@ function denyAtScan(
     } else if (b === 'cd') {
       hasCd = true
     } else if (b === 'find') {
+      if (findBraceRmDeny(cmd)) return REASON
       // claude-factory-lbn: this loop reads `cmd` by index. It does not call `cmd.slice(i + 1)`.
       // `isRecursiveRm(cmd, i + 1)` starts its own scan right after `-exec` or `-execdir`, at the
       // `rm` word. It stops at the first non-flag word. A later `-exec`/`-execdir` match starts a

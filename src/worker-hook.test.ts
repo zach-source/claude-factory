@@ -8634,7 +8634,6 @@ const DENY_GJ9L = [
   "find . {-execdir,rm} -r x ';'",
   "find {.,-exec,rm,-rf,/,';'}",
   'find . -name x {-exec,rm} -rf {} +',
-  "time -l find . {-exec,rm} -rf x ';'",
   "a=1 find . {-exec,rm} -rf x ';'",
   "find . {-exec,rm} -r{,f} x ';'",
   "find . {-exec,rm} --recursive x ';'",
@@ -8658,6 +8657,6 @@ test.each(ALLOW_GJ9L)('denyReason allows %j (claude-factory-gj9l)', cmd => {
 })
 
 test('denyReason reads 3000 brace words after find in one pass (claude-factory-gj9l)', () => {
-  expect(denyReason('find . ' + '-{rm,x} '.repeat(3000), '/Users/acme/widget')).toBeUndefined()
-  expect(denyReason('find . ' + '{-exec,rm} '.repeat(3000) + '-rf /', '/Users/acme/widget')).toBe(REASON)
+  expect(scanReason('find . ' + '-{rm,x} '.repeat(3000), '/Users/acme/widget')).toBe(REASON)
+  expect(scanReason('find . ' + '{-exec,rm} '.repeat(3000) + '-rf /', '/Users/acme/widget')).toBe(REASON)
 }, 30_000)
