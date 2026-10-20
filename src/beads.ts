@@ -72,8 +72,10 @@ export const goalOf = (b: Bead) =>
     .join('\n\n')
 
 /** a bead handed to ship keeps its PR: a rework run pushes to that branch and opens no new PR */
-export const shipBranchOf = (b: Bead) =>
-  b.metadata?.ship_branch ? String(b.metadata.ship_branch) : undefined
+export const shipBranchOf = (b: Bead) => {
+  const v = String(b.metadata?.ship_branch ?? '')
+  return /^factory\/[\w.-]+$/.test(v) && !v.includes('..') ? v : undefined
+}
 const shipRework = (b: Bead) => {
   const branch = shipBranchOf(b)
   return (

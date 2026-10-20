@@ -865,7 +865,8 @@ export function ownCopy(template: string, name: string) {
 
 /** the queued PR's branch on origin, fetched, so a rework run starts on the PR's own commits; undefined when it is gone */
 export function reworkBase(repo: string, branch: string) {
-  Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', branch], { timeout: 30_000 })
+  if (!/^factory\/[\w.-]+$/.test(branch) || branch.includes('..')) return undefined
+  Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', '--', branch], { timeout: 30_000 })
   const ref = `origin/${branch}`
   return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
     ? ref

@@ -24,3 +24,7 @@ test('a rework run starts on the queued PR branch from origin, and only when tha
   expect(reworkBase(clone, 'factory/run-1')).toBe('origin/factory/run-1')
   expect(reworkBase(clone, 'factory/gone')).toBeUndefined()
 })
+
+test('a branch that is not a factory branch name gives no base', () => {
+  for (const b of ['-x', 'main', '../x', 'factory/../x']) expect(reworkBase('.', b)).toBeUndefined()
+})

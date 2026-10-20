@@ -58,9 +58,9 @@ Report ready when the next pull request is current with main and has no conflict
     },
     release: {
       timeoutMin: 60,
-      prompt: `Prepare the release of the NEXT pull request only: the one your inbox names, or the first line of \`factory ship <rig>\`. Add the changelog entry and the version bump the repo's conventions call for, update the pull request description with the plan's summary, the verification evidence and a rollback plan, and mark it ready with \`gh pr ready\`. You are the only station that marks a pull request ready. Wait for CI and read every failing check.
+      prompt: `Every child task of the bead must be closed (bd children <bead>). If one is open, report changes and name it. Prepare the release of the NEXT pull request only: the one your inbox names, or the first line of \`factory ship <rig>\`. Add the changelog entry and the version bump the repo's conventions call for, update the pull request description with the plan's summary, the verification evidence and a rollback plan, and mark it ready with \`gh pr ready\`. You are the only station that marks a pull request ready. Wait for CI and read every failing check.
 Report ready when the pull request is ready and CI is green, and give its link. Report changes when it needs changes: write the evidence in a bead comment first, and the queue station sends it back to a work run.`,
-      next: { ready: 'deploy', changes: { to: 'queue', delayMin: 1 } },
+      next: { ready: 'deploy', changes: 'queue' },
     },
     deploy: {
       runner: LAPTOP,

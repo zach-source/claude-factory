@@ -122,6 +122,17 @@ test('a PR closed unmerged leaves the queue before the hold, and soak reads the 
   expect(ship.nodes.soak.prompt).toContain("the bead's comments")
 })
 
+test('release needs every child task closed first', () => {
+  expect(ship.nodes.release.prompt).toContain(
+    'Every child task of the bead must be closed (bd children <bead>)',
+  )
+})
+
+test('a release that reports changes does not refill the budget: 12 x (ready, changes) reaches stuck', () => {
+  const { snapshot } = walk(ship, Array(12).fill(['ready', 'changes']).flat())
+  expect(where(snapshot.value)[1]).toBe('stuck')
+})
+
 test('queue names the next PR first and lists every owner-only step in one list', () => {
   expect(ship.nodes.queue.prompt).toContain('name it first')
   expect(ship.nodes.queue.prompt).toContain('every owner-only step the queue needs in one list')
