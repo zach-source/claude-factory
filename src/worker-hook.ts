@@ -941,7 +941,8 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: b
     if (line === delim || (dash && line.replace(/^\t+/, '') === delim)) {
       const body = cmd.slice(nl + 1, p)
       if (quoted) hz.quoted.push([nl + 1, p])
-      if (hazard && (/\S/.test(cmd.slice(e + 1)) || (!quoted && /\$\(|`/.test(body)))) info.heredoc = true
+      if (hazard && (/\S/.test(cmd.slice(e + 1)) || (!quoted && /\$\(|`|\\\n/.test(body))))
+        info.heredoc = true
       return
     }
     p = e + 1
