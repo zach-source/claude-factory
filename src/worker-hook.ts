@@ -6654,6 +6654,32 @@ function varOpName(w: string): string | undefined {
   return m ? (m[1] ?? m[2]) : undefined
 }
 
+// claude-factory-miqy.12: count the raw-text mentions of NAME that are not a pure read (the plain and braced forms).
+// A write form the table does not know still shows as a mention, so the head check fails closed.
+const MENTION_COUNTERS = new WeakMap<VarTable, (name: string) => number>()
+// claude-factory-miqy.13: names the shell sets itself. A head of one of them denies.
+const IMPLICIT_VARS = new Set([
+  '_',
+  'REPLY',
+  'BASH_REMATCH',
+  'MAPFILE',
+  'OPTARG',
+  'COPROC',
+  'READLINE_LINE',
+  'reply',
+  'match',
+  'MATCH',
+])
+function countMentions(text: string, name: string): number {
+  let n = 0
+  for (const m of text.matchAll(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))) {
+    const i = m.index!
+    const pure = text[i - 1] === '$' || (text.slice(i - 2, i) === '${' && text[i + name.length] === '}')
+    if (!pure) n++
+  }
+  return n
+}
+
 function varRefName(w: string): string | undefined {
   const m = VAR_REF.exec(w)
   return m ? (m[1] ?? m[2]) : undefined
@@ -6860,6 +6886,18 @@ function denyAtScan(
   let ambiguousAssignment = false
   let subIdx = 0
   const vars: VarTable = new Map(outerVars)
+  const joined = command.split('\\\n').join('')
+  const inheritedCount = outerVars && MENTION_COUNTERS.get(outerVars)
+  const mentionCache = new Map<string, number>()
+  const mentions = (name: string): number => {
+    let n = mentionCache.get(name)
+    if (n === undefined) {
+      n = Math.max(countMentions(joined, name), inheritedCount ? inheritedCount(name) : 0)
+      mentionCache.set(name, n)
+    }
+    return n
+  }
+  MENTION_COUNTERS.set(vars, mentions)
   // claude-factory-miqy: collect every write first. A set after the use still counts.
   for (const w of segs) recordVarWrites(w, vars)
   // miqy.11: ${NAME:=v} and ${NAME=v} write a name the lexer does not show as a write.
@@ -6871,9 +6909,16 @@ function denyAtScan(
     }
   }
   const scanValue = (name: string, rest: string[]): string | undefined => {
-    if (!vars.has(name)) return undefined
+    const n = mentions(name)
+    if (n === 0 && !IMPLICIT_VARS.has(name)) return undefined
     const value = vars.get(name)
-    if (value === undefined || vars.has('IFS') || VAR_UNREADABLE.test(value)) {
+    if (
+      n !== 1 ||
+      IMPLICIT_VARS.has(name) ||
+      value === undefined ||
+      vars.has('IFS') ||
+      VAR_UNREADABLE.test(value)
+    ) {
       return DYNAMIC_VERB_REASON
     }
     const text = [...value.split(/\s+/).filter(Boolean), ...rest.map(shellQuoteWord)].join(' ')
@@ -6881,7 +6926,6 @@ function denyAtScan(
   }
   const varsGuard = (words: string[], cmd: string[]): boolean =>
     cmd.length > 0 &&
-    vars.size > 0 &&
     !anyDynamicCommandReason(words) &&
     !(personOnly?.length && anyDynamicLiveApplyReason(words, personOnly))
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
@@ -6982,7 +7026,8 @@ function denyAtScan(
       } else {
         // The head may name a set variable. ${!Y} names another one, so any set name denies.
         const opName = varOpName(cmd[0]!)
-        if (opName && (vars.has(opName) || cmd[0]!.startsWith('${!'))) return DYNAMIC_VERB_REASON
+        if (opName && (vars.has(opName) || mentions(opName) >= 2 || cmd[0]!.startsWith('${!')))
+          return DYNAMIC_VERB_REASON
       }
     }
     if (!cmd.length) continue

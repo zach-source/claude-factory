@@ -8323,6 +8323,26 @@ const MIQY_DENY: Array<[string, string]> = [
   ['eval \'X="rm -rf /"\'; $X', DYNAMIC_VERB_REASON],
   ['{ X="rm -rf /"; }; $X', DYNAMIC_VERB_REASON],
   ['env X="rm -rf /" bash -c \'$X\'', REASON],
+  ['X=ls; X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]+=" -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[1,-1]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; declare X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; export X[0]="rm -rf /"; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; eval \'X[0]="rm -rf /"\'; $X', DYNAMIC_VERB_REASON],
+  [': ${X[0]:="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]="git push origin main"; ${X}', DYNAMIC_VERB_REASON],
+  ['X=ls; X[0]="rm -rf /"; sudo $X', DYNAMIC_VERB_REASON],
+  ['X=ls; select X in "rm -rf /"; do $X; done', DYNAMIC_VERB_REASON],
+  ['X=ls; vared X; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; : ${X::="rm -rf /"}; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; X=ls; $X', DYNAMIC_VERB_REASON],
+  ['X=ls; unset X; $X', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; $_', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; ${_}', DYNAMIC_VERB_REASON],
+  ['$REPLY', DYNAMIC_VERB_REASON],
+  ['${BASH_REMATCH}', DYNAMIC_VERB_REASON],
+  ['echo "rm -rf /"; sudo $_', DYNAMIC_VERB_REASON],
 ]
 test.each(MIQY_DENY)('denyReason denies %j (claude-factory-miqy)', (cmd, reason) => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBe(reason)
@@ -8341,6 +8361,10 @@ test.each([
   'X="ls -l"; $X',
   'X=1; echo $X',
   'X="rm -rf /"; echo $X',
+  'X=(ls); echo ${X[0]}',
+  'X=ls; $X -la',
+  'X=ls; $X',
+  'echo $_',
 ])('denyReason allows %j (claude-factory-miqy)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, MIQY_GATE)).toBeUndefined()
 })
