@@ -1317,8 +1317,16 @@ function realCommandInfo(words: string[]): { cmd: string[]; dynamicRepeatCount: 
  * `$`, or holds a `$` this function cannot read (such as `$(`) or an unclosed `${`.
  * One pass with an explicit stack: O(length).
  */
-const EXPAND_NAME = /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/
-const EXPAND_OP = /^(?::[-=+]|[-=+])/
+const EXPAND_FLAGS = /(?:\([^()]*\))*[!=~^]*/y
+const EXPAND_NAME = /(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/y
+const EXPAND_SUB = /(?:\[[^\]]*\])?/y
+const EXPAND_OP = /(?::[-=+]|[-=+])/y
+const EXPAND_VAR = /(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*#?$!-])/y
+function stickyAt(re: RegExp, w: string, at: number): number {
+  re.lastIndex = at
+  const m = re.exec(w)
+  return m ? at + m[0].length : -1
+}
 function expandedCommandWord(w: string): string | undefined {
   if (!w.includes('$')) return undefined
   const stack: Array<{ keep: boolean; buf: string }> = [{ keep: true, buf: '' }]
@@ -1339,24 +1347,22 @@ function expandedCommandWord(w: string): string | undefined {
     }
     const next = w[i + 1]
     if (next === '{') {
-      const rest = w.slice(i + 2, i + 2 + 400)
-      const nm = EXPAND_NAME.exec(rest)
-      const op = nm ? EXPAND_OP.exec(rest.slice(nm[0].length)) : null
-      if (nm && op) {
+      let e = stickyAt(EXPAND_FLAGS, w, i + 2)
+      if (e >= 0) e = stickyAt(EXPAND_NAME, w, e)
+      if (e >= 0) e = stickyAt(EXPAND_SUB, w, e)
+      if (e >= 0) e = stickyAt(EXPAND_OP, w, e)
+      if (e >= 0) {
         stack.push({ keep: true, buf: '' })
-        i += 2 + nm[0].length + op[0].length
+        i = e
       } else {
         stack.push({ keep: false, buf: '' })
         i += 2
       }
       continue
     }
-    const m =
-      next === undefined
-        ? null
-        : /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*#?$!-])/.exec(w.slice(i + 1, i + 1 + 400))
-    if (!m) return undefined
-    i += 1 + m[0].length
+    const e = next === undefined ? -1 : stickyAt(EXPAND_VAR, w, i + 1)
+    if (e < 0) return undefined
+    i = e
   }
   return stack.length === 1 ? stack[0]!.buf : undefined
 }
@@ -6381,6 +6387,25 @@ function denyAt(
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
   const late: { reason?: string } = {}
+  // claude-factory-pwy0: the lexer splits a word at the `(` of a zsh flag group, `${(L)x:-rm}`.
+  // Read the command again without the flag groups. This is deny-only: only the rm reason counts.
+  if (command.includes('${(')) {
+    const bare = command.replace(/\$\{\([^()]*\)/g, '${')
+    if (bare !== command) {
+      const r = denyAt(
+        bare,
+        root,
+        personOnly,
+        gate,
+        depth,
+        state,
+        movedBefore,
+        ghConfigMovedBefore,
+        aliasStack,
+      )
+      if (r === REASON) return r
+    }
+  }
   return (
     denyAtScan(
       command,

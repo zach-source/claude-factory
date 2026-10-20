@@ -7653,6 +7653,16 @@ const DENY_PWY0: string[] = [
   'cd / ; ${RM:-rm} acme.txt',
   '${F:-find} . -exec rm -rf {} +',
   'find . -exec ${RM:-rm} -rf {} +',
+  '${' + 'a'.repeat(500) + ':-rm} -rf /',
+  'rm$' + 'a'.repeat(500) + ' -rf /',
+  '${x[0]:-rm} -rf /',
+  '${x[@]:-rm} -rf /',
+  '${!x:-rm} -rf /',
+  '${x[1]:-rm} -rf /',
+  '${(L)x:-rm} -rf /',
+  '${=x:-rm} -rf /',
+  '${~x:-rm} -rf /',
+  '${^x:-rm} -rf /',
 ]
 test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
