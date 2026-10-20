@@ -7460,12 +7460,15 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
+    // k8iz: true when the miqy table read this pure $NAME head's value, so the late deny skips it.
+    let headValueRead = false
     // The older dynamic-word scan keeps its own reason when it denies first.
     if (varsGuard(words, cmd)) {
       const headName = varRefName(cmd[0]!)
       if (headName) {
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
+        headValueRead = vars.has(headName)
       } else {
         // The head may name a set variable. ${!Y} names another one, so any set name denies.
         const opName = varOpName(cmd[0]!)
@@ -7585,6 +7588,7 @@ function denyAtScan(
     if (
       (segIfs[segIdx] || outerSegs.ifs) &&
       !late.reason &&
+      !headValueRead &&
       wrapperReadingsDeny(words, root, otherSegs(segIdx, true)).deny
     ) {
       late.reason = REASON
@@ -7598,6 +7602,7 @@ function denyAtScan(
       if (
         (segIfs[segIdx] || outerSegs.ifs) &&
         !late.reason &&
+        !headValueRead &&
         wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx, true)).deny
       ) {
         late.reason = REASON
