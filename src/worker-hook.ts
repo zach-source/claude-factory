@@ -2426,7 +2426,11 @@ function globalGitConfigUse(
       if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
       continue
     }
-    if (GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) || globNamesGlobalGitConfig(candidate, (samples ??= globalGitConfigSamples(root, gate)))) return 'write'
+    if (
+      GLOBAL_GIT_CONFIG_FILE_RE.test(candidate) ||
+      globNamesGlobalGitConfig(candidate, (samples ??= globalGitConfigSamples(root, gate)))
+    )
+      return 'write'
     if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
   }
   return use
@@ -5362,7 +5366,7 @@ function anyDynamicCommandReason(words: string[]): string | undefined {
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length;) {
+  for (let i = 0; i < words.length; ) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
@@ -6342,7 +6346,13 @@ function denyAtScan(
         ? 'operands'
         : 'none'
     const configUse = mayTouch
-      ? globalGitConfigUse(words, operandSkip, b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir', root, gate)
+      ? globalGitConfigUse(
+          words,
+          operandSkip,
+          b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+          root,
+          gate,
+        )
       : undefined
     if (configUse === 'mention') state.globalGitConfig = true
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
