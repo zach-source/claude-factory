@@ -100,7 +100,7 @@ test('queue sends a PR that needs changes back to implement through the existing
 })
 
 test('a run ships 30 PRs in a row without a stuck step budget', () => {
-  const round = ['ready', 'ready', 'deployed', 'healthy']
+  const round = ['ready', 'ready', 'published']
   const outcomes = [...Array(30).keys()].flatMap(() => round)
   const { visited, snapshot } = walk(ship, [...outcomes, 'empty'])
   expect(snapshot.context.error).toBeNull()
