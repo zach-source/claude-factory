@@ -9848,6 +9848,15 @@ const DENY_K8IZ: string[] = [
   "y='rm ../acme.txt'; >/dev/null $y",
   "y='rm ../acme.txt'; 2>/dev/null $y",
   'IFS=_; y=rm_../acme.txt; >/dev/null $y',
+  // k8iz.26: an operator or flag-group head with IFS set or 2+ commands
+  'IFS=_; ${X%y} a.txt',
+  'IFS=_; ${X:-} a.txt',
+  'IFS=_; $=X a.txt',
+  'export IFS=_; ${X:0} a.txt',
+  'IFS=_; $PATH[(w)1] a.txt',
+  'echo hi; ${X%y} a.txt',
+  'IFS=_; $X[(w)1] a.txt',
+  'echo hi; $X[(w)1] a.txt',
   // k8iz.15: accepted false denies (fail closed)
   'export${IFS}PATH=/x; git status',
 ]

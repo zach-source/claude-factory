@@ -7912,7 +7912,11 @@ function denyAtScan(
   // or outer segment, a prefix assignment, a loop or `set --` gave it. So it denies when the
   // text has 2+ segments or its own segment starts with a NAME= or NAME+= prefix.
   // A zsh flag group cuts a word into segments, so it does not count there.
-  const manySegs = segs.length > 1 && !command.includes('${(')
+  const ZSF = /\[\([A-Za-z]+\)/
+  const manySegs =
+    segs.length > 1 &&
+    !command.includes('${(') &&
+    (!ZSF.test(command) || segments(command.replace(/(\[)\([A-Za-z]+\)/g, '$1')).length > 1)
   const segIfs = segs.map(sg => manySegs || /^[A-Za-z_]\w*\+?=/.test(sg[0] ?? ''))
   const flagCount = segFlag.filter(Boolean).length
   const rmFindCount = segRmFind.filter(Boolean).length
@@ -8068,8 +8072,7 @@ function denyAtScan(
           return DYNAMIC_VERB_REASON
         // piqf read this glued head and allowed it (no IFS, a path value), so the late deny skips it.
         const h0 = cmd[0]!
-        if (opName || (/\$(?:\{[^}]*\}|[A-Za-z_]\w*)\//.test(h0) && !/[`]|\$\(/.test(h0)))
-          headValueRead = true
+        if (/\$(?:\{[^}]*\}|[A-Za-z_]\w*)\//.test(h0) && !/[`]|\$\(/.test(h0)) headValueRead = true
       }
     }
     if (!cmd.length) continue
