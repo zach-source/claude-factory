@@ -225,6 +225,14 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-mozp: in a comment the shell keeps a backslash, so a backslash-newline does not
+// join the lines. segments() joins them, so the guard denies the comment line itself.
+export const COMMENT_CONTINUATION_REASON =
+  'The factory denies this command: a # comment line ends with a backslash and more text follows. ' +
+  'In a comment the shell keeps the backslash, so the next line runs as a command that this guard ' +
+  'reads as comment words. Remove the backslash, or run the next command in a separate Bash call. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-mmc9.14: bash and zsh disagree on a non-ASCII or subscripted assignment prefix.
 export const ASSIGNMENT_PREFIX_REASON =
   'The factory denies this command: it starts with an assignment word that bash and zsh read in ' +
@@ -1164,7 +1172,22 @@ function riskyTarget(t: string, root?: string): boolean {
 // claude-factory-p43v.19: bash's `coproc NAME? command` starts a background job in the same way.
 // realCommand treats coproc as a reserved word too.
 // coproc takes no flag of its own. The real command follows it.
-const RESERVED_LEADING_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', 'coproc'])
+//
+// claude-factory-fmeu: a brace group `{ cmd; }` runs cmd in the same shell.
+// The `{` word is a shell prefix, so realCommand skips it and finds cmd.
+// The closing `}` is a separate word. No check acts on it.
+const RESERVED_LEADING_WORDS = new Set([
+  'do',
+  'then',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+  '!',
+  'coproc',
+  '{',
+])
 
 // claude-factory-p43v.19: this map lists the flags that take a separate value word.
 // It covers each wrapper above and `timeout`.
@@ -1176,6 +1199,7 @@ const RESERVED_LEADING_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'whi
 //
 // Source: each wrapper's own man page.
 // sudo takes a value after -u, -g, -C, -D, -h, -p, -U, -r and -t.
+// `realCommand` reads sudo through `skipSudoFlags`. `commandAnchors` still uses the sets below.
 // env takes a value after -u, -C, -P, -L, -U and -a.
 // nice takes a value after -n.
 //
@@ -1214,6 +1238,90 @@ const WRAPPER_BARE_FLAGS: Record<string, Set<string>> = {
   command: new Set(['-p']),
 }
 
+// claude-factory-aylh: sudo option tables. Source: sudo parse_args.c, sudo_short_opts
+// "+Aa:BbC:c:D:Eeg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv". Each letter below takes a value.
+// The other letters (A B b E e H i K k l N n P S s V v) are bare.
+const SUDO_SHORT_VALUE_FLAGS = new Set(['a', 'C', 'c', 'D', 'g', 'h', 'p', 'R', 'r', 'T', 't', 'U', 'u'])
+
+// The 31 names of sudo_long_opts. true means required_argument. `preserve-env` takes a value
+// only after `=`, so it is false.
+const SUDO_LONG_OPTIONS: Record<string, boolean> = {
+  'other-user': true,
+  'auth-type': true,
+  'close-from': true,
+  'login-class': true,
+  chdir: true,
+  group: true,
+  host: true,
+  prompt: true,
+  chroot: true,
+  role: true,
+  'command-timeout': true,
+  type: true,
+  user: true,
+  background: false,
+  edit: false,
+  'set-home': false,
+  login: false,
+  'remove-timestamp': false,
+  list: false,
+  'preserve-env': false,
+  'preserve-groups': false,
+  shell: false,
+  validate: false,
+  askpass: false,
+  bell: false,
+  help: false,
+  'reset-timestamp': false,
+  'no-update': false,
+  'non-interactive': false,
+  stdin: false,
+  version: false,
+}
+
+/**
+ * Skip the options and the NAME=value words that sudo reads before its command.
+ * It follows getopt_long: `--` ends the options, a long name can be a unique prefix,
+ * and a short cluster such as `-nEu root` ends in a value letter that takes the next word.
+ * It reads an unknown option as bare. Real sudo runs nothing after an unknown option,
+ * so this cannot hide a command that runs.
+ */
+function skipSudoFlags(words: string[]): string[] {
+  let i = 0
+  while (i < words.length) {
+    const w = words[i]!
+    if (w === '--') return words.slice(i + 1)
+    if (w[0] !== '-' && w[0] !== '/' && w.indexOf('=') > 0) {
+      i++
+      continue
+    }
+    if (w === '-' || w[0] !== '-') break
+    if (w.startsWith('--')) {
+      const eq = w.indexOf('=')
+      const name = eq < 0 ? w.slice(2) : w.slice(2, eq)
+      let required = false
+      if (eq < 0) {
+        if (name in SUDO_LONG_OPTIONS) required = SUDO_LONG_OPTIONS[name]!
+        else {
+          const hits = Object.keys(SUDO_LONG_OPTIONS).filter(k => k.startsWith(name))
+          if (hits.length === 1) required = SUDO_LONG_OPTIONS[hits[0]!]!
+        }
+      }
+      i += required ? 2 : 1
+      continue
+    }
+    let step = 1
+    for (let k = 1; k < w.length; k++) {
+      if (SUDO_SHORT_VALUE_FLAGS.has(w[k]!)) {
+        if (k === w.length - 1) step = 2
+        break
+      }
+    }
+    i += step
+  }
+  return words.slice(i)
+}
+
 /**
  * The function skips each flag word after a known wrapper's own name.
  * It handles one word pair at a time.
@@ -1230,6 +1338,7 @@ const WRAPPER_BARE_FLAGS: Record<string, Set<string>> = {
  * The scan skips that `--` word first, because it ends the wrapper's own option list.
  */
 function skipWrapperFlags(wrapperName: string, words: string[]): string[] {
+  if (wrapperName === 'sudo') return skipSudoFlags(words)
   const valueFlags = WRAPPER_VALUE_FLAGS[wrapperName]
   const bareFlags = WRAPPER_BARE_FLAGS[wrapperName]
   let w = words
@@ -6301,6 +6410,28 @@ export function denyReason(
 }
 
 /**
+ * claude-factory-mozp: returns true when a comment line ends in a backslash and more text follows.
+ * A comment starts at a `#` that begins a word. The shell keeps the backslash, so the next line
+ * runs as a command. segments() joins the two lines. The check reads the raw text, one test for
+ * each line, so the cost is linear. A `#` after a space inside quotes also counts. That is a
+ * deny that is not needed, which is safe.
+ */
+function commentLineContinues(cmd: string): boolean {
+  let k = cmd.indexOf('#')
+  while (k !== -1) {
+    if (k === 0 || /[\s;&|()<>`]/.test(cmd[k - 1]!)) {
+      const e = cmd.indexOf('\n', k)
+      if (e === -1) return false
+      if (cmd[e - 1] === '\\' && /\S/.test(cmd.slice(e + 1))) return true
+      k = cmd.indexOf('#', e)
+    } else {
+      k = cmd.indexOf('#', k + 1)
+    }
+  }
+  return false
+}
+
+/**
  * The scan `denyReason` runs, with no length cap (claude-factory-dts). `denyReason` is the only
  * public entry point that checks `MAX_COMMAND_LENGTH`. A recursive call (through `anyShellReason`,
  * for `eval` or `sh -c`) reads a substring of a command that `denyReason` already capped. So this
@@ -6579,6 +6710,8 @@ function denyAtScan(
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
+  // claude-factory-mozp: every decoded script (sh -c, eval, alias, substitution) passes here too.
+  if (commentLineContinues(command)) return COMMENT_CONTINUATION_REASON
   // claude-factory-1zr5: a table the hook cannot read denies every command (fail closed).
   const aliasTable = gate.shellAliases?.()
   if (gate.shellAliases && !aliasTable) return SHELL_ALIAS_READ_REASON
