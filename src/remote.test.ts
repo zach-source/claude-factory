@@ -1365,6 +1365,70 @@ test("a launch starts from a gone worker's pushed commits instead of pushing the
   rmSync(runDir, { recursive: true })
 }, 30_000) // git clones and a whole tick
 
+test("a launch stores the origin's GitHub owner in the side file and sends the matching policy keys", () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+    return p.stdout.toString().trim()
+  }
+  mkdirSync(dir, { recursive: true })
+  const sent = join(dir, 'launch-policy-sent')
+  const kubectl = join(dir, 'capture-launch-create')
+  writeFileSync(
+    kubectl,
+    `#!/bin/sh\ncase "$*" in *create*) cat > ${sent} ;; *) exec ${readyController()} "$@" ;; esac\n`,
+  )
+  chmodSync(kubectl, 0o755)
+  const cases = [
+    ['r5a', 'github.com/zach-source/widget.git', 'zach-source', ['GITHUB_ZS', 'GITHUB_ZS_BASIC']],
+    ['r5b', 'github.com/acme/widget.git', 'acme', ['GITHUB', 'GITHUB_BASIC']],
+    ['r5c', 'gitlab.example.com/acme/widget.git', undefined, ['GITHUB', 'GITHUB_BASIC']],
+  ] as const
+  for (const [id, path, owner, keys] of cases) {
+    rmSync(sent, { force: true })
+    const origin = join(dir, id, path)
+    const worktree = join(dir, id, 'wt')
+    mkdirSync(join(dir, id), { recursive: true })
+    sh(dir, 'git', 'init', '-q', '--bare', origin)
+    sh(dir, 'git', 'clone', '-q', origin, worktree)
+    writeFileSync(join(worktree, 'a'), 'a\n')
+    sh(worktree, 'git', 'add', '.')
+    sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    const runDir = join(home, 'runs', id)
+    mkdirSync(join(runDir, 'prompts'), { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(def)}`)
+    const run = { id, factory: join(runDir, 'factory.ts'), repo: worktree, goal: 'g', ws: 'w1', worktree }
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
+    const actor = createActor(compile(def)).start()
+    actor.send({ type: 'TICK', at: Date.now() })
+    writeFileSync(
+      join(runDir, 'state.json'),
+      JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    )
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    const out = factory(['tick'], {
+      FACTORY_AX_IMAGE: 'img',
+      FACTORY_KUBECTL: kubectl,
+      FACTORY_AX_VAULT: 'factory',
+    }).out
+    expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
+    const sideName = readdirSync(runDir).find(f => /^f-.*\.json$/.test(f))!
+    const side = JSON.parse(readFileSync(join(runDir, sideName), 'utf8'))
+    expect(side.githubOwner).toBe(owner)
+    const sentKeys = JSON.parse(readFileSync(sent, 'utf8'))
+      .rules.slice(1, 3)
+      .map((r: any) => r.https.effects.replaceHeaders[0].credentialUri.split('/').at(-1))
+    expect(sentKeys).toEqual(keys as unknown as string[])
+    rmSync(runDir, { recursive: true })
+  }
+}, 60_000) // git clones and whole ticks
+
 test("a pull that kept the VM's version of an issue says on it what the laptop had", () => {
   // what dolt sql -r json printed for the pull's statements, one line each
   const out = [
