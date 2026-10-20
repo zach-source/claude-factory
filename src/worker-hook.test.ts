@@ -348,14 +348,15 @@ test('denyReason denies an rm -rf behind a stack of eval words, fast (claude-fac
 // A depth limit, MAX_SHELL_DEPTH = 32, corrects this problem.
 // The hook denies a command that has more than 32 levels of eval.
 // It will fail closed.
-// This check is much faster than the 500 ms time limit of this test.
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
+// The limit is 2000 ms, not 500 ms: the scan takes about 380 ms on a laptop and 611 ms was seen
+// on a CI runner.
 const DEEP_RM_N = 4000
 const DEEP_RM_COMMAND = 'eval '.repeat(DEEP_RM_N) + 'rm '.repeat(DEEP_RM_N) + '; rm -rf x'
 
 test('scanReason denies a 4000-level stacked eval rm -rf form, fast, no personOnly (claude-factory-epz)', () => {
   expect(scanReason(DEEP_RM_COMMAND)).toBe(DEEP_COMMAND_REASON)
-}, 500)
+}, 2000)
 
 // claude-factory-dts: the same over-8192-character command denies with LONG_COMMAND_REASON
 // through denyReason, on every rig, with no personOnly set.
@@ -4187,6 +4188,55 @@ test.each(ALLOW_GLOBAL_GIT_CONFIG)(
     expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
   },
 )
+
+// claude-factory-93fx: APFS folds case fully, so U+FB01 (fi) and U+00DF (ss) name the same file.
+const LIG = 'ﬁ'
+const DENY_FOLD = [
+  `printf x >> ~/.gitcon${LIG}g`,
+  `cp f ~/.gitcon${LIG}g`,
+  `cp f /etc/gitcon${LIG}g`,
+  `cp f ~/.GITCON${LIG}G`,
+  `cp f ~/.con${LIG}g/git/con${LIG}g`,
+  `cp f /home/acme/xdg/git/con${LIG}g`,
+  `cp f ~/.gitcon${LIG}*`,
+  `cd /etc; cp f gitcon${LIG}g`,
+  `cd ~/.con${LIG}g; git status`,
+  `cd ~/.con${LIG}g/git; printf x >> con${LIG}g`,
+]
+test.each(DENY_FOLD)('denyReason denies the folded form %j (claude-factory-93fx)', cmd => {
+  expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBe(GLOBAL_GIT_CONFIG_REASON)
+})
+test.each([`cat ~/.gitcon${LIG}g`, `ls vite.con${LIG}g.ts`, `git status`])(
+  'denyReason allows %j (claude-factory-93fx)',
+  cmd => {
+    expect(denyReason(cmd, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)).toBeUndefined()
+  },
+)
+test('denyReason gives a ligature twin the verdict of its ASCII row (claude-factory-93fx)', () => {
+  const rows = [
+    ...DENY_GLOBAL_GIT_CONFIG_WRITE,
+    ...DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE,
+    ...DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R2,
+    ...DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R3,
+    ...DENY_GLOBAL_GIT_CONFIG_WRITE_ALONE_R4,
+    ...ALLOW_GLOBAL_GIT_CONFIG,
+  ]
+  let n = 0
+  for (const row of rows) {
+    const twin = row.replace(
+      /(?<=[./t])con(fi)g/gi,
+      (_m, f) => 'con' + (f === 'fi' ? LIG : LIG.toUpperCase()) + 'g',
+    )
+    if (twin === row) continue
+    n++
+    const want = denyReason(row, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)
+    expect([twin, denyReason(twin, '/r/acme/widget', undefined, GLOBAL_GIT_CONFIG_GATE)]).toEqual([
+      twin,
+      want,
+    ])
+  }
+  expect(n).toBeGreaterThan(20)
+})
 
 // A command that is not a reader names the path: it fails closed, also when it reads.
 test('denyReason denies a non-reader that names the global git config (claude-factory-ty8y, accepted false positive)', () => {
