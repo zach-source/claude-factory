@@ -189,8 +189,9 @@ const BODY_ROWS = [
   'r$X -rf /',
   'find . -exec $X -rf {} +',
 ]
-test.each(
-  BODY_ROWS.flatMap(b => [`repeat 1 { ${b} }`, `if [[ 1 ]] { ${b}; }`, `{ true } always { ${b} }`]),
-)('4IOD.16 denies %s', cmd => {
-  expect(run(cmd)).toBe(REASON)
-})
+test.each(BODY_ROWS.flatMap(b => [`repeat 1 { ${b} }`, `if [[ 1 ]] { ${b}; }`, `{ true } always { ${b} }`]))(
+  '4IOD.16 denies %s',
+  cmd => {
+    expect(run(cmd)).toBe(REASON)
+  },
+)
