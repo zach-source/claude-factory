@@ -9174,7 +9174,7 @@ test.each([
 test.each(['echo x | {fd}> f $SH', 'echo x | {fd}> f $SH -s'])(
   'denyReason denies %j (claude-factory-sdur leadingRedirects)',
   cmd => {
-    expect(denyReason(cmd, '/Users/acme/widget')).toBe(SHELL_STDIN_REASON)
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(SHELL_ALIAS_DEFINE_REASON)
   },
 )
 
