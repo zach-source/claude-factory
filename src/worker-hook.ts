@@ -2619,66 +2619,6 @@ function globalGitConfigSamples(root: string | undefined, gate: HookGate | undef
   return out
 }
 
-// claude-factory-ebmm: a comma or `..` group expands to each alternative, innermost first, with one cap
-// (BRACE_CAP) for the whole word. Over the cap each group becomes a glob that keeps its characters, so
-// the literal text stays. `{}`, a lone `{` and `${` stay.
-const BRACE_CAP = 64
-const INT_RE = /^-?\d+$/
-function rangeToComma(a: string, b: string): string | undefined {
-  const n: string[] = []
-  if (INT_RE.test(a) && INT_RE.test(b)) {
-    const x = Number(a)
-    const y = Number(b)
-    if (Math.abs(y - x) >= BRACE_CAP) return undefined
-    const padded = /^-?0\d/.test(a) || /^-?0\d/.test(b)
-    const pad = padded ? Math.max(a.replace('-', '').length, b.replace('-', '').length) : 0
-    for (let i = x; x <= y ? i <= y : i >= y; i += x <= y ? 1 : -1)
-      n.push((i < 0 ? '-' : '') + String(Math.abs(i)).padStart(pad, '0'))
-  } else if (a.length === 1 && b.length === 1) {
-    const x = a.charCodeAt(0)
-    const y = b.charCodeAt(0)
-    if (Math.abs(y - x) >= BRACE_CAP) return undefined
-    for (let i = x; x <= y ? i <= y : i >= y; i += x <= y ? 1 : -1) n.push(String.fromCharCode(i))
-    if (n.some(c => !/[A-Za-z0-9]/.test(c))) return undefined
-  } else return undefined
-  return n.length > 1 ? `{${n.join(',')}}` : n[0]
-}
-
-function groupToGlob(alts: string): string {
-  return /^[\w.-]+(,[\w.-]+)*$/.test(alts) ? `[${[...new Set(alts.replace(/,/g, ''))].join('')}]*` : '*'
-}
-
-function expandBraces(w: string): string[] {
-  w = w.replace(/\{([^{}.,]+)\.\.([^{}.,]+)\}/g, (_all, a: string, b: string) => {
-    const r = rangeToComma(a, b)
-    if (r !== undefined) return r
-    return INT_RE.test(a) && INT_RE.test(b) ? '[-0-9]*' : '*'
-  })
-  w = w.replace(/\{[^{}]*\.\.[^{}]*\}/g, '*')
-  const todo = [w]
-  const out: string[] = []
-  while (todo.length) {
-    const cur = todo.pop()!
-    const m = /\{([^{}]*,[^{}]*)\}/.exec(cur)
-    if (!m) {
-      out.push(cur)
-    } else {
-      const pre = cur.slice(0, m.index)
-      const post = cur.slice(m.index + m[0].length)
-      for (const a of m[1]!.split(',')) todo.push(pre + a + post)
-    }
-    if (todo.length + out.length > BRACE_CAP) {
-      let c = w
-      for (let prev = ''; prev !== c;) {
-        prev = c
-        c = c.replace(/\{([^{}]*,[^{}]*)\}/g, (_all, alts: string) => groupToGlob(alts))
-      }
-      return [c]
-    }
-  }
-  return out
-}
-
 // claude-factory-ty8y: commands that read their operands. A reader writes only through a redirect.
 const READER_COMMANDS = new Set([
   'cat',
@@ -2709,11 +2649,116 @@ const READER_COMMANDS = new Set([
 // claude-factory-ty8y.12: commands whose operands are text (a search word, a title, a comment body).
 const TEXT_OPERAND_COMMANDS = new Set(['bd', 'factory', 'gh'])
 
+// claude-factory-ebmm: a sound over-approximation of shell glob and brace words, with no RegExp and no
+// brace expansion. A `*` run, or a brace group that holds a glob character, matches any text. A `?` or
+// a `[..]` matches one char. Any other brace group matches any run of the chars in its text, of the
+// chars from `x` to `y` for each `x..y`, and of `{`, `}` and `,`. A digit range also adds `0-9` and `-`.
+// A `${..}` span and an unbalanced `{` stay literal.
+type GlobToken =
+  { k: 'lit'; c: string } | { k: 'one' } | { k: 'any' } | { k: 'cls'; f: (c: string) => boolean }
+
+function braceClass(text: string): (c: string) => boolean {
+  const set = new Set<string>([...text, '{', '}', ','])
+  const spans: [number, number][] = []
+  for (const m of text.matchAll(/(.)\.\.(.)/gu)) {
+    const lo = m[1]!.codePointAt(0)!
+    const hi = m[2]!.codePointAt(0)!
+    spans.push([Math.min(lo, hi), Math.max(lo, hi)])
+  }
+  if (/\d/.test(text) && text.includes('..')) spans.push([48, 57], [45, 45])
+  return c => {
+    for (const x of [c, c.toLowerCase(), c.toUpperCase()]) {
+      if (set.has(x)) return true
+      const cp = x.codePointAt(0)!
+      if (spans.some(([lo, hi]) => cp >= lo && cp <= hi)) return true
+    }
+    return false
+  }
+}
+
+function tokenizeGlob(w: string): GlobToken[] {
+  const out: GlobToken[] = []
+  for (let i = 0; i < w.length; i++) {
+    const c = w[i]!
+    if (c === '$' && w[i + 1] === '{') {
+      const e = w.indexOf('}', i)
+      const end = e < 0 ? i : e
+      for (; i <= end; i++) out.push({ k: 'lit', c: w[i]! })
+      i--
+    } else if (c === '*') out.push({ k: 'any' })
+    else if (c === '?') out.push({ k: 'one' })
+    else if (c === '[' && w.indexOf(']', i + 2) > 0) {
+      out.push({ k: 'one' })
+      i = w.indexOf(']', i + 2)
+    } else if (c === '{') {
+      let depth = 0
+      let j = i
+      for (; j < w.length; j++) {
+        if (w[j] === '{') depth++
+        else if (w[j] === '}' && --depth === 0) break
+      }
+      if (j >= w.length) out.push({ k: 'lit', c })
+      else {
+        const text = w.slice(i + 1, j)
+        out.push(/[*?[]/.test(text) ? { k: 'any' } : { k: 'cls', f: braceClass(text) })
+        i = j
+      }
+    } else out.push({ k: 'lit', c })
+  }
+  return out
+}
+
 function globNamesGlobalGitConfig(word: string, samples: string[], state?: ScanState): boolean {
-  // claude-factory-ty8y.24, 267o: globCanMatch collapses star runs and fails closed over the star cap.
-  return expandBraces(word.replace(/^["']+|["']+$/g, '')).some(w =>
-    /[*?[]/.test(w) ? globCanMatch(w, samples, state) : GLOBAL_GIT_CONFIG_FILE_RE.test(w),
-  )
+  const w = word.replace(/^["']+|["']+$/g, '')
+  if (!/[*?[{]/.test(w)) return false
+  const toks = tokenizeGlob(w)
+  // claude-factory-ty8y.24, 267o: star runs collapse, and more than MAX_GLOB_STARS fails closed.
+  let stars = 0
+  toks.forEach((t, i) => {
+    if (t.k === 'any' && toks[i - 1]?.k !== 'any') stars++
+  })
+  if (stars > MAX_GLOB_STARS) return true
+  if (state && spendWork(state, toks.length * samples.length)) return true
+  return samples.some(s => {
+    const L = s.length
+    let cur = new Uint8Array(L + 1)
+    cur[0] = 1
+    for (const [ti, t] of toks.entries()) {
+      const next = new Uint8Array(L + 1)
+      let live = false
+      let min = -1
+      for (let p = 0; p <= L; p++) {
+        if (!cur[p]) continue
+        if (min < 0) min = p
+        if (t.k === 'any') continue
+        if (t.k === 'cls') {
+          next[p] = 1
+          live = true
+          if (p < L && t.f(s[p]!)) cur[p + 1] = 1
+        } else if (
+          t.k === 'lit' &&
+          t.c === '.' &&
+          toks[ti - 1]?.k === 'lit' &&
+          (toks[ti - 1] as { c: string }).c === '/'
+        ) {
+          // a path part `/.` names the same path as no part (normalizeConfigPath)
+          next[p] = 1
+          live = true
+          if (p < L && s[p] === '.') next[p + 1] = 1
+        } else if (p < L && (t.k === 'one' || s[p]!.toLowerCase() === t.c.toLowerCase())) {
+          next[p + 1] = 1
+          live = true
+        }
+      }
+      if (t.k === 'any' && min >= 0) {
+        next.fill(1, min)
+        live = true
+      }
+      if (!live) return false
+      cur = next
+    }
+    return cur[L] === 1
+  })
 }
 
 type OperandSkip = 'none' | 'reader' | 'operands'

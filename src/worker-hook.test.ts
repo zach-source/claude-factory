@@ -3796,6 +3796,12 @@ const DENY_EBMM_ROOT = [
   'tee -a ~widget/.config/g*/config',
   'cp x ~widget/.config/g*/.',
   'tee -a ~widget/.config/git/c*',
+  `tee -a /Users/{z-a,widget}/.gitc*${'{,}'.repeat(7)}`,
+  `cp x /Users/{z-a,widget}/.config/g*/.${'{,}'.repeat(7)}`,
+  'tee -a /Users/{a..z}idget/.gitc*',
+  `tee -a /Users/widge{t,x}/.gitc*${'{,}'.repeat(7)}`,
+  'tee -a ~{widget,x}/.gitc*',
+  'tee -a {~widget,x}/.gitc*',
 ]
 const DENY_EBMM_ANY = [
   'tee -a ~/.gitconfi{g,}',
@@ -3806,6 +3812,9 @@ const DENY_EBMM_ANY = [
   'tee -a /home/*/.gitc*',
   'tee -a /home/acme/.gitc*',
   'tee -a ~/.gitc*',
+  'tee -a $HO{M,}E/.gitc*',
+  'tee -a ~/.{g*,x}',
+  'tee -a ~/.gitconfi{e..g..2}',
 ]
 test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
   'denyReason denies %j under a second fixture user (claude-factory-ebmm)',
@@ -3858,6 +3867,11 @@ test.each([
   'touch f{a,b}{1..40}',
   'mkdir -p {a,b}{1..40}',
   'touch {a..z}{a..z}',
+  `touch f${'{a,b}'.repeat(7)}`,
+  'mkdir -p {a,b}/{c,d}/{e,f}/{g,h}/{i,j}/{k,l}/{m,n}',
+  'touch {a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}x',
+  'touch {1..10..2}',
+  'touch {a..e..2}',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
 })
@@ -3882,6 +3896,15 @@ test('denyReason scans many nested brace groups fast (claude-factory-ebmm.4)', (
     `tee -a x ${'{a,b}'.repeat(30)}; git push origin HEAD:main`,
     `tee -a ~/.gitconfi{g,}${'{,}'.repeat(30)}`,
   ]) {
+    const t = performance.now()
+    denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
+    expect(performance.now() - t).toBeLessThan(1000)
+  }
+})
+
+test('denyReason scans a long brace word fast (claude-factory-ebmm.13)', () => {
+  for (const g of ['{,}', '{a,b}x']) {
+    const cmd = `tee -a ~/.gitconfi${g.repeat(2000)}`
     const t = performance.now()
     denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)
     expect(performance.now() - t).toBeLessThan(1000)
