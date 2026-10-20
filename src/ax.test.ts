@@ -727,7 +727,7 @@ test("a rig's shared Dolt remote is what the VM's beads clone from, with only a 
   }
 })
 
-test("a rig with no Dolt remote bootstraps its beads from the git origin through a sync.remote config", () => {
+test('a rig with no Dolt remote bootstraps its beads from the git origin through a sync.remote config', () => {
   const own = join(dir, 'own-beads-origin')
   const bd = join(dir, 'bd-boot-origin')
   // like bd 1.3.0: no .beads/config.yaml, no workspace
