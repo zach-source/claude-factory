@@ -1888,11 +1888,17 @@ function dynamicHeadDeny(
   // claude-factory-0xw4: the head can expand to env, sudo or command with value flags (-u root),
   // so a later dynamic word can be rm. Deny-only; never sets rm.
   let later = 0
+  let scanned = -2
   for (let k = start + 1; k < cmd.length; k++) {
     const t = cmd[k]!
     if (start > 0 && (t === ';' || t === '+')) break
-    if (t[0] === '-' || !DYN_CHARS.test(t)) continue
+    if (!DYN_CHARS.test(t)) continue
     if (!later) later = k
+    if (t[0] === '-' && scanned === k - 1) {
+      scanned = k
+      continue
+    }
+    scanned = t[0] === '-' ? k : -2
     if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
   }
   const riskyFrom = (from: number): boolean => {
@@ -2007,6 +2013,7 @@ function wrapperReadingsDeny(
       work.push(() => head(j))
       return
     }
+    if (DYN_CHARS.test(w)) work.push(() => head(j))
     work.push(() => xargsFlags(j + 1))
     work.push(() => xargsFlags(j + 2))
   }
@@ -2029,6 +2036,7 @@ function wrapperReadingsDeny(
       after(name, j)
       return
     }
+    if (w !== '--' && DYN_CHARS.test(w)) work.push(() => head(j))
     if (w === '--') {
       let k = j + 1
       if (name === 'env' && words[k] === '-') k++
