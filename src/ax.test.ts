@@ -746,9 +746,8 @@ test("a rig with no Dolt remote bootstraps its beads from the git origin through
   })
   try {
     worker.setupBeads()
-    expect(readFileSync(join(dir, 'bd-boot-origin.log'), 'utf8')).toBe(
-      'sync.remote: "git+https://github.com/acme/widget.git"\n',
-    )
+    const log = readFileSync(join(dir, 'bd-boot-origin.log'), 'utf8')
+    expect(log).toBe('sync.remote: "git+https://github.com/acme/widget.git"\n')
   } finally {
     process.env = saved
   }

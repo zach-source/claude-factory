@@ -2,7 +2,16 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axRepoPath, bdEnv, beadsDirOf, httpsRemote, mapRigs, mapRunRepo, planRepoSync, syncRepos } from './axrepos'
+import {
+  axRepoPath,
+  bdEnv,
+  beadsDirOf,
+  httpsRemote,
+  mapRigs,
+  mapRunRepo,
+  planRepoSync,
+  syncRepos,
+} from './axrepos'
 
 const AX = { FACTORY_IN_AX: '1' }
 const rigs = [

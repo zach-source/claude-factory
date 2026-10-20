@@ -140,7 +140,8 @@ export function bootstrapBeads(
   // a rig's shared Dolt remote (FACTORY_BEADS_REMOTE), else the repo's GitHub origin
   // bd finds no workspace without a config.yaml, so the origin case gets one too (git+ form)
   mkdirSync(join(dir, '.beads'), { recursive: true })
-  writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(remote ?? `git+${origin}`)}\n`)
+  const syncRemote = remote ?? `git+${origin}`
+  writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(syncRemote)}\n`)
   for (const cmd of [
     ['git', 'init', '-q', '.'],
     ...(remote ? [] : [['git', 'remote', 'add', 'origin', origin]]),
