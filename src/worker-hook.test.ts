@@ -6247,6 +6247,32 @@ const DASH_DYN_DENY = [
   'xargs --max-args=$(y) foo -rf /home',
 ]
 
+// claude-factory-cwt9.16: NAME=$(y) after env or sudo is an argument, so the substitution splits.
+test.each([
+  'env X=$(y) -rf /home',
+  'sudo X=$(y) -rf /home',
+  'env X=$(y) foo -rf /home',
+  'sudo X=$(y) foo /home/x',
+  'env -u root X=$(y) -rf /home',
+  'sudo -u root X=$(y) -rf /home',
+  'env A[1]=$(y) -rf /home',
+  'env X+=$(y) -rf /home',
+  'env X=$(y)b -rf /home',
+  'env X=$(y) ls /home',
+])(
+  'denyReason denies a split substitution after an env assignment argument: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeDefined()
+  },
+)
+
+test.each(['X=$(y) ls /home', 'A=$(y) B=$(y) make all'])(
+  'denyReason allows a prefix-slot assignment with a substitution: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+  },
+)
+
 test.each(DASH_DYN_DENY)(
   'denyReason denies a dynamic flag-shaped word before rm: %s (claude-factory-cwt9)',
   cmd => {

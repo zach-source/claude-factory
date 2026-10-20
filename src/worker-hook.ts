@@ -7728,12 +7728,29 @@ function replaceGluedSubstitutions(command: string, fill = ' '): string {
         command.lastIndexOf('\n', from),
         command.lastIndexOf('\t', from),
       ) + 1
-    const assign = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/.test(command.slice(wordStart, from))
+    const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/
+    let cmdStart = 0
+    for (let k = wordStart - 1; k >= 0; k--) {
+      const ch = command[k]!
+      if (ch === '\n' || ch === ';' || ch === '&' || ch === '|' || (ch === '(' && command[k - 1] !== '$')) {
+        cmdStart = k + 1
+        break
+      }
+    }
+    // An assignment word skips only in the prefix slot. After env or sudo it is an argument.
+    const assignWord = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/.test(command.slice(wordStart, from))
+    const assign =
+      assignWord &&
+      command
+        .slice(cmdStart, wordStart)
+        .split(/\s+/)
+        .every(w => w === '' || ASSIGN.test(w))
     if ((/[\s(]/.test(before) && /[\s)]/.test(after)) || (fill !== ' ' && assign)) {
       from = command.indexOf('$(', from + 2)
       continue
     }
-    out += command.slice(last, from) + fill
+    // After env or sudo, NAME=$(y) splits: the part after the first word is a command word.
+    out += command.slice(last, from) + (assignWord && fill !== ' ' ? ' ' : '') + fill
     last = end
     const body = command.slice(from + 2, command[end - 1] === ')' ? end - 1 : end)
     const inner = body.includes('$(') ? replaceGluedSubstitutions(body, fill) : body
