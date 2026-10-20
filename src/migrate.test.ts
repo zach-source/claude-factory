@@ -100,6 +100,8 @@ test('the host waits on an empty home for the marker, and starts on a marker, a 
   expect(homeReady({ ...f, fresh: true })).toBe(true)
   expect(homeReady({ ...f, hasRigs: true })).toBe(true)
   expect(homeReady({ ...f, hasRigs: true, archive: true })).toBe(false)
+  expect(homeReady({ ...f, migrated: true, restoring: true })).toBe(false)
+  expect(homeReady({ ...f, fresh: true, restoring: true })).toBe(false)
 })
 
 test('pack makes a tar.gz with the migrated rigs.json and without the laptop-only files', () => {

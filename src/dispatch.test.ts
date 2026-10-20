@@ -2,7 +2,7 @@
 // station (claude-factory-b6c.27). `bd linear pull` copies every Linear label onto the bead it
 // writes, with no filter. dispatch already honors `station:<name>` (beads.ts stationOf): it starts a
 // run past the factory's own first stations. A Linear-side actor with write access to an issue can
-// set `station:deploy` or `station:release` this way. The person later adds the `factory` label to
+// set `station:review` or `station:security` this way. The person later adds the `factory` label to
 // work the bead. Without this fix, that run would skip triage, plan, implement, review and security.
 //
 // This test drives the real `dispatch()` through `factory beads`. It uses a fake `bd` and `herdr`,
@@ -36,7 +36,7 @@ const factory = (args: string[]) => {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 
-/** fake bd: `ready` answers one bead carrying `station:deploy`, with or without a Linear
+/** fake bd: `ready` answers one bead carrying `station:review`, with or without a Linear
  * `external_ref`, depending on `extRef`. `children` is always empty (no bead here has one). Every
  * other call (claim, dolt remote list, sync) exits 0, so dispatch proceeds past them with no error. */
 function fakeBd(extRef: string | undefined) {
@@ -45,7 +45,7 @@ function fakeBd(extRef: string | undefined) {
     {
       id: 'acme-1',
       title: 't',
-      labels: ['factory', 'station:deploy'],
+      labels: ['factory', 'station:review'],
       ...(extRef && { external_ref: extRef }),
     },
   ])
@@ -128,7 +128,7 @@ test("dispatch never starts a run at a Linear-sourced bead's station:<name> labe
   reset('https://linear.app/acme/issue/STI-1')
   const out = factory(['beads'])
   expect(out.code).toBe(0)
-  expect(gotoOf()).toEqual([]) // the run stays at the factory's own start station, not "deploy"
+  expect(gotoOf()).toEqual([]) // the run stays at the factory's own start station, not "review"
 })
 
 test('a station:<name> label a person wrote by hand (no Linear external_ref) still starts the run there', () => {
@@ -137,7 +137,7 @@ test('a station:<name> label a person wrote by hand (no Linear external_ref) sti
   expect(out.code).toBe(0)
   const gotos = gotoOf()
   expect(gotos).toHaveLength(1)
-  expect(gotos[0]!.node).toBe('deploy') // the control: proves dispatch really reaches stationOf here
+  expect(gotos[0]!.node).toBe('review') // the control: proves dispatch really reaches stationOf here
 })
 
 // dispatch() orders its candidates by the pm's plan, when one is fresh (claude-factory-dun.3).
@@ -1557,7 +1557,7 @@ test('a conflict label that cannot come off mails its run once, not every pass',
 })
 
 test('station:<name> with no factory:<name> label keeps the rig factory (A4 control)', () => {
-  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory', 'station:deploy'] }])
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory', 'station:review'] }])
   const out = pfactory(['beads'], { GH_JSON: '[]' })
   expect(out.code).toBe(0)
   expect(pinnedFactoryName()).toBe('lifecycle')

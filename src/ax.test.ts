@@ -287,6 +287,23 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
   expect(git!.https.effects!.replaceHeaders[0]).toMatchObject({ header: 'Authorization', prefix: 'Basic ' })
 })
 
+test('the manager has its own github.com vault key when a backup remote is set; workers keep GITHUB_BASIC', () => {
+  const key = (k?: string) =>
+    JSON.stringify(ax.egressPolicy('factory', [], undefined, undefined, undefined, k).rules).match(
+      /factory\/(GITHUB_BASIC\w*)/,
+    )![1]
+  expect(key()).toBe('GITHUB_BASIC')
+  expect(key(ax.managerGithubKey({ FACTORY_AX_BACKUP_REMOTE: 'https://github.com/acme/h.git' }))).toBe(
+    'GITHUB_BASIC_MANAGER',
+  )
+  expect(ax.managerGithubKey({})).toBe('GITHUB_BASIC')
+  const mgr = JSON.stringify(
+    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER').rules,
+  )
+  expect(mgr).not.toContain('GITHUB_ZS')
+  expect(mgr).not.toContain('pathPrefixes')
+})
+
 test("a task's phase is read from ax get, and a deleted task has none", () => {
   expect(ax.phase('t')).toBeNull()
   writeFileSync(join(dir, 'get'), 'metadata:\n  name: t\nstatus:\n  phase: Suspended\n  actor: t\n')

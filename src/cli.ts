@@ -30,6 +30,7 @@ import {
   compile,
   extend,
   fill,
+  hasShipEdge,
   isParked,
   isPrWait,
   WORKER_OUTCOMES,
@@ -56,12 +57,14 @@ import {
   dispatchable,
   factoryOf,
   goalOf,
+  shipBranchOf,
   hasBeads,
   isOwned,
   LABEL,
   linearSourced,
   byId,
   parentOf,
+  shipQueueText,
   stationOf,
   type Bead,
 } from './beads'
@@ -82,7 +85,7 @@ import {
 } from './sweeps'
 import * as gatebrief from './gatebrief'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
-import { tokens, waiting } from './sidebar'
+import { shipLines, tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
@@ -105,6 +108,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
@@ -238,6 +242,8 @@ export type Run = {
   forkedFrom?: string
   /** the bead this run works: its epic in the repo's beads tracker */
   bead?: string
+  /** a rig's ship run: only the runner writes this, and it counts against no run limit (claude-factory-rtuw) */
+  ship?: true
 }
 type Saved = {
   cursor: number
@@ -247,7 +253,13 @@ type Saved = {
 }
 /** bead bookkeeping, the beads pass's own file: journal entries mirrored, last heartbeat, whether track()
  * recorded the run's end, whether that ending was a requeue, and what last went wrong */
-type Track = { mirrored: number; beatAt: number; isSettled: boolean; requeued?: boolean; error?: string }
+export type Track = {
+  mirrored: number
+  beatAt: number
+  isSettled: boolean
+  requeued?: boolean
+  error?: string
+}
 type Input = Ev extends infer E ? (E extends Ev ? Omit<E, 'at'> : never) : never
 export type Row = {
   id: string
@@ -850,6 +862,16 @@ export function ownCopy(template: string, name: string) {
     `// commit, checked with \`factory check ${OWN}/${name}.ts\`. The improve sweep proposes changes to it.\n\n` +
     body
   )
+}
+
+/** the queued PR's branch on origin, fetched, so a rework run starts on the PR's own commits; undefined when it is gone */
+export function reworkBase(repo: string, branch: string) {
+  if (!/^factory\/[\w.-]+$/.test(branch) || branch.includes('..')) return undefined
+  Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', '--', branch], { timeout: 30_000 })
+  const ref = `origin/${branch}`
+  return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
+    ? ref
+    : undefined
 }
 
 /**
@@ -2324,8 +2346,27 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   }
 }
 
+/**
+ * The run's own PR among the links its reports cite. One link is that PR. With several, a report may cite
+ * a sibling PR, so the answer is the link whose head branch is the run's; no match records none, and the
+ * ship run finds the PR from ship_branch.
+ */
+export function shipPrOf(
+  links: string[],
+  branch: string,
+  headOf: (url: string) => string | null = url => {
+    const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'headRefName', '-q', '.headRefName'], {
+      timeout: 20_000,
+    })
+    return p.exitCode === 0 ? p.stdout.toString().trim() : null
+  },
+) {
+  if (links.length < 2) return links[0] ?? ''
+  return links.find(url => headOf(url) === branch) ?? ''
+}
+
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
-function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
+export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
   const b = beads(run.repo, actorOf(run.id))
   const id = run.bead!
   for (const e of c.log.slice(t.mirrored)) {
@@ -2341,9 +2382,24 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     const last = c.log.at(-1)
     const edge = last && def.nodes[last.node]?.next[last.outcome]
     const reason = clip(last ? `${last.node} ${last.outcome}: ${last.summary}` : node, 500)
+    // A ship edge hands the approved PR to the rig's ship run (claude-factory-rtuw). It runs before
+    // the open-children branch: approval is the end, and the ship run needs the bead open and queued.
+    if (node === 'done' && typeof edge === 'object' && edge.ship) {
+      const links = [...c.log].reverse().flatMap(e => [...prsIn(e.summary), ...mrsIn(e.summary)])
+      const url = shipPrOf([...new Set(links)], run.branch)
+      b.ship(id, run.id, { pr: url, branch: run.branch })
+      // a parked ship run wakes on mail; one that is not live is started by the next shipPass
+      for (const s of liveShipRuns().filter(s => s.run.repo === run.repo))
+        post(s.run.id, {
+          type: 'MAIL',
+          from: 'factory',
+          to: s.node,
+          text: `${id} joined the ship queue: ${url || 'no pull request link'} (run ${run.id}).`,
+        })
+    }
     // open children, however the run ended: what is left is theirs to start, so the bead stays open
     // rather than deferred out of sight (dispatch skips it, so it does not come straight back)
-    if (openChildren(b, id).length) {
+    else if (openChildren(b, id).length) {
       b.release(id)
       b.comment(id, `run ${run.id} ended with open child beads, so this stays open for them: ${reason}`)
     }
@@ -2445,6 +2501,55 @@ const trackOf = (id: string, saved?: Saved): Track => {
       }
 }
 
+/** the repos that need a new ship run: a non-empty queue and no live ship run (claude-factory-rtuw) */
+export const shipStarts = (repos: string[], queued: (repo: string) => number, live: ReadonlySet<string>) =>
+  repos.filter(r => !live.has(r) && queued(r) > 0)
+
+/** the live ship runs: the runner's own flag, or the id a ship run gets from its factory name */
+const liveShipRuns = () =>
+  runIds().flatMap(id => {
+    try {
+      const { run, value } = current(id)
+      const ended = ['done', 'aborted'].includes(where(value)[0])
+      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0] }] : []
+    } catch {
+      return [] // removed mid-pass
+    }
+  })
+
+/**
+ * Starts one ship run for each rig whose ship queue holds a bead and which has no live ship run.
+ * A ship run takes no room: it counts against FACTORY_MAX_RUNS and the rig's maxRuns never
+ * (claude-factory-rtuw), so this does not call assertRoom. The beads pass calls it.
+ */
+async function shipPass() {
+  if (halted()) return
+  const live = new Set(liveShipRuns().map(s => s.run.repo))
+  const byRepo = new Map(rigs().map(r => [r.repo, r]))
+  const queues = new Map<string, number>()
+  const queued = (repo: string) => {
+    try {
+      if (!hasBeads(repo)) return 0
+      if (!queues.has(repo)) queues.set(repo, beads(repo, 'factory').shipQueue().length)
+    } catch (err) {
+      console.error(`${new Date().toISOString()} ship queue for ${repo}: ${(err as Error).message}`)
+    }
+    return queues.get(repo) ?? 0
+  }
+  for (const repo of shipStarts([...byRepo.keys()], queued, live)) {
+    const rig = byRepo.get(repo)!
+    try {
+      const preview = await loadFactory(factorySource('ship', repo))
+      if (preview.name !== 'ship') throw new Error(`its ship factory is named '${preview.name}', not 'ship'`)
+      const goal = `Ship rig ${rig.name}'s queue: factory ship ${rig.name} lists the pull requests, next to merge first.`
+      const { run } = await createTracked('ship', preview.name, repo, goal, undefined, undefined, true)
+      console.log(`${new Date().toISOString()} ship for rig ${rig.name} → ${run.id}`)
+    } catch (err) {
+      console.error(`${new Date().toISOString()} ship for rig ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+}
+
 /**
  * every run's beads, out of the tick: under load one bd call can take a minute, and launching, nudging and
  * failing workers must not wait on it. Mirrors reports, heartbeats claims, settles finished runs, then
@@ -2496,6 +2601,7 @@ async function beadsPass() {
         // removed mid-pass
       }
     }
+    await shipPass()
     await linearPass()
     await dispatch()
     await labelPass()
@@ -4288,12 +4394,18 @@ async function createRun(
   spec: string,
   repo: string,
   goal: string,
-  { id, bead, from }: { id: string; bead?: string; from?: { run: Run; saved: Saved } },
+  {
+    id,
+    bead,
+    from,
+    ship,
+    onto,
+  }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true; onto?: string },
 ) {
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
   const created = herdr(
-    ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? base],
+    ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? onto ?? base],
     ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
   )
   const ws: string = created.workspace.workspace_id
@@ -4306,6 +4418,9 @@ async function createRun(
   let def: Factory
   try {
     def = await loadFactory(source)
+    // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
+    if (hasShipEdge(def) && !hasBeads(repo))
+      throw new Error('it hands its beads to ship, which needs a repo with .beads')
     writeJson(pinned, def)
   } catch (err) {
     herdr('worktree', 'remove', '--workspace', ws, '--force') // fresh, nothing in it yet
@@ -4331,6 +4446,7 @@ async function createRun(
     worktree,
     ...(from && { forkedFrom: from.run.id }),
     ...(bead && { bead }),
+    ...(ship && { ship }),
   }
   // the source's worker stays the source's: the fork launches its own
   const snapshot = from
@@ -4352,12 +4468,20 @@ async function createTracked(
   goal: string,
   bead?: string,
   from?: { run: Run; saved: Saved },
+  ship?: true,
+  shipBranch?: string,
 ) {
   const id = `${name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`
   const b = beads(repo, actorOf(id))
   if (bead && !b.claim(bead)) fail(`${bead} is already claimed by another worker`)
   try {
-    return await createRun(spec, repo, goal, { id, bead, from })
+    return await createRun(spec, repo, goal, {
+      id,
+      bead,
+      from,
+      ship,
+      onto: shipBranch && reworkBase(repo, shipBranch),
+    })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
     if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
@@ -5205,7 +5329,16 @@ async function dispatch() {
         }
         let run, def
         try {
-          ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id))
+          ;({ run, def } = await createTracked(
+            spec,
+            name,
+            rig.repo,
+            goalOf(bead),
+            bead.id,
+            undefined,
+            undefined,
+            shipBranchOf(bead),
+          ))
         } catch (err) {
           if (/already claimed/.test((err as Error).message)) {
             skips.set(bead.id, 'claimed elsewhere')
@@ -5658,6 +5791,17 @@ export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: 
       r.log.some(e => [...prsIn(e.summary), ...mrsIn(e.summary)].includes(pr.url)),
   )?.id
 
+/** the queued bead whose PR this is: ship owns it, so no rework run may start on it (claude-factory-rtuw) */
+export const queuedOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, queue: Bead[]) =>
+  queue.find(b => b.metadata?.ship_branch === pr.headRefName || (!!pr.url && b.metadata?.ship_pr === pr.url))
+
+/** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
+export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<typeof beads>, 'unship'>) {
+  const owner = queuedOwner({ url, headRefName: '' }, queue)
+  if (owner) b.unship(owner.id, `${url} was closed unmerged`)
+  return owner
+}
+
 /**
  * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
  * aborts the live run it belongs to; `conflict` or `rework` mails that run's station (so two workers never
@@ -5724,8 +5868,28 @@ async function labelPass() {
           }
     try {
       const labeled = forge.list()
+      const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
+        ? beads(rig.repo, 'factory').shipQueue()
+        : []
       for (const pr of labeled) {
         const action = labelAction(pr)
+        const queuedBead = action === 'rework' ? queuedOwner(pr, shipped) : undefined
+        // a queued PR closed unmerged leaves the queue: the ship run would loop on it as the next PR
+        if (action === 'close') {
+          const closed = queuedOwner(pr, shipped)
+          if (closed) beads(rig.repo, 'factory').unship(closed.id, `${pr.url} was closed unmerged`)
+        }
+        if (queuedBead) {
+          // the rig's ship run owns a queued PR: it hears of the label, and no rework run starts
+          const text = `[factory] ${pr.url} (${queuedBead.id}) was ${asksOf(pr)}. Treat it as changes needed: follow your rework steps.`
+          forge.unlabel(pr, reworkLabels(pr))
+          const ships = liveShipRuns().filter(s => s.run.repo === rig.repo)
+          for (const s of ships) post(s.run.id, { type: 'MAIL', from: 'factory', to: s.node, text })
+          // no live ship run to hear it: the bead keeps the ask, and the next ship run reads it
+          if (!ships.length) beads(rig.repo, 'factory').comment(queuedBead.id, text)
+          console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)
+          continue
+        }
         const runId = prOwner(pr, live)
         if (action === 'close') {
           forge.close(pr, `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`)
@@ -5914,6 +6078,14 @@ async function watchPass() {
           store[key]!.routed = true
           console.log(`${iso} ${id}: routing ${node} -> ${outcome}: ${d.text.split('\n')[0]}`)
           routed.push({ run: id, node, url: d.url, outcome, at: now })
+          if (d.kind === 'hold' && run.ship && hasBeads(run.repo)) {
+            try {
+              const b = beads(run.repo, actorOf(id))
+              unshipClosed(d.url, b.shipQueue(), b)
+            } catch (err) {
+              console.log(`${iso} ${id}: closed PR not taken out of the queue: ${(err as Error).message}`)
+            }
+          }
           if (d.kind === 'changes' && run.bead && hasBeads(run.repo)) {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
@@ -5958,6 +6130,7 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   const held: (string | undefined)[] = []
   for (const id of runIds()) {
     const { run, value } = current(id)
+    if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
     const [node, sub] = where(value)
     const n = (await loadFactory(run.factory)).nodes[node]
     const s = slot(n, sub)
@@ -6121,6 +6294,10 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   const preview = await loadFactory(factorySource(spec!, root))
   if (at && !preview.nodes[at])
     fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
+  if (preview.name === 'ship')
+    fail(
+      `only the runner starts a ship run, once for each rig with a queue: see factory ship ${rigOf(root)?.name ?? root}`,
+    )
   const linked = beadFor(root, goal, { isOwnerOk })
   const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
   if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
@@ -6632,6 +6809,14 @@ async function status(id: string | undefined) {
         ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
         : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
     )
+  if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
+    const age = backupAge(HOME, Date.now())
+    const err = backupError(HOME)
+    console.log(
+      (age === undefined ? 'home backup: none yet' : `home backup: ${Math.round(age / 60_000)} min ago`) +
+        (err ? `; last run failed: ${err}` : ''),
+    )
+  }
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
   for (const runId of id ? [id] : runIds()) {
     const { run, value, c } = current(runId)
@@ -6657,6 +6842,28 @@ async function status(id: string | undefined) {
     for (const e of id ? c.log : c.log.slice(-1))
       console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${e.summary.replace(/\s+/g, ' ').slice(0, 160)}`)
   }
+  if (!id) {
+    const ships = liveShipRuns()
+    for (const [rig, queue] of Object.entries(shipQueues())) {
+      const repo = rigs().find(r => r.name === rig)!.repo
+      const live = ships.find(s => s.run.repo === repo)
+      const lines = shipLines(queue, live && { id: live.run.id, node: live.node })
+      if (lines.length) console.log(`rig ${rig}\n${lines.join('\n')}`)
+    }
+  }
+}
+
+/** each rig's ship queue, the next PR first; a rig whose bd cannot be read is left out */
+function shipQueues() {
+  const out: Record<string, Bead[]> = {}
+  for (const rig of rigs()) {
+    try {
+      if (hasBeads(rig.repo)) out[rig.name] = beads(rig.repo, 'factory').shipQueue()
+    } catch (err) {
+      console.error(`ship queue for ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+  return out
 }
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
@@ -6712,7 +6919,8 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
-  show <run> | backlog | prs         JSON for the manager's views
+  ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
+  show <run> | backlog | prs        JSON for the manager's views
   decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
@@ -6888,7 +7096,7 @@ if (import.meta.main && !outboxCmd)
         break
       case 'manager':
         if (args[0] === 'host') {
-          await managerhost.host(args.slice(1), { prepare: reposSync })
+          await managerhost.host(args.slice(1), { prepare: reposSync, lock: () => hold('tick.lock') })
           break
         }
         if (args[0] === '--ax') {
@@ -7302,6 +7510,11 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
+      case 'ship': {
+        if (!args[0]) fail('usage: factory ship <rig|repo>')
+        console.log(shipQueueText(beads(repoOf(args[0]!), 'factory').shipQueue()))
+        break
+      }
       case 'status':
         await status(args[0])
         break
@@ -7313,7 +7526,7 @@ if (import.meta.main && !outboxCmd)
             return row(run, def, value, c, agentOf(def, value, c))
           }),
         )
-        console.log(waiting(rows, Date.now()))
+        console.log(waiting(rows, Date.now(), shipQueues()))
         break
       }
       case 'report': {

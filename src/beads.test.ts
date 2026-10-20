@@ -16,6 +16,12 @@ import {
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 
+test('a bead handed to ship is not listed as unqueued', () => {
+  const shipped = bead('ap-6', { labels: ['ship'], status: 'open' })
+  const out = backlogOf([], [shipped, bead('ap-7')], [], [shipped, bead('ap-7')])
+  expect(out.unqueued.map(b => b.id)).toEqual(['ap-7'])
+})
+
 test('only top-level beads no run holds are dispatched, up to the room left', () => {
   const ready = [
     ...[bead('fx-1'), bead('fx-1.1', { parent: 'fx-1' }), bead('fx-2'), bead('fx-5', { assignee: 'zach' })],
@@ -99,6 +105,10 @@ test('a bead becomes a goal and may name its station', () => {
   expect(stationOf(b)).toBe('incident')
   expect(stationOf(bead('fx-8', { labels: ['factory'] }))).toBeUndefined()
   expect(goalOf(bead('fx-7'))).toBe('fx-7: title fx-7')
+  const q = goalOf(bead('fx-6', { metadata: { ship_branch: 'factory/run-1', ship_pr: 'https://x/pull/3' } }))
+  expect(q).toContain('https://x/pull/3 on branch factory/run-1')
+  expect(q).toContain('starts from origin/factory/run-1')
+  expect(q).toContain('Open no new PR')
 })
 
 test('factoryOf reads a factory:<name> label, never one from a Linear pull, a path, or the bare factory label', () => {
