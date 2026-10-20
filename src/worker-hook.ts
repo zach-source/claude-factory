@@ -1660,8 +1660,6 @@ function wrapperReadingsDeny(words: string[], root: string | undefined): { deny:
     if (w === '--') {
       let k = j + 1
       if (name === 'env' && words[k] === '-') k++
-      // sudo ends NAME=value words at '--': the next word is the command. Read both ways.
-      if (name === 'sudo') after(name, k)
       if (name === 'env' || name === 'sudo') while (k < n && wrapperAssignmentOperand(words[k]!)) k++
       after(name, k)
       return
