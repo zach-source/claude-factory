@@ -9728,7 +9728,8 @@ const ALLOW_PWY0: string[] = [
   '$x acme.txt',
   '$HOME/.local/bin/claude plugin test mod',
   '"$ROOT/bin/factory" report x 2 ready "rm -rf rows"',
-  '/bin/s? -c x',
+  // /bin/s? also matches su and ss on Linux, so it would deny there (claude-factory-clcc.10).
+  '/bin/[s]h -c x',
   'env --unset "$X" --chdir /tmp make test',
 ]
 test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
