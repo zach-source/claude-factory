@@ -225,6 +225,14 @@ export const DOLLAR_QUOTE_REASON =
   'decodes this quote, so this guard cannot read the real command words. Write the words ' +
   'plainly, or use printf or a file. Do not retry this exact command.'
 
+// claude-factory-mozp: in a comment the shell keeps a backslash, so a backslash-newline does not
+// join the lines. segments() joins them, so the guard denies the comment line itself.
+export const COMMENT_CONTINUATION_REASON =
+  'The factory denies this command: a # comment line ends with a backslash and more text follows. ' +
+  'In a comment the shell keeps the backslash, so the next line runs as a command that this guard ' +
+  'reads as comment words. Remove the backslash, or run the next command in a separate Bash call. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-mmc9.14: bash and zsh disagree on a non-ASCII or subscripted assignment prefix.
 export const ASSIGNMENT_PREFIX_REASON =
   'The factory denies this command: it starts with an assignment word that bash and zsh read in ' +
@@ -6316,6 +6324,28 @@ export function denyReason(
 }
 
 /**
+ * claude-factory-mozp: returns true when a comment line ends in a backslash and more text follows.
+ * A comment starts at a `#` that begins a word. The shell keeps the backslash, so the next line
+ * runs as a command. segments() joins the two lines. The check reads the raw text, one test for
+ * each line, so the cost is linear. A `#` after a space inside quotes also counts. That is a
+ * deny that is not needed, which is safe.
+ */
+function commentLineContinues(cmd: string): boolean {
+  let k = cmd.indexOf('#')
+  while (k !== -1) {
+    if (k === 0 || /[\s;&|()<>`]/.test(cmd[k - 1]!)) {
+      const e = cmd.indexOf('\n', k)
+      if (e === -1) return false
+      if (cmd[e - 1] === '\\' && /\S/.test(cmd.slice(e + 1))) return true
+      k = cmd.indexOf('#', e)
+    } else {
+      k = cmd.indexOf('#', k + 1)
+    }
+  }
+  return false
+}
+
+/**
  * The scan `denyReason` runs, with no length cap (claude-factory-dts). `denyReason` is the only
  * public entry point that checks `MAX_COMMAND_LENGTH`. A recursive call (through `anyShellReason`,
  * for `eval` or `sh -c`) reads a substring of a command that `denyReason` already capped. So this
@@ -6512,6 +6542,8 @@ function denyAtScan(
 ): string | undefined {
   if (!command) return undefined
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
+  // claude-factory-mozp: every decoded script (sh -c, eval, alias, substitution) passes here too.
+  if (commentLineContinues(command)) return COMMENT_CONTINUATION_REASON
   // claude-factory-1zr5: a table the hook cannot read denies every command (fail closed).
   const aliasTable = gate.shellAliases?.()
   if (gate.shellAliases && !aliasTable) return SHELL_ALIAS_READ_REASON

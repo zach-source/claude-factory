@@ -11,6 +11,7 @@ import {
   COMMENT_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  COMMENT_CONTINUATION_REASON,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
   ASSIGNMENT_PREFIX_REASON,
@@ -5632,6 +5633,64 @@ test.each(DENY_DQ_SUBST)('denyReason denies %j (double-quoted substitution)', (c
   expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
 })
 
+// claude-factory-mozp: a backslash at the end of a comment line is literal in a shell, so the next
+// line runs as a command. segments() joins the lines, so the guard must deny the comment line.
+const BS = '\\'
+const NL = '\n'
+const DENY_COMMENT_CONTINUATION: [string, string][] = [
+  [`true #${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true #a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true;#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # it's${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}git${BS}${NL} push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}gh pr merge 5`, COMMENT_CONTINUATION_REASON],
+  [`true # a${BS}${NL}rm -rf /`, COMMENT_CONTINUATION_REASON],
+  [`echo $(true # a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo "$(true # a${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`x="$(true # a${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`echo DQ"$(true # a${BS}${NL}git push origin main${NL})"DQ`, COMMENT_CONTINUATION_REASON],
+  // quote concatenation: the backslash and the newline sit in different quote spans
+  [`sh -c 'true #a${BS}'"${NL}"'git push origin main'`, COMMENT_CONTINUATION_REASON],
+  [`bash -c 'true #a${BS}'"${NL}git push origin main"`, COMMENT_CONTINUATION_REASON],
+  [`eval 'true #a${BS}'"${NL}"'git push origin main'`, COMMENT_CONTINUATION_REASON],
+  [`echo $(sh -c 'true #a${BS}'"${NL}"'git push origin main')`, COMMENT_CONTINUATION_REASON],
+  // every character that can start a word before the comment hash
+  [`true|#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true&&#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`true&#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`(true)#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`(#a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo $(#a${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`true\t#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`#a${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  // the rows from the bead, with a space before the backslash: the push word is already visible
+  [`true # a ${BS}${NL}git push origin main`, COMMENT_CONTINUATION_REASON],
+  [`echo $(true # a ${BS}${NL}git push origin main${NL})`, COMMENT_CONTINUATION_REASON],
+  [`echo "$(true # a ${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+  [`x="$(true # a ${BS}${NL}git push origin main${NL})"`, COMMENT_CONTINUATION_REASON],
+]
+
+test.each(DENY_COMMENT_CONTINUATION)(
+  'denyReason denies %j (comment line ends in a backslash)',
+  (cmd, reason) => {
+    expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBe(reason)
+  },
+)
+
+const ALLOW_COMMENT_CONTINUATION = [
+  `echo x#y${BS}${NL}git status`,
+  `echo '#'${BS}${NL}git status`,
+  `echo "#"${BS}${NL}git status`,
+  `echo a #b${NL}git status`,
+  `git status # note${BS}`,
+  `git status # note${BS}${NL}  `,
+]
+
+test.each(ALLOW_COMMENT_CONTINUATION)('denyReason allows %j (no comment continuation)', cmd => {
+  expect(denyReason(cmd, '/root/repo', ['acme'], DQ_GATE)).toBeUndefined()
+})
+
 const ALLOW_DQ_SUBST = [
   'echo "git push origin main"',
   "echo 'git push origin main'",
@@ -5663,8 +5722,8 @@ const DENY_WMSR_COMMENT: [string, string][] = [
   [`true &# it's\n${WM}`, COMMENT_REASON],
   [`true &&# it's\n${WM}`, COMMENT_REASON],
   [`# don't\n${WM}`, COMMENT_REASON],
-  [`true # a\\\n${WM}`, COMMENT_REASON],
-  [`echo $(true # a\\\n${WM}\n)`, COMMENT_REASON],
+  [`true # a\\\n${WM}`, COMMENT_CONTINUATION_REASON],
+  [`echo $(true # a\\\n${WM}\n)`, COMMENT_CONTINUATION_REASON],
   [`echo $(true)#' \n${WM}\n'`, COMMENT_REASON],
 ]
 test.each(DENY_WMSR_COMMENT)('denyReason denies %j (comment text, wmsr)', (cmd, reason) => {
