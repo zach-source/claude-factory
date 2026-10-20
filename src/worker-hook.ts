@@ -4859,7 +4859,7 @@ function segmentMayDefineAlias(words: string[]): boolean {
 
 // claude-factory-iufy: true when this segment may turn on GLOB_SUBST.
 // (a) a word names globsubst (case and _ ignored); (b) setopt/unsetopt with -m or a pattern or
-// expansion argument; (c) set -o/+o with an expansion; (d) an options[...] or options= write.
+// expansion argument; (c) set -o/+o with an expansion. An options[...] write has a dynamic verb.
 function segmentMayGlobSubst(words: string[]): boolean {
   const first = commandAnchors(words)[0]
   const safe = first !== undefined && externalProgram(words[first]!)
@@ -4871,7 +4871,6 @@ function segmentMayGlobSubst(words: string[]): boolean {
       if (safe && i > first! && !dyn) continue
       return true
     }
-    if (/^options(\[|=|\+=)/.test(w) && dyn) return true
     if (w === 'setopt' || w === 'unsetopt') {
       if (bare.slice(i + 1).some(a => a === '-m' || /[$`*?[]/.test(a))) return true
     } else if (w === 'set') {
