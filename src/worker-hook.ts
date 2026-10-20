@@ -441,6 +441,8 @@ interface ScanState {
   stdinDeferred: boolean
   globalGitConfig: boolean
   gitWord: boolean
+  /** claude-factory-mn2y: set when any segment, at any depth, may define a shell alias. */
+  aliasWrite: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
   substFallbacks: number
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
@@ -4203,6 +4205,60 @@ function dynamicCommandWord(w: string): boolean {
   return w !== '{}' && dynamicWord(w)
 }
 
+// claude-factory-mn2y: external programs cannot change the parent shell's alias table. Never add
+// a shell builtin (echo, print, printf, read, typeset, :) to this list.
+const ALIAS_SAFE_COMMANDS = new Set([
+  'grep',
+  'egrep',
+  'fgrep',
+  'rg',
+  'git',
+  'gh',
+  'bd',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'sed',
+  'awk',
+  'jq',
+  'sort',
+  'bun',
+  'ls',
+  'diff',
+])
+
+// claude-factory-mn2y: true when this segment may define a shell alias.
+// W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
+// W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
+function segmentMayDefineAlias(words: string[]): boolean {
+  const anchors = commandAnchors(words)
+  const first = anchors[0]
+  const safe = first !== undefined && ALIAS_SAFE_COMMANDS.has(words[first]!)
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (!/alias/i.test(w)) continue
+    if (safe && i > first! && !/[$`]/.test(w)) continue
+    return true
+  }
+  for (const a of anchors) {
+    if (!dynamicCommandWord(words[a]!)) continue
+    for (let i = a + 1; i < words.length; i++) {
+      if (/^[^-=]+=/.test(words[i]!) || /[$`]/.test(words[i]!)) return true
+    }
+  }
+  return false
+}
+
+// claude-factory-mn2y: the raw text has no expansion, substitution or brace, and every segment
+// is an alias command.
+function plainAliasOnly(command: string): boolean {
+  const raw = command.replace(/\\\r?\n/g, '')
+  if (/[$`()<>{}]/.test(raw)) return false
+  const segs = segments(raw)
+  return segs.length > 0 && segs.every(w => w[0] === 'alias')
+}
+
 /**
  * Removes a leading `refs/heads/` or `heads/` from `ref`.
  * After this, `refs/heads/main`, `heads/main` and `main` compare equal.
@@ -6487,6 +6543,7 @@ export function scanReason(
     stdinDeferred: false,
     globalGitConfig: false,
     gitWord: false,
+    aliasWrite: false,
     substFallbacks: 0,
     work: budget,
   }
@@ -6496,6 +6553,10 @@ export function scanReason(
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
+  // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
+  // trap, source or substitution reads it after this hook ran. Deny unless the command is only
+  // plain alias segments.
+  if (state.aliasWrite && !plainAliasOnly(command)) return SHELL_ALIAS_DEFINE_REASON
   if (!state.headPush) return state.stdinDeferred ? SHELL_STDIN_REASON : undefined
   // claude-factory-9zd5: R4. A headPush denies when the command itself holds a branch-change or
   // git-admin-path signal (branchChange, gitAdminPath), or when gate.cwd itself names a directory
@@ -6799,6 +6860,7 @@ function denyAtScan(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
+    if (!state.aliasWrite && segmentMayDefineAlias(words)) state.aliasWrite = true
     if (aliasTable) {
       const aliased = shellAliasReason(
         words,
