@@ -1215,7 +1215,7 @@ const FIND_EXEC_WORDS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
 function findExecRmDeny(cmdIn: string[]): boolean {
   const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
   for (let i = 0; i < cmd.length; i++) {
-    if (!FIND_EXEC_WORDS.has(cmd[i]!)) continue
+    if (!FIND_EXEC_WORDS.has(cmd[i]!) && !globActionWord(cmd[i]!)) continue
     const k = i + 1
     if (k >= cmd.length) continue
     const b = baseWord(cmd[k]!)
@@ -1671,6 +1671,9 @@ const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false }
 const DYN_CHARS = /[$`*?[]/
 const DYN_FLAG_TEXT = /(?<![-:])-[A-Za-z]*[rR]|:--[A-Za-z]*[rR]|--rec|-delete|-exec|-ok/
 const DYN_FLAG_WORDS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir'])
+// A glob word such as -exe? can match a file named -exec, so find runs it as an action.
+const globActionWord = (w: string): boolean => /^[-*?[]/.test(w) && /[*?[]/.test(w)
+const findExecWord = (w: string): boolean => w === '-exec' || w === '-execdir' || globActionWord(w)
 
 function hasLettersInOrder(w: string, letters: string): boolean {
   let k = 0
@@ -1703,7 +1706,8 @@ function dynamicHeadDeny(
     return { deny: true, rm: false }
   if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags) return { deny: true, rm: false }
   if (start === 0) {
-    for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
+    for (let k = 1; k < cmd.length; k++)
+      if (DYN_FLAG_WORDS.has(cmd[k]!) || globActionWord(cmd[k]!)) return { deny: true, rm: false }
   }
   // claude-factory-0xw4: the head can expand to env, sudo or command with value flags (-u root),
   // so a later dynamic word can be rm. Deny-only; never sets rm.
@@ -1762,7 +1766,7 @@ function rmFindReading(
   if (b === 'find') {
     if (findExecRmDeny(cmd)) return { deny: true, rm: false }
     for (let i = 0; i < cmd.length; i++) {
-      if (!FIND_EXEC_WORDS.has(cmd[i]!) || i + 1 >= cmd.length) continue
+      if (!findExecWord(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
       if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny)
         return { deny: true, rm: false }
