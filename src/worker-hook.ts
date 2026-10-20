@@ -766,6 +766,8 @@ type SegInfo = {
   funcDef?: boolean
   // claude-factory-wmsr: a here-document that segments() cannot read with certainty
   heredoc?: boolean
+  // claude-factory-5hjj: segments that end in a `(` marker glued to the word before it
+  glued?: Set<string[]>
 }
 
 const HAZARD_RE = /['"`\\]/
@@ -965,6 +967,9 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
         if (arg) {
+          // claude-factory-5hjj: a glued `(` (`/bin/r(m)`, `/bin/@(r)m`) is a glob group in the
+          // word. It is not a function pair, `a=(` or `<(`.
+          if (info && hasWord && !wasExempt && !info.funcDef) (info.glued ??= new Set()).add(cur)
           endWord()
           cur.push('(')
         }
@@ -1259,6 +1264,22 @@ function skipWrapperFlags(wrapperName: string, words: string[]): string[] {
 // place of this one.
 function wrapperAssignmentOperand(w: string): boolean {
   return w[0] !== '-' && w.indexOf('=') > 0
+}
+
+/**
+ * claude-factory-5hjj: `head` ends with the word that has a glued `(`.
+ * The function returns true if that word is in the command slot.
+ * That means it is a command anchor, it follows `find -exec` (or -execdir, -ok, -okdir), or only
+ * redirects come before it. A glued `(` in an argument (`ls a(b)`) is allowed.
+ */
+function gluedAtCommandSlot(head: string[]): boolean {
+  const last = head.length - 1
+  if (last < 0) return false
+  if (commandAnchors(head).includes(last)) return true
+  if (/^-(exec|execdir|ok|okdir)$/.test(head[last - 1] ?? '')) return true
+  let i = 0
+  while (i < last && /^(\d*[<>]|&>)/.test(head[i]!)) i += /^(\d*[<>]+|&>>?)&?-?$/.test(head[i]!) ? 2 : 1
+  return i === last
 }
 
 /** `words` with any leading VAR=val, wrapper (sudo, env, time...), `timeout <n>` or `xargs [flags]` stripped */
@@ -6433,6 +6454,8 @@ function denyAtScan(
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
+    // claude-factory-5hjj: a glob group glued to a command word hides the command from every scan.
+    if (quoteInfo.glued?.has(words) && gluedAtCommandSlot(words.slice(0, -1))) return DYNAMIC_VERB_REASON
     if (setsDangerousGitConfigEnv(words)) hasDangerousConfigEnv = true
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
