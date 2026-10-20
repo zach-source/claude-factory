@@ -1118,10 +1118,13 @@ function recursiveFlag(w: string): boolean {
   return false
 }
 
+/** A redirect word. Group 1 is the glued target: empty when the target is the next word. */
+const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|<<-?|<>|<)[|!&]?(.*)$/s
+
 /**
  * `words` is an rm command and its args. `words[start]` is the rm word itself.
  * This function returns true when `words` asks for a recursive delete.
- * It stops at the first `--` word or the first non-flag word.
+ * It skips redirect words and their targets. It stops at the first `--` word or the first other non-flag word.
  *
  * claude-factory-lbn: this function reads `words` by index. It does not call
  * `words.slice(start + 1)`. The find branch below calls this function once for each
@@ -1134,6 +1137,15 @@ function isRecursiveRm(words: string[], start = 0): boolean {
     if (w === '--') return false
     if (w.startsWith('-')) {
       if (recursiveFlag(w)) return true
+      continue
+    }
+    // claude-factory-g4l4: the shell takes a redirect word out of the rm args, so flags after it still count.
+    const redirect = RM_REDIRECT_WORD.exec(w)
+    if (redirect) {
+      if (redirect[1] === '') {
+        const next = words[k + 1] ?? '-'
+        if (next === '--' || !next.startsWith('-')) k++
+      }
       continue
     }
     return false
@@ -1576,11 +1588,81 @@ function assignmentReadingsDeny(words: string[], root: string | undefined, state
 }
 
 /**
+ * claude-factory-pwy0: what the other segments of a command hold. A variable set in one segment
+ * can put flags or the letters rm into a dynamic command word in another.
+ */
+type OtherSegs = { flags: boolean; rmfind: boolean }
+const NO_OTHER_SEGS: OtherSegs = { flags: false, rmfind: false }
+const DYN_CHARS = /[$`*?[]/
+const DYN_FLAG_TEXT = /(?<![-:])-[A-Za-z]*[rR]|:--[A-Za-z]*[rR]|--rec|-delete|-exec|-ok/
+const DYN_FLAG_WORDS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir'])
+
+function hasLettersInOrder(w: string, letters: string): boolean {
+  let k = 0
+  for (let i = 0; i < w.length && k < letters.length; i++) if (w[i]!.toLowerCase() === letters[k]) k++
+  return k === letters.length
+}
+
+/**
+ * claude-factory-pwy0: one fail-closed rule for a dynamic command word `cmd[start]` (it holds
+ * `$`, a backtick or a glob character, and its base word is not rm or find). No model of shell
+ * expansion: it denies when the word can run rm or find with flags, or rm on a risky target.
+ * A: the word cannot be read (open `${`, `${!`, backtick, `$(`).
+ * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
+ * C: another segment holds flag text (a variable there can put flags in the word).
+ * D: the word may read as rm or find, and a target is risky or a default value holds a path.
+ * Returns rm: true when D holds but no target is risky, for the cd + rm rule. O(length).
+ */
+function dynamicHeadDeny(
+  cmd: string[],
+  start: number,
+  root: string | undefined,
+  other: OtherSegs,
+): { deny: boolean; rm: boolean } {
+  const w = cmd[start]!
+  // The lexer cuts a word at a zsh flag group `${(L)`; denyAt reads that command again without it.
+  const bal = w.endsWith('${') ? w.slice(0, -2) : w
+  if (w.includes('`') || w.includes('${!') || bal.split('{').length > bal.split('}').length)
+    return { deny: true, rm: false }
+  if (isRecursiveRm(cmd, start) || DYN_FLAG_TEXT.test(w) || other.flags) return { deny: true, rm: false }
+  if (start === 0) {
+    for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
+  }
+  if (!(other.rmfind || hasLettersInOrder(w, 'rm') || hasLettersInOrder(w, 'find')))
+    return { deny: false, rm: false }
+  const dflt = /\$\{[^}:=+-]*:?[-=+]/.exec(w)
+  if (dflt) {
+    const rest = w.slice(dflt.index + dflt[0].length)
+    if (rest.includes('/') || rest.includes('~') || rest.includes('..')) return { deny: true, rm: false }
+  }
+  let afterDashDash = false
+  for (let k = start + 1; k < cmd.length; k++) {
+    const t = cmd[k]!
+    if (start > 0 && (t === ';' || t === '+')) break
+    if (!afterDashDash && t === '--') {
+      afterDashDash = true
+      continue
+    }
+    if (!afterDashDash && t.startsWith('-')) continue
+    if (riskyTarget(t, root)) return { deny: true, rm: false }
+  }
+  return { deny: false, rm: true }
+}
+
+/**
  * claude-factory-21ux: true when an rm or find-exec-rm rule denies the command that starts at `cmd[0]`.
  * `rm` is true when `cmd[0]` is an rm word that the rule did not deny.
  */
-function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+function rmFindReading(
+  cmd: string[],
+  root: string | undefined,
+  other: OtherSegs = NO_OTHER_SEGS,
+): { deny: boolean; rm: boolean } {
   const b = baseWord(cmd[0]!)
+  if (b !== 'rm' && b !== 'find' && DYN_CHARS.test(cmd[0]!)) {
+    const d = dynamicHeadDeny(cmd, 0, root, other)
+    if (d.deny || d.rm) return d
+  }
   if (b === 'rm') {
     if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return { deny: true, rm: false }
     return { deny: false, rm: true }
@@ -1588,7 +1670,11 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
   if (b === 'find') {
     for (let i = 0; i < cmd.length; i++) {
       if (cmd[i] !== '-exec' && cmd[i] !== '-execdir') continue
-      if (i + 1 < cmd.length && baseWord(cmd[i + 1]!) === 'rm' && isRecursiveRm(cmd, i + 1)) {
+      if (i + 1 >= cmd.length) continue
+      const next = cmd[i + 1]!
+      if (baseWord(next) === 'rm') {
+        if (isRecursiveRm(cmd, i + 1)) return { deny: true, rm: false }
+      } else if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny) {
         return { deny: true, rm: false }
       }
     }
@@ -1610,7 +1696,11 @@ function rmFindReading(cmd: string[], root: string | undefined): { deny: boolean
  * The caller then sets hasRm, for the cd + rm rule.
  * Each (index, wrapper) state runs once, so the walk has O(n) states.
  */
-function wrapperReadingsDeny(words: string[], root: string | undefined): { deny: boolean; rm: boolean } {
+function wrapperReadingsDeny(
+  words: string[],
+  root: string | undefined,
+  other: OtherSegs = NO_OTHER_SEGS,
+): { deny: boolean; rm: boolean } {
   const n = words.length
   const seenHead = new Set<number>()
   const seenFlag = new Set<string>()
@@ -1634,7 +1724,7 @@ function wrapperReadingsDeny(words: string[], root: string | undefined): { deny:
       work.push(() => xargsFlags(i + 1))
       return
     }
-    const r = rmFindReading(words.slice(i), root)
+    const r = rmFindReading(words.slice(i), root, other)
     if (r.deny) found = true
     if (r.rm) rm = true
   }
@@ -1827,6 +1917,48 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
     return
   }
   if (firstSingle >= 0) anchors.push(firstSingle)
+}
+
+/**
+ * claude-factory-2a3i: reads the word after each dynamic command word as a possible rm or find.
+ * Returns 'deny' for a recursive or risky rm, or a find -exec/-execdir rm. Returns 'rm' for an
+ * allowed rm (the caller then applies the rm + cd rule). Returns undefined otherwise.
+ * One slice for each anchor. commandAnchors caps the anchors.
+ */
+function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | undefined {
+  let result: 'rm' | undefined
+  const anchors = commandAnchors(words).slice()
+  // A find -exec, -execdir, -ok or -okdir slot is a command slot too. The scan is monotone in the
+  // start index, so the smallest dynamic slot gives the result of all of them. No cap needed.
+  for (let i = 0; i + 1 < words.length; i++) {
+    if (!/^-(exec|execdir|ok|okdir)$/.test(words[i]!)) continue
+    if (!dynamicCommandWord(words[i + 1]!)) continue
+    anchors.push(i + 1)
+    break
+  }
+  for (const a of anchors) {
+    const head = words[a]!
+    if (!dynamicCommandWord(head)) continue
+    // A `{` or `}` word is a group marker, and realCommand strips it. A `name()` word is a function
+    // definition. definesFunction denies it with its own reason.
+    if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
+    // The head can expand to a wrapper with value flags or operands (`-u root`, `-n 5`, `5`). So
+    // scan forward over every rm word. An rm word can be a flag value, so the real rm can come
+    // later. The first rm word gets the full rule. Each later rm word gets the recursive-flag rule.
+    // One pass for each anchor: O(n).
+    let first = true
+    for (let k = a + 1; k < words.length; k++) {
+      if (baseWord(words[k]!) !== 'rm') continue
+      if (isRecursiveRm(words, k)) return 'deny'
+      if (!first) continue
+      first = false
+      const rest = realCommand(words.slice(k))
+      if (!rest.length || baseWord(rest[0]!) !== 'rm') continue
+      if (isRecursiveRm(rest) || rmTargets(rest).some(t => riskyTarget(t, root))) return 'deny'
+      result = 'rm'
+    }
+  }
+  return result
 }
 
 function commandAnchors(words: string[]): number[] {
@@ -6696,6 +6828,25 @@ function denyAt(
 ): string | undefined {
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
+  // claude-factory-pwy0: the lexer splits a word at the `(` of a zsh flag group, `${(L)x:-rm}`.
+  // Read the command again without the flag groups. This is deny-only: only the rm reason counts.
+  if (command.includes('${(')) {
+    const bare = command.replace(/\$\{(?:\([^()]*\))+/g, '${')
+    if (bare !== command) {
+      const r = denyAt(
+        bare,
+        root,
+        personOnly,
+        gate,
+        depth,
+        state,
+        movedBefore,
+        ghConfigMovedBefore,
+        aliasStack,
+      )
+      if (r === REASON) return r
+    }
+  }
   const late: { reason?: string; glued?: string } = {}
   return (
     denyAtScan(
@@ -6776,6 +6927,15 @@ function denyAtScan(
   let definesFunction = quoteInfo.funcDef
   let ambiguousAssignment = false
   let subIdx = 0
+  // claude-factory-pwy0: per-segment flag text and rm/find text, so a dynamic word reads the others.
+  const segFlag = segs.map(sg => DYN_FLAG_TEXT.test(sg.join(' ')))
+  const segRmFind = segs.map(sg => /rm|find/i.test(sg.join(' ')))
+  const flagCount = segFlag.filter(Boolean).length
+  const rmFindCount = segRmFind.filter(Boolean).length
+  const otherSegs = (i: number): OtherSegs => ({
+    flags: flagCount - (segFlag[i] ? 1 : 0) > 0,
+    rmfind: rmFindCount - (segRmFind[i] ? 1 : 0) > 0,
+  })
   // claude-factory-2pdm: scans the double-quoted substitution bodies that sit before segment
   // `upTo`, in order, so a body that moves HEAD counts for a later push.
   const scanSubs = (upTo: number): string | undefined => {
@@ -6936,6 +7096,11 @@ function denyAtScan(
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
       return GLOBAL_GIT_CONFIG_REASON
+    // claude-factory-2a3i: a dynamic command word can expand to `command`, `sudo` or `env`, so the
+    // word after it can be the real rm or find. Deny-only: cmd, b and operandSkip stay unchanged.
+    const dynRm = dynamicHeadRmReading(words, root)
+    if (dynRm === 'deny') return REASON
+    if (dynRm === 'rm') hasRm = true
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
@@ -6953,9 +7118,15 @@ function denyAtScan(
       }
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
-    const readings = wrapperReadingsDeny(words, root)
+    const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
     if (readings.deny) return REASON
     if (readings.rm) hasRm = true
+    // claude-factory-pwy0: a leading redirect word hides a dynamic command word that reads as rm.
+    if (words.some(w => w.includes('$')) && words.some(w => /[<>]/.test(w))) {
+      const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
+      if (dropped.deny) return REASON
+      if (dropped.rm) hasRm = true
+    }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
     // flag, which only moves the one command it wraps: anyGitReason's and anyShellReason's own
