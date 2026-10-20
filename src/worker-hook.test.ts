@@ -6721,6 +6721,28 @@ test.each(ALLOW_WMSR_ESCAPED_LT)('denyReason allows %j (here-string, wmsr)', cmd
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
 })
 
+// claude-factory-wmsr.37: a terminator line plus a closing backtick ends a backtick body early.
+const WMSR37_BT = '`'
+const WMSR37_BODY = "\necho 'a\nEOF" + WMSR37_BT
+const DENY_WMSR_BT_TERM = [
+  `x=${WMSR37_BT}cat <<'EOF'${WMSR37_BODY}\n${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<"EOF"${WMSR37_BODY}\n${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<\\EOF${WMSR37_BODY}\n${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<-'EOF'\n\techo 'a\n\tEOF${WMSR37_BT}\n${WM}\n\tEOF`,
+  `echo ${WMSR37_BT}cat <<'EOF'${WMSR37_BODY}; ${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<'EOF'${WMSR37_BODY} && ${WM}\nEOF`,
+  `y=1 x=${WMSR37_BT}cat <<'EOF'${WMSR37_BODY}\n${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<'EOF'${WMSR37_BODY}\n${WM}\n${WMSR37_BT}\nEOF`,
+]
+test.each(DENY_WMSR_BT_TERM)('denyReason denies %j (terminator plus backtick, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_BT_TERM = ['git commit -m "$(cat <<\'EOF\'\ntext\nEOF\n)"']
+test.each(ALLOW_WMSR_BT_TERM)('denyReason allows %j (commit message heredoc, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
+})
+
 // A # right after a brace or a redirect char can start a comment in a shell.
 const DENY_WMSR_COMMENT_PREV = [
   `echo a >#it's\n${WM}`,
