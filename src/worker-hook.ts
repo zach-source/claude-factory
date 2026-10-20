@@ -1176,11 +1176,11 @@ const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|
  * `-exec rm` or `-execdir rm` word. A slice there would still cost O(n) for each call, and
  * O(n^2) in total.
  */
-function isRecursiveRm(words: string[], start = 0, brace = false): boolean {
+function isRecursiveRm(words: string[], start = 0): boolean {
   for (let k = start + 1; k < words.length; k++) {
     const w = words[k]!
     if (w === '--') return false
-    if (brace && BRACE_LIST_WORD.test(w)) {
+    if (BRACE_LIST_WORD.test(w)) {
       // claude-factory-gj9l: pieces can join with the text outside the braces ({-,}r). A - with r or R in the word counts.
       if (bracePieceRecursive(w) || (w.includes('-') && /[rR]/.test(w))) return true
       if (!w.startsWith('-')) continue
@@ -1226,7 +1226,7 @@ function findExecRmDeny(cmdIn: string[]): boolean {
       if (!braceScanned && BRACE_LIST_WORD.test(cmd[i]!)) {
         braceScanned = true
         for (let j = i + 1; j < cmd.length; j++) {
-          if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j, true)) return true
+          if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
         }
       }
       continue
@@ -1240,7 +1240,7 @@ function findExecRmDeny(cmdIn: string[]): boolean {
     }
     if (WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
       for (let j = k + 1; j < cmd.length; j++) {
-        if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j, true)) return true
+        if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
       }
       return false
     }
@@ -1641,7 +1641,7 @@ function findBraceRmDeny(cmd: string[]): boolean {
   let clearUntil = 0
   const recursive = (j: number): boolean => {
     if (j < clearUntil) return false
-    if (isRecursiveRm(cmd, j, true)) return true
+    if (isRecursiveRm(cmd, j)) return true
     let k = j + 1
     while (k < cmd.length) {
       const c = cmd[k]!

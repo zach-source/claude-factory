@@ -9508,6 +9508,40 @@ test.each(ALLOW_GJ9L)('denyReason allows %j (claude-factory-gj9l)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
 })
 
+const GJ9L_HEADS = [
+  'rm',
+  '/bin/rm',
+  'nice -n 5 rm',
+  'sudo rm',
+  'env rm',
+  'xargs rm',
+  'timeout 5 rm',
+  'command -p rm',
+]
+const GJ9L_FLAGS = ['{-,}r', '{-r,x}', '{-rf,x}', '-f {-r,x}', '--re{c,c}ursive', '2>x {-,}r']
+const GJ9L_MATRIX: string[] = []
+for (const prefix of ['', 'r=1 ', 'time ', 'command ', 'sudo '])
+  for (const head of GJ9L_HEADS)
+    for (const flag of GJ9L_FLAGS) {
+      for (const slot of ['-exec', '-execdir', '-ok', '-okdir'])
+        GJ9L_MATRIX.push(`${prefix}find . ${slot} ${head} ${flag} x ';'`)
+      const [h0, ...hRest] = head.split(' ')
+      GJ9L_MATRIX.push(`${prefix}find . {-ok,${h0}} ${hRest.join(' ')} ${flag} x ';'`)
+    }
+test('denyReason denies every brace flag in every find exec slot (claude-factory-gj9l matrix)', () => {
+  const open = GJ9L_MATRIX.filter(c => denyReason(c, '/Users/acme/widget') !== REASON)
+  expect(open).toEqual([])
+})
+
+test.each([
+  'find . -ok rm -f {} +',
+  "find . -ok ls {} ';'",
+  "find . -name '*.{js,ts}' -ok rm -f {} ';'",
+  "find {src,mod} -ok rm -f {} ';'",
+])('denyReason allows %j (claude-factory-gj9l -ok)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
 test('denyReason reads 3000 brace words after find in one pass (claude-factory-gj9l)', () => {
   expect(scanReason('find . ' + '-{rm,x} '.repeat(3000), '/Users/acme/widget')).toBe(REASON)
   expect(scanReason('find . ' + '{-exec,rm} '.repeat(3000) + '-rf /', '/Users/acme/widget')).toBe(REASON)
