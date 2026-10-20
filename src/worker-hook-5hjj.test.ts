@@ -85,6 +85,15 @@ const DENIED = [
   'timeout --kill-after=1 5 /bin/r(m) x',
   '"eval" /bin/r(m) -rf /',
   'find . -name x -exec /bin/r(m) -rf / ;',
+  'x >f /bin/g(i)t push',
+  'caffeinate /bin/g(i)t push origin main',
+  'caffeinate /bin/r(m) -rf /',
+  'arch -arm64 /bin/g(i)t push origin main',
+  'arch -arm64 /bin/r(m) -rf /',
+  'script -q /dev/null /bin/g(i)t push origin main',
+  'script -q /dev/null /bin/r(m) -rf /',
+  'stdbuf -o0 /bin/g(i)t push origin main',
+  'stdbuf -o0 /bin/r(m) -rf /',
 ]
 test.each(DENIED)('denies a glob group in the command word: %s', cmd => {
   expect(run(cmd)).toBe(DYNAMIC_VERB_REASON)
@@ -123,7 +132,6 @@ const ALLOWED = [
   '/bin/r(m)',
   'echo a(b) c',
   'ls *.@(js|ts) -l',
-  'x >f /bin/g(i)t push',
   'sudo ls a(b) c',
   'find . -name a(b) -print',
   'eval echo hi',
