@@ -1493,6 +1493,31 @@ describe('an AX worker that never started', () => {
     rmSync(join(home, 'runs', id), { recursive: true })
   })
 
+  test("a retried egress policy keeps the task's GitHub owner, so a zach-source rig keeps its keys", () => {
+    const sent = join(dir, 'policy-sent')
+    const kubectl = join(dir, 'capture-create')
+    const keysOf = () =>
+      JSON.parse(readFileSync(sent, 'utf8'))
+        .rules.slice(1, 3)
+        .map((r: any) => r.https.effects.replaceHeaders[0].credentialUri.split('/').at(-1))
+    for (const [id, owner, keys] of [
+      ['nostart-owner-zs', 'zach-source', ['GITHUB_ZS', 'GITHUB_ZS_BASIC']],
+      ['nostart-owner-none', undefined, ['GITHUB', 'GITHUB_BASIC']],
+    ] as const) {
+      launchedAfterFail(id, 'old failure', 120)
+      writeFileSync(
+        kubectl,
+        `#!/bin/sh\ncase "$*" in *"get deployment ax-controller"*) exec ${readyController()} "$@" ;; esac\ncat > ${sent}\n`,
+      )
+      chmodSync(kubectl, 0o755)
+      cluster('Running', { status: 'working', lines: [] })
+      setSide(id, { policy: false, egress: [], githubOwner: owner })
+      factory(['tick'], { FACTORY_KUBECTL: kubectl, FACTORY_AX_VAULT: 'factory' })
+      expect(keysOf()).toEqual(keys as unknown as string[])
+      rmSync(join(home, 'runs', id), { recursive: true })
+    }
+  })
+
   test('a Running task whose brief.md is not yet put fails naming the brief', () => {
     const id = 'nostart-brief'
     launchedAfterFail(id, 'old failure', 120)
