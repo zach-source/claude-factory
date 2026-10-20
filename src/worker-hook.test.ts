@@ -8510,6 +8510,16 @@ test.each(['echo x | {fd}> f $SH', 'echo x | {fd}> f $SH -s'])(
   },
 )
 
+test.each([
+  '{fd}>f rm -rf /',
+  '{fd}>f find / -exec rm -rf {} \\;',
+  'find / -exec {fd}>f rm -rf {} \\;',
+  'find / -exec rm {fd}>f -rf {} \\;',
+  '>f rm -rf ./x',
+])('denyReason denies %j (claude-factory-sdur redirect re-read)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+})
+
 test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{fd}>f echo hi'])(
   'denyReason keeps allowing %j (claude-factory-sdur)',
   cmd => {

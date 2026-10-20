@@ -7067,6 +7067,12 @@ function denyAtScan(
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
     }
+    // claude-factory-sdur: a redirect word (`>f`, `{fd}>f`) is not the command or an -exec word.
+    // Read the segment again without redirect words. Deny-only.
+    if (words.some(w => /[<>]/.test(w))) {
+      const noRedir = dropRedirectWords(words)
+      if (noRedir.length !== words.length && rmFindDeny(realCommand(noRedir), root)) return REASON
+    }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
     // flag, which only moves the one command it wraps: anyGitReason's and anyShellReason's own
