@@ -2684,6 +2684,12 @@ test.each([
   'nice rm 2>o -r src',
   'time -l rm 2>o -r src',
   'find . -exec rm 2>o -r {} \\;',
+  'rm 2> -- -r src',
+  'rm > -- -r src',
+  'rm &> -- -rf src',
+  'rm << -- -r src',
+  'nice rm 2> -- -r src',
+  'find . -exec rm 2> -- -r {} \\;',
 ])('denyReason denies %j (claude-factory-g4l4)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, G4L4_GATE)).toBe(REASON)
 })
@@ -2695,6 +2701,7 @@ test.each([
   'rm 2>o -- -r',
   'find . -exec rm 2>o {} \\;',
   'rm a.txt 2>o',
+  'rm 2> -- a.txt',
 ])('denyReason allows %j (claude-factory-g4l4)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, G4L4_GATE)).toBeUndefined()
 })

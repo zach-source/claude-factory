@@ -1111,7 +1111,7 @@ const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|
 /**
  * `words` is an rm command and its args. `words[start]` is the rm word itself.
  * This function returns true when `words` asks for a recursive delete.
- * It stops at the first `--` word or the first non-flag word.
+ * It skips redirect words and their targets. It stops at the first `--` word or the first other non-flag word.
  *
  * claude-factory-lbn: this function reads `words` by index. It does not call
  * `words.slice(start + 1)`. The find branch below calls this function once for each
@@ -1129,7 +1129,10 @@ function isRecursiveRm(words: string[], start = 0): boolean {
     // claude-factory-g4l4: the shell takes a redirect word out of the rm args, so flags after it still count.
     const redirect = RM_REDIRECT_WORD.exec(w)
     if (redirect) {
-      if (redirect[1] === '' && !(words[k + 1] ?? '-').startsWith('-')) k++
+      if (redirect[1] === '') {
+        const next = words[k + 1] ?? '-'
+        if (next === '--' || !next.startsWith('-')) k++
+      }
       continue
     }
     return false
