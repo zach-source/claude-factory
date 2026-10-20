@@ -832,6 +832,8 @@ type SegInfo = {
   heredoc?: boolean
   // claude-factory-5hjj: segments that end in a `(` marker glued to the word before it
   glued?: Set<string[]>
+  // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
+  gluedRedir?: boolean
 }
 
 const HAZARD_RE = /['"`\\]/
@@ -918,7 +920,14 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz): void {
  * The split reading (dash) comes first. The joined reading (bash, zsh) follows it and keeps &> in
  * its own word, so the words after the redirect stay with the command.
  */
-function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin = false): string[][] {
+const FD_PREFIX_RE = /^(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\})$/
+function segments(
+  cmd: string,
+  info?: SegInfo,
+  subs?: DqSubstitution[],
+  ampJoin = false,
+  cutRedir = false,
+): string[][] {
   const segs: string[][] = []
   let sawAmpGt = false
   let cur: string[] = []
@@ -1115,6 +1124,12 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
       if (cmd[j] === "'" || cmd[j] === '"') info.dollarQuote = true
     }
+    // claude-factory-4a4o: bash and zsh start a redirect at an unquoted < or > inside a word, so
+    // `rm>f -rf /` runs rm. The default reading keeps one word. The cut reading ends the word here.
+    if ((c === '<' || c === '>') && hasWord && !/[<>]/.test(word) && !FD_PREFIX_RE.test(word)) {
+      if (info) info.gluedRedir = true
+      if (cutRedir) endWord()
+    }
     word += c
     hasWord = true
     redirPrev = c === '<' || c === '>'
@@ -1123,7 +1138,15 @@ function segments(cmd: string, info?: SegInfo, subs?: DqSubstitution[], ampJoin 
   endSeg()
   const out = segs.filter(s => s.length > 0)
   if (sawAmpGt && !ampJoin)
-    out.push(...segments(cmd, { dollarQuote: false, state: info?.state, deep: info?.deep }, undefined, true))
+    out.push(
+      ...segments(
+        cmd,
+        { dollarQuote: false, state: info?.state, deep: info?.deep },
+        undefined,
+        true,
+        cutRedir,
+      ),
+    )
   return out
 }
 
@@ -1273,13 +1296,13 @@ function rmTargets(words: string[]): string[] {
 
 /**
  * Checks rm target `t` for risk.
- * A `$` expansion, a glob char (`*`, `?`, `[`), a brace (`{`, a list that hides a path), or a leading `~` makes `t` risky.
+ * A `$` expansion, a glob char (`*`, `?`, `[`), a brace (`{`, a list that hides a path), a leading `~`, or a leading `=cmd` (zsh expands it to a command path) makes `t` risky.
  * A path that resolves outside `root` also makes `t` risky, when the caller passes `root`.
  * `root` itself counts as outside, so `rm <root>` is risky too.
  * When the caller omits `root`, an absolute path or a path with a `..` segment is risky instead.
  */
 function riskyTarget(t: string, root?: string): boolean {
-  if (/[$*?[{]/.test(t) || t.startsWith('~')) return true
+  if (/[$*?[{]/.test(t) || t.startsWith('~') || /^=[^=]/.test(t)) return true
   if (root === undefined) return t.startsWith('/') || t.split('/').includes('..')
   const base = root.endsWith('/') ? root.slice(0, -1) : root
   const resolved = resolvePath(base, t)
@@ -1729,6 +1752,8 @@ function hasLettersInOrder(w: string, letters: string): boolean {
  * B: recursive flags follow, the word holds flag text, or a later word is -delete/-exec/-ok.
  * C: another segment holds flag text (a variable there can put flags in the word).
  * D: the word may read as rm or find, and a target is risky or a default value holds a path.
+ * E (0xw4): a later dynamic word is followed by recursive flags (the head can be env or sudo).
+ * F (0xw4): a risky target follows the first later dynamic word.
  * Returns rm: true when D holds but no target is risky, for the cd + rm rule. O(length).
  */
 function dynamicHeadDeny(
@@ -1746,6 +1771,31 @@ function dynamicHeadDeny(
   if (start === 0) {
     for (let k = 1; k < cmd.length; k++) if (DYN_FLAG_WORDS.has(cmd[k]!)) return { deny: true, rm: false }
   }
+  // claude-factory-0xw4: the head can expand to env, sudo or command with value flags (-u root),
+  // so a later dynamic word can be rm. Deny-only; never sets rm.
+  let later = 0
+  for (let k = start + 1; k < cmd.length; k++) {
+    const t = cmd[k]!
+    if (start > 0 && (t === ';' || t === '+')) break
+    if (t[0] === '-' || !DYN_CHARS.test(t)) continue
+    if (!later) later = k
+    if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
+  }
+  const riskyFrom = (from: number): boolean => {
+    let afterDashDash = false
+    for (let k = from; k < cmd.length; k++) {
+      const t = cmd[k]!
+      if (start > 0 && (t === ';' || t === '+')) break
+      if (!afterDashDash && t === '--') {
+        afterDashDash = true
+        continue
+      }
+      if (!afterDashDash && t.startsWith('-')) continue
+      if (riskyTarget(t, root)) return true
+    }
+    return false
+  }
+  if (later && riskyFrom(later + 1)) return { deny: true, rm: false }
   if (!(other.rmfind || hasLettersInOrder(w, 'rm') || hasLettersInOrder(w, 'find')))
     return { deny: false, rm: false }
   const dflt = /\$\{[^}:=+-]*:?[-=+]/.exec(w)
@@ -1753,17 +1803,7 @@ function dynamicHeadDeny(
     const rest = w.slice(dflt.index + dflt[0].length)
     if (rest.includes('/') || rest.includes('~') || rest.includes('..')) return { deny: true, rm: false }
   }
-  let afterDashDash = false
-  for (let k = start + 1; k < cmd.length; k++) {
-    const t = cmd[k]!
-    if (start > 0 && (t === ';' || t === '+')) break
-    if (!afterDashDash && t === '--') {
-      afterDashDash = true
-      continue
-    }
-    if (!afterDashDash && t.startsWith('-')) continue
-    if (riskyTarget(t, root)) return { deny: true, rm: false }
-  }
+  if (riskyFrom(start + 1)) return { deny: true, rm: false }
   return { deny: false, rm: true }
 }
 
@@ -2563,8 +2603,8 @@ function xargsHidesOperand(words: string[]): boolean {
 }
 
 // claude-factory-l43b: a redirect word starts with an optional fd number, then < or >.
-const REDIRECT_WORD = /^\d*[<>]/
-const REDIRECT_OPERATOR = /^\d*(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
+const REDIRECT_WORD = /^(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})[<>]/
+const REDIRECT_OPERATOR = /^(?:\d*|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})(<<<|<<-?|<|>>?|<>|>\||[<>]&)$/
 
 /** Returns how many leading redirect words (and their targets) `words` has. */
 function leadingRedirects(words: string[]): number {
@@ -3079,7 +3119,7 @@ function hasGitWordIn(words: string[]): boolean {
 // Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
 // A word that holds only the operator matches in full, such as a bare `>` or `>>`.
 // The caller then reads the next word as the target.
-const REDIRECT_PREFIX_RE = /^(?:\d+|&)?(?:<>|>>?&?[|!]?)/
+const REDIRECT_PREFIX_RE = /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})?(?:<>|>>?&?[|!]?)/
 
 // claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
 // `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
@@ -6657,6 +6697,8 @@ function anyShellReason(
     }
     if (bw === 'eval') {
       const rest = words.slice(j + 1)
+      // bash eval has no options, and zsh eval skips every leading `-` word, also after `--`: drop each one, none is the script head.
+      while (rest.length && ['--', '-'].includes(rest[0]!.replace(/["'\\]/g, ''))) rest.shift()
       if (rest.length) {
         const r = denyAt(
           rest.join(' '),
@@ -7419,6 +7461,11 @@ function denyAtScan(
     state,
   }
   const segs = segments(command, quoteInfo, subs)
+  // claude-factory-4a4o: a redirect glued to a word is a second reading. It only adds segments.
+  if (quoteInfo.gluedRedir && !quoteInfo.deep)
+    segs.push(
+      ...segments(command, { dollarQuote: false, state, deep: quoteInfo.deep }, undefined, false, true),
+    )
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
   // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
@@ -7784,6 +7831,18 @@ function denyAtScan(
       const dropped = wrapperReadingsDeny(dropRedirectWords(words), root, otherSegs(segIdx))
       if (dropped.deny) return REASON
       if (dropped.rm) hasRm = true
+    }
+    // claude-factory-sdur: a redirect word (`>f`, `{fd}>f`) is not the command or an -exec word.
+    // Read the segment again without redirect words. Deny-only.
+    if (words.some(w => /[<>]/.test(w))) {
+      const noRedir = dropRedirectWords(words)
+      if (noRedir.length !== words.length) {
+        const real = realCommand(noRedir)
+        if (rmFindDeny(real, root)) return REASON
+        const base = baseWord(real[0] ?? '')
+        if (base === 'rm') hasRm = true
+        else if (base === 'cd') hasCd = true
+      }
     }
     // claude-factory-68gn: a cd, pushd, popd or chdir word anywhere in this segment moves the
     // shell's own current directory for every segment after it (not for an env -C or --git-dir
