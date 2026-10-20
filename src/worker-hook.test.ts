@@ -5592,6 +5592,94 @@ test.each(DTR2_ALLOW)('denyReason allows a harmless repeat word: %s (claude-fact
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
 })
 
+const DYN_RM_DENY = [
+  '$N rm -rf /',
+  'X=command; $X rm -rf /',
+  '"$X" rm -rf /',
+  '${X} rm -rf /',
+  '$X -p rm -rf /',
+  '$X -- rm -rf /',
+  '$X sudo rm -rf /',
+  '$X command rm -rf /',
+  '$X /bin/rm -rf /',
+  '$X rm ../x',
+  '$X rm -r x',
+  '$X find . -exec rm -r {} +',
+  '$X find / -execdir rm -rf {} \\;',
+  'sudo $X rm -rf /',
+  'env $X rm -rf /',
+  'sudo -E $X rm -rf /',
+  'env -v $X rm -rf /',
+  'timeout 5 $X rm -rf /',
+  'nice -n 5 $X rm -rf /',
+  'if true; then $X rm -rf /; fi',
+  'echo x | $X rm -rf /',
+  '$X rm a; cd /x',
+  'cd /x; $X rm a',
+  '$X -u root rm -rf /',
+  '$X -C 5 rm -rf /',
+  '$X -n 5 rm -rf /',
+  '$X 5 rm -rf /',
+  '$X -k 5 5 rm -rf /',
+  '$X -u root $Y rm -rf /',
+  '$X -u find rm -rf /',
+  'X=env; $X -u find rm -rf /',
+  '$X -C find rm -rf /',
+  '$X -u find /bin/rm -rf /',
+  '$X find rm -rf /',
+  '$X -u rm rm -r src',
+  'X=env; $X -u rm rm -r src',
+  '$X -u rm -- rm -r src',
+  '$X -u rm rm -rf src',
+  '$X -u rm =rm -r src',
+  '$X -C rm rm -r src',
+  '$X -u rm sudo rm -r src',
+  '$X -u rm find src -exec rm -r {} +',
+  'find . -exec $X rm -rf / {} \\;',
+  'find . -exec $X rm -r src {} \\;',
+  'find . -exec $X rm {} +',
+  'find . -exec ${X} rm -rf {} +',
+  'find . -exec "$X" rm -rf {} +',
+  'find . -execdir $X rm -rf {} +',
+  'find . -exec $X -u rm rm -r src {} +',
+  'find . -exec $X -u + rm -rf / {} \\;',
+  'sudo find . -exec $X rm -rf {} +',
+  'find . -name x -exec $X rm -rf / {} \\;',
+  'find . -exec $X rm -rf / {} \\; -print',
+  'find . \\( -exec $X rm -rf / {} \\; \\)',
+  'X=env; find . -exec $X rm -rf / {} \\;',
+]
+
+test.each(DYN_RM_DENY)(
+  'denyReason denies rm behind a dynamic command word: %s (claude-factory-2a3i)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+const DYN_RM_KEEP = [
+  '$N ls',
+  'echo $N rm',
+  'echo $N rm -rf /',
+  '$N rm a',
+  '$N rm build/x',
+  '"$PY" -c "print(1)"',
+  '$X ls -d /',
+  'echo rm -rf /',
+  'find . -exec $X ls {} +',
+]
+
+test.each(DYN_RM_KEEP)('denyReason keeps allowing a harmless dynamic word: %s (claude-factory-2a3i)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test.each(['$(echo command) rm -rf /', '$N git push origin main', 'rm -rf /', '$X =rm -rf /'])(
+  'denyReason keeps denying: %s (claude-factory-2a3i)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
 test.each([
   ['=rm', 'rm'],
   ['=RM', 'rm'],
