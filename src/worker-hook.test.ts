@@ -4031,6 +4031,25 @@ const DENY_EBMM_ANY = [
   'tee -a ~/.config/git/../git/conf*',
   'rsync -a git/ ~/.config/*/../git/',
   'cp x ~/.config/../.config/g*/.',
+  'tee -a ~/{..,x}/widget/.gitc*',
+  'tee -a ~/r/{..,x}/.gitc*',
+  'tee -a ~/r/.{.,x}/.gitc*',
+  'tee -a ~/r/.{.,}/.gitc*',
+  'tee -a ~/r/..{,}/.gitc*',
+  'tee -a ~/r/{.,.}./.gitc*',
+  'tee -a ~/{r/..,x}/.gitc*',
+  'tee -a {~,x}/../widget/.gitc*',
+  'tee -a {/Users,x}/../Users/widget/.gitc*',
+  'tee -a ~/r/.?/.gitc*',
+  'tee -a ~/r/.[.]/.gitc*',
+  'tee -a ~/r/.*/.gitc*',
+  'tee -a /Users/widget/r/.?/.gitc*',
+  'cp x ~/.config/.?/.config/g*/.',
+  'tee -a ~/r/{,}../.gitc*',
+  'tee -a ~/r/{,}.?/.gitc*',
+  'tee -a ~/a/b/.?/../.gitc*',
+  'tee -a ~/r/x{,/..}/.gitc*',
+  'tee -a ~/r/{x/,..}/.gitc*',
 ]
 test.each([...DENY_EBMM_ROOT, ...DENY_EBMM_ANY].flatMap(c => [c, `${c}; git push`]))(
   'denyReason denies %j under a second fixture user (claude-factory-ebmm)',
@@ -4115,6 +4134,11 @@ test.each([
   'cp x ../y*',
   'touch a/../b*',
   'touch /tmp/a/../b*',
+  'cp ~/dots/.* /tmp/x',
+  'cp a /tmp/v1.{2,3}/z',
+  'cp a /tmp/a.*/z',
+  'mkdir -p /Users/widget/r/{src,test}/x',
+  'cp x ~/r/*/y',
 ])('denyReason does not deny %j (claude-factory-ebmm)', cmd => {
   expect(denyReason(cmd, EBMM_ROOT, undefined, GLOBAL_GIT_CONFIG_GATE)).not.toBe(GLOBAL_GIT_CONFIG_REASON)
 })
