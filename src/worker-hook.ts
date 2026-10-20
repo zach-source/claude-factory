@@ -8181,6 +8181,20 @@ function denyAtScan(
         if (/\$(?:\{[^}]*\}|[A-Za-z_]\w*)\//.test(h0) && !/[`]|\$\(/.test(h0)) headValueRead = true
       }
     }
+    {
+      // claude-factory-xbr1: skipSudoFlags skips a $=X or ${=X} word as NAME=value, and wrapper
+      // value slots skip $X. A skipped word that expands a set name may split into a command.
+      const skipped = words.slice(0, words.length - cmd.length)
+      let k = 0
+      while (k < skipped.length && /^[A-Za-z_]\w*\+?=/.test(skipped[k]!)) k++
+      for (const w of skipped.slice(k)) {
+        for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
+          const n = m[1]!
+          if (IMPLICIT_VARS.has(n) || vars.has(n) || mentions(n) >= 2 || m[0].startsWith('${!') || dynWrite())
+            late.reason ??= DYNAMIC_VERB_REASON
+        }
+      }
+    }
     if (!cmd.length) continue
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
