@@ -2400,9 +2400,14 @@ function joinedWords(words: string[]): string {
 
 // `moved` is true when a cd, pushd or popd word ran before this segment (claude-factory-ty8y.20).
 const SEGMENT_MAY_TOUCH_RE = /config|xdg|git|worktree|work-tree|[*?[{<>]|(^|\n)-C(\n|$)/i
+// claude-factory-93fx: APFS folds case fully (U+FB01 fi, U+00DF ss), but a regex i flag folds simply.
+// Fold a non-ASCII text the same way as baseWord before a path regex tests it.
+function foldNonAscii(s: string): string {
+  return /[^\x00-\x7f]/.test(s) ? s.toUpperCase().toLowerCase() : s
+}
 // One pass over the joined words. When it fails, none of the four ty8y segment checks can match.
 function segmentMayTouchGit(words: string[]): boolean {
-  return SEGMENT_MAY_TOUCH_RE.test(joinedWords(words))
+  return SEGMENT_MAY_TOUCH_RE.test(foldNonAscii(joinedWords(words)))
 }
 
 function gitWorkTreeOutside(words: string[], root: string | undefined, moved = false): boolean {
@@ -2491,7 +2496,7 @@ function globalGitConfigUse(
 ): 'write' | 'mention' | undefined {
   // Whole-segment fast path (claude-factory-lbn scan cost). A word can name the file only through
   // the text config or XDG, a glob character, a brace, or a redirect operator.
-  if (!/config|XDG|[*?[{<>]/i.test(joinedWords(words))) return undefined
+  if (!/config|XDG|[*?[{<>]/i.test(foldNonAscii(joinedWords(words)))) return undefined
   let use: 'mention' | undefined
   let pending = false
   let prevWriterFlag = false
@@ -2502,7 +2507,12 @@ function globalGitConfigUse(
     pending = false
     // Fast path (claude-factory-lbn scan cost): a plain word holds no path or glob character, so no
     // regex below can match it, unless it is a redirect, an of= word, or names gitconfig or XDG.
-    if (!wasPending && PLAIN_WORD_RE.test(word) && !/^of=|gitconfig|XDG_CONFIG_HOME/i.test(word)) continue
+    if (
+      !wasPending &&
+      PLAIN_WORD_RE.test(word) &&
+      !/^of=|gitconfig|XDG_CONFIG_HOME/i.test(foldNonAscii(word))
+    )
+      continue
     let candidate = normalizeConfigPath(word)
     let redirect = wasPending
     const m = word.match(REDIRECT_PREFIX_RE)
@@ -2521,6 +2531,7 @@ function globalGitConfigUse(
       if (skip === 'reader') continue
       if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
     }
+    candidate = foldNonAscii(candidate)
     if (isCd && !redirect) {
       if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
       continue
