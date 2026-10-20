@@ -30,6 +30,7 @@ import {
   compile,
   extend,
   fill,
+  hasShipEdge,
   isParked,
   isPrWait,
   WORKER_OUTCOMES,
@@ -239,6 +240,8 @@ export type Run = {
   forkedFrom?: string
   /** the bead this run works: its epic in the repo's beads tracker */
   bead?: string
+  /** a rig's ship run: only the runner writes this, and it counts against no run limit (claude-factory-rtuw) */
+  ship?: true
 }
 type Saved = {
   cursor: number
@@ -248,7 +251,13 @@ type Saved = {
 }
 /** bead bookkeeping, the beads pass's own file: journal entries mirrored, last heartbeat, whether track()
  * recorded the run's end, whether that ending was a requeue, and what last went wrong */
-type Track = { mirrored: number; beatAt: number; isSettled: boolean; requeued?: boolean; error?: string }
+export type Track = {
+  mirrored: number
+  beatAt: number
+  isSettled: boolean
+  requeued?: boolean
+  error?: string
+}
 type Input = Ev extends infer E ? (E extends Ev ? Omit<E, 'at'> : never) : never
 export type Row = {
   id: string
@@ -2322,7 +2331,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
 }
 
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
-function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
+export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
   const b = beads(run.repo, actorOf(run.id))
   const id = run.bead!
   for (const e of c.log.slice(t.mirrored)) {
@@ -2338,9 +2347,15 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     const last = c.log.at(-1)
     const edge = last && def.nodes[last.node]?.next[last.outcome]
     const reason = clip(last ? `${last.node} ${last.outcome}: ${last.summary}` : node, 500)
+    // A ship edge hands the approved PR to the rig's ship run (claude-factory-rtuw). It runs before
+    // the open-children branch: approval is the end, and the ship run needs the bead open and queued.
+    if (node === 'done' && typeof edge === 'object' && edge.ship) {
+      const url = [...c.log].reverse().flatMap(e => [...prsIn(e.summary), ...mrsIn(e.summary)])[0] ?? ''
+      b.ship(id, run.id, { pr: url, branch: run.branch })
+    }
     // open children, however the run ended: what is left is theirs to start, so the bead stays open
     // rather than deferred out of sight (dispatch skips it, so it does not come straight back)
-    if (openChildren(b, id).length) {
+    else if (openChildren(b, id).length) {
       b.release(id)
       b.comment(id, `run ${run.id} ended with open child beads, so this stays open for them: ${reason}`)
     }
@@ -4303,6 +4318,9 @@ async function createRun(
   let def: Factory
   try {
     def = await loadFactory(source)
+    // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
+    if (hasShipEdge(def) && !hasBeads(repo))
+      throw new Error('it hands its beads to ship, which needs a repo with .beads')
     writeJson(pinned, def)
   } catch (err) {
     herdr('worktree', 'remove', '--workspace', ws, '--force') // fresh, nothing in it yet

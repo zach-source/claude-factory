@@ -38,6 +38,9 @@ export type Edge =
       ship?: true
     }
 export const edgeTo = (e: Edge) => (typeof e === 'string' ? e : e.to)
+/** the factory has an edge that hands its bead to the ship queue */
+export const hasShipEdge = (def: { nodes: Record<string, { next?: Record<string, Edge> }> }) =>
+  Object.values(def.nodes).some(n => Object.values(n.next ?? {}).some(e => typeof e === 'object' && !!e.ship))
 const delayOf = (e: Edge) => (typeof e === 'string' ? 0 : (e.delayMin ?? 0))
 
 export type Node = {
