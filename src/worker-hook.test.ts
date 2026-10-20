@@ -33,6 +33,7 @@ import {
   scanReason,
   SHELL_ALIAS_READ_REASON,
   SHELL_ALIAS_REASON,
+  SHELL_STDIN_REASON,
   shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
@@ -3198,7 +3199,6 @@ const DENY_FUNCTION_DEF = [
   `echo \\$() { sh x; }`,
   `a\\=() { sh x; }; a= -c 'git push origin main'`,
   `\\<() { sh x; }; \\< -c 'git push origin main'`,
-  `f() { rm "$@"; }; f -rf /tmp/x`,
   `eval 'f() { sh x; }'; f -c 'git push origin main'`,
   `sh -c 'f() { sh x; }; f -c "git push origin main"'`,
   `bash -c 'f() { sh x; }; f -c "git push origin main"'`,
@@ -3273,6 +3273,8 @@ test('denyReason keeps the older reason for definitions with another deny (claud
   expect(run('git-x() { git "$@"; }; git-x push origin main')).toBe(DYNAMIC_VERB_REASON)
   expect(run(`() { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
   expect(run(`function { sh x } -c 'git push origin main'`)).toBe(PUSH_REASON)
+  // fmeu: the brace group body now reaches the rm check first
+  expect(run(`f() { rm "$@"; }; f -rf /tmp/x`)).toBe(REASON)
 })
 
 const ALLOW_FUNCTION_DEF_LOOKALIKE = [
@@ -7793,6 +7795,45 @@ test('baseWord cache equals the uncached function, also after a cache clear', ()
   expect(baseWord('\\rm')).toBe('rm')
   expect(baseWord('/bin/SH')).toBe('sh')
   expect(baseWord('dir/')).toBe('')
+})
+
+// claude-factory-fmeu: a brace group is a shell-prefix word. The command inside it still runs.
+const DENY_BRACE_GROUP_REASON = [
+  '{ rm -rf /; }',
+  '{ A=x rm -rf /; }',
+  '{ rm -rf / }',
+  '! { rm -rf /; }',
+  'if true; then { rm -rf /; }; fi',
+  'while true; do { rm -rf /; }; done',
+  '{ { rm -rf /; }; }',
+  '{ sudo rm -rf /; }',
+  'time { rm -rf /; }',
+  'x | { rm -rf /; }',
+  'coproc { rm -rf /; }',
+]
+
+test.each(DENY_BRACE_GROUP_REASON)('denyReason denies %j (claude-factory-fmeu, brace group)', cmd => {
+  expect(denyReason(cmd)).toBe(REASON)
+})
+
+test('denyReason keeps the older reason for brace groups with another deny (claude-factory-fmeu)', () => {
+  expect(denyReason('coproc N { rm -rf /; }')).toBe(SHELL_STDIN_REASON)
+  expect(denyReason('{ git push o main; }')).toBe(PUSH_REASON)
+  expect(denyReason('{ $G $V o main; }')).toBe(DYNAMIC_VERB_REASON)
+})
+
+const ALLOW_BRACE_GROUP = [
+  'echo {a,b}',
+  'find . -exec ls {} +',
+  '{ echo hi; }',
+  '{ echo }',
+  '{ ls; } > .scratch/o',
+  '{ git commit -m x; }',
+  'echo }',
+]
+
+test.each(ALLOW_BRACE_GROUP)('denyReason allows %j (claude-factory-fmeu, brace group)', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
 })
 
 // claude-factory-21ux: a wrapper flag that realCommand does not know must not hide an rm or a
