@@ -6864,7 +6864,11 @@ export function scanReason(
   }
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
-  if (reason) return state.ifsLate && state.stdinDeferred && reason === REASON ? SHELL_STDIN_REASON : reason
+  if (reason) {
+    if (!(state.ifsLate && state.stdinDeferred && reason === REASON)) return reason
+    const aliasDef = state.aliasWrite && !plainAliasOnly(command)
+    return aliasDef ? SHELL_ALIAS_DEFINE_REASON : SHELL_STDIN_REASON
+  }
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
