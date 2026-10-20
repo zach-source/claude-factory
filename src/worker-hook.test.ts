@@ -6158,6 +6158,61 @@ test.each(DYN_LATER_DENY)(
   },
 )
 
+// claude-factory-cwt9: a flag-shaped word with a dynamic character can split into "-" plus a command word.
+const DASH_DYN_DENY = [
+  'env -u root -$Y -rf /',
+  'env -$Y -rf /',
+  'sudo -$Y -rf /',
+  'sudo -u root -$Y -rf /',
+  'env -u$Y -rf /',
+  'env -i -$Y -rf /',
+  'nice -n 5 -$Y -rf /',
+  'xargs -$Y -rf /',
+  '- -$Y -rf /',
+  'command -$Y -rf /',
+  'env -$Y -r src',
+  'env -"$Y" -rf /',
+  '$X -u root -$Y -rf /',
+  '$X -u root -$Y ../x',
+  '$X -u root --$Y -rf /',
+]
+
+test.each(DASH_DYN_DENY)('denyReason denies a dynamic flag-shaped word before rm: %s (claude-factory-cwt9)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBe(REASON)
+})
+
+test('denyReason denies a glob flag word before rm (claude-factory-cwt9)', () => {
+  expect(denyReason('env -* -rf /', '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+test.each([
+  'env -$Y ls',
+  'env -u root -$Y ls -d /',
+  'env -u root -$Y src',
+  'nice -n$N make all',
+  'xargs -$N echo',
+  'env -i -$Y',
+  'git log -$N',
+  'grep -$F x /',
+])('denyReason keeps allowing a dynamic flag-shaped word without rm: %s (claude-factory-cwt9)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test.each(['$X -u root --flag=$V src', '$MAKE -j$N all'])(
+  'denyReason does not deny %s with the rm reason (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).not.toBe(REASON)
+  },
+)
+
+test.each(['env', 'xargs', '$X'])('denyReason scans a long run of dynamic flag words fast: %s (claude-factory-cwt9)', head => {
+  const cmd = head + ' -$A'.repeat(2000)
+  const t = Date.now()
+  const r = denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
+  expect(Date.now() - t).toBeLessThan(1000)
+  expect(r).not.toBe(LONG_COMMAND_REASON)
+})
+
 const DYN_LATER_KEEP = ['echo $X -u root $Y -rf /', 'git -C $Y status']
 
 test.each(DYN_LATER_KEEP)('denyReason keeps allowing: %s (claude-factory-0xw4)', cmd => {
