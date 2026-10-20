@@ -35,14 +35,18 @@ test('a factory child of a parent that is not a factory bead starts on its own (
   expect(ids([kid], [], parents(epic, kid))).toEqual(['fx-9.1'])
   // no map: the old rule holds
   expect(ids([kid], [])).toEqual([])
-  // the parent is a factory bead: its run carries the child
+  // the parent is a factory bead with no live run: dispatch skips it for its open children, so the
+  // child starts, labeled or not (the person handed over the whole tree)
   const owned = bead('fx-9', { labels: ['factory'] })
-  expect(ids([kid], [], parents(owned, kid))).toEqual([])
+  expect(ids([kid], [], parents(owned, kid))).toEqual(['fx-9.1'])
+  expect(ids([bead('fx-9.3', { parent: 'fx-9' })], [], parents(owned))).toEqual(['fx-9.3'])
+  // the parent is a factory bead with a live run: its run carries the child
+  expect(ids([kid], ['fx-9'], parents(owned, kid))).toEqual([])
   // the parent has a live run
   expect(ids([kid], ['fx-9'], parents(epic, kid))).toEqual([])
   // the parent is not in the listing
   expect(ids([kid], [], parents(kid))).toEqual([])
-  // the child itself must carry the label
+  // the parent is no factory bead: the child itself must carry the label
   expect(ids([bead('fx-9.2', { parent: 'fx-9' })], [], parents(epic))).toEqual([])
   // an assigned child stays out
   expect(ids([{ ...kid, assignee: 'zach' }], [], parents(epic, kid))).toEqual([])

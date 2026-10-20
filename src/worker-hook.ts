@@ -822,6 +822,31 @@ function isCatHeredoc(body: string): boolean {
   return false
 }
 
+/**
+ * claude-factory-5hjj: true when the group that opens at `cmd[open]` closes and then nothing
+ * follows it but a space, a separator or the end. A command word with such a group has no
+ * argument, so it is harmless. Python bodies (`print(len(x))`) take this path.
+ */
+function groupEndsCommand(cmd: string, open: number): boolean {
+  let depth = 0
+  let j = open
+  for (; j < cmd.length; j++) {
+    const c = cmd[j]!
+    if (c === '\\') j++
+    else if (c === "'") {
+      j = cmd.indexOf("'", j + 1)
+      if (j < 0) return false
+    } else if (c === '"') {
+      for (j++; j < cmd.length && cmd[j] !== '"'; j++) if (cmd[j] === '\\') j++
+    } else if (c === '(') depth++
+    else if (c === ')' && --depth === 0) break
+  }
+  if (j >= cmd.length) return false
+  j++
+  while (cmd[j] === ' ' || cmd[j] === '\t') j++
+  return j >= cmd.length || ';&|\n)'.includes(cmd[j]!)
+}
+
 /** What segments() reports to its caller. A set flag makes denyAt deny the command. */
 type SegInfo = {
   dollarQuote: boolean
@@ -832,6 +857,8 @@ type SegInfo = {
   funcDef?: boolean
   // claude-factory-wmsr: a here-document that segments() cannot read with certainty
   heredoc?: boolean
+  // claude-factory-5hjj: segments that end in a `(` marker glued to the word before it
+  glued?: Set<string[]>
   quotedNames?: Map<string[], number[]>
   // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
   gluedRedir?: boolean
@@ -1059,6 +1086,20 @@ function segments(
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
         if (arg) {
+          // claude-factory-5hjj: a glued `(` (`/bin/r(m)`, `/bin/@(r)m`) is a glob group in the
+          // word. It is not a function pair, `a=(` or `<(`.
+          // A call such as `print(1)` in an interpreter body has nothing after the group, so it passes.
+          if (
+            info &&
+            hasWord &&
+            !wasExempt &&
+            !info.funcDef &&
+            !(prev === '{' && cmd[i - 2] === '$') &&
+            !(prev === '[' && /^(?:\$\w+)?\[$/.test(word)) &&
+            !groupEndsCommand(cmd, i)
+          ) {
+            ;(info.glued ??= new Set()).add(cur)
+          }
           endWord()
           cur.push('(')
         }
@@ -1073,6 +1114,7 @@ function segments(
       // claude-factory-cu5m.12: a `&` or `|` right after `<` or `>` is part of a redirect
       // (`>&`, `<&`, `>|`, `>>|`) in zsh, bash and sh. It is not a separator.
       word += c
+      redirPrev = c === '&' && cmd[i + 1] === '|'
       hasWord = true
       continue
     }
@@ -1541,6 +1583,33 @@ function skipWrapperFlags(wrapperName: string, words: string[]): string[] {
 // place of this one.
 function wrapperAssignmentOperand(w: string): boolean {
   return w[0] !== '-' && w.indexOf('=') > 0
+}
+
+// claude-factory-5hjj.14: commands that never run an argument.
+const GLUED_ARG_SAFE = new Set(
+  'ls echo printf cat grep rg head tail wc file stat du diff sort uniq cut tr'.split(' '),
+)
+/**
+ * claude-factory-5hjj: `head` ends with the word that has a glued `(`.
+ * The function returns false only if the word is provably an argument. Otherwise it returns true.
+ * It returns true unless the head is in the first segment of the whole command (`first`). An
+ * earlier segment can change PATH, an alias or a hash.
+ * It returns true unless head[0] is a plain literal and every other head word has only plain, glob
+ * and flag characters. A `$` or a backtick denies.
+ * It returns true if the word is a command anchor.
+ * It returns true if head[0] is not in GLUED_ARG_SAFE. This denies a PATH= prefix, env, sudo and
+ * an unknown wrapper such as `caffeinate g(i)t`.
+ * The function returns false for a glued `(` in a plain argument, for example `ls a(b)`.
+ */
+function gluedAtCommandSlot(head: string[], first: boolean): boolean {
+  const last = head.length - 1
+  if (last < 0) return false
+  if (!first || !/^[\w./+][\w./+-]*$/.test(head[0]!)) return true
+  if (!head.every((x, k) => k === 0 || /^[\w./+=*?@![\]-]+$/.test(x))) return true
+  const anchors = commandAnchors(head)
+  if (anchors.includes(last)) return true
+  if (!GLUED_ARG_SAFE.has(head[0]!.replace(/^\/(usr\/)?bin\//, ''))) return true
+  return false
 }
 
 // claude-factory-mmc9: true when the shell reads `w` as a prefix assignment, not as the command.
@@ -3253,7 +3322,7 @@ function hasGitWordIn(words: string[]): boolean {
 // Examples: `>.git/HEAD`, `2>/path`, `&>>/path`.
 // A word that holds only the operator matches in full, such as a bare `>` or `>>`.
 // The caller then reads the next word as the target.
-const REDIRECT_PREFIX_RE = /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})?(?:<>|>>?\|?)/
+const REDIRECT_PREFIX_RE = /^(?:\d+|&|\{[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?\})?(?:<>|>>?&?[|!]?)/
 
 // claude-factory-9zd5: matches a remote-tracking `HEAD` word, for example `origin/HEAD` or
 // `refs/remotes/origin/HEAD`. This word names a read-only ref that git itself manages. It does not
@@ -8004,6 +8073,9 @@ function denyAtScan(
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
     if (xargsHidesOperand(words)) return XARGS_REASON
+    // claude-factory-5hjj: a glob group glued to a command word hides the command from every scan.
+    if (quoteInfo.glued?.has(words) && gluedAtCommandSlot(words.slice(0, -1), depth === 0 && segIdx === 0))
+      return DYNAMIC_VERB_REASON
     if (setsDangerousGitConfigEnv(words) || (splitWords && setsDangerousGitConfigEnv(splitWords)))
       hasDangerousConfigEnv = true
     // claude-factory-upag: a quoted assignment name keeps its own reason where assignmentReadingsDeny

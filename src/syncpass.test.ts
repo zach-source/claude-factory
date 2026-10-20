@@ -228,7 +228,8 @@ test('a full rig gets one row and no bd ready call (AC6)', () => {
   expect(existsSync(log) ? readFileSync(log, 'utf8') : '').not.toContain(' ready')
 })
 
-test('a factory child of an unlabeled parent starts; of a factory parent it does not (AC7)', () => {
+// A factory parent with open children and no live run never starts itself, so its child starts too.
+test('a factory child starts when its parent has no live run, labeled parent or not (AC7)', () => {
   const kid = { id: 'kid', title: 't', labels: ['factory'], parent: 'acme-e' }
   const listing = (epicLabels: string[]) =>
     JSON.stringify([{ id: 'acme-e', title: 'epic', labels: epicLabels, status: 'open' }, kid])
@@ -239,6 +240,6 @@ test('a factory child of an unlabeled parent starts; of a factory parent it does
 
   oneRig({ 'ready.json': JSON.stringify([kid]), 'list.json': listing(['factory']) }, 5)
   factory(['beads'])
-  expect(existsSync(join(home, 'runs'))).toBe(false)
-  expect(dispatchJson().filter(x => x.skip)).toEqual([{ id: 'kid', rig: 'acme-a', skip: 'child of acme-e' }])
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(1)
+  expect(dispatchJson().filter(x => x.skip)).toEqual([])
 })
