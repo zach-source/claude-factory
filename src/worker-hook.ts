@@ -6884,6 +6884,39 @@ function varOpName(w: string): string | undefined {
   return m ? (m[1] ?? m[2]) : undefined
 }
 
+// claude-factory-piqf: a head word that glues text to the expansion of a set name runs the split
+// value (X=' -rf /'; rm${X}). The guard does not read that value, so it denies. The one exception
+// is a head path such as ${HOME%/}/bin/tool: a literal "/" follows the last expansion, so the word
+// stays one path. Then every set name must hold a plain value with no space and no IFS, and may
+// have only its one write and the op-form reads in this word.
+function gluedHeadReason(
+  head: string,
+  vars: VarTable,
+  mentions: (name: string) => number,
+  dynWrite: () => boolean,
+): boolean {
+  const names = [...head.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)].map(m => m[1]!)
+  if (!names.length) return false
+  if (dynWrite()) return true
+  const setNames = names.filter(n => vars.has(n) || IMPLICIT_VARS.has(n))
+  if (!setNames.length) return false
+  if (vars.has('IFS')) return true
+  let end = -1
+  for (const m of head.matchAll(GLUED_EXPANSION_RE)) end = m.index! + m[0].length
+  if (end < 0 || head[end] !== '/') return true
+  for (const n of setNames) {
+    const value = vars.get(n)
+    if (IMPLICIT_VARS.has(n) || value === undefined || /\s/.test(value) || VAR_UNREADABLE.test(value)) return true
+    let ops = 0
+    for (const m of head.matchAll(new RegExp(`\\$\\{${n}([^}A-Za-z0-9_][^}]*)\\}`, 'g'))) {
+      if (/[\s$\`'"\\*?[]/.test(m[1]!)) return true
+      ops++
+    }
+    if (mentions(n) > 1 + ops) return true
+  }
+  return false
+}
+
 // claude-factory-miqy.12: count the raw-text mentions of NAME that are not a pure read (the plain and braced forms).
 // A write form the table does not know still shows as a mention, so the head check fails closed.
 const MENTION_COUNTERS = new WeakMap<VarTable, (name: string) => number>()
@@ -7337,6 +7370,8 @@ function denyAtScan(
       if (headName) {
         const r = scanValue(headName, cmd.slice(1))
         if (r) return r
+      } else if (gluedHeadReason(cmd[0]!, vars, mentions, dynWrite)) {
+        return DYNAMIC_VERB_REASON
       } else {
         // The head may name a set variable. ${!Y} names another one, so any set name denies.
         const opName = varOpName(cmd[0]!)
