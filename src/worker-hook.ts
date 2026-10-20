@@ -1437,7 +1437,7 @@ function gluedAtCommandSlot(head: string[]): boolean {
   let i = 0
   // {name}> and {name}< name an fd; >&- closes one and takes no operand
   while (i < last && /^((\d*|\{[A-Za-z_]\w*\})[<>]|&>)/.test(head[i]!))
-    i += /^((\d*|\{[A-Za-z_]\w*\})[<>]+\|?|&>>?\|?)&?$/.test(head[i]!) ? 2 : 1
+    i += /^((\d*|\{[A-Za-z_]\w*\})[<>]+[|!]?|&>>?[|!]?)&?!?$/.test(head[i]!) ? 2 : 1
   return i === last
 }
 
