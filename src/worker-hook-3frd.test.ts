@@ -44,9 +44,9 @@ test.each(AC1)('3FRD AC1 denies %s', cmd => {
 // AC2: a dollar in a literal script, or in an argv word after it.
 const AC2 = [
   "bash -c '$0 ../acme.txt' rm",
-  "bash -c '\"$0\" ../acme.txt' rm",
+  'bash -c \'"$0" ../acme.txt\' rm',
   "bash -c '$1 ../acme.txt' _ rm",
-  "bash -c '\"$@\"' _ rm ../acme.txt",
+  'bash -c \'"$@"\' _ rm ../acme.txt',
   "bash -c 'echo $1' _ hi",
   'bash -c \'echo hi\' "$y"',
 ]
@@ -94,7 +94,7 @@ test('3FRD AC7 keeps specific reasons', () => {
 })
 
 // AC8: the 38jm AC5 rows that held a dollar next to -c now deny.
-test.each(["bash -c 'echo $" + "HOME'","sh -c 'git status' $X", 'sh -c "$CMD"'])(
+test.each(["bash -c 'echo $" + "HOME'", "sh -c 'git status' $X", 'sh -c "$CMD"'])(
   '3FRD AC8 denies %s',
   cmd => {
     expect(run(cmd)).toBe(SH_DYNAMIC_SCRIPT_REASON)
