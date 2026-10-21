@@ -2360,6 +2360,10 @@ function commandAnchors(words: string[]): number[] {
   const anchors: number[] = []
   let j = i + 1
   let mayBeValue = false
+  // claude-factory-hwzy: a word with a brace expands before the wrapper reads it, and sudo runs
+  // a `/` word as the command. Neither is a NAME=value operand, so it stays an anchor.
+  const skipOperand = (w: string) =>
+    wrapperAssignmentOperand(w) && !/[{}]/.test(w) && !(base === 'sudo' && w[0] === '/')
   let timeoutDurationPending = base === 'timeout'
 
   // claude-factory-p43v.32: the outer loop can run more than once. One pass walks a wrapper's own
@@ -2393,7 +2397,7 @@ function commandAnchors(words: string[]): number[] {
         }
         // claude-factory-p43v.30: a `NAME=value` operand (claude-factory-p43v.25) can also
         // follow a wrapper's own `--`. Skip each one here too.
-        while (j < words.length && wrapperAssignmentOperand(words[j]!)) j++
+        while (j < words.length && skipOperand(words[j]!)) j++
         if (j >= words.length) return anchors
         const nb = baseWord(words[j]!)
         if (LEAD_WRAPPERS.has(nb)) {
@@ -2417,7 +2421,7 @@ function commandAnchors(words: string[]): number[] {
       // follow a wrapper's own name or flags. `sudo` and `env` both read this form as an
       // environment variable to set for the real command, not as that command. Skip each one;
       // `realCommand` already skips this form before it reads the wrapper's own name.
-      if (wrapperAssignmentOperand(w)) {
+      if (skipOperand(w)) {
         j++
         continue
       }
@@ -8188,6 +8192,8 @@ function denyAtScan(
       let k = 0
       while (k < skipped.length && /^[A-Za-z_]\w*\+?=/.test(skipped[k]!)) k++
       for (const w of skipped.slice(k)) {
+        // claude-factory-hwzy: a brace word that realCommand ate as a value may be the command.
+        if (BRACE_LIST_WORD.test(w)) late.reason ??= DYNAMIC_VERB_REASON
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
           const n = m[1]!
           if (IMPLICIT_VARS.has(n) || vars.has(n) || mentions(n) >= 2 || m[0].startsWith('${!') || dynWrite())
