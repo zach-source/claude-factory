@@ -431,6 +431,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the release workflow cuts the release PR body at 60000 chars (claude-factory-b2dn). GitHub refuses a PR body over 65536 chars, and the 0.13.0 notes had 77849. The cut body links the full CHANGELOG.md on the release branch.
 - Fixed: the worker hook did not deny a dynamic command word that ends in a dashed git verb, such as `$G-push`. The shell runs the `git-push` binary. The hook now denies such a word at the command slot. A dynamic word that ends in any trigger verb also denies (claude-factory-ycaq).
 - New: the AX manager holds no secret (claude-factory-192.3). Its policy gets a `DOLT_BASIC` rule for each rig `beadsRemote` and a `LINEAR` rule for a `--linear` rig. The policy broker has `GET /controller` (the launch guard reads the controller there, because the VM has no kube API) and `POST /token/best` (runs `claude-token best` in the broker pod). With `FACTORY_AX_MANAGER_BROKER` set, `FACTORY_AX_TOKEN_SWAP` calls the broker. In AX, the Linear pull sends a placeholder key. `hack/ax-manager-check.sh` checks all of this in the VM. The laptop path does not change.
+- Fixed: `glab api --hostname` took the host from a merge request URL in a report. A worker report can name a URL on any host, and glab sent `GITLAB_TOKEN` to that host. `factory prs` and `factory watch` now call glab only for a merge request on the rig origin host. They skip other merge requests and do not count them as errors. (claude-factory-pw6t)
 
 ## 0.13.0 (2026-10-18)
 
