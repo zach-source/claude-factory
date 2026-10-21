@@ -7860,7 +7860,11 @@ function replaceGluedExpansions(command: string, empty = false, ifsMask = 0): st
           break
         }
       }
-      if (end < 0) end = i + 2
+      if (end < 0) {
+        out += isSpace(command[i - 1]) ? '$' + '{' : ' '
+        i++
+        continue
+      }
     } else if (n !== undefined && /[A-Za-z_]/.test(n)) {
       while (end < command.length && /[A-Za-z0-9_]/.test(command[end]!)) end++
     } else if (n !== undefined && /[0-9@*#?$!-]/.test(n)) end++
