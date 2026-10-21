@@ -1,8 +1,7 @@
 // `factory metrics` after gc has touched a run (claude-factory-503.1.2).
 //
 // records() must count a run once. This holds even when metrics.jsonl holds two lines for the run.
-// sessionsOf() must still name a session's station. This holds once gc removes prompts/ and leaves
-// prompts.list in its place.
+// The stored usage of a run is the only source of `--tokens` (claude-factory-hr94).
 //
 // These tests drive the real CLI against on-disk fixtures, like src/watch.test.ts does.
 import { afterEach, expect, test } from 'bun:test'
@@ -27,9 +26,8 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
 }
 
 // `factory metrics --tokens` prints a "station visits" table from the run's own log (unrelated to
-// sessionsOf) above the "tokens:" section that sessionsOf() feeds. A station visited once shows
-// "<node>  1" in that first table regardless of sessionsOf, so a test on sessionsOf's output must
-// check the tokens section alone, or it passes even when sessionsOf has a bug.
+// the stored usage) above the "tokens:" section that the stored usage feeds. A station visited once
+// shows "<node>  1" in that first table, so a test on the usage must check the tokens section alone.
 const tokensSection = (out: string) => out.slice(out.indexOf('tokens:'))
 
 const DEF: Factory = {
@@ -59,112 +57,96 @@ test('a metrics.jsonl line a gc prune wrote, then a later factory rm line for th
   expect(parsed.all.fates).toEqual({ closed: 1 })
 })
 
-test("a session's station still resolves from prompts.list once gc has removed prompts/ (AC8)", () => {
-  mkdirSync(home, { recursive: true })
-  const worktree = join(dir, 'wt')
-  mkdirSync(worktree, { recursive: true })
-  // createdAt(id) reads the id's own trailing "-<base36 time>xx" suffix: a bare "r1" parses to NaN,
-  // which then fails metrics' `Date.now() - createdAt < days` filter and drops the run silently
-  const id = `ship-${Date.now().toString(36)}xx`
-  const runDir = join(home, 'runs', id)
-  mkdirSync(runDir, { recursive: true })
-  const factoryFile = join(runDir, 'factory.ts')
-  writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
-  const run = {
-    id,
-    factory: factoryFile,
-    repo: worktree,
-    goal: 'g',
-    ws: 'w1',
-    worktree,
-    branch: 'b',
-  }
-  writeFileSync(join(runDir, 'run.json'), JSON.stringify(run))
-  const actor = createActor(compile(DEF)).start()
-  actor.send({ type: 'TICK', at: 0 })
-  const { seq } = actor.getSnapshot().context
-  actor.send({ type: 'DONE', seq, outcome: 'ready', summary: 'done', at: 0 })
-  writeFileSync(
-    join(runDir, 'state.json'),
-    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
-  )
-  // prompts/ is already gone: gc wrote prompts.list with the names it held, before removing it
-  writeFileSync(join(runDir, 'prompts.list'), JSON.stringify([`${seq}-implement.md`]))
-
-  const claudeHome = join(dir, 'claude')
-  const projectDir = join(claudeHome, 'projects', worktree.replace(/[^a-zA-Z0-9]/g, '-'))
-  mkdirSync(projectDir, { recursive: true })
-  // sessionOf() matches the brief's own usage line literally ("<outcome>" is the placeholder text
-  // the real prompt renders, not a real outcome word): see src/metrics.test.ts's own fixture
-  const brief = JSON.stringify({
-    type: 'user',
-    message: { content: `report ${id} ${seq} <outcome> "<summary>"` },
-  })
-  const turn = JSON.stringify({
-    type: 'assistant',
-    message: { id: 'a', usage: { input_tokens: 1, cache_read_input_tokens: 10, output_tokens: 5 } },
-  })
-  writeFileSync(join(projectDir, 's1.jsonl'), `${brief}\n${turn}\n`)
-
-  const out = factory(['metrics', '--tokens'], { CLAUDE_CONFIG_DIR: claudeHome })
-  expect(out.code).toBe(0)
-  expect(tokensSection(out.out)).toMatch(/implement\s+1/) // not '?': the name came from prompts.list
+// claude-factory-hr94: `factory metrics --tokens` reads stored usage only. A live run's rows are in
+// runs/<id>/usage.jsonl. A removed run's rows are in its metrics.jsonl line. No transcript is read.
+const row = (node: string, over: Record<string, unknown> = {}) => ({
+  node,
+  seq: 1,
+  session: 's1',
+  model: 'claude-opus-4-7',
+  input: 1,
+  cacheWrite: 2,
+  cacheRead: 30,
+  output: 4,
+  turns: 5,
+  peak: 33,
+  ...over,
 })
 
-// PR #59 review finding 1 (claude-factory-503.1.5). A `goto` revive after gc recreates prompts/, but
-// with only the new prompt's name. sessionsOf() must still name the old sessions' stations too: it
-// must read the union of prompts.list and prompts/, not either alone.
-test('sessionsOf() names both an old session (from prompts.list) and a revived one (from prompts/) (claude-factory-503.1.5)', () => {
+test('--tokens shows the stations and models of a live run from its usage.jsonl, with no transcript on disk (hr94 AC10, AC12)', () => {
   mkdirSync(home, { recursive: true })
-  const worktree = join(dir, 'wt2')
-  mkdirSync(worktree, { recursive: true })
-  const DEF2: Factory = {
-    name: 'ship',
-    start: 'implement',
-    nodes: {
-      implement: { prompt: 'do it', next: { ready: 'verify' } },
-      verify: { prompt: 'check it', next: { ready: 'done' } },
-    },
-  }
-  const id = `ship-${Date.now().toString(36)}xz`
-  const runDir = join(home, 'runs', id)
-  mkdirSync(runDir, { recursive: true })
-  const factoryFile = join(runDir, 'factory.ts')
-  writeFileSync(factoryFile, `export default ${JSON.stringify(DEF2)}`)
-  const run = { id, factory: factoryFile, repo: worktree, goal: 'g', ws: 'w1', worktree, branch: 'b' }
-  writeFileSync(join(runDir, 'run.json'), JSON.stringify(run))
-  const actor = createActor(compile(DEF2)).start()
-  actor.send({ type: 'TICK', at: 0 })
-  const seq1 = actor.getSnapshot().context.seq // 1, at 'implement'
-  actor.send({ type: 'DONE', seq: seq1, outcome: 'ready', summary: 'built', at: 0 })
-  const seq2 = actor.getSnapshot().context.seq // 2, at 'verify'
-  actor.send({ type: 'DONE', seq: seq2, outcome: 'ready', summary: 'checked', at: 0 })
+  const { id, runDir } = workingRun('u2')
   writeFileSync(
-    join(runDir, 'state.json'),
-    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    join(runDir, 'usage.jsonl'),
+    [row('implement'), row('verify', { session: 's2', model: 'claude-sonnet-4-6' })]
+      .map(r => JSON.stringify(r))
+      .join('\n') + '\n',
   )
-  // gc already pruned prompts/ once, leaving prompts.list with the name it held then
-  writeFileSync(join(runDir, 'prompts.list'), JSON.stringify([`${seq1}-implement.md`]))
-  // a goto revive after gc recreated prompts/, with only the new prompt's name
-  mkdirSync(join(runDir, 'prompts'), { recursive: true })
-  writeFileSync(join(runDir, 'prompts', `${seq2}-verify.md`), 'the brief')
-
-  const claudeHome = join(dir, 'claude2')
-  const projectDir = join(claudeHome, 'projects', worktree.replace(/[^a-zA-Z0-9]/g, '-'))
-  mkdirSync(projectDir, { recursive: true })
-  const briefOf = (s: number) =>
-    JSON.stringify({ type: 'user', message: { content: `report ${id} ${s} <outcome> "<summary>"` } })
-  const turn = JSON.stringify({
-    type: 'assistant',
-    message: { id: 'a', usage: { input_tokens: 1, cache_read_input_tokens: 10, output_tokens: 5 } },
-  })
-  writeFileSync(join(projectDir, 's1.jsonl'), `${briefOf(seq1)}\n${turn}\n`)
-  writeFileSync(join(projectDir, 's2.jsonl'), `${briefOf(seq2)}\n${turn}\n`)
-
-  const out = factory(['metrics', '--tokens'], { CLAUDE_CONFIG_DIR: claudeHome })
+  const out = factory(['metrics', '--tokens'], { CLAUDE_CONFIG_DIR: join(dir, 'no-such-claude') })
   expect(out.code).toBe(0)
-  expect(tokensSection(out.out)).toMatch(/implement\s+1/) // from prompts.list alone
-  expect(tokensSection(out.out)).toMatch(/verify\s+1/) // from the recreated prompts/ alone
+  expect(tokensSection(out.out)).toMatch(/implement\s+claude-opus-4-7\s+1/)
+  expect(tokensSection(out.out)).toMatch(/verify\s+claude-sonnet-4-6\s+1/)
+  expect(tokensSection(out.out)).toContain('in 1 runs')
+  expect(id).toBeTruthy()
+})
+
+test('--tokens counts a run factory rm removed, shows cache hit rate and cost, and --json carries the same numbers (hr94 AC10-AC13)', () => {
+  mkdirSync(home, { recursive: true })
+  const id = `ship-${Date.now().toString(36)}ab`
+  const line = {
+    id,
+    node: 'done',
+    createdAt: parseInt(id.slice(id.lastIndexOf('-') + 1, -2), 36),
+    log: [
+      { node: 'implement', attempt: 1, outcome: 'ready', summary: 's', at: 0 },
+      { node: 'deploy', attempt: 1, outcome: 'deployed', summary: 'ok', at: 1 },
+    ],
+    sessions: [row('implement', { input: 100, cacheWrite: 100, cacheRead: 800, output: 1000 })],
+  }
+  writeFileSync(join(home, 'metrics.jsonl'), JSON.stringify(line) + '\n')
+  writeFileSync(
+    join(home, 'manager-usage.jsonl'),
+    JSON.stringify({
+      name: 'patrol',
+      at: Date.now(),
+      model: 'claude-haiku-5-5',
+      input: 10,
+      cacheWrite: 0,
+      cacheRead: 90,
+      output: 5,
+    }) +
+      '\n' +
+      JSON.stringify({
+        name: 'dream',
+        at: 1,
+        model: 'claude-opus-4-7',
+        input: 1,
+        cacheWrite: 1,
+        cacheRead: 1,
+        output: 1,
+      }) +
+      '\n',
+  )
+  const out = factory(['metrics', '--tokens'])
+  expect(out.code).toBe(0)
+  const tokens = tokensSection(out.out)
+  expect(tokens).toContain('cache hit rate 80%') // 800 / (100 + 100 + 800)
+  expect(tokens).toMatch(/implement\s+claude-opus-4-7/)
+  expect(tokens).toMatch(/patrol\s+claude-haiku-5-5/)
+  expect(tokens).toMatch(/dream\s+claude-opus-4-7/)
+  const json = JSON.parse(factory(['metrics', '--json', '--tokens']).out)
+  expect(json.tokens.shippedRuns).toBe(1)
+  expect(json.tokens.total).toMatchObject({
+    input: 100,
+    cacheWrite: 100,
+    cacheRead: 800,
+    output: 1000,
+    hitRate: 0.8,
+  })
+  expect(json.tokens.manager.map((m: { name: string }) => m.name).sort()).toEqual(['dream', 'patrol'])
+  // --since drops the dream row (at: 1) but keeps the patrol row
+  const since = JSON.parse(factory(['metrics', '--json', '--tokens', '--since', '30d']).out)
+  expect(since.tokens.manager.map((m: { name: string }) => m.name)).toEqual(['patrol'])
 })
 
 // claude-factory-hr94: a station's end stores its sessions' usage; the metrics.jsonl line holds it

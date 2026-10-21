@@ -7,7 +7,10 @@ import {
   parsePrecheckLines,
   precheckStats,
   render,
+  costOf,
+  hitRate,
   renderTokens,
+  tokensReport,
   sessionOf,
 } from './metrics'
 
@@ -215,10 +218,55 @@ test("a session's tokens count each turn once, and its station comes from the br
       peak: 301,
     },
   ])
-  const s = { ...rows[0]!, run: 'run-1' }
-  const table = renderTokens([s, { ...s, run: 'run-2' }], new Set(['run-2']))
-  expect(table).toContain('2 worker sessions in 2 runs')
-  expect(table).toMatch(/implement\s+2/)
+})
+
+test('renderTokens shows the hit rate, a cost from PRICES, the shipped run tokens by station and model, and the manager names', () => {
+  const u = (run: string, node: string, model: string) => ({
+    run,
+    node,
+    seq: 1,
+    session: `${node}-${model}`,
+    model,
+    input: 1_000_000,
+    cacheWrite: 1_000_000,
+    cacheRead: 8_000_000,
+    output: 1_000_000,
+    turns: 4,
+    peak: 90_000,
+  })
+  const rows = [
+    u('run-1', 'implement', 'claude-opus-4-7'),
+    u('run-2', 'implement', 'claude-opus-4-7'),
+    u('run-2', 'verify', 'claude-sonnet-4-6'),
+    u('run-2', 'verify', 'mystery-9'),
+  ]
+  const text = renderTokens(rows, new Set(['run-2']), [
+    {
+      name: 'patrol',
+      at: 1,
+      model: 'claude-haiku-5-5',
+      input: 1e6,
+      cacheWrite: 0,
+      cacheRead: 0,
+      output: 1e6,
+    },
+  ])
+  expect(text).toContain('over 4 worker sessions in 2 runs')
+  expect(text).toContain('cache hit rate 80%') // 8 / (1 + 1 + 8)
+  // opus: 1*5 + 1*5*1.25 + 8*5*0.1 + 1*25 = 40.25 for one row; sonnet 3 + 3.75 + 2.4 + 15 = 24.15
+  expect(costOf(rows[0]!, rows[0]!.model)).toBeCloseTo(40.25)
+  expect(costOf(rows[2]!, rows[2]!.model)).toBeCloseTo(24.15)
+  expect(costOf(rows[3]!, rows[3]!.model)).toBeNull()
+  expect(text).toContain('cost ~$104.65') // 2 opus rows + 1 sonnet row
+  expect(text).toContain('1 rows of an unknown model not priced')
+  expect(text).toMatch(/implement\s+claude-opus-4-7\s+2/)
+  expect(text).toMatch(/verify\s+mystery-9\s+1.*\s-\s/) // an unpriced model: "-" for cost, tokens still counted
+  const r = tokensReport(rows, new Set(['run-2']))
+  expect(r.stations.find(s => s.node === 'implement')!.perShippedRun).toBe(11_000_000) // run-2's one implement row
+  expect(r.tokensPerShippedRun).toBe(33_000_000) // run-2: 3 rows of 11M
+  expect(text).toMatch(/patrol\s+claude-haiku-5-5/)
+  expect(text).toContain('$6.00') // haiku: 1*1 + 1*5
+  expect(hitRate({ input: 0, cacheWrite: 0, cacheRead: 0, output: 5 })).toBeNull()
 })
 
 test('sessionOf gives a row for each model, and a subagent adds tokens but not turns or peak', () => {

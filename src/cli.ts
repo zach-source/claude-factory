@@ -126,6 +126,8 @@ import {
   renderTokens,
   sessionOf,
   type RunRecord,
+  type ManagerUsage,
+  tokensReport,
   type StoredUsage,
   validUsage,
   type Usage,
@@ -6960,6 +6962,22 @@ function usageIn(cwd: string, run: string, nodeOfSeq: (seq: number) => string, s
     })
 }
 
+/** the manager's own sessions (patrol, pm, briefer, dream) since `since`, from manager-usage.jsonl */
+function managerUsage(since: number): ManagerUsage[] {
+  const file = join(HOME, 'manager-usage.jsonl')
+  if (!existsSync(file)) return []
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .flatMap(l => {
+      try {
+        return l ? [JSON.parse(l) as ManagerUsage] : []
+      } catch {
+        return []
+      }
+    })
+    .filter(m => m.at >= since)
+}
+
 function records(): RunRecord[] {
   const file = join(HOME, 'metrics.jsonl')
   const lines: RunRecord[] = existsSync(file)
@@ -7588,10 +7606,19 @@ if (import.meta.main && !outboxCmd)
           ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
           : []
         const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
+        // --tokens reads what runs stored (record().sessions) and manager-usage.jsonl, never a live transcript
+        const tokenArgs = args.includes('--tokens')
+          ? ([
+              picked.flatMap(r => (r.sessions ?? []).map(u => ({ ...u, run: r.id }))),
+              new Set(picked.filter(r => fate(r) === 'shipped').map(r => r.id)),
+              managerUsage(since_),
+            ] as const)
+          : null
         if (args.includes('--json'))
           console.log(
             JSON.stringify({
               all: metrics(picked),
+              ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
               rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
             }),
@@ -7606,16 +7633,7 @@ if (import.meta.main && !outboxCmd)
           )
           if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
         }
-        if (args.includes('--tokens')) {
-          const live = picked.filter(r => runIds().includes(r.id))
-          console.log(
-            '\n' +
-              renderTokens(
-                live.flatMap(r => usageOf(loadRun(r.id)).map(u => ({ ...u, run: r.id }))),
-                new Set(live.filter(r => fate(r) === 'shipped').map(r => r.id)),
-              ),
-          )
-        }
+        if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
         break
       }
       case 'backlog':

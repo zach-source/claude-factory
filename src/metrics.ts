@@ -346,29 +346,146 @@ export const tokensOf = (u: Usage) => u.input + u.cacheWrite + u.cacheRead + u.o
 const mtok = (n: number) => `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)}M`
 
 export type StoredUsage = Usage & { run: string }
+/** one manager subagent turn (or one dream), from manager-usage.jsonl */
+export type ManagerUsage = {
+  name: string
+  at: number
+  model: string
+  input: number
+  cacheWrite: number
+  cacheRead: number
+  output: number
+  turns?: number
+  peak?: number
+}
 
-/** tokens by station, and per run and per shipped run */
-export function renderTokens(rows: StoredUsage[], shipped: Set<string>) {
-  const sessions = rows.map(u => ({
-    run: u.run,
-    node: u.node,
-    turns: u.turns,
-    tokens: tokensOf(u),
-    peak: u.peak,
-  }))
-  const total = sessions.reduce((a, s) => a + s.tokens, 0)
-  const runs = new Set(sessions.map(s => s.run))
-  const ofShipped = sessions.filter(s => shipped.has(s.run)).reduce((a, s) => a + s.tokens, 0)
+/** USD per million tokens, by model family. A cache write costs 1.25x the input price, a cache read 0.1x */
+export const PRICES: Record<string, { in: number; out: number }> = {
+  opus: { in: 5, out: 25 },
+  sonnet: { in: 3, out: 15 },
+  haiku: { in: 1, out: 5 },
+}
+
+type Tok = { input: number; cacheWrite: number; cacheRead: number; output: number }
+
+/** the estimate in USD; null for a model that is in no family of PRICES */
+export function costOf(t: Tok, model: string) {
+  const family = Object.keys(PRICES).find(k => model.toLowerCase().includes(k))
+  if (!family) return null
+  const p = PRICES[family]!
+  return (t.input * p.in + t.cacheWrite * p.in * 1.25 + t.cacheRead * p.in * 0.1 + t.output * p.out) / 1e6
+}
+
+/** the share of the context a turn re-sent that came from the cache; null when there was no context */
+export const hitRate = (t: Tok) => {
+  const context = t.input + t.cacheWrite + t.cacheRead
+  return context ? t.cacheRead / context : null
+}
+
+type Sum = Tok & { sessions: number; turns: number; peak: number; cost: number; unpriced: number }
+
+/** the totals of some rows. `cost` adds only the models that have a price; `unpriced` counts the rest */
+function sumOf(
+  rows: (Tok & { model: string; turns?: number; peak?: number })[],
+  sessions = rows.length,
+): Sum {
+  const s: Sum = {
+    input: 0,
+    cacheWrite: 0,
+    cacheRead: 0,
+    output: 0,
+    sessions,
+    turns: 0,
+    peak: 0,
+    cost: 0,
+    unpriced: 0,
+  }
+  for (const r of rows) {
+    s.input += r.input
+    s.cacheWrite += r.cacheWrite
+    s.cacheRead += r.cacheRead
+    s.output += r.output
+    s.turns += r.turns ?? 0
+    s.peak = Math.max(s.peak, r.peak ?? 0)
+    const c = costOf(r, r.model)
+    if (c === null) s.unpriced++
+    else s.cost += c
+  }
+  return s
+}
+const allOf = (t: Tok) => t.input + t.cacheWrite + t.cacheRead + t.output
+const sessionsIn = (rows: StoredUsage[]) => new Set(rows.map(u => `${u.run}\0${u.session}`)).size
+
+/**
+ * everything `factory metrics --tokens` shows, from the stored rows only: totals, each station and model
+ * (with the tokens of a shipped run), and each manager name
+ */
+export function tokensReport(rows: StoredUsage[], shipped: Set<string>, manager: ManagerUsage[] = []) {
+  const runs = new Set(rows.map(u => u.run))
+  const total = sumOf(rows, sessionsIn(rows))
+  const inShipped = rows.filter(u => shipped.has(u.run))
+  const group = <T extends Tok & { model: string; turns?: number; peak?: number }>(
+    xs: T[],
+    key: (x: T) => string,
+  ) => [...Map.groupBy(xs, key)].map(([k, v]) => ({ key: k, rows: v }))
+  return {
+    runs: runs.size,
+    shippedRuns: shipped.size,
+    total: { ...total, tokens: allOf(total), hitRate: hitRate(total) },
+    tokensPerRun: allOf(total) / Math.max(1, runs.size),
+    tokensPerShippedRun: shipped.size ? allOf(sumOf(inShipped)) / shipped.size : null,
+    stations: group(rows, u => `${u.node}\0${u.model}`)
+      .map(g => {
+        const [node, model] = g.key.split('\0') as [string, string]
+        const sum = sumOf(g.rows, sessionsIn(g.rows))
+        const ship = sumOf(g.rows.filter(u => shipped.has(u.run)))
+        return {
+          node,
+          model,
+          ...sum,
+          tokens: allOf(sum),
+          hitRate: hitRate(sum),
+          cost: costOf(sum, model),
+          perShippedRun: shipped.size ? allOf(ship) / shipped.size : null,
+        }
+      })
+      .sort((a, b) => b.tokens - a.tokens),
+    manager: group(manager, m => `${m.name}\0${m.model}`)
+      .map(g => {
+        const [name, model] = g.key.split('\0') as [string, string]
+        const sum = sumOf(g.rows)
+        return { name, model, ...sum, tokens: allOf(sum), hitRate: hitRate(sum), cost: costOf(sum, model) }
+      })
+      .sort((a, b) => b.tokens - a.tokens),
+  }
+}
+
+const pct = (r: number | null) => (r === null ? '-' : `${Math.round(r * 100)}%`)
+const usd = (c: number | null) => (c === null ? '-' : `$${c.toFixed(2)}`)
+
+/** the text of `tokensReport`: totals with cache hit rate and cost, a table by station and model, the manager's names */
+export function renderTokens(rows: StoredUsage[], shipped: Set<string>, manager: ManagerUsage[] = []) {
+  const r = tokensReport(rows, shipped, manager)
+  const t = r.total
   const lines = [
-    `tokens: ${mtok(total)} over ${sessions.length} worker sessions in ${runs.size} runs; ${mtok(total / Math.max(1, runs.size))} a run, ${shipped.size ? mtok(ofShipped / shipped.size) : '-'} a shipped run`,
-    '  station      sessions   tokens  median/session  turns/session  peak context',
+    `tokens: ${mtok(t.tokens)} over ${t.sessions} worker sessions in ${r.runs} runs; ${mtok(r.tokensPerRun)} a run, ${r.tokensPerShippedRun === null ? '-' : mtok(r.tokensPerShippedRun)} a shipped run`,
+    `  input ${mtok(t.input)}  cache write ${mtok(t.cacheWrite)}  cache read ${mtok(t.cacheRead)}  output ${mtok(t.output)}; cache hit rate ${pct(t.hitRate)}; cost ~${usd(t.cost)}${t.unpriced ? ` (${t.unpriced} rows of an unknown model not priced)` : ''}`,
+    '  station      model                  sessions   tokens  input  c.write  c.read  output  hit    cost  /shipped run  turns/session  peak context',
   ]
-  const by = Map.groupBy(sessions, s => s.node)
-  for (const [node, ss] of [...by].sort(
-    (a, b) => b[1].reduce((x, s) => x + s.tokens, 0) - a[1].reduce((x, s) => x + s.tokens, 0),
-  ))
+  for (const s of r.stations)
     lines.push(
-      `  ${node.padEnd(12)} ${String(ss.length).padStart(8)}  ${mtok(ss.reduce((a, s) => a + s.tokens, 0)).padStart(7)}  ${mtok(median(ss.map(s => s.tokens))!).padStart(14)}  ${String(Math.round(ss.reduce((a, s) => a + s.turns, 0) / ss.length)).padStart(13)}  ${`${Math.round(Math.max(...ss.map(s => s.peak)) / 1000)}k`.padStart(12)}`,
+      `  ${s.node.padEnd(12)} ${s.model.padEnd(22)} ${String(s.sessions).padStart(7)}  ${mtok(s.tokens).padStart(7)}  ${mtok(s.input).padStart(5)}  ${mtok(s.cacheWrite).padStart(7)}  ${mtok(s.cacheRead).padStart(6)}  ${mtok(s.output).padStart(6)}  ${pct(s.hitRate).padStart(3)}  ${usd(s.cost).padStart(7)}  ${(s.perShippedRun === null ? '-' : mtok(s.perShippedRun)).padStart(12)}  ${String(Math.round(s.turns / Math.max(1, s.sessions))).padStart(13)}  ${`${Math.round(s.peak / 1000)}k`.padStart(12)}`,
     )
+  if (r.manager.length) {
+    lines.push(
+      '',
+      'manager sessions:',
+      '  name       model                  turns   tokens  input  c.write  c.read  output  hit    cost',
+    )
+    for (const m of r.manager)
+      lines.push(
+        `  ${m.name.padEnd(10)} ${m.model.padEnd(22)} ${String(m.sessions).padStart(5)}  ${mtok(m.tokens).padStart(7)}  ${mtok(m.input).padStart(5)}  ${mtok(m.cacheWrite).padStart(7)}  ${mtok(m.cacheRead).padStart(6)}  ${mtok(m.output).padStart(6)}  ${pct(m.hitRate).padStart(3)}  ${usd(m.cost).padStart(7)}`,
+      )
+  }
   return lines.join('\n')
 }
