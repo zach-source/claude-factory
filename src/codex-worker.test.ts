@@ -210,7 +210,7 @@ test('the probe runs the agent own executable, not codex from PATH', () => {
   const other = join(f.tmp, 'bin')
   mkdirSync(other)
   writeFileSync(join(other, 'codex'), `#!/bin/sh\ncat '${f.features}'\n`, { mode: 0o755 })
-  writeFileSync(f.features, 'hooks stable false\n')
+  f.fake(`printf 'hooks stable false\\n'\n`)
   const path = process.env.PATH
   process.env.PATH = `${other}:${path}`
   try {
