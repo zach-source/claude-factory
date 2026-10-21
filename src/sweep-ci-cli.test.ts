@@ -13,10 +13,10 @@ const fx = join(dir, 'fx') // fixture files the fakes read
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-const factory = () => {
+const factory = (extra: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'sweep'], {
-    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0' },
+    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...extra },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
@@ -239,4 +239,25 @@ test('flakes: at most 10 log reads', () => {
     .split('\n')
     .filter(l => l.startsWith('run view'))
   expect(views).toHaveLength(10)
+})
+
+test.each(['ci', 'flakes'])('%s: no room means no gh call and no lastAt', sweep => {
+  setup([sweep])
+  flaky(3)
+  factory({ FACTORY_MAX_RUNS: '0' })
+  expect(journal()).toMatchObject([{ sweep, action: 'no-room' }])
+  expect(existsSync(join(fx, 'gh-calls.log'))).toBe(false)
+  expect(existsSync(join(home, 'sweeps.json')) && state().a?.[sweep]).toBeFalsy()
+})
+
+test('flakes: a green re-run reads the failed log of the attempt before it', () => {
+  setup(['flakes'])
+  const r = run({ attempt: 2 }) as { databaseId: number }
+  runs([r])
+  writeFileSync(join(fx, `log-${r.databaseId}.txt`), 'x\n')
+  factory()
+  const views = readFileSync(join(fx, 'gh-calls.log'), 'utf8')
+    .split('\n')
+    .filter(l => l.startsWith('run view'))
+  expect(views).toEqual([`run view ${r.databaseId} --log-failed --attempt 1`])
 })

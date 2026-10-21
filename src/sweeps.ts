@@ -197,7 +197,7 @@ export type GhRun = {
   attempt?: number
 }
 
-export type CiRed = { key: string; workflow: string; sha: string; url: string }
+export type CiRed = { key: string; workflowId: number; workflow: string; sha: string; url: string }
 
 /** the dedupe key of a red main streak: the workflow id and the first failing SHA */
 export const ciKey = (workflowId: number, sha: string): string => `ci-red:${workflowId}-${sha.slice(0, 7)}`
@@ -226,6 +226,7 @@ export function mainCiReds(runs: GhRun[]): CiRed[] {
     }
     out.push({
       key: ciKey(id, first.headSha),
+      workflowId: id,
       workflow: rs[0]!.workflowName,
       sha: first.headSha,
       url: rs[0]!.url,
@@ -234,9 +235,10 @@ export function mainCiReds(runs: GhRun[]): CiRed[] {
   return out
 }
 
-/** the reds whose key is not a label on an open bead */
+/** The reds with no open bead. A label with the prefix `ci-red:<workflow id>-` also tracks the red:
+ * a streak longer than the run window moves its first failing SHA, and must not file a second bead. */
 export const newCiReds = (reds: CiRed[], openLabels: Set<string>): CiRed[] =>
-  reds.filter(r => !openLabels.has(r.key))
+  reds.filter(r => ![...openLabels].some(l => l.startsWith(`ci-red:${r.workflowId}-`)))
 
 /** a run whose failed log holds a flaky test; `attempt` picks the failed attempt of a re-run */
 export type FlakyRun = { id: number; url: string; attempt?: number }

@@ -4058,7 +4058,7 @@ function ciSweepRead(
   }
   const since = new Date(now - 7 * 86_400_000).toISOString().slice(0, 10)
   const flaky = flakyRuns(
-    ghRuns(rig.repo, ['--branch', branch, '--created', `>=${since}`, '--limit', '300']),
+    ghRuns(rig.repo, ['--branch', branch, '--created', `>=${since}`, '--limit', '1000']),
   ).slice(0, 10)
   if (!flaky.length) return { action: 'quiet' }
   const labels = openLabels(rig.repo)
@@ -4149,9 +4149,16 @@ async function sweep() {
       let mail: string | undefined
       let read: { sig: string; lines: number } | undefined
       if (station === 'ci' || station === 'flakes') {
-        let read: { action: 'green' | 'tracked' | 'quiet' | 'start'; mail?: string }
+        // Check room first. A full factory writes no lastAt, so a late check repeats the gh reads each tick.
         try {
-          read = ciSweepRead(rig, station, at)
+          await assertRoom(rig.repo)
+        } catch {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'no-room' })
+          continue
+        }
+        let ci: { action: 'green' | 'tracked' | 'quiet' | 'start'; mail?: string }
+        try {
+          ci = ciSweepRead(rig, station, at)
         } catch (err) {
           state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
           writeJson(sweepStateFile(), state)
@@ -4161,13 +4168,13 @@ async function sweep() {
           )
           continue
         }
-        if (read.action !== 'start') {
+        if (ci.action !== 'start') {
           state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
           writeJson(sweepStateFile(), state)
-          logSweep({ at, rig: rig.name, sweep: station, action: read.action })
+          logSweep({ at, rig: rig.name, sweep: station, action: ci.action })
           continue
         }
-        mail = read.mail
+        mail = ci.mail
       }
       if (station === 'monitor') {
         let output: string

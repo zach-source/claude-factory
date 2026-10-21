@@ -672,7 +672,7 @@ new work. `ci` lists the default branch's runs. Each workflow with a red newest 
 nothing starts. If not, one run files ONE P1 bead with the labels `factory`, `station:plan` and
 `sweep-queue:main-ci-red`.
 
-`flakes` reads 7 days of runs. A run is flaky when the same SHA passed
+`flakes` reads up to 1000 runs of the default branch from the past 7 days. A run is flaky when the same SHA passed
 and failed, or passed on a re-run. The factory reads the failed logs of at most 10 flaky runs.
 It keeps only test ids of 1 to 200 printable ASCII characters. A test that failed in 2 or more
 flaky runs gets one bead, `quarantine + fix flaky test: <id>`, with the label `flake:<12 hex>`.

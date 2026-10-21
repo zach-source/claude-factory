@@ -80,7 +80,7 @@ test('ciKey and newCiReds: a key on an open bead is dropped', () => {
   expect(ciKey(7, 'abcdef0123')).toBe('ci-red:7-abcdef0')
   const reds = mainCiReds([run({ sha: 'a'.repeat(40), at: 1, conclusion: 'failure' })])
   expect(newCiReds(reds, new Set(['factory', 'ci-red:7-aaaaaaa']))).toEqual([])
-  expect(newCiReds(reds, new Set(['ci-red:7-bbbbbbb']))).toEqual(reds)
+  expect(newCiReds(reds, new Set(['ci-red:9-bbbbbbb']))).toEqual(reds)
 })
 
 test('flakyRuns: a failure and a success on one SHA, and a success after a re-run attempt', () => {
@@ -147,4 +147,10 @@ test('flakeCandidates: n>=2 files, n>=3 queues, one count per run, open keys dro
     ['b', 2, false],
   ])
   expect(flakeCandidates([r('u1', ['x'])], new Set())).toEqual([])
+})
+
+test('an open label of the same workflow tracks a red whose first failing SHA moved', () => {
+  const [red] = mainCiReds([run({ sha: 'a'.repeat(40), at: 1, conclusion: 'failure' })])
+  expect(newCiReds([red!], new Set(['ci-red:7-zzzzzzz']))).toEqual([])
+  expect(newCiReds([red!], new Set(['ci-red:8-zzzzzzz']))).toEqual([red!])
 })
