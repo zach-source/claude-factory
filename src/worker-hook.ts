@@ -1343,6 +1343,59 @@ function findExecRmDeny(cmdIn: string[]): boolean {
 }
 
 /**
+ * claude-factory-easj: `find -delete` removes every match, like `rm -r`.
+ * Returns true when `cmd`, a find command, has a delete word and a start path that is dynamic or outside `root`.
+ * A delete word is `-delete`, a glob word that can match it, or a brace word with its letters.
+ * The rule allows the root itself and a find with no start path. It only denies.
+ */
+function findDeleteDeny(cmdIn: string[], root?: string): boolean {
+  const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
+  const hasDelete = cmd.some(
+    w =>
+      w === '-delete' ||
+      (w.startsWith('-') && BRACE_LIST_WORD.test(w) && hasLettersInOrder(w, '-delete')) ||
+      (globActionWord(w) && globMatchesDelete(w)),
+  )
+  if (!hasDelete) return false
+  let i = 1
+  for (; i < cmd.length; i++) {
+    const w = cmd[i]!
+    if (w === '--') {
+      i++
+      break
+    }
+    if (w === '-f' || w === '-D') {
+      if (w === '-f' && i + 1 < cmd.length && findPathRisky(cmd[i + 1]!, root)) return true
+      i++
+      continue
+    }
+    if (!/^-([HLPEXdsx]+|O\d?)$/.test(w)) break
+  }
+  for (; i < cmd.length; i++) {
+    const w = cmd[i]!
+    if (w.startsWith('-') || w === '(' || w === '!') break
+    if (findPathRisky(w, root)) return true
+  }
+  return false
+}
+
+// A glob word that can match the file name -delete. A bracket class is read as a wildcard, so it errs toward deny.
+function globMatchesDelete(w: string): boolean {
+  const re = w.replace(/\[[^\]]*\]|[*?]|[\\^$.+(){}|]/g, m =>
+    m === '*' ? '.*' : m[0] === '[' || m === '?' ? '.' : '\\' + m,
+  )
+  return new RegExp('^' + re + '$').test('-delete')
+}
+
+function findPathRisky(t: string, root?: string): boolean {
+  if (/[$*?[{`]/.test(t) || t.startsWith('~') || /^=[^=]/.test(t)) return true
+  if (root === undefined) return t.startsWith('/') || t.split('/').includes('..')
+  const base = root.endsWith('/') ? root.slice(0, -1) : root
+  const resolved = resolvePath(base, t)
+  return resolved !== base && !resolved.startsWith(base + '/')
+}
+
+/**
  * Returns the operands of an rm command. `words[0]` is the rm word itself.
  * An operand is a non-flag word before a `--`, or any word after a `--`
  * (a word there can start with `-` and still be a path).
@@ -1804,7 +1857,7 @@ function rmFindDeny(cmd: string[], root?: string, riskyMemo?: Map<string, boolea
       })
     )
   }
-  if (b === 'find' && (findBraceRmDeny(cmd) || findExecRmDeny(cmd))) return true
+  if (b === 'find' && (findBraceRmDeny(cmd) || findExecRmDeny(cmd) || findDeleteDeny(cmd, root))) return true
   return false
 }
 
@@ -1955,7 +2008,8 @@ function rmFindReading(
     return { deny: false, rm: true }
   }
   if (b === 'find') {
-    if (findBraceRmDeny(cmd) || findExecRmDeny(cmd)) return { deny: true, rm: false }
+    if (findBraceRmDeny(cmd) || findExecRmDeny(cmd) || findDeleteDeny(cmd, root))
+      return { deny: true, rm: false }
     for (let i = 0; i < cmd.length; i++) {
       if (!findExecWord(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
@@ -6494,7 +6548,7 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length;) {
+  for (let i = 0; i < words.length; ) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
@@ -7601,7 +7655,7 @@ const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]
 // text, where quotes and backslashes are visible, and is the reading that does not depend on them.
 function flattenBraceExpansions(w: string, byDepth: boolean): string {
   let out = ''
-  for (let i = 0; i < w.length;) {
+  for (let i = 0; i < w.length; ) {
     if (w[i] !== '$' || w[i + 1] !== '{') {
       // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
       out += !byDepth && w[i] === '}' ? '$@' : w[i]
@@ -8331,13 +8385,17 @@ function denyAtScan(
           if (i + 1 < cmd.length && globCommandWord(cmd[i + 1]!, cmd[i + 2])) return DYNAMIC_VERB_REASON
         }
       }
-      if (findBraceRmDeny(cmd) || findExecRmDeny(cmd)) return REASON
+      if (findBraceRmDeny(cmd) || findExecRmDeny(cmd) || findDeleteDeny(cmd, root)) return REASON
     }
     // claude-factory-j471: a redirect word (`>f find ...`, `find -exec >f rm ...`) can hide the
     // find word or the slot head. Read the segment again without its redirect words.
     if (words.some(w => /[<>]/.test(w))) {
       const c2 = realCommand(dropRedirectWords(words))
-      if (c2.length && baseWord(c2[0]!) === 'find' && (findBraceRmDeny(c2) || findExecRmDeny(c2)))
+      if (
+        c2.length &&
+        baseWord(c2[0]!) === 'find' &&
+        (findBraceRmDeny(c2) || findExecRmDeny(c2) || findDeleteDeny(c2, root))
+      )
         return REASON
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.

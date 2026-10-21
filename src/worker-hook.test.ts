@@ -9145,7 +9145,6 @@ const J1KI_ALLOW_ROWS = [
 // claude-factory-easj: find -delete removes every match, like rm -r. A start path outside the worktree, a glob or a variable denies.
 const EASJ_DENY_ROWS = [
   'find / -delete',
-  'find $HOME -delete',
   'find .. -delete',
   'nocorrect find / -delete',
   'sudo find / -delete',
@@ -9153,7 +9152,6 @@ const EASJ_DENY_ROWS = [
   'find -f / -delete',
   'find -- / -delete',
   'find . / -delete',
-  'find / -de?ete',
   'find / -{delete,print}',
   'env find / -delete',
   'xargs find / -delete',
@@ -9163,8 +9161,9 @@ const EASJ_DENY_ROWS = [
   'find / -type f -name x -delete -print',
   'find "$D"/x -name y -delete',
   'find /root/repo/../x -delete',
-  'find * -delete',
 ]
+// These rows keep their own deny reason (the home rule or the glob command word rule).
+const EASJ_OTHER_DENY_ROWS = ['find $HOME -delete', 'find / -de?ete', 'find * -delete']
 const EASJ_ALLOW_ROWS = [
   'find .scratch/x -delete',
   'find . -name x -delete',
@@ -9175,6 +9174,9 @@ const EASJ_ALLOW_ROWS = [
 ]
 test.each(EASJ_DENY_ROWS)('claude-factory-easj: %s denies with REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(EASJ_OTHER_DENY_ROWS)('claude-factory-easj: %s denies', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeDefined()
 })
 test.each(EASJ_ALLOW_ROWS)('claude-factory-easj: %s stays allowed', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
