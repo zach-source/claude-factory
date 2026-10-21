@@ -127,7 +127,10 @@ export function sweepGuard(
       })
       // claude-factory-8pc.13(c): a bead with no `created_at` must stay inside the window (as if
       // filed now), not fall out of it at epoch 0 and so escape the cap and the defer below.
-      .map(x => ({ ...x, at: x.b.created_at ? new Date(x.b.created_at).getTime() : now }))
+      .map(x => {
+        const t = x.b.created_at ? new Date(x.b.created_at).getTime() : now
+        return { ...x, at: Number.isFinite(t) ? t : now }
+      })
       .filter(x => now - x.at < windowMs)
       .sort((a, c) => a.at - c.at)
       .map((x, i) => ({
