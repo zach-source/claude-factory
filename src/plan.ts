@@ -321,11 +321,6 @@ export function findings(
   return out
 }
 
-/** `starved-epic` and `goal-no-beads` ask a person for more scope or attention: filed labeled
- * `human`, an Interview-tab decision item. `epic-done-open` and `goal-no-plan` are gaps the factory
- * can act on by itself (start the children, notice nothing is ranked): filed unlabeled instead. */
-export const HUMAN_FINDING_KINDS: ReadonlySet<FindingKind> = new Set(['starved-epic', 'goal-no-beads'])
-
 /** one rig's input for `buildPlan`: its candidates (dispatch's own ready list), its full bead
  * list (for findings) and the ids any live run there owns, plus the pm's raw answer for it */
 export type RigInput = {
