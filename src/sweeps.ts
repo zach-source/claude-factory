@@ -167,7 +167,7 @@ export function clipUtf8(text: string, maxBytes = 4096): string {
  */
 export function dueSweeps(
   def: Factory,
-  rig: { name: string; repo: string; sweeps?: string[]; slo?: string },
+  rig: { name: string; repo: string; sweeps?: string[]; slo?: string; drift?: string },
   state: SweepState,
   liveRuns: LiveRun[],
   now: number,
@@ -175,6 +175,7 @@ export function dueSweeps(
   const names = (rig.sweeps ?? sweepNames(def)).filter(s => def.nodes[s]?.everyMin)
   return names.filter(s => {
     if (s === 'monitor' && !rig.slo) return false
+    if (s === 'drift' && !rig.drift) return false
     const goal = sweepGoal(s)
     if (liveRuns.some(r => r.repo === rig.repo && r.goal === goal)) return false
     const lastAt = state[rig.name]?.[s]?.lastAt ?? 0

@@ -69,6 +69,17 @@ test('monitor needs rig.slo even when rig.sweeps names it explicitly', () => {
   expect(dueSweeps(def, { ...rig, slo: 'kubectl get pods' }, {}, [], Date.now())).toEqual(['monitor'])
 })
 
+test('drift needs rig.drift even when rig.sweeps names it explicitly', () => {
+  const d: Factory = {
+    ...def,
+    nodes: { ...def.nodes, drift: { prompt: 'd', next: { filed: 'done' }, everyMin: 60 } },
+  }
+  const rig = { name: 'a', repo: '/a', sweeps: ['drift'] }
+  expect(dueSweeps(d, rig, {}, [], Date.now())).toEqual([])
+  expect(dueSweeps(d, { name: 'a', repo: '/a' }, {}, [], Date.now())).not.toContain('drift')
+  expect(dueSweeps(d, { ...rig, drift: 'flux get ks -A' }, {}, [], Date.now())).toEqual(['drift'])
+})
+
 test('a rig.sweeps name with no everyMin node in def is dropped, not thrown', () => {
   const rig = { name: 'a', repo: '/a', sweeps: ['other', 'maintain'] }
   expect(dueSweeps(def, rig, {}, [], Date.now())).toEqual(['maintain'])
