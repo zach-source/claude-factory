@@ -2551,7 +2551,7 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
         // The cap defer must reset the counter. Without this reset, a person's undefer sends the bead
         // straight into a new defer on its next requeue. `requeues` would still read 5 or more
         // (claude-factory-wnm.17).
-        if (!already && !(requeues < REQUEUE_MAX)) {
+        if (!already && !(requeues >= 0 && requeues < REQUEUE_MAX)) {
           b.defer(id, `requeued ${REQUEUE_MAX} times`)
           b.setMetadata(id, { requeues: '0' })
         } else {

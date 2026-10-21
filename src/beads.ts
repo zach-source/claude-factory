@@ -486,8 +486,8 @@ export const beads = (repo: string, actor: string) => ({
     const b = lookupBead(repo, actor, id)
     const already = b?.metadata?.requeued_from === runId
     const prior = Number(b?.metadata?.requeues ?? 0)
-    // a non-finite count never writes NaN back: it reads as 0 here, and track() defers it as at-cap
-    const requeues = (Number.isFinite(prior) ? prior : 0) + (already ? 0 : 1)
+    // a non-finite or negative count never writes NaN back: it reads as 0 here, and track() defers it as at-cap
+    const requeues = (Number.isFinite(prior) && prior >= 0 ? prior : 0) + (already ? 0 : 1)
     const oldLabels = (b?.labels ?? []).filter(
       l => (to?.factory && l.startsWith('factory:')) || (to?.station && l.startsWith('station:')),
     )

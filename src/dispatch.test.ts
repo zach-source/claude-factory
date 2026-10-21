@@ -1384,7 +1384,7 @@ test('REQUEUE_MAX (5) stops the loop: a bead already requeued 5 times is deferre
   expect(trackOf('run-4').requeued).toBeUndefined()
 })
 
-test.each(['x', 'NaN'])(
+test.each(['x', 'NaN', '-1'])(
   'a non-numeric requeues value (%s) counts as at-cap: deferred, not requeued (claude-factory-yo9)',
   bad => {
     const showJson = JSON.stringify([
