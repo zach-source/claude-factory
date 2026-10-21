@@ -10310,6 +10310,19 @@ test.each([
   "find . -exec rm {} -r ';'",
   "find . -exec rm {-f,{}} {-r,{}} ';'",
   "find . -exec rm x + -rf {} ';'",
+  "find . {-exec,rm} x -rf acme ';'",
+  "find . -exec {rm,x} y -rf acme ';'",
+  'find . -exec rm {} -rf / \\;',
+  'find . -exec sudo rm x -rf / \\;',
+  'find . -exec sudo rm x -rf acme \\;',
+  "find . -exec rm {{}} -r ../o ';'",
+  "find . -exec rm {{}} -r acme ';'",
+  'X=rm; $X x -rf acme',
+  'X=rm; $X rm x -rf acme',
+  'rm x --recursive acme',
+  'rm x --recursive=always acme',
+  "find . {-exec,sudo} rm x -rf acme ';'",
+  "find . -exec rm {} + -exec rm x -rf acme ';'",
 ])('denyReason denies %j (claude-factory-39cy)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
 })
