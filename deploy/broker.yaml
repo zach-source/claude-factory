@@ -1,0 +1,90 @@
+# The policy broker (docs/remote-runner.md, Policy broker). Set BROKER_IMAGE to the image, by digest, and apply:
+#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> envsubst '$BROKER_IMAGE' < deploy/broker.yaml | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: factory-broker
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-policy-broker
+  namespace: factory-broker
+---
+# the egress gateway's CA, which GET /ca reads
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factory-policy-broker
+rules:
+  - apiGroups: ['certificates.k8s.io']
+    resources: ['clustertrustbundles']
+    verbs: ['get']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: factory-policy-broker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: factory-policy-broker
+subjects:
+  - kind: ServiceAccount
+    name: factory-policy-broker
+    namespace: factory-broker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-policy-broker
+  namespace: factory-broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: factory-policy-broker
+  template:
+    metadata:
+      labels:
+        app: factory-policy-broker
+    spec:
+      serviceAccountName: factory-policy-broker
+      automountServiceAccountToken: true
+      containers:
+        - name: broker
+          image: ${BROKER_IMAGE}
+          args: ['--port', '8080']
+          env:
+            - name: FACTORY_BROKER_ATESPACES
+              value: factory
+            - name: FACTORY_BROKER_ENDPOINT
+              value: api.ate-system.svc:443
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+          volumeMounts:
+            - name: ate-api-token
+              mountPath: /var/run/secrets/ate-api
+              readOnly: true
+      volumes:
+        - name: ate-api-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: factory-policy-broker
+  namespace: factory-broker
+spec:
+  selector:
+    app: factory-policy-broker
+  ports:
+    - port: 8080
+      targetPort: 8080
