@@ -1482,7 +1482,7 @@ export const pickAgent = (
 ) => {
   const params = paramsOf(def, rig, env)
   const split = def.nodes[node]!.split
-  const picked = !rig?.agent && split && runner !== 'ax' && splitPick(runId, split.share, params[split.share])
+  const picked = split && runner !== 'ax' && splitPick(runId, split.share, params[split.share])
   return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
 }
 const agentOfNode = (run: Run, def: Factory, node: string) =>
