@@ -2087,18 +2087,21 @@ test('the filing guard leaves child, sweep-filed and person beads alone', () => 
 
 test('a closed bead uses a cluster slot: the 7th stays held, the closed one gets no write', () => {
   const beads = replayBeads()
-  beads[1].status = 'closed' // w-2
+  beads[1]!.status = 'closed' // w-2
+  beads[7]!.status = 'closed' // w-8: past the cap, closed
   filingReset(beads)
   gfactory(['beads'])
   // w-2 closed still uses a slot, so w-6 is the 6th and w-7 is the 7th: held
-  expect(fCalls().filter(l => /^bd update w-7 .*--add-label held:cluster:worker-hook/.test(l))).toHaveLength(1)
-  expect(fCalls().some(l => /^bd (update|comment) w-2 /.test(l))).toBe(false)
+  expect(fCalls().filter(l => /^bd update w-7 .*--add-label held:cluster:worker-hook/.test(l))).toHaveLength(
+    1,
+  )
+  expect(fCalls().some(l => /^bd (update|comment) w-[28] /.test(l))).toBe(false)
   expect(startedBeads()).not.toContain('w-7')
 })
 
 test('a past-cap bead with no factory label gets a mark only; factory queue later starts it', () => {
   const beads = replayBeads()
-  beads[6].labels = ['pm-proposal'] // w-7
+  beads[6]!.labels = ['pm-proposal'] // w-7
   filingReset(beads)
   gfactory(['beads'])
   expect(fCalls().some(l => /^bd (update|comment) w-7 .*(held:|filing)/.test(l))).toBe(false)
@@ -2106,7 +2109,7 @@ test('a past-cap bead with no factory label gets a mark only; factory queue late
   expect(JSON.parse(readFileSync(join(ghome, 'filing-guard.json'), 'utf8')).a).toHaveProperty('w-7')
   expect(startedBeads()).not.toContain('w-7')
   // factory queue adds the label; the mark keeps the guard from holding it
-  beads[6].labels = ['factory']
+  beads[6]!.labels = ['factory']
   fakeFilingBd(beads)
   nextPass()
   gfactory(['beads'])
