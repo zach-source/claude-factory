@@ -58,9 +58,9 @@ export type Node = {
   timeoutMin?: number
   /**
    * The station can report one outcome this many times in a run. Review's `changes` is one example.
-   * Only an outcome that loops back counts: its edge goes to a node no deeper than this one from `start`,
-   * or to a node that cannot end the run. An outcome that goes to `done`, or to a deeper node that can
-   * end the run (review's `security`), never counts.
+   * Only an outcome that loops back counts: its edge goes to this node, to a node on
+   * this node's shortest path from `start`, or to a node that cannot end the run. An outcome that goes to
+   * `done`, or to an off-path node that can end the run (review's `security`), never counts.
    * When `onRounds` is set, the next such report re-plans the run.
    * With no `onRounds`, the next report holds for the manager instead.
    * A loop that does not converge by then needs a new design, or a person.
@@ -498,27 +498,29 @@ export function compile(def: Factory) {
   const isCurrent = ({ context, event }: { context: Ctx; event: Ev }) =>
     'seq' in event && event.seq === context.seq
 
-  // An outcome counts toward a node's `rounds` only when its edge loops back: the target is no deeper
-  // than the node (BFS from start), or the target cannot end the run (no edge to done). An edge to done,
-  // or to a deeper station that can end the run (review's security), is a forward hand-off and never counts.
-  const depth: Record<string, number> = { [def.start]: 0 }
+  // An outcome counts toward a node's `rounds` only when its edge loops back: the target is the node
+  // itself, sits on the node's shortest path from start (BFS parents), or cannot end the run (no edge to
+  // done). An edge to done, or to an off-path station that can end the run (review's security), never counts.
+  const parent: Record<string, string> = {}
+  const seen = new Set([def.start])
   for (const queue = [def.start]; queue.length;) {
     const q = queue.shift()!
     for (const e of Object.values(def.nodes[q]?.next ?? {})) {
       const t = edgeTo(e)
-      if (t !== 'done' && !(t in depth)) {
-        depth[t] = depth[q]! + 1
+      if (t !== 'done' && !seen.has(t)) {
+        seen.add(t)
+        parent[t] = q
         queue.push(t)
       }
     }
   }
-  const d = (id: string) => depth[id] ?? Infinity
   const counts = (id: string, node: Node, outcome: string) => {
     const e = node.next[outcome]
     if (!e) return false
     const t = edgeTo(e)
-    const ends = Object.values(def.nodes[t]?.next ?? {}).some(x => edgeTo(x) === 'done')
-    return t !== 'done' && (d(t) <= d(id) || !ends)
+    if (t === 'done') return false
+    for (let x: string | undefined = id; x; x = parent[x]) if (x === t) return true
+    return !Object.values(def.nodes[t]?.next ?? {}).some(x => edgeTo(x) === 'done')
   }
 
   const nodeState = (id: string, node: Node) => {
