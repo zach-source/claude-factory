@@ -241,6 +241,16 @@ fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). Th
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
 redefine a rig with `rig add`; there is one rig per repo.
 
+A rig starts only beads with the `factory` label. To keep a rig busy from its unlabeled ready
+beads, set `autoQueue` in `rigs.json`, for example `"autoQueue": { "minPriority": 2, "perHour": 3 }`.
+When the rig has room and no labeled bead to start, dispatch takes up to `perHour` beads in a
+rolling hour. It takes only leaf beads (no parent, no open child, not an epic) with no assignee, a
+priority of `minPriority` or higher urgency (0 is the highest), and no `rejected`, `owner`,
+`human` or `ship` label. It skips beads that a sweep filed and beads the flood guard holds. The
+best come first: priority, then oldest. Each pick gets the labels `factory` and `auto-queued`, and
+starts as a normal run. The picks of the last hour are in `auto-queue.json`. Without `autoQueue`
+the rig works as before.
+
 A rig can name kube contexts that only a person can change. Use `--person-only-context` to
 add one. Repeat the flag to add more contexts.
 
