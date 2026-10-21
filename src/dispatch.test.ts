@@ -1206,6 +1206,8 @@ const REQ: Factory = {
       next: {
         ship: { to: 'done', requeue: { factory: 'release', station: 'deploy' } },
         again: { to: 'done', requeue: true },
+        park: { to: 'done', defer: { station: 'implement' } },
+        plain: { to: 'done', defer: true },
       },
     },
   },
@@ -1263,7 +1265,7 @@ function reqResetShowFails() {
 }
 
 /** run.json + state.json for a run that just ended on outcome `ship` or `again`, both requeue edges */
-function requeuedRun(id: string, bead: string, outcome: 'ship' | 'again') {
+function requeuedRun(id: string, bead: string, outcome: 'ship' | 'again' | 'park' | 'plain') {
   const f = join(pdir, 'req.json')
   if (!existsSync(f)) writeFileSync(f, JSON.stringify(REQ))
   const actor = createActor(compile(REQ)).start()
@@ -1438,6 +1440,29 @@ test('a requeue edge on a Linear-sourced bead defers instead of looping: dispatc
   expect(calls.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0) // never requeued
   expect(trackOf('run-8')).toMatchObject({ isSettled: true })
   expect(trackOf('run-8').requeued).toBeUndefined()
+})
+
+test('a defer {station} edge defers the bead and moves its station label; defer: true and a Linear-sourced bead leave labels alone', () => {
+  const labels = ['factory', 'factory:lifecycle', 'station:quick']
+  const run = (outcome: 'park' | 'plain', extra: object, id: string) => {
+    reqReset(JSON.stringify([{ id: 'acme-1', title: 't', labels, ...extra }]))
+    requeuedRun(id, 'acme-1', outcome)
+    expect(pfactory(['beads']).code).toBe(0)
+    return readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  }
+  const swap = run('park', {}, 'run-d1')
+  expect(swap.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
+  const update = swap.find(l => l.startsWith('bd update acme-1'))!
+  expect(update).toContain('--remove-label station:quick')
+  expect(update).toContain('--add-label station:implement')
+  expect(update).not.toContain('factory:lifecycle')
+  expect(trackOf('run-d1')).toMatchObject({ isSettled: true })
+  const plain = run('plain', {}, 'run-d2')
+  expect(plain.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
+  expect(plain.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0)
+  const linear = run('park', { external_ref: 'https://linear.app/acme/issue/STI-1' }, 'run-d3')
+  expect(linear.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
+  expect(linear.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0)
 })
 
 // claude-factory-wnm (A4, A6, A7): the `factory:<name>` dispatch label.

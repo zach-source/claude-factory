@@ -2436,7 +2436,12 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
           t.requeued = true
         }
       }
-    } else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
+    } else if (typeof edge === 'object' && edge.defer) {
+      // dispatch never reads a station label off a Linear-sourced bead, so it gets a plain defer
+      const station = typeof edge.defer === 'object' ? edge.defer.station : undefined
+      const current = station ? b.lookup(id) : undefined
+      b.defer(id, reason, current && linearSourced(current) ? undefined : station)
+    }
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
