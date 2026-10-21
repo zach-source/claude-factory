@@ -6159,6 +6159,176 @@ test.each(DYN_LATER_DENY)(
   },
 )
 
+// claude-factory-cwt9: a flag-shaped word with a dynamic character can split into "-" plus a command word.
+const DASH_DYN_DENY = [
+  'sudo -$(y) foo --recur /home',
+  'sudo -$(y) foo --rec /home',
+  'xargs -$(y) foo --recu /home',
+  'sudo -${Y} foo --recur /home',
+  'sudo -$(y) --rec /home',
+  'xargs -$(y) --recur /home',
+  'xargs -$(y) -I R --rec /home',
+  'env -u root -$Y -rf /',
+  'env -$Y -rf /',
+  'sudo -$Y -rf /',
+  'sudo -u root -$Y -rf /',
+  'env -u$Y -rf /',
+  'env -i -$Y -rf /',
+  'nice -n 5 -$Y -rf /',
+  'xargs -$Y -rf /',
+  '- -$Y -rf /',
+  'command -$Y -rf /',
+  'env -$Y -r src',
+  'env -"$Y" -rf /',
+  '$X -u root -$Y -rf /',
+  '$X -u root -$Y ../x',
+  '$X -u root --$Y -rf /',
+  'sudo -$(y) -rf /',
+  'sudo -u root -$(y) -rf /',
+  'sudo -E$(y) -rf /',
+  'sudo -`y` -rf /',
+  'xargs -$(y) -rf /',
+  'xargs -0$(y) -rf /',
+  'xargs -n1 -$(y) -rf /',
+  'xargs -`y` -rf /',
+  'timeout -$Y -rf /',
+  'nohup -$Y -rf /',
+  'exec -$Y -rf /',
+  'time -$Y -rf /',
+  'xargs -$(y) -r /home',
+  'xargs -$(y) -r -f /home',
+  'xargs -$(y) -R -f /home',
+  'xargs -$(y) -r -f ../x',
+  'xargs -0$(y) -r -f /home',
+  'sudo -$(y) -r -f /home',
+  'sudo -$(y) -R /home',
+  'sudo -$Y -R /home',
+  'xargs -$(y)r -f /home',
+  'xargs -$(y)rf /home',
+  'sudo -$(y)r -f /home',
+  'sudo -$(y)rf /home',
+  'xargs -${Y}r -f /home',
+  'xargs -${Y}rf /home',
+  'sudo -${Y}r -f /home',
+  'sudo -${Y}rf /home',
+  'xargs -$(y) foo -rf /home',
+  'xargs -$(y) -I REPL -rf /home',
+  'xargs -$(y) a b -rf /home',
+  'xargs -$(y) -n1 foo -rf /home',
+  'xargs -$Y -I REPL -rf /home',
+  'sudo -$(y) foo -rf /home',
+  'sudo -$(y) x -rf /home',
+  'sudo -$(y) -u root -rf /home',
+  'sudo -$(y) -n foo -rf /home',
+  'sudo -$(y) foo --recursive /home',
+  'sudo -$(y) foo --r /home',
+  'sudo -$(y) foo --re /home',
+  'xargs -$(y) foo --r /home',
+  'xargs -$(y) --re /home',
+  'sudo -${Y} foo --re /home',
+  'env -$Y foo --r /home',
+  'env -$Y --r /home',
+  'env -u root -$Y ls -d /',
+  'env -$Y rm /home/x',
+  'env -$Y rm ../x',
+  'sudo -$Y rm /home/x',
+  'sudo -$Y rm ../x',
+  'xargs -$Y rm /home/x',
+  'xargs -$Y rm ../x',
+  'nice -n 5 -$Y rm /home/x',
+  'sudo -E$(y) foo -rf /home',
+  'sudo -E$(y) x -rf /home',
+  'xargs -0$(y) foo -rf /home',
+  'xargs -n1$(y) a b -rf /home',
+  'xargs -I$(y) REPL -rf /home',
+  'sudo --user=$(y) foo -rf /home',
+  'sudo --group=$(y) foo -rf /home',
+  'sudo --user=$(y) foo /etc/passwd',
+  'xargs --max-args=$(y) foo -rf /home',
+]
+
+// claude-factory-cwt9.16: NAME=$(y) after env or sudo is an argument, so the substitution splits.
+test.each([
+  'env X=$(y) -rf /home',
+  'sudo X=$(y) -rf /home',
+  'env X=$(y) foo -rf /home',
+  'sudo X=$(y) foo /home/x',
+  'env -u root X=$(y) -rf /home',
+  'sudo -u root X=$(y) -rf /home',
+  'env A[1]=$(y) -rf /home',
+  'env X+=$(y) -rf /home',
+  'env X=$(y)b -rf /home',
+  'env X=$(y) ls /home',
+  'env A=1\\;B=1 X=$(y) -rf /home',
+  "env A='(B=1' X=$(y) -rf /home",
+  'env A="|B=1" X=$(y) -rf /home',
+  "env A='&B=1' X=$(y) -rf /home",
+  'sudo A=1\\;B=1 X=$(y) -rf /home',
+  "env A='|B=1' X=$(y) foo /home/x",
+  'env A=1\\|B=1 X=$(y) -rf /home',
+  'env A=1\\\nX=$(y) -rf /home',
+  "sudo A='(B=1' X=$(y) foo -rf /home",
+])(
+  'denyReason denies a split substitution after an env assignment argument: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeDefined()
+  },
+)
+
+test.each(['X=$(y) ls /home', 'A=$(y) B=$(y) make all'])(
+  'denyReason allows a prefix-slot assignment with a substitution: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+  },
+)
+
+test.each(DASH_DYN_DENY)(
+  'denyReason denies a dynamic flag-shaped word before rm: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBe(REASON)
+  },
+)
+
+test('denyReason denies a glob flag word before rm (claude-factory-cwt9)', () => {
+  expect(denyReason('env -* -rf /', '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+test.each([
+  'env -$Y ls',
+  'env -u root -$Y src',
+  'env -$Y ls -R src',
+  'xargs -$N grep -r foo src',
+  'env -$Y cat src/a',
+  'nice -n$N make all',
+  'xargs -$N echo',
+  'env -i -$Y',
+  'git log -$N',
+  'grep -$F x /',
+  'xargs -0 -r ls /',
+  'xargs -0 -r -n1 echo /',
+  'sudo -E ls -R /',
+])('denyReason keeps allowing a dynamic flag-shaped word without rm: %s (claude-factory-cwt9)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test.each(['$X -u root --flag=$V src', '$MAKE -j$N all'])(
+  'denyReason does not deny %s with the rm reason (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).not.toBe(REASON)
+  },
+)
+
+test.each(['env', 'xargs', '$X'])(
+  'denyReason scans a long run of dynamic flag words fast: %s (claude-factory-cwt9)',
+  head => {
+    const cmd = head + ' -$A'.repeat(2000)
+    const t = Date.now()
+    const r = denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
+    expect(Date.now() - t).toBeLessThan(1000)
+    expect(r).not.toBe(LONG_COMMAND_REASON)
+  },
+)
+
 const DYN_LATER_KEEP = ['echo $X -u root $Y -rf /', 'git -C $Y status']
 
 test.each(DYN_LATER_KEEP)('denyReason keeps allowing: %s (claude-factory-0xw4)', cmd => {
