@@ -43,6 +43,7 @@ export const SWEEP_QUEUE_LABELS = [
   'sweep-queue:incident',
   'sweep-queue:main-ci-red',
   'sweep-queue:critical-advisory',
+  'sweep-queue:flaky-test',
 ]
 
 export type GuardedBead = { id: string; created_by?: string; created_at?: string; labels?: string[] }
