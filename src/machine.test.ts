@@ -415,6 +415,61 @@ test('onRounds re-plans a capped station with its findings, then holds for the m
   expect(s.context.mail.manager?.at(-1)?.text).toContain('held instead of going to implement')
 })
 
+// claude-factory-53tf: only an outcome that loops back counts toward a node's rounds cap.
+// review's `security` leaves the loop for a deeper node, so it never counts.
+const secDef = (onRounds?: string): Factory => ({
+  ...def,
+  nodes: {
+    plan: { prompt: 'plan it', next: { planned: 'implement' } },
+    implement: { prompt: 'build it', next: { ready: 'review' }, retries: 1 },
+    review: {
+      prompt: 'review it',
+      next: { changes: 'implement', security: 'security', approve: 'done' },
+      rounds: 3,
+      ...(onRounds ? { onRounds } : {}),
+    },
+    security: { prompt: 'scan it', next: { changes: 'implement', approve: 'done' } },
+  },
+  start: 'plan',
+})
+
+function secRun(onRounds?: string) {
+  const { send } = run(secDef(onRounds))
+  let seq = 1
+  let t = 0
+  const d = (outcome: string) => send({ type: 'DONE', seq: seq++, outcome, summary: outcome, at: ++t })
+  d('planned')
+  return { d, send }
+}
+
+test.each(['plan', undefined])('review security reports never count toward the cap (onRounds %s)', onRounds => {
+  const { d } = secRun(onRounds)
+  for (let i = 0; i < 7; i++) {
+    d('ready')
+    const s = d('security')
+    expect(where(s.value)).toEqual(['security', 'working'])
+    expect(s.context.mail.plan ?? []).toHaveLength(0)
+    expect(s.context.log.some(e => e.replan)).toBe(false)
+    d('changes') // security changes goes back to implement
+  }
+})
+
+test('back edges still cap, and security reports between them do not move the cap', () => {
+  const { d } = secRun('plan')
+  for (let i = 0; i < 3; i++) {
+    d('ready')
+    d('security')
+    d('changes')
+    d('ready')
+    expect(where(d('changes').value)).toEqual(['implement', 'working'])
+  }
+  d('ready')
+  const s = d('changes')
+  expect(where(s.value)).toEqual(['plan', 'working'])
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'review', replan: true })
+  expect(s.context.mail.plan?.at(-1)?.text).toContain('round cap')
+})
+
 // claude-factory-qgz AC2: the re-plan mail stays near 24000 chars even when every round's summary is huge.
 test('capReplanMail clips each round so the whole mail stays under 24000 chars plus its header', () => {
   const big = 'x'.repeat(50_000)
