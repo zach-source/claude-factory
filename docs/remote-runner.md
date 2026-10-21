@@ -396,7 +396,7 @@ Two more calls serve the manager's secrets (see Manager secrets):
 | `GET /controller`       | The readiness fields of Deployment `ax-system/ax-controller` as JSON: generation, replicas, observed generation, ready and available replicas. No env or annotation. |
 | `POST /token/best`      | Runs `claude-token best`. 200 with its first stdout line. 409 while one runs. 502 with the first stderr line. 404 when `CLAUDE_TOKEN_ITEM` is unset.       |
 
-`GET /controller` needs `get` on that one Deployment (a Role in `ax-system`). `POST /token/best` changes the live Claude token for every AX worker, so keep the broker address private to the manager task. The response never holds a token.
+`GET /controller` needs `get` on that one Deployment (a Role in `ax-system`). `POST /token/best` changes the live Claude token for every AX worker, so `deploy/broker.yaml` has a NetworkPolicy. It lets only namespace `ate-system` (the egress gateway) reach port 8080. Confirm the gateway pod labels at apply. The response never holds a token.
 
 ### Manager secrets
 

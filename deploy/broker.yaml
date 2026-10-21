@@ -125,3 +125,24 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+---
+# Only the egress gateway's namespace can call the broker: the manager's calls arrive from the gateway.
+# Confirm the gateway namespace and pod labels before apply.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: factory-policy-broker
+  namespace: factory-broker
+spec:
+  podSelector:
+    matchLabels:
+      app: factory-policy-broker
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ate-system
+      ports:
+        - protocol: TCP
+          port: 8080
