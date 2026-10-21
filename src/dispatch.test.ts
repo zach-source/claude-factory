@@ -140,16 +140,26 @@ test('a station:<name> label a person wrote by hand (no Linear external_ref) sti
   expect(gotos[0]!.node).toBe('review') // the control: proves dispatch really reaches stationOf here
 })
 
+test('a rig whose repo has no .beads store yields no dispatch error (claude-factory-toml)', () => {
+  reset(undefined)
+  rmSync(join(dir, 'repo', '.beads'), { recursive: true })
+  writeFileSync(join(bin, 'bd'), '#!/bin/sh\necho "Error: no beads database found" >&2\nexit 1\n')
+  chmodSync(join(bin, 'bd'), 0o755)
+  expect(factory(['beads']).code).toBe(0)
+  const f = join(home, 'dispatch.json')
+  expect(existsSync(f) ? errorRows() : []).toEqual([])
+})
+
 // dispatch() orders its candidates by the pm's plan, when one is fresh (claude-factory-dun.3).
 // `bd ready` here always lists acme-1 then acme-2. The rig's maxRuns is 1.
 // So dispatch starts exactly one of them each pass. Which one shows whether the plan's order won.
 
 /** fake bd: `ready` lists acme-1 then acme-2, top-level `factory` beads, each with the given
  * priority. `children` is always empty (claude-factory-dun.3). */
-function fakeBdTwo(p1: number, p2: number) {
+function fakeBdTwo(p1: number, p2: number, by1?: string) {
   mkdirSync(bin, { recursive: true })
   const beads = JSON.stringify([
-    { id: 'acme-1', title: 't1', labels: ['factory'], priority: p1 },
+    { id: 'acme-1', title: 't1', labels: ['factory'], priority: p1, created_by: by1 },
     { id: 'acme-2', title: 't2', labels: ['factory'], priority: p2 },
   ])
   const script = [
@@ -166,13 +176,13 @@ function fakeBdTwo(p1: number, p2: number) {
   chmodSync(join(bin, 'bd'), 0o755)
 }
 
-function resetTwo(p1: number, p2: number) {
+function resetTwo(p1: number, p2: number, by1?: string) {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(claudeConfig, { recursive: true })
   writeFileSync(join(claudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
   mkdirSync(home, { recursive: true })
   const r = repo()
-  fakeBdTwo(p1, p2)
+  fakeBdTwo(p1, p2, by1)
   fakeHerdr()
   writeFileSync(
     join(home, 'rigs.json'),
@@ -310,6 +320,19 @@ test('a planned P3 never starts before a real P2: priority always sorts ahead of
   const out = factory(['beads'])
   expect(out.code).toBe(0)
   expect(startedBead()).toBe('acme-1') // P2 still wins
+})
+
+// claude-factory-nwlh.4: a top-level P1 that review filed sorts as P2, so a person's P1 starts first.
+test('a review-filed top-level P1 (acme-1) starts after a person P1 (acme-2)', () => {
+  resetTwo(1, 1, 'factory/lifecycle-x/review')
+  expect(factory(['beads']).code).toBe(0)
+  expect(startedBead()).toBe('acme-2')
+})
+
+test('a triage-filed P1 (acme-1) keeps its bd order and starts first', () => {
+  resetTwo(1, 1, 'factory/lifecycle-x/triage')
+  expect(factory(['beads']).code).toBe(0)
+  expect(startedBead()).toBe('acme-1')
 })
 
 // claude-factory-6as.2: dispatch's pre-check.

@@ -56,7 +56,7 @@ export function runnerOf(address: string): Runner
 
 ### Harnesses in the VM
 
-The VM runs the agent the rig chose, the one `agentOfNode` gives a pane (the rig's `--agent`, else the station's, else the factory's), told apart by `harnessOf`. The laptop passes it as `FACTORY_HARNESS` (`claude`, `codex` or `pi`); an agent command that is none of them (a script) is refused at launch, and `rig add --runner ax --agent …` refuses it up front. Each turn is headless and has no permission prompts, because the microVM is the sandbox.
+The VM runs the agent the rig chose, the one `agentOfNode` gives a pane (the rig's `--agent`, else the station's, else the factory's), told apart by `harnessOf`. The laptop passes it as `FACTORY_HARNESS` (`claude`, `codex` or `pi`); an agent command that is none of them (a script) is refused at launch, and `rig add --runner ax --agent …` refuses it up front. A codex agent is refused too: the VM has no deny hook for codex yet (claude-factory-72dq). Each turn is headless and has no permission prompts, because the microVM is the sandbox.
 
 | Harness | First turn                                                                                             | Later turns                                       | Session id                                   |
 | ------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------- | -------------------------------------------- |
@@ -358,3 +358,72 @@ To turn it off, unset `FACTORY_AX_BACKUP_REMOTE` and run `factory manager --ax` 
 - The host does not start the manager while the home is empty, or while a migration archive is on the volume.
 - Runs on `ax://` workers move with no change. Their workers keep running while the move happens.
 - The upload is `PUT_PART` bytes of base64 for each `ax ssh` call, because `ax ssh` has no stdin. A home of 100 MB sends in about 1500 calls. A part that fails is sent again 3 times. Then the command stops. Run it again, because a part sent twice does no harm.
+
+### Policy broker
+
+The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the TLS call to it with grpc-status 14. So the manager cannot create a worker egress policy or read the gateway CA with `kubectl ate`. The policy broker does these two jobs for it.
+
+The broker is a small HTTP server in the cluster (`factory broker serve [--port 8080]`, image from `Dockerfile.broker`, manifest `deploy/broker.yaml`). It runs `kubectl ate` with a projected ServiceAccount token (audience `api.ate-system.svc`). ate-api checks the token and its audience. It applies no other authorization, so the broker enforces the limits itself.
+
+| Call                                  | Result                                                                                              |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `PUT /policy/<atespace>/<actor>`      | Body is an EgressPolicy as JSON. The broker deletes the old policy, then creates the new one.       |
+| `DELETE /policy/<atespace>/<actor>`   | Deletes the policy. A policy that is gone already is not an error.                                  |
+| `GET /ca`                             | The PEM of the gateway CA bundle.                                                                   |
+| `GET /healthz`                        | `ok`.                                                                                               |
+
+Limits:
+
+- Only the atespaces in `FACTORY_BROKER_ATESPACES` (default `factory`).
+- Never the policy of the manager actor (`FACTORY_AX_MANAGER`, default `f-manager`). You create that policy from the laptop.
+- Atespace and actor must be RFC 1123 labels. The body must be a JSON object with `rules`, 64 KiB at most.
+- The broker logs one line for each call.
+
+Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task. The broker has no caller authentication.
+
+Use in the manager task:
+
+1. On the laptop, set `FACTORY_AX_MANAGER_AX_SERVER`, `FACTORY_AX_MANAGER_ROUTER` and `FACTORY_AX_MANAGER_BROKER` to the in-cluster URLs. Keep the values out of the repository. `factory manager --ax` then sets `AX_SERVER` and `FACTORY_POLICY_BROKER` in the task env.
+2. The manager policy gets one `http` rule for each of the three URLs. An `https` rule does not work for plain HTTP (h2c) to a service.
+3. In the VM, `FACTORY_POLICY_BROKER` makes `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before.
+
+Deploy: set `BROKER_IMAGE` to the image by digest. Run `envsubst '$BROKER_IMAGE' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image. For the token swap, also set the `CLAUDE_TOKEN_*` variables (see the header of `deploy/broker.yaml`) in the `envsubst` list.
+
+Two more calls serve the manager's secrets (see Manager secrets):
+
+| Call                    | Result                                                                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /controller`       | The readiness fields of Deployment `ax-system/ax-controller` as JSON: generation, replicas, observed generation, ready and available replicas. No env or annotation. |
+| `POST /token/best`      | Runs `claude-token best`. 200 with its first stdout line. 409 while one runs. 502 with the first stderr line. 404 when `CLAUDE_TOKEN_ITEM` is unset.       |
+
+`GET /controller` needs `get` on that one Deployment (a Role in `ax-system`). `POST /token/best` changes the live Claude token for every AX worker, so `deploy/broker.yaml` has a NetworkPolicy. It lets only namespace `ate-system` (the egress gateway) reach port 8080. Confirm the gateway pod labels at apply. The response never holds a token.
+
+### Manager secrets
+
+The manager VM holds placeholders only. The egress gateway puts the real value in from the agent-vault vault (`FACTORY_AX_VAULT`).
+
+| Secret                    | In the VM                                              | How it works                                                                                                                       |
+| ------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Claude session            | `CLAUDE_CODE_OAUTH_TOKEN=placeholder`                  | Vault key `ANTHROPIC`, rule for `api.anthropic.com`.                                                                               |
+| `gh`                      | `GH_TOKEN=placeholder`                                 | Vault key `GITHUB`, rules for `api.github.com` and `uploads.github.com`.                                                           |
+| `git push`                | Basic-auth header with a placeholder                   | Vault key `GITHUB_BASIC`, rule for `github.com`. `zach-source` repos wait on claude-factory-192.11.                                |
+| Dolt (`bd dolt pull`)     | `DOLT_REMOTE_PASSWORD=placeholder`                     | The rig's own egress entry for that host and port gives the vault key, header and prefix. Else the key is `DOLT_BASIC`. `managerEgress` adds one rule for each `https` `beadsRemote` host and port. A rig with none, or with an `http` remote, adds none.            |
+| Linear (`--linear` rigs)  | Key `placeholder` when `FACTORY_IN_AX=1`               | Vault key `LINEAR`, header `Authorization`, no prefix. `managerEgress` adds the `api.linear.app` rule only for a `--linear` rig.   |
+| AX server, router, broker | none                                                   | Plain `http` (h2c) rules, no credential.                                                                                           |
+| Kube API                  | none                                                   | The VM has none. `unavailable()` asks the broker `GET /controller`.                                                                |
+| Token swap                | `FACTORY_AX_TOKEN_SWAP` is a `curl` POST to the broker | The broker pod runs `claude-token best`. The op writer token is the Secret `claude-token-op` there, never in the VM.                |
+
+Workers only (not the manager): `BUILDBUDDY`, `ATTIC`, `OPENAI`, `GITLAB`.
+
+Check it in the VM: `AX_CHECK_SWAP=1 RIG_REPO=<clone> BEADS_RIG_REPO=<clone> AX_PROBE_FILE=<task manifest with __NAME__> hack/ax-manager-check.sh`. `AX_CHECK_SWAP=1` is needed for the token swap check. It swaps the live Claude token for all AX workers. Without it, the check prints SKIP. The script prints PASS or FAIL for the `gh`, `git push`, `bd dolt pull`, token swap, AX apply and no-secret-on-disk checks.
+
+Owner steps (a worker never runs these):
+
+1. Merge the pull request.
+2. Build and push the broker image by digest (`Dockerfile.broker` takes `OP_VERSION` and `OP_SHA256`).
+3. Make a service account with write on the token vault only. Run `kubectl -n factory-broker create secret generic claude-token-op --from-literal=token=<op token>`.
+4. Run `CLAUDE_TOKEN_ITEM=.. CLAUDE_TOKEN_VAULT=.. CLAUDE_TOKEN_LIVE_FIELD=.. CLAUDE_TOKEN_SLOT_FIELD=.. CLAUDE_TOKEN_ACTIVE_FIELD=.. BROKER_IMAGE=<digest> envsubst '<the variables>' < deploy/broker.yaml | kubectl apply -f -`.
+5. Launch the manager again with `FACTORY_AX_MANAGER_BROKER`, `FACTORY_AX_MANAGER_AX_SERVER` and `FACTORY_AX_MANAGER_ROUTER` set.
+6. For a `--linear` rig, add `LINEAR` to the agent-vault vault.
+
+Rollback: revert the pull request, apply the previous `broker.yaml` and image, and unset `FACTORY_AX_MANAGER_BROKER`. The laptop path does not change.

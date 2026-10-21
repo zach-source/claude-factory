@@ -383,6 +383,28 @@ test('small AC7/AC8: triage names the small route and its exclusions; the ship d
   expect(ship.nodes.deploy!.prompt).toContain('docs-only')
 })
 
+// claude-factory-53tf: review's security outcome leaves the loop, so it never counts toward review's cap.
+test('review security reports (4-7) with security changes between go to security, never re-plan (53tf)', () => {
+  // a long maxSteps: seven loops would use up the default launch budget of 20
+  const actor = createActor(compile({ ...lifecycle, maxSteps: 200 })).start()
+  let now = 0
+  const report = (outcome: string) => {
+    const { seq } = actor.getSnapshot().context
+    actor.send({ type: 'DONE', seq, outcome, summary: `${outcome} ${now}`, at: ++now })
+  }
+  for (let i = 1; i <= 7; i++) {
+    actor.send({ type: 'GOTO', node: 'review', at: now })
+    report('security')
+    expect(where(actor.getSnapshot().value)[0]).toBe('security')
+    actor.send({ type: 'GOTO', node: 'security', at: now })
+    report('changes')
+    expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+  }
+  const ctx = actor.getSnapshot().context
+  expect(ctx.log.some(e => e.replan)).toBe(false)
+  expect(ctx.mail.plan ?? []).toEqual([])
+})
+
 // claude-factory-qgz: review hits its round cap (3) and re-plans once with the round's findings,
 // instead of holding for a hand goto; a second cap in the same run still holds for the manager.
 test("review's round cap re-plans to plan with the findings, then holds on a second cap (claude-factory-qgz AC1-AC3, AC7)", () => {
@@ -515,4 +537,14 @@ test('triage rollout requeues into the release factory; decision defers at plan;
   expect(walk(lifecycle, ['decision'], 'implement').visited).toEqual(['implement', 'done'])
   expect(walk(lifecycle, ['build']).visited).toEqual(['triage', 'plan'])
   expect(walk(lifecycle, ['reject']).snapshot.context.log.at(-1)).toMatchObject({ outcome: 'reject' })
+})
+
+test('review, security and check prompts hold the out-of-diff rule (claude-factory-nwlh.4)', () => {
+  for (const n of ['review', 'security', 'check'] as const) {
+    const p = lifecycle.nodes[n]!.prompt
+    expect(p).toContain("outside this branch's diff never makes the verdict changes")
+    expect(p).toContain('bd search')
+    expect(p).toContain('P2 or lower')
+    expect(p).toContain('sets P0 or P1')
+  }
 })

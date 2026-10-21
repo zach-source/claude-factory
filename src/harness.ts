@@ -68,12 +68,13 @@ export const codexMcp = (servers: Record<string, McpServer>) =>
 
 /**
  * the shell line that starts a worker on the prompt file, or resumes its session with the prompt as
- * the next turn. `extra` is what only Claude takes (the --settings that leaves out herdr-fleet).
+ * the next turn. `extra` is flags put after the agent's own (Claude's --settings, codex's guard flags).
+ * `env` is a codex-only VAR=value prefix (CODEX_HOME).
  */
 export function command(
   agent: string,
   prompt: string,
-  o: { session?: string; mcp?: Mcp; extra?: string } = {},
+  o: { session?: string; mcp?: Mcp; extra?: string; env?: Record<string, string> } = {},
 ) {
   const text = `"$(cat ${sq(prompt)})"`
   const { session, mcp } = o
@@ -83,11 +84,14 @@ export function command(
       return `${base}${mcp ? ` --mcp-config ${sq(mcp.file)}` : ''}${o.extra ?? ''} ${text}`
     }
     case 'codex': {
-      const flags = mcp ? codexMcp(mcp.servers) : ''
-      if (!session) return `${agent}${flags} ${text}`
+      const flags = `${o.extra ?? ''}${mcp ? codexMcp(mcp.servers) : ''}`
+      const env = Object.entries(o.env ?? {})
+        .map(([k, v]) => `${k}=${sq(v)} `)
+        .join('')
+      if (!session) return `${env}${agent}${flags} ${text}`
       // codex resume [OPTIONS] [SESSION_ID] [PROMPT]: the subcommand goes right after the executable
       const [exe, ...rest] = agent.trim().split(/\s+/)
-      return `${exe} resume${rest.length ? ` ${rest.join(' ')}` : ''}${flags} ${sq(session)} ${text}`
+      return `${env}${exe} resume${rest.length ? ` ${rest.join(' ')}` : ''}${flags} ${sq(session)} ${text}`
     }
     case 'pi': {
       // ponytail: pi has no MCP client of its own; say so in the pane rather than drop the config silently.
