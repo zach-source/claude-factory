@@ -28,6 +28,13 @@ const deny = [
   `nice -n ${sub('echo 5 rm')} -rf /`,
   'sudo A=$(echo 1 rm) -rf /',
   'env A=$(echo 1 rm) -rf /',
+  'sudo -u $(echo root git) push --force origin main',
+  'env -u $(echo X git) push --force origin main',
+  'sudo -E -u $(echo root rm) -rf /',
+  'sudo -u $(echo root rm) -rf /',
+  'env -u $(echo X rm) -rf /',
+  'nice -n $(echo 5 rm) -rf /',
+  'sudo -C $(echo 3 rm) -rf /',
 ]
 test.each(deny)('denies %s', row => {
   expect(run(row)).toBeDefined()
