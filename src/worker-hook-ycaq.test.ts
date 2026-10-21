@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { denyReason, DYNAMIC_VERB_REASON, type HookGate } from './worker-hook'
+import { denyReason, DYNAMIC_VERB_REASON, PUSH_REASON, type HookGate } from './worker-hook'
 
 // claude-factory-ycaq: a dynamic command word that ends in a dashed git verb ($G-push) runs the
 // git-push binary. The guard must deny it.
@@ -39,6 +39,16 @@ const AC1 = [
   'env $G-push origin main',
   '$G-checkout main',
   '$G-config x y',
+  '"$ifs"push origin main',
+  '"$ifs"push$E origin main',
+  '$ifs"push" origin main',
+  '"$IFS"push origin main',
+  '"$ifs"send-pack x',
+  '"$ifs"config x y',
+  'x$ifs"push" origin main',
+  '$G-p${E}ush origin main',
+  '$G"push"$E origin main',
+  '${G}push$1 origin main',
 ]
 const AC2 = [
   '=git-push origin main',
@@ -59,6 +69,7 @@ const AC3 = [
   'cp $G-push x',
   '$PY -c x',
   '=git-status',
+  '$G-push.sh x',
 ]
 
 test('a dynamic word ending in a dashed git verb is denied', () => {
@@ -66,6 +77,10 @@ test('a dynamic word ending in a dashed git verb is denied', () => {
 })
 test('literal dashed git binaries stay denied', () => {
   for (const c of AC2) expect(run(c), c).toBeDefined()
+})
+test('glued IFS pushes keep the push reason', () => {
+  for (const c of ['git$IFS"push"$IFS"origin"$IFS"main"', 'git${IFS}push${IFS}origin${IFS}main'])
+    expect(run(c), c).toBe(PUSH_REASON)
 })
 test('other dynamic words stay allowed', () => {
   for (const c of AC3) expect(run(c), c).toBeUndefined()
