@@ -1809,6 +1809,12 @@ export function codexWorker(
   if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
   const off = codexGuardOff(agent)
   if (off) fail(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
+  // the home trusts the worktree so codex shows no folder prompt; a .codex entry there would load unguarded config
+  for (let d = resolve(run.worktree); ; d = dirname(d)) {
+    if (existsSync(join(d, '.codex')))
+      fail(`a codex worker keeps the deny hook on: ${join(d, '.codex')} would add project config`)
+    if (existsSync(join(d, '.git')) || dirname(d) === d) break
+  }
   const user = o.userHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
   const dir = o.dir ?? join(runDir(run.id), 'codex', node)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -1825,7 +1831,8 @@ export function codexWorker(
   })
   writeFileSync(
     join(dir, 'config.toml'),
-    `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n`,
+    `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
+      `[projects.${JSON.stringify(run.worktree)}]\ntrust_level = "trusted"\n`,
   )
   const id = commitIdentity(HOME)
   writeFileSync(

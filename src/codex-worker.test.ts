@@ -64,8 +64,7 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   expect(readlinkSync(join(f.dir, 'auth.json'))).toBe(join(f.user, 'auth.json'))
   const toml = readFileSync(join(f.dir, 'config.toml'), 'utf8')
   expect(toml).toContain('model_auto_compact_token_limit = 400000')
-  expect(toml).not.toContain('trust_level')
-  expect(toml).not.toContain('[projects')
+  expect(toml).toContain(`[projects.${JSON.stringify(f.run.worktree)}]\ntrust_level = "trusted"`)
   expect(toml).not.toContain('leak')
   const pre = JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks.PreToolUse
   expect(pre).toHaveLength(2)
@@ -167,6 +166,15 @@ test('a codex launch refuses without the hook file and when the agent command tu
     expect(() => f.make(`codex ${bad}`)).toThrow('keeps the deny hook on')
   for (const ok of ['-m o3', '--disable multi_agent', '-c model_reasoning_effort=high', '--enable hooks'])
     expect(() => f.make(`codex ${ok}`)).not.toThrow()
+})
+
+test('a codex launch refuses when the worktree holds a .codex entry', () => {
+  const f = fixture()
+  mkdirSync(join(f.run.worktree, '.codex'), { recursive: true })
+  expect(() => f.make()).toThrow('.codex')
+  rmSync(join(f.run.worktree, '.codex'), { recursive: true })
+  mkdirSync(join(f.run.worktree, '.git'), { recursive: true })
+  expect(() => f.make()).not.toThrow()
 })
 
 test('a codex launch refuses when codex reports a guard that is not in force', () => {
