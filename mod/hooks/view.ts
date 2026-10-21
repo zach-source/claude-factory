@@ -692,8 +692,14 @@ export type Interview = {
   /** other open items that ask the same decision. `mergeSame` folds them into this one. An answer also goes
    * down the path of each member. */
   also?: Interview[]
+  /** the exact owner-only command a parked run waits on ("parked, waiting on: <step>"). Such an item never merges. */
+  step?: string
   at: number
 }
+
+/** the command or step a run asks the person to do: what follows "parked, waiting on:" in its report */
+export const ownerStep = (text: string): string | undefined =>
+  text.replace(/\s+/g, ' ').match(/parked, waiting on:\s*(.+)/i)?.[1]?.trim()
 
 /** `factory decisions`' shape: a rig's open bd decisions, or what stopped it reading them */
 export type Decision = {
@@ -868,6 +874,7 @@ export function interviews(runs: readonly FactoryRun[], answered: Record<string,
       details: raw,
       needsProposal: needsProposalOf(!!a.question, question, options),
       hasOwnQuestion: !!a.question,
+      step: parked ? ownerStep(raw) : undefined,
       at,
     })
   }
@@ -933,7 +940,7 @@ export function beadInterviews(
  * stand-in line can repeat across unrelated runs parked at the same station. Merging those would answer one
  * run's question for another.
  *
- * A gate or a blocked-on-prompt item never merges. Each stays its own item.
+ * A gate, a blocked-on-prompt item or an owner step (`step`) never merges. Each stays its own item.
  *
  * The oldest member is the visible item, and it keeps its key. The other members fold into `also`. An answer
  * to the item still reaches each member down its own path. For a run, the path is mail, then retry or abort.
@@ -948,7 +955,7 @@ export function mergeSame(items: readonly Interview[]): Interview[] {
   const groups = new Map<string, Interview[]>()
   const solo: Interview[] = []
   for (const iv of items) {
-    if (iv.kind === 'gate' || iv.kind === 'prompt') {
+    if (iv.kind === 'gate' || iv.kind === 'prompt' || iv.step) {
       solo.push(iv)
       continue
     }
