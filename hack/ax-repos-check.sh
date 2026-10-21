@@ -20,7 +20,7 @@ for r in $rigs; do
   if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then ok "$r repo $repo"; else bad "$r repo $repo is missing"; continue; fi
   store=$HOME_DIR/beads/$r
   if [ -d "$repo/.beads" ]; then
-    if BEADS_DIR=$store/.beads BEADS_DOLT_SHARED_SERVER=0 bd list -n 1 >/dev/null 2>&1; then ok "$r bd store"; else bad "$r bd store $store"; fi
+    if [ -d "$store/.beads" ] && env -C "$store" BEADS_DIR="$store/.beads" BEADS_DOLT_SHARED_SERVER=0 bd list -n 1 >/dev/null 2>&1; then ok "$r bd store"; else bad "$r bd store $store"; fi
   else
     echo "SKIP $r bd store (the rig has no .beads)"
   fi
@@ -31,6 +31,6 @@ for r in $rigs; do
   wt=$(git -C "$repo" worktree list | grep "factory-$run" | awk '{print $1}')
   [ -n "$wt" ] && ok "$r worktree" || bad "$r worktree for $run"
   git -C "$repo" ls-remote --exit-code --heads origin "factory/$run" >/dev/null 2>&1 && ok "$r pushed factory/$run" || bad "$r run branch factory/$run is not pushed"
-  ax get tasks 2>/dev/null | grep -q "$run" && ok "$r AX worker" || bad "$r no AX worker task for $run"
+  ax ${FACTORY_AX_CONTEXT:+--context "$FACTORY_AX_CONTEXT"} -a "${FACTORY_AX_ATESPACE:-factory}" get tasks 2>/dev/null | grep -q "$run" && ok "$r AX worker" || bad "$r no AX worker task for $run"
 done
 exit $fail
