@@ -106,6 +106,14 @@ export type Node = {
   /** worker command for this node, overrides the factory's */
   agent?: string
   /**
+   * Some runs start this station with `agent` instead of its own command. `agent` can hold {name}s.
+   * `share` is the name of a param. Its value is a number from 0 to 1.
+   * The runner picks for each run, and the pick does not change (cli.ts `splitPick`).
+   * The value 0 turns the split off.
+   * `validate` refuses a split on a gate, an unknown {name} or share, and a default outside 0 to 1.
+   */
+  split?: { agent: string; share: string }
+  /**
    * where this station's workers run whatever the rig's runner (`herdr`, `ax`): a station that needs the
    * laptop (its kubectl, its network, production) stays on herdr when the rig sends its workers to VMs
    */
@@ -256,9 +264,16 @@ const PARAM = /\{([a-z][a-z0-9_]*)\}/g
 export const fill = (cmd: string, params: Record<string, string>) =>
   cmd.replace(PARAM, (all, name: string) => params[name] ?? all)
 
+/** a share param's value: a finite number from 0 to 1 */
+export const shareOk = (v: string) =>
+  v.trim() !== '' && Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 1
+
 export function validate(def: Factory): Factory {
   const ids = Object.keys(def.nodes ?? {})
-  const commands = [def.agent, ...ids.map(id => def.nodes[id]!.agent)].filter(Boolean) as string[]
+  const commands = [
+    def.agent,
+    ...ids.flatMap(id => [def.nodes[id]!.agent, def.nodes[id]!.split?.agent]),
+  ].filter(Boolean) as string[]
   const unknown = [...new Set(commands.flatMap(c => [...c.matchAll(PARAM)].map(m => m[1]!)))].filter(
     name => !(name in (def.params ?? {})),
   )
@@ -273,6 +288,14 @@ export function validate(def: Factory): Factory {
         typeof node.prompt !== 'string' && `${id}: has no prompt`,
         !Object.keys(node.next ?? {}).length && `${id}: has no outcomes`,
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
+        node.gate && node.split && `${id}: a gate has no worker, so no split`,
+        node.split &&
+          !(node.split.share in (def.params ?? {})) &&
+          `${id}: split share "${node.split.share}" is not a param`,
+        node.split &&
+          node.split.share in (def.params ?? {}) &&
+          !shareOk(def.params![node.split.share]!) &&
+          `${id}: split share "${node.split.share}" must be a number between 0 and 1`,
         node.gate && node.runner && `${id}: a gate has no worker, so no runner`,
         node.gate && node.awaitsPr && `${id}: a gate has no worker, so nothing to hold back`,
         node.gate && node.onTimeout && `${id}: a gate has no worker, so no onTimeout`,

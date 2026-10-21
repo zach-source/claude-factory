@@ -1098,3 +1098,26 @@ describe('shouldHandToOwner', () => {
     expect(shouldHandToOwner([blocked(0), blocked(0), other], 2 * H)).toBe(false)
   })
 })
+
+test('validate checks a node split: its agent params, its share param and its default', () => {
+  const mk =
+    (split: object, params: Record<string, string> = {}, gate = false) =>
+    () =>
+      validate({
+        name: 'x',
+        start: 'a',
+        params: { codex: 'codex', codex_share: '0.3', ...params },
+        nodes: {
+          a: { prompt: '', next: { ok: 'done' }, ...(gate ? { gate: true } : {}), split: split as never },
+        },
+      })
+  const ok = { agent: '{codex}', share: 'codex_share' }
+  expect(mk(ok)).not.toThrow()
+  expect(mk({ ...ok, agent: '{ghost}' })).toThrow('{ghost}')
+  expect(mk({ ...ok, share: 'nope' })).toThrow('split share "nope" is not a param')
+  for (const bad of ['abc', '', '-1', '2', 'NaN', 'Infinity'])
+    expect(mk(ok, { codex_share: bad })).toThrow('between 0 and 1')
+  expect(mk(ok, { codex_share: '0' })).not.toThrow()
+  expect(mk(ok, { codex_share: '1' })).not.toThrow()
+  expect(mk(ok, {}, true)).toThrow('a gate has no worker, so no split')
+})
