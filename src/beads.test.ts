@@ -393,7 +393,7 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     expect(readFileSync(log, 'utf8')).not.toContain('close')
     expect(show).toBe('show fx-1 --json --actor factory/run-1')
     expect(queue).toBe(
-      'update fx-1 --add-label factory --remove-label rejected --remove-label stale? --actor factory/run-1',
+      'update fx-1 --add-label factory --remove-label rejected --remove-label stale? --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory/run-1',
     )
   } finally {
     process.env.PATH = path
@@ -424,7 +424,10 @@ test('queue removes a stale factory:*/station:* label before adding the station 
       .find(l => l.startsWith('update'))!
     expect(update).toContain('--remove-label factory:release')
     expect(update).toContain('--remove-label station:deploy')
-    expect(update).toContain('--add-label factory --remove-label rejected')
+    expect(update).toContain(
+      '--add-label factory --remove-label rejected --remove-label stale? --remove-label owner',
+    )
+    expect(update).toContain('--unset-metadata owner_question --unset-metadata owner_since')
     expect(update).toContain('--add-label station:implement')
   } finally {
     process.env.PATH = path
@@ -732,6 +735,38 @@ test('defer with a station swaps station:* after bd defer; without one it makes 
     writeFileSync(log, '')
     b.defer('fx-1', 'why')
     expect(readFileSync(log, 'utf8')).not.toContain('update')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('handToOwner drops the factory label and sets the owner label, question and time; queue clears them', () => {
+  const bin = join(tmpdir(), `fake-bd-owner-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  writeFileSync(
+    join(bin, 'bd'),
+    [
+      '#!/bin/sh',
+      `echo "$*" >> ${log}`,
+      `case "$1" in show) printf '%s' '[{"id":"fx-1","title":"t"}]';; esac`,
+    ].join('\n'),
+  )
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    b.handToOwner('fx-1', 'which region?')
+    const update = readFileSync(log, 'utf8')
+      .trim()
+      .split('\n')
+      .find(l => l.startsWith('update'))!
+    expect(update).toStartWith('update fx-1 --remove-label factory --add-label owner')
+    expect(update).toContain('--set-metadata owner_question=which region?')
+    expect(update).toMatch(/--set-metadata owner_since=\d{4}-/)
+    b.queue('fx-1')
+    expect(readFileSync(log, 'utf8')).toContain('--remove-label owner --unset-metadata owner_question')
   } finally {
     process.env.PATH = path
   }

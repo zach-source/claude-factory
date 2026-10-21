@@ -498,6 +498,35 @@ export const parkDelayMin = (c: Ctx, node: string, parkMin: number) => {
   return Math.min(parkMin * 2 ** n, Math.max(parkMin, 480))
 }
 
+/** how many blocked reports in a row, at one station, hand the bead to its owner */
+export const OWNER_BLOCKED_PASSES = 3
+/** how long the first park of a blocked streak may last before the bead goes to its owner */
+export const OWNER_AFTER_MS = 24 * 3_600_000
+/** a blocked report that names a step only the owner can do */
+export const isOwnerStep = (text: string) =>
+  /\bowner[- ]?(?:only|step|action|decision|input|call)\b|\b(?:waiting|waits?) (?:on|for) (?:the |its )?owner\b/i.test(
+    text,
+  )
+
+/**
+ * Decides if a blocked run ends and its bead goes to the owner. It reads the trailing blocked reports
+ * at the last station. A pre-launch PR park (`isPrWait`) spent no worker and counts for nothing. Any
+ * other outcome ends the streak. True when the last report names an owner step, when the streak has
+ * `OWNER_BLOCKED_PASSES` reports, or when its first report is older than `OWNER_AFTER_MS`.
+ */
+export const shouldHandToOwner = (log: Entry[], now: number) => {
+  const node = log.at(-1)?.node
+  const streak: Entry[] = []
+  for (let i = log.length - 1; i >= 0 && log[i]?.node === node && log[i]?.outcome === 'blocked'; i--)
+    if (!isPrWait(log[i])) streak.push(log[i]!)
+  if (!streak.length) return false
+  return (
+    isOwnerStep(streak[0]!.summary) ||
+    streak.length >= OWNER_BLOCKED_PASSES ||
+    now - streak.at(-1)!.at > OWNER_AFTER_MS
+  )
+}
+
 export function compile(def: Factory) {
   validate(def)
   const m = setup({ types: { context: {} as Ctx, events: {} as Ev } })

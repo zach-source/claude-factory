@@ -39,6 +39,8 @@ export const LABEL = 'factory'
 export const REJECTED = 'rejected'
 /** a bead handed off to the rig's ship run: open, no `factory` label, so dispatch skips it */
 export const SHIP = 'ship'
+/** a bead a blocked run handed to its owner: open, no `factory` label, until `queue` puts it back */
+export const OWNER = 'owner'
 const shipAt = (b: Bead) => String(b.metadata?.ship_at ?? '')
 /** queue order: oldest handoff first */
 export const shipOrder = (bs: Bead[]) => [...bs].sort((a, b) => shipAt(a).localeCompare(shipAt(b)))
@@ -383,6 +385,12 @@ export const beads = (repo: string, actor: string) => ({
         REJECTED,
         '--remove-label',
         STALE_LABEL,
+        '--remove-label',
+        OWNER,
+        '--unset-metadata',
+        'owner_question',
+        '--unset-metadata',
+        'owner_since',
         ...(station ? ['--add-label', `station:${station}`] : []),
       ),
       'update',
@@ -498,6 +506,27 @@ export const beads = (repo: string, actor: string) => ({
         `rejected_at=${new Date().toISOString()}`,
         '--set-metadata',
         `reject_reason=${reason}`,
+      ),
+      'update',
+    )
+  },
+  /** a blocked run ends: the bead stays open and unclaimed, out of the queue, with the question for its owner */
+  handToOwner: (id: string, question: string) => {
+    bd(repo, actor, 'unclaim', id)
+    return must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        '--remove-label',
+        LABEL,
+        '--add-label',
+        OWNER,
+        '--set-metadata',
+        `owner_question=${question}`,
+        '--set-metadata',
+        `owner_since=${new Date().toISOString()}`,
       ),
       'update',
     )

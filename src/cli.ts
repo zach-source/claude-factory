@@ -39,6 +39,7 @@ import {
   parkDelayMin,
   prsIn,
   reach,
+  shouldHandToOwner,
   timeoutOf,
   unread,
   validate,
@@ -62,6 +63,8 @@ import {
   shipBranchOf,
   hasBeads,
   isOwned,
+  OWNER,
+  REJECTED,
   LABEL,
   linearSourced,
   byId,
@@ -93,7 +96,9 @@ import {
 } from './sweeps'
 import * as gatebrief from './gatebrief'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
-import { shipLines, tokens, waiting } from './sidebar'
+import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
+import { REPAIR_CAP, repairs, type PrFact } from './repairs'
+import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
@@ -120,6 +125,7 @@ import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
+import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -2545,6 +2551,9 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
       b.release(id)
       b.comment(id, `run ${run.id} ended with open child beads, so this stays open for them: ${reason}`)
     }
+    // a blocked run that waits on a person ends here: the bead goes to its owner, not to the deferred pile
+    else if (node === 'aborted' && shouldHandToOwner(c.log, now))
+      b.handToOwner(id, clip(c.log.at(-1)!.summary, 500))
     // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
     else if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
     // A requeue edge keeps the bead ready and factory-labeled for the next dispatch, in the factory
@@ -2730,6 +2739,10 @@ async function beadsPass() {
         if (!run.bead) continue
         const saved = readJson<Saved>(join(runDir(id), 'state.json'))
         const t = trackOf(id, saved)
+        // a parked run whose blocker needs a person ends; track() hands its bead to the owner
+        const [liveNode, sub] = where(saved.snapshot.value)
+        if (sub === 'waiting' && liveNode !== 'done' && liveNode !== 'aborted')
+          if (shouldHandToOwner(saved.snapshot.context.log, Date.now())) post(id, { type: 'ABORT' })
         try {
           track(
             run,
@@ -2751,7 +2764,10 @@ async function beadsPass() {
     await shipPass()
     await linearPass()
     await dispatch()
+    // repairs share the label pass's throttle: one labels.stamp gates both
+    const labelsDue = !isFresh(join(HOME, 'labels.stamp'), LABELS_MS)
     await labelPass()
+    if (labelsDue) await repairPass()
   } finally {
     release()
   }
@@ -4901,6 +4917,9 @@ async function createTracked(
 /** the bead a new run works: the one its goal names, or a new one when the repo tracks beads */
 /** a run's tasks are its bead's children, and its release waits on every one: a bead whose children
  * already exist is worked child by child, a run each */
+/** a child bead that waits on a person: handed to its owner, deferred or rejected */
+const isWaitingOnPerson = (x: Bead) =>
+  x.status === 'deferred' || !!x.labels?.some(l => l === OWNER || l === REJECTED)
 const openChildren = (b: ReturnType<typeof beads>, id: string) =>
   b.children(id).filter(x => x.status !== 'closed')
 
@@ -4969,6 +4988,8 @@ export type Rig = {
   remote?: string
   factory: string
   maxRuns?: number
+  /** when the rig has room and no labeled bead to start, queue the best unlabeled ready leaf beads (src/autoqueue.ts); off when absent */
+  autoQueue?: AutoQueue
   sweeps?: string[]
   /** a sweep station's factory, in place of the built-in "sweeps" (factories/sweeps.ts) */
   sweepsFactory?: string
@@ -5257,6 +5278,8 @@ const syncFile = () => join(HOME, 'sync.json')
 /** the flood guard's own "already handled" marks (claude-factory-8pc.18): a sweep worker's bd
  * labels never reach this file, so they cannot forge the mark the way `sweep:<station>` can. */
 const sweepGuardFile = () => join(HOME, 'sweep-guard.json')
+/** per rig, the times (ms) auto-queue took a bead: the rolling hour's cap reads this */
+const autoQueueFile = () => join(HOME, 'auto-queue.json')
 
 /** why a rig takes no more runs: the town's cap, or its own */
 const fullText = (
@@ -5473,6 +5496,9 @@ async function dispatch() {
   // `pruneGuardState` below uses this to keep a rig's marks only for beads still open. A flat 48h
   // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
   const openIds: Record<string, Set<string>> = {}
+  const autoHistory: Record<string, number[]> = existsSync(autoQueueFile())
+    ? readJson<Record<string, number[]>>(autoQueueFile())
+    : {}
   for (const rig of rigs()) {
     if (!hasBeads(rig.repo)) continue // claude-factory-toml: a rig with no .beads store has no beads steps
     // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
@@ -5641,15 +5667,17 @@ async function dispatch() {
         )
       }
       const eligible = startable.filter(x => {
-        const why = isOwned(x)
-          ? 'owner decisions pending'
-          : hygieneHeld(x)
-            ? 'hygiene proposed close (factory queue releases it)'
-            : openChildren(b, x.id).length
-              ? 'open children'
-              : linearIds.has(x.id)
-                ? 'Linear id unconfirmed'
-                : ''
+        const open = isOwned(x) || x.labels?.includes(OWNER) ? [] : openChildren(b, x.id)
+        const why =
+          isOwned(x) || x.labels?.includes(OWNER) || (open.length && open.every(isWaitingOnPerson))
+            ? 'owner decisions pending'
+            : hygieneHeld(x)
+              ? 'hygiene proposed close (factory queue releases it)'
+              : open.length
+                ? 'open children'
+                : linearIds.has(x.id)
+                  ? 'Linear id unconfirmed'
+                  : ''
         if (why) skips.set(x.id, why)
         return !why
       })
@@ -5658,6 +5686,36 @@ async function dispatch() {
       // `freshPlan.rigs[rig.name]` would resolve a rig named, for example, `constructor` to an
       // inherited `Object.prototype` value instead of `undefined` (claude-factory-dun.18).
       const candidates = plan.orderByPlan(eligible, plan.rigPlanOf(freshPlan, rig.name))
+      // claude-factory-x9ai.5: no labeled bead to start and room left: take the best unlabeled leaf beads
+      const auto = autoQueueOf(rig)
+      if (auto && !candidates.length) {
+        const now = Date.now()
+        const history = Array.isArray(autoHistory[rig.name]) ? autoHistory[rig.name]! : []
+        const parents = new Set(all.filter(x => x.status !== 'closed' && x.parent).map(x => x.parent!))
+        const picks = autoPick(
+          b.unqueued(),
+          now,
+          history,
+          auto,
+          room(rig, busy, undefined, held),
+          parents,
+          excluded,
+        ).filter(x => !openChildren(b, x.id).length && !linearIds.has(x.id))
+        const taken: number[] = []
+        for (const x of picks) {
+          try {
+            b.relabel(x.id, { add: [LABEL, AUTO_LABEL] })
+          } catch (err) {
+            errors.push({ id: x.id, error: (err as Error).message })
+            continue
+          }
+          taken.push(now)
+          skips.set(x.id, 'auto-queued')
+          readyIds.push(x.id)
+          candidates.push(x)
+        }
+        autoHistory[rig.name] = [...recentPicks(history, now), ...taken]
+      }
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
       for (const bead of candidates) {
@@ -5786,6 +5844,7 @@ async function dispatch() {
     }
   }
   writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
+  if (Object.keys(autoHistory).length) writeJson(autoQueueFile(), autoHistory)
   writeJson(dispatchFile(), errors)
 }
 
@@ -6233,6 +6292,95 @@ export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<type
   const owner = queuedOwner({ url, headRefName: '' }, queue)
   if (owner) b.unship(owner.id, `${url} was closed unmerged`)
   return owner
+}
+
+/** the rig's pull requests of any state, newest 200; none on a forge without `gh` */
+function rigPrs(repo: string): PrFact[] {
+  if (originRef(repo)?.forge !== 'github') return []
+  const fields = 'number,url,state,isDraft,body,headRefName'
+  const p = Bun.spawnSync(['gh', 'pr', 'list', '--state', 'all', '-L', '200', '--json', fields], {
+    cwd: repo,
+    timeout: 60_000,
+  })
+  if (p.exitCode !== 0) throw new Error(`gh pr list: ${p.stderr.toString().trim().split('\n')[0]}`)
+  return JSON.parse(p.stdout.toString())
+}
+
+type LiveBead = { blocked: boolean; why?: string; since?: number }
+/** each live run's bead: whether the run waits on the owner, what it asks, and since when */
+async function liveByBead() {
+  const out = new Map<string, LiveBead>()
+  for (const id of runIds()) {
+    const { run, value, c } = current(id)
+    if (!run.bead || ['done', 'aborted'].includes(where(value)[0])) continue
+    const r = row(run, await loadFactory(run.factory), value, c)
+    out.set(run.bead, {
+      blocked: !!holdOf(r),
+      why: r.gate?.question ?? r.last?.summary,
+      since: r.last?.at ?? r.since,
+    })
+  }
+  return out
+}
+
+const repairsFile = () => join(HOME, 'repairs.jsonl')
+
+/**
+ * Closes or defers beads whose work is plainly done or dead (`repairs` in src/repairs.ts decides).
+ * It makes at most REPAIR_CAP changes in a rig in one pass. Each change goes to repairs.jsonl,
+ * which `factory digest` reads. The beads pass calls it.
+ */
+const isFresh = (stamp: string, ms: number) => existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < ms
+
+async function repairPass() {
+  if (halted()) return
+  const live = new Set((await liveByBead()).keys())
+  for (const rig of rigs()) {
+    try {
+      if (!hasBeads(rig.repo)) continue
+      const b = beads(rig.repo, 'factory')
+      const todo = repairs(rig.name, b.every(), rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
+      for (const r of todo) {
+        if (r.kind === 'close' ? !b.close(r.id, r.reason) : !b.unship(r.id, r.reason)) continue
+        const at = new Date().toISOString()
+        appendFileSync(repairsFile(), JSON.stringify({ at, rig: rig.name, ...r }) + '\n')
+        console.log(`${at} repair ${rig.name} ${r.kind} ${r.id}: ${r.reason}`)
+      }
+    } catch (err) {
+      console.error(`${new Date().toISOString()} repairs for ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+}
+
+/** `factory digest`: per rig, the beads by state, the owner queue and the PRs to merge. It only reads. */
+async function digest() {
+  const live = await liveByBead()
+  const out: DigestRig[] = []
+  for (const rig of rigs()) {
+    try {
+      if (!hasBeads(rig.repo)) continue
+      const b = beads(rig.repo, 'factory')
+      const o = originRef(rig.repo)
+      out.push({
+        name: rig.name,
+        slug: o?.forge === 'github' ? `${o.owner}/${o.repo}` : undefined,
+        beads: b.every(),
+        ctx: { live, prs: rigPrs(rig.repo) },
+        queue: b.shipQueue(),
+      })
+    } catch (err) {
+      console.error(`digest for ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+  const lines = existsSync(repairsFile()) ? readFileSync(repairsFile(), 'utf8').trim().split('\n') : []
+  const recent = lines.slice(-10).flatMap(l => {
+    try {
+      return [JSON.parse(l) as RepairLog]
+    } catch {
+      return [] // a torn line
+    }
+  })
+  console.log(digestText(out, recent, Date.now()))
 }
 
 /**
@@ -7376,6 +7524,7 @@ const usage = `factory — herdr software factories on xstate
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
+  digest                             per rig: beads by state, the owner queue, recent repairs, PRs to merge in order
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
@@ -7967,6 +8116,9 @@ if (import.meta.main && !outboxCmd)
       }
       case 'status':
         await status(args[0])
+        break
+      case 'digest':
+        await digest()
         break
       case 'waiting': {
         const rows = await Promise.all(
