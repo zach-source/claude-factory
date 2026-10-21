@@ -7814,12 +7814,10 @@ function replaceGluedSubstitutions(command: string, fill = ' '): string {
 // an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
 // ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
 // becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
-// replaces only the "${". In empty mode, an exact $IFS or ${IFS} stays a space. A ${IFS...} span with
-// a modifier is a space when its bit in ifsMask is set, else empty. A ${NAME:-word} default (also -,
-// :=, =, :+, +) becomes its word, read again for nested spans. Every other glued span becomes empty text, as the shell reads an unset name.
-function replaceGluedExpansions(command: string, empty = false, ifsMask = 0): string {
+// replaces only the "${". In keep mode, only an exact $IFS or ${IFS} becomes a space. Every other glued
+// span stays as typed, so a head word such as g${X:-it} stays dynamic and the dynamic verb rule sees it.
+function replaceGluedExpansions(command: string, keep = false): string {
   let out = ''
-  let ifsIdx = 0
   let q = ''
   const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
   for (let i = 0; i < command.length; i++) {
@@ -7860,11 +7858,7 @@ function replaceGluedExpansions(command: string, empty = false, ifsMask = 0): st
           break
         }
       }
-      if (end < 0) {
-        out += isSpace(command[i - 1]) ? '$' + '{' : ' '
-        i++
-        continue
-      }
+      if (end < 0) end = i + 2
     } else if (n !== undefined && /[A-Za-z_]/.test(n)) {
       while (end < command.length && /[A-Za-z0-9_]/.test(command[end]!)) end++
     } else if (n !== undefined && /[0-9@*#?$!-]/.test(n)) end++
@@ -7875,32 +7869,13 @@ function replaceGluedExpansions(command: string, empty = false, ifsMask = 0): st
     const span = command.slice(i, end)
     if (isSpace(command[i - 1]) && isSpace(command[end])) {
       out += span
-    } else if (!empty || span === '$IFS' || span === '${IFS}') out += ' '
-    else if (IFS_MOD_RE.test(span)) out += (ifsMask >> Math.min(ifsIdx++, 30)) & 1 ? ' ' : ''
-    else {
-      const word = DEFAULT_WORD_RE.exec(span)?.[1]
-      // A default or alternate span is read as its word or as empty text, by its bit in ifsMask.
-      // A word with a quote or backslash and a dollar or brace reads as empty; else it is read again.
-      const asWord = (ifsMask >> Math.min(ifsIdx++, 30)) & 1
-      out +=
-        word === undefined || !asWord || (/['"\\]/.test(word) && /[${}]/.test(word))
-          ? ''
-          : replaceGluedExpansions('x' + word + 'x', true, ifsMask).slice(1, -1)
-    }
+    } else if (!keep || span === '$IFS' || span === '${IFS}') out += ' '
+    else out += span
     i = end - 1
   }
   return out
 }
-const IFS_MOD_RE = /^\$\{IFS(?![A-Za-z0-9_])/
-const DEFAULT_WORD_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([\s\S]*)\}$/
-
-// claude-factory-y094.6: the empty readings of a text. Each ${IFS...} span with a modifier may hold
-// a separator or nothing, so read every choice for up to 3 such spans, else all of them and none.
-function emptyReadings(text: string): string[] {
-  const n = text.match(/\$\{IFS(?![A-Za-z0-9_}])|\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]/g)?.length ?? 0
-  const masks = n > 3 ? [0, -1] : Array.from({ length: 1 << n }, (_, k) => k)
-  return [...new Set(masks.map(m => replaceGluedExpansions(text, true, m)))]
-}
+const IFS_MOD_SPAN_RE = /\$\{IFS[^A-Za-z0-9_}]|\$\{[^}]*\$\{?IFS(?![A-Za-z0-9_])/
 
 function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
@@ -7961,7 +7936,7 @@ function denyAt(
       if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }
   }
-  const late: { reason?: string; glued?: string } = {}
+  const late: { reason?: string; glued?: string; kept?: string } = {}
   return (
     denyAtScan(
       command,
@@ -7977,6 +7952,7 @@ function denyAt(
       outerVars,
     ) ??
     late.glued ??
+    late.kept ??
     late.reason
   )
 }
@@ -7990,7 +7966,7 @@ function denyAtScan(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
-  late: { reason?: string; glued?: string },
+  late: { reason?: string; glued?: string; kept?: string },
   aliasStack: readonly string[],
   outerVars?: VarTable,
 ): string | undefined {
@@ -8045,7 +8021,6 @@ function denyAtScan(
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
   }
-  const seen = new Set<string>()
   // claude-factory-cwt9.12: the lexer drops a glued substitution, so `-E$(y)` reads as `-E`. Read the
   // command again with each one as the text `$_`, so the word stays dynamic. It has fewer "$(" too.
   if (command.includes('$(')) {
@@ -8056,25 +8031,20 @@ function denyAtScan(
     }
   }
   if (unglued.includes('$')) {
-    for (const raw of new Set([replaceGluedExpansions(unglued), ...emptyReadings(unglued)])) {
-      if (raw === unglued || seen.has(raw)) continue
-      seen.add(raw)
-      spendWork(state, command.length * 8)
+    const raw = replaceGluedExpansions(unglued)
+    if (raw !== unglued) {
       const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
       if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
     }
   }
-  // claude-factory-y094: read a bare name before a quote as empty text unless it holds IFS.
+  // claude-factory-y094: read the command with only each glued $IFS or ${IFS} as a space.
   if (command.includes('$')) {
-    const subbed = command.includes('$(') ? replaceGluedSubstitutions(command) : command
-    const emptied = subbed.replace(GLUED_BARE_NAME_RE, m => (m === '$IFS' ? ' ' : ''))
-    for (const raw of new Set([emptied, ...emptyReadings(emptied)])) {
-      if (raw === command || raw === unglued || seen.has(raw)) continue
-      seen.add(raw)
-      spendWork(state, command.length * 8)
-      const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
-      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    const kept = replaceGluedExpansions(command, true)
+    if (kept !== command) {
+      const split = denyAt(kept, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.kept ??= split
     }
+    if (IFS_MOD_SPAN_RE.test(command) && command.split('$').length > 2) late.kept ??= DYNAMIC_VERB_REASON
   }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON

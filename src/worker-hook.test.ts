@@ -9333,8 +9333,16 @@ test.each([
   "g${X:-'i'}t${IFS}push${IFS}origin${IFS}main",
   'g${X:-\\i}t${IFS}push${IFS}origin${IFS}main',
   'g${HOME:+"i"}t${IFS}push${IFS}origin${IFS}main',
-])('claude-factory-y094: %s denies with PUSH_REASON', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+  'g${X:+z}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+  'g${X:+a}${X:+b}${X:+c}${HOME:+i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}${HOME:+t}${X:+z}${X:+z}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}t${X:+a}${X:+b}${X:+c}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+${Y:+zz}i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i${Y:+zz}}t${IFS}push${IFS}origin${IFS}main',
+  'gi${HOME:+t${Y:+zz}}${IFS}push${IFS}origin${IFS}main',
+  'g${IFS:0:0}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+])('claude-factory-y094: %s denies with DYNAMIC_VERB_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
 })
 // y094.6: an IFS span with a modifier glued after an emptied head word still denies (any reason).
 test.each([
@@ -9355,10 +9363,12 @@ test.each(['r${X}m -rf /', 'r${X}m${IFS}-rf${IFS}/', 'r$(:)m -r ./d'])(
   },
 )
 test('claude-factory-y094: g${X}h${IFS}pr${IFS}merge${IFS}1 denies like gh pr merge', () => {
-  const want = denyReason('gh${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)
-  expect(want).toBeDefined()
-  expect(denyReason('g${X}h${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(want)
-  expect(denyReason('g${HOME:+h}${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(want)
+  expect(denyReason('g${X}h${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(
+    DYNAMIC_VERB_REASON,
+  )
+  expect(denyReason('g${HOME:+h}${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(
+    DYNAMIC_VERB_REASON,
+  )
 })
 test.each([
   'g${X}it${IFS}status',
@@ -9371,6 +9381,10 @@ test.each([
   'echo a${X:-b}c',
   'echo a${X:+b}c',
   'ls${IFS:0:1}-la',
+  'echo ${X:-${Y:-a}}',
+  'echo ${A:-a}${B:-b}${C:-c}${D:-d}${E:-e}',
+  'echo "${IFS:0:1}"',
+  'git commit -m "g${X}it${IFS}push"',
 ])('claude-factory-y094: %s stays allowed', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
 })
