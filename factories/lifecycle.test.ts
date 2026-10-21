@@ -544,7 +544,8 @@ test('review, security and check share one blocking-scope rule (2ida AC3, AC4)',
     expect(p).toContain('P2 or lower')
     expect(p).toContain('sets P0 or P1')
   }
-  expect(lifecycle.nodes.security!.prompt).toContain('P1 or higher')
+  expect(lifecycle.nodes.security!.prompt).not.toContain('P1 or higher')
+  expect(lifecycle.nodes.security!.prompt).toContain('for a person to prioritize')
 })
 
 test('plan names the proof for each AC, negative rows and a fail-closed class rule (2ida AC5)', () => {
