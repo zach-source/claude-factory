@@ -2575,8 +2575,8 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   let evalScanned = false
   let slotEnd = 0
   let trapEnd = 0
-  if (start === 0)
-    for (const t of dynamicHeadScripts(words)) if (stringNamesBdCommand(t, state, depth + 1)) return true
+  for (const t of dynamicHeadScripts(start ? words.slice(start) : words))
+    if (stringNamesBdCommand(t, state, depth + 1)) return true
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true

@@ -40,8 +40,12 @@ for (const row of ROWS)
 for (const cmd of [
   "$X 'git push origin main'",
   '$X "git push -f origin main"',
-  "BEADS_ACTOR=person $X 'bd create acme -l factory'",
+  "env -i $X 'bd create acme -l factory'",
   'X=eval; $X "rm -rf /"',
+  '$X x "rm -rf /"',
+  "$X 'git push -f origin' main",
+  "$X 'git push' origin main",
+  "env -i $X x 'bd create acme'",
 ])
   test(`deny ${cmd}`, () => expect(run(cmd)).toBeDefined())
 for (const cmd of [
