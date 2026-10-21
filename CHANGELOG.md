@@ -436,6 +436,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: a run state machine counted a review `security` approval toward the `rounds` limit of its node. The fourth approval re-planned the run. An outcome now counts only when its edge loops back. (claude-factory-53tf)
 - New: the `ci` and `flakes` sweeps (claude-factory-q08). The `ci` sweep files one P1 bead when a workflow on the default branch is red and no open bead tracks it. The `flakes` sweep files one bead for each test that failed in 2 or more flaky runs in 7 days. The `maintain` sweep does not file red CI or flaky tests now.
 - New: lifecycle triage has the outcomes `rollout`, `decision` and `elsewhere` (claude-factory-502). `rollout` requeues the bead into the `release` factory. `decision` (also at plan and implement) defers the bead with the question on it. `bd undefer` then restarts it at plan, through the new edge field `defer: { station }`. `elsewhere` defers the bead after the worker files it in the other rig. A worker on a VM leaves a `File in:` line. The manager prompt tells the manager to file it. Before, these runs parked for days. The manager prompt change needs a manager restart.
+- Fixed: the codex launch probe ran `codex` from PATH with only the factory flags (claude-factory-b9vf). It now runs the agent's own executable and flags, then the factory flags, then `features list`. It stops after 10 seconds and refuses the launch.
 
 ## 0.13.0 (2026-10-18)
 
