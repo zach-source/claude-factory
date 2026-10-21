@@ -8299,8 +8299,9 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
-    if (cmd.length && dynamicCommandWord(cmd[0]!) && dynamicDashedVerb(cmd[0]!))
-      late.reason ??= DYNAMIC_VERB_REASON
+    for (const c of [cmd, realCommandInfo(dropRedirectWords(words)).cmd])
+      if (c.length && dynamicCommandWord(c[0]!) && dynamicDashedVerb(c[0]!))
+        late.reason ??= DYNAMIC_VERB_REASON
     // k8iz: true when the miqy table read this pure $NAME head's value, so the late deny skips it.
     let headValueRead = false
     // The older dynamic-word scan keeps its own reason when it denies first.

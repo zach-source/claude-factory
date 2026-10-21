@@ -54,6 +54,31 @@ const AC1 = [
   'git"$ifs"send-pack x',
   'git"$ifs"config x y',
   '/x/git"$ifs"push origin main',
+  '2>&1 $G-push origin main',
+  '>>f $G-push origin main',
+  '<<<x $G-push origin main',
+  '{fd}>f $G-push origin main',
+  'nice -n 5 $G-push origin main',
+  'timeout -s KILL 5 $G-push origin main',
+  'sudo -u x -- $G-push origin main',
+  'env -u X $G-push origin main',
+  'command -p $G-push origin main',
+  'exec -a x $G-push origin main',
+  'nohup >f $G-push origin main',
+  'env >f $G-push origin main',
+  'time -p $G-push origin main',
+  'sudo -g x $G-push origin main',
+  '$G-push origin main | cat',
+  '>f $G-checkout main',
+  '>f $G-send-pack x',
+  '{ >f $G-push origin main; }',
+  '( >f $G-push origin main )',
+  'echo x | >f $G-push origin main',
+  'x=$(>f $G-push origin main)',
+  'eval ">f $G-push origin main"',
+  'bash -c ">f $G-push origin main"',
+  'xargs >f $G-push origin main',
+  '>f git"$ifs"push origin main',
 ]
 const AC2 = [
   '=git-push origin main',
@@ -61,6 +86,10 @@ const AC2 = [
   'git-push origin main',
   '~/bin/git-push origin main',
   '$X/git-push origin main',
+  'env -S "$G-push origin main"',
+  'x() { $G-push origin main; }',
+  'A=1 >f $G-push origin main',
+  '>f =git-push origin main',
 ]
 const AC3 = [
   '$G-tool x',
@@ -75,6 +104,7 @@ const AC3 = [
   '$PY -c x',
   '=git-status',
   '$G-push.sh x',
+  '>f $G-tool x',
 ]
 
 test('a dynamic word ending in a dashed git verb is denied', () => {
