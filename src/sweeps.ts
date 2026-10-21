@@ -12,8 +12,11 @@ export const sweepGoal = (station: string) => `sweep: ${station}`
 export const sweepNames = (def: Factory): string[] =>
   Object.keys(def.nodes).filter(id => def.nodes[id]!.everyMin)
 
-/** sweeps.json's shape: for each rig, for each sweep, when it last ran, and (monitor only) its last read. */
-export type SweepState = Record<string, Record<string, { lastAt: number; sig?: string; lines?: number }>>
+/** sweeps.json's shape: for each rig, for each sweep, when it last ran, and (monitor, drift) its last read. drift keeps the clipped read itself. */
+export type SweepState = Record<
+  string,
+  Record<string, { lastAt: number; sig?: string; lines?: number; read?: string }>
+>
 
 export type LiveRun = { repo: string; goal: string }
 

@@ -4099,8 +4099,8 @@ const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.strin
  * pipe kubectl, Mimir or Loki calls together. It combines stdout and stderr: a command that starts
  * failing is itself a change worth a pass. A 30s timeout keeps a hung read from jamming `factory
  * sweep`. */
-function readSlo(rig: Rig): string {
-  const p = Bun.spawnSync(['sh', '-c', rig.slo!], { cwd: rig.repo, timeout: 30_000 })
+function readSlo(rig: Rig, cmd = rig.slo!): string {
+  const p = Bun.spawnSync(['sh', '-c', cmd], { cwd: rig.repo, timeout: 30_000 })
   return (p.stdout.toString() + p.stderr.toString()).trim()
 }
 
@@ -4160,7 +4160,30 @@ async function sweep() {
       // monitor reads before it ever asks for a slot: unchanged needs no run, so it must cost no
       // room, and a changed read still needs its mail even when no room is free yet (it waits)
       let mail: string | undefined
-      let read: { sig: string; lines: number } | undefined
+      let read: { sig?: string; lines?: number; read?: string } | undefined
+      // drift reads on every due pass, with no unchanged skip: a resource that stays broken must be
+      // checked again each hour. The mail holds this read and the last one, so the model can tell a
+      // stuck resource (in both) from a new one.
+      if (station === 'drift') {
+        let output: string
+        try {
+          output = readSlo(rig, rig.drift!)
+        } catch (err) {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+          console.error(
+            `${new Date().toISOString()} sweep drift for rig ${rig.name}: ${(err as Error).message}`,
+          )
+          continue
+        }
+        const before = state[rig.name]?.[station]
+        const now = clipUtf8(output)
+        read = { read: now }
+        mail =
+          `current read:\n${now}\n\nprevious read` +
+          (before?.read !== undefined
+            ? ` (${new Date(before.lastAt).toISOString()}):\n${clipUtf8(before.read)}`
+            : ': none, this is the first pass')
+      }
       if (station === 'monitor') {
         let output: string
         try {
@@ -4693,6 +4716,13 @@ export type Rig = {
    * `--sweeps` that names `monitor` with no `--slo`.
    */
   slo?: string
+  /**
+   * A read-only command for the drift sweep: it lists the rig's Flux Kustomizations and HelmReleases,
+   * e.g. `flux get kustomizations -A; flux get helmreleases -A`. `factory sweep` runs it on the laptop
+   * (`sh -c`, like `slo`). A rig with this set is a GitOps rig. Drift is due only when this is set.
+   * `rig add` refuses an explicit `--sweeps` that names `drift` with no `--drift`.
+   */
+  drift?: string
   /** what the manager works toward there while the rig has room */
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
@@ -6265,6 +6295,7 @@ async function defineRig(
     max,
     sweeps,
     slo,
+    drift,
     goal,
     runner,
     agent,
@@ -6280,6 +6311,7 @@ async function defineRig(
     max?: string
     sweeps?: string
     slo?: string
+    drift?: string
     goal?: string
     runner?: string
     agent?: string
@@ -6353,6 +6385,13 @@ async function defineRig(
     if (!slo.trim()) fail('--slo is a read-only command, e.g. --slo "kubectl get pods -A | grep -v Running"')
     rig.slo = slo
   }
+  if (drift !== undefined) {
+    if (!drift.trim())
+      fail(
+        '--drift is a read-only command, e.g. --drift "flux get kustomizations -A; flux get helmreleases -A"',
+      )
+    rig.drift = drift
+  }
   if (sweeps !== undefined) {
     rig.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
     const sweepsDef = await loadFactory(factorySource(rig.sweepsFactory ?? 'sweeps', repo))
@@ -6364,6 +6403,8 @@ async function defineRig(
     // dueSweeps already gates it), which is a silent no-op a person is better off told about now
     if (rig.sweeps.includes('monitor') && !rig.slo)
       fail('monitor needs --slo "<read-only command>": add it, or drop monitor from --sweeps')
+    if (rig.sweeps.includes('drift') && !rig.drift)
+      fail('drift needs --drift "<read-only command>": add it, or drop drift from --sweeps')
   }
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
@@ -7771,10 +7812,11 @@ if (import.meta.main && !outboxCmd)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
-        const [max, sweeps, slo, runner, agent, mcp, linear, linearProjects, linearLabels] = [
+        const [max, sweeps, slo, drift, runner, agent, mcp, linear, linearProjects, linearLabels] = [
           opt('--max'),
           opt('--sweeps'),
           opt('--slo'),
+          opt('--drift'),
           opt('--runner'),
           opt('--agent'),
           opt('--mcp'),
@@ -7795,12 +7837,13 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--drift cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
             sweeps,
             slo,
+            drift,
             goal,
             runner,
             agent,
@@ -7858,6 +7901,7 @@ if (import.meta.main && !outboxCmd)
             )
             if (r.goal) console.log(`  goal: ${r.goal}`)
             if (r.slo) console.log(`  slo: ${r.slo}`)
+            if (r.drift) console.log(`  drift: ${r.drift}`)
             if (r.agent) console.log(`  agent: ${r.agent}`)
             if (personOnlyContexts(r)?.length)
               console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
