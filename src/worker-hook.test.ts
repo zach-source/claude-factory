@@ -9129,6 +9129,42 @@ test.each([
 ])('claude-factory-j1ki.12-15: %s stays allowed', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
 })
+// claude-factory-y094: an empty glued expansion joins the command word.
+test.each([
+  'g${X}it${IFS}push${IFS}origin${IFS}main',
+  'g$1it${IFS}push${IFS}origin${IFS}main',
+  'g$@it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-}it${IFS}push${IFS}origin${IFS}main',
+  'g${X#a}it${IFS}push${IFS}origin${IFS}main',
+  'sudo g${X}it${IFS}push${IFS}origin${IFS}main',
+  'true && g${X}it${IFS}push${IFS}origin${IFS}main',
+  'g${X}it${IFS}push${IFS}origin${IFS}HEAD:main',
+  'gi${X}t${IFS}pu${X}sh${IFS}origin${IFS}main',
+  'g$X"it"$IFS"push"$IFS"origin"$IFS"main"',
+])('claude-factory-y094: %s denies with PUSH_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+test.each(['r${X}m -rf /', 'r${X}m${IFS}-rf${IFS}/', 'r$(:)m -r ./d'])(
+  'claude-factory-y094: %s denies with REASON',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test('claude-factory-y094: g${X}h${IFS}pr${IFS}merge${IFS}1 denies like gh pr merge', () => {
+  const want = denyReason('gh${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)
+  expect(want).toBeDefined()
+  expect(denyReason('g${X}h${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(want)
+})
+test.each([
+  'g${X}it${IFS}status',
+  'echo a${X}b',
+  'ls build/a${X}b',
+  '$HOME/.local/bin/claude plugin test mod',
+  'git -C "$WT"/sub status',
+  'ls$IFS-la',
+])('claude-factory-y094: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
 const J1KI_ALLOW_ROWS = [
   'ls ${IFS}',
   'echo a${X}b',

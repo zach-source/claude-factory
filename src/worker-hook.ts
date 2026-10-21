@@ -6494,7 +6494,7 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length;) {
+  for (let i = 0; i < words.length; ) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
@@ -7601,7 +7601,7 @@ const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]
 // text, where quotes and backslashes are visible, and is the reading that does not depend on them.
 function flattenBraceExpansions(w: string, byDepth: boolean): string {
   let out = ''
-  for (let i = 0; i < w.length;) {
+  for (let i = 0; i < w.length; ) {
     if (w[i] !== '$' || w[i + 1] !== '{') {
       // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
       out += !byDepth && w[i] === '}' ? '$@' : w[i]
@@ -7703,7 +7703,7 @@ function replaceGluedSubstitutions(command: string): string {
 // ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
 // becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
 // replaces only the "${".
-function replaceGluedExpansions(command: string): string {
+function replaceGluedExpansions(command: string, empty = false): string {
   let out = ''
   let q = ''
   const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
@@ -7755,10 +7755,53 @@ function replaceGluedExpansions(command: string): string {
     }
     if (isSpace(command[i - 1]) && isSpace(command[end])) {
       out += command.slice(i, end)
-    } else out += ' '
+    } else out += empty && !command.slice(i, end).includes('IFS') ? '' : ' '
     i = end - 1
   }
   return out
+}
+
+// claude-factory-y094: an unset variable in the middle of a word is empty text, so g${X}it is git.
+// splitGluedExpansions reads it as a break (g it). This is the extra deny-only reading: each glued
+// ${...} span or $NAME that is not IFS, and each $1 or $@, becomes empty text. A span or name that
+// holds IFS stays a break, and a $( ) stays for splitGluedExpansions. A whole-word expansion stays.
+function emptyGluedExpansions(words: string[]): string[] {
+  return words.map(w => {
+    if (!w.includes('$')) return w
+    let out = ''
+    for (let i = 0; i < w.length; i++) {
+      if (w[i] !== '$') {
+        out += w[i]
+        continue
+      }
+      const n = w[i + 1]
+      if (n === '{') {
+        let depth = 0
+        let end = -1
+        for (let j = i + 1; j < w.length; j++) {
+          if (w[j] === '{' && w[j - 1] === '$') depth++
+          else if (w[j] === '}' && --depth === 0) {
+            end = j
+            break
+          }
+        }
+        if (end < 0) {
+          out += '$@'
+        } else {
+          out += w.slice(i, end + 1).includes('IFS') ? '$@' : ''
+          i = end
+        }
+        continue
+      }
+      const name = /^\$=?[A-Za-z_][A-Za-z0-9_]*/.exec(w.slice(i))?.[0]
+      if (name) {
+        out += name.includes('IFS') ? '$@' : ''
+        i += name.length - 1
+      } else if (n !== undefined && /[0-9@*#?$!-]/.test(n)) i++
+      else out += '$'
+    }
+    return out === '' ? w : out
+  })
 }
 
 function quoteWord(w: string): string {
@@ -7904,8 +7947,18 @@ function denyAtScan(
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
   }
   if (unglued.includes('$')) {
-    const raw = replaceGluedExpansions(unglued)
-    if (raw !== unglued) {
+    for (const raw of [replaceGluedExpansions(unglued), replaceGluedExpansions(unglued, true)]) {
+      if (raw === unglued) continue
+      const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
+  }
+  // claude-factory-y094: read a bare name before a quote as empty text unless it holds IFS.
+  if (command.includes('$')) {
+    const subbed = command.includes('$(') ? replaceGluedSubstitutions(command) : command
+    const emptied = subbed.replace(GLUED_BARE_NAME_RE, m => (m.includes('IFS') ? ' ' : ''))
+    for (const raw of [emptied, replaceGluedExpansions(emptied, true)]) {
+      if (raw === command || raw === unglued) continue
       const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
       if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
     }
@@ -8082,7 +8135,10 @@ function denyAtScan(
       if (aliased) return aliased
     }
     const splitWords = splitGluedExpansions(words)
-    for (const sw of [splitWords, splitGluedExpansions(words, false)]) {
+    const emptied = emptyGluedExpansions(words)
+    const emptiedSplit =
+      splitGluedExpansions(emptied) ?? (emptied.some((w, k) => w !== words[k]) ? emptied : undefined)
+    for (const sw of [splitWords, splitGluedExpansions(words, false), emptiedSplit]) {
       if (!sw?.length) continue
       const split = denyAt(
         sw.map(quoteWord).join(' '),
