@@ -446,6 +446,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: `filingGuard` and `sweepGuard` now count a bead with an unparseable `created_at` as created now. Before, such a bead escaped the flood cap. (claude-factory-d4jx)
 - Docs: the memory lifecycle task list marks T006 as done (claude-factory-kw1). It changes no code.
 - Docs: the README now says the flood guard finds a sweep-filed bead by `created_by`, not by the `sweep:<name>` label (claude-factory-8v9). It changes no code.
+- New: `hack/ax-repos-check.sh` checks in the AX manager task that each rig has a clone and a beads store (claude-factory-192.4). With `AX_CHECK_START=1` it also runs `factory start` on each rig.
 
 ## 0.13.0 (2026-10-18)
 
