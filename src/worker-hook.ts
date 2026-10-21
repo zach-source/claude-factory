@@ -1272,7 +1272,11 @@ const RM_REDIRECT_WORD = /^(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:&>>?|>>?|<<<|
  * `-exec rm` or `-execdir rm` word. A slice there would still cost O(n) for each call, and
  * O(n^2) in total. `rmScan` also returns the end index, so a caller can skip the range that it read.
  */
-function rmScan(words: string[], start: number, find: boolean | 'head' = false): { recursive: boolean; end: number } {
+function rmScan(
+  words: string[],
+  start: number,
+  find: boolean | 'head' = false,
+): { recursive: boolean; end: number } {
   let k = start + 1
   for (; k < words.length; k++) {
     const w = words[k]!
@@ -1894,7 +1898,12 @@ function dynamicHeadDeny(
   const bal = w.endsWith('${') ? w.slice(0, -2) : w
   if (w.includes('`') || w.includes('${!') || bal.split('{').length > bal.split('}').length)
     return { deny: true, rm: false }
-  if (isRecursiveRm(cmd, start, start > 0) || DYN_FLAG_TEXT.test(w) || other.flags || (other.ifs && /[$`]/.test(w)))
+  if (
+    isRecursiveRm(cmd, start, start > 0) ||
+    DYN_FLAG_TEXT.test(w) ||
+    other.flags ||
+    (other.ifs && /[$`]/.test(w))
+  )
     return { deny: true, rm: false }
   if (start === 0) {
     for (let k = 1; k < cmd.length; k++)
