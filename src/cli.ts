@@ -39,6 +39,7 @@ import {
   parkDelayMin,
   prsIn,
   reach,
+  shareOk,
   shouldHandToOwner,
   timeoutOf,
   unread,
@@ -1458,11 +1459,34 @@ export const paramsOf = (def: Pick<Factory, 'params'>, rig?: Pick<Rig, 'params'>
       rig?.params?.[k] ?? (env[`FACTORY_${k.toUpperCase()}`]?.trim() || v),
     ]),
   )
-/** the worker command: the rig's own (one harness for all its stations) over the station's and the factory's */
-const agentOfNode = (run: Run, def: Factory, node: string) => {
-  const rig = rigOf(run.repo)
-  return fill(rig?.agent ?? def.nodes[node]!.agent ?? def.agent ?? AGENT, paramsOf(def, rig))
+/**
+ * Does this run take the split agent? The pick hashes the run id and the share's name, so one run picks the
+ * same way every time, and two share params pick on their own. A bad share value (not a number from 0 to 1) is 0.
+ */
+export function splitPick(runId: string, shareName: string, share: string | undefined) {
+  if (share === undefined || !shareOk(share)) return false
+  const h = createHash('sha256').update(`${runId}:${shareName}`).digest().readUInt32BE(0)
+  return h / 2 ** 32 < Number(share)
 }
+/**
+ * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
+ * factory's. The split never applies on the ax runner (it has no codex guard yet: claude-factory-72dq).
+ */
+export const pickAgent = (
+  runId: string,
+  def: Factory,
+  node: string,
+  rig: Pick<Rig, 'agent' | 'params'> | undefined,
+  runner: string,
+  env = process.env,
+) => {
+  const params = paramsOf(def, rig, env)
+  const split = def.nodes[node]!.split
+  const picked = !rig?.agent && split && runner !== 'ax' && splitPick(runId, split.share, params[split.share])
+  return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
+}
+const agentOfNode = (run: Run, def: Factory, node: string) =>
+  pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
 /** the context of the last turn in a Claude transcript's tail, in tokens; 0 when it has none */
 export function lastContext(tail: string) {
