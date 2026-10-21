@@ -884,6 +884,7 @@ test('a failed close keeps the duplicate drift bead from starting', () => {
   fakeDriftBd(1)
   gfactory(['beads'])
   expect(readFileSync(gCallsLog, 'utf8')).toMatch(/^bd close acme-2\b/m)
+  expect(readFileSync(gCallsLog, 'utf8')).not.toMatch(/^bd comment /m)
   expect(gRunDirs().map(gBeadOf)).not.toContain('acme-2')
 })
 

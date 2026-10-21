@@ -55,6 +55,8 @@ test('drift runs hourly on the laptop, with a read-only prompt that keeps one be
   expect(p).toContain('sweep-queue:incident')
   expect(p).toContain('drift:<key>')
   expect(p).toContain('comment on it')
+  expect(p).toContain('<latest tag>')
+  expect(p).toContain('a closed bead counts too')
   expect(p).toContain('bump bead')
   expect(p).toContain('no `factory` label')
 })

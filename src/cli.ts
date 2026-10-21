@@ -5277,8 +5277,8 @@ async function dispatch() {
         excluded.add(dup)
         duplicates.add(dup)
         try {
-          b.comment(original, `drift: ${dup} is a duplicate of this bead; closing it`)
           if (!b.close(dup, `duplicate of ${original}`)) throw new Error(`bd close ${dup} failed`)
+          b.comment(original, `drift: ${dup} was a duplicate of this bead; closed it`)
         } catch (err) {
           errors.push({ id: dup, error: (err as Error).message })
         }

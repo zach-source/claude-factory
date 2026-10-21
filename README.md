@@ -669,7 +669,7 @@ checked again), and mails the current and the previous read, each clipped to 4 K
 reads: it never applies, reconciles, suspends or resumes anything. A Flux Kustomization or
 HelmRelease that is not Ready, or suspended, in both reads (60 minutes apart) gets an incident
 bead; a manifest image behind its source repo's latest release gets a bump bead with no
-`factory` label. Each resource has one open bead, labeled `drift:<key>`. Start a pass by hand with
+`factory` label. Each resource has one open bead, labeled `drift:<key>`; each image tag has one bead, even a closed one. Start a pass by hand with
 `factory start sweeps@maintain <rig> 'sweep: maintain'`.
 
 **Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example

@@ -133,12 +133,14 @@ export function sweepGuard(
       .map(x => ({ ...x, at: x.b.created_at ? new Date(x.b.created_at).getTime() : now }))
       .filter(x => now - x.at < windowMs)
       .sort((a, c) => a.at - c.at)
-      .map((x, i) => ({
-        id: x.b.id,
-        station: x.station,
-        kept: i < cap,
-        allowed: i < cap && !!x.b.labels?.some(l => SWEEP_QUEUE_LABELS.includes(l)),
-      }))
+      // claude-factory-d20: a queue-labeled bead ranks only among queue-labeled beads, so an
+      // unlabeled bead (a drift bump bead) never takes the auto-start place of a later incident.
+      .map((x, i, all) => {
+        const isQ = (y: { b: GuardedBead }) => !!y.b.labels?.some(l => SWEEP_QUEUE_LABELS.includes(l))
+        const queued = isQ(x)
+        const rank = queued ? all.slice(0, i).filter(isQ).length : i
+        return { id: x.b.id, station: x.station, kept: rank < cap, allowed: queued && rank < cap }
+      })
   )
 }
 

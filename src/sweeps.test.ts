@@ -132,6 +132,19 @@ test('driftDuplicates: a bead a person filed is never a duplicate, but can be th
   ).toEqual([])
 })
 
+test('5 unlabeled drift beads take no auto-start place from a later incident bead', () => {
+  const now = Date.now()
+  const bumps = Array.from({ length: 5 }, (_, i) =>
+    filed(`bump${i}`, 'drift', new Date(now - (9 - i) * 60_000).toISOString()),
+  )
+  const inc = {
+    ...filed('inc', 'drift', new Date(now - 1000).toISOString()),
+    labels: ['sweep-queue:incident'],
+  }
+  const v = sweepGuard([...bumps, inc], now).find(x => x.id === 'inc')
+  expect(v).toMatchObject({ kept: true, allowed: true })
+})
+
 test('the first 5 sweep-filed beads in the window stay; a 6th is not kept', () => {
   const now = Date.now()
   const beads = Array.from({ length: 6 }, (_, i) =>
