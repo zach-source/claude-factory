@@ -38,11 +38,21 @@ test('claude resumes with --resume, takes the MCP file as is and its settings', 
 })
 
 test('codex gets each MCP server as a config override, and resumes with its subcommand', () => {
-  expect(command('codex --full-auto', '/p.md', { mcp, extra: ' --settings {}' })).toBe(
+  expect(command('codex --full-auto', '/p.md', { mcp })).toBe(
     `codex --full-auto -c 'mcp_servers.fx={"command"="fx-mcp","args"=["--x"]}' "$(cat '/p.md')"`,
   )
   expect(command('codex --full-auto', '/p.md', { session: 'u-1' })).toBe(
     `codex resume --full-auto 'u-1' "$(cat '/p.md')"`,
+  )
+})
+
+test('codex takes its extra flags and an env prefix, fresh and on resume', () => {
+  const o = { extra: ' --enable hooks', env: { CODEX_HOME: "/h/it's" } }
+  expect(command('codex -m o3', '/p.md', o)).toBe(
+    `CODEX_HOME='/h/it'\\''s' codex -m o3 --enable hooks "$(cat '/p.md')"`,
+  )
+  expect(command('codex -m o3', '/p.md', { ...o, session: 'u-1', mcp })).toBe(
+    `CODEX_HOME='/h/it'\\''s' codex resume -m o3 --enable hooks -c 'mcp_servers.fx={"command"="fx-mcp","args"=["--x"]}' 'u-1' "$(cat '/p.md')"`,
   )
 })
 
