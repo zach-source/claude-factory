@@ -1348,15 +1348,21 @@ function findExecRmDeny(cmdIn: string[]): boolean {
  * A delete word is `-delete`, a glob word that can match it, or a brace word with its letters.
  * The rule allows the root itself and a find with no start path. It only denies.
  */
-function findDeleteDeny(cmdIn: string[], root?: string): boolean {
-  const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
-  const hasDelete = cmd.some(
+function findHasDelete(cmd: string[]): boolean {
+  return cmd.some(
     w =>
       w === '-delete' ||
+      (w.startsWith('-') && /[$`]/.test(w)) ||
       (w.startsWith('-') && BRACE_LIST_WORD.test(w) && hasLettersInOrder(w, '-delete')) ||
       (globActionWord(w) && globMatchesDelete(w)),
   )
-  if (!hasDelete) return false
+}
+
+function findDeleteDeny(cmdIn: string[], root?: string): boolean {
+  const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
+  if (!findHasDelete(cmd)) return false
+  // easj.4: GNU -files0-from reads the start paths from a file, so the guard cannot read them.
+  if (cmd.some(w => w.startsWith('-files0-from'))) return true
   let i = 1
   for (; i < cmd.length; i++) {
     const w = cmd[i]!
@@ -1364,8 +1370,15 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
       i++
       break
     }
-    if (w === '-f' || w === '-D') {
-      if (w === '-f' && i + 1 < cmd.length && findPathRisky(cmd[i + 1]!, root)) return true
+    // easj.3: BSD find reads -f clustered (-sf) and glued (-f/). The path is the rest of the word or the next word.
+    const fm = /^-[HLPEXdsx]*f(.*)$/.exec(w)
+    if (fm) {
+      const p = fm[1] || cmd[i + 1]
+      if (p !== undefined && findPathRisky(p, root)) return true
+      if (!fm[1]) i++
+      continue
+    }
+    if (w === '-D') {
       i++
       continue
     }
@@ -2010,6 +2023,7 @@ function rmFindReading(
   if (b === 'find') {
     if (findBraceRmDeny(cmd) || findExecRmDeny(cmd) || findDeleteDeny(cmd, root))
       return { deny: true, rm: false }
+    if (findHasDelete(cmd)) return { deny: false, rm: true }
     for (let i = 0; i < cmd.length; i++) {
       if (!findExecWord(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
@@ -8376,7 +8390,7 @@ function denyAtScan(
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
-    } else if (b === 'cd') {
+    } else if (b === 'cd' || b === 'pushd') {
       hasCd = true
     } else if (b === 'find') {
       // claude-factory-clcc: a glob char in the word after -exec, -execdir, -ok or -okdir can expand to rm.
@@ -8386,6 +8400,7 @@ function denyAtScan(
         }
       }
       if (findBraceRmDeny(cmd) || findExecRmDeny(cmd) || findDeleteDeny(cmd, root)) return REASON
+      if (findHasDelete(cmd)) hasRm = true
     }
     // claude-factory-j471: a redirect word (`>f find ...`, `find -exec >f rm ...`) can hide the
     // find word or the slot head. Read the segment again without its redirect words.
