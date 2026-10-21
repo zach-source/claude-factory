@@ -1424,6 +1424,12 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
   if (!findHasDelete(cmd)) return false
   // easj.4: GNU -files0-from reads the start paths from a file, so the guard cannot read them.
   if (cmd.some(w => w.startsWith('-files0-from'))) return true
+  // easj.15: a find inside an exec slot of this find runs with its own start paths.
+  for (let k = 1; k < cmd.length - 1; k++) {
+    if (!FIND_EXEC_WORDS.has(cmd[k]!)) continue
+    const sub = realCommand(cmd.slice(k + 1))
+    if (sub.length && baseWord(sub[0]!) === 'find' && findDeleteDeny(sub, root)) return true
+  }
   let i = 1
   for (; i < cmd.length; i++) {
     const w = cmd[i]!
@@ -1447,7 +1453,7 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
   }
   for (; i < cmd.length; i++) {
     const w = cmd[i]!
-    if (w.startsWith('-') || w === '(' || w === '!') break
+    if ((w.startsWith('-') && w !== '-') || w === '(' || w === '!') break
     // easj.9: a later word that may expand to -delete starts the expression, not a path.
     // easj.12: break only when this word is the sole delete word; a real delete word keeps the path test.
     if (
@@ -1464,7 +1470,7 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
 
 // A glob word that can match the file name -delete. A bracket class is read as a wildcard, so it errs toward deny.
 function globMatchesDelete(w: string): boolean {
-  const re = w.replace(/\[[^\]]*\]|[*?]|[\\^$.+(){}|]/g, m =>
+  const re = w.replace(/\[[^\]]*\]|[*?]|[\\^$.+(){}|[\]]/g, m =>
     m === '*' ? '.*' : m[0] === '[' || m === '?' ? '.' : '\\' + m,
   )
   return new RegExp('^' + re + '$').test('-delete')
@@ -8538,7 +8544,7 @@ function denyAtScan(
     if (b === 'rm') {
       if (isRecursiveRm(cmd) || rmTargets(cmd).some(t => riskyTarget(t, root))) return REASON
       hasRm = true
-    } else if (b === 'cd' || b === 'pushd') {
+    } else if (DIR_CHANGE_WORDS.has(b)) {
       hasCd = true
     } else if (b === 'find') {
       // claude-factory-clcc: a glob char in the word after -exec, -execdir, -ok or -okdir can expand to rm.
@@ -8549,6 +8555,15 @@ function denyAtScan(
       }
       if (findBraceRmDeny(cmd) || findExecRmDeny(cmd) || findDeleteDeny(cmd, root)) return REASON
       if (findHasDelete(cmd)) hasRm = true
+    }
+    // easj.16/.17: a find with a delete word denies when an xargs word comes before the find word
+    // (the replacement string can fill the start path) or when the tool call's cwd is outside root.
+    if (findHasDelete(words)) {
+      const fi = words.findIndex(w => baseWord(w) === 'find')
+      if (fi >= 0) {
+        if (words.slice(0, fi).some(w => baseWord(w) === 'xargs')) return REASON
+        if (g.cwd !== undefined && g.cwd !== root && findPathRisky(g.cwd, root)) return REASON
+      }
     }
     // claude-factory-j471: a redirect word (`>f find ...`, `find -exec >f rm ...`) can hide the
     // find word or the slot head. Read the segment again without its redirect words.

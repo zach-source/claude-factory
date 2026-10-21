@@ -9409,9 +9409,12 @@ test.each(['find . -delete', 'find -delete', 'find ./x -delete', 'find . -name x
       expect(denyReason(cmd, '/root/repo', undefined, { ...J1KI_GATE, cwd })).toBeDefined()
   },
 )
-test.each(['find . -delete', 'find .scratch/x -delete'])('claude-factory-easj.17: %s allows with cwd inside root', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, { ...J1KI_GATE, cwd: '/root/repo/sub' })).toBeUndefined()
-})
+test.each(['find . -delete', 'find .scratch/x -delete'])(
+  'claude-factory-easj.17: %s allows with cwd inside root',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, { ...J1KI_GATE, cwd: '/root/repo/sub' })).toBeUndefined()
+  },
+)
 const EASJ_OTHER_DENY_ROWS = ['find $HOME -delete', 'find / -de?ete', 'find * -delete']
 const EASJ_ALLOW_ROWS = [
   'find .scratch/x -delete',
