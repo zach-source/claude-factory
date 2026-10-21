@@ -9139,9 +9139,47 @@ const J1KI_ALLOW_ROWS = [
   'git commit -m "a ${X} b"',
   'git -C "$WT"/sub status',
   'ls build/a${X}b 2>/dev/null',
-  'find "$D"/x -name y -delete',
+  'find "$D"/x -name y -print',
   'echo a$(date)b',
 ]
+// claude-factory-easj: find -delete removes every match, like rm -r. A start path outside the worktree, a glob or a variable denies.
+const EASJ_DENY_ROWS = [
+  'find / -delete',
+  'find $HOME -delete',
+  'find .. -delete',
+  'nocorrect find / -delete',
+  'sudo find / -delete',
+  'find -L / -delete',
+  'find -f / -delete',
+  'find -- / -delete',
+  'find . / -delete',
+  'find / -de?ete',
+  'find / -{delete,print}',
+  'env find / -delete',
+  'xargs find / -delete',
+  '/usr/bin/find / -delete',
+  'x=1 find / -delete',
+  'find / -name x -delete',
+  'find / -type f -name x -delete -print',
+  'find "$D"/x -name y -delete',
+  'find /root/repo/../x -delete',
+  'find * -delete',
+]
+const EASJ_ALLOW_ROWS = [
+  'find .scratch/x -delete',
+  'find . -name x -delete',
+  'find -delete',
+  'find /root/repo/x -delete',
+  'find / -name x -print',
+  'find "$D"/x -name y -print',
+]
+test.each(EASJ_DENY_ROWS)('claude-factory-easj: %s denies with REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(EASJ_ALLOW_ROWS)('claude-factory-easj: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
+
 // claude-factory-dnw1: a nested default inside a glued brace expansion must not end at the first "}".
 test.each(['rm${X:-${IFS}}-rf${X:-${IFS}}/', 'rm${X:-${Y:-${IFS}}}-rf${X:-${IFS}}/', 'rm${X:-${IFS}}-rf /'])(
   'claude-factory-dnw1: %s denies with REASON',
