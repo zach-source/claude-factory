@@ -692,13 +692,15 @@ and `sweep-queue:flaky-test`. Each pass writes one line to `sweeps.jsonl`. The `
 `green`, `tracked` (`ci`), `quiet` (`flakes`), `started` or `error`. `error` means a `gh` or `bd`
 call failed: no run starts, and the next pass waits for the cadence.
 
-**Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
-`sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A later bead
+**Flood guard**: the guard finds a sweep-filed bead by who filed it (the `created_by` field),
+not by a label. A worker cannot dodge the cap by setting a label. Dispatch adds the label
+`sweep:<name>` (for example `sweep:maintain`) after it scores the bead. The guard never reads
+that label. Each rig keeps at most 5 such beads in any 24-hour window. A later bead
 that day still gets filed, but it waits for a person instead of starting on its own. A kept
 bead keeps the `factory` label, and starts on its own, only when it also carries
 `sweep-queue:incident`, `sweep-queue:main-ci-red`, `sweep-queue:critical-advisory` or
 `sweep-queue:flaky-test`. Every other kept bead loses the `factory` label too and waits for a person, the same as a later
-bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
+bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label. This is the only use of that label.
 
 **Hygiene**: the `hygiene` sweep runs in code once a day for each rig. It starts no run. It finds
 open beads that a merged PR already shipped, duplicates, orphans, deferred beads with no owner and
