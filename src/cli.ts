@@ -126,7 +126,8 @@ import {
   renderTokens,
   sessionOf,
   type RunRecord,
-  type Session,
+  type StoredUsage,
+  type Usage,
 } from './metrics'
 import {
   alreadyDone,
@@ -301,7 +302,7 @@ export type Row = {
 
 const runDir = (id: string) => join(HOME, 'runs', id)
 // gc writes this before it removes prompts/ (claude-factory-503.1.2): the file names that were in
-// it, so sessionsOf() still maps a session's turns to the station that ran it after gc prunes them
+// it, so usageOf() still maps a session's turns to the station that ran it after gc prunes them
 const promptsListFile = (id: string) => join(runDir(id), 'prompts.list')
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
@@ -3471,7 +3472,7 @@ function gcPass(days: number, dryRun: boolean) {
       const listFile = promptsListFile(r.id)
       // Union with any names prompts.list already held (claude-factory-503.1.7): a goto revive
       // after an earlier gc can have refilled prompts/ with only its new names, and overwriting
-      // the list here would lose the old station names sessionsOf() still needs.
+      // the list here would lose the old station names usageOf() still needs.
       const old = existsSync(listFile) ? readJson<string[]>(listFile) : []
       const current = existsSync(dir) ? readdirSync(dir) : []
       writeJson(listFile, [...new Set([...old, ...current])])
@@ -6851,7 +6852,7 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
 
 /** the runs metrics count: every live run, and the ones factory rm kept in metrics.jsonl */
 /** what each Claude worker session of a run spent, from the transcripts in its worktree's project dir */
-function sessionsOf(run: Run): Session[] {
+function usageOf(run: Run, since = 0): Usage[] {
   const dir = join(
     process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
     'projects',
@@ -6875,10 +6876,20 @@ function sessionsOf(run: Run): Session[] {
       return m ? [[Number(m[1]), m[2]!.replace(/-resume$/, '')] as const] : []
     }),
   )
+  const read = (f: string) => readFileSync(f, 'utf8').split('\n')
   return readdirSync(dir)
-    .filter(f => f.endsWith('.jsonl'))
-    .map(f => sessionOf(readFileSync(join(dir, f), 'utf8').split('\n'), run.id, seq => nodes.get(seq) ?? '?'))
-    .filter(s => s.turns > 0)
+    .filter(f => f.endsWith('.jsonl') && statSync(join(dir, f)).mtimeMs >= since)
+    .flatMap(f => {
+      const session = f.slice(0, -'.jsonl'.length)
+      const subDir = join(dir, session, 'subagents')
+      const subs = existsSync(subDir)
+        ? readdirSync(subDir)
+            .filter(g => g.endsWith('.jsonl'))
+            .map(g => read(join(subDir, g)))
+        : []
+      return sessionOf(read(join(dir, f)), run.id, seq => nodes.get(seq) ?? '?', session, subs)
+    })
+    .filter(u => u.turns > 0)
 }
 
 function records(): RunRecord[] {
@@ -7531,7 +7542,7 @@ if (import.meta.main && !outboxCmd)
           console.log(
             '\n' +
               renderTokens(
-                live.flatMap(r => sessionsOf(loadRun(r.id))),
+                live.flatMap(r => usageOf(loadRun(r.id)).map(u => ({ ...u, run: r.id }))),
                 new Set(live.filter(r => fate(r) === 'shipped').map(r => r.id)),
               ),
           )

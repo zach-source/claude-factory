@@ -230,47 +230,110 @@ export function precheckStats(lines: Pick<PrecheckLine, 'kind'>[]) {
   return { skipped: mergedPr + liveRun, mergedPr, liveRun, failOpen }
 }
 
-/** one Claude worker session's spend, from its transcript */
-export type Session = { run: string; node: string; turns: number; tokens: number; out: number; peak: number }
+/** one Claude worker session's spend with one model, from its transcript. `input` is the fresh
+ * input, `cacheWrite` the cache creation and `cacheRead` the cache hits: their prices differ.
+ * `peak` is the biggest context one turn re-sent. */
+export type Usage = {
+  node: string
+  seq: number
+  session: string
+  model: string
+  input: number
+  cacheWrite: number
+  cacheRead: number
+  output: number
+  turns: number
+  peak: number
+}
 
 /**
- * a transcript's spend: every turn re-sends its context (input, cache writes and reads) and adds its output.
- * Claude Code writes a turn once per content block, under one message id, so each id counts once
+ * a transcript's spend, one row for each model. Claude Code writes a turn once per content block,
+ * under one message id, so each id counts once. The session's subagent transcripts (`subs`) add their
+ * tokens under their own model; they leave `turns` and `peak` alone.
  */
-export function sessionOf(lines: string[], run: string, nodeOfSeq: (seq: number) => string): Session {
-  const seen = new Set<string>()
-  const s: Session = { run, node: '?', turns: 0, tokens: 0, out: 0, peak: 0 }
-  for (const line of lines) {
-    if (!line) continue
-    let e: { type?: string; message?: { id?: string; content?: unknown; usage?: Record<string, number> } }
-    try {
-      e = JSON.parse(line)
-    } catch {
-      continue
+export function sessionOf(
+  lines: string[],
+  run: string,
+  nodeOfSeq: (seq: number) => string,
+  session = '',
+  subs: string[][] = [],
+): Usage[] {
+  const rows = new Map<string, Usage>()
+  let node = '?'
+  let seq = 0
+  const add = (ls: string[], main: boolean) => {
+    const seen = new Set<string>()
+    for (const line of ls) {
+      if (!line) continue
+      let e: {
+        type?: string
+        message?: { id?: string; model?: string; content?: unknown; usage?: Record<string, number> }
+      }
+      try {
+        e = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (main && node === '?' && e.type === 'user') {
+        const text =
+          typeof e.message?.content === 'string' ? e.message.content : JSON.stringify(e.message?.content)
+        const m = new RegExp(`${run} (\\d+) <outcome>`).exec(text ?? '') // the brief's report line names its seq
+        if (m) {
+          seq = Number(m[1])
+          node = nodeOfSeq(seq)
+        }
+      }
+      const u = e.message?.usage
+      if (e.type !== 'assistant' || !u || seen.has(e.message!.id ?? '')) continue
+      seen.add(e.message!.id ?? '')
+      const model = e.message?.model ?? '?'
+      const r = rows.get(model) ?? {
+        node,
+        seq,
+        session,
+        model,
+        input: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 0,
+        turns: 0,
+        peak: 0,
+      }
+      rows.set(model, r)
+      r.input += u.input_tokens ?? 0
+      r.cacheWrite += u.cache_creation_input_tokens ?? 0
+      r.cacheRead += u.cache_read_input_tokens ?? 0
+      r.output += u.output_tokens ?? 0
+      if (main) {
+        r.turns++
+        r.peak = Math.max(
+          r.peak,
+          (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+        )
+      }
     }
-    if (s.node === '?' && e.type === 'user') {
-      const text =
-        typeof e.message?.content === 'string' ? e.message.content : JSON.stringify(e.message?.content)
-      const m = new RegExp(`${run} (\\d+) <outcome>`).exec(text ?? '') // the brief's report line names its seq
-      if (m) s.node = nodeOfSeq(Number(m[1]))
-    }
-    const u = e.message?.usage
-    if (e.type !== 'assistant' || !u || seen.has(e.message!.id ?? '')) continue
-    seen.add(e.message!.id ?? '')
-    const context =
-      (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0)
-    s.turns++
-    s.tokens += context + (u.output_tokens ?? 0)
-    s.out += u.output_tokens ?? 0
-    s.peak = Math.max(s.peak, context)
   }
-  return s
+  add(lines, true)
+  for (const sub of subs) add(sub, false)
+  return [...rows.values()].map(r => ({ ...r, node, seq })) // the brief line can come after the first turn
 }
+
+/** a Usage row's tokens, all types */
+export const tokensOf = (u: Usage) => u.input + u.cacheWrite + u.cacheRead + u.output
 
 const mtok = (n: number) => `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)}M`
 
+export type StoredUsage = Usage & { run: string }
+
 /** tokens by station, and per run and per shipped run */
-export function renderTokens(sessions: Session[], shipped: Set<string>) {
+export function renderTokens(rows: StoredUsage[], shipped: Set<string>) {
+  const sessions = rows.map(u => ({
+    run: u.run,
+    node: u.node,
+    turns: u.turns,
+    tokens: tokensOf(u),
+    peak: u.peak,
+  }))
   const total = sessions.reduce((a, s) => a + s.tokens, 0)
   const runs = new Set(sessions.map(s => s.run))
   const ofShipped = sessions.filter(s => shipped.has(s.run)).reduce((a, s) => a + s.tokens, 0)

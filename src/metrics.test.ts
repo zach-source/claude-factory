@@ -180,28 +180,61 @@ test("a run's id carries its creation time", () => {
 })
 
 test("a session's tokens count each turn once, and its station comes from the brief's report line", () => {
-  const turn = (id: string, read: number, out: number) =>
+  const turn = (id: string, read: number, out: number, model = 'claude-opus-4-7', write = 0) =>
     JSON.stringify({
       type: 'assistant',
-      message: { id, usage: { input_tokens: 1, cache_read_input_tokens: read, output_tokens: out } },
+      message: {
+        id,
+        model,
+        usage: {
+          input_tokens: 1,
+          cache_creation_input_tokens: write,
+          cache_read_input_tokens: read,
+          output_tokens: out,
+        },
+      },
     })
   const brief = JSON.stringify({ type: 'user', message: { content: 'report run-1 3 <outcome> "<summary>"' } })
-  const s = sessionOf(
-    [brief, turn('a', 100, 5), turn('a', 100, 5), turn('b', 300, 7), 'not json', ''],
+  const rows = sessionOf(
+    [brief, turn('a', 100, 5, undefined, 10), turn('a', 100, 5), turn('b', 300, 7), 'not json', ''],
     'run-1',
     seq => (seq === 3 ? 'implement' : '?'),
+    'sess-1',
   )
-  expect(s).toEqual({
-    run: 'run-1',
-    node: 'implement',
-    turns: 2,
-    tokens: 101 + 5 + 301 + 7,
-    out: 12,
-    peak: 301,
-  })
-  const table = renderTokens([s, { ...s, run: 'run-2', tokens: 1e6 }], new Set(['run-2']))
+  expect(rows).toEqual([
+    {
+      node: 'implement',
+      seq: 3,
+      session: 'sess-1',
+      model: 'claude-opus-4-7',
+      input: 2,
+      cacheWrite: 10,
+      cacheRead: 400,
+      output: 12,
+      turns: 2,
+      peak: 301,
+    },
+  ])
+  const s = { ...rows[0]!, run: 'run-1' }
+  const table = renderTokens([s, { ...s, run: 'run-2' }], new Set(['run-2']))
   expect(table).toContain('2 worker sessions in 2 runs')
   expect(table).toMatch(/implement\s+2/)
+})
+
+test('sessionOf gives a row for each model, and a subagent adds tokens but not turns or peak', () => {
+  const turn = (id: string, model: string, read: number) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { id, model, usage: { input_tokens: 1, cache_read_input_tokens: read, output_tokens: 2 } },
+    })
+  const rows = sessionOf([turn('a', 'opus', 50), turn('b', 'sonnet', 70)], 'run-1', () => 'verify', 's', [
+    [turn('a', 'haiku', 9000), turn('c', 'opus', 8000)],
+  ])
+  const by = Object.fromEntries(rows.map(r => [r.model, r]))
+  expect(Object.keys(by).sort()).toEqual(['haiku', 'opus', 'sonnet'])
+  expect(by.opus).toMatchObject({ cacheRead: 8050, input: 2, turns: 1, peak: 51 }) // 'a' in the subagent counts again: its own file
+  expect(by.haiku).toMatchObject({ cacheRead: 9000, turns: 0, peak: 0 })
+  expect(by.sonnet).toMatchObject({ turns: 1, peak: 71 })
 })
 
 // claude-factory-6as.4: triage reject rate, and how many of those rejects were ALREADY_DONE
