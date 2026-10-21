@@ -320,6 +320,26 @@ export function sessionOf(
   return [...rows.values()].map(r => ({ ...r, node, seq })) // the brief line can come after the first turn
 }
 
+const NUMS = ['input', 'cacheWrite', 'cacheRead', 'output', 'turns', 'peak'] as const
+
+/**
+ * the usage rows an AX worker sent with its report. The laptop does not trust the VM: its agent can
+ * write its own outbox. Keep at most 20 rows. Keep only well-formed rows. Take node and seq from the
+ * laptop's own record of the task. A bad or missing value gives fewer rows, never an error.
+ */
+export function validUsage(raw: unknown, node: string, seq: number): Usage[] {
+  if (!Array.isArray(raw) || raw.length > 20) return []
+  return raw.flatMap((r: Record<string, unknown> | null) => {
+    if (!r || typeof r !== 'object') return []
+    const { model, session } = r
+    if (typeof model !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(model)) return []
+    if (typeof session !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(session)) return []
+    const n = NUMS.map(k => r[k])
+    if (!n.every(v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1e12)) return []
+    return [{ node, seq, session, model, ...Object.fromEntries(NUMS.map((k, i) => [k, n[i]])) } as Usage]
+  })
+}
+
 /** a Usage row's tokens, all types */
 export const tokensOf = (u: Usage) => u.input + u.cacheWrite + u.cacheRead + u.output
 

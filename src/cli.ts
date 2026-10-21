@@ -127,6 +127,7 @@ import {
   sessionOf,
   type RunRecord,
   type StoredUsage,
+  validUsage,
   type Usage,
 } from './metrics'
 import {
@@ -681,6 +682,10 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     // best effort, the report stands either way
     // the same for its bd writes, which it pushed where the rig's VMs share its beads
     else if (argv![0] === 'report') {
+      try {
+        const rows = validUsage(JSON.parse(line).usage, side!.node, side!.seq)
+        if (rows.length) appendUsage(run.id, rows)
+      } catch {} // a bad usage never changes the report
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       // from where this VM was told to push, which a rig changed since does not move
       if (run.bead) syncRigBeads(run, 'pull', side?.beadsRemote)
@@ -7178,7 +7183,7 @@ if (queued) {
       process.exit(1)
     }
   }
-  worker.queue([cmd!, ...args])
+  worker.queue([cmd!, ...args], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
