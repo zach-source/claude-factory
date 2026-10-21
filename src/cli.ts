@@ -90,7 +90,9 @@ import {
 } from './sweeps'
 import * as gatebrief from './gatebrief'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
-import { shipLines, tokens, waiting } from './sidebar'
+import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
+import { REPAIR_CAP, repairs, type PrFact } from './repairs'
+import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
@@ -2744,6 +2746,7 @@ async function beadsPass() {
     await linearPass()
     await dispatch()
     await labelPass()
+    await repairPass()
   } finally {
     release()
   }
@@ -6003,6 +6006,95 @@ export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<type
   return owner
 }
 
+/** the rig's pull requests of any state, newest 200; none on a forge without `gh` */
+function rigPrs(repo: string): PrFact[] {
+  if (originRef(repo)?.forge !== 'github') return []
+  const fields = 'number,url,state,isDraft,body,headRefName'
+  const p = Bun.spawnSync(['gh', 'pr', 'list', '--state', 'all', '-L', '200', '--json', fields], {
+    cwd: repo,
+    timeout: 60_000,
+  })
+  if (p.exitCode !== 0) throw new Error(`gh pr list: ${p.stderr.toString().trim().split('\n')[0]}`)
+  return JSON.parse(p.stdout.toString())
+}
+
+type LiveBead = { blocked: boolean; why?: string; since?: number }
+/** each live run's bead: whether the run waits on the owner, what it asks, and since when */
+async function liveByBead() {
+  const out = new Map<string, LiveBead>()
+  for (const id of runIds()) {
+    const { run, value, c } = current(id)
+    if (!run.bead || ['done', 'aborted'].includes(where(value)[0])) continue
+    const r = row(run, await loadFactory(run.factory), value, c)
+    out.set(run.bead, {
+      blocked: !!holdOf(r),
+      why: r.gate?.question ?? r.last?.summary,
+      since: r.last?.at ?? r.since,
+    })
+  }
+  return out
+}
+
+const repairsFile = () => join(HOME, 'repairs.jsonl')
+
+/**
+ * Closes or defers beads whose work is plainly done or dead (`repairs` in src/repairs.ts decides).
+ * It makes at most REPAIR_CAP changes in a rig in one pass. Each change goes to repairs.jsonl,
+ * which `factory digest` reads. The beads pass calls it.
+ */
+async function repairPass() {
+  const stamp = join(HOME, 'repairs.stamp')
+  if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < LABELS_MS)) return
+  writeFileSync(stamp, '')
+  const live = new Set((await liveByBead()).keys())
+  for (const rig of rigs()) {
+    try {
+      if (!hasBeads(rig.repo)) continue
+      const b = beads(rig.repo, 'factory')
+      const todo = repairs(rig.name, b.every(), rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
+      for (const r of todo) {
+        if (r.kind === 'close' ? !b.close(r.id, r.reason) : !b.unship(r.id, r.reason)) continue
+        const at = new Date().toISOString()
+        appendFileSync(repairsFile(), JSON.stringify({ at, rig: rig.name, ...r }) + '\n')
+        console.log(`${at} repair ${rig.name} ${r.kind} ${r.id}: ${r.reason}`)
+      }
+    } catch (err) {
+      console.error(`${new Date().toISOString()} repairs for ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+}
+
+/** `factory digest`: per rig, the beads by state, the owner queue and the PRs to merge. It only reads. */
+async function digest() {
+  const live = await liveByBead()
+  const out: DigestRig[] = []
+  for (const rig of rigs()) {
+    try {
+      if (!hasBeads(rig.repo)) continue
+      const b = beads(rig.repo, 'factory')
+      const o = originRef(rig.repo)
+      out.push({
+        name: rig.name,
+        slug: o?.forge === 'github' ? `${o.owner}/${o.repo}` : undefined,
+        beads: b.every(),
+        ctx: { live, prs: rigPrs(rig.repo) },
+        queue: b.shipQueue(),
+      })
+    } catch (err) {
+      console.error(`digest for ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+  const lines = existsSync(repairsFile()) ? readFileSync(repairsFile(), 'utf8').trim().split('\n') : []
+  const recent = lines.slice(-10).flatMap(l => {
+    try {
+      return [JSON.parse(l) as RepairLog]
+    } catch {
+      return [] // a torn line
+    }
+  })
+  console.log(digestText(out, recent, Date.now()))
+}
+
 /**
  * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
  * aborts the live run it belongs to; `conflict` or `rework` mails that run's station (so two workers never
@@ -7144,6 +7236,7 @@ const usage = `factory — herdr software factories on xstate
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
+  digest                             per rig: beads by state, the owner queue, recent repairs, PRs to merge in order
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
@@ -7728,6 +7821,9 @@ if (import.meta.main && !outboxCmd)
       }
       case 'status':
         await status(args[0])
+        break
+      case 'digest':
+        await digest()
         break
       case 'waiting': {
         const rows = await Promise.all(
