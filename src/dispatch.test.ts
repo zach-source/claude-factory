@@ -140,6 +140,16 @@ test('a station:<name> label a person wrote by hand (no Linear external_ref) sti
   expect(gotos[0]!.node).toBe('review') // the control: proves dispatch really reaches stationOf here
 })
 
+test('a rig whose repo has no .beads store yields no dispatch error (claude-factory-toml)', () => {
+  reset(undefined)
+  rmSync(join(dir, 'repo', '.beads'), { recursive: true })
+  writeFileSync(join(bin, 'bd'), '#!/bin/sh\necho "Error: no beads database found" >&2\nexit 1\n')
+  chmodSync(join(bin, 'bd'), 0o755)
+  expect(factory(['beads']).code).toBe(0)
+  const f = join(home, 'dispatch.json')
+  expect(existsSync(f) ? errorRows() : []).toEqual([])
+})
+
 // dispatch() orders its candidates by the pm's plan, when one is fresh (claude-factory-dun.3).
 // `bd ready` here always lists acme-1 then acme-2. The rig's maxRuns is 1.
 // So dispatch starts exactly one of them each pass. Which one shows whether the plan's order won.
