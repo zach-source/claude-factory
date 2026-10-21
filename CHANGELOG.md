@@ -423,12 +423,8 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook did not see zsh glob qualifier code. A glued group such as `ls *(e:...:)` or `ls *(+name)` runs a command for each file. The hook now denies an unquoted group glued to a word that holds `e`, `+`, `$` or a backtick (claude-factory-1r7x).
 - Fixed: a codex worker had no deny hook, lean settings, worker rules or context limit (claude-factory-x0b9). It now gets its own `CODEX_HOME` with the deny hook, the worker rules and a compaction limit. A codex launch refuses if the agent command turns the guard off. The ax runner refuses codex workers until claude-factory-72dq.
 - Fixed: the dispatch loop reported `bd list: Error: no beads database found` for a rig with no `.beads` store, such as the ax rig. The loop now skips such a rig (claude-factory-toml).
-<<<<<<< HEAD
 - New: the drift sweep for GitOps rigs (claude-factory-d20). `factory rig add <name> <repo> --drift '<read-only command>'` turns it on, for example `flux get kustomizations -A; flux get helmreleases -A`. Each hour `factory sweep` runs the command and starts a run with the current read and the previous read. The run files a P0 or P1 incident bead for a Flux Kustomization or HelmRelease that stays not Ready or suspended for more than 1 hour. It files a bump bead, with no `factory` label, for a manifest image behind its source repo's latest release. Each resource has one open bead, labeled `drift:<key>`: the sweep comments on it, and dispatch closes a duplicate. The sweep only reads. A rig with no `--drift` runs no drift sweep. Ship's deploy now parks on a bump pull request in another repo, and never opens or merges it.
-||||||| 5358600
-=======
 - Fixed: the worker hook allowed a `find` with `-delete` (or a glob or brace word that can expand to it) on a start path outside the worktree, such as `find / -delete`. The hook now denies it when a start path is outside the worktree, a glob, a variable or a tilde path (claude-factory-easj).
->>>>>>> origin/main
 
 ## 0.13.0 (2026-10-18)
 
