@@ -257,10 +257,6 @@ test('--owned starts an owner-only bead for the person, but FACTORY_PATROL refus
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
 })
 
-// claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
-// person must run `factory retry` to free it. A stuck run must not fill FACTORY_MAX_RUNS, the
-// town cap. The person already holds the run, the same way as a wait or a gate. The control
-// below checks the same cap, but on a run that still works.
 test('start <factory>@constructor (an Object.prototype key) fails as an unknown station and creates nothing (claude-factory-dax)', () => {
   reset()
   const r = repo()
@@ -286,6 +282,10 @@ test('fork <run> constructor (an Object.prototype key) prints the usage line (cl
   expect(out.err).toContain('usage: factory fork')
 })
 
+// claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
+// person must run `factory retry` to free it. A stuck run must not fill FACTORY_MAX_RUNS, the
+// town cap. The person already holds the run, the same way as a wait or a gate. The control
+// below checks the same cap, but on a run that still works.
 test('a stuck run does not count against FACTORY_MAX_RUNS, but a working run does (claude-factory-ytz.1)', () => {
   reset()
   const r = repo()
