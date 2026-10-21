@@ -2552,6 +2552,22 @@ function shCScriptValue(words: string[], start: number): string | undefined {
 // claude-factory-igj.8: the scan reads every word after start, not only words[start]. A wrapper
 // word (env, nice, nohup, sudo, and so on) can sit between start and the sh/bash/zsh/dash or
 // eval word. This scan still finds that later word.
+// claude-factory-ibas: the first dynamic head word (X in `$X "rm -rf /"`) can expand to eval or
+// sh -c. Then the later words are a script. Returns the script texts to read: the joined words
+// (eval) and each later word that holds a space or shell operator (sh -c "$1"). Only the first
+// dynamic anchor counts; the joined read recurses into the later ones (cbai).
+function dynamicHeadScripts(words: string[]): string[] {
+  for (const a of commandAnchors(words)) {
+    const head = words[a]!
+    if (!dynamicCommandWord(head)) continue
+    if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
+    const rest = words.slice(a + 1)
+    if (!rest.length) return []
+    return [rest.join(' '), ...rest.filter(w => /[\s;&|<>()$`]/.test(w))]
+  }
+  return []
+}
+
 function segmentRunsBdCommand(words: string[], start: number, depth: number, state: ScanState): boolean {
   // claude-factory-cbai: the first eval word's recursion reads every later word of the segment
   // (rest holds them all, later eval words too). A later eval word then needs no recursion of its
@@ -2559,6 +2575,8 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   let evalScanned = false
   let slotEnd = 0
   let trapEnd = 0
+  if (start === 0)
+    for (const t of dynamicHeadScripts(words)) if (stringNamesBdCommand(t, state, depth + 1)) return true
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === 'bd') return true
@@ -6925,6 +6943,10 @@ function anyShellReason(
   let slotEnd = 0
   let trapEnd = 0
   let moved = movedBefore
+  for (const t of dynamicHeadScripts(words)) {
+    const r = denyAt(t, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
+    if (r) return r
+  }
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
     if (DIR_CHANGE_WORDS.has(bw)) {
