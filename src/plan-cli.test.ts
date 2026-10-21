@@ -589,3 +589,44 @@ test('plan show sanitizes and clips a long, dirty pm-log error before printing i
   expect(line).toBeDefined()
   expect(line!.length).toBeLessThan(220)
 })
+
+const churnFinding = (count: number) => ({
+  kind: 'file-churn',
+  rig: 'a',
+  key: 'file-churn:a:12345678',
+  text: `src/hot.ts changed in ${count} merged PRs in 48 hours`,
+  file: 'src/hot.ts',
+  count,
+})
+
+test('plan set turns a file-churn finding into one human design-question bead, and a re-run with a new count files none', () => {
+  reset()
+  writeFacts({ findings: [churnFinding(8)] })
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath, { proposals: [] })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  const written = JSON.parse(readFileSync(planJson(), 'utf8'))
+  expect(written.rigs.a.findings).toHaveLength(1)
+  expect(written.proposals).toHaveLength(1)
+  expect(written.proposals[0].change).toContain('design question: src/hot.ts')
+  expect(createCalls()).toHaveLength(1)
+  expect(createCalls()[0]).toContain('-l human')
+  expect(createCalls()[0]).toContain('pm proposal: design question')
+
+  writeFacts({ findings: [churnFinding(30)] })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  expect(createCalls()).toHaveLength(1)
+})
+
+test('a pm proposal cannot set the dedupe key', () => {
+  reset()
+  writeFacts({ findings: [] })
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath, {
+    proposals: [{ rig: 'a', bead: 'fx-1', change: 'c', why: 'w', key: 'proposal:a:file-churn:12345678' }],
+  })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  expect(JSON.parse(readFileSync(planJson(), 'utf8')).proposals[0].key).toBeUndefined()
+  expect(createCalls()).toHaveLength(1)
+  expect(callsLog()).toContain('proposal:a:fx-1')
+})

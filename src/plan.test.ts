@@ -398,7 +398,8 @@ test('buildPlan: adds goal-no-plan only once ranking comes up empty for a goal r
 
 // ---- file-churn ----
 
-const churnOf = (churn: Record<string, number>) => findings('widget', undefined, [], [], Date.now(), 24, churn)
+const churnOf = (churn: Record<string, number>) =>
+  findings('widget', undefined, [], [], Date.now(), 24, churn)
 
 test('file-churn: 8 merges give a finding and a design-question proposal, 7 give none', () => {
   const f = churnOf({ 'src/a.ts': 8 })

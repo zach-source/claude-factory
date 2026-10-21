@@ -5454,6 +5454,7 @@ function rigFacts(
   busy: number,
   now: number,
   linear: { ids: Set<string>; rigs: Set<string> },
+  churn: Record<string, number> = {},
 ): RigFacts {
   // every open child, read from `every` (already in hand): no `bd children` subprocess call
   // per candidate (claude-factory-dun.12).
@@ -5501,7 +5502,7 @@ function rigFacts(
     .filter(x => isClosed(x) && (tsOf(x.closed_at) ?? -Infinity) >= dayAgo)
     .map(x => ({ id: x.id, title: plan.sanitize(x.title), priority: x.priority }))
   const liveBeadIds = every.filter(x => linked.has(x.id)).map(x => x.id)
-  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now)
+  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now, 24, churn)
   return {
     goal: rig.goal,
     maxRuns: rig.maxRuns,
@@ -5555,6 +5556,31 @@ export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1
   return JSON.stringify(clone)
 }
 
+/** Counts the merged PRs for each file in the last 48 hours on origin/main.
+ * Any failure gives {}: the rig still reports. */
+function mergedFileChurn(repo: string): Record<string, number> {
+  try {
+    const p = Bun.spawnSync(
+      [
+        'git',
+        '-C',
+        repo,
+        'log',
+        '--merges',
+        `--since=${plan.CHURN_SINCE}`,
+        '--diff-merges=first-parent',
+        '--name-only',
+        '--format=@%H',
+        'origin/main',
+      ],
+      { timeout: 10_000 },
+    )
+    return p.exitCode === 0 ? plan.churnCounts(p.stdout.toString()) : {}
+  } catch {
+    return {}
+  }
+}
+
 /** every rig's facts, gathered once: a rig whose own bd call fails still reports (with `error`), so
  * one rig's trouble never stops the others from reaching the pm. */
 async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
@@ -5573,7 +5599,16 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
     }
     try {
       const b = beads(rig.repo, 'factory')
-      out[rig.name] = rigFacts(rig, b.every(), b.ready(), linked, busy, now, linear)
+      out[rig.name] = rigFacts(
+        rig,
+        b.every(),
+        b.ready(),
+        linked,
+        busy,
+        now,
+        linear,
+        mergedFileChurn(rig.repo),
+      )
     } catch (err) {
       out[rig.name] = emptyRigFacts(rig, busy, (err as Error).message)
     }
@@ -5651,6 +5686,7 @@ function planSetCmd(answerPath?: string) {
     if (rf.goal && items.length === 0) found.push(plan.goalNoPlanFinding(name, rf.goal))
     rigsPlan[name] = { items, findings: found }
   }
+  const churnProposals = plan.churnProposals(Object.values(facts!).flatMap(rf => rf.findings))
   const cleanProposals: plan.Proposal[] = (Array.isArray(answer!.proposals) ? answer!.proposals : [])
     .filter(
       (p): p is { rig: string; bead?: unknown; change: string; why: string } =>
@@ -5668,14 +5704,15 @@ function planSetCmd(answerPath?: string) {
     }))
 
   // every validation above must pass before anything is written: a refusal never touches plan.json
-  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: cleanProposals } satisfies plan.Plan)
+  const allProposals = [...churnProposals.filter(p => rigNames.has(p.rig)), ...cleanProposals]
+  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: allProposals } satisfies plan.Plan)
 
   let filedTotal = 0
   for (const name of rigNames) {
     const rig = rigs().find(r => r.name === name)
     if (!rig || !hasBeads(rig.repo)) continue
     const b = beads(rig.repo, 'factory')
-    const toFile = cleanProposals
+    const toFile = allProposals
       .filter(p => p.rig === name)
       .map(p => ({
         title: `pm proposal: ${clip(p.change, 80)}`,

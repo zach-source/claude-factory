@@ -421,6 +421,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook did not see a quote hidden in a here-document inside a backtick substitution. A shell ends such a body at a line with the delimiter and a closing backtick. The hook looked for an exact delimiter line, found a later one, and skipped the check. The hook now denies when a body line starts with the delimiter but is not equal to it (claude-factory-wmsr.37).
 - Fixed: the worker hook let `sudo ${=X}` run the value of a set name. In `X="git push origin main"; sudo ${=X}`, zsh splits the value and sudo runs it. The hook took `${=X}` for a `NAME=value` word and skipped it. A wrapper can skip a word. The hook now denies that word if it expands a set name. Examples: `sudo -u $X` and `nice -n ${=X}`. (claude-factory-xbr1)
 - Fixed: the worker hook did not see zsh glob qualifier code. A glued group such as `ls *(e:...:)` or `ls *(+name)` runs a command for each file. The hook now denies an unquoted group glued to a word that holds `e`, `+`, `$` or a backtick (claude-factory-1r7x).
+- New: the PM plan has a `file-churn` finding (claude-factory-nwlh.5). `factory plan facts` counts the merged PRs for each file on `origin/main` in the last 48 hours. A file in 8 or more PRs gives a finding in `plan.json`. Each rig gets the top 5. The count skips lockfiles and `CHANGELOG.md`. `factory plan set` also files one `human` bead for each file that asks a design question. The dedupe key does not use the count, so a file gets one bead.
 
 ## 0.13.0 (2026-10-18)
 
