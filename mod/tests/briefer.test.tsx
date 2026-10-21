@@ -114,7 +114,7 @@ test(
   { ...SLOW, options: { briefer: true } },
   async ($, on) => {
     const clock = mock.clock(on)
-    brieferMocks(on, { runs: () => [GATE_RUN('r1')] })
+    const files = brieferMocks(on, { runs: () => [GATE_RUN('r1')] })
     const spawns = spawnsOf(on, 'factory:briefer')
     on('turn.complete', ($, e) => ({ text: e.answer }) as never)
     agentListMock(on, ['brief-1'])
@@ -139,7 +139,31 @@ test(
       reason: 'answer',
       turnId: 't1',
       agentId: 'brief-1',
+      usage: {
+        input_tokens: 3,
+        output_tokens: 4,
+        cache_read_input_tokens: 5,
+        cache_creation_input_tokens: 2,
+        model: 'claude-x',
+      },
     } as never)
+    // claude-factory-hr94: the briefer's turn is counted under its own name
+    expect(
+      (files.get(`${HOME}/manager-usage.jsonl`) ?? '')
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l)),
+    ).toEqual([
+      {
+        name: 'briefer',
+        at: expect.any(Number),
+        model: 'claude-x',
+        input: 3,
+        cacheWrite: 2,
+        cacheRead: 5,
+        output: 4,
+      },
+    ])
   },
 )
 

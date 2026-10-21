@@ -3008,6 +3008,32 @@ function compactMessage(
  * grooms the memory with a headless worker that can only edit inside it: files the inbox under topics,
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
+/** the dream's own sessions (hr94): one name=dream row for each model in manager-usage.jsonl. Never throws */
+function storeDreamUsage(start: number) {
+  try {
+    const rows = usageIn(MEMORY, '', () => '?', start)
+    appendFileSync(
+      join(HOME, 'manager-usage.jsonl'),
+      rows
+        .map(u =>
+          JSON.stringify({
+            name: 'dream',
+            at: Date.now(),
+            model: u.model,
+            input: u.input,
+            cacheWrite: u.cacheWrite,
+            cacheRead: u.cacheRead,
+            output: u.output,
+            turns: u.turns,
+            peak: u.peak,
+          }),
+        )
+        .map(l => l + '\n')
+        .join(''),
+    )
+  } catch {}
+}
+
 async function dream() {
   const release = hold('dream.lock')
   if (!release) return 'a dream is already running'
@@ -3060,6 +3086,7 @@ async function dream() {
     )
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
     writeFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
+    storeDreamUsage(start)
     if (p.exitCode !== 0) return said
     git(MEMORY, 'add', '-A')
     // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
@@ -6889,12 +6916,6 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
 /** the runs metrics count: every live run, and the ones factory rm kept in metrics.jsonl */
 /** what each Claude worker session of a run spent, from the transcripts in its worktree's project dir */
 function usageOf(run: Run, since = 0): Usage[] {
-  const dir = join(
-    process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
-    'projects',
-    run.worktree.replace(/[^a-zA-Z0-9]/g, '-'),
-  )
-  if (!existsSync(dir)) return []
   const prompts = join(runDir(run.id), 'prompts')
   const listFile = promptsListFile(run.id)
   // gc can have removed prompts/, leaving prompts.list with the names that were in it. A goto
@@ -6912,6 +6933,17 @@ function usageOf(run: Run, since = 0): Usage[] {
       return m ? [[Number(m[1]), m[2]!.replace(/-resume$/, '')] as const] : []
     }),
   )
+  return usageIn(run.worktree, run.id, seq => nodes.get(seq) ?? '?', since)
+}
+
+/** the usage rows of every Claude session that ran in `cwd` and wrote its transcript at or after `since` */
+function usageIn(cwd: string, run: string, nodeOfSeq: (seq: number) => string, since = 0): Usage[] {
+  const dir = join(
+    process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+    'projects',
+    cwd.replace(/[^a-zA-Z0-9]/g, '-'),
+  )
+  if (!existsSync(dir)) return []
   const read = (f: string) => readFileSync(f, 'utf8').split('\n')
   return readdirSync(dir)
     .filter(f => f.endsWith('.jsonl') && statSync(join(dir, f)).mtimeMs >= since)
@@ -6923,7 +6955,7 @@ function usageOf(run: Run, since = 0): Usage[] {
             .filter(g => g.endsWith('.jsonl'))
             .map(g => read(join(subDir, g)))
         : []
-      const rows = sessionOf(read(join(dir, f)), run.id, seq => nodes.get(seq) ?? '?', session, subs)
+      const rows = sessionOf(read(join(dir, f)), run, nodeOfSeq, session, subs)
       return rows.some(u => u.turns > 0) ? rows : []
     })
 }
