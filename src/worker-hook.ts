@@ -6437,7 +6437,7 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
 
 const TRIGGER_ALT = [...DYNAMIC_COMMAND_TRIGGER].join('|')
 const DASHED_VERB_TAIL = new RegExp(`-(?:${TRIGGER_ALT})(?:$|\\$)`)
-const EXPANSION_END_VERB = new RegExp(`(?:[})\`]|\\$[a-z_][a-z0-9_]*)(?:${TRIGGER_ALT})(?:$|\\$)`)
+const EXPANSION_END_VERB = new RegExp(`(?:[})\`]|\\$[a-z_][a-z0-9_]*)(?:${TRIGGER_ALT})(?:$|\\$(?:\\{[^{}]*\\}|\\w+)$)`)
 
 /**
  * claude-factory-ycaq: `$G-push` runs the `git-push` binary when `$G` holds a git-core path.
