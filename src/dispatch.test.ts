@@ -1905,7 +1905,8 @@ function fakeFilingBd(all: FBead[]) {
     '    printf \'%s\' "$out";;',
     '  update|comment)',
     `    id="$2"`,
-    `    if [ -f "${gdir}/fail-$id" ]; then exit 1; fi`,
+    // only a hold (comment, or update adding held:*) fails: a start's own `update --claim` must not
+    `    case "$1 $*" in "comment "*|*"--add-label held:"*) if [ -f "${gdir}/fail-$id" ]; then exit 1; fi;; esac`,
     '    if [ "$1" = update ]; then',
     `      case " $* " in *" --remove-label factory "*) touch "${gdir}/removed-$id";; esac`,
     `      case " $* " in *" --add-label factory "*) rm -f "${gdir}/removed-$id";; esac`,
@@ -1945,7 +1946,12 @@ const replayBeads = (): FBead[] => [
 ]
 const fCalls = () => readFileSync(gCallsLog, 'utf8').trim().split('\n')
 const startedBeads = () => gRunDirs().map(gBeadOf)
-const dispatchRows = () => JSON.parse(readFileSync(join(ghome, 'dispatch.json'), 'utf8')) as { id: string; skip?: string; error?: string }[]
+const dispatchRows = () =>
+  JSON.parse(readFileSync(join(ghome, 'dispatch.json'), 'utf8')) as {
+    id: string
+    skip?: string
+    error?: string
+  }[]
 const nextPass = () => rmSync(join(ghome, 'dispatch.stamp'), { force: true })
 
 test('the filing guard holds the 7th worker-hook bead and starts none after it', () => {
@@ -1956,13 +1962,16 @@ test('the filing guard holds the 7th worker-hook bead and starts none after it',
     expect(started).not.toContain(id)
     expect(
       fCalls().filter(
-        l => l.startsWith(`bd update ${id} `) && l.includes('--remove-label factory') && l.includes('--add-label held:cluster:worker-hook'),
+        l =>
+          l.startsWith(`bd update ${id} `) &&
+          l.includes('--remove-label factory') &&
+          l.includes('--add-label held:cluster:worker-hook'),
       ),
     ).toHaveLength(1)
     expect(fCalls().filter(l => l.startsWith(`bd comment ${id} `))).toHaveLength(1)
     expect(dispatchRows().filter(r => r.id === id && r.skip?.startsWith('filing guard'))).toHaveLength(1)
   }
-  expect(started).toContain('w-1')
+  expect(started.sort()).toEqual(['p-1', 'w-1', 'w-2', 'w-3', 'w-4', 'w-5', 'w-6'])
   expect(fCalls().some(l => /^bd update (w-[1-6]|p-1) .*--remove-label factory/.test(l))).toBe(false)
   expect(fCalls().find(l => l.startsWith('bd comment w-7 '))).toContain('factory queue a w-7')
 })
@@ -2000,7 +2009,11 @@ test('the filing guard fails closed: a failed relabel starts nothing, leaves no 
   gfactory(['beads'])
   expect(startedBeads()).not.toContain('w-7')
   expect(dispatchRows().some(r => r.id === 'w-7' && r.error)).toBe(true)
-  expect(existsSync(join(ghome, 'filing-guard.json')) ? readFileSync(join(ghome, 'filing-guard.json'), 'utf8') : '').not.toContain('w-7')
+  expect(
+    existsSync(join(ghome, 'filing-guard.json'))
+      ? readFileSync(join(ghome, 'filing-guard.json'), 'utf8')
+      : '',
+  ).not.toContain('w-7')
   rmSync(join(gdir, 'fail-w-7'))
   nextPass()
   gfactory(['beads'])
@@ -2022,7 +2035,11 @@ test('a re-queued held bead starts and is not held again', () => {
   nextPass()
   gfactory(['beads'])
   expect(startedBeads()).toContain('w-7')
-  expect(fCalls().slice(before).some(l => /^bd (update|comment) w-7 .*(held|remove-label factory)/.test(l))).toBe(false)
+  expect(
+    fCalls()
+      .slice(before)
+      .some(l => /^bd (update|comment) w-7 .*(held|remove-label factory)/.test(l)),
+  ).toBe(false)
 })
 
 test('a factory-filed bead that only ready names (filed mid-pass) does not start', () => {
@@ -2058,5 +2075,9 @@ test('the filing guard leaves child, sweep-filed and person beads alone', () => 
   gfactory(['beads'])
   expect(fCalls().some(l => /^bd (update|comment) (w-0\.|h-)\S* .*(held:|filing)/.test(l))).toBe(false)
   expect(fCalls().some(l => /^bd update s-\d .*held:/.test(l))).toBe(false)
-  expect(existsSync(join(ghome, 'filing-guard.json')) ? readFileSync(join(ghome, 'filing-guard.json'), 'utf8') : '').not.toMatch(/w-0|h-|s-/)
+  expect(
+    existsSync(join(ghome, 'filing-guard.json'))
+      ? readFileSync(join(ghome, 'filing-guard.json'), 'utf8')
+      : '',
+  ).not.toMatch(/w-0|h-|s-/)
 })
