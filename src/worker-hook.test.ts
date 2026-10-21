@@ -9183,6 +9183,21 @@ const EASJ_DENY_ROWS = [
   'cd / ; 2>f find . -delete',
 ]
 // These rows keep their own deny reason (the home rule or the glob command word rule).
+const EASJ_DYNAMIC_PATH_ROWS = [
+  'find -L $X -delete',
+  'find -H "$D" -delete',
+  'find -P ${D} -delete',
+  'find -x $X -delete',
+  'find -O3 $X -delete',
+  'find -s "$D" -name y -delete',
+  'find . $X -delete',
+  'find . "$D" -delete',
+  'find .scratch $X -delete',
+  'find -f . $X -delete',
+]
+test.each(EASJ_DYNAMIC_PATH_ROWS)('claude-factory-easj.12: %s denies with REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
 const EASJ_OTHER_DENY_ROWS = ['find $HOME -delete', 'find / -de?ete', 'find * -delete']
 const EASJ_ALLOW_ROWS = [
   'find .scratch/x -delete',
