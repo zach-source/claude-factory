@@ -3238,7 +3238,7 @@ export function selfUpdateMail(now: number, home = HOME): (Mail & { run: string 
   return [{ run: 'factory', from: 'factory', text, at: now }]
 }
 
-/** token usage of the live runs from the last `days` days; '' when no worker session ran */
+/** token usage table of the live runs in recs; '' when no worker session ran and emptyOk is false */
 export function tokenTable(recs: ReturnType<typeof records>, emptyOk: boolean): string {
   const live = recs.filter(r => runIds().includes(r.id))
   const sessions = live.flatMap(r => sessionsOf(loadRun(r.id)))
@@ -3246,6 +3246,7 @@ export function tokenTable(recs: ReturnType<typeof records>, emptyOk: boolean): 
   return renderTokens(sessions, new Set(live.filter(r => fate(r) === 'shipped').map(r => r.id)))
 }
 
+/** token usage of the live runs from the last days days */
 export function tokenReport(days: number): string {
   return tokenTable(
     records().filter(r => Date.now() - r.createdAt < days * 86_400_000),
@@ -3268,7 +3269,12 @@ export function tokenDigestMail(
   const period = Number(process.env.FACTORY_TOKEN_DIGEST_MS) || 7 * 86_400_000
   if (existsSync(file) && now - readJson<{ at: number }>(file).at < period) return []
   writeJson(file, { at: now })
-  const report = digest()
+  let report = ''
+  try {
+    report = digest()
+  } catch {
+    return [] // a failing digest must not break tick; the date is already written
+  }
   if (!report) return []
   return [
     { run: 'factory', from: 'factory', text: `factory weekly token digest, last 7d:\n${report}`, at: now },

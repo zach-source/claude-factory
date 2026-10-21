@@ -1189,13 +1189,13 @@ test('tokenDigestMail mails nothing for an empty digest but moves the date', () 
   expect(JSON.parse(readFileSync(join(home, 'token-digest.json'), 'utf8')).at).toBe(0)
 })
 
-test('tokenDigestMail writes the date before the digest runs, so a throw waits a week', () => {
+test('tokenDigestMail returns [] when the digest throws, and the date is written first', () => {
   const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
-  expect(() =>
+  expect(
     tokenDigestMail(5, home, () => {
       throw new Error('boom')
     }),
-  ).toThrow()
+  ).toEqual([])
   expect(JSON.parse(readFileSync(join(home, 'token-digest.json'), 'utf8')).at).toBe(5)
 })
 
