@@ -453,9 +453,28 @@ export const beads = (repo: string, actor: string) => ({
   /** false when bd refuses, e.g. while the bead still has open tasks */
   close: (id: string, reason: string) => bd(repo, actor, 'close', id, '--reason', reason).isOk,
   /** unassigned and out of bd ready until a person undefers it, which hands it back to the factory */
-  defer: (id: string, reason: string) => {
+  defer: (id: string, reason: string, station?: string) => {
     bd(repo, actor, 'unclaim', id)
-    return must(bd(repo, actor, 'defer', id, '--reason', reason), 'defer')
+    const out = must(bd(repo, actor, 'defer', id, '--reason', reason), 'defer')
+    // with a station, the run after an undefer starts there: it replaces every station:* label
+    if (station) {
+      const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(l => l.startsWith('station:'))
+      must(
+        bd(
+          repo,
+          actor,
+          'update',
+          id,
+          ...old.flatMap(l => ['--remove-label', l]),
+          '--add-label',
+          LABEL, // a bead started by hand lacks it, and dispatch reads only labeled beads
+          '--add-label',
+          `station:${station}`,
+        ),
+        'update',
+      )
+    }
+    return out
   },
   /**
    * a station judged it not the factory's to do: still open and ready for a person, but out of the factory's

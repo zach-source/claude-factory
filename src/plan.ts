@@ -10,9 +10,36 @@ import { createHash } from 'node:crypto'
 import { parentOf, type Bead } from './beads'
 
 export type PlanItem = { id: string; title: string; priority: number; why: string }
-export type FindingKind = 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan'
-export type Finding = { kind: FindingKind; rig: string; bead?: string; key: string; text: string }
-export type Proposal = { rig: string; bead?: string; change: string; why: string }
+export type FindingKind = 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan' | 'file-churn'
+export type Finding = {
+  kind: FindingKind
+  rig: string
+  bead?: string
+  key: string
+  text: string
+  file?: string
+  count?: number
+}
+export type Proposal = { rig: string; bead?: string; change: string; why: string; key?: string }
+
+export const CHURN_MIN = 8
+export const CHURN_SINCE = '48.hours'
+export const CHURN_MAX = 5
+export const CHURN_IGNORE = [
+  'bun.lock',
+  'bun.lockb',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'go.sum',
+  'Cargo.lock',
+  'flake.lock',
+  'uv.lock',
+  'poetry.lock',
+  'Gemfile.lock',
+  'composer.lock',
+  'CHANGELOG.md',
+]
 export type RigPlan = { items: PlanItem[]; findings: Finding[] }
 export type Plan = { at: number; rigs: Record<string, RigPlan>; proposals: Proposal[] }
 
@@ -24,6 +51,17 @@ export const PLAN_FRESH_MS = 2 * 60 * 60_000
 
 /** A bead with no priority sorts into the lowest band (4, backlog). It never sorts ahead of a prioritized bead. */
 const prio = (b: Pick<Bead, 'priority'>) => b.priority ?? 4
+
+const STATION_FILER = /^factory\/[^/]+\/(review|security|verify|check)$/
+
+/** True for a top-level P0/P1 bead that a review, security, verify or check station filed.
+ * Only a person, or triage or plan on the run's own bead, sets P0 or P1. Dispatch sorts such a bead
+ * as P2. No bd write happens: the stored priority stays. */
+export const stationDemoted = (b: Bead): boolean =>
+  parentOf(b) === undefined && prio(b) <= 1 && STATION_FILER.test(b.created_by ?? '')
+
+/** The priority band a bead sorts in. */
+const band = (b: Bead) => (stationDemoted(b) ? 2 : prio(b))
 
 // Covers C0 (minus \n \r \t) and DEL, plus C1 controls (incl. U+0085 NEL, U+009B 8-bit CSI --
 // a VT500-family parser such as xterm or xterm.js treats U+009B as CSI, the same pane escape
@@ -72,7 +110,8 @@ export const hashOf = (s: string) => createHash('sha256').update(s).digest('hex'
  * proposal filed on bead X, `plan set` drops every later proposal on X, for good, even a
  * different change. This is by design. It stops hourly spam. A later reader must not read it as
  * a bug. */
-export function proposalKey(rig: string, p: Pick<Proposal, 'bead' | 'change' | 'why'>): string {
+export function proposalKey(rig: string, p: Pick<Proposal, 'bead' | 'change' | 'why' | 'key'>): string {
+  if (p.key) return p.key
   return p.bead ? `proposal:${rig}:${p.bead}` : `proposal:${rig}:${hashOf(`${p.change}\n${p.why}`)}`
 }
 
@@ -121,12 +160,12 @@ export function rankPlan(answer: AnswerItem[], candidates: Bead[]): PlanItem[] {
   const rank = new Map(order.map((id, i) => [id, i]))
   return candidates
     .map((c, i) => ({ c, i, r: rank.get(c.id) ?? Infinity }))
-    .sort((a, b) => prio(a.c) - prio(b.c) || a.r - b.r || a.i - b.i)
+    .sort((a, b) => band(a.c) - band(b.c) || a.r - b.r || a.i - b.i)
     .slice(0, 10)
     .map(({ c }) => ({
       id: c.id,
       title: sanitize(c.title),
-      priority: prio(c),
+      priority: band(c),
       why: whyOf.get(c.id) ?? '(no reason given)',
     }))
 }
@@ -200,11 +239,11 @@ export function rigPlanOf(p: Plan | undefined, name: string): RigPlan | undefine
  * A planned P2 never passes a real P1, because priority always sorts first.
  */
 export function orderByPlan(candidates: Bead[], rigPlan: { items: PlanItem[] } | undefined): Bead[] {
-  if (!rigPlan) return candidates
-  const rank = new Map(rigPlan.items.map((it, i) => [it.id, i]))
+  if (!rigPlan && !candidates.some(stationDemoted)) return candidates
+  const rank = new Map((rigPlan?.items ?? []).map((it, i) => [it.id, i]))
   return candidates
     .map((c, i) => ({ c, i, r: rank.get(c.id) ?? Infinity }))
-    .sort((a, b) => prio(a.c) - prio(b.c) || a.r - b.r || a.i - b.i)
+    .sort((a, b) => band(a.c) - band(b.c) || a.r - b.r || a.i - b.i)
     .map(({ c }) => c)
 }
 
@@ -257,6 +296,7 @@ export function findings(
   liveBeadIds: string[] | Set<string>,
   now: number,
   starveHours = 24,
+  churn: Record<string, number> = {},
 ): Finding[] {
   const live = liveBeadIds instanceof Set ? liveBeadIds : new Set(liveBeadIds)
   const starveMs = starveHours * 3_600_000
@@ -318,7 +358,42 @@ export function findings(
         text: `${rig}'s goal has no open bead driving it: "${clip(goal, 100)}"`,
       })
   }
+  const hot = Object.entries(churn)
+    .filter(([f, n]) => n >= CHURN_MIN && !CHURN_IGNORE.includes(f.split('/').pop()!))
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, CHURN_MAX)
+  for (const [file, count] of hot)
+    out.push({
+      kind: 'file-churn',
+      rig,
+      key: `file-churn:${rig}:${hashOf(file)}`,
+      text: `${sanitize(file, 200)} changed in ${count} merged PRs in 48 hours`,
+      file: sanitize(file, 200),
+      count,
+    })
   return out
+}
+
+/** `churnProposals` turns each file-churn finding into a proposal that asks the person a design
+ * question. The fixed `key` hides the count, so a new count never files a second bead. */
+export function churnProposals(found: Finding[]): Proposal[] {
+  return found
+    .filter(f => f.kind === 'file-churn' && f.file && f.count !== undefined)
+    .map(f => ({
+      rig: f.rig,
+      change: `design question: ${f.file} changed in ${f.count} merged PRs in 48 hours; split it, change its ownership, or accept the churn?`,
+      why: `${f.file} was in ${f.count} merged PRs in the last 48 hours. Many PRs on one file often show a missing seam.`,
+      key: `proposal:${f.rig}:file-churn:${hashOf(f.file!)}`,
+    }))
+}
+
+/** `churnCounts` reads `git log --merges --name-only --format=@%H` output.
+ * It counts each path once for each commit. */
+export function churnCounts(out: string): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const block of out.split(/^@.*$/m))
+    for (const f of new Set(block.split('\n').filter(Boolean))) counts[f] = (counts[f] ?? 0) + 1
+  return counts
 }
 
 /** one rig's input for `buildPlan`: its candidates (dispatch's own ready list), its full bead

@@ -653,6 +653,8 @@ The `small` loop skips the Opus plan step. It adds the security station only whe
 | Sweep    | Cadence       | What it needs                         |
 | -------- | ------------- | -------------------------------------- |
 | monitor  | every 30 min  | a rig's `--slo '<read-only command>'` |
+| ci       | every 2 h     | `gh` logged in on the laptop; a model runs only when main CI is red |
+| flakes   | weekly        | `gh` logged in on the laptop; a model runs only when a test flaked |
 | maintain | daily         | nothing extra                          |
 | improve  | daily, rotating refactor, performance, cost and factory-health lens | nothing extra |
 | hygiene  | daily, in code (no model, no run); proposes closes, never closes | nothing extra |
@@ -665,12 +667,27 @@ laptop (never on a VM worker), hashes its output, and starts a run only when the
 since the last pass; the unchanged output never reaches a model. Start a pass by hand with
 `factory start sweeps@maintain <rig> 'sweep: maintain'`.
 
+`ci` and `flakes` read GitHub Actions on the laptop with `gh`. They start no run unless they find
+new work. `ci` lists the default branch's runs. Each workflow with a red newest run gets the key
+`ci-red:<workflow id>-<first failing SHA, 7 characters>`. If every key is a label on an open bead,
+nothing starts. If not, one run files ONE P1 bead with the labels `factory`, `station:plan` and
+`sweep-queue:main-ci-red`.
+
+`flakes` reads up to 1000 runs of the default branch from the past 7 days. A run is flaky when the same SHA passed
+and failed, or passed on a re-run. The factory reads the failed logs of at most 10 flaky runs.
+It keeps only test ids of 1 to 200 printable ASCII characters. A test that failed in 2 or more
+flaky runs gets one bead, `quarantine + fix flaky test: <id>`, with the label `flake:<12 hex>`.
+A pass files at most 3. A test that failed in 3 or more runs also gets `factory`, `station:plan`
+and `sweep-queue:flaky-test`. Each pass writes one line to `sweeps.jsonl`. The `action` is
+`green`, `tracked` (`ci`), `quiet` (`flakes`), `started` or `error`. `error` means a `gh` or `bd`
+call failed: no run starts, and the next pass waits for the cadence.
+
 **Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
 `sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A later bead
 that day still gets filed, but it waits for a person instead of starting on its own. A kept
 bead keeps the `factory` label, and starts on its own, only when it also carries
-`sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every
-other kept bead loses the `factory` label too and waits for a person, the same as a later
+`sweep-queue:incident`, `sweep-queue:main-ci-red`, `sweep-queue:critical-advisory` or
+`sweep-queue:flaky-test`. Every other kept bead loses the `factory` label too and waits for a person, the same as a later
 bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
 
 **Hygiene**: the `hygiene` sweep runs in code once a day for each rig. It starts no run. It finds
@@ -856,7 +873,7 @@ export default {
 
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
-the manager; lifecycle's review has 3), `onRounds` (a node for a re-plan at the round cap, below),
+the manager; lifecycle's review has 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `onRounds` (a node for a re-plan at the round cap, below),
 `repeatMail` (an outcome that mails the manager on a repeat, below), `gate: true` for a station the
 person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
 to merge, close or update a pull or merge request an arrival's report links, before it starts a
@@ -867,7 +884,19 @@ queue, until someone queues it again). It can instead carry `requeue: true`, or
 `requeue: { factory?, station? }`. Either way the bead stays open, ready and `factory`-labeled.
 The next dispatch starts it in the factory and station the `requeue` object names, or in the
 labels the worker already set when `requeue` is `true` (claude-factory-wnm; see "The backlog
-dispatches itself" above).
+dispatches itself" above). A `defer` edge can also name a station: `defer: { station: 'plan' }`.
+It defers the bead and swaps its `station:*` label. The run after a `bd undefer` starts at that
+station. The station must be a node of the same factory.
+
+Lifecycle's triage has three outcomes that end the run at once (claude-factory-502):
+
+- `rollout`: the goal is to ship pull requests that are already open or merged. The bead requeues
+  into the `release` factory.
+- `decision`: the work needs a person's choice. The worker puts the question on the bead. The run
+  ends deferred. `bd undefer` starts it again at `plan`. Plan and implement also report `decision`.
+- `elsewhere`: the work belongs in another rig's repo. The worker files the bead there and
+  comments its id on this bead. The run ends deferred. A worker that cannot reach that repo writes
+  a `File in:` line, and the manager files the bead.
 
 `onRounds` names the node that takes the first capped report, instead of the manager. The run
 carries the round's findings to that node. A second capped report in the same run still goes to
