@@ -142,6 +142,27 @@ export function sweepGuard(
   )
 }
 
+/**
+ * The duplicate drift beads (claude-factory-d20): the drift prompt files one bead for each resource,
+ * labeled `drift:<key>`, and a model can still file a second one. Of the not-closed beads that share a
+ * key, the oldest is the original. Each newer bead that a drift sweep filed (`sweepFiler`) is a
+ * duplicate of it. A bead a person filed is never a duplicate. A closed bead is never either side.
+ */
+export function driftDuplicates(
+  beads: (GuardedBead & { status?: string })[],
+): { dup: string; original: string }[] {
+  const byKey = new Map<string, (GuardedBead & { status?: string })[]>()
+  for (const b of beads) {
+    if (b.status === 'closed') continue
+    for (const l of b.labels ?? []) if (l.startsWith('drift:')) byKey.set(l, [...(byKey.get(l) ?? []), b])
+  }
+  const at = (b: GuardedBead) => (b.created_at ? new Date(b.created_at).getTime() : Infinity)
+  return [...byKey.values()].flatMap(group => {
+    const [original, ...rest] = [...group].sort((a, b) => at(a) - at(b))
+    return rest.filter(b => sweepFiler(b) === 'drift').map(b => ({ dup: b.id, original: original!.id }))
+  })
+}
+
 /** A deterministic fingerprint of a monitor pass's command output (claude-factory-8pc.6). `sweep()`
  * compares this against the last pass's `sig` in sweeps.json. When it is unchanged, no run starts,
  * and no model reads the output. Two equal outputs always give the same sig. One byte of difference

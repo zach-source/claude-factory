@@ -73,6 +73,7 @@ import {
 import * as plan from './plan'
 import {
   clipUtf8,
+  driftDuplicates,
   dueSweeps,
   guardHandled,
   markGuardHandled,
@@ -5267,8 +5268,23 @@ async function dispatch() {
       openIds[rig.name] = new Set(all.filter(x => x.status !== 'closed').map(x => x.id))
       const excluded = new Set<string>()
       const scored = new Set<string>()
+      // claude-factory-d20: the drift prompt keeps one open bead for each resource, but a model can
+      // file a second one. Comment on the oldest, then close the duplicate. A failed call keeps the
+      // duplicate from starting this pass (fail closed). The duplicate still counts for the 5/24h cap.
+      const duplicates = new Set<string>()
+      for (const { dup, original } of driftDuplicates(all)) {
+        excluded.add(dup)
+        duplicates.add(dup)
+        try {
+          b.comment(original, `drift: ${dup} is a duplicate of this bead; closing it`)
+          if (!b.close(dup, `duplicate of ${original}`)) throw new Error(`bd close ${dup} failed`)
+        } catch (err) {
+          errors.push({ id: dup, error: (err as Error).message })
+        }
+      }
       for (const v of sweepGuard(all, Date.now())) {
         scored.add(v.id)
+        if (duplicates.has(v.id)) continue // closed above, or kept out: no flood-guard write on it
         const current = all.find(x => x.id === v.id)
         if (!current) continue
         // claude-factory-8pc.22: sweepGuard above still counts a closed bead for the cap. A
