@@ -3,6 +3,7 @@
 // the run's inbox.jsonl, which the next tick drains in order.
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -17,6 +18,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
   writeSync,
 } from 'node:fs'
@@ -112,6 +114,7 @@ import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import * as broker from './broker'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -1244,6 +1247,12 @@ export { httpsRemote }
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
  * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
  */
+/** the VM has no codex guard yet: no deny hook, so no codex worker there (claude-factory-72dq) */
+export function axCodexRefused(agent: string) {
+  if (harnessOf(agent) === 'codex')
+    fail(`the ax runner does not run codex workers yet: they would have no deny hook (claude-factory-72dq)`)
+}
+
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
   if (unavailable) fail(unavailable)
@@ -1252,7 +1261,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
-  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  if (!harness) fail(`the ax runner runs claude or pi workers, not "${agent}"`)
+  axCodexRefused(agent)
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1752,12 +1762,125 @@ export function workerFlags(
   return ` --tools ${WORKER_TOOLS} --setting-sources project,local --settings ${sq(file)} --system-prompt-file ${sq(prompt)}`
 }
 
+// codex features the guard needs off: each one lets a command run with no PreToolUse hook (claude-factory-x0b9)
+const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
+// codex_hooks is the legacy alias of hooks: turning it off turns the hooks off
+const CODEX_HOOKS = ['hooks', 'codex_hooks']
+// 0.160.1 ignores --disable unified_exec (features list keeps it true), so the launch probe cannot check it
+const CODEX_PROBED = CODEX_UNGUARDED.filter(f => f !== 'unified_exec')
+
+/** the reason a codex agent command turns a guard part off, or undefined */
+function codexGuardOff(agent: string): string | undefined {
+  // drop shell quotes and backslashes first: codex sees '--ignore-user-config' as the bare flag
+  const text = agent.replace(/['"\\]/g, '')
+  const w = text
+    .trim()
+    .split(/\s+/)
+    .flatMap(s => (/^--[\w-]+=/.test(s) ? s.split(/=(.*)/s).slice(0, 2) : [s]))
+  for (let i = 0; i < w.length; i++) {
+    const next = (w[i + 1] ?? '').replace(/\s/g, '')
+    if (w[i] === '--ignore-user-config') return w[i]
+    if (w[i] === '--disable' && CODEX_HOOKS.includes(next)) return `--disable ${next}`
+    if (w[i] === '--enable' && CODEX_UNGUARDED.includes(next)) return `--enable ${next}`
+  }
+  // -c/--config values in dotted, joined (-cfeatures.x=y) or table form (features={x=y}); fail closed on any match
+  const on = CODEX_UNGUARDED.join('|')
+  const re = new RegExp(
+    `features\\.(hooks|codex_hooks)=false|features\\.(${on})=true|features=\\{[^}]*((hooks|codex_hooks)=false|(${on})=true)`,
+  )
+  const m = text.replace(/\s/g, '').match(re)
+  if (m) return `-c ${m[0]}`
+}
+
+/**
+ * A codex worker gets its own CODEX_HOME at <run dir>/codex/<node>, never the person's ~/.codex. It holds
+ * config.toml (context limit), hooks.json (the person's hooks, then the deny hook last), AGENTS.md (the worker
+ * rules) and an auth.json link. Codex has the PreToolUse hook, so worker-hook.ts runs as it is. Fail closed:
+ * no hook file, or an agent command that turns the guard off, refuses the launch (claude-factory-x0b9).
+ */
+export function codexWorker(
+  run: Pick<Run, 'id' | 'worktree'>,
+  def: Pick<Factory, 'maxContextK'>,
+  node: string,
+  agent: string,
+  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches'>,
+  o: { hookFile?: string; userHome?: string; dir?: string; codexBin?: string } = {},
+): { env: Record<string, string>; extra: string } {
+  const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
+  if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
+  const off = codexGuardOff(agent)
+  if (off) fail(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
+  // the home trusts the worktree so codex shows no folder prompt; a .codex entry there would load unguarded config
+  for (let d = resolve(run.worktree); ; d = dirname(d)) {
+    if (existsSync(join(d, '.codex')))
+      fail(`a codex worker keeps the deny hook on: ${join(d, '.codex')} would add project config`)
+    if (existsSync(join(d, '.git')) || dirname(d) === d) break
+  }
+  const user = o.userHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
+  const dir = o.dir ?? join(runDir(run.id), 'codex', node)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  let theirs: Record<string, unknown[]> = {}
+  try {
+    theirs = readJson<{ hooks?: Record<string, unknown[]> }>(join(user, 'hooks.json')).hooks ?? {}
+  } catch {
+    // no user hooks, or not JSON: the deny hook is the only one
+  }
+  const hook = denyHook(process.execPath, hookFile, personOnlyContexts(rig), protectedBranches(rig))
+  writeJson(join(dir, 'hooks.json'), {
+    hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), hook] },
+  })
+  writeFileSync(
+    join(dir, 'config.toml'),
+    `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
+      `[projects.${JSON.stringify(run.worktree)}]\ntrust_level = "trusted"\n`,
+  )
+  const id = commitIdentity(HOME)
+  writeFileSync(
+    join(dir, 'AGENTS.md'),
+    readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') +
+      readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8') +
+      id.rule,
+  )
+  // one token store: codex rotates a ChatGPT refresh token, and a copy that refreshes would stale the person's own
+  const auth = join(user, 'auth.json')
+  const link = join(dir, 'auth.json')
+  rmSync(link, { force: true })
+  if (existsSync(auth)) symlinkSync(auth, link)
+  const extra =
+    ' --enable hooks --dangerously-bypass-hook-trust' +
+    CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
+    ' --disable apps --disable memories'
+  // ask codex what is on with these flags and this home: fail closed on a guard that is not in force
+  const probe = Bun.spawnSync([o.codexBin ?? 'codex', ...extra.trim().split(' '), 'features', 'list'], {
+    env: { ...process.env, CODEX_HOME: dir },
+  })
+  const on = new Map<string, string>()
+  for (const l of probe.stdout.toString().split('\n')) {
+    const c = l.trim().split(/\s+/)
+    if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
+  }
+  const bad =
+    probe.exitCode !== 0
+      ? 'codex features list failed'
+      : on.get('hooks') !== 'true'
+        ? 'hooks is not on'
+        : CODEX_PROBED.find(f => on.get(f) !== 'false')
+  if (bad) fail(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
+  return {
+    env: { CODEX_HOME: dir, CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
+    extra,
+  }
+}
+
 function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
-  const extra = workerFlags(def, rig)
-  return command(agentOfNode(run, def, node), prompt, {
+  const agent = agentOfNode(run, def, node)
+  const setup =
+    harnessOf(agent) === 'codex' ? codexWorker(run, def, node, agent, rig) : { extra: workerFlags(def, rig) }
+  return command(agent, prompt, {
     session,
-    extra,
+    ...setup,
     mcp: rig?.mcp ? readMcp(rig.mcp) : undefined,
   })
 }
@@ -5065,6 +5188,7 @@ async function dispatch() {
   // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
   const openIds: Record<string, Set<string>> = {}
   for (const rig of rigs()) {
+    if (!hasBeads(rig.repo)) continue // claude-factory-toml: a rig with no .beads store has no beads steps
     // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
     const skips = new Map<string, string>()
     const started = new Set<string>()
@@ -5454,6 +5578,7 @@ function rigFacts(
   busy: number,
   now: number,
   linear: { ids: Set<string>; rigs: Set<string> },
+  churn: Record<string, number> = {},
 ): RigFacts {
   // every open child, read from `every` (already in hand): no `bd children` subprocess call
   // per candidate (claude-factory-dun.12).
@@ -5501,7 +5626,7 @@ function rigFacts(
     .filter(x => isClosed(x) && (tsOf(x.closed_at) ?? -Infinity) >= dayAgo)
     .map(x => ({ id: x.id, title: plan.sanitize(x.title), priority: x.priority }))
   const liveBeadIds = every.filter(x => linked.has(x.id)).map(x => x.id)
-  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now)
+  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now, 24, churn)
   return {
     goal: rig.goal,
     maxRuns: rig.maxRuns,
@@ -5555,6 +5680,32 @@ export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1
   return JSON.stringify(clone)
 }
 
+/** Counts the merged PRs for each file in the last 48 hours on origin/main.
+ * Any failure gives {}: the rig still reports. */
+export function mergedFileChurn(repo: string): Record<string, number> {
+  try {
+    const p = Bun.spawnSync(
+      [
+        'git',
+        '-C',
+        repo,
+        'log',
+        '--merges',
+        '--first-parent',
+        `--since=${plan.CHURN_SINCE}`,
+        '--diff-merges=first-parent',
+        '--name-only',
+        '--format=@%H',
+        'origin/main',
+      ],
+      { timeout: 10_000 },
+    )
+    return p.exitCode === 0 ? plan.churnCounts(p.stdout.toString()) : {}
+  } catch {
+    return {}
+  }
+}
+
 /** every rig's facts, gathered once: a rig whose own bd call fails still reports (with `error`), so
  * one rig's trouble never stops the others from reaching the pm. */
 async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
@@ -5573,7 +5724,16 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
     }
     try {
       const b = beads(rig.repo, 'factory')
-      out[rig.name] = rigFacts(rig, b.every(), b.ready(), linked, busy, now, linear)
+      out[rig.name] = rigFacts(
+        rig,
+        b.every(),
+        b.ready(),
+        linked,
+        busy,
+        now,
+        linear,
+        mergedFileChurn(rig.repo),
+      )
     } catch (err) {
       out[rig.name] = emptyRigFacts(rig, busy, (err as Error).message)
     }
@@ -5651,6 +5811,7 @@ function planSetCmd(answerPath?: string) {
     if (rf.goal && items.length === 0) found.push(plan.goalNoPlanFinding(name, rf.goal))
     rigsPlan[name] = { items, findings: found }
   }
+  const churnProposals = plan.churnProposals(Object.values(facts!).flatMap(rf => rf.findings))
   const cleanProposals: plan.Proposal[] = (Array.isArray(answer!.proposals) ? answer!.proposals : [])
     .filter(
       (p): p is { rig: string; bead?: unknown; change: string; why: string } =>
@@ -5668,14 +5829,15 @@ function planSetCmd(answerPath?: string) {
     }))
 
   // every validation above must pass before anything is written: a refusal never touches plan.json
-  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: cleanProposals } satisfies plan.Plan)
+  const allProposals = [...cleanProposals, ...churnProposals.filter(p => rigNames.has(p.rig))]
+  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: allProposals } satisfies plan.Plan)
 
   let filedTotal = 0
   for (const name of rigNames) {
     const rig = rigs().find(r => r.name === name)
     if (!rig || !hasBeads(rig.repo)) continue
     const b = beads(rig.repo, 'factory')
-    const toFile = cleanProposals
+    const toFile = allProposals
       .filter(p => p.rig === name)
       .map(p => ({
         title: `pm proposal: ${clip(p.change, 80)}`,
@@ -6188,7 +6350,8 @@ async function defineRig(
   if (remote && mcp !== undefined)
     fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
   if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
+    fail(`--agent for the ${rig.runner} runner is claude or pi (not "${agent}")`)
+  if (remote && agent !== undefined) axCodexRefused(agent)
   if (egress?.length) {
     if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
     let parsed: Egress[] | undefined
@@ -7076,6 +7239,9 @@ if (import.meta.main && !outboxCmd)
         break
       case 'sync':
         await syncPass()
+        break
+      case 'broker':
+        broker.main(args)
         break
       case 'manager':
         if (args[0] === 'host') {
