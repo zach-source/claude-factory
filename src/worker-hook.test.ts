@@ -9400,7 +9400,13 @@ const EASJ_SEC_DENY_ROWS = [
   'chdir /; find . -delete',
 ]
 test.each(EASJ_SEC_DENY_ROWS)('claude-factory-easj sec: %s denies', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeDefined()
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test('claude-factory-easj.19: nested find in exec slots scans in linear time', () => {
+  const cmd = 'find . ' + '-exec find . '.repeat(30) + '-delete \\; ; rm -rf /'
+  const t = performance.now()
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  expect(performance.now() - t).toBeLessThan(1000)
 })
 test.each(['find . -delete', 'find -delete', 'find ./x -delete', 'find . -name x -delete'])(
   'claude-factory-easj.17: %s denies when gate cwd is outside root',
