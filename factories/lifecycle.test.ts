@@ -514,6 +514,7 @@ test('review, security and check share one blocking-scope rule (2ida AC3, AC4)',
   for (const n of ['review', 'security', 'check'] as const) {
     const p = lifecycle.nodes[n]!.prompt
     expect(p).toContain('A finding blocks only when it is one of these')
+    expect(p).toContain('makes an existing defect reachable or enabled')
     expect(p).toContain('Not blocking')
     expect(p).toContain('discovered-from:')
   }

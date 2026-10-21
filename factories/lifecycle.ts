@@ -53,7 +53,7 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 // review, security and check interpolate this: it keeps a gap that origin/main already has from blocking
 const blockingScope = `A finding blocks only when it is one of these kinds:
 1. An acceptance criterion fails.
-2. The diff adds the defect, or the defect is in lines the diff changed.
+2. The diff adds the defect, or the defect is in lines the diff changed, or the diff makes an existing defect reachable or enabled (a new caller, route, default, flag or input path).
 3. The defect is a sibling site of a defect that the diff fixes, or of an earlier round's finding.
 A gap that origin/main also has and that no acceptance criterion names does not block. File it as separate work (\`bd create ... --deps discovered-from:<run bead>\`, see Tracking) and list it under 'Not blocking'. Each blocking finding names its kind: 1, 2 or 3.`
 
