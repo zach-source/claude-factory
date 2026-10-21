@@ -104,8 +104,7 @@ import {
   parseSync,
   pullArgs,
   redact,
-  resolveConnectCreds,
-  resolveLinearApiKey,
+  linearAuth,
   routeLinearIssue,
   syncEnv,
 } from './linear'
@@ -114,6 +113,7 @@ import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import * as broker from './broker'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -139,6 +139,7 @@ import {
   gitlabForge,
   gitlabWatchNotes,
   mrsIn,
+  onHost,
   parseGitlabLabeled,
   parseMergedPrs,
   parseRemote,
@@ -325,7 +326,7 @@ async function launchAxManager(args: string[]) {
     fail('FACTORY_AX_MANAGER_IMAGE is not set: name the manager image (Dockerfile.worker, target manager)')
   const m = ax.remoteManager()
   if (m) fail(m)
-  const { name, policy } = await ax.launchManager(image!, args)
+  const { name, policy } = await ax.launchManager(image!, args, rawRigs())
   console.log(
     `the manager runs in AX task ${name}${policy ? '' : ' (its egress policy is NOT created: the task has no egress; check the AX controller)'}`,
   )
@@ -4332,10 +4333,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
   const since = force || !prior?.lastGoodAt ? undefined : prior.lastGoodAt - LINEAR_SKEW_MS
   let secrets: string[] = []
   try {
-    const creds = resolveConnectCreds()
-    secrets = [creds.token, creds.cfId, creds.cfSecret]
-    const apiKey = await resolveLinearApiKey(creds, linearConnectCache)
-    secrets.push(apiKey)
+    const apiKey = await linearAuth(secrets, process.env, linearConnectCache)
     const { issues, truncated } = await fetchLinearIssues(apiKey, rig.linear!.team)
     const allRigs = rigs()
     let unrouted = 0
@@ -5187,6 +5185,7 @@ async function dispatch() {
   // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
   const openIds: Record<string, Set<string>> = {}
   for (const rig of rigs()) {
+    if (!hasBeads(rig.repo)) continue // claude-factory-toml: a rig with no .beads store has no beads steps
     // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
     const skips = new Map<string, string>()
     const started = new Set<string>()
@@ -5576,6 +5575,7 @@ function rigFacts(
   busy: number,
   now: number,
   linear: { ids: Set<string>; rigs: Set<string> },
+  churn: Record<string, number> = {},
 ): RigFacts {
   // every open child, read from `every` (already in hand): no `bd children` subprocess call
   // per candidate (claude-factory-dun.12).
@@ -5623,7 +5623,7 @@ function rigFacts(
     .filter(x => isClosed(x) && (tsOf(x.closed_at) ?? -Infinity) >= dayAgo)
     .map(x => ({ id: x.id, title: plan.sanitize(x.title), priority: x.priority }))
   const liveBeadIds = every.filter(x => linked.has(x.id)).map(x => x.id)
-  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now)
+  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now, 24, churn)
   return {
     goal: rig.goal,
     maxRuns: rig.maxRuns,
@@ -5677,6 +5677,32 @@ export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1
   return JSON.stringify(clone)
 }
 
+/** Counts the merged PRs for each file in the last 48 hours on origin/main.
+ * Any failure gives {}: the rig still reports. */
+export function mergedFileChurn(repo: string): Record<string, number> {
+  try {
+    const p = Bun.spawnSync(
+      [
+        'git',
+        '-C',
+        repo,
+        'log',
+        '--merges',
+        '--first-parent',
+        `--since=${plan.CHURN_SINCE}`,
+        '--diff-merges=first-parent',
+        '--name-only',
+        '--format=@%H',
+        'origin/main',
+      ],
+      { timeout: 10_000 },
+    )
+    return p.exitCode === 0 ? plan.churnCounts(p.stdout.toString()) : {}
+  } catch {
+    return {}
+  }
+}
+
 /** every rig's facts, gathered once: a rig whose own bd call fails still reports (with `error`), so
  * one rig's trouble never stops the others from reaching the pm. */
 async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
@@ -5695,7 +5721,16 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
     }
     try {
       const b = beads(rig.repo, 'factory')
-      out[rig.name] = rigFacts(rig, b.every(), b.ready(), linked, busy, now, linear)
+      out[rig.name] = rigFacts(
+        rig,
+        b.every(),
+        b.ready(),
+        linked,
+        busy,
+        now,
+        linear,
+        mergedFileChurn(rig.repo),
+      )
     } catch (err) {
       out[rig.name] = emptyRigFacts(rig, busy, (err as Error).message)
     }
@@ -5773,6 +5808,7 @@ function planSetCmd(answerPath?: string) {
     if (rf.goal && items.length === 0) found.push(plan.goalNoPlanFinding(name, rf.goal))
     rigsPlan[name] = { items, findings: found }
   }
+  const churnProposals = plan.churnProposals(Object.values(facts!).flatMap(rf => rf.findings))
   const cleanProposals: plan.Proposal[] = (Array.isArray(answer!.proposals) ? answer!.proposals : [])
     .filter(
       (p): p is { rig: string; bead?: unknown; change: string; why: string } =>
@@ -5790,14 +5826,15 @@ function planSetCmd(answerPath?: string) {
     }))
 
   // every validation above must pass before anything is written: a refusal never touches plan.json
-  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: cleanProposals } satisfies plan.Plan)
+  const allProposals = [...cleanProposals, ...churnProposals.filter(p => rigNames.has(p.rig))]
+  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: allProposals } satisfies plan.Plan)
 
   let filedTotal = 0
   for (const name of rigNames) {
     const rig = rigs().find(r => r.name === name)
     if (!rig || !hasBeads(rig.repo)) continue
     const b = beads(rig.repo, 'factory')
-    const toFile = cleanProposals
+    const toFile = allProposals
       .filter(p => p.rig === name)
       .map(p => ({
         title: `pm proposal: ${clip(p.change, 80)}`,
@@ -6093,13 +6130,13 @@ async function watchPass() {
       cache.set(url, v)
       return v
     }
-    const viewMr = async (url: string, cwd: string): Promise<WatchedPr | null> => {
+    const viewMr = async (url: string, cwd: string, host?: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
       let r: Awaited<ReturnType<ReturnType<typeof gitlabForge>['view']>> | null = null
       let notes: Awaited<ReturnType<typeof gitlabWatchNotes>> = null
       try {
-        r = await gitlabForge(spawnGlab).view(url, cwd)
-        notes = 'viewed' in r ? await gitlabWatchNotes(spawnGlab, url, cwd) : null
+        r = await gitlabForge(spawnGlab).view(url, cwd, host)
+        notes = 'viewed' in r ? await gitlabWatchNotes(spawnGlab, url, cwd, host) : null
       } catch {
         // a missing glab binary counts as a failed view
       }
@@ -6127,11 +6164,17 @@ async function watchPass() {
         if (sub !== 'waiting' || !isParked(c, node)) continue
         const parked = c.log.at(-1)!
         const urls = prsIn(parked.summary)
-        const mrUrls = mrsIn(parked.summary)
+        // glab sends GITLAB_TOKEN to the URL's host, so only an MR on the rig's forge host is viewed
+        const forgeHost = originRef(run.repo)?.host
+        const mrUrls = mrsIn(parked.summary).filter(url => {
+          if (onHost(url, forgeHost)) return true
+          console.error(`watch: skip merge request on host ${url.split('/')[2]}: not the rig forge host`)
+          return false
+        })
         if (!urls.length && !mrUrls.length) continue
         const views = await Promise.all([
           ...urls.map(url => viewGh(url, run.repo)),
-          ...mrUrls.map(url => viewMr(url, run.repo)),
+          ...mrUrls.map(url => viewMr(url, run.repo, forgeHost)),
         ])
         const prs = views.filter(v => v !== null)
         const failed = prs.length < views.length
@@ -7199,6 +7242,9 @@ if (import.meta.main && !outboxCmd)
         break
       case 'sync':
         await syncPass()
+        break
+      case 'broker':
+        broker.main(args)
         break
       case 'manager':
         if (args[0] === 'host') {
