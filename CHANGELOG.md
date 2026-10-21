@@ -423,6 +423,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook did not see zsh glob qualifier code. A glued group such as `ls *(e:...:)` or `ls *(+name)` runs a command for each file. The hook now denies an unquoted group glued to a word that holds `e`, `+`, `$` or a backtick (claude-factory-1r7x).
 - Fixed: a codex worker had no deny hook, lean settings, worker rules or context limit (claude-factory-x0b9). It now gets its own `CODEX_HOME` with the deny hook, the worker rules and a compaction limit. A codex launch refuses if the agent command turns the guard off. The ax runner refuses codex workers until claude-factory-72dq.
 - Fixed: the dispatch loop reported `bd list: Error: no beads database found` for a rig with no `.beads` store, such as the ax rig. The loop now skips such a rig (claude-factory-toml).
+- New: the AX manager holds no secret (claude-factory-192.3). Its policy gets a `DOLT_BASIC` rule for each rig `beadsRemote` and a `LINEAR` rule for a `--linear` rig. The policy broker has `GET /controller` (the launch guard reads the controller there, because the VM has no kube API) and `POST /token/best` (runs `claude-token best` in the broker pod). With `FACTORY_AX_MANAGER_BROKER` set, `FACTORY_AX_TOKEN_SWAP` calls the broker. In AX, the Linear pull sends a placeholder key. `hack/ax-manager-check.sh` checks all of this in the VM. The laptop path does not change.
 
 ## 0.13.0 (2026-10-18)
 
