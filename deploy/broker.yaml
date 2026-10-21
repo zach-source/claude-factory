@@ -1,5 +1,8 @@
 # The policy broker (docs/remote-runner.md, Policy broker). Set BROKER_IMAGE to the image, by digest, and apply:
-#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> envsubst '$BROKER_IMAGE' < deploy/broker.yaml | kubectl apply -f -
+#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> envsubst '$BROKER_IMAGE $CLAUDE_TOKEN_ITEM $CLAUDE_TOKEN_VAULT $CLAUDE_TOKEN_LIVE_FIELD $CLAUDE_TOKEN_SLOT_FIELD $CLAUDE_TOKEN_ACTIVE_FIELD' < deploy/broker.yaml | kubectl apply -f -
+# The CLAUDE_TOKEN_* values are bin/claude-token's variables. Leave CLAUDE_TOKEN_ITEM empty and POST /token/best is
+# not served. The op writer token is the Secret claude-token-op (key token) in namespace factory-broker.
+# Make it by hand, outside this file: kubectl -n factory-broker create secret generic claude-token-op --from-literal=token=<op token>
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -34,6 +37,32 @@ subjects:
     name: factory-policy-broker
     namespace: factory-broker
 ---
+# GET /controller: get on the one Deployment ax-controller, nothing else
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factory-policy-broker
+  namespace: ax-system
+rules:
+  - apiGroups: ['apps']
+    resources: ['deployments']
+    resourceNames: ['ax-controller']
+    verbs: ['get']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factory-policy-broker
+  namespace: ax-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-policy-broker
+subjects:
+  - kind: ServiceAccount
+    name: factory-policy-broker
+    namespace: factory-broker
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,15 +80,30 @@ spec:
     spec:
       serviceAccountName: factory-policy-broker
       automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: broker
           image: ${BROKER_IMAGE}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
           args: ['--port', '8080']
           env:
             - name: FACTORY_BROKER_ATESPACES
               value: factory
             - name: FACTORY_BROKER_ENDPOINT
               value: api.ate-system.svc:443
+            - { name: CLAUDE_TOKEN_ITEM, value: '${CLAUDE_TOKEN_ITEM}' }
+            - { name: CLAUDE_TOKEN_VAULT, value: '${CLAUDE_TOKEN_VAULT}' }
+            - { name: CLAUDE_TOKEN_LIVE_FIELD, value: '${CLAUDE_TOKEN_LIVE_FIELD}' }
+            - { name: CLAUDE_TOKEN_SLOT_FIELD, value: '${CLAUDE_TOKEN_SLOT_FIELD}' }
+            - { name: CLAUDE_TOKEN_ACTIVE_FIELD, value: '${CLAUDE_TOKEN_ACTIVE_FIELD}' }
+            - name: OP_SERVICE_ACCOUNT_TOKEN
+              valueFrom:
+                secretKeyRef: { name: claude-token-op, key: token, optional: true }
           ports:
             - containerPort: 8080
           readinessProbe:
@@ -88,3 +132,24 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+---
+# Only the egress gateway's namespace can call the broker: the manager's calls arrive from the gateway.
+# Confirm the gateway namespace and pod labels before apply.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: factory-policy-broker
+  namespace: factory-broker
+spec:
+  podSelector:
+    matchLabels:
+      app: factory-policy-broker
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ate-system
+      ports:
+        - protocol: TCP
+          port: 8080
