@@ -235,6 +235,20 @@ test('validate rejects broken graphs', () => {
   expect(validate(def)).toBe(def)
 })
 
+test('validate accepts a defer edge that names a station of the factory, and refuses an unknown one', () => {
+  const rejects = (edge: object) => () =>
+    validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
+  expect(rejects({ to: 'done', defer: { station: 'a' } })).not.toThrow()
+  expect(rejects({ to: 'done', defer: { station: 'nope' } })).toThrow('defer station "nope" is not a node')
+  expect(rejects({ to: 'a', defer: { station: 'a' } })).toThrow('only an edge into done defers')
+  expect(rejects({ to: 'done', defer: { station: 'a' }, requeue: true })).toThrow(
+    'defers, rejects or requeues, only one',
+  )
+  expect(rejects({ to: 'done', defer: { station: 'a' }, ship: true })).toThrow(
+    'defers, rejects, requeues or ships, only one',
+  )
+})
+
 test('validate refuses a requeue edge that does not go into done, that also defers or rejects, or that names an invalid factory/station', () => {
   const rejects = (edge: object) => () =>
     validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
