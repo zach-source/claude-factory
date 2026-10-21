@@ -52,7 +52,14 @@ export type Harness = 'claude' | 'codex' | 'pi'
  * a rig's extra egress rule: HTTPS to `hosts`, and with a vault `key` the gateway puts that agent-vault credential in
  * `header` (after `prefix`) on the way out. No key: reachable as it is. `port` when not 443 (a Dolt remotesapi)
  */
-export type Egress = { hosts: string[]; key?: string; header?: string; prefix?: string; port?: number }
+export type Egress = {
+  hosts: string[]
+  key?: string
+  header?: string
+  prefix?: string
+  port?: number
+  http?: boolean
+}
 
 const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i
 /**
@@ -218,12 +225,49 @@ function must(args: string[], stdin?: string) {
   return r.out
 }
 
+/**
+ * the policy broker's base URL (src/broker.ts), set inside the AX manager's VM, which cannot reach ate-api:
+ * policies and the gateway CA then go to it over HTTP, not through kubectl. Unset, kubectl as before
+ */
+const BROKER = () => process.env.FACTORY_POLICY_BROKER?.replace(/\/+$/, '')
+// ponytail: curl, since callers are synchronous; the manager image has it. The ceiling is one try, 30 s
+const CURL = () => process.env.FACTORY_CURL ?? 'curl'
+function broker(method: string, path: string, body?: string) {
+  const p = Bun.spawnSync(
+    [
+      CURL(),
+      '-sS',
+      '-m',
+      '30',
+      '-X',
+      method,
+      ...(body === undefined ? [] : ['--data-binary', '@-']),
+      '-w',
+      '\\n%{http_code}',
+      `${BROKER()}${path}`,
+    ],
+    { stdin: body === undefined ? undefined : Buffer.from(body), timeout: 35_000 },
+  )
+  const out = p.stdout.toString()
+  const nl = out.lastIndexOf('\n')
+  const status = Number(out.slice(nl + 1))
+  return {
+    ok: p.exitCode === 0 && status >= 200 && status < 300,
+    body: nl >= 0 ? out.slice(0, nl) : p.stderr.toString(),
+  }
+}
+
 const EGRESS_CA = 'egress-mitm.ate.dev:mitm:primary-bundle'
 /**
  * the egress gateway's public CA, which the VM must trust because every HTTPS request out is decrypted by the
  * gateway; Substrate hands it only to actors whose template asks for it, and AX's templates don't
  */
 export function egressCA() {
+  if (BROKER()) {
+    const r = broker('GET', '/ca')
+    if (!r.ok || !r.body.trim()) throw new Error(`the egress gateway's CA: ${r.body.trim() || 'empty'}`)
+    return r.body.trim()
+  }
   const p = Bun.spawnSync([
     KUBECTL(),
     ...context(),
@@ -354,10 +398,10 @@ export function egressPolicy(
       // change every devenv's derivation, and so miss the rig's cached devenv
       { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } },
       ...(gate ? [gateRule(gate)] : []),
-      ...(gate ? stripRegistryHosts(extra) : extra).map(({ hosts, key, header, prefix, port }) =>
+      ...(gate ? stripRegistryHosts(extra) : extra).map(({ hosts, key, header, prefix, port, http }) =>
         key
           ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port)
-          : { https: { hostnames: hosts, ...(port && { ports: { numbers: [port] } }) } },
+          : { [http ? 'http' : 'https']: { hostnames: hosts, ...(port && { ports: { numbers: [port] } }) } },
       ),
     ],
   }
@@ -374,13 +418,13 @@ export function createPolicy(
   githubOwner?: string,
   githubKey?: string,
 ) {
+  const policy = JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey))
+  if (BROKER()) return broker('PUT', `/policy/${ATESPACE()}/${task}`, policy).ok
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(
     [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
     {
-      stdin: Buffer.from(
-        JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey)),
-      ),
+      stdin: Buffer.from(policy),
       timeout: 30_000,
     },
   )
@@ -560,6 +604,15 @@ const MANAGER_PASS = [
   'FACTORY_AX_BACKUP_EVERY',
 ]
 
+/**
+ * the in-cluster addresses the manager's VM uses, read on the laptop and given at launch (none is committed): the AX
+ * server (AX_SERVER in the VM), the atenet router, and the policy broker (FACTORY_POLICY_BROKER in the VM). The
+ * laptop's name differs from the VM's, so a laptop that has the broker set does not send its own policies to it
+ */
+const MANAGER_AX_SERVER = 'FACTORY_AX_MANAGER_AX_SERVER'
+const MANAGER_ROUTER = 'FACTORY_AX_MANAGER_ROUTER'
+const MANAGER_BROKER = 'FACTORY_AX_MANAGER_BROKER'
+
 /** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
 export function managerEnv(env: Record<string, string | undefined> = process.env) {
   return {
@@ -568,32 +621,40 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     // its Claude sessions on the volume, so `--resume` finds them after a restart
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
     ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
+    ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
+    ...(env[MANAGER_BROKER] && { FACTORY_POLICY_BROKER: env[MANAGER_BROKER] }),
+    // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make
+    ...(routerAddress(env[MANAGER_ROUTER]) && { AX_ROUTER: routerAddress(env[MANAGER_ROUTER])! }),
+  }
+}
+
+/** `host:port` of the router URL (port 80 when it names none); undefined when the value is not a URL */
+export function routerAddress(url?: string) {
+  if (!url) return undefined
+  try {
+    const u = new URL(url)
+    return /^https?:$/.test(u.protocol) && u.hostname ? `${u.hostname}:${u.port || 80}` : undefined
+  } catch {
+    return undefined
   }
 }
 
 /**
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
- * and the AX server, which its ax runner talks to. ponytail: AX_SERVER only; a rig's hosts stay with the workers
+ * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
+ * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
+ * A value that is not a URL adds no rule. ponytail: a rig's hosts stay with the workers
  */
-export function managerEgress(axServer = process.env.AX_SERVER): Egress[] {
-  const u = (() => {
+export function managerEgress(env: Record<string, string | undefined> = process.env): Egress[] {
+  const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap(k => {
     try {
-      return axServer ? new URL(axServer) : null
+      const u = env[k] ? new URL(env[k]!) : null
+      return u?.hostname ? [{ hosts: [u.hostname], port: Number(u.port) || 80, http: true }] : []
     } catch {
-      return null
+      return []
     }
-  })()
-  return [
-    { hosts: ['claude.ai'] },
-    ...(u?.hostname
-      ? [
-          {
-            hosts: [u.hostname],
-            ...(u.port ? { port: Number(u.port) } : u.protocol === 'http:' && { port: 80 }),
-          },
-        ]
-      : []),
-  ]
+  })
+  return [{ hosts: ['claude.ai'] }, ...rules]
 }
 
 /**
