@@ -659,12 +659,23 @@ const RUNNER_WRAPPERS = new Set([
   'devenv',
   'capsh',
   'start-stop-daemon',
+  'entr',
+  'proot',
+  'ccache',
+  'run0',
+  'rr',
+  'flatpak-spawn',
+  'setlock',
+  'mpirun',
+  'srun',
 ])
 
 // `bun test src/*.test.ts` must stay allowed, so bun is a runner only for x, exec and run.
 function isRunner(words: string[], i: number): boolean {
   const b = baseWord(words[i]!)
-  return RUNNER_WRAPPERS.has(b) || (b === 'bun' && ['x', 'exec', 'run'].includes(words[i + 1] ?? ''))
+  return (
+    RUNNER_WRAPPERS.has(b) || (b === 'bun' && words.slice(i + 1).some(w => ['x', 'exec', 'run'].includes(w)))
+  )
 }
 
 const WRAPPERS = new Set([

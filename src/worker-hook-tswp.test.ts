@@ -352,3 +352,32 @@ test.each([
 ])('denyReason allows %j (claude-factory-tswp r5)', cmd => {
   expect(run(cmd)).toBeUndefined()
 })
+
+const R6 = [
+  'bun --bun x rm -rf /',
+  'bun -b x rm -rf /',
+  'bun --cwd . x rm -rf /',
+  'bun --silent run rm -rf /',
+  'nice bun --bun x rm -rf /',
+  'bun --bun x {rm,} -rf /',
+  'bun --bun x find . -exec rm -rf {} +',
+  ...['bunx', 'entr', 'proot', 'ccache', 'run0', 'rr', 'flatpak-spawn', 'setlock', 'mpirun', 'srun'].map(
+    w => `${w} rm -rf /`,
+  ),
+]
+
+test.each(R6)('denyReason denies %j (claude-factory-tswp r6)', cmd => {
+  expect(run(cmd)).toBeString()
+})
+
+test.each([
+  'bun test src/*.test.ts',
+  'bun test --watch src/a.test.ts',
+  'bun run build',
+  'bun --bun x tsc',
+  'bunx tsc',
+  'ccache gcc -c a.c',
+  'stdbuf -o0 ls',
+])('denyReason allows %j (claude-factory-tswp r6)', cmd => {
+  expect(run(cmd)).toBeUndefined()
+})
