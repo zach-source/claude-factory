@@ -5558,7 +5558,7 @@ export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1
 
 /** Counts the merged PRs for each file in the last 48 hours on origin/main.
  * Any failure gives {}: the rig still reports. */
-function mergedFileChurn(repo: string): Record<string, number> {
+export function mergedFileChurn(repo: string): Record<string, number> {
   try {
     const p = Bun.spawnSync(
       [
@@ -5567,6 +5567,7 @@ function mergedFileChurn(repo: string): Record<string, number> {
         repo,
         'log',
         '--merges',
+        '--first-parent',
         `--since=${plan.CHURN_SINCE}`,
         '--diff-merges=first-parent',
         '--name-only',
@@ -5704,7 +5705,7 @@ function planSetCmd(answerPath?: string) {
     }))
 
   // every validation above must pass before anything is written: a refusal never touches plan.json
-  const allProposals = [...churnProposals.filter(p => rigNames.has(p.rig)), ...cleanProposals]
+  const allProposals = [...cleanProposals, ...churnProposals.filter(p => rigNames.has(p.rig))]
   writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: allProposals } satisfies plan.Plan)
 
   let filedTotal = 0
