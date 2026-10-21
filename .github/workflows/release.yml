@@ -78,6 +78,10 @@ jobs:
           git commit -m "release: $VERSION"
           git push origin "$branch"
           notes="$(bun src/release.ts notes "$VERSION")"
+          # GitHub refuses a PR body over 65536 chars. Cut the notes and link the full CHANGELOG.
+          if [ "${#notes}" -gt 60000 ]; then
+            notes="${notes:0:60000}"$'\n\n'"Notes cut at 60000 chars. Full text: https://github.com/${GITHUB_REPOSITORY}/blob/${branch}/CHANGELOG.md"
+          fi
           gh pr create --base main --head "$branch" --title "release: $VERSION" --body "$notes"
           # A GITHUB_TOKEN-opened PR starts no pull_request run, so ci.yml's required checks
           # never report on this head SHA unless something dispatches them. Do that here.

@@ -520,3 +520,13 @@ test('a manager goto plan between two verify reds breaks the repeat streak (clau
   // the re-plan renumbered AC2, so this is not a real repeat: still only the 1st mail
   expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
 })
+
+test('review, security and check prompts hold the out-of-diff rule (claude-factory-nwlh.4)', () => {
+  for (const n of ['review', 'security', 'check'] as const) {
+    const p = lifecycle.nodes[n]!.prompt
+    expect(p).toContain("outside this branch's diff never makes the verdict changes")
+    expect(p).toContain('bd search')
+    expect(p).toContain('P2 or lower')
+    expect(p).toContain('sets P0 or P1')
+  }
+})

@@ -51,7 +51,7 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller'])
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'bctl'])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
@@ -1587,10 +1587,12 @@ test('launchManager applies the manager task with its command and env, then retr
     Object.assign(process.env, {
       FACTORY_MAX_RUNS: '16',
       FACTORY_AX_VAULT: 'v1',
-      AX_SERVER: 'http://ax.example.private:8080',
+      FACTORY_AX_MANAGER_AX_SERVER: 'http://ax.example.svc:8080',
+      FACTORY_AX_MANAGER_ROUTER: 'http://router.example.svc',
+      FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
     })
     delete process.env.FACTORY_AX_IMAGE
-    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], { waitMs: 0 })
+    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], [], { waitMs: 0 })
     expect(r).toEqual({ name: 'f-manager', policy: true })
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
@@ -1612,19 +1614,154 @@ test('launchManager applies the manager task with its command and env, then retr
     expect(env.FACTORY_AX_IMAGE).toBeUndefined()
     expect(env.FACTORY_REPO).toBeUndefined()
     expect(env.FACTORY_OUTBOX).toBeUndefined()
-    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.map(
-      (x: { https: { hostnames: string[]; ports?: unknown } }) => x.https,
-    )
-    expect(rules.some((h: { hostnames: string[] }) => h.hostnames.includes('claude.ai'))).toBe(true)
-    expect(rules.at(-1)).toEqual({ hostnames: ['ax.example.private'], ports: { numbers: [8080] } })
+    expect(env.AX_SERVER).toBe('http://ax.example.svc:8080')
+    expect(env.FACTORY_POLICY_BROKER).toBe('http://broker.example.svc:8080')
+    expect(env.AX_ROUTER).toBe('router.example.svc:80')
+    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules
+    expect(
+      rules.some((x: { https?: { hostnames: string[] } }) => x.https?.hostnames.includes('claude.ai')),
+    ).toBe(true)
+    expect(rules.slice(-3)).toEqual([
+      { http: { hostnames: ['ax.example.svc'], ports: { numbers: [8080] } } },
+      { http: { hostnames: ['router.example.svc'], ports: { numbers: [80] } } },
+      { http: { hostnames: ['broker.example.svc'], ports: { numbers: [8080] } } },
+    ])
     expect(logged().filter(l => l.includes('create egress-policy f-manager')).length).toBe(2) // refused once, then in
   } finally {
     process.env = saved
   }
 })
 
-test('managerEgress names the AX server only when AX_SERVER is a URL', () => {
-  expect(ax.managerEgress(undefined)).toEqual([{ hosts: ['claude.ai'] }])
-  expect(ax.managerEgress('not a url')).toEqual([{ hosts: ['claude.ai'] }])
-  expect(ax.managerEgress('https://ax.x.io')).toEqual([{ hosts: ['claude.ai'] }, { hosts: ['ax.x.io'] }])
+test('managerEnv sets the token swap to a broker POST only when the broker is set', () => {
+  expect(ax.managerEnv({}).FACTORY_AX_TOKEN_SWAP).toBeUndefined()
+  expect(
+    ax.managerEnv({ FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080/' }).FACTORY_AX_TOKEN_SWAP,
+  ).toBe('curl -sSf -m 25 -X POST http://broker.example.svc:8080/token/best')
+})
+
+test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
+  expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_ROUTER: 'http://r.example.svc' })).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['r.example.svc'], port: 80, http: true },
+  ])
+})
+
+// a fake curl: records the call and the body, answers by path
+const curl = join(dir, 'curl')
+writeFileSync(
+  curl,
+  `#!/bin/sh
+printf 'curl %s\\n' "$*" >> ${calls}
+case "$*" in
+  *PUT*) cat > ${dir}/policy; printf 'created\\n201' ;;
+  */ca*) printf 'CA-FROM-BROKER\\n200' ;;
+  */controller*) cat ${dir}/bctl ;;
+  *) printf 'no\\n502' ;;
+esac
+`,
+)
+chmodSync(curl, 0o755)
+
+test('with FACTORY_POLICY_BROKER set, unavailable() asks the broker and does not run kubectl', () => {
+  const ready = {
+    metadata: { generation: 3 },
+    spec: { replicas: 1 },
+    status: { observedGeneration: 3, readyReplicas: 1, availableReplicas: 1 },
+  }
+  const saved = [process.env.FACTORY_POLICY_BROKER, process.env.FACTORY_CURL]
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+  process.env.FACTORY_CURL = curl
+  try {
+    writeFileSync(join(dir, 'bctl'), JSON.stringify(ready) + '\n200')
+    expect(ax.unavailable()).toBeUndefined()
+    expect(logged().some(l => l.startsWith('kubectl'))).toBe(false)
+    expect(logged().at(-1)).toContain('http://broker.example.svc:8080/controller')
+    const notReady = { ...ready, status: { ...ready.status, readyReplicas: 0 } }
+    writeFileSync(join(dir, 'bctl'), JSON.stringify(notReady) + '\n200')
+    expect(ax.unavailable()).toContain('is not ready at its current generation')
+    writeFileSync(join(dir, 'bctl'), 'controller: boom\n502')
+    expect(ax.unavailable()).toContain('could not be observed')
+  } finally {
+    if (saved[0] === undefined) delete process.env.FACTORY_POLICY_BROKER
+    else process.env.FACTORY_POLICY_BROKER = saved[0]
+    if (saved[1] === undefined) delete process.env.FACTORY_CURL
+    else process.env.FACTORY_CURL = saved[1]
+  }
+})
+
+test('with FACTORY_POLICY_BROKER set, the policy and the CA go to the broker and kubectl is not run', () => {
+  process.env.FACTORY_CURL = curl
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080/'
+  try {
+    expect(ax.egressCA()).toBe('CA-FROM-BROKER')
+    expect(ax.createPolicy('f-r1-1')).toBe(true)
+    expect(logged()).toEqual([
+      'curl -sS -m 30 -X GET -w \\n%{http_code} http://broker.example.svc:8080/ca',
+      'curl -sS -m 30 -X PUT --data-binary @- -w \\n%{http_code} http://broker.example.svc:8080/policy/factory/f-r1-1',
+    ])
+    expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy())
+    process.env.FACTORY_CURL = 'false'
+    expect(ax.createPolicy('f-r1-1')).toBe(false)
+    expect(() => ax.egressCA()).toThrow('the egress gateway')
+  } finally {
+    delete process.env.FACTORY_CURL
+    delete process.env.FACTORY_POLICY_BROKER
+  }
+})
+
+test('routerAddress gives host:port of the router URL, port 80 by default, and nothing for a non-URL', () => {
+  expect(ax.routerAddress('http://r.example.svc')).toBe('r.example.svc:80')
+  expect(ax.routerAddress('http://r.example.svc:8081')).toBe('r.example.svc:8081')
+  expect(ax.routerAddress('r.example.svc:80')).toBeUndefined()
+  expect(ax.routerAddress(undefined)).toBeUndefined()
+})
+
+test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none without one', () => {
+  const rig = (name: string, url?: string, egress?: ax.Egress[]) => ({
+    name,
+    ...(url && { beadsRemote: { name: 'origin', url, user: 'u' } }),
+    ...(egress && { egress }),
+  })
+  const rigs = [
+    rig('a', 'https://beads-dolt.beads.svc.cluster.local:50051/acme/widget'),
+    rig('b', 'https://beads-dolt.beads.svc.cluster.local:50051/acme/other'),
+    rig('c', 'https://dolt.example.com/acme/x'),
+    rig('d'),
+    rig('e', 'not a url'),
+    rig('f', 'http://plain.example.com:50051/x'),
+  ]
+  const dolt = (hosts: string[], port: number) => ({
+    hosts,
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+    port,
+  })
+  expect(ax.managerEgress({}, rigs)).toEqual([
+    { hosts: ['claude.ai'] },
+    dolt(['beads-dolt.beads.svc.cluster.local'], 50051),
+    dolt(['dolt.example.com'], 443),
+  ])
+  const own = rig('g', 'https://own.example.com:8443/x', [
+    { hosts: ['own.example.com'], port: 8443, key: 'ACME_DOLT', header: 'X-Auth', prefix: 'T ' },
+  ])
+  expect(ax.managerEgress({}, [own])[1]).toEqual({
+    hosts: ['own.example.com'],
+    key: 'ACME_DOLT',
+    header: 'X-Auth',
+    prefix: 'T ',
+    port: 8443,
+  })
+  expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }])
+})
+
+test('managerEgress adds the Linear rule only for a rig with --linear', () => {
+  const linear = { linear: { team: 't' } }
+  expect(ax.managerEgress({}, [{}])).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({}, [linear])).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
+  ])
 })

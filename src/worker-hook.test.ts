@@ -9299,6 +9299,95 @@ test.each([
 ])('claude-factory-j1ki.12-15: %s stays allowed', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
 })
+// claude-factory-y094: an empty glued expansion joins the command word.
+test.each([
+  'g${X}it${IFS}push${IFS}origin${IFS}main',
+  'g${XIFS}it${IFS}push${IFS}origin${IFS}main',
+  'g$XIFS"it"$IFS"push"$IFS"origin"$IFS"main"',
+  'g${IFS:+}it${IFS}push${IFS}origin${IFS}main',
+  'g${IFS:0:0}it${IFS}push${IFS}origin${IFS}main',
+  'g$1it${IFS}push${IFS}origin${IFS}main',
+  'g$@it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-}it${IFS}push${IFS}origin${IFS}main',
+  'g${X#a}it${IFS}push${IFS}origin${IFS}main',
+  'sudo g${X}it${IFS}push${IFS}origin${IFS}main',
+  'true && g${X}it${IFS}push${IFS}origin${IFS}main',
+  'g${X}it${IFS}push${IFS}origin${IFS}HEAD:main',
+  'gi${X}t${IFS}pu${X}sh${IFS}origin${IFS}main',
+  'g$X"it"$IFS"push"$IFS"origin"$IFS"main"',
+  'g${X}it${IFS:0:1}push${IFS:0:1}--force${IFS:0:1}origin${IFS:0:1}main',
+  'g${X:-it}${IFS}push${IFS}origin${IFS}main',
+  'g${X=it}${IFS}push${IFS}origin${IFS}main',
+  'g${X:=it}${IFS}push${IFS}origin${IFS}main',
+  '${X:-git}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+it}${IFS}push${IFS}origin${IFS}main',
+  'g${X:-${Y:-i}}t${IFS}push${IFS}origin${IFS}main',
+  'g${X:-it${IFS}push}${IFS}origin${IFS}main',
+  'g${X:+zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X+zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X-zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-${Y:+zz}}it${IFS}push${IFS}origin${IFS}main',
+  'g' + '${X:+${IFS:0:1}}'.repeat(50) + 'it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-"i"}t${IFS}push${IFS}origin${IFS}main',
+  "g${X:-'i'}t${IFS}push${IFS}origin${IFS}main",
+  'g${X:-\\i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+"i"}t${IFS}push${IFS}origin${IFS}main',
+  'g${X:+z}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+  'g${X:+a}${X:+b}${X:+c}${HOME:+i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}${HOME:+t}${X:+z}${X:+z}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}t${X:+a}${X:+b}${X:+c}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+${Y:+zz}i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i${Y:+zz}}t${IFS}push${IFS}origin${IFS}main',
+  'gi${HOME:+t${Y:+zz}}${IFS}push${IFS}origin${IFS}main',
+  'g${IFS:0:0}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+])('claude-factory-y094: %s denies with DYNAMIC_VERB_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+// y094.6: an IFS span with a modifier glued after an emptied head word still denies (any reason).
+test.each([
+  'g${X}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+  'g${X}it${IFS:1:1}push${IFS:1:1}origin${IFS:1:1}main',
+  'g${X}it${IFS:1}push${IFS:1}origin${IFS:1}main',
+  'g${X}it${IFS::1}push${IFS::1}origin${IFS::1}main',
+  'g${X}it${IFS:-}push${IFS:-}origin${IFS:-}main',
+  'g${X}it${IFS-}push${IFS-}origin${IFS-}main',
+  'g${X}it${IFS}push${IFS:0:1}origin${IFS:+}main',
+])('claude-factory-y094.6: %s denies', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeDefined()
+})
+test.each(['r${X}m -rf /', 'r${X}m${IFS}-rf${IFS}/', 'r$(:)m -r ./d'])(
+  'claude-factory-y094: %s denies with REASON',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test('claude-factory-y094: g${X}h${IFS}pr${IFS}merge${IFS}1 denies like gh pr merge', () => {
+  expect(denyReason('g${X}h${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(
+    DYNAMIC_VERB_REASON,
+  )
+  expect(denyReason('g${HOME:+h}${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(
+    DYNAMIC_VERB_REASON,
+  )
+})
+test.each([
+  'g${X}it${IFS}status',
+  'echo a${X}b',
+  'ls build/a${X}b',
+  '$HOME/.local/bin/claude plugin test mod',
+  'git -C "$WT"/sub status',
+  'ls$IFS-la',
+  'ls ${X:-.}',
+  'echo a${X:-b}c',
+  'echo a${X:+b}c',
+  'ls${IFS:0:1}-la',
+  'echo ${X:-${Y:-a}}',
+  'echo ${A:-a}${B:-b}${C:-c}${D:-d}${E:-e}',
+  'echo "${IFS:0:1}"',
+  'git commit -m "g${X}it${IFS}push"',
+])('claude-factory-y094: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
 const J1KI_ALLOW_ROWS = [
   'ls ${IFS}',
   'echo a${X}b',
@@ -9309,9 +9398,145 @@ const J1KI_ALLOW_ROWS = [
   'git commit -m "a ${X} b"',
   'git -C "$WT"/sub status',
   'ls build/a${X}b 2>/dev/null',
-  'find "$D"/x -name y -delete',
+  'find "$D"/x -name y -print',
   'echo a$(date)b',
 ]
+// claude-factory-easj: find -delete removes every match, like rm -r. A start path outside the worktree, a glob or a variable denies.
+const EASJ_DENY_ROWS = [
+  'find / -delete',
+  'find .. -delete',
+  'nocorrect find / -delete',
+  'sudo find / -delete',
+  'find -L / -delete',
+  'find -f / -delete',
+  'find -- / -delete',
+  'find . / -delete',
+  'find / -{delete,print}',
+  'env find / -delete',
+  'xargs find / -delete',
+  '/usr/bin/find / -delete',
+  'x=1 find / -delete',
+  'find / -name x -delete',
+  'find / -type f -name x -delete -print',
+  'find "$D"/x -name y -delete',
+  'find /root/repo/../x -delete',
+  'find -sf / . -delete',
+  'find -Lf / . -delete',
+  'find -f/ . -delete',
+  'find -f / . -delete',
+  'find -files0-from l -delete',
+  'find . -files0-from l -delete',
+  'find / -$X',
+  'find / -${X}',
+  'cd / && find . -delete',
+  'cd /; find . -delete',
+  'pushd /; find . -delete',
+  'find . -delete -exec ${X} -rf / +',
+  'find -O10 / -delete',
+  'find -O99 / -delete',
+  'find / $X',
+  'find / ${X}',
+  'find / "$X"',
+  'find / -print $X',
+  'cd / ; >f find . -delete',
+  'cd / ; 2>f find . -delete',
+]
+// These rows keep their own deny reason (the home rule or the glob command word rule).
+const EASJ_DYNAMIC_PATH_ROWS = [
+  'find -L $X -delete',
+  'find -H "$D" -delete',
+  'find -P ${D} -delete',
+  'find -x $X -delete',
+  'find -O3 $X -delete',
+  'find -s "$D" -name y -delete',
+  'find . $X -delete',
+  'find . "$D" -delete',
+  'find .scratch $X -delete',
+  'find -f . $X -delete',
+]
+test.each(EASJ_DYNAMIC_PATH_ROWS)('claude-factory-easj.12: %s denies with REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+// easj security round 1 (.13 to .18)
+const EASJ_SEC_DENY_ROWS = [
+  'find . -[x; rm -rf /',
+  'find . -[x; git push --force origin main',
+  "find / -name '-[x' -o -delete",
+  'find - / -delete',
+  'find -- - / -delete',
+  'find -L - / -delete',
+  'find - .. -delete',
+  'find . -exec find / -delete \\;',
+  'find . -execdir find / -delete \\;',
+  'find . -maxdepth 0 -exec find / -delete \\;',
+  'find . -exec env find / -delete \\;',
+  'find . -exec sudo find / -delete \\;',
+  'find . -exec /usr/bin/find / -delete \\;',
+  'find . -exec find -L / -delete \\;',
+  'find . -exec find / -delete {} +',
+  'find . -ok find / -delete \\;',
+  'find . -execdir xargs find / -delete \\;',
+  'echo / | xargs -I% find % -delete',
+  'echo / | xargs -I @ find @ -delete',
+  'echo / | xargs -J % find % -delete',
+  'echo / | xargs --replace=% find % -delete',
+  'echo / | xargs -I % sudo find % -delete',
+  'echo / | xargs -L1 -I% find % -delete',
+  'echo / | xargs -0 -I% find % -delete',
+  'echo / | xargs -I% find -L % -delete',
+  'echo / | xargs find % -name x -delete',
+  'echo / | xargs -I% find -f % -delete',
+  'chdir /; find . -delete',
+]
+test.each(EASJ_SEC_DENY_ROWS)('claude-factory-easj sec: %s denies', cmd => {
+  const r = denyReason(cmd, '/root/repo', undefined, J1KI_GATE)
+  // The push row denies with the protected-branch reason, not the rm reason.
+  if (cmd.includes('git push')) expect(r).toBeDefined()
+  else expect(r).toBe(REASON)
+})
+test('claude-factory-easj.19: nested find in exec slots scans in linear time', () => {
+  const cmd = 'find . ' + '-exec find . '.repeat(30) + '-delete \\; ; rm -rf /'
+  const t = performance.now()
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  expect(performance.now() - t).toBeLessThan(1000)
+})
+test.each(['find . -delete', 'find -delete', 'find ./x -delete', 'find . -name x -delete'])(
+  'claude-factory-easj.17: %s denies when gate cwd is outside root',
+  cmd => {
+    for (const cwd of ['/', '/etc'])
+      expect(denyReason(cmd, '/root/repo', undefined, { ...J1KI_GATE, cwd })).toBeDefined()
+  },
+)
+test.each(['find . -delete', 'find .scratch/x -delete'])(
+  'claude-factory-easj.17: %s allows with cwd inside root',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, { ...J1KI_GATE, cwd: '/root/repo/sub' })).toBeUndefined()
+  },
+)
+const EASJ_OTHER_DENY_ROWS = ['find $HOME -delete', 'find / -de?ete', 'find * -delete']
+const EASJ_ALLOW_ROWS = [
+  'find .scratch/x -delete',
+  'find . -name x -delete',
+  'find -delete',
+  'find /root/repo/x -delete',
+  'find / -name x -print',
+  'find "$D"/x -name y -print',
+  'find . -$X',
+  'find / -name "$X" -print',
+  'find . -name "$X" -delete',
+  'find . $X',
+  'find -f .scratch . -delete',
+]
+test.each(EASJ_DENY_ROWS)('claude-factory-easj: %s denies with REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+})
+test.each(EASJ_OTHER_DENY_ROWS)('claude-factory-easj: %s denies', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeDefined()
+})
+test.each(EASJ_ALLOW_ROWS)('claude-factory-easj: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
+
 // claude-factory-dnw1: a nested default inside a glued brace expansion must not end at the first "}".
 test.each(['rm${X:-${IFS}}-rf${X:-${IFS}}/', 'rm${X:-${Y:-${IFS}}}-rf${X:-${IFS}}/', 'rm${X:-${IFS}}-rf /'])(
   'claude-factory-dnw1: %s denies with REASON',
