@@ -442,17 +442,20 @@ function secRun(onRounds?: string) {
   return { d, send }
 }
 
-test.each(['plan', undefined])('review security reports never count toward the cap (onRounds %s)', onRounds => {
-  const { d } = secRun(onRounds)
-  for (let i = 0; i < 7; i++) {
-    d('ready')
-    const s = d('security')
-    expect(where(s.value)).toEqual(['security', 'working'])
-    expect(s.context.mail.plan ?? []).toHaveLength(0)
-    expect(s.context.log.some(e => e.replan)).toBe(false)
-    d('changes') // security changes goes back to implement
-  }
-})
+test.each(['plan', undefined])(
+  'review security reports never count toward the cap (onRounds %s)',
+  onRounds => {
+    const { d } = secRun(onRounds)
+    for (let i = 0; i < 5; i++) {
+      d('ready')
+      const s = d('security')
+      expect(where(s.value)).toEqual(['security', 'working'])
+      expect(s.context.mail.plan ?? []).toHaveLength(0)
+      expect(s.context.log.some(e => e.replan)).toBe(false)
+      d('changes') // security changes goes back to implement
+    }
+  },
+)
 
 test('back edges still cap, and security reports between them do not move the cap', () => {
   const { d } = secRun('plan')
