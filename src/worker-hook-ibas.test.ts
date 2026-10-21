@@ -20,6 +20,10 @@ const ROWS = [
   "$X 'rm -rf' /",
   '$X "echo a;rm -rf /"',
   "$X 'cd /; rm -r x'",
+  '${X:-eval} "rm -rf /"',
+  '${=X} "rm -rf /"',
+  '"$@" "rm -rf /"',
+  '$@ "rm -rf /"',
 ]
 const PREFIXES = [
   '%',
