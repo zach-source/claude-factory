@@ -2419,6 +2419,32 @@ function haltRun(
   return step === 'wait' || step === 'tell' ? 'stopping' : 'paused'
 }
 
+/** a herdr worker's station ended: keep what its transcripts show. A failure here must never fail the tick */
+function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt: number) {
+  try {
+    if (runnerOf(pane).name !== 'herdr' || !startedAt) return
+    const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
+    if (rows.length) appendUsage(run.id, rows)
+  } catch {}
+}
+const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
+const appendUsage = (id: string, rows: Usage[]) =>
+  appendFileSync(usageFile(id), rows.map(r => JSON.stringify(r) + '\n').join(''))
+/** a run's stored rows; a session and model that was stored twice (a resumed worker) keeps its last row */
+function storedUsage(id: string): Usage[] {
+  if (!existsSync(usageFile(id))) return []
+  const rows = readFileSync(usageFile(id), 'utf8')
+    .split('\n')
+    .flatMap(l => {
+      try {
+        return l ? [JSON.parse(l) as Usage] : []
+      } catch {
+        return []
+      }
+    })
+  return [...new Map(rows.map(r => [`${r.session}\0${r.model}`, r])).values()]
+}
+
 async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   const def = await loadFactory(run.factory)
   const file = join(runDir(run.id), 'state.json')
@@ -2434,8 +2460,13 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     })
   const send = (e: Input, at = now) => {
     const pane = ctx().pane
+    const { seq, startedAt } = ctx()
+    const node = where(actor.getSnapshot().value)[0]
     actor.send({ ...e, at } as Ev)
-    if (pane && pane !== ctx().pane) runnerOf(pane).close(pane)
+    if (pane && pane !== ctx().pane) {
+      storeUsage(run, pane, node, seq, startedAt)
+      runnerOf(pane).close(pane)
+    }
   }
 
   for (const line of lines.slice(saved.cursor)) {
@@ -6887,9 +6918,9 @@ function usageOf(run: Run, since = 0): Usage[] {
             .filter(g => g.endsWith('.jsonl'))
             .map(g => read(join(subDir, g)))
         : []
-      return sessionOf(read(join(dir, f)), run.id, seq => nodes.get(seq) ?? '?', session, subs)
+      const rows = sessionOf(read(join(dir, f)), run.id, seq => nodes.get(seq) ?? '?', session, subs)
+      return rows.some(u => u.turns > 0) ? rows : []
     })
-    .filter(u => u.turns > 0)
 }
 
 function records(): RunRecord[] {
@@ -6916,6 +6947,7 @@ function record(id: string): RunRecord {
     createdAt: createdAt(id),
     log: c.log,
     ...(trackOf(id).requeued && { requeued: true }),
+    sessions: storedUsage(id),
   }
 }
 

@@ -11,6 +11,8 @@ export type RunRecord = {
   createdAt: number
   log: Entry[]
   requeued?: boolean
+  /** the run's worker sessions' spend. An older metrics.jsonl line has none: it reads as [] */
+  sessions?: Usage[]
 }
 
 const FAILED = new Set(['fail', 'failed', 'abandon', 'red'])

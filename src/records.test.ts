@@ -6,7 +6,7 @@
 //
 // These tests drive the real CLI against on-disk fixtures, like src/watch.test.ts does.
 import { afterEach, expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -165,4 +165,103 @@ test('sessionsOf() names both an old session (from prompts.list) and a revived o
   expect(out.code).toBe(0)
   expect(tokensSection(out.out)).toMatch(/implement\s+1/) // from prompts.list alone
   expect(tokensSection(out.out)).toMatch(/verify\s+1/) // from the recreated prompts/ alone
+})
+
+// claude-factory-hr94: a station's end stores its sessions' usage; the metrics.jsonl line holds it
+// after `factory rm`; an old line without the field still reads.
+const turnAt = (id: string, model: string, read: number) =>
+  JSON.stringify({
+    type: 'assistant',
+    message: {
+      id,
+      model,
+      usage: {
+        input_tokens: 1,
+        cache_creation_input_tokens: 2,
+        cache_read_input_tokens: read,
+        output_tokens: 3,
+      },
+    },
+  })
+
+function workingRun(tail: string) {
+  mkdirSync(home, { recursive: true })
+  const worktree = join(dir, `wt-${tail}`)
+  mkdirSync(worktree, { recursive: true })
+  const id = `ship-${Date.now().toString(36)}${tail}`
+  const runDir = join(home, 'runs', id)
+  mkdirSync(runDir, { recursive: true })
+  const factoryFile = join(runDir, 'factory.ts')
+  writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
+  writeFileSync(
+    join(runDir, 'run.json'),
+    JSON.stringify({ id, factory: factoryFile, repo: worktree, goal: 'g', ws: 'w1', worktree, branch: 'b' }),
+  )
+  const actor = createActor(compile(DEF)).start()
+  actor.send({ type: 'TICK', at: Date.now() - 5000 })
+  const { seq } = actor.getSnapshot().context
+  actor.send({ type: 'SPAWNED', seq, pane: 'w1:p1', at: Date.now() - 5000 })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  const claudeHome = join(dir, `claude-${tail}`)
+  const projectDir = join(claudeHome, 'projects', worktree.replace(/[^a-zA-Z0-9]/g, '-'))
+  mkdirSync(join(projectDir, 's1', 'subagents'), { recursive: true })
+  const brief = JSON.stringify({
+    type: 'user',
+    message: { content: `report ${id} ${seq} <outcome> "<summary>"` },
+  })
+  writeFileSync(join(projectDir, 's1.jsonl'), `${brief}\n${turnAt('a', 'claude-opus-4-7', 100)}\n`)
+  writeFileSync(
+    join(projectDir, 's1', 'subagents', 'agent-x.jsonl'),
+    `${turnAt('b', 'claude-haiku-5-5', 40)}\n`,
+  )
+  const herdr = join(dir, 'herdr')
+  writeFileSync(herdr, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  return { id, runDir, seq, env: { CLAUDE_CONFIG_DIR: claudeHome, FACTORY_HERDR: herdr } }
+}
+
+test('a station end stores the sessions usage in usage.jsonl; factory rm keeps it in metrics.jsonl (hr94 AC3, AC4)', () => {
+  const { id, runDir, seq, env } = workingRun('u1')
+  writeFileSync(
+    join(runDir, 'inbox.jsonl'),
+    JSON.stringify({ type: 'DONE', seq, outcome: 'ready', summary: 'built' }) + '\n',
+  )
+  expect(factory(['tick'], env).code).toBe(0)
+  const rows = readFileSync(join(runDir, 'usage.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  const by = Object.fromEntries(rows.map(r => [r.model, r]))
+  expect(by['claude-opus-4-7']).toMatchObject({
+    node: 'implement',
+    seq,
+    session: 's1',
+    input: 1,
+    cacheWrite: 2,
+    cacheRead: 100,
+    output: 3,
+    turns: 1,
+    peak: 103,
+  })
+  expect(by['claude-haiku-5-5']).toMatchObject({ cacheRead: 40, turns: 0 }) // the subagent, its own model
+  rmSync(join(dir, 'wt-u1'), { recursive: true }) // no git worktree here: rm skips a worktree that is gone
+  const rm = factory(['rm', id], env)
+  expect(rm.err).toBe('')
+  expect(rm.code).toBe(0)
+  const line = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim().split('\n').at(-1)!)
+  expect(line.sessions.map((r: { model: string }) => r.model).sort()).toEqual([
+    'claude-haiku-5-5',
+    'claude-opus-4-7',
+  ])
+})
+
+test('a metrics.jsonl line with no sessions field still reads (hr94 AC5)', () => {
+  mkdirSync(home, { recursive: true })
+  writeFileSync(
+    join(home, 'metrics.jsonl'),
+    JSON.stringify({ id: 'old-1', node: 'done', createdAt: 0, log: [] }) + '\n',
+  )
+  expect(factory(['metrics', '--tokens']).code).toBe(0)
 })
