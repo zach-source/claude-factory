@@ -68,7 +68,10 @@ describe('digestText', () => {
   test('counts, owner queue, merge lines and recent repairs', () => {
     const text = digestText(
       [rig],
-      [{ at: '2026-01-01T10:00:00Z', rig: 'demo', id: 'x', kind: 'close', reason: 'shipped' }],
+      [
+        { at: '2026-01-01T10:00:00Z', rig: 'demo', id: 'x', kind: 'close', reason: 'shipped' },
+        { at: '2026-01-01T11:00:00Z', rig: 'demo', id: 'y', kind: 'close', reason: 'every child is closed' },
+      ],
       now,
     )
     expect(text).toContain('demo: queued 1, waiting-on-owner 1, in-ship 2')
@@ -76,6 +79,8 @@ describe('digestText', () => {
     expect(text).toContain('  b P1 1d title b')
     expect(text).toContain('  gh pr merge 4 -R o/r --merge  # d')
     expect(text).not.toContain('gh pr merge 5')
-    expect(text).toContain('2026-01-01T10:00 demo close x: shipped')
+    expect(text).toContain(
+      'recent repairs:\n  2026-01-01T10:00 demo close x: shipped\n  2026-01-01T11:00 demo close y: every child is closed',
+    )
   })
 })

@@ -102,5 +102,5 @@ export function digestText(rigs: DigestRig[], recent: RepairLog[], now: number):
     ].join('\n')
   })
   const fixes = recent.map(l => `  ${l.at.slice(0, 16)} ${l.rig} ${l.kind} ${l.id}: ${l.reason}`)
-  return [...blocks, ...(fixes.length ? ['recent repairs:', ...fixes] : [])].join('\n\n')
+  return [...blocks, ...(fixes.length ? [['recent repairs:', ...fixes].join('\n')] : [])].join('\n\n')
 }
