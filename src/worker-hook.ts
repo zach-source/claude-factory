@@ -1422,14 +1422,23 @@ function findHasDelete(cmd: string[]): boolean {
 function findDeleteDeny(cmdIn: string[], root?: string): boolean {
   const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
   if (!findHasDelete(cmd)) return false
-  // easj.4: GNU -files0-from reads the start paths from a file, so the guard cannot read them.
-  if (cmd.some(w => w.startsWith('-files0-from'))) return true
+  if (findDeletePathDeny(cmd, root)) return true
   // easj.15: a find inside an exec slot of this find runs with its own start paths.
+  // easj.19: no recursion. This loop visits every exec word, so a nested find needs only the path test.
   for (let k = 1; k < cmd.length - 1; k++) {
     if (!FIND_EXEC_WORDS.has(cmd[k]!)) continue
-    const sub = realCommand(cmd.slice(k + 1))
-    if (sub.length && baseWord(sub[0]!) === 'find' && findDeleteDeny(sub, root)) return true
+    const sub0 = realCommand(cmd.slice(k + 1))
+    const sub = sub0.some(w => /[<>]/.test(w)) ? dropRedirectWords(sub0) : sub0
+    if (sub.length && baseWord(sub[0]!) === 'find' && findHasDelete(sub) && findDeletePathDeny(sub, root))
+      return true
   }
+  return false
+}
+
+// The start-path test of findDeleteDeny for one find command that has a delete word.
+function findDeletePathDeny(cmd: string[], root?: string): boolean {
+  // easj.4: GNU -files0-from reads the start paths from a file, so the guard cannot read them.
+  if (cmd.some(w => w.startsWith('-files0-from'))) return true
   let i = 1
   for (; i < cmd.length; i++) {
     const w = cmd[i]!

@@ -9400,7 +9400,10 @@ const EASJ_SEC_DENY_ROWS = [
   'chdir /; find . -delete',
 ]
 test.each(EASJ_SEC_DENY_ROWS)('claude-factory-easj sec: %s denies', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  const r = denyReason(cmd, '/root/repo', undefined, J1KI_GATE)
+  // The push row denies with the protected-branch reason, not the rm reason.
+  if (cmd.includes('git push')) expect(r).toBeDefined()
+  else expect(r).toBe(REASON)
 })
 test('claude-factory-easj.19: nested find in exec slots scans in linear time', () => {
   const cmd = 'find . ' + '-exec find . '.repeat(30) + '-delete \\; ; rm -rf /'
