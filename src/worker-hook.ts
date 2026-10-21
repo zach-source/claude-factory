@@ -6436,22 +6436,30 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
 ])
 
 const TRIGGER_ALT = [...DYNAMIC_COMMAND_TRIGGER].join('|')
-const DASHED_VERB_TAIL = new RegExp(`-(?:${TRIGGER_ALT})(?:$|\\$)`)
-const EXPANSION_END_VERB = new RegExp(
-  `(?:[})\`]|\\$[a-z_][a-z0-9_]*)(?<!\\$ifs)(?:${TRIGGER_ALT})(?:\\$(?:\\{[^{}]*\\}|\\w+|[@*]))*$`,
-)
+const DYN_EXP = /\$\{[^{}]*\}|\$[a-z_]\w*|\$[@*#?!$0-9-]/g
+const DYN_END_R1 = new RegExp(`(?:^|-)(?:${TRIGGER_ALT})$`)
+const DYN_END_R2 = new RegExp(`.(?:${TRIGGER_ALT})$`)
 
 /**
  * claude-factory-ycaq: `$G-push` runs the `git-push` binary when `$G` holds a git-core path.
- * The dashed-binary rule cannot read a dynamic word. This function drops quotes and backslashes
- * and makes the word lowercase (APFS is case-blind). It returns true for two forms. (a) The word
- * ends in a dash and a verb. (b) An expansion end or a variable name comes right before a verb.
- * The tokenizer drops quotes, so `"$G"push` reads as `$Gpush`. Form (b) must deny both.
+ * The dashed-binary rule cannot read a dynamic word. This function treats every expansion as
+ * possibly empty. It drops quotes and backslashes and makes the word lowercase (APFS is
+ * case-blind). R1: remove every expansion. Deny when the text left ends in a verb at the start
+ * or after a dash. R2: the tokenizer drops quotes, so `"$G"push` reads as the bare name `$Gpush`.
+ * For each bare name, deny when the name and the rest end in any char and a verb. Skip a name that
+ * starts with `ifs` right after `git`: glued IFS keeps PUSH_REASON.
  */
 function dynamicDashedVerb(w: string): boolean {
-  const s = w.replace(/\\\n/g, '').replace(/\\/g, '').toLowerCase()
-  if (DASHED_VERB_TAIL.test(s.replace(/["']/g, ''))) return true
-  return EXPANSION_END_VERB.test(s.replace(/["']+$/, ''))
+  const s = w.replace(/\\\n/g, '').replace(/\\/g, '').replace(/["']/g, '').toLowerCase()
+  if (DYN_END_R1.test(s.replace(DYN_EXP, ''))) return true
+  for (const m of s.matchAll(/\$([a-z_]\w*)/g)) {
+    const pre = s.slice(0, m.index)
+    const name = m[1]!
+    if (/(?:^|\/)git$/.test(pre) && name.startsWith('ifs')) continue
+    const rest = s.slice(m.index! + m[0].length)
+    if (DYN_END_R2.test(name + rest.replace(DYN_EXP, ''))) return true
+  }
+  return false
 }
 
 /**
