@@ -1896,7 +1896,7 @@ function fakeFilingBd(all: FBead[]) {
   const unqueuedCase = full
     .filter(b => b.status !== 'closed')
     .map(b => {
-      const entry = `{\\"id\\":\\"${b.id}\\",\\"title\\":\\"t\\",\\"priority\\":1,\\"created_at\\":\\"${b.created_at}\\",\\"labels\\":[]}`
+      const entry = `{\\"id\\":\\"${b.id}\\",\\"title\\":\\"t\\",\\"priority\\":1,\\"created_at\\":\\"${b.created_at}\\",\\"labels\\":${JSON.stringify(b.labels.filter(l => l !== 'factory')).replace(/"/g, '\\\\"')}}`
       const guard = b.labels.includes('factory') ? `[ -f "${gdir}/removed-${b.id}" ] && ` : ''
       return `    ${guard}{ out="$out$sep${entry}"; sep=","; }`
     })
@@ -2128,6 +2128,26 @@ test('a past-cap bead with no factory label gets a mark only; factory queue late
   expect(startedBeads()).toContain('w-7')
 })
 
+test('auto-queue does not re-queue a held bead after the 24h filing window', () => {
+  const beads = replayBeads().map((b, i) => (i < 6 ? { ...b, status: 'closed' } : b))
+  filingReset(beads)
+  writeFileSync(
+    join(ghome, 'rigs.json'),
+    JSON.stringify([
+      { name: 'a', repo: repo(), factory: 'lifecycle', autoQueue: { minPriority: 4, perHour: 10 } },
+    ]),
+  )
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd update w-7 .*held:cluster/.test(l))).toBe(true)
+  beads[6]!.labels = ['held:cluster:worker-hook']
+  beads[6]!.hoursAgo = 30
+  fakeFilingBd(beads)
+  nextPass()
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd update w-7 .*--add-label factory/.test(l))).toBe(false)
+  expect(startedBeads()).not.toContain('w-7')
+})
+
 test('auto-queue does not re-queue a held or mark-only bead; factory queue still releases it', () => {
   const beads = replayBeads().map((b, i) => (i < 6 ? { ...b, status: 'closed' } : b))
   beads[7]!.labels = ['pm-proposal'] // w-8: past the cap, not factory-queued
@@ -2149,6 +2169,7 @@ test('auto-queue does not re-queue a held or mark-only bead; factory queue still
   expect(startedBeads()).not.toContain('w-8')
   // released: factory is back, so the marked bead starts
   beads[6]!.labels = ['factory']
+  rmSync(join(gdir, 'removed-w-7'), { force: true })
   fakeFilingBd(beads)
   nextPass()
   gfactory(['beads'])
