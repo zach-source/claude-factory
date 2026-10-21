@@ -230,6 +230,47 @@ export function precheckStats(lines: Pick<PrecheckLine, 'kind'>[]) {
   return { skipped: mergedPr + liveRun, mergedPr, liveRun, failOpen }
 }
 
+/** one line of HOME/launches.jsonl: a worker launch, with the harness and model it ran */
+export type LaunchLine = {
+  at: number
+  run: string
+  rig: string
+  node: string
+  seq: number
+  harness: string
+  model: string
+  resume: boolean
+}
+
+/** reads HOME/launches.jsonl: this drops a malformed line and a line with no station or harness */
+export const parseLaunchLines = (text: string) =>
+  (parsePrecheckLines(text) as unknown as LaunchLine[]).filter(
+    l => typeof l?.node === 'string' && typeof l.harness === 'string',
+  )
+
+/** launches per station, by "harness model" */
+export function launchStats(lines: Pick<LaunchLine, 'node' | 'harness' | 'model'>[]) {
+  const out: Record<string, Record<string, number>> = {}
+  for (const l of lines) {
+    const key = `${l.harness} ${l.model ?? '?'}`
+    const station = (out[l.node] ??= {})
+    station[key] = (station[key] ?? 0) + 1
+  }
+  return out
+}
+
+/** one line a station: its launches by harness and model; empty when there are none */
+export const renderLaunches = (stats: ReturnType<typeof launchStats>) =>
+  Object.entries(stats)
+    .map(
+      ([node, by]) =>
+        `${node}: ${Object.keys(by)
+          .sort()
+          .map(k => `${k} ${by[k]}`)
+          .join(', ')}`,
+    )
+    .join('\n')
+
 /** one Claude worker session's spend, from its transcript */
 export type Session = { run: string; node: string; turns: number; tokens: number; out: number; peak: number }
 

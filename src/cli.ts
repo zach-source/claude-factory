@@ -132,10 +132,13 @@ import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerIn
 import {
   createdAt,
   fate,
+  launchStats,
   metrics,
+  parseLaunchLines,
   parsePrecheckLines,
   precheckStats,
   render,
+  renderLaunches,
   renderTokens,
   sessionOf,
   type RunRecord,
@@ -1214,6 +1217,19 @@ function reviveWorktree(run: Run) {
   )
 }
 
+/** one line a launch in HOME/launches.jsonl, for `factory metrics`: a write error never blocks the launch */
+function logLaunch(run: Run, node: string, seq: number, agent: string, resume: boolean) {
+  try {
+    const rig = rigOf(run.repo)?.name
+    const harness = harnessOf(agent) ?? 'other'
+    const model = ax.modelOf(agent) ?? 'default'
+    const line = { at: Date.now(), run: run.id, rig, node, seq, harness, model, resume }
+    appendFileSync(join(HOME, 'launches.jsonl'), `${JSON.stringify(line)}\n`)
+  } catch {
+    // best effort: see above
+  }
+}
+
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
@@ -1225,6 +1241,7 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, full())
   }
+  logLaunch(run, node, c.seq, agentOfNode(run, def, node), !!session)
   return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
 }
 
@@ -8025,12 +8042,19 @@ if (import.meta.main && !outboxCmd)
         const precheckAll = existsSync(precheckFile())
           ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
           : []
+        const launchFile = join(HOME, 'launches.jsonl')
+        const launches = existsSync(launchFile)
+          ? parseLaunchLines(readFileSync(launchFile, 'utf8')).filter(
+              l => l.at >= since_ && (!rig || l.rig === rig),
+            )
+          : []
         const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
         if (args.includes('--json'))
           console.log(
             JSON.stringify({
               all: metrics(picked),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
+              launches,
               rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
             }),
           )
@@ -8043,6 +8067,8 @@ if (import.meta.main && !outboxCmd)
             ),
           )
           if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
+          if (launches.length)
+            console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
         }
         if (args.includes('--tokens')) {
           const live = picked.filter(r => runIds().includes(r.id))

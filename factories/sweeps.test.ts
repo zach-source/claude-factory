@@ -30,9 +30,9 @@ test('sweeps carries the same house rules and params as lifecycle', () => {
   expect(sweeps.rules).toBe(lifecycle.rules)
   // the codex params belong to lifecycle's split stations: sweeps has none
   const claudeOnly = Object.fromEntries(
-    Object.entries(lifecycle.params!).filter(([k]) => !k.startsWith('codex')),
+    Object.entries(lifecycle.params as Record<string, string>).filter(([k]) => !k.startsWith('codex')),
   )
-  expect(sweeps.params).toEqual(claudeOnly)
+  expect(sweeps.params as object).toEqual(claudeOnly)
 })
 
 test('each prompt names its own sweep label, the daily cap and the auto-queue allowlist', () => {

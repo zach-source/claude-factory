@@ -544,7 +544,8 @@ test('triage rollout requeues into the release factory; decision defers at plan;
 })
 
 test('only implement, verify and security split to codex, and the exec tier never gets the security model', () => {
-  const split = Object.entries(lifecycle.nodes)
+  const lc = lifecycle as Factory
+  const split = Object.entries(lc.nodes)
     .filter(([, n]) => n.split)
     .map(([id, n]) => [id, n.split!.share, n.split!.agent])
   expect(split).toEqual([
@@ -552,13 +553,14 @@ test('only implement, verify and security split to codex, and the exec tier neve
     ['verify', 'codex_share', "{codex} -m '{codex_exec_model}'"],
     ['security', 'codex_security_share', "{codex} -m '{codex_security_model}'"],
   ])
-  for (const id of ['plan', 'review', 'check', 'incident']) expect(lifecycle.nodes[id]!.split).toBeUndefined()
-  expect(lifecycle.params!.codex_share).toBe('0.3')
-  expect(lifecycle.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
+  for (const id of ['plan', 'review', 'check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
+  expect(lc.params!.codex_share).toBe('0.3')
+  expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
   validate(lifecycle as Factory)
 })
 
 test('every station model id of every factory resolves to a known id', async () => {
+  const lc = lifecycle as Factory
   const known = [
     'claude-sonnet-5-5[1m]',
     'claude-opus-5-5[1m]',
@@ -575,8 +577,8 @@ test('every station model id of every factory resolves to a known id', async () 
       }
     }
   }
-  expect(modelOf(fill(lifecycle.nodes.implement!.split!.agent, lifecycle.params!))).toBe('gpt-6.1-sol')
-  expect(modelOf(fill(lifecycle.nodes.security!.split!.agent, lifecycle.params!))).toBe('gpt-6-astra')
+  expect(modelOf(fill(lc.nodes.implement!.split!.agent, lc.params!))).toBe('gpt-6.1-sol')
+  expect(modelOf(fill(lc.nodes.security!.split!.agent, lc.params!))).toBe('gpt-6-astra')
 })
 
 test('review, security and check prompts hold the out-of-diff rule (claude-factory-nwlh.4)', () => {
