@@ -7943,8 +7943,9 @@ function replaceGluedSubstitutions(command: string, fill = ' '): string {
 // an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
 // ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
 // becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
-// replaces only the "${".
-function replaceGluedExpansions(command: string): string {
+// replaces only the "${". In keep mode, only an exact $IFS or ${IFS} becomes a space. Every other glued
+// span stays as typed, so a head word such as g${X:-it} stays dynamic and the dynamic verb rule sees it.
+function replaceGluedExpansions(command: string, keep = false): string {
   let out = ''
   let q = ''
   const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
@@ -7994,13 +7995,16 @@ function replaceGluedExpansions(command: string): string {
       out += c
       continue
     }
+    const span = command.slice(i, end)
     if (isSpace(command[i - 1]) && isSpace(command[end])) {
-      out += command.slice(i, end)
-    } else out += ' '
+      out += span
+    } else if (!keep || span === '$IFS' || span === '${IFS}') out += ' '
+    else out += span
     i = end - 1
   }
   return out
 }
+const IFS_MOD_SPAN_RE = /\$\{IFS[^A-Za-z0-9_}]|\$\{[^}]*\$\{?IFS(?![A-Za-z0-9_])/
 
 function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
@@ -8061,7 +8065,7 @@ function denyAt(
       if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }
   }
-  const late: { reason?: string; glued?: string } = {}
+  const late: { reason?: string; glued?: string; kept?: string } = {}
   return (
     denyAtScan(
       command,
@@ -8077,6 +8081,7 @@ function denyAt(
       outerVars,
     ) ??
     late.glued ??
+    late.kept ??
     late.reason
   )
 }
@@ -8090,7 +8095,7 @@ function denyAtScan(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
-  late: { reason?: string; glued?: string },
+  late: { reason?: string; glued?: string; kept?: string },
   aliasStack: readonly string[],
   outerVars?: VarTable,
 ): string | undefined {
@@ -8160,6 +8165,15 @@ function denyAtScan(
       const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
       if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
     }
+  }
+  // claude-factory-y094: read the command with only each glued $IFS or ${IFS} as a space.
+  if (command.includes('$')) {
+    const kept = replaceGluedExpansions(command, true)
+    if (kept !== command) {
+      const split = denyAt(kept, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.kept ??= split
+    }
+    if (IFS_MOD_SPAN_RE.test(command) && command.split('$').length > 2) late.kept ??= DYNAMIC_VERB_REASON
   }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
