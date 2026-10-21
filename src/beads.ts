@@ -447,6 +447,8 @@ export const beads = (repo: string, actor: string) => ({
           id,
           ...old.flatMap(l => ['--remove-label', l]),
           '--add-label',
+          LABEL, // a bead started by hand lacks it, and dispatch reads only labeled beads
+          '--add-label',
           `station:${station}`,
         ),
         'update',

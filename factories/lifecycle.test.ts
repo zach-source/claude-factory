@@ -505,6 +505,8 @@ test('triage rollout requeues into the release factory; decision defers at plan;
   expect(lifecycle.nodes.triage!.next.elsewhere).toEqual({ to: 'done', defer: true })
   for (const n of ['triage', 'plan', 'implement'] as const)
     expect(lifecycle.nodes[n].next.decision).toEqual(decision)
+  expect(lifecycle.nodes.implement!.prompt).toContain('open no new pull request')
+  expect(lifecycle.nodes.implement!.prompt).toContain('earlier run opened')
   expect(release.start).toBe('recipe')
   expect(walk(lifecycle, ['rollout']).visited).toEqual(['triage', 'done'])
   expect(walk(lifecycle, ['elsewhere']).visited).toEqual(['triage', 'done'])
