@@ -94,7 +94,8 @@ test('the verdicts do not depend on input order, and equal times sort by id', ()
 
 test('a station-held bead uses no cluster slot', () => {
   const x = many(5, i => ({ id: `a${i}`, created_by: 'factory/acme-r1/plan' }))
-  const others = many(3, i => ({ id: `c${i}`, created_by: `factory/acme-o${i}/plan` }))
+  const late = new Date(now - 1000).toISOString()
+  const others = many(3, i => ({ id: `c${i}`, created_at: late, created_by: `factory/acme-o${i}/plan` }))
   const v = filingGuard([...x, ...others], now)
   expect(kept(v.filter(r => r.station === 'acme-r1/plan'))).toEqual([true, true, true, false, false])
   expect(kept(v.filter(r => r.station !== 'acme-r1/plan'))).toEqual([true, true, true])
