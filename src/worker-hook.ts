@@ -8310,6 +8310,8 @@ function denyAtScan(
       let k = 0
       while (k < skipped.length && /^[A-Za-z_]\w*\+?=/.test(skipped[k]!)) k++
       for (const w of skipped.slice(k)) {
+        // claude-factory-2hz6: a backtick ends the segment, so the wrapper skips its substitution word.
+        if (w.includes('`')) late.reason ??= DYNAMIC_VERB_REASON
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
           const n = m[1]!
           if (IMPLICIT_VARS.has(n) || vars.has(n) || mentions(n) >= 2 || m[0].startsWith('${!') || dynWrite())
