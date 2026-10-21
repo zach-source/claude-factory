@@ -247,6 +247,15 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 
 The console also has a `stop` button and a `resume` button.
 
+### Attach to the AX manager
+
+If the manager runs in the AX task `f-manager`, use these commands on the laptop:
+
+- `factory attach` prints the manager pane once. `factory attach --follow` prints it again every 3 seconds.
+- `factory say <text...>` types the text and Enter into the manager pane.
+
+To stop, press Ctrl-C. This stops only the command on the laptop. The manager keeps running, because it is the AX task `f-manager`. `ax ssh` has no PTY, so `factory attach` shows a snapshot and not a keyboard. To read another pane, set `FACTORY_AX_MANAGER_PANE` to an id from `herdr pane list`. See [remote-runner.md](remote-runner.md).
+
 ### Where the state lives
 
 All files are under the factory directory (`FACTORY_HOME`). The factory has no log file for the tick. The manager session shows the tick messages.
