@@ -49,6 +49,11 @@ const AC1 = [
   '$G-p${E}ush origin main',
   '$G"push"$E origin main',
   '${G}push$1 origin main',
+  'git"$ifs"push origin main',
+  'git"$IFS"push origin main',
+  'git"$ifs"send-pack x',
+  'git"$ifs"config x y',
+  '/x/git"$ifs"push origin main',
 ]
 const AC2 = [
   '=git-push origin main',

@@ -6446,16 +6446,14 @@ const DYN_END_R2 = new RegExp(`.(?:${TRIGGER_ALT})$`)
  * possibly empty. It drops quotes and backslashes and makes the word lowercase (APFS is
  * case-blind). R1: remove every expansion. Deny when the text left ends in a verb at the start
  * or after a dash. R2: the tokenizer drops quotes, so `"$G"push` reads as the bare name `$Gpush`.
- * For each bare name, deny when the name and the rest end in any char and a verb. Skip a name that
- * starts with `ifs` right after `git`: glued IFS keeps PUSH_REASON.
+ * For each bare name, deny when the name and the rest end in any char and a verb. The caller runs
+ * this in the late fallback, so a real command reason (glued IFS push) wins.
  */
 function dynamicDashedVerb(w: string): boolean {
   const s = w.replace(/\\\n/g, '').replace(/\\/g, '').replace(/["']/g, '').toLowerCase()
   if (DYN_END_R1.test(s.replace(DYN_EXP, ''))) return true
   for (const m of s.matchAll(/\$([a-z_]\w*)/g)) {
-    const pre = s.slice(0, m.index)
     const name = m[1]!
-    if (/(?:^|\/)git$/.test(pre) && name.startsWith('ifs')) continue
     const rest = s.slice(m.index! + m[0].length)
     if (DYN_END_R2.test(name + rest.replace(DYN_EXP, ''))) return true
   }
@@ -6596,7 +6594,6 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
     // binary). `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
     if (cmd.length > 0 && dynamicCommandWord(cmd[0]!)) {
-      if (dynamicDashedVerb(cmd[0]!)) return DYNAMIC_VERB_REASON
       let k = 1
       while (k < cmd.length) {
         const w = cmd[k]!
@@ -8302,6 +8299,8 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
+    if (cmd.length && dynamicCommandWord(cmd[0]!) && dynamicDashedVerb(cmd[0]!))
+      late.reason ??= DYNAMIC_VERB_REASON
     // k8iz: true when the miqy table read this pure $NAME head's value, so the late deny skips it.
     let headValueRead = false
     // The older dynamic-word scan keeps its own reason when it denies first.
