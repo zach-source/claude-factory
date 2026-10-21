@@ -25,6 +25,17 @@ export const PLAN_FRESH_MS = 2 * 60 * 60_000
 /** A bead with no priority sorts into the lowest band (4, backlog). It never sorts ahead of a prioritized bead. */
 const prio = (b: Pick<Bead, 'priority'>) => b.priority ?? 4
 
+const STATION_FILER = /^factory\/[^/]+\/(review|security|verify|check)$/
+
+/** True for a top-level P0/P1 bead that a review, security, verify or check station filed.
+ * Only a person, or triage or plan on the run's own bead, sets P0 or P1. Dispatch sorts such a bead
+ * as P2. No bd write happens: the stored priority stays. */
+export const stationDemoted = (b: Bead): boolean =>
+  parentOf(b) === undefined && prio(b) <= 1 && STATION_FILER.test(b.created_by ?? '')
+
+/** The priority band a bead sorts in. */
+const band = (b: Bead) => (stationDemoted(b) ? 2 : prio(b))
+
 // Covers C0 (minus \n \r \t) and DEL, plus C1 controls (incl. U+0085 NEL, U+009B 8-bit CSI --
 // a VT500-family parser such as xterm or xterm.js treats U+009B as CSI, the same pane escape
 // injection an ESC filter closes), U+2028/U+2029 (line/paragraph separator) and the Unicode
@@ -121,12 +132,12 @@ export function rankPlan(answer: AnswerItem[], candidates: Bead[]): PlanItem[] {
   const rank = new Map(order.map((id, i) => [id, i]))
   return candidates
     .map((c, i) => ({ c, i, r: rank.get(c.id) ?? Infinity }))
-    .sort((a, b) => prio(a.c) - prio(b.c) || a.r - b.r || a.i - b.i)
+    .sort((a, b) => band(a.c) - band(b.c) || a.r - b.r || a.i - b.i)
     .slice(0, 10)
     .map(({ c }) => ({
       id: c.id,
       title: sanitize(c.title),
-      priority: prio(c),
+      priority: band(c),
       why: whyOf.get(c.id) ?? '(no reason given)',
     }))
 }
@@ -200,11 +211,11 @@ export function rigPlanOf(p: Plan | undefined, name: string): RigPlan | undefine
  * A planned P2 never passes a real P1, because priority always sorts first.
  */
 export function orderByPlan(candidates: Bead[], rigPlan: { items: PlanItem[] } | undefined): Bead[] {
-  if (!rigPlan) return candidates
-  const rank = new Map(rigPlan.items.map((it, i) => [it.id, i]))
+  if (!rigPlan && !candidates.some(stationDemoted)) return candidates
+  const rank = new Map((rigPlan?.items ?? []).map((it, i) => [it.id, i]))
   return candidates
     .map((c, i) => ({ c, i, r: rank.get(c.id) ?? Infinity }))
-    .sort((a, b) => prio(a.c) - prio(b.c) || a.r - b.r || a.i - b.i)
+    .sort((a, b) => band(a.c) - band(b.c) || a.r - b.r || a.i - b.i)
     .map(({ c }) => c)
 }
 
