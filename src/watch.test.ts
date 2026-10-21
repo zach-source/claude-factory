@@ -321,6 +321,14 @@ function routeRun(id: string, opts: { at?: number; bead?: string; url?: string }
   writeFileSync(f, JSON.stringify(ROUTE_SHIP))
   const r = repo()
   if (opts.bead) mkdirSync(join(r, '.beads'), { recursive: true })
+  // a merge request run needs the rig's forge host: the watch views only MRs on the origin host
+  if (opts.url?.includes('/-/merge_requests/') && !existsSync(join(r, '.git'))) {
+    for (const a of [
+      ['init', '-q'],
+      ['remote', 'add', 'origin', 'https://gitlab.example.com/acme/widget.git'],
+    ])
+      Bun.spawnSync(['git', '-C', r, ...a])
+  }
   parkedRun(id, r, f, { def: ROUTE_SHIP, ...opts })
 }
 
@@ -598,4 +606,40 @@ test('a missing gh or glab binary counts an error, routes nothing and re-parks n
   expect(inboxOf('r1')).toEqual([])
   expect(inboxOf('r2')).toEqual([])
   expect(watchJson().errors).toBe(2)
+})
+
+const OFF_HOST = 'https://gitlab.invalid/acme/widget/-/merge_requests/1'
+const glabCalls = () => join(dir, 'glab-calls.log')
+/** makes the fake glab log each call, one line an invocation */
+function logGlab() {
+  const real = readFileSync(join(bin, 'glab'), 'utf8').split('\n')
+  writeFileSync(join(bin, 'glab'), [real[0], `echo "$*" >> ${glabCalls()}`, ...real.slice(1)].join('\n'))
+}
+
+test('a park that names only a merge request on another host runs glab 0 times and counts no error (pw6t)', () => {
+  reset()
+  routeRun('r1', { url: OFF_HOST })
+  fakeGlab(mrBody({ sha: 'bbb2222' }), [])
+  logGlab()
+  const out = factory(['watch'])
+  expect(existsSync(glabCalls())).toBe(false)
+  expect(out.err).toContain('gitlab.invalid')
+  expect(out.err).not.toContain(OFF_HOST)
+  expect(inboxOf('r1')).toEqual([])
+  expect(watchJson().errors).toBe(0)
+})
+
+test('an off-host merge request is skipped and the on-host one still routes (pw6t)', () => {
+  reset()
+  routeRun('r1', { url: `${OFF_HOST} and ${MR_URL}` })
+  fakeGlab(mrBody(), [])
+  logGlab()
+  factory(['watch'])
+  fakeGlab(mrBody({ sha: 'bbb2222' }), [mrNote('/changes use the helper', 'zach')])
+  logGlab()
+  factory(['watch'])
+  expect(readFileSync(glabCalls(), 'utf8')).not.toContain('gitlab.invalid')
+  expect(readFileSync(glabCalls(), 'utf8')).toContain('gitlab.example.com')
+  expect(watchJson().errors).toBe(0)
+  expect(inboxOf('r1')[0]).toMatchObject({ type: 'ROUTE', outcome: 'changes' })
 })
