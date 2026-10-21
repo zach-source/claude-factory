@@ -181,3 +181,58 @@ export function dueSweeps(
     return now - lastAt >= def.nodes[s]!.everyMin! * 60_000
   })
 }
+
+/** one row of `gh run list --json workflowDatabaseId,workflowName,headSha,conclusion,status,databaseId,createdAt,url,event` */
+export type GhRun = {
+  workflowDatabaseId: number
+  workflowName: string
+  headSha: string
+  conclusion: string
+  status: string
+  databaseId: number
+  createdAt: string
+  url: string
+  event: string
+  attempt?: number
+}
+
+export type CiRed = { key: string; workflow: string; sha: string; url: string }
+
+/** the dedupe key of a red main streak: the workflow id and the first failing SHA */
+export const ciKey = (workflowId: number, sha: string): string => `ci-red:${workflowId}-${sha.slice(0, 7)}`
+
+const RED = ['failure', 'timed_out', 'startup_failure']
+const counted = (r: GhRun): boolean =>
+  r.status === 'completed' &&
+  !r.event.startsWith('pull_request') &&
+  (r.conclusion === 'success' || RED.includes(r.conclusion))
+
+/** Per workflow, reports the red newest counted run of main. A pull_request event, an unfinished run
+ * and a cancelled, skipped, neutral or action_required run are not counted. The SHA is the oldest run
+ * of the newest unbroken red streak, so a later red push keeps the same key. */
+export function mainCiReds(runs: GhRun[]): CiRed[] {
+  const by = new Map<number, GhRun[]>()
+  for (const r of runs.filter(counted))
+    by.set(r.workflowDatabaseId, [...(by.get(r.workflowDatabaseId) ?? []), r])
+  const out: CiRed[] = []
+  for (const [id, rs] of by) {
+    rs.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    if (!RED.includes(rs[0]!.conclusion)) continue
+    let first = rs[0]!
+    for (const r of rs) {
+      if (!RED.includes(r.conclusion)) break
+      first = r
+    }
+    out.push({
+      key: ciKey(id, first.headSha),
+      workflow: rs[0]!.workflowName,
+      sha: first.headSha,
+      url: rs[0]!.url,
+    })
+  }
+  return out
+}
+
+/** the reds whose key is not a label on an open bead */
+export const newCiReds = (reds: CiRed[], openLabels: Set<string>): CiRed[] =>
+  reds.filter(r => !openLabels.has(r.key))
