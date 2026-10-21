@@ -14,6 +14,7 @@ import {
   rankPlan,
   rigPlanOf,
   sanitize,
+  stationDemoted,
   type Plan,
   type RigInput,
 } from './plan'
@@ -437,4 +438,41 @@ test('churnCounts: one count per path per commit', () => {
   const out = '@aaa\nsrc/a.ts\nsrc/b.ts\nsrc/a.ts\n\n@bbb\nsrc/a.ts\n'
   expect(churnCounts(out)).toEqual({ 'src/a.ts': 2, 'src/b.ts': 1 })
   expect(churnCounts('')).toEqual({})
+})
+
+// ---- station-filed P0/P1 sorts as P2 (claude-factory-nwlh.4) ----
+
+const rv = 'factory/lifecycle-x/review'
+
+test('stationDemoted: only a top-level P0/P1 from review, security, verify or check', () => {
+  for (const st of ['review', 'security', 'verify', 'check'])
+    expect(stationDemoted(bead('a-1', { priority: 1, created_by: `factory/r/${st}` }))).toBe(true)
+  expect(stationDemoted(bead('a-1', { priority: 0, created_by: rv }))).toBe(true)
+  expect(stationDemoted(bead('a-1', { priority: 1, created_by: 'Zach Taylor' }))).toBe(false)
+  expect(stationDemoted(bead('a-1', { priority: 1, created_by: 'factory/r/triage' }))).toBe(false)
+  expect(stationDemoted(bead('a-1', { priority: 1, created_by: 'factory/r/plan' }))).toBe(false)
+  expect(stationDemoted(bead('a-1', { priority: 1, created_by: 'factory/sweeps-x/maintain' }))).toBe(false)
+  expect(stationDemoted(bead('a-1.2', { priority: 1, created_by: rv }))).toBe(false)
+  expect(stationDemoted(bead('a-1', { priority: 1, parent: 'a-0', created_by: rv }))).toBe(false)
+  expect(stationDemoted(bead('a-1', { priority: 2, created_by: rv }))).toBe(false)
+  expect(stationDemoted(bead('a-1', { priority: 1 }))).toBe(false)
+})
+
+test('orderByPlan: a review-filed P1 sorts in the P2 band, even when the plan ranks it first', () => {
+  const c = [
+    bead('a-1', { priority: 1, created_by: rv }),
+    bead('a-2', { priority: 3 }),
+    bead('a-3', { priority: 1, created_by: 'Zach Taylor' }),
+  ]
+  const plan = { items: [{ id: 'a-1', title: 't', priority: 1, why: 'w' }] }
+  expect(orderByPlan(c, plan).map(b => b.id)).toEqual(['a-3', 'a-1', 'a-2'])
+  expect(orderByPlan(c, undefined).map(b => b.id)).toEqual(['a-3', 'a-1', 'a-2'])
+})
+
+test('rankPlan: a demoted P1 shows as priority 2', () => {
+  const items = rankPlan([], [bead('a-1', { priority: 1, created_by: rv }), bead('a-2', { priority: 2 })])
+  expect(items.map(i => [i.id, i.priority])).toEqual([
+    ['a-1', 2],
+    ['a-2', 2],
+  ])
 })
