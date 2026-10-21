@@ -60,6 +60,7 @@ function setup(beads: unknown[], ghMode: 'ok' | 'fail' = 'ok', github = true) {
       'case "$1" in',
       `  list) cat '${listFile}';;`,
       "  comments) printf '%s' '[]';;",
+      `  show) printf '%s' '[{"id":"acme-1","labels":["factory","stale?"]}]';;`,
       "  create) printf '%s' 'acme-digest';;",
       '  *) exit 0;;',
       'esac',
@@ -176,4 +177,11 @@ test('factory hygiene <rig> prints findings as JSON and writes nothing (AC12)', 
     'acme-2:stale',
   ])
   expect(writes()).toEqual([])
+})
+
+test('factory queue removes the stale label so a held bead starts again (AC13)', () => {
+  setup([])
+  expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
+  const upd = callLines().find(l => l.startsWith('update acme-1'))
+  expect(upd).toContain('--remove-label stale?')
 })

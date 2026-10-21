@@ -150,7 +150,7 @@ import {
   type PrState,
   type RunMeta,
 } from './prs'
-import { digestLines, findHygiene, proposalComment, RECENT_COMMENT_MS, STALE_LABEL } from './hygiene'
+import { digestLines, findHygiene, hygieneHeld, proposalComment, RECENT_COMMENT_MS, STALE_LABEL } from './hygiene'
 import {
   nextSyncEntry,
   runBounded,
@@ -5341,7 +5341,9 @@ async function dispatch() {
       const eligible = startable.filter(x => {
         const why = isOwned(x)
           ? 'owner decisions pending'
-          : openChildren(b, x.id).length
+          : hygieneHeld(x)
+            ? 'hygiene proposed close (factory queue releases it)'
+            : openChildren(b, x.id).length
             ? 'open children'
             : linearIds.has(x.id)
               ? 'Linear id unconfirmed'

@@ -5,6 +5,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { bdEnv } from './axrepos'
+import { STALE_LABEL } from './hygiene'
 import { runBounded, syncTimeoutMs, timedOutText } from './sync'
 
 export type Bead = {
@@ -379,6 +380,8 @@ export const beads = (repo: string, actor: string) => ({
         LABEL,
         '--remove-label',
         REJECTED,
+        '--remove-label',
+        STALE_LABEL,
         ...(station ? ['--add-label', `station:${station}`] : []),
       ),
       'update',

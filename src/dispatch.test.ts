@@ -560,6 +560,24 @@ test('a person-requeued bead (rejected_by=dispatch metadata) starts, with 0 gh c
   expect(runDirs()).toHaveLength(1)
 })
 
+// claude-factory-8bg: dispatch holds a bead the hygiene sweep proposed as shipped or duplicate
+test('a stale label with a shipped or duplicate proposal: dispatch starts no run (claude-factory-8bg)', () => {
+  for (const kind of ['shipped', 'duplicate']) {
+    precheckReset({ labels: ['factory', 'stale?'], metadata: { hygiene_proposed: `${kind}@2026-10-20` } })
+    expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+    expect(runDirs()).toHaveLength(0)
+  }
+})
+
+test('a stale-kind proposal, or a shipped one with no stale label, still starts (claude-factory-8bg)', () => {
+  precheckReset({ labels: ['factory', 'stale?'], metadata: { hygiene_proposed: 'stale@2026-10-20' } })
+  pfactory(['beads'], { GH_JSON: '[]' })
+  expect(runDirs()).toHaveLength(1)
+  precheckReset({ labels: ['factory'], metadata: { hygiene_proposed: 'shipped@2026-10-20' } })
+  pfactory(['beads'], { GH_JSON: '[]' })
+  expect(runDirs()).toHaveLength(1)
+})
+
 test('FACTORY_PRECHECK=0 turns the whole check off: 0 gh calls, the run starts as before', () => {
   precheckReset()
   const out = pfactory(['beads'], {
