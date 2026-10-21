@@ -6494,7 +6494,7 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
 
   let sawGitWord = false
   let pendingDynamic = false
-  for (let i = 0; i < words.length; ) {
+  for (let i = 0; i < words.length;) {
     const w = words[i]!
     const b = baseWord(w)
     if (b === 'git' || b === 'gh' || GIT_DASHED_BINARY.test(b)) {
@@ -7601,7 +7601,7 @@ const GLUED_EXPANSION_RE = /\$(?:\(\([^)]*\)\)|\([^)]*\)|=?[A-Za-z_][A-Za-z0-9_]
 // text, where quotes and backslashes are visible, and is the reading that does not depend on them.
 function flattenBraceExpansions(w: string, byDepth: boolean): string {
   let out = ''
-  for (let i = 0; i < w.length; ) {
+  for (let i = 0; i < w.length;) {
     if (w[i] !== '$' || w[i + 1] !== '{') {
       // A stray "}" is the tail of a nested span that an escaped or quoted "${" hid: read it as a break.
       out += !byDepth && w[i] === '}' ? '$@' : w[i]
@@ -7702,7 +7702,8 @@ function replaceGluedSubstitutions(command: string): string {
 // an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
 // ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
 // becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
-// replaces only the "${".
+// replaces only the "${". In empty mode, only an exact $IFS or ${IFS} stays a space; every other
+// glued span becomes empty text, as the shell reads an unset name.
 function replaceGluedExpansions(command: string, empty = false): string {
   let out = ''
   let q = ''
@@ -7755,7 +7756,7 @@ function replaceGluedExpansions(command: string, empty = false): string {
     }
     if (isSpace(command[i - 1]) && isSpace(command[end])) {
       out += command.slice(i, end)
-    } else out += empty && !command.slice(i, end).includes('IFS') ? '' : ' '
+    } else out += empty && !['$IFS', '${IFS}'].includes(command.slice(i, end)) ? '' : ' '
     i = end - 1
   }
   return out
@@ -7913,7 +7914,7 @@ function denyAtScan(
   // claude-factory-y094: read a bare name before a quote as empty text unless it holds IFS.
   if (command.includes('$')) {
     const subbed = command.includes('$(') ? replaceGluedSubstitutions(command) : command
-    const emptied = subbed.replace(GLUED_BARE_NAME_RE, m => (m.includes('IFS') ? ' ' : ''))
+    const emptied = subbed.replace(GLUED_BARE_NAME_RE, m => (m === '$IFS' ? ' ' : ''))
     for (const raw of [emptied, replaceGluedExpansions(emptied, true)]) {
       if (raw === command || raw === unglued) continue
       const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)

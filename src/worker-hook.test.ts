@@ -9132,6 +9132,10 @@ test.each([
 // claude-factory-y094: an empty glued expansion joins the command word.
 test.each([
   'g${X}it${IFS}push${IFS}origin${IFS}main',
+  'g${XIFS}it${IFS}push${IFS}origin${IFS}main',
+  'g$XIFS"it"$IFS"push"$IFS"origin"$IFS"main"',
+  'g${IFS:+}it${IFS}push${IFS}origin${IFS}main',
+  'g${IFS:0:0}it${IFS}push${IFS}origin${IFS}main',
   'g$1it${IFS}push${IFS}origin${IFS}main',
   'g$@it${IFS}push${IFS}origin${IFS}main',
   'g${X:-}it${IFS}push${IFS}origin${IFS}main',
