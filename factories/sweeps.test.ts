@@ -40,3 +40,23 @@ test('each prompt names its own sweep label, the daily cap and the auto-queue al
     expect(node.prompt).toContain('sweep-queue:critical-advisory')
   }
 })
+
+test('drift runs hourly on the laptop, with a read-only prompt that keeps one bead per resource', () => {
+  const n = sweeps.nodes.drift
+  expect(n.everyMin).toBe(60)
+  expect(n.runner).toBe('herdr')
+  expect(n.timeoutMin).toBe(30)
+  expect(Object.entries(n.next)).toEqual([['filed', 'done']])
+  const p = n.prompt
+  expect(p).toMatch(/Never apply, patch, reconcile, suspend or resume/)
+  expect(p).toContain('previous read')
+  expect(p).toContain('60 minutes')
+  expect(p).toContain('station:incident')
+  expect(p).toContain('sweep-queue:incident')
+  expect(p).toContain('drift:<key>')
+  expect(p).toContain('comment on it')
+  expect(p).toContain('<latest tag>')
+  expect(p).toContain('a closed bead counts too')
+  expect(p).toContain('bump bead')
+  expect(p).toContain('no `factory` label')
+})

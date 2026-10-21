@@ -22,6 +22,13 @@ function walk(def: Factory, outcomes: string[], at = def.start) {
   return { visited, snapshot: actor.getSnapshot() }
 }
 
+test('deploy waits for a bump pull request in another repo and never opens or merges it', () => {
+  const p = ship.nodes.deploy.prompt
+  expect(p).toContain('only through a pull request in another repo')
+  expect(p).toContain('never open or merge it')
+  expect(p).toContain('parked, waiting on: a bump pull request in <repo>')
+})
+
 test('ship validates, compiles and starts at queue', () => {
   expect(() => compile(validate(ship))).not.toThrow()
   expect(ship.name).toBe('ship')

@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import {
   clipUtf8,
+  driftDuplicates,
   dueSweeps,
   guardHandled,
   markGuardHandled,
@@ -10,6 +11,7 @@ import {
   sweepGoal,
   sweepGuard,
   sweepNames,
+  type GuardedBead,
   type SweepGuardState,
   type SweepState,
 } from './sweeps'
@@ -69,6 +71,17 @@ test('monitor needs rig.slo even when rig.sweeps names it explicitly', () => {
   expect(dueSweeps(def, { ...rig, slo: 'kubectl get pods' }, {}, [], Date.now())).toEqual(['monitor'])
 })
 
+test('drift needs rig.drift even when rig.sweeps names it explicitly', () => {
+  const d: Factory = {
+    ...def,
+    nodes: { ...def.nodes, drift: { prompt: 'd', next: { filed: 'done' }, everyMin: 60 } },
+  }
+  const rig = { name: 'a', repo: '/a', sweeps: ['drift'] }
+  expect(dueSweeps(d, rig, {}, [], Date.now())).toEqual([])
+  expect(dueSweeps(d, { name: 'a', repo: '/a' }, {}, [], Date.now())).not.toContain('drift')
+  expect(dueSweeps(d, { ...rig, drift: 'flux get ks -A' }, {}, [], Date.now())).toEqual(['drift'])
+})
+
 test('a rig.sweeps name with no everyMin node in def is dropped, not thrown', () => {
   const rig = { name: 'a', repo: '/a', sweeps: ['other', 'maintain'] }
   expect(dueSweeps(def, rig, {}, [], Date.now())).toEqual(['maintain'])
@@ -89,6 +102,62 @@ const filed = (id: string, station: string, createdAt: string, labels: string[] 
   created_by: `factory/sweeps-${id}run/${station}`,
   created_at: createdAt,
   labels,
+})
+
+// --- driftDuplicates (claude-factory-d20): one open bead for each drift key ---
+
+const K = 'drift:kustomization.flux-system.apps'
+const dbead = (id: string, at: number, extra: Partial<GuardedBead & { status: string }> = {}) => ({
+  ...filed(id, 'drift', new Date(at).toISOString(), [K]),
+  ...extra,
+})
+
+test('driftDuplicates: of two open beads with one key, the newer is the duplicate of the older', () => {
+  const beads = [dbead('new', 2000), dbead('old', 1000)]
+  expect(driftDuplicates(beads)).toEqual([{ dup: 'new', original: 'old' }])
+})
+
+test('driftDuplicates: a closed original gives none, and so do different keys', () => {
+  expect(driftDuplicates([dbead('new', 2000), dbead('old', 1000, { status: 'closed' })])).toEqual([])
+  expect(
+    driftDuplicates([dbead('new', 2000), { ...dbead('x', 1000), labels: ['drift:image.acme.widget'] }]),
+  ).toEqual([])
+})
+
+test('driftDuplicates: a bead a person filed is never a duplicate, but can be the original', () => {
+  const person = { id: 'p', created_by: 'a person', created_at: new Date(1000).toISOString(), labels: [K] }
+  expect(driftDuplicates([person, dbead('new', 2000)])).toEqual([{ dup: 'new', original: 'p' }])
+  expect(
+    driftDuplicates([dbead('old', 1000), { ...person, created_at: new Date(2000).toISOString() }]),
+  ).toEqual([])
+})
+
+test('5 unlabeled drift beads take no auto-start place from a later incident bead', () => {
+  const now = Date.now()
+  const bumps = Array.from({ length: 5 }, (_, i) =>
+    filed(`bump${i}`, 'drift', new Date(now - (9 - i) * 60_000).toISOString()),
+  )
+  const inc = {
+    ...filed('inc', 'drift', new Date(now - 1000).toISOString()),
+    labels: ['sweep-queue:incident'],
+  }
+  const v = sweepGuard([...bumps, inc], now).find(x => x.id === 'inc')
+  expect(v).toMatchObject({ kept: true, allowed: true })
+})
+
+test('5 incident beads, 1 bump bead, then a 6th incident bead: the 6th is not kept', () => {
+  const now = Date.now()
+  const inc = (id: string, ago: number) => ({
+    ...filed(id, 'drift', new Date(now - ago).toISOString()),
+    labels: ['sweep-queue:incident'],
+  })
+  const beads = [
+    ...Array.from({ length: 5 }, (_, i) => inc(`i${i}`, (9 - i) * 60_000)),
+    filed('bump', 'drift', new Date(now - 3000).toISOString()),
+    inc('i5', 1000),
+  ]
+  const v = sweepGuard(beads, now)
+  expect(v.find(x => x.id === 'i5')).toMatchObject({ kept: false, allowed: false })
 })
 
 test('the first 5 sweep-filed beads in the window stay; a 6th is not kept', () => {

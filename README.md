@@ -232,6 +232,7 @@ factory rig add web ~/repos/web --max 4                     # all of factories/s
 factory rig add app ~/repos/app --max 3 --sweeps none --goal finish the v2 features
 factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor --slo "kubectl get pods -n infra | grep -v Running"
 factory rig add docs ~/repos/docs review-loop --sweeps none
+factory rig add gitops ~/repos/gitops --sweeps drift --drift "flux get kustomizations -A; flux get helmreleases -A"
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig rm docs                                         # nothing new starts; its runs carry on
 ```
@@ -653,6 +654,7 @@ The `small` loop skips the Opus plan step. It adds the security station only whe
 | Sweep    | Cadence       | What it needs                         |
 | -------- | ------------- | -------------------------------------- |
 | monitor  | every 30 min  | a rig's `--slo '<read-only command>'` |
+| drift    | hourly        | a rig's `--drift '<read-only command>'` (a GitOps rig) |
 | maintain | daily         | nothing extra                          |
 | improve  | daily, rotating refactor, performance, cost and factory-health lens | nothing extra |
 
@@ -661,11 +663,19 @@ The `small` loop skips the Opus plan step. It adds the security station only whe
 files what it finds as beads, not as a standing run. `rig add --sweeps a,b|none` picks which
 sweeps a rig runs; the default is all of them. `monitor` reads the rig's `--slo` command on the
 laptop (never on a VM worker), hashes its output, and starts a run only when the hash changed
-since the last pass; the unchanged output never reaches a model. Start a pass by hand with
+since the last pass; the unchanged output never reaches a model. `drift` reads the rig's `--drift`
+command the same way, but starts a run on every due pass (a resource that stays broken must be
+checked again), and mails the current and the previous read, each clipped to 4 KiB. It only
+reads: it never applies, reconciles, suspends or resumes anything. A Flux Kustomization or
+HelmRelease that is not Ready, or suspended, in both reads (60 minutes apart) gets an incident
+bead; a manifest image behind its source repo's latest release gets a bump bead with no
+`factory` label. Each resource has one open bead, labeled `drift:<key>`; each image tag has one bead, even a closed one. Start a pass by hand with
 `factory start sweeps@maintain <rig> 'sweep: maintain'`.
 
 **Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
-`sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A later bead
+`sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A bead with a
+`sweep-queue:*` label counts only the earlier beads with such a label, so an unlabeled drift
+bump bead takes no place from a later incident. A later bead
 that day still gets filed, but it waits for a person instead of starting on its own. A kept
 bead keeps the `factory` label, and starts on its own, only when it also carries
 `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every

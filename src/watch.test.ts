@@ -167,6 +167,21 @@ test('a merge that predates a pre-launch park still wakes it at once, not out it
   expect(mailOf('r1')).toHaveLength(1)
 })
 
+test('a run parked on a pull request in another repo is watched and woken on its merge (AC9)', () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  const foreign = 'https://github.com/acme/widget-flux/pull/7' // the GitOps repo, not the run's own
+  writeFileSync(prState, JSON.stringify({ state: 'MERGED', updatedAt: iso(1 * 60_000) }))
+  parkedRun('r1', repo(), f, { url: foreign })
+  const out = factory(['watch'])
+  expect(out.code).toBe(0)
+  expect(ghCallCount()[0]).toContain(foreign)
+  expect(mailOf('r1')).toHaveLength(1)
+  const watchJson = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
+  expect(watchJson.woke[0]).toMatchObject({ run: 'r1', node: 'deploy', url: foreign })
+})
+
 test('a closed pull request routes the same way a merge does (AC3)', () => {
   reset()
   const f = join(dir, 'ship.json')

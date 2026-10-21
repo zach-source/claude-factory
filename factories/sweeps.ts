@@ -6,6 +6,7 @@ import type { Factory } from '../src/machine'
 // A pass is one run. It goes straight to `done`. The cadence lives in `sweep()`, not in a self-loop.
 //
 //   monitor   production watch, read-only, every 30 min, on a rig with a `--slo` command set
+//   drift     GitOps drift watch, read-only, hourly, on a rig with a `--drift` command set
 //   maintain  dependency, advisory and docs maintenance, once a day
 //   improve   refactor, performance, cost and factory-health review, once a day, lens in rotation
 //
@@ -66,6 +67,19 @@ export default {
 File what hurts users now as separate work that starts on its own at the incident station, at priority 0, labeled sweep-queue:incident. File defects that can wait as separate work for a person to prioritize. Never file what is already tracked or running.
 ${guardNote('monitor')}
 Report filed with the key numbers, which the next pass compares against, and what you filed.`,
+      next: { filed: 'done' },
+    },
+    drift: {
+      runner: LAPTOP,
+      everyMin: 60,
+      timeoutMin: 30,
+      prompt: `One pass of GitOps drift watch, read-only. Never apply, patch, reconcile, suspend or resume anything: no kubectl apply, patch, delete or edit, no flux reconcile, suspend or resume, no helm upgrade. Only read.
+The rig's \`--drift\` command ran before you started. Your inbox holds its current read and the previous read with its time, each clipped to 4 KiB. A resource is a Flux Kustomization or HelmRelease.
+1. Not Ready, or suspended: a resource in both reads (the reads are at least 60 minutes apart, so 1 hour) is stuck. File it as separate work that starts on its own at the incident station: priority 0 when its workloads are down, else priority 1, labeled sweep-queue:incident and station:incident, with the \`factory\` label. A resource in the current read only is new: wait for the next pass.
+2. Image tags behind: in the manifests, find each image whose source repo has a newer GitHub release (gh release list, gh api, read-only). File one bump bead in this rig for it, with no \`factory\` label and no sweep-queue label, so a person prioritizes it.
+One open bead per resource. Give each bead the label drift:<key>: drift:<kind>.<namespace>.<name> for a resource (kind in lower case), drift:image.<image with / changed to .>.<latest tag> for an image. Before you file, run bd list --all -l drift:<key> and look for a bead. For a resource, only a bead that is not closed counts: if one exists, comment on it with the current state and file nothing new. For an image, a closed bead counts too (a person can decline a bump): file nothing new for that tag.
+${guardNote('drift')}
+Report filed with the resources you checked, what you filed and what you commented on.`,
       next: { filed: 'done' },
     },
     maintain: {
