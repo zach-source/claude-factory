@@ -575,7 +575,97 @@ const RUNNER_WRAPPERS = new Set([
   'sem',
   'lckdo',
   'xcrun',
+  'setarch',
+  'linux64',
+  'runcon',
+  'aa-exec',
+  'perf',
+  'valgrind',
+  'gdb',
+  'lldb',
+  'uv',
+  'uvx',
+  'poetry',
+  'pipenv',
+  'pdm',
+  'hatch',
+  'rye',
+  'pixi',
+  'conda',
+  'micromamba',
+  'bundle',
+  'pnpm',
+  'yarn',
+  'npm',
+  'npx',
+  'bunx',
+  'mise',
+  'asdf',
+  'devbox',
+  'volta',
+  'fnm',
+  'op',
+  'aws-vault',
+  'doppler',
+  'infisical',
+  'dotenvx',
+  'dotenv',
+  'envchain',
+  'chamber',
+  'tini',
+  'dumb-init',
+  'gosu',
+  'su-exec',
+  'setuidgid',
+  'envdir',
+  'envuidgid',
+  'softlimit',
+  'screen',
+  'dtach',
+  'abduco',
+  'zellij',
+  'tmux',
+  'watchexec',
+  'ts',
+  'tsp',
+  'nq',
+  'daemonize',
+  'pueue',
+  'rlwrap',
+  'logsave',
+  'annotate-output',
+  'zrun',
+  'run-one',
+  'timelimit',
+  'hwloc-bind',
+  'pfexec',
+  'datefudge',
+  'tsocks',
+  'torify',
+  'socksify',
+  'gksudo',
+  'machinectl',
+  'ip',
+  'systemd-cat',
+  'dbus-run-session',
+  'dbus-launch',
+  'gpg-agent',
+  'launchctl',
+  'reattach-to-user-namespace',
+  'sshpass',
+  'toolbox',
+  'distrobox',
+  'guix',
+  'devenv',
+  'capsh',
+  'start-stop-daemon',
 ])
+
+// `bun test src/*.test.ts` must stay allowed, so bun is a runner only for x, exec and run.
+function isRunner(words: string[], i: number): boolean {
+  const b = baseWord(words[i]!)
+  return RUNNER_WRAPPERS.has(b) || (b === 'bun' && ['x', 'exec', 'run'].includes(words[i + 1] ?? ''))
+}
 
 const WRAPPERS = new Set([
   'sudo',
@@ -1395,7 +1485,7 @@ function findExecRmDeny(cmdIn: string[]): boolean {
       if (isRecursiveRm(cmd, k)) return true
       continue
     }
-    if (WRAPPERS.has(b) || RUNNER_WRAPPERS.has(b) || b === 'timeout' || b === 'xargs') {
+    if (WRAPPERS.has(b) || isRunner(cmd, k) || b === 'timeout' || b === 'xargs') {
       for (let j = k + 1; j < cmd.length; j++) {
         if (baseWord(cmd[j]!) === 'rm' && isRecursiveRm(cmd, j)) return true
       }
@@ -2063,6 +2153,10 @@ function wrapperReadingsDeny(
       return
     }
     const b = baseWord(w)
+    if (b === 'repeat') {
+      work.push(() => head(i + 2))
+      return
+    }
     if (WRAPPERS.has(b) || b === 'timeout') {
       work.push(() => flags(b, i + 1))
       return
@@ -2071,7 +2165,7 @@ function wrapperReadingsDeny(
       work.push(() => xargsFlags(i + 1))
       return
     }
-    if (RUNNER_WRAPPERS.has(b)) {
+    if (isRunner(words, i)) {
       work.push(() => runner(i + 1))
       return
     }
@@ -2446,7 +2540,7 @@ function commandAnchors(words: string[]): number[] {
   if (i >= words.length) return []
   let base = baseWord(words[i]!)
   // claude-factory-tswp: any later word of a runner can be the command. Deny-only readings use this.
-  if (RUNNER_WRAPPERS.has(base)) return runnerAnchors(words, i, [])
+  if (isRunner(words, i)) return runnerAnchors(words, i, [])
   if (!LEAD_WRAPPERS.has(base)) return [i]
 
   const anchors: number[] = []
@@ -2488,7 +2582,7 @@ function commandAnchors(words: string[]): number[] {
         while (j < words.length && wrapperAssignmentOperand(words[j]!)) j++
         if (j >= words.length) return anchors
         const nb = baseWord(words[j]!)
-        if (RUNNER_WRAPPERS.has(nb)) return runnerAnchors(words, j, anchors)
+        if (isRunner(words, j)) return runnerAnchors(words, j, anchors)
         if (LEAD_WRAPPERS.has(nb)) {
           base = nb
           j++
@@ -2525,7 +2619,7 @@ function commandAnchors(words: string[]): number[] {
         continue
       }
       const nb = baseWord(w)
-      if (RUNNER_WRAPPERS.has(nb)) return runnerAnchors(words, j, anchors)
+      if (isRunner(words, j)) return runnerAnchors(words, j, anchors)
       if (LEAD_WRAPPERS.has(nb)) {
         base = nb
         j++
@@ -2551,7 +2645,7 @@ function commandAnchors(words: string[]): number[] {
       // above the outer loop). Restart the flag walk there, in place of adding it as a flat
       // candidate.
       const nb2 = baseWord(words[k2]!)
-      if (RUNNER_WRAPPERS.has(nb2)) return runnerAnchors(words, k2, anchors)
+      if (isRunner(words, k2)) return runnerAnchors(words, k2, anchors)
       if (LEAD_WRAPPERS.has(nb2)) {
         anchors.push(k2)
         // claude-factory-p43v.32: a long run of `-Z v env -Z v env ...` restarts this chase once
