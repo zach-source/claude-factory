@@ -12,6 +12,8 @@ import { NAME } from './beads'
  * the run moves on.
  *
  * The `defer` field (`to: 'done'` only) ends the run. The work stays open for a person to pick up.
+ * `defer: { station }` also moves the bead's `station:*` label, so the run after an undefer starts
+ * at that station. The station must be a node of the same factory.
  *
  * The `reject` field (`to: 'done'` only) also ends the run. The work stays open and ready. It stays
  * out of the factory's queue until a person queues it again.
@@ -32,7 +34,7 @@ export type Edge =
   | {
       to: string
       delayMin?: number
-      defer?: true
+      defer?: true | { station: string }
       reject?: true
       requeue?: true | { factory?: string; station?: string }
       ship?: true
@@ -58,6 +60,9 @@ export type Node = {
   timeoutMin?: number
   /**
    * The station can report one outcome this many times in a run. Review's `changes` is one example.
+   * Only an outcome that loops back counts: its edge goes to this node, to a node on
+   * this node's shortest path from `start`, or to a node that cannot end the run. An outcome that goes to
+   * `done`, or to an off-path node that can end the run (review's `security`), never counts.
    * When `onRounds` is set, the next such report re-plans the run.
    * With no `onRounds`, the next report holds for the manager instead.
    * A loop that does not converge by then needs a new design, or a person.
@@ -305,6 +310,10 @@ export function validate(def: Factory): Factory {
             edge.to !== 'done' &&
             `${id}: only an edge into done rejects`,
           typeof edge !== 'string' &&
+            typeof edge.defer === 'object' &&
+            !ids.includes(edge.defer.station) &&
+            `${id}: outcome "${outcome}" defer station "${edge.defer.station}" is not a node`,
+          typeof edge !== 'string' &&
             edge.defer &&
             edge.reject &&
             `${id}: an edge defers or rejects, not both`,
@@ -494,6 +503,31 @@ export function compile(def: Factory) {
   const m = setup({ types: { context: {} as Ctx, events: {} as Ev } })
   const isCurrent = ({ context, event }: { context: Ctx; event: Ev }) =>
     'seq' in event && event.seq === context.seq
+
+  // An outcome counts toward a node's `rounds` only when its edge loops back: the target is the node
+  // itself, sits on the node's shortest path from start (BFS parents), or cannot end the run (no edge to
+  // done). An edge to done, or to an off-path station that can end the run (review's security), never counts.
+  const parent: Record<string, string> = {}
+  const seen = new Set([def.start])
+  for (const queue = [def.start]; queue.length;) {
+    const q = queue.shift()!
+    for (const e of Object.values(def.nodes[q]?.next ?? {})) {
+      const t = edgeTo(e)
+      if (t !== 'done' && !seen.has(t)) {
+        seen.add(t)
+        parent[t] = q
+        queue.push(t)
+      }
+    }
+  }
+  const counts = (id: string, node: Node, outcome: string) => {
+    const e = node.next[outcome]
+    if (!e) return false
+    const t = edgeTo(e)
+    if (t === 'done') return false
+    for (let x: string | undefined = id; x; x = parent[x]) if (x === t) return true
+    return !Object.values(def.nodes[t]?.next ?? {}).some(x => edgeTo(x) === 'done')
+  }
 
   const nodeState = (id: string, node: Node) => {
     const attempts = 1 + (node.retries ?? 2)
@@ -686,6 +720,7 @@ export function compile(def: Factory) {
                             guard: ({ context, event }: { context: Ctx; event: Ev }) =>
                               isCurrent({ context, event }) &&
                               event.type === 'DONE' &&
+                              counts(id, node, event.outcome) &&
                               context.log.filter(e => e.node === id && e.outcome === event.outcome).length ===
                                 node.rounds!,
                             target: `#factory.${node.onRounds}`,
@@ -718,6 +753,7 @@ export function compile(def: Factory) {
                     {
                       guard: ({ context, event }: { context: Ctx; event: Ev }) => {
                         if (!isCurrent({ context, event }) || event.type !== 'DONE') return false
+                        if (!counts(id, node, event.outcome)) return false
                         const n = context.log.filter(e => e.node === id && e.outcome === event.outcome).length
                         return node.onRounds ? n > 2 * node.rounds! : n >= node.rounds!
                       },

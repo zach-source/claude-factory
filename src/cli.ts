@@ -74,6 +74,12 @@ import * as plan from './plan'
 import {
   clipUtf8,
   dueSweeps,
+  failedTests,
+  flakeCandidates,
+  flakyRuns,
+  mainCiReds,
+  newCiReds,
+  type GhRun,
   guardHandled,
   markGuardHandled,
   pruneGuardState,
@@ -104,8 +110,7 @@ import {
   parseSync,
   pullArgs,
   redact,
-  resolveConnectCreds,
-  resolveLinearApiKey,
+  linearAuth,
   routeLinearIssue,
   syncEnv,
 } from './linear'
@@ -114,6 +119,7 @@ import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import * as broker from './broker'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import {
@@ -139,6 +145,7 @@ import {
   gitlabForge,
   gitlabWatchNotes,
   mrsIn,
+  onHost,
   parseGitlabLabeled,
   parseMergedPrs,
   parseRemote,
@@ -325,7 +332,7 @@ async function launchAxManager(args: string[]) {
     fail('FACTORY_AX_MANAGER_IMAGE is not set: name the manager image (Dockerfile.worker, target manager)')
   const m = ax.remoteManager()
   if (m) fail(m)
-  const { name, policy } = await ax.launchManager(image!, args)
+  const { name, policy } = await ax.launchManager(image!, args, rawRigs())
   console.log(
     `the manager runs in AX task ${name}${policy ? '' : ' (its egress policy is NOT created: the task has no egress; check the AX controller)'}`,
   )
@@ -2563,7 +2570,12 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
           t.requeued = true
         }
       }
-    } else if (typeof edge === 'object' && edge.defer) b.defer(id, reason)
+    } else if (typeof edge === 'object' && edge.defer) {
+      // dispatch never reads a station label off a Linear-sourced bead, so it gets a plain defer
+      const station = typeof edge.defer === 'object' ? edge.defer.station : undefined
+      const current = station ? b.lookup(id) : undefined
+      b.defer(id, reason, current && linearSourced(current) ? undefined : station)
+    }
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
@@ -4094,7 +4106,7 @@ type SweepLogEntry = {
   at: number
   rig: string
   sweep: string
-  action: 'started' | 'no-room' | 'unchanged' | 'error' | 'no-beads'
+  action: 'started' | 'no-room' | 'unchanged' | 'error' | 'no-beads' | 'green' | 'tracked' | 'quiet'
   run?: string
 }
 const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.stringify(e) + '\n')
@@ -4107,6 +4119,109 @@ const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.strin
 function readSlo(rig: Rig): string {
   const p = Bun.spawnSync(['sh', '-c', rig.slo!], { cwd: rig.repo, timeout: 30_000 })
   return (p.stdout.toString() + p.stderr.toString()).trim()
+}
+
+/** the rig's default branch: origin/HEAD without `origin/`, else main */
+function defaultBranch(repo: string): string {
+  const p = Bun.spawnSync(['git', '-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  const b =
+    p.exitCode === 0
+      ? p.stdout
+          .toString()
+          .trim()
+          .replace(/^origin\//, '')
+      : ''
+  return /^[\w][\w./-]*$/.test(b) ? b : 'main'
+}
+
+/** one read-only `gh` call on the laptop (claude-factory-q08): a non-zero exit or a timeout throws */
+function ghRead(repo: string, args: string[], timeout = 30_000): string {
+  const p = Bun.spawnSync(['gh', ...args], { cwd: repo, timeout, maxBuffer: 8_000_000 })
+  if (p.exitCode !== 0) throw new Error(`gh ${args.slice(0, 2).join(' ')}: ${p.exitCode ?? 'timeout'}`)
+  return p.stdout.toString()
+}
+
+const GH_RUN_FIELDS =
+  'workflowDatabaseId,workflowName,headSha,conclusion,status,databaseId,createdAt,url,event,attempt'
+const ghRuns = (repo: string, extra: string[]): GhRun[] => {
+  const runs = JSON.parse(ghRead(repo, ['run', 'list', ...extra, '--json', GH_RUN_FIELDS]))
+  if (!Array.isArray(runs)) throw new Error('gh run list: not a list')
+  return runs
+}
+
+/** the labels of every open bead in `repo`, for the ci-red and flake dedupe; a bd failure throws */
+const openLabels = (repo: string): Set<string> =>
+  new Set(
+    beads(repo, 'factory')
+      .every()
+      .filter(b => b.status !== 'closed')
+      .flatMap(b => b.labels ?? []),
+  )
+
+/** printable ASCII only, so a workflow name or URL cannot carry a control or bidi character into a mail */
+const plain = (s: string, max = 200) => s.replace(/[^\x20-\x7e]/g, '?').slice(0, max)
+
+/**
+ * The deterministic read of the `ci` and `flakes` sweeps (claude-factory-q08). No model runs here.
+ * `start` means a run is worth its tokens, and `mail` is its inbox text: keys, ids and URLs only,
+ * never raw log text. Any gh or bd failure throws, so no run starts (the caller logs `error`).
+ */
+function ciSweepRead(
+  rig: Rig,
+  station: 'ci' | 'flakes',
+  now: number,
+): { action: 'green' | 'tracked' | 'quiet' | 'start'; mail?: string } {
+  const branch = defaultBranch(rig.repo)
+  if (station === 'ci') {
+    const reds = mainCiReds(ghRuns(rig.repo, ['--branch', branch, '--limit', '100']))
+    if (!reds.length) return { action: 'green' }
+    const fresh = newCiReds(reds, openLabels(rig.repo))
+    if (!fresh.length) return { action: 'tracked' }
+    return {
+      action: 'start',
+      mail: clipUtf8(
+        fresh
+          .map(
+            r =>
+              `key: ${r.key} | workflow: ${plain(r.workflow, 80)} | first failing sha: ${r.sha.slice(0, 40)} | newest run: ${plain(r.url)}`,
+          )
+          .join('\n'),
+      ),
+    }
+  }
+  const since = new Date(now - 7 * 86_400_000).toISOString().slice(0, 10)
+  const flaky = flakyRuns(
+    ghRuns(rig.repo, ['--branch', branch, '--created', `>=${since}`, '--limit', '1000']),
+  ).slice(0, 10)
+  if (!flaky.length) return { action: 'quiet' }
+  const labels = openLabels(rig.repo)
+  const logs = flaky.flatMap(r => {
+    try {
+      const out = ghRead(rig.repo, [
+        'run',
+        'view',
+        String(r.id),
+        '--log-failed',
+        ...(r.attempt ? ['--attempt', String(r.attempt)] : []),
+      ])
+      return [{ url: plain(r.url), tests: failedTests(out) }]
+    } catch {
+      return [] // a log that expired or timed out only costs this run's evidence
+    }
+  })
+  const found = flakeCandidates(logs, labels)
+  if (!found.length) return { action: 'quiet' }
+  return {
+    action: 'start',
+    mail: clipUtf8(
+      found
+        .map(
+          c =>
+            `test: ${c.id} | key: ${c.key} | n: ${c.n} | queue: ${c.queue} | runs: ${c.urls.slice(0, 3).join(' ')}`,
+        )
+        .join('\n'),
+    ),
+  }
 }
 
 /**
@@ -4166,6 +4281,34 @@ async function sweep() {
       // room, and a changed read still needs its mail even when no room is free yet (it waits)
       let mail: string | undefined
       let read: { sig: string; lines: number } | undefined
+      if (station === 'ci' || station === 'flakes') {
+        // Check room first. A full factory writes no lastAt, so a late check repeats the gh reads each tick.
+        try {
+          await assertRoom(rig.repo)
+        } catch {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'no-room' })
+          continue
+        }
+        let ci: { action: 'green' | 'tracked' | 'quiet' | 'start'; mail?: string }
+        try {
+          ci = ciSweepRead(rig, station, at)
+        } catch (err) {
+          state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
+          writeJson(sweepStateFile(), state)
+          logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+          console.error(
+            `${new Date().toISOString()} sweep ${station} for rig ${rig.name}: ${(err as Error).message}`,
+          )
+          continue
+        }
+        if (ci.action !== 'start') {
+          state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
+          writeJson(sweepStateFile(), state)
+          logSweep({ at, rig: rig.name, sweep: station, action: ci.action })
+          continue
+        }
+        mail = ci.mail
+      }
       if (station === 'monitor') {
         let output: string
         try {
@@ -4337,10 +4480,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
   const since = force || !prior?.lastGoodAt ? undefined : prior.lastGoodAt - LINEAR_SKEW_MS
   let secrets: string[] = []
   try {
-    const creds = resolveConnectCreds()
-    secrets = [creds.token, creds.cfId, creds.cfSecret]
-    const apiKey = await resolveLinearApiKey(creds, linearConnectCache)
-    secrets.push(apiKey)
+    const apiKey = await linearAuth(secrets, process.env, linearConnectCache)
     const { issues, truncated } = await fetchLinearIssues(apiKey, rig.linear!.team)
     const allRigs = rigs()
     let unrouted = 0
@@ -5582,6 +5722,7 @@ function rigFacts(
   busy: number,
   now: number,
   linear: { ids: Set<string>; rigs: Set<string> },
+  churn: Record<string, number> = {},
 ): RigFacts {
   // every open child, read from `every` (already in hand): no `bd children` subprocess call
   // per candidate (claude-factory-dun.12).
@@ -5629,7 +5770,7 @@ function rigFacts(
     .filter(x => isClosed(x) && (tsOf(x.closed_at) ?? -Infinity) >= dayAgo)
     .map(x => ({ id: x.id, title: plan.sanitize(x.title), priority: x.priority }))
   const liveBeadIds = every.filter(x => linked.has(x.id)).map(x => x.id)
-  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now)
+  const found = plan.findings(rig.name, rig.goal, every, liveBeadIds, now, 24, churn)
   return {
     goal: rig.goal,
     maxRuns: rig.maxRuns,
@@ -5683,6 +5824,32 @@ export function clipFactsJson(facts: Record<string, RigFacts>, maxBytes = 64 * 1
   return JSON.stringify(clone)
 }
 
+/** Counts the merged PRs for each file in the last 48 hours on origin/main.
+ * Any failure gives {}: the rig still reports. */
+export function mergedFileChurn(repo: string): Record<string, number> {
+  try {
+    const p = Bun.spawnSync(
+      [
+        'git',
+        '-C',
+        repo,
+        'log',
+        '--merges',
+        '--first-parent',
+        `--since=${plan.CHURN_SINCE}`,
+        '--diff-merges=first-parent',
+        '--name-only',
+        '--format=@%H',
+        'origin/main',
+      ],
+      { timeout: 10_000 },
+    )
+    return p.exitCode === 0 ? plan.churnCounts(p.stdout.toString()) : {}
+  } catch {
+    return {}
+  }
+}
+
 /** every rig's facts, gathered once: a rig whose own bd call fails still reports (with `error`), so
  * one rig's trouble never stops the others from reaching the pm. */
 async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
@@ -5701,7 +5868,16 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
     }
     try {
       const b = beads(rig.repo, 'factory')
-      out[rig.name] = rigFacts(rig, b.every(), b.ready(), linked, busy, now, linear)
+      out[rig.name] = rigFacts(
+        rig,
+        b.every(),
+        b.ready(),
+        linked,
+        busy,
+        now,
+        linear,
+        mergedFileChurn(rig.repo),
+      )
     } catch (err) {
       out[rig.name] = emptyRigFacts(rig, busy, (err as Error).message)
     }
@@ -5779,6 +5955,7 @@ function planSetCmd(answerPath?: string) {
     if (rf.goal && items.length === 0) found.push(plan.goalNoPlanFinding(name, rf.goal))
     rigsPlan[name] = { items, findings: found }
   }
+  const churnProposals = plan.churnProposals(Object.values(facts!).flatMap(rf => rf.findings))
   const cleanProposals: plan.Proposal[] = (Array.isArray(answer!.proposals) ? answer!.proposals : [])
     .filter(
       (p): p is { rig: string; bead?: unknown; change: string; why: string } =>
@@ -5796,14 +5973,15 @@ function planSetCmd(answerPath?: string) {
     }))
 
   // every validation above must pass before anything is written: a refusal never touches plan.json
-  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: cleanProposals } satisfies plan.Plan)
+  const allProposals = [...cleanProposals, ...churnProposals.filter(p => rigNames.has(p.rig))]
+  writeJson(planFile(), { at: now, rigs: rigsPlan, proposals: allProposals } satisfies plan.Plan)
 
   let filedTotal = 0
   for (const name of rigNames) {
     const rig = rigs().find(r => r.name === name)
     if (!rig || !hasBeads(rig.repo)) continue
     const b = beads(rig.repo, 'factory')
-    const toFile = cleanProposals
+    const toFile = allProposals
       .filter(p => p.rig === name)
       .map(p => ({
         title: `pm proposal: ${clip(p.change, 80)}`,
@@ -6099,13 +6277,13 @@ async function watchPass() {
       cache.set(url, v)
       return v
     }
-    const viewMr = async (url: string, cwd: string): Promise<WatchedPr | null> => {
+    const viewMr = async (url: string, cwd: string, host?: string): Promise<WatchedPr | null> => {
       if (cache.has(url)) return cache.get(url)!
       let r: Awaited<ReturnType<ReturnType<typeof gitlabForge>['view']>> | null = null
       let notes: Awaited<ReturnType<typeof gitlabWatchNotes>> = null
       try {
-        r = await gitlabForge(spawnGlab).view(url, cwd)
-        notes = 'viewed' in r ? await gitlabWatchNotes(spawnGlab, url, cwd) : null
+        r = await gitlabForge(spawnGlab).view(url, cwd, host)
+        notes = 'viewed' in r ? await gitlabWatchNotes(spawnGlab, url, cwd, host) : null
       } catch {
         // a missing glab binary counts as a failed view
       }
@@ -6133,11 +6311,17 @@ async function watchPass() {
         if (sub !== 'waiting' || !isParked(c, node)) continue
         const parked = c.log.at(-1)!
         const urls = prsIn(parked.summary)
-        const mrUrls = mrsIn(parked.summary)
+        // glab sends GITLAB_TOKEN to the URL's host, so only an MR on the rig's forge host is viewed
+        const forgeHost = originRef(run.repo)?.host
+        const mrUrls = mrsIn(parked.summary).filter(url => {
+          if (onHost(url, forgeHost)) return true
+          console.error(`watch: skip merge request on host ${url.split('/')[2]}: not the rig forge host`)
+          return false
+        })
         if (!urls.length && !mrUrls.length) continue
         const views = await Promise.all([
           ...urls.map(url => viewGh(url, run.repo)),
-          ...mrUrls.map(url => viewMr(url, run.repo)),
+          ...mrUrls.map(url => viewMr(url, run.repo, forgeHost)),
         ])
         const prs = views.filter(v => v !== null)
         const failed = prs.length < views.length
@@ -7205,6 +7389,9 @@ if (import.meta.main && !outboxCmd)
         break
       case 'sync':
         await syncPass()
+        break
+      case 'broker':
+        broker.main(args)
         break
       case 'manager':
         if (args[0] === 'host') {
