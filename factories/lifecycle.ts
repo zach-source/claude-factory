@@ -181,7 +181,7 @@ Report approve; changes with a numbered list of everything to fix, found in one 
       },
       prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section, or triage's summary on a small run. Change no code.
 ${blockingScope}
-A high or critical finding that origin/main also has does not block, but file it at P1 or higher and name it in the report.
+A high or critical finding that origin/main also has does not block, but name it in the report as a high or critical finding for a person to prioritize.
 Post it on the pull request the way review does.
 Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
       next: { approve: { to: 'done', ship: true }, changes: 'implement' },
