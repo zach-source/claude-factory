@@ -10,6 +10,7 @@ import {
   isNoWorker,
   isPrWait,
   mrsIn,
+  MAIL_ONLY_WAKE_AT,
   parkDelayMin,
   prevReport,
   prsIn,
@@ -292,16 +293,65 @@ test('a blocked worker parks its station without spending an attempt, and mail o
   expect(s.context.log.map(e => e.outcome)).toEqual(['fail', 'blocked', 'blocked'])
 })
 
-test('each blocked report in a row doubles the park, up to 8h', () => {
+test('each blocked report in a row doubles the park, up to 24h', () => {
   const ctx = (n: number) =>
     ({
       log: [{ node: 'plan', outcome: 'ready' }, ...Array(n).fill({ node: 'deploy', outcome: 'blocked' })],
     }) as never
   expect([0, 1, 2, 3, 4, 9].map(n => parkDelayMin(ctx(n), 'deploy', 60))).toEqual([
-    60, 120, 240, 480, 480, 480,
+    60, 120, 240, 480, 960, 1440,
   ])
-  expect(parkDelayMin(ctx(3), 'deploy', 600)).toBe(600)
+  expect(parkDelayMin(ctx(6), 'deploy', 60)).toBe(1440)
+  expect(parkDelayMin(ctx(1), 'deploy', 600)).toBe(1200)
+  expect(parkDelayMin(ctx(3), 'deploy', 600)).toBe(1440)
+  expect(parkDelayMin(ctx(1), 'deploy', 2000)).toBe(2000)
 })
+
+test('after 6 blocked reports in a row a station waits for mail only; mail wakes it at once', () => {
+  const { send } = run()
+  let at = 1000
+  let s = send({ type: 'BLOCKED', seq: 1, reason: 'needs the owner', at })
+  for (let i = 2; i <= 5; i++) {
+    at = (s.context.wakeAt as number) + 1
+    s = send({ type: 'TICK', at })
+    s = send({ type: 'BLOCKED', seq: s.context.seq, reason: 'needs the owner', at })
+    expect(s.context.wakeAt).toBeLessThan(MAIL_ONLY_WAKE_AT)
+  }
+  const told = s.context.mail.manager?.length ?? 0
+  at = (s.context.wakeAt as number) + 1
+  s = send({ type: 'TICK', at })
+  s = send({ type: 'BLOCKED', seq: s.context.seq, reason: 'needs the owner', at })
+  expect(s.context.wakeAt).toBe(MAIL_ONLY_WAKE_AT)
+  expect(s.context.mail.manager?.length).toBe(told + 1)
+  expect(s.context.mail.manager?.at(-1)).toMatchObject({ from: 'implement' })
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('implement waits until mailed')
+  s = send({ type: 'TICK', at: MAIL_ONLY_WAKE_AT - 1 })
+  expect(where(s.value)).toEqual(['implement', 'waiting'])
+
+  const attempt = s.context.attempt
+  s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'check again', at: 5_000_000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context).toMatchObject({ attempt, wakeAt: 0 })
+
+  s = send({ type: 'BLOCKED', seq: s.context.seq, reason: 'needs the owner', at: 6_000_000 })
+  expect(s.context.wakeAt).toBe(MAIL_ONLY_WAKE_AT)
+  expect(s.context.mail.manager?.length).toBe(told + 1)
+})
+
+test.each(['https://github.com/acme/widget/pull/7', 'https://gitlab.com/acme/widget/-/merge_requests/7'])(
+  'a park that names %s never goes mail-only',
+  url => {
+    const { send } = run()
+    let at = 1000
+    let s = send({ type: 'BLOCKED', seq: 1, reason: `${url} needs a review`, at })
+    for (let i = 0; i < 8; i++) {
+      at = (s.context.wakeAt as number) + 1
+      s = send({ type: 'TICK', at })
+      s = send({ type: 'BLOCKED', seq: s.context.seq, reason: `${url} needs a review`, at })
+      expect(s.context.wakeAt).toBeLessThan(MAIL_ONLY_WAKE_AT)
+    }
+  },
+)
 
 test('a timed edge is not cut short by mail', () => {
   const { send } = run({

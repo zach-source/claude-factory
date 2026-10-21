@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { Row } from './cli'
-import { hold, shipLines, tokens, waiting } from './sidebar'
+import { hold, runText, shipLines, tokens, waiting } from './sidebar'
 
 const blocked = { node: 'deploy', attempt: 1, outcome: 'blocked', summary: 'PR #7', at: 1 }
 const rows: Row[] = [
@@ -104,4 +104,15 @@ test('shipLines shows the ship run, the count and the next PR first', () => {
     '    then https://x/pull/2 (a-2)',
   ])
   expect(shipLines([])).toEqual([])
+})
+
+test('a run with no timed wake says it waits until mailed', () => {
+  const r: Row = {
+    id: 'h',
+    ws: 'w8',
+    node: 'soak',
+    sub: 'waiting',
+    last: { ...blocked, outcome: 'deployed' },
+  }
+  expect(runText(r)).toBe('soak · waits until mailed')
 })

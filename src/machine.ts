@@ -478,16 +478,25 @@ export const isNoWorker = (e?: Entry) => e?.attempt === 0
 export const prWaitSummary = (urls: string[]) =>
   `no worker yet: waiting for ${urls.join(', ')} to merge, close or change`
 
-/** how long a station parks: parkMin, doubled for each blocked report it already made in a row, at most 8h.
- * A pre-launch park (`isPrWait`) spent no worker, so this skips it rather than counting it. */
-export const parkDelayMin = (c: Ctx, node: string, parkMin: number) => {
+/** blocked worker reports in a row at this node; a pre-launch park (`isPrWait`) spent no worker, so it is skipped */
+const blockedRun = (c: Ctx, node: string) => {
   let n = 0
   for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node; i--) {
     if (c.log[i]?.outcome !== 'blocked') break
     if (!isPrWait(c.log[i])) n++
   }
-  return Math.min(parkMin * 2 ** n, Math.max(parkMin, 480))
+  return n
 }
+
+/** how long a station parks: parkMin, doubled for each blocked report it already made in a row, at most 24h */
+export const parkDelayMin = (c: Ctx, node: string, parkMin: number) =>
+  Math.min(parkMin * 2 ** blockedRun(c, node), Math.max(parkMin, 1440))
+
+/** after this many blocked reports in a row (with this one), a non-PR park has no timed wake */
+export const PARK_MAIL_ONLY_AFTER = 6
+/** a wakeAt no clock reaches: only mail to the station wakes it. A real date, so JSON and `new Date` keep working */
+export const MAIL_ONLY_WAKE_AT = 8.64e15
+export const isMailOnly = (c: Pick<Ctx, 'wakeAt'>) => c.wakeAt >= MAIL_ONLY_WAKE_AT
 
 export function compile(def: Factory) {
   validate(def)
@@ -769,16 +778,27 @@ export function compile(def: Factory) {
               target: 'waiting',
               actions: assign(({ context, event }) => {
                 const { reason, at } = event as Extract<Ev, { type: 'BLOCKED' }>
-                // each report that finds it still blocked doubles the wait, up to 8h: a re-check is a whole worker
+                // each report that finds it still blocked doubles the wait, up to 24h: a re-check is a whole worker.
+                // After PARK_MAIL_ONLY_AFTER in a row, a park that names no PR or MR waits for mail only.
                 const isWatched = prsIn(reason).length > 0
-                const wakeAt =
-                  at +
-                  (isWatched ? WATCHED_PARK_MIN : parkDelayMin(context as Ctx, id, node.parkMin ?? 60)) *
-                    60_000
-                const text = `${id} is parked, waiting on: ${reason}. It checks again ${isWatched ? 'when one of its pull requests changes, at the latest' : 'at'} ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
+                const mailOnly =
+                  !isWatched &&
+                  !mrsIn(reason).length &&
+                  blockedRun(context as Ctx, id) + 1 >= PARK_MAIL_ONLY_AFTER
+                const wakeAt = mailOnly
+                  ? MAIL_ONLY_WAKE_AT
+                  : at +
+                    (isWatched ? WATCHED_PARK_MIN : parkDelayMin(context as Ctx, id, node.parkMin ?? 60)) *
+                      60_000
+                const text = mailOnly
+                  ? `${id} waits until mailed: it was blocked ${PARK_MAIL_ONLY_AFTER} times in a row on: ${reason}. It makes no timed re-check now. Mail the station to wake it.`
+                  : `${id} is parked, waiting on: ${reason}. It checks again ${isWatched ? 'when one of its pull requests changes, at the latest' : 'at'} ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
                 // the manager hears when a station parks, not each re-check that finds nothing changed
                 const last = context.log.at(-1)
-                const isRepeat = last?.node === id && last.outcome === 'blocked'
+                const isRepeat =
+                  last?.node === id &&
+                  last.outcome === 'blocked' &&
+                  !(mailOnly && blockedRun(context as Ctx, id) + 1 === PARK_MAIL_ONLY_AFTER)
                 return {
                   log: [
                     ...context.log,

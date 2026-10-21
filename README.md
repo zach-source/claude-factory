@@ -951,7 +951,10 @@ rows = [
 - **Parking**: a worker reports `blocked "<what>"` when it waits on something outside the
   run (a person's decision, a human review or merge, another run). The run parks at that
   station. It spends no worker and no attempt. The manager learns what it waits for. A fresh
-  worker checks again after `parkMin`, or as soon as someone mails the station. Deploy parks
+  worker checks again after `parkMin`, or as soon as someone mails the station. Each blocked
+  report in a row doubles the wait, up to 24h. After 6 blocked reports in a row that name no
+  pull or merge request, the station has no timed wake. `factory status` shows `waits until
+  mailed`. The manager hears once. Only mail to the station wakes it. Deploy parks
   this way on a pull request that only a person can approve or merge. When the report links
   pull requests, the factory watches them (`gh` or `glab`, every minute). It mails the station
   once a real change happens after the park: a new head commit, a merge, a close, or a review

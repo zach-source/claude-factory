@@ -18,7 +18,11 @@ const isLive = (r: Row) => r.node && r.node !== 'done' && r.node !== 'aborted'
 export function runText(r: Row) {
   const state =
     hold(r) ??
-    (r.sub === 'waiting' && r.wakeAt ? `waits ${new Date(r.wakeAt).toTimeString().slice(0, 5)}` : 'working')
+    (r.sub === 'waiting'
+      ? r.wakeAt
+        ? `waits ${new Date(r.wakeAt).toTimeString().slice(0, 5)}`
+        : 'waits until mailed'
+      : 'working')
   return `${r.node} · ${state}`
 }
 

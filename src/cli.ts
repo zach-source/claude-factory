@@ -36,6 +36,7 @@ import {
   isParked,
   isPrWait,
   WORKER_OUTCOMES,
+  isMailOnly,
   parkDelayMin,
   prsIn,
   reach,
@@ -2318,7 +2319,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
 /** what holds the run now, for a run whose worker is not being reconciled */
 function agentOf(def: Factory, value: unknown, c: Ctx) {
   const [node, sub] = where(value)
-  if (sub === 'waiting') return `waits until ${clock(c.wakeAt)}`
+  if (sub === 'waiting') return `waits until ${isMailOnly(c) ? 'mailed' : clock(c.wakeAt)}`
   if (sub === 'working' && def.nodes[node]?.gate) return 'awaiting decision'
   if (!c.pane) return undefined
   try {
@@ -2369,7 +2370,7 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     rig: rigOf(run.repo)?.name,
     trail: c.log.slice(-40).map(e => e.node),
     ...(c.startedAt && { since: c.startedAt }),
-    ...(c.wakeAt && { wakeAt: c.wakeAt }),
+    ...(c.wakeAt && !isMailOnly(c) && { wakeAt: c.wakeAt }),
     ...(c.mail[node]?.length && { mailedAt: Math.max(...c.mail[node]!.map(m => m.at ?? 0)) }),
     ...(n?.gate &&
       sub === 'working' && {
