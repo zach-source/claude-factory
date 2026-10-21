@@ -6435,6 +6435,23 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
   'api',
 ])
 
+const TRIGGER_ALT = [...DYNAMIC_COMMAND_TRIGGER].join('|')
+const DASHED_VERB_TAIL = new RegExp(`-(?:${TRIGGER_ALT})$`)
+const EXPANSION_END_VERB = new RegExp(`(?:[})\`]|\\$[a-z_][a-z0-9_]*)(?:${TRIGGER_ALT})$`)
+
+/**
+ * claude-factory-ycaq: `$G-push` runs the `git-push` binary when `$G` holds a git-core path.
+ * The dashed-binary rule cannot read a dynamic word. This function drops quotes and backslashes
+ * and makes the word lowercase (APFS is case-blind). It returns true for two forms. (a) The word
+ * ends in a dash and a verb. (b) An expansion end or a variable name comes right before a verb.
+ * The tokenizer drops quotes, so `"$G"push` reads as `$Gpush`. Form (b) must deny both.
+ */
+function dynamicDashedVerb(w: string): boolean {
+  const s = w.replace(/\\\n/g, '').replace(/\\/g, '').toLowerCase()
+  if (DASHED_VERB_TAIL.test(s.replace(/["']/g, ''))) return true
+  return EXPANSION_END_VERB.test(s.replace(/["']+$/, ''))
+}
+
 /**
  * claude-factory-clcc: bash and zsh expand a glob in the command word, so `/bin/[r]m -rf /` runs
  * rm. A word is a glob command word when it holds `*`, `?` or a `[..]` pair. A lone `[` or `[[`
@@ -6569,6 +6586,7 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
     // binary). `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
     if (cmd.length > 0 && dynamicCommandWord(cmd[0]!)) {
+      if (dynamicDashedVerb(cmd[0]!)) return DYNAMIC_VERB_REASON
       let k = 1
       while (k < cmd.length) {
         const w = cmd[k]!
