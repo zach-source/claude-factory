@@ -426,6 +426,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook allowed a `find` with `-delete` (or a glob or brace word that can expand to it) on a start path outside the worktree, such as `find / -delete`. The hook now denies it when a start path is outside the worktree, a glob, a variable or a tilde path (claude-factory-easj).
 - New: `src/filing-guard.ts` with `filingActor`, `clusterKey` and `filingGuard` (claude-factory-nwlh.1). `filingGuard` caps the beads one actor or one cluster can file in a window, and counts held beads that use slots. No caller yet: nwlh.2 wires it in.
 - Changed: the dispatch plan sorts a top-level P0 or P1 bead from a review, security, verify or check station as P2. It does not write to bd. A finding outside the diff no longer gives the verdict `changes`. The station files one P2 bead for each class (claude-factory-nwlh.4).
+- New: the PM plan has a `file-churn` finding (claude-factory-nwlh.5). `factory plan facts` counts the merged PRs for each file on `origin/main` in the last 48 hours. A file in 8 or more PRs gives a finding in `plan.json`. Each rig gets the top 5. The count skips lockfiles and `CHANGELOG.md`. `factory plan set` also files one `human` bead for each file that asks a design question. The dedupe key does not use the count, so a file gets one bead.
 
 ## 0.13.0 (2026-10-18)
 
