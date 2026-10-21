@@ -80,9 +80,16 @@ spec:
     spec:
       serviceAccountName: factory-policy-broker
       automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: broker
           image: ${BROKER_IMAGE}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
           args: ['--port', '8080']
           env:
             - name: FACTORY_BROKER_ATESPACES

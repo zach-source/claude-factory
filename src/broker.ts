@@ -8,7 +8,12 @@ const EGRESS_CA = 'egress-mitm.ate.dev:mitm:primary-bundle'
 /** an RFC 1123 label, as an atespace or an actor name */
 const LABEL = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/
 
-export type Run = (argv: string[], stdin?: string) => Promise<{ code: number; out: string; err: string }>
+/** `op` is true only for the token swap: the other children (kubectl) do not inherit OP_SERVICE_ACCOUNT_TOKEN */
+export type Run = (
+  argv: string[],
+  stdin?: string,
+  op?: boolean,
+) => Promise<{ code: number; out: string; err: string }>
 export type Config = {
   atespaces: string[]
   /** the manager's actor: its policy is made from the laptop, and the broker never changes it */
@@ -21,8 +26,10 @@ export type Config = {
   swap: string[] | null
 }
 
-async function spawn(argv: string[], stdin?: string) {
+async function spawn(argv: string[], stdin?: string, op = false) {
+  const { OP_SERVICE_ACCOUNT_TOKEN: _op, ...rest } = process.env
   const p = Bun.spawn(argv, {
+    env: op ? process.env : rest,
     stdin: stdin === undefined ? 'ignore' : Buffer.from(stdin),
     stdout: 'pipe',
     stderr: 'pipe',
@@ -151,11 +158,12 @@ export async function handle(req: Request, c: Config): Promise<Response> {
     if (swapping) return text(409, 'a token swap is running\n')
     swapping = true
     try {
-      const p = await c.run(c.swap!)
+      const p = await c.run(c.swap!, undefined, true)
       // the first line only: the script prints "slot N is live", and a token must never leave in a response
-      return p.code === 0
-        ? text(200, firstLine(p.out) + '\n')
-        : text(502, `${firstLine(p.err) || 'token swap failed'}\n`)
+      if (p.code === 0) return text(200, firstLine(p.out) + '\n')
+      // the caller is not authenticated and op's stderr is not ours: log it, answer with a fixed body
+      console.error(`token swap failed: ${firstLine(p.err)}`)
+      return text(502, 'token swap failed\n')
     } finally {
       swapping = false
     }

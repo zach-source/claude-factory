@@ -132,8 +132,10 @@ const swapEnv = { CLAUDE_TOKEN_ITEM: 'item-x', FACTORY_BROKER_ENDPOINT: 'api.exa
 
 test('POST /token/best runs claude-token best and returns its first stdout line, never a token', async () => {
   const calls: string[][] = []
-  const run: Run = async argv => {
+  const opFlags: (boolean | undefined)[] = []
+  const run: Run = async (argv, _stdin, op) => {
     calls.push(argv)
+    opFlags.push(op)
     return {
       code: 0,
       out: 'slot 2 is live; agent-vault picks it up within 5 minutes\nsk-ant-secret\n',
@@ -142,6 +144,7 @@ test('POST /token/best runs claude-token best and returns its first stdout line,
   }
   const c = configFrom(swapEnv, run)
   const res = await handle(req('POST', '/token/best'), c)
+  expect(opFlags).toEqual([true])
   expect(res.status).toBe(200)
   const body = await res.text()
   expect(body).toBe('slot 2 is live; agent-vault picks it up within 5 minutes\n')
@@ -156,7 +159,7 @@ test('POST /token/best is 404 when CLAUDE_TOKEN_ITEM is unset, and runs nothing'
   expect(calls).toEqual([])
 })
 
-test('POST /token/best answers 409 while a swap runs, then 502 with the first stderr line only', async () => {
+test('POST /token/best answers 409 while a swap runs, then 502 with a fixed body', async () => {
   let release!: () => void
   const gate = new Promise<void>(r => (release = r))
   const slow: Run = async () => {
@@ -170,7 +173,7 @@ test('POST /token/best answers 409 while a swap runs, then 502 with the first st
   release()
   const done = await first
   expect(done.status).toBe(502)
-  expect(await done.text()).toBe("claude-token: couldn't update the item\n")
+  expect(await done.text()).toBe('token swap failed\n')
   const again = await handle(
     req('POST', '/token/best'),
     configFrom(swapEnv, async () => ({ code: 0, out: 'slot 1 is live', err: '' })),
