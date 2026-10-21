@@ -655,6 +655,7 @@ The `small` loop skips the Opus plan step. It adds the security station only whe
 | monitor  | every 30 min  | a rig's `--slo '<read-only command>'` |
 | maintain | daily         | nothing extra                          |
 | improve  | daily, rotating refactor, performance, cost and factory-health lens | nothing extra |
+| hygiene  | daily, in code (no model, no run); proposes closes, never closes | nothing extra |
 
 `factory tick` starts one run per due `(rig, sweep)` pass, at most every `FACTORY_SWEEP_MS`
 (default 300000ms); `FACTORY_SWEEPS=0` turns this off. Each pass goes straight to `done`: it
@@ -671,6 +672,13 @@ bead keeps the `factory` label, and starts on its own, only when it also carries
 `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every
 other kept bead loses the `factory` label too and waits for a person, the same as a later
 bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
+
+**Hygiene**: the `hygiene` sweep runs in code once a day for each rig. It starts no run. It finds
+open beads that a merged PR already shipped, duplicates, orphans, deferred beads with no owner and
+stale beads. It adds the label `stale?` and the comment `proposed close: <kind>: <evidence>` to
+each, and files one digest bead. It never closes a bead. `factory hygiene <rig>` prints what a pass
+would propose and writes nothing. `FACTORY_HYGIENE=0` turns the pass off. See
+[Hygiene sweep](docs/beads.md#hygiene-sweep).
 
 A pinned run from before this design (`claude-factory-8pc`) still loads its own copy of the
 sweep stations from `factories/lifecycle.ts`, if its `factory.json` holds one.
