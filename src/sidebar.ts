@@ -2,6 +2,7 @@
 // what holds it) and one on the manager's (the rollup). Pure: the runner reports what this returns.
 import type { Bead } from './beads'
 import type { Row } from './cli'
+import { ownerStep } from '../mod/hooks/view'
 
 /** why a run waits on someone, or null while it moves on its own */
 export function hold(r: Row): 'needs you' | 'stuck' | 'parked' | null {
@@ -43,11 +44,7 @@ const ORDER = ['needs you', 'stuck', 'parked'] as const
 const ago = (ms: number) =>
   ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${(ms / 3_600_000).toFixed(1)}h`
 
-/** the command or step a run asks the person to do: what follows "parked, waiting on:" in its report */
-const ownerStep = (r: Row) => {
-  const why = (r.gate?.question ?? r.error ?? r.last?.summary ?? '').replace(/\s+/g, ' ')
-  return why.match(/parked, waiting on:\s*(.+)/i)?.[1]?.trim()
-}
+const stepOf = (r: Row) => ownerStep(r.gate?.question ?? r.error ?? r.last?.summary ?? '')
 
 /** the ship queue as status shows it: the ship run and station, then the queue, next PR first */
 export function shipLines(queue: Bead[], run?: { id: string; node: string }) {
@@ -69,8 +66,8 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
     .filter(isLive)
     .filter(r => hold(r))
     .sort((a, b) => ORDER.indexOf(hold(a)!) - ORDER.indexOf(hold(b)!))
-  const steps = held.filter(r => ownerStep(r))
-  const others = held.filter(r => !ownerStep(r))
+  const steps = held.filter(r => stepOf(r))
+  const others = held.filter(r => !stepOf(r))
   const whyOf = (r: Row) => {
     const h = hold(r)!
     const why =
@@ -123,7 +120,7 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
         `Owner steps (${steps.length}):`,
         ...steps.map((r, i) =>
           [
-            `  ${i + 1}. ${ownerStep(r)}`,
+            `  ${i + 1}. ${stepOf(r)}`,
             `     run ${r.id} · rig ${r.rig ?? '(no rig)'} · ${ago(now - (r.last?.at ?? r.since ?? now))}`,
             ...prsOf(whyOf(r)).map(p => `     ${p}`),
             `     → ${answerOf(r)}`,
