@@ -55,7 +55,7 @@ const blockingScope = `A finding blocks only when it is one of these kinds:
 1. An acceptance criterion fails.
 2. The diff adds the defect, or the defect is in lines the diff changed, or the diff makes an existing defect reachable or enabled (a new caller, route, default, flag or input path).
 3. The defect is a sibling site of a defect that the diff fixes, or of an earlier round's finding.
-A finding outside this branch's diff never makes the verdict changes, unless it is kind 1 or 3 or the diff makes it reachable (kind 2). A gap that origin/main also has and that no acceptance criterion names does not block: list it under 'Not blocking' and file it as separate work. Run \`bd search\` first and add the instance to an open class bead. If none is open, file one bead per class at P2 or lower, with the instances as evidence (\`--deps discovered-from:<run bead>\`, see Tracking). Only a person, or triage or plan on the run's own bead, sets P0 or P1. Each blocking finding names its kind: 1, 2 or 3.`
+A finding outside this branch's diff never makes the verdict changes, unless it is kind 1 or 3 or the diff makes it reachable (kind 2). A gap that origin/main also has, that no acceptance criterion names and that is not kind 2 or 3 does not block: list it under 'Not blocking' and file it as separate work. Run \`bd search\` first and add the instance to an open class bead. If none is open, file one bead per class at P2 or lower, with the instances as evidence (\`--deps discovered-from:<run bead>\`, see Tracking). Only a person, or triage or plan on the run's own bead, sets P0 or P1. Each blocking finding names its kind: 1, 2 or 3.`
 
 export default {
   name: 'lifecycle',
@@ -181,7 +181,7 @@ Report approve; changes with a numbered list of everything to fix, found in one 
       },
       prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section, or triage's summary on a small run. Change no code.
 ${blockingScope}
-A high or critical finding that origin/main also has does not block, but name it in the report as a high or critical finding for a person to prioritize.
+A high or critical finding that origin/main also has and that is not kind 1, 2 or 3 does not block, but name it in the report as a high or critical finding for a person to prioritize.
 Post it on the pull request the way review does.
 Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
       next: { approve: { to: 'done', ship: true }, changes: 'implement' },
