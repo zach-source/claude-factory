@@ -7816,7 +7816,7 @@ function replaceGluedSubstitutions(command: string, fill = ' '): string {
 // becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
 // replaces only the "${". In empty mode, an exact $IFS or ${IFS} stays a space. A ${IFS...} span with
 // a modifier is a space when its bit in ifsMask is set, else empty. A ${NAME:-word} default (also -,
-// :=, =) becomes its word. Every other glued span becomes empty text, as the shell reads an unset name.
+// :=, =, :+, +) becomes its word, read again for nested spans. Every other glued span becomes empty text, as the shell reads an unset name.
 function replaceGluedExpansions(command: string, empty = false, ifsMask = 0): string {
   let out = ''
   let ifsIdx = 0
@@ -7877,13 +7877,20 @@ function replaceGluedExpansions(command: string, empty = false, ifsMask = 0): st
       out += span
     } else if (!empty || span === '$IFS' || span === '${IFS}') out += ' '
     else if (IFS_MOD_RE.test(span)) out += (ifsMask >> Math.min(ifsIdx++, 30)) & 1 ? ' ' : ''
-    else out += DEFAULT_WORD_RE.exec(span)?.[1] ?? ''
+    else {
+      const word = DEFAULT_WORD_RE.exec(span)?.[1]
+      // The word is read again with glue on both sides, so a nested span in it is read too.
+      out +=
+        word === undefined || /['"\\]/.test(word)
+          ? ''
+          : replaceGluedExpansions('x' + word + 'x', true, ifsMask).slice(1, -1)
+    }
     i = end - 1
   }
   return out
 }
 const IFS_MOD_RE = /^\$\{IFS(?![A-Za-z0-9_])/
-const DEFAULT_WORD_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=]([^${}]*)\}$/
+const DEFAULT_WORD_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([\s\S]*)\}$/
 
 // claude-factory-y094.6: the empty readings of a text. Each ${IFS...} span with a modifier may hold
 // a separator or nothing, so read every choice for up to 3 such spans, else all of them and none.

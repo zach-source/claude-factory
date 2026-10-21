@@ -9320,6 +9320,10 @@ test.each([
   'g${X=it}${IFS}push${IFS}origin${IFS}main',
   'g${X:=it}${IFS}push${IFS}origin${IFS}main',
   '${X:-git}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+it}${IFS}push${IFS}origin${IFS}main',
+  'g${X:-${Y:-i}}t${IFS}push${IFS}origin${IFS}main',
+  'g${X:-it${IFS}push}${IFS}origin${IFS}main',
 ])('claude-factory-y094: %s denies with PUSH_REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
 })
@@ -9345,6 +9349,7 @@ test('claude-factory-y094: g${X}h${IFS}pr${IFS}merge${IFS}1 denies like gh pr me
   const want = denyReason('gh${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)
   expect(want).toBeDefined()
   expect(denyReason('g${X}h${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(want)
+  expect(denyReason('g${HOME:+h}${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(want)
 })
 test.each([
   'g${X}it${IFS}status',
@@ -9355,6 +9360,7 @@ test.each([
   'ls$IFS-la',
   'ls ${X:-.}',
   'echo a${X:-b}c',
+  'echo a${X:+b}c',
   'ls${IFS:0:1}-la',
 ])('claude-factory-y094: %s stays allowed', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
