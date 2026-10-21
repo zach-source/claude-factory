@@ -24,6 +24,12 @@ const ROWS = [
   '${=X} "rm -rf /"',
   '"$@" "rm -rf /"',
   '$@ "rm -rf /"',
+  '${X/b/a} "rm -rf /"',
+  '${X%/} "rm -rf /"',
+  '${X:-/x} "rm -rf /"',
+  '"${X/b/a}" "rm -rf /"',
+  'e$X "rm -rf /"',
+  'ev${X} "rm -rf /"',
 ]
 const PREFIXES = [
   '%',
@@ -59,6 +65,9 @@ for (const cmd of [
   '$GIT status',
   '$X "a b" c',
   '$GREP -n "foo bar" file',
+  '$CC -o out "my file.c"',
+  '${PAGER:-less} "notes file.md"',
+  '"$ROOT/bin/factory" status',
 ])
   test(`allow ${cmd}`, () => expect(run(cmd)).toBeUndefined())
 

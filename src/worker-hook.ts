@@ -2631,14 +2631,6 @@ function shCScriptValue(words: string[], start: number): string | undefined {
   return undefined
 }
 
-// claude-factory-igj: this checks words from index start to the end of the one segment words.
-// It returns true for a bd word there, or for a sh/bash/zsh/dash -c script or an eval word that
-// holds a bd word. depth bounds the recursion. MAX_SHELL_DEPTH bounds it the same way, for
-// anyShellReason's own eval/sh -c recursion.
-//
-// claude-factory-igj.8: the scan reads every word after start, not only words[start]. A wrapper
-// word (env, nice, nohup, sudo, and so on) can sit between start and the sh/bash/zsh/dash or
-// eval word. This scan still finds that later word.
 // claude-factory-ibas: the first dynamic head word (X in `$X "rm -rf /"`) can expand to eval or
 // sh -c. Then the later words are a script. Returns the script texts to read: the joined words
 // (eval) and each later word that holds a space or shell operator (sh -c "$1"). Only the first
@@ -2649,7 +2641,9 @@ function dynamicHeadScripts(words: string[]): string[] {
   for (const a of [...commandAnchors(words), ...splits]) {
     const head = words[a]!
     // A head with a slash ("$ROOT/bin/factory") names a path, so it is not read.
-    if (!/^"?\$[^/]*$/.test(head)) continue
+    // ibas.6, .7: drop ${...} groups first; any other unquoted dollar (e$X) makes it dynamic.
+    const bare = head.replace(/\$\{[^}]*\}/g, '$V')
+    if (head.startsWith("'") || !bare.includes('$') || bare.includes('/')) continue
     const rest = words.slice(a + 1)
     // A here-string form has its own, more specific deny (SHELL_STDIN_REASON).
     if (!rest.length || rest.includes('<<<')) return []
@@ -2658,6 +2652,14 @@ function dynamicHeadScripts(words: string[]): string[] {
   return []
 }
 
+// claude-factory-igj: this checks words from index start to the end of the one segment words.
+// It returns true for a bd word there, or for a sh/bash/zsh/dash -c script or an eval word that
+// holds a bd word. depth bounds the recursion. MAX_SHELL_DEPTH bounds it the same way, for
+// anyShellReason's own eval/sh -c recursion.
+//
+// claude-factory-igj.8: the scan reads every word after start, not only words[start]. A wrapper
+// word (env, nice, nohup, sudo, and so on) can sit between start and the sh/bash/zsh/dash or
+// eval word. This scan still finds that later word.
 function segmentRunsBdCommand(words: string[], start: number, depth: number, state: ScanState): boolean {
   // claude-factory-cbai: the first eval word's recursion reads every later word of the segment
   // (rest holds them all, later eval words too). A later eval word then needs no recursion of its
