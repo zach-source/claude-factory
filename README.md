@@ -673,8 +673,9 @@ bead; a manifest image behind its source repo's latest release gets a bump bead 
 `factory start sweeps@maintain <rig> 'sweep: maintain'`.
 
 **Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
-`sweep:maintain`). Each rig keeps at most 5 such beads with a `sweep-queue:*` label, and at
-most 5 without one, in any 24-hour window. A later bead
+`sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A bead with a
+`sweep-queue:*` label counts only the earlier beads with such a label, so an unlabeled drift
+bump bead takes no place from a later incident. A later bead
 that day still gets filed, but it waits for a person instead of starting on its own. A kept
 bead keeps the `factory` label, and starts on its own, only when it also carries
 `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every

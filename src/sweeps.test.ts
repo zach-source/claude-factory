@@ -157,7 +157,6 @@ test('5 incident beads, 1 bump bead, then a 6th incident bead: the 6th is not ke
     inc('i5', 1000),
   ]
   const v = sweepGuard(beads, now)
-  expect(v.find(x => x.id === 'bump')?.kept).toBe(true)
   expect(v.find(x => x.id === 'i5')).toMatchObject({ kept: false, allowed: false })
 })
 

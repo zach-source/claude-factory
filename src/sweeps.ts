@@ -107,9 +107,9 @@ export function pruneGuardState(
 /**
  * This is the flood guard (claude-factory-8pc.5). At most `cap` (default 5) sweep-filed beads per
  * rig stay inside any rolling `windowMs` (default 24h) window. It keeps the oldest ones first, by
- * `created_at`. The cap counts queue-labeled beads (`sweep-queue:*`) and unlabeled beads apart: up
- * to `cap` of each stay, so up to 2 x `cap` stay in all, and only `cap` of them can auto-start.
- * `beads` is one rig's full bead list. Only beads a sweep pass filed (`sweepFiler`)
+ * `created_at`. A queue-labeled bead (`sweep-queue:*`) counts only the earlier queue-labeled
+ * beads. An unlabeled bead counts every earlier bead. So an unlabeled bead never takes a queued
+ * bead's place. `beads` is one rig's full bead list. Only beads a sweep pass filed (`sweepFiler`)
  * appear in the result. The caller must leave every other bead alone: a person's, or another run's.
  *
  * `kept` false means the bead is past the cap: the caller must defer it and strip its `factory`
