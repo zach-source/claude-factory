@@ -1636,7 +1636,7 @@ test('managerEnv sets the token swap to a broker POST only when the broker is se
   expect(ax.managerEnv({}).FACTORY_AX_TOKEN_SWAP).toBeUndefined()
   expect(
     ax.managerEnv({ FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080/' }).FACTORY_AX_TOKEN_SWAP,
-  ).toBe('curl -sSf -m 120 -X POST http://broker.example.svc:8080/token/best')
+  ).toBe('curl -sSf -m 25 -X POST http://broker.example.svc:8080/token/best')
 })
 
 test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
@@ -1719,16 +1719,18 @@ test('routerAddress gives host:port of the router URL, port 80 by default, and n
 })
 
 test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none without one', () => {
-  const rig = (name: string, url?: string) => ({
+  const rig = (name: string, url?: string, egress?: ax.Egress[]) => ({
     name,
     ...(url && { beadsRemote: { name: 'origin', url, user: 'u' } }),
+    ...(egress && { egress }),
   })
   const rigs = [
-    rig('a', 'http://beads-dolt.beads.svc.cluster.local:50051/acme/widget'),
-    rig('b', 'http://beads-dolt.beads.svc.cluster.local:50051/acme/other'),
+    rig('a', 'https://beads-dolt.beads.svc.cluster.local:50051/acme/widget'),
+    rig('b', 'https://beads-dolt.beads.svc.cluster.local:50051/acme/other'),
     rig('c', 'https://dolt.example.com/acme/x'),
     rig('d'),
     rig('e', 'not a url'),
+    rig('f', 'http://plain.example.com:50051/x'),
   ]
   const dolt = (hosts: string[], port: number) => ({
     hosts,
@@ -1742,6 +1744,16 @@ test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none 
     dolt(['beads-dolt.beads.svc.cluster.local'], 50051),
     dolt(['dolt.example.com'], 443),
   ])
+  const own = rig('g', 'https://own.example.com:8443/x', [
+    { hosts: ['own.example.com'], port: 8443, key: 'ACME_DOLT', header: 'X-Auth', prefix: 'T ' },
+  ])
+  expect(ax.managerEgress({}, [own])[1]).toEqual({
+    hosts: ['own.example.com'],
+    key: 'ACME_DOLT',
+    header: 'X-Auth',
+    prefix: 'T ',
+    port: 8443,
+  })
   expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }])
 })
 

@@ -634,7 +634,7 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     ...(env[MANAGER_BROKER] && {
       FACTORY_POLICY_BROKER: env[MANAGER_BROKER],
       // the swap runs in the broker pod, where the op writer token is; the VM holds none
-      FACTORY_AX_TOKEN_SWAP: `curl -sSf -m 120 -X POST ${env[MANAGER_BROKER]!.replace(/\/+$/, '')}/token/best`,
+      FACTORY_AX_TOKEN_SWAP: `curl -sSf -m 25 -X POST ${env[MANAGER_BROKER]!.replace(/\/+$/, '')}/token/best`,
     }),
     // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make
     ...(routerAddress(env[MANAGER_ROUTER]) && { AX_ROUTER: routerAddress(env[MANAGER_ROUTER])! }),
@@ -660,7 +660,7 @@ export function routerAddress(url?: string) {
  */
 export function managerEgress(
   env: Record<string, string | undefined> = process.env,
-  rigs: { beadsRemote?: { url: string }; linear?: unknown }[] = [],
+  rigs: { beadsRemote?: { url: string }; linear?: unknown; egress?: Egress[] }[] = [],
 ): Egress[] {
   const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap(k => {
     try {
@@ -670,18 +670,22 @@ export function managerEgress(
       return []
     }
   })
-  // one DOLT_BASIC rule for each host:port of a rig's beadsRemote; a rig with none adds none
+  // one rule for each host:port of a rig's https beadsRemote (the gateway injects only on HTTPS); a rig with none adds
+  // none. The key, header and prefix come from the rig's own egress entry for that host:port, else DOLT_BASIC
   const dolt = new Map<string, Egress>()
   for (const r of rigs) {
     try {
       const u = r.beadsRemote ? new URL(r.beadsRemote.url) : null
-      if (!u?.hostname) continue
-      const port = Number(u.port) || (u.protocol === 'http:' ? 80 : 443)
+      if (!u?.hostname || u.protocol !== 'https:') continue
+      const port = Number(u.port) || 443
+      const own = r.egress?.find(
+        e => e.key && e.hosts.includes(u.hostname) && (e.port ?? 443) === port && !e.http,
+      )
       dolt.set(`${u.hostname}:${port}`, {
         hosts: [u.hostname],
-        key: 'DOLT_BASIC',
-        header: 'Authorization',
-        prefix: 'Basic ',
+        key: own?.key ?? 'DOLT_BASIC',
+        header: own ? (own.header ?? 'Authorization') : 'Authorization',
+        prefix: own ? (own.prefix ?? 'Bearer ') : 'Basic ',
         port,
       })
     } catch {}

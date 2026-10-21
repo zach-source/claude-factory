@@ -407,7 +407,7 @@ The manager VM holds placeholders only. The egress gateway puts the real value i
 | Claude session            | `CLAUDE_CODE_OAUTH_TOKEN=placeholder`                  | Vault key `ANTHROPIC`, rule for `api.anthropic.com`.                                                                               |
 | `gh`                      | `GH_TOKEN=placeholder`                                 | Vault key `GITHUB`, rules for `api.github.com` and `uploads.github.com`.                                                           |
 | `git push`                | Basic-auth header with a placeholder                   | Vault key `GITHUB_BASIC`, rule for `github.com`. `zach-source` repos wait on claude-factory-192.11.                                |
-| Dolt (`bd dolt pull`)     | `DOLT_REMOTE_PASSWORD=placeholder`                     | Vault key `DOLT_BASIC`. `managerEgress` adds one rule for each `beadsRemote` host and port. A rig with none adds none.            |
+| Dolt (`bd dolt pull`)     | `DOLT_REMOTE_PASSWORD=placeholder`                     | The rig's own egress entry for that host and port gives the vault key, header and prefix. Else the key is `DOLT_BASIC`. `managerEgress` adds one rule for each `https` `beadsRemote` host and port. A rig with none, or with an `http` remote, adds none.            |
 | Linear (`--linear` rigs)  | Key `placeholder` when `FACTORY_IN_AX=1`               | Vault key `LINEAR`, header `Authorization`, no prefix. `managerEgress` adds the `api.linear.app` rule only for a `--linear` rig.   |
 | AX server, router, broker | none                                                   | Plain `http` (h2c) rules, no credential.                                                                                           |
 | Kube API                  | none                                                   | The VM has none. `unavailable()` asks the broker `GET /controller`.                                                                |
@@ -415,7 +415,7 @@ The manager VM holds placeholders only. The egress gateway puts the real value i
 
 Workers only (not the manager): `BUILDBUDDY`, `ATTIC`, `OPENAI`, `GITLAB`.
 
-Check it in the VM: `RIG_REPO=<clone> BEADS_RIG_REPO=<clone> AX_PROBE_FILE=<task manifest with __NAME__> hack/ax-manager-check.sh`. It prints PASS or FAIL for the `gh`, `git push`, `bd dolt pull`, token swap, AX apply and no-secret-on-disk checks.
+Check it in the VM: `AX_CHECK_SWAP=1 RIG_REPO=<clone> BEADS_RIG_REPO=<clone> AX_PROBE_FILE=<task manifest with __NAME__> hack/ax-manager-check.sh`. `AX_CHECK_SWAP=1` is needed for the token swap check. It swaps the live Claude token for all AX workers. Without it, the check prints SKIP. The script prints PASS or FAIL for the `gh`, `git push`, `bd dolt pull`, token swap, AX apply and no-secret-on-disk checks.
 
 Owner steps (a worker never runs these):
 

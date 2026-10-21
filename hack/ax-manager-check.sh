@@ -4,6 +4,7 @@
 #   RIG_REPO=<rig clone> BEADS_RIG_REPO=<rig clone with a beadsRemote> hack/ax-manager-check.sh
 # AC1-AC5 call out; AC6 and AC7 read the VM. It prints PASS or FAIL for each check and exits 1 on any FAIL.
 # It creates one probe task and one probe branch dry-run, and it removes the task. It prints no secret.
+# AC4 swaps the live Claude token for all AX workers. It runs only with AX_CHECK_SWAP=1.
 set -u
 fail=0
 ok() { echo "PASS $1"; }
@@ -33,7 +34,9 @@ else
 fi
 
 # AC4 token swap through the broker
-if [ -n "${FACTORY_AX_TOKEN_SWAP:-}" ]; then
+if [ "${AX_CHECK_SWAP:-}" != 1 ]; then
+  echo "SKIP AC4 token swap (set AX_CHECK_SWAP=1: it swaps the live token for all AX workers)"
+elif [ -n "${FACTORY_AX_TOKEN_SWAP:-}" ]; then
   out=$($FACTORY_AX_TOKEN_SWAP 2>&1)
   case "$out" in *"slot "*" is live"*) ok "AC4 token swap" ;; *) bad "AC4 token swap" ;; esac
 else
