@@ -145,6 +145,22 @@ test('5 unlabeled drift beads take no auto-start place from a later incident bea
   expect(v).toMatchObject({ kept: true, allowed: true })
 })
 
+test('5 incident beads, 1 bump bead, then a 6th incident bead: the 6th is not kept', () => {
+  const now = Date.now()
+  const inc = (id: string, ago: number) => ({
+    ...filed(id, 'drift', new Date(now - ago).toISOString()),
+    labels: ['sweep-queue:incident'],
+  })
+  const beads = [
+    ...Array.from({ length: 5 }, (_, i) => inc(`i${i}`, (9 - i) * 60_000)),
+    filed('bump', 'drift', new Date(now - 3000).toISOString()),
+    inc('i5', 1000),
+  ]
+  const v = sweepGuard(beads, now)
+  expect(v.find(x => x.id === 'bump')?.kept).toBe(true)
+  expect(v.find(x => x.id === 'i5')).toMatchObject({ kept: false, allowed: false })
+})
+
 test('the first 5 sweep-filed beads in the window stay; a 6th is not kept', () => {
   const now = Date.now()
   const beads = Array.from({ length: 6 }, (_, i) =>
