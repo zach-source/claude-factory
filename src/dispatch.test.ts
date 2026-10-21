@@ -1893,14 +1893,26 @@ function fakeFilingBd(all: FBead[]) {
         `    if [ ! -f "${gdir}/removed-${b.id}" ]; then out="$out$sep{\\"id\\":\\"${b.id}\\",\\"title\\":\\"t\\",\\"labels\\":[\\"factory\\"]}"; sep=","; fi`,
     )
     .join('\n')
+  const unqueuedCase = full
+    .filter(b => b.status !== 'closed')
+    .map(b => {
+      const entry = `{\\"id\\":\\"${b.id}\\",\\"title\\":\\"t\\",\\"priority\\":1,\\"created_at\\":\\"${b.created_at}\\",\\"labels\\":[]}`
+      const guard = b.labels.includes('factory') ? `[ -f "${gdir}/removed-${b.id}" ] && ` : ''
+      return `    ${guard}{ out="$out$sep${entry}"; sep=","; }`
+    })
+    .join('\n')
   const script = [
     '#!/bin/sh',
     `echo "bd $*" >> "${gCallsLog}"`,
     'case "$1" in',
     `  list) printf '%s' '${JSON.stringify(full)}';;`,
     '  ready)',
+    // `ready` without --label is the auto-queue's read: open beads that carry no `factory` label now
     '    out="["',
     '    sep=""',
+    `    case " $* " in *" --label "*) ;; *)`,
+    unqueuedCase,
+    '    out="$out]"; printf \'%s\' "$out"; exit 0;; esac',
     readyCase,
     // a bead filed after `list` ran: ready names it, list never did
     `    if [ -f "${gdir}/midpass" ]; then out="$out$sep{\\"id\\":\\"m-1\\",\\"title\\":\\"t\\",\\"created_by\\":\\"factory/run9/plan\\",\\"labels\\":[\\"factory\\"]}"; fi`,
@@ -2109,6 +2121,33 @@ test('a past-cap bead with no factory label gets a mark only; factory queue late
   expect(JSON.parse(readFileSync(join(ghome, 'filing-guard.json'), 'utf8')).a).toHaveProperty('w-7')
   expect(startedBeads()).not.toContain('w-7')
   // factory queue adds the label; the mark keeps the guard from holding it
+  beads[6]!.labels = ['factory']
+  fakeFilingBd(beads)
+  nextPass()
+  gfactory(['beads'])
+  expect(startedBeads()).toContain('w-7')
+})
+
+test('auto-queue does not re-queue a held or mark-only bead; factory queue still releases it', () => {
+  const beads = replayBeads().map((b, i) => (i < 6 ? { ...b, status: 'closed' } : b))
+  beads[7]!.labels = ['pm-proposal'] // w-8: past the cap, not factory-queued
+  filingReset(beads)
+  writeFileSync(
+    join(ghome, 'rigs.json'),
+    JSON.stringify([
+      { name: 'a', repo: repo(), factory: 'lifecycle', autoQueue: { minPriority: 4, perHour: 10 } },
+    ]),
+  )
+  gfactory(['beads']) // pass 1: w-7 held, w-8 marked
+  expect(fCalls().some(l => /^bd update w-7 .*held:cluster/.test(l))).toBe(true)
+  beads[6]!.labels = ['held:cluster:worker-hook'] // what bd lists now
+  fakeFilingBd(beads)
+  nextPass()
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd update w-[78] .*--add-label factory/.test(l))).toBe(false)
+  expect(startedBeads()).not.toContain('w-7')
+  expect(startedBeads()).not.toContain('w-8')
+  // released: factory is back, so the marked bead starts
   beads[6]!.labels = ['factory']
   fakeFilingBd(beads)
   nextPass()
