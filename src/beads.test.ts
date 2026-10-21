@@ -695,3 +695,42 @@ test('fileFinding JSON-encodes a key with a quote or backslash, instead of break
     process.env.PATH = path
   }
 })
+
+test('defer with a station swaps station:* after bd defer; without one it makes no label call', () => {
+  const bin = join(tmpdir(), `fake-bd-defer-station-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const show = join(bin, 'show.json')
+  const script = ['#!/bin/sh', `echo "$*" >> ${log}`, 'case "$1" in', `  show) cat ${show};;`, 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    writeFileSync(
+      show,
+      JSON.stringify([{ id: 'fx-1', title: 't', labels: ['factory', 'factory:lifecycle', 'station:quick'] }]),
+    )
+    writeFileSync(log, '')
+    b.defer('fx-1', 'why', 'plan')
+    const calls = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls.some(c => c.startsWith('defer fx-1 --reason why'))).toBe(true)
+    const upd = calls.find(c => c.startsWith('update'))!
+    expect(upd).toContain('--remove-label station:quick')
+    expect(upd).toContain('--add-label station:plan')
+    expect(upd).not.toContain('factory:lifecycle')
+    // a bead started by hand has no factory label; undefer must still re-dispatch it (502.6)
+    writeFileSync(show, JSON.stringify([{ id: 'fx-1', title: 't', labels: ['station:quick'] }]))
+    writeFileSync(log, '')
+    b.defer('fx-1', 'why', 'plan')
+    expect(readFileSync(log, 'utf8')).toMatch(/--add-label factory( |$)/m)
+    writeFileSync(log, '')
+    b.defer('fx-1', 'why')
+    expect(readFileSync(log, 'utf8')).not.toContain('update')
+  } finally {
+    process.env.PATH = path
+  }
+})

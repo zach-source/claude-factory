@@ -1493,7 +1493,7 @@ test('gitlabWatchNotes asks the project for each human author and trusts access 
     7: { code: 0, out: '{"access_level":30}', err: '' },
     9: { code: 0, out: '{"access_level":10}', err: '' },
   })
-  const notes = await gitlabWatchNotes(glab, MR_URL, '/tmp')
+  const notes = await gitlabWatchNotes(glab, MR_URL, '/tmp', 'gitlab.example.com')
   expect(notes!.map(n => n.person)).toEqual([true, false, false, false, false])
   expect(paths.filter(p => p.includes('/members/all/')).sort()).toEqual([
     'projects/group%2Fsub%2Fproject/members/all/7',
@@ -1502,9 +1502,11 @@ test('gitlabWatchNotes asks the project for each human author and trusts access 
 })
 
 test('gitlabWatchNotes: a 404 is no member, any other failure gives null (5wav.7)', async () => {
-  expect((await gitlabWatchNotes(glabFake({}).glab, MR_URL, '/tmp'))!.some(n => n.person)).toBe(false)
+  expect(
+    (await gitlabWatchNotes(glabFake({}).glab, MR_URL, '/tmp', 'gitlab.example.com'))!.some(n => n.person),
+  ).toBe(false)
   const boom = glabFake({ 7: { code: 1, out: '', err: 'timeout' } })
-  expect(await gitlabWatchNotes(boom.glab, MR_URL, '/tmp')).toBeNull()
+  expect(await gitlabWatchNotes(boom.glab, MR_URL, '/tmp', 'gitlab.example.com')).toBeNull()
 })
 
 test('gitlabForge.view never fetches notes, so the PR panel pays no extra call (5wav.9)', async () => {
@@ -1513,8 +1515,56 @@ test('gitlabForge.view never fetches notes, so the PR panel pays no extra call (
     paths.push(argv.at(-1)!)
     return { code: 0, out: JSON.stringify(MR), err: '' }
   }
-  const res = await gitlabForge(glab).view(MR_URL, '/tmp')
+  const res = await gitlabForge(glab).view(MR_URL, '/tmp', 'gitlab.example.com')
   expect('viewed' in res).toBe(true)
   expect(paths.some(p => p.includes('/notes'))).toBe(false)
   expect(paths).toHaveLength(2)
+})
+
+const OFF_HOST = 'https://gitlab.invalid/acme/widget/-/merge_requests/1'
+
+test('gitlabForge.view and gitlabWatchNotes make no glab call for a host that is not the rig host (pw6t)', async () => {
+  const calls: string[][] = []
+  const glab = fakeGh([], calls)
+  for (const [url, host] of [
+    [OFF_HOST, 'gitlab.example.com'],
+    [MR_URL, undefined],
+  ] as const) {
+    expect(await gitlabForge(glab).view(url, '/tmp', host)).toEqual({
+      err: 'merge request is not on the rig forge host',
+    })
+    expect(await gitlabWatchNotes(glab, url, '/tmp', host)).toBeNull()
+  }
+  expect(calls).toEqual([])
+  // on the rig host, glab gets the rig host
+  await gitlabForge(glab).view(MR_URL, '/tmp', 'GitLab.Example.com')
+  expect(calls).toHaveLength(2)
+  expect(calls.every(c => c[2] === 'GitLab.Example.com')).toBe(true)
+})
+
+test('buildPrs: an MR URL on another host is never viewed, on a GitLab rig or a GitHub rig (pw6t)', async () => {
+  for (const rig of [
+    { forge: 'gitlab' as const, host: 'gitlab.example.com' },
+    { forge: 'github' as const, host: 'github.com' },
+  ]) {
+    const glabCalls: string[][] = []
+    const ghCalls: string[][] = []
+    const [mr] = foldMentions([], [{ url: OFF_HOST, station: 'implement', at: 1, source: 'report' }])
+    const r = run({ ...rig, file: { version: 1, prs: [mr!] } })
+    const out = await buildPrs(
+      [r],
+      IS_STATION,
+      fakeGh([], ghCalls),
+      2_000_000_000,
+      DEFAULT_BUDGET,
+      Date.now,
+      60_000,
+      fakeGh([], glabCalls),
+    )
+    expect(glabCalls.filter(c => c.join(' ').includes('gitlab.invalid'))).toEqual([])
+    expect(ghCalls.filter(c => c[1] === 'view')).toEqual([])
+    expect(out.rows[0]!.prs.find(p => p.url === OFF_HOST)).toMatchObject({
+      error: 'merge request is not on the rig forge host',
+    })
+  }
 })

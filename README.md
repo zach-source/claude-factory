@@ -848,7 +848,7 @@ export default {
 
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
-the manager; lifecycle's review has 3), `onRounds` (a node for a re-plan at the round cap, below),
+the manager; lifecycle's review has 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `onRounds` (a node for a re-plan at the round cap, below),
 `repeatMail` (an outcome that mails the manager on a repeat, below), `gate: true` for a station the
 person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
 to merge, close or update a pull or merge request an arrival's report links, before it starts a
@@ -859,7 +859,19 @@ queue, until someone queues it again). It can instead carry `requeue: true`, or
 `requeue: { factory?, station? }`. Either way the bead stays open, ready and `factory`-labeled.
 The next dispatch starts it in the factory and station the `requeue` object names, or in the
 labels the worker already set when `requeue` is `true` (claude-factory-wnm; see "The backlog
-dispatches itself" above).
+dispatches itself" above). A `defer` edge can also name a station: `defer: { station: 'plan' }`.
+It defers the bead and swaps its `station:*` label. The run after a `bd undefer` starts at that
+station. The station must be a node of the same factory.
+
+Lifecycle's triage has three outcomes that end the run at once (claude-factory-502):
+
+- `rollout`: the goal is to ship pull requests that are already open or merged. The bead requeues
+  into the `release` factory.
+- `decision`: the work needs a person's choice. The worker puts the question on the bead. The run
+  ends deferred. `bd undefer` starts it again at `plan`. Plan and implement also report `decision`.
+- `elsewhere`: the work belongs in another rig's repo. The worker files the bead there and
+  comments its id on this bead. The run ends deferred. A worker that cannot reach that repo writes
+  a `File in:` line, and the manager files the bead.
 
 `onRounds` names the node that takes the first capped report, instead of the manager. The run
 carries the round's findings to that node. A second capped report in the same run still goes to

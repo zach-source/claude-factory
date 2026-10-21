@@ -50,12 +50,12 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.
 - .factory/ is this factory's own definition: change it only in a run whose goal is to change it, check every edited file with \`factory check\` (see your brief) before committing, and keep a person's merge of the pull request as the gate before anything deploys.`
 
-// review, security and check interpolate this: it keeps a gap that origin/main already has from blocking
+// review, security and check interpolate this: one rule for what blocks and where a finding goes
 const blockingScope = `A finding blocks only when it is one of these kinds:
 1. An acceptance criterion fails.
 2. The diff adds the defect, or the defect is in lines the diff changed, or the diff makes an existing defect reachable or enabled (a new caller, route, default, flag or input path).
 3. The defect is a sibling site of a defect that the diff fixes, or of an earlier round's finding.
-A gap that origin/main also has and that no acceptance criterion names does not block. File it as separate work (\`bd create ... --deps discovered-from:<run bead>\`, see Tracking) and list it under 'Not blocking'. Each blocking finding names its kind: 1, 2 or 3.`
+A finding outside this branch's diff never makes the verdict changes, unless it is kind 1 or 3 or the diff makes it reachable (kind 2). A gap that origin/main also has and that no acceptance criterion names does not block: list it under 'Not blocking' and file it as separate work. Run \`bd search\` first and add the instance to an open class bead. If none is open, file one bead per class at P2 or lower, with the instances as evidence (\`--deps discovered-from:<run bead>\`, see Tracking). Only a person, or triage or plan on the run's own bead, sets P0 or P1. Each blocking finding names its kind: 1, 2 or 3.`
 
 export default {
   name: 'lifecycle',
@@ -80,9 +80,15 @@ export default {
 - optimize: make something faster or cheaper (a latency, throughput, memory or cost goal)
 - refactor: restructure code without changing behavior
 - incident: production is broken or degraded now
+- rollout: the goal is to ship pull requests that are already open or merged (release, deploy, roll out), with nothing to build. The bead moves to the release factory, which starts at recipe. Name the pull requests in the summary.
+- decision: the work cannot go on without a person's decision. Put the question on the bead (a bd comment) and end the summary with a \`Question:\` line and an \`Options:\` line. The run ends deferred. \`bd undefer\` starts it again at plan.
+- elsewhere: the change belongs in another rig's repo. File the bead there: run bd create with your cwd in that rig's repo (see \`factory rig\`), the label \`factory\`, and this bead's id in its description. Then comment the new id on this bead. If you cannot reach that repo (a VM worker), put one line \`File in: <rig>: <title> | <description>\` in the summary for the manager. The run ends deferred.
 - reject: unclear, already tracked (a run in \`factory status\`, an open issue), or not worth doing; say why
 Summary: the goal restated as a testable outcome, its constraints, and the files and systems involved.`,
       next: {
+        rollout: { to: 'done', requeue: { factory: 'release' } },
+        decision: { to: 'done', defer: { station: 'plan' } },
+        elsewhere: { to: 'done', defer: true },
         build: 'plan',
         small: 'quick',
         optimize: 'baseline',
@@ -105,8 +111,9 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 6. Observability: the metrics, logs or checks that prove it works in production; the ship run's soak reads them.
 7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary.
 For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned. For a change to the factory itself (.factory/), the acceptance criteria say what future runs will do differently and how that shows in their journals.
-Commit nothing but an architecture decision record, and only where the repo keeps them.`,
-      next: { ready: 'implement' },
+Commit nothing but an architecture decision record, and only where the repo keeps them.
+When the plan cannot go on without a person's decision, put the question on the bead and report decision, with \`Question:\` and \`Options:\` lines at the end of the summary. The run ends deferred; \`bd undefer\` starts it again at plan.`,
+      next: { ready: 'implement', decision: { to: 'done', defer: { station: 'plan' } } },
     },
     baseline: {
       runner: LAPTOP,
@@ -136,10 +143,11 @@ Before you report ready, run this self-check at the final HEAD, after your last 
 5. After a send-back, read the whole delta since the last reviewed head (\`git diff <reviewed sha>..HEAD\`) for defects that your fixes added. Grep for the siblings of each finding.
 6. Add no changelog entry and no version bump: the ship release adds them.
 Close every task of this run (see Tracking). Push the branch and open it as a draft pull request if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
+Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
-For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, mail the manager the question and wait for the answer.
+For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, push the branch, name it and the draft pull request in the summary, put the question on the bead, and report decision with \`Question:\` and \`Options:\` lines at the end of the summary. The run ends deferred; \`bd undefer\` starts it again at plan.
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
-      next: { ready: 'verify', abandon: 'done' },
+      next: { ready: 'verify', abandon: 'done', decision: { to: 'done', defer: { station: 'plan' } } },
     },
     verify: {
       timeoutMin: 75,

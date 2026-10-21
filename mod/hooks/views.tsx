@@ -1010,7 +1010,10 @@ export function interviewView(
 ) {
   const { Box, Text, Button, Input } = p.ui
   const answered = Object.fromEntries((draft.interviewed ?? []).map(d => [d.key, d.answer]))
-  const open = openInterviews(board.runs, decisions.rigs, decisions.proposals, answered)
+  const all = openInterviews(board.runs, decisions.rigs, decisions.proposals, answered)
+  // owner-only steps lead, in one group; every row keeps its own answer path
+  const open = [...all.filter(i => i.step), ...all.filter(i => !i.step)]
+  const nSteps = all.filter(i => i.step).length
   const done = [...(draft.interviewed ?? [])].reverse()
   const isOpenDetails = (key: string) => draft.interviewOpen?.includes(key) ?? false
   const tab = draft.interviewTab ?? 'open'
@@ -1049,6 +1052,11 @@ export function interviewView(
           const run = iv.run ? board.runs.find(r => r.id === iv.run) : undefined
           return (
             <Box key={iv.key} flexDirection="column" marginBottom={1}>
+              {i === 0 && nSteps > 0 && (
+                <Text key="iv-steps" bold>
+                  {`Owner steps (${nSteps})`}
+                </Text>
+              )}
               <Box gap={1}>
                 {cell(p, `iv-n-${iv.key}`, `${i + 1}.`, { dimColor: true })}
                 {iv.rig && cell(p, `iv-rig-${iv.key}`, iv.rig, { color: 'magenta' })}
@@ -1076,6 +1084,11 @@ export function interviewView(
                   <Text color="yellow" bold wrap="wrap">
                     ? {iv.title}
                   </Text>
+                  {iv.step && (
+                    <Text key={`iv-step-${iv.key}`} wrap="wrap">
+                      {`$ ${iv.step}`}
+                    </Text>
+                  )}
                   {iv.context && (
                     <Text dimColor wrap="wrap">
                       {iv.context}
