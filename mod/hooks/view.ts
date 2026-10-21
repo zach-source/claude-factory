@@ -699,7 +699,10 @@ export type Interview = {
 
 /** the command or step a run asks the person to do: what follows "parked, waiting on:" in its report */
 export const ownerStep = (text: string): string | undefined =>
-  text.replace(/\s+/g, ' ').match(/parked, waiting on:\s*(.+)/i)?.[1]?.trim()
+  text
+    .replace(/\s+/g, ' ')
+    .match(/parked, waiting on:\s*(.+)/i)?.[1]
+    ?.trim()
 
 /** `factory decisions`' shape: a rig's open bd decisions, or what stopped it reading them */
 export type Decision = {

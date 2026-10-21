@@ -668,7 +668,11 @@ const STEPS_TICK = {
     { name: 'api', repo: '/w/api', factory: 'lifecycle' },
     { name: 'web', repo: '/w/web', factory: 'lifecycle' },
   ],
-  runs: [{ ...park('s1', 'api', STEP_CMDS[0]!), bead: 'api-1' }, { ...park('s2', 'api', STEP_CMDS[1]!), bead: 'api-1' }, park('s3', 'web', STEP_CMDS[2]!)],
+  runs: [
+    { ...park('s1', 'api', STEP_CMDS[0]!), bead: 'api-1' },
+    { ...park('s2', 'api', STEP_CMDS[1]!), bead: 'api-1' },
+    park('s3', 'web', STEP_CMDS[2]!),
+  ],
 }
 
 test(
