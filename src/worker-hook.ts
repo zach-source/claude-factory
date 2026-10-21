@@ -1902,11 +1902,18 @@ function dynamicHeadDeny(
       return { deny: true, rm: false }
   }
   let later = 0
+  let scanned = -2
   for (let k = start + 1; k < cmd.length; k++) {
     const t = cmd[k]!
     if (start > 0 && (t === ';' || t === '+')) break
-    if (t[0] === '-' || !DYN_CHARS.test(t)) continue
+    if (!DYN_CHARS.test(t)) continue
     if (!later) later = k
+    // Safe skip: isRecursiveRm at the earlier dash word k-1 already reads this word as a flag.
+    if (t[0] === '-' && scanned === k - 1) {
+      scanned = k
+      continue
+    }
+    scanned = t[0] === '-' ? k : -2
     if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
   }
   const riskyFrom = (from: number): boolean => {
@@ -2012,6 +2019,33 @@ function wrapperReadingsDeny(
     if (r.deny) found = true
     if (r.rm) rm = true
   }
+  // claude-factory-cwt9: the lexer drops a substitution, so `-$(y)` or `-E$(y)` reads as `-` or `-E`.
+  // The dropped text can be a command word. A recursive flag and a risky target after the dash
+  // word: after a lone dash or a dynamic dash word, any risky operand denies. After a real dash
+  // word, a recursive flag and a risky target deny. A plain -r after a real dash word is safe:
+  // `xargs -0 -r ls /` is common.
+  const dashHidesRm = (j: number): boolean => {
+    const nx = words[j + 1]
+    if (nx === undefined) return false
+    // claude-factory-cwt9.11: a dash word with a dynamic part, or a lone dash, can hide a command
+    // word. The literal rm rule denies any risky operand, so deny any risky operand after it.
+    // This tests no flag, so a new spelling of a recursive flag cannot get past it.
+    if (words[j] === '-' || DYN_CHARS.test(words[j]!)) {
+      if (words.slice(j + 1).some(x => !x.startsWith('-') && riskyTarget(x, root))) return true
+    }
+    if (
+      nx !== '-r' &&
+      nx !== '-R' &&
+      isRecursiveRm(words, j) &&
+      rmTargets(words.slice(j)).some(t => riskyTarget(t, root))
+    )
+      return true
+    // A plain -r is recursive only when the first operand is risky.
+    // `xargs -0 -r ls /` has the operand `ls`, so it stays allowed.
+    if (!/^-[A-Za-z]*[rR]/.test(nx)) return false
+    const first = words.slice(j + 1).find(x => !x.startsWith('-'))
+    return first !== undefined && riskyTarget(first, root)
+  }
   const xargsFlags = (j: number): void => {
     const key = 'xargs:' + j
     if (seenFlag.has(key)) return
@@ -2022,6 +2056,8 @@ function wrapperReadingsDeny(
       work.push(() => head(j))
       return
     }
+    if (DYN_CHARS.test(w)) work.push(() => head(j))
+    if (dashHidesRm(j)) found = true
     work.push(() => xargsFlags(j + 1))
     work.push(() => xargsFlags(j + 2))
   }
@@ -2040,10 +2076,12 @@ function wrapperReadingsDeny(
       work.push(() => flags(name, j + 1))
       return
     }
+    if (w.startsWith('-') && dashHidesRm(j)) found = true
     if (w === '-' || !w.startsWith('-')) {
       after(name, j)
       return
     }
+    if (w !== '--' && DYN_CHARS.test(w)) work.push(() => head(j))
     if (w === '--') {
       let k = j + 1
       if (name === 'env' && words[k] === '-') k++
@@ -7675,7 +7713,7 @@ function substitutionEnd(command: string, from: number): number {
 // with a space or paren on both sides is a whole word and stays, but the scan goes into its body.
 // The body of a glued $( ) is read again and added as an extra line, so a glued $( ) inside it is
 // read too.
-function replaceGluedSubstitutions(command: string): string {
+function replaceGluedSubstitutions(command: string, fill = ' '): string {
   let out = ''
   let last = 0
   const extra: string[] = []
@@ -7684,14 +7722,39 @@ function replaceGluedSubstitutions(command: string): string {
     const end = substitutionEnd(command, from)
     const before = from > 0 ? command[from - 1]! : ' '
     const after = end < command.length ? command[end]! : ' '
-    if (/[\s(]/.test(before) && /[\s)]/.test(after)) {
+    const wordStart =
+      Math.max(
+        command.lastIndexOf(' ', from),
+        command.lastIndexOf('\n', from),
+        command.lastIndexOf('\t', from),
+      ) + 1
+    const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/
+    let cmdStart = 0
+    for (let k = wordStart - 1; k >= 0; k--) {
+      const ch = command[k]!
+      if (ch === '\n' || ch === ';' || ch === '&' || ch === '|' || (ch === '(' && command[k - 1] !== '$')) {
+        cmdStart = k + 1
+        break
+      }
+    }
+    // An assignment word skips only in the prefix slot. After env or sudo it is an argument.
+    const assignWord = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/.test(command.slice(wordStart, from))
+    const assign =
+      assignWord &&
+      !/['"\\`]/.test(command.slice(0, wordStart)) &&
+      command
+        .slice(cmdStart, wordStart)
+        .split(/\s+/)
+        .every(w => w === '' || ASSIGN.test(w))
+    if ((/[\s(]/.test(before) && /[\s)]/.test(after)) || (fill !== ' ' && assign)) {
       from = command.indexOf('$(', from + 2)
       continue
     }
-    out += command.slice(last, from) + ' '
+    // After env or sudo, NAME=$(y) splits: the part after the first word is a command word.
+    out += command.slice(last, from) + (assignWord && fill !== ' ' ? ' ' : '') + fill
     last = end
     const body = command.slice(from + 2, command[end - 1] === ')' ? end - 1 : end)
-    const inner = body.includes('$(') ? replaceGluedSubstitutions(body) : body
+    const inner = body.includes('$(') ? replaceGluedSubstitutions(body, fill) : body
     if (inner !== body) extra.push(inner)
     from = command.indexOf('$(', end)
   }
@@ -7902,6 +7965,15 @@ function denyAtScan(
   if (unglued !== command) {
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+  }
+  // claude-factory-cwt9.12: the lexer drops a glued substitution, so `-E$(y)` reads as `-E`. Read the
+  // command again with each one as the text `$_`, so the word stays dynamic. It has fewer "$(" too.
+  if (command.includes('$(')) {
+    const kept = replaceGluedSubstitutions(command, '$_')
+    if (kept !== command) {
+      const split = denyAt(kept, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
   }
   if (unglued.includes('$')) {
     const raw = replaceGluedExpansions(unglued)
@@ -8195,7 +8267,12 @@ function denyAtScan(
         }
       }
     }
-    if (!cmd.length) continue
+    if (!cmd.length) {
+      // claude-factory-cwt9: `sudo -`y`` leaves no command word, but the backtick word can be one.
+      if (words.some(w => w[0] === '-' && w.includes('`')) && wrapperReadingsDeny(words, root).deny)
+        return REASON
+      continue
+    }
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
     // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2
