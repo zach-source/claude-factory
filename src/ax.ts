@@ -152,23 +152,32 @@ export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1
 export function unavailable(): string | undefined {
   const unknown = 'AX executor unavailable: controller readiness could not be observed'
   try {
-    const p = Bun.spawnSync(
-      [
-        KUBECTL(),
-        ...context(),
-        'get',
-        'deployment',
-        'ax-controller',
-        '-n',
-        'ax-system',
-        '-o',
-        'json',
-        '--request-timeout=5s',
-      ],
-      { timeout: 6_000 },
-    )
-    if (p.exitCode !== 0) return unknown
-    const d = JSON.parse(p.stdout.toString())
+    let raw: string
+    if (BROKER()) {
+      // the manager's VM has no kube API: the broker reads the Deployment's readiness fields
+      const r = broker('GET', '/controller')
+      if (!r.ok) return unknown
+      raw = r.body
+    } else {
+      const p = Bun.spawnSync(
+        [
+          KUBECTL(),
+          ...context(),
+          'get',
+          'deployment',
+          'ax-controller',
+          '-n',
+          'ax-system',
+          '-o',
+          'json',
+          '--request-timeout=5s',
+        ],
+        { timeout: 6_000 },
+      )
+      if (p.exitCode !== 0) return unknown
+      raw = p.stdout.toString()
+    }
+    const d = JSON.parse(raw)
     const generation = d?.metadata?.generation
     const status = d?.status
     if (
@@ -622,7 +631,11 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
     ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
     ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
-    ...(env[MANAGER_BROKER] && { FACTORY_POLICY_BROKER: env[MANAGER_BROKER] }),
+    ...(env[MANAGER_BROKER] && {
+      FACTORY_POLICY_BROKER: env[MANAGER_BROKER],
+      // the swap runs in the broker pod, where the op writer token is; the VM holds none
+      FACTORY_AX_TOKEN_SWAP: `curl -sSf -m 120 -X POST ${env[MANAGER_BROKER]!.replace(/\/+$/, '')}/token/best`,
+    }),
     // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make
     ...(routerAddress(env[MANAGER_ROUTER]) && { AX_ROUTER: routerAddress(env[MANAGER_ROUTER])! }),
   }

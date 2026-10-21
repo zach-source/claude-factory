@@ -17,6 +17,8 @@ export type Config = {
   /** the `kubectl ate` prefix, with the token file and, when set, the endpoint */
   ate: string[]
   kubectl: string
+  /** the token swap command. It is null when CLAUDE_TOKEN_ITEM is unset, and the broker does not serve POST /token/best */
+  swap: string[] | null
 }
 
 async function spawn(argv: string[], stdin?: string) {
@@ -42,6 +44,7 @@ export const configFrom = (env: Record<string, string | undefined>, run: Run = s
     manager: env.FACTORY_AX_MANAGER ?? 'f-manager',
     run,
     kubectl,
+    swap: env.CLAUDE_TOKEN_ITEM ? [env.FACTORY_BROKER_TOKEN_CMD ?? 'claude-token', 'best'] : null,
     ate: [
       kubectl,
       'ate',
@@ -52,13 +55,23 @@ export const configFrom = (env: Record<string, string | undefined>, run: Run = s
   }
 }
 
+const firstLine = (s: string) => s.trim().split('\n')[0] ?? ''
+/** one swap at a time: two runs would race on the same op item */
+let swapping = false
+
 const text = (status: number, body: string) =>
   new Response(body, { status, headers: { 'content-type': 'text/plain' } })
 
-/** what a request asks for, or the refusal: `PUT|DELETE /policy/<atespace>/<actor>`, `GET /ca`, `GET /healthz` */
-export function route(method: string, path: string, c: Pick<Config, 'atespaces' | 'manager'>) {
+/** what a request asks for, or the refusal: `PUT|DELETE /policy/<atespace>/<actor>`, `GET /ca`, `GET /controller`, `POST /token/best`, `GET /healthz` */
+export function route(
+  method: string,
+  path: string,
+  c: Pick<Config, 'atespaces' | 'manager'> & { swap?: string[] | null },
+) {
   if (method === 'GET' && path === '/healthz') return { op: 'health' as const }
   if (method === 'GET' && path === '/ca') return { op: 'ca' as const }
+  if (method === 'GET' && path === '/controller') return { op: 'controller' as const }
+  if (method === 'POST' && path === '/token/best' && c.swap) return { op: 'swap' as const }
   const m = /^\/policy\/([^/]+)\/([^/]+)$/.exec(path)
   if (!m || (method !== 'PUT' && method !== 'DELETE')) return { status: 404, error: 'not found' }
   const [atespace, actor] = [m[1]!, m[2]!]
@@ -101,6 +114,51 @@ export async function handle(req: Request, c: Config): Promise<Response> {
     return p.code === 0 && p.out.trim()
       ? text(200, p.out.trim() + '\n')
       : text(502, `ca: ${p.err.trim() || 'empty'}\n`)
+  }
+  if (r.op === 'controller') {
+    const p = await c.run([
+      c.kubectl,
+      'get',
+      'deployment',
+      'ax-controller',
+      '-n',
+      'ax-system',
+      '-o',
+      'json',
+      '--request-timeout=5s',
+    ])
+    // only the readiness fields leave the broker, not the Deployment's env or annotations
+    try {
+      const d = JSON.parse(p.out)
+      if (p.code !== 0 || !d) throw new Error()
+      return text(
+        200,
+        JSON.stringify({
+          metadata: { generation: d.metadata?.generation, deletionTimestamp: d.metadata?.deletionTimestamp },
+          spec: { replicas: d.spec?.replicas },
+          status: {
+            observedGeneration: d.status?.observedGeneration,
+            readyReplicas: d.status?.readyReplicas,
+            availableReplicas: d.status?.availableReplicas,
+          },
+        }) + '\n',
+      )
+    } catch {
+      return text(502, `controller: ${firstLine(p.err) || 'not a Deployment'}\n`)
+    }
+  }
+  if (r.op === 'swap') {
+    if (swapping) return text(409, 'a token swap is running\n')
+    swapping = true
+    try {
+      const p = await c.run(c.swap!)
+      // the first line only: the script prints "slot N is live", and a token must never leave in a response
+      return p.code === 0
+        ? text(200, firstLine(p.out) + '\n')
+        : text(502, `${firstLine(p.err) || 'token swap failed'}\n`)
+    } finally {
+      swapping = false
+    }
   }
   const target = [r.actor, '-a', r.atespace]
   if (r.op === 'delete') {

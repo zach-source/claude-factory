@@ -95,3 +95,85 @@ test('the atespaces and the manager come from the environment', () => {
   expect(route('PUT', '/policy/a/mgr', c)).toMatchObject({ status: 403 })
   expect(c.ate).toEqual(['kubectl', 'ate', '--token-file', '/var/run/secrets/ate-api/token'])
 })
+
+test('GET /controller returns only the readiness fields of the ax-controller Deployment', async () => {
+  const full = {
+    metadata: { generation: 3, name: 'ax-controller', annotations: { secret: 'x' } },
+    spec: { replicas: 1, template: { spec: { containers: [{ env: [{ name: 'K', value: 'v' }] }] } } },
+    status: { observedGeneration: 3, readyReplicas: 1, availableReplicas: 1 },
+  }
+  const { calls, c } = setup(() => ({ code: 0, out: JSON.stringify(full) }))
+  const res = await handle(req('GET', '/controller'), c)
+  expect(res.status).toBe(200)
+  expect(await res.json()).toEqual({
+    metadata: { generation: 3 },
+    spec: { replicas: 1 },
+    status: { observedGeneration: 3, readyReplicas: 1, availableReplicas: 1 },
+  })
+  expect(calls[0]!.argv).toEqual([
+    'kubectl',
+    'get',
+    'deployment',
+    'ax-controller',
+    '-n',
+    'ax-system',
+    '-o',
+    'json',
+    '--request-timeout=5s',
+  ])
+  const denied = setup(() => ({ code: 1, err: 'denied' }))
+  expect((await handle(req('GET', '/controller'), denied.c)).status).toBe(502)
+  const junk = setup(() => ({ code: 0, out: 'not json' }))
+  expect((await handle(req('GET', '/controller'), junk.c)).status).toBe(502)
+  expect(route('POST', '/controller', c)).toMatchObject({ status: 404 })
+})
+
+const swapEnv = { CLAUDE_TOKEN_ITEM: 'item-x', FACTORY_BROKER_ENDPOINT: 'api.example.svc:443' }
+
+test('POST /token/best runs claude-token best and returns its first stdout line, never a token', async () => {
+  const calls: string[][] = []
+  const run: Run = async argv => {
+    calls.push(argv)
+    return {
+      code: 0,
+      out: 'slot 2 is live; agent-vault picks it up within 5 minutes\nsk-ant-secret\n',
+      err: '',
+    }
+  }
+  const c = configFrom(swapEnv, run)
+  const res = await handle(req('POST', '/token/best'), c)
+  expect(res.status).toBe(200)
+  const body = await res.text()
+  expect(body).toBe('slot 2 is live; agent-vault picks it up within 5 minutes\n')
+  expect(calls).toEqual([['claude-token', 'best']])
+  expect(route('GET', '/token/best', c)).toMatchObject({ status: 404 })
+})
+
+test('POST /token/best is 404 when CLAUDE_TOKEN_ITEM is unset, and runs nothing', async () => {
+  const { calls, c } = setup()
+  const res = await handle(req('POST', '/token/best'), c)
+  expect(res.status).toBe(404)
+  expect(calls).toEqual([])
+})
+
+test('POST /token/best answers 409 while a swap runs, then 502 with the first stderr line only', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(r => (release = r))
+  const slow: Run = async () => {
+    await gate
+    return { code: 1, out: '', err: "claude-token: couldn't update the item\nsk-ant-secret\n" }
+  }
+  const c = configFrom(swapEnv, slow)
+  const first = handle(req('POST', '/token/best'), c)
+  const second = await handle(req('POST', '/token/best'), c)
+  expect(second.status).toBe(409)
+  release()
+  const done = await first
+  expect(done.status).toBe(502)
+  expect(await done.text()).toBe("claude-token: couldn't update the item\n")
+  const again = await handle(
+    req('POST', '/token/best'),
+    configFrom(swapEnv, async () => ({ code: 0, out: 'slot 1 is live', err: '' })),
+  )
+  expect(again.status).toBe(200)
+})

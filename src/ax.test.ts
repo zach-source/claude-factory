@@ -51,7 +51,7 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller'])
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'bctl'])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
@@ -1632,6 +1632,13 @@ test('launchManager applies the manager task with its command and env, then retr
   }
 })
 
+test('managerEnv sets the token swap to a broker POST only when the broker is set', () => {
+  expect(ax.managerEnv({}).FACTORY_AX_TOKEN_SWAP).toBeUndefined()
+  expect(
+    ax.managerEnv({ FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080/' }).FACTORY_AX_TOKEN_SWAP,
+  ).toBe('curl -sSf -m 120 -X POST http://broker.example.svc:8080/token/best')
+})
+
 test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
   expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([{ hosts: ['claude.ai'] }])
@@ -1650,11 +1657,39 @@ printf 'curl %s\\n' "$*" >> ${calls}
 case "$*" in
   *PUT*) cat > ${dir}/policy; printf 'created\\n201' ;;
   */ca*) printf 'CA-FROM-BROKER\\n200' ;;
+  */controller*) cat ${dir}/bctl ;;
   *) printf 'no\\n502' ;;
 esac
 `,
 )
 chmodSync(curl, 0o755)
+
+test('with FACTORY_POLICY_BROKER set, unavailable() asks the broker and does not run kubectl', () => {
+  const ready = {
+    metadata: { generation: 3 },
+    spec: { replicas: 1 },
+    status: { observedGeneration: 3, readyReplicas: 1, availableReplicas: 1 },
+  }
+  const saved = [process.env.FACTORY_POLICY_BROKER, process.env.FACTORY_CURL]
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+  process.env.FACTORY_CURL = curl
+  try {
+    writeFileSync(join(dir, 'bctl'), JSON.stringify(ready) + '\n200')
+    expect(ax.unavailable()).toBeUndefined()
+    expect(logged().some(l => l.startsWith('kubectl'))).toBe(false)
+    expect(logged().at(-1)).toContain('http://broker.example.svc:8080/controller')
+    const notReady = { ...ready, status: { ...ready.status, readyReplicas: 0 } }
+    writeFileSync(join(dir, 'bctl'), JSON.stringify(notReady) + '\n200')
+    expect(ax.unavailable()).toContain('is not ready at its current generation')
+    writeFileSync(join(dir, 'bctl'), 'controller: boom\n502')
+    expect(ax.unavailable()).toContain('could not be observed')
+  } finally {
+    if (saved[0] === undefined) delete process.env.FACTORY_POLICY_BROKER
+    else process.env.FACTORY_POLICY_BROKER = saved[0]
+    if (saved[1] === undefined) delete process.env.FACTORY_CURL
+    else process.env.FACTORY_CURL = saved[1]
+  }
+})
 
 test('with FACTORY_POLICY_BROKER set, the policy and the CA go to the broker and kubectl is not run', () => {
   process.env.FACTORY_CURL = curl
@@ -1711,8 +1746,8 @@ test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none 
 })
 
 test('managerEgress adds the Linear rule only for a rig with --linear', () => {
-  const linear = { name: 'l', linear: { team: 't' } }
-  expect(ax.managerEgress({}, [{ name: 'x' }])).toEqual([{ hosts: ['claude.ai'] }])
+  const linear = { linear: { team: 't' } }
+  expect(ax.managerEgress({}, [{}])).toEqual([{ hosts: ['claude.ai'] }])
   expect(ax.managerEgress({}, [linear])).toEqual([
     { hosts: ['claude.ai'] },
     { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
