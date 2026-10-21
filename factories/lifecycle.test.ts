@@ -498,3 +498,18 @@ test('a manager goto plan between two verify reds breaks the repeat streak (clau
   // the re-plan renumbered AC2, so this is not a real repeat: still only the 1st mail
   expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
 })
+
+test('triage rollout requeues into the release factory; decision defers at plan; elsewhere defers (502 AC4-AC7)', () => {
+  const decision = { to: 'done', defer: { station: 'plan' } }
+  expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
+  expect(lifecycle.nodes.triage!.next.elsewhere).toEqual({ to: 'done', defer: true })
+  for (const n of ['triage', 'plan', 'implement']) expect(lifecycle.nodes[n]!.next.decision).toEqual(decision)
+  expect(release.start).toBe('recipe')
+  expect(walk(lifecycle, ['rollout']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['elsewhere']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['decision']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['decision'], 'plan').visited).toEqual(['plan', 'done'])
+  expect(walk(lifecycle, ['decision'], 'implement').visited).toEqual(['implement', 'done'])
+  expect(walk(lifecycle, ['build']).visited).toEqual(['triage', 'plan'])
+  expect(walk(lifecycle, ['reject']).snapshot.context.log.at(-1)).toMatchObject({ outcome: 'reject' })
+})
