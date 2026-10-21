@@ -2,6 +2,8 @@ import { expect, test } from 'bun:test'
 import type { Bead } from './beads'
 import {
   buildPlan,
+  churnCounts,
+  churnProposals,
   findings,
   hashOf,
   isFresh,
@@ -392,4 +394,46 @@ test('buildPlan: adds goal-no-plan only once ranking comes up empty for a goal r
   const plan2 = buildPlan(now, [withWork], [])
   expect(plan2.rigs.widget!.items).toHaveLength(1)
   expect(plan2.rigs.widget!.findings).toEqual([])
+})
+
+// ---- file-churn ----
+
+const churnOf = (churn: Record<string, number>) => findings('widget', undefined, [], [], Date.now(), 24, churn)
+
+test('file-churn: 8 merges give a finding and a design-question proposal, 7 give none', () => {
+  const f = churnOf({ 'src/a.ts': 8 })
+  expect(f).toHaveLength(1)
+  expect(f[0]).toMatchObject({ kind: 'file-churn', file: 'src/a.ts', count: 8 })
+  expect(f[0]!.key).toBe(`file-churn:widget:${hashOf('src/a.ts')}`)
+  expect(f[0]!.text).toContain('src/a.ts')
+  expect(f[0]!.text).toContain('8')
+  expect(churnOf({ 'src/a.ts': 7 })).toEqual([])
+  const [p] = churnProposals(f)
+  expect(p!.rig).toBe('widget')
+  expect(p!.change).toContain('design question')
+  expect(p!.change).toContain('src/a.ts')
+  expect(p!.why).toContain('8')
+})
+
+test('file-churn: lockfiles and CHANGELOG.md are ignored by basename', () => {
+  expect(churnOf({ 'CHANGELOG.md': 50, 'bun.lock': 20, 'pkg/go.sum': 9 })).toEqual([])
+})
+
+test('file-churn: at most 5 per rig, highest count first, ties by path', () => {
+  const churn = { 'f.ts': 9, 'e.ts': 9, 'd.ts': 10, 'c.ts': 8, 'b.ts': 8, 'a.ts': 8 }
+  expect(churnOf(churn).map(f => f.file)).toEqual(['d.ts', 'e.ts', 'f.ts', 'a.ts', 'b.ts'])
+})
+
+test('churn proposal key does not depend on the count', () => {
+  const a = churnProposals(churnOf({ 'src/a.ts': 8 }))[0]!
+  const b = churnProposals(churnOf({ 'src/a.ts': 30 }))[0]!
+  expect(proposalKey('widget', a)).toBe(proposalKey('widget', b))
+  expect(proposalKey('widget', a)).toBe(`proposal:widget:file-churn:${hashOf('src/a.ts')}`)
+  expect(proposalKey('widget', { bead: 'x-1', change: 'c', why: 'w' })).toBe('proposal:widget:x-1')
+})
+
+test('churnCounts: one count per path per commit', () => {
+  const out = '@aaa\nsrc/a.ts\nsrc/b.ts\nsrc/a.ts\n\n@bbb\nsrc/a.ts\n'
+  expect(churnCounts(out)).toEqual({ 'src/a.ts': 2, 'src/b.ts': 1 })
+  expect(churnCounts('')).toEqual({})
 })

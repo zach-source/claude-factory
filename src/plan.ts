@@ -10,9 +10,36 @@ import { createHash } from 'node:crypto'
 import { parentOf, type Bead } from './beads'
 
 export type PlanItem = { id: string; title: string; priority: number; why: string }
-export type FindingKind = 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan'
-export type Finding = { kind: FindingKind; rig: string; bead?: string; key: string; text: string }
-export type Proposal = { rig: string; bead?: string; change: string; why: string }
+export type FindingKind = 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan' | 'file-churn'
+export type Finding = {
+  kind: FindingKind
+  rig: string
+  bead?: string
+  key: string
+  text: string
+  file?: string
+  count?: number
+}
+export type Proposal = { rig: string; bead?: string; change: string; why: string; key?: string }
+
+export const CHURN_MIN = 8
+export const CHURN_SINCE = '48.hours'
+export const CHURN_MAX = 5
+export const CHURN_IGNORE = [
+  'bun.lock',
+  'bun.lockb',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'go.sum',
+  'Cargo.lock',
+  'flake.lock',
+  'uv.lock',
+  'poetry.lock',
+  'Gemfile.lock',
+  'composer.lock',
+  'CHANGELOG.md',
+]
 export type RigPlan = { items: PlanItem[]; findings: Finding[] }
 export type Plan = { at: number; rigs: Record<string, RigPlan>; proposals: Proposal[] }
 
@@ -72,7 +99,8 @@ export const hashOf = (s: string) => createHash('sha256').update(s).digest('hex'
  * proposal filed on bead X, `plan set` drops every later proposal on X, for good, even a
  * different change. This is by design. It stops hourly spam. A later reader must not read it as
  * a bug. */
-export function proposalKey(rig: string, p: Pick<Proposal, 'bead' | 'change' | 'why'>): string {
+export function proposalKey(rig: string, p: Pick<Proposal, 'bead' | 'change' | 'why' | 'key'>): string {
+  if (p.key) return p.key
   return p.bead ? `proposal:${rig}:${p.bead}` : `proposal:${rig}:${hashOf(`${p.change}\n${p.why}`)}`
 }
 
@@ -257,6 +285,7 @@ export function findings(
   liveBeadIds: string[] | Set<string>,
   now: number,
   starveHours = 24,
+  churn: Record<string, number> = {},
 ): Finding[] {
   const live = liveBeadIds instanceof Set ? liveBeadIds : new Set(liveBeadIds)
   const starveMs = starveHours * 3_600_000
@@ -318,7 +347,42 @@ export function findings(
         text: `${rig}'s goal has no open bead driving it: "${clip(goal, 100)}"`,
       })
   }
+  const hot = Object.entries(churn)
+    .filter(([f, n]) => n >= CHURN_MIN && !CHURN_IGNORE.includes(f.split('/').pop()!))
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, CHURN_MAX)
+  for (const [file, count] of hot)
+    out.push({
+      kind: 'file-churn',
+      rig,
+      key: `file-churn:${rig}:${hashOf(file)}`,
+      text: `${sanitize(file, 200)} changed in ${count} merged PRs in 48 hours`,
+      file: sanitize(file, 200),
+      count,
+    })
   return out
+}
+
+/** `churnProposals` turns each file-churn finding into a proposal that asks the person a design
+ * question. The fixed `key` hides the count, so a new count never files a second bead. */
+export function churnProposals(found: Finding[]): Proposal[] {
+  return found
+    .filter(f => f.kind === 'file-churn' && f.file && f.count !== undefined)
+    .map(f => ({
+      rig: f.rig,
+      change: `design question: ${f.file} changed in ${f.count} merged PRs in 48 hours; split it, change its ownership, or accept the churn?`,
+      why: `${f.file} was in ${f.count} merged PRs in the last 48 hours. Many PRs on one file often show a missing seam.`,
+      key: `proposal:${f.rig}:file-churn:${hashOf(f.file!)}`,
+    }))
+}
+
+/** `churnCounts` reads `git log --merges --name-only --format=@%H` output.
+ * It counts each path once for each commit. */
+export function churnCounts(out: string): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const block of out.split(/^@.*$/m))
+    for (const f of new Set(block.split('\n').filter(Boolean))) counts[f] = (counts[f] ?? 0) + 1
+  return counts
 }
 
 /** one rig's input for `buildPlan`: its candidates (dispatch's own ready list), its full bead
