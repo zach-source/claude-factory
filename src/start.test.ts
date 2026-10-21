@@ -241,6 +241,45 @@ test('a goal naming a bead bd finds still starts a run on it, as before', () => 
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
 })
 
+// claude-factory-vad1: goalOf writes a run's goal as '<id>: <title>'. A start with that text, copied from a
+// run or from `factory status`, must work the named bead, not file a copy titled with the whole text.
+test("an '<id>: <title>' goal naming a bead bd finds starts a run on that bead and creates nothing (claude-factory-vad1)", () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'found')
+  const out = run(['start', factoryFixture(), r, 'acme-1: docs: filing guard, thresholds and re-queue'])
+  expect(out.code).toBe(0)
+  const log = readFileSync(calls, 'utf8')
+  expect(log).toContain('show acme-1 ')
+  expect(log).not.toContain('create ')
+  expect(readdirSync(join(home, 'runs')).length).toBe(1)
+})
+
+test("an '<id>: <title>' goal under this rig's prefix that bd does not find fails the start and creates nothing (claude-factory-vad1)", () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'notfound')
+  const out = run(['start', factoryFixture(), r, 'acme-yrq: some title'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('no bead acme-yrq')
+  expect(readFileSync(calls, 'utf8')).not.toContain('create ')
+})
+
+test('a goal with a colon whose head is not a bead id still creates a bead, as before (claude-factory-vad1)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'notfound')
+  const out = run(['start', factoryFixture(), r, 'fix-login: the form drops the session'])
+  expect(out.code).toBe(0)
+  expect(readFileSync(calls, 'utf8')).toContain('create fix-login: the form drops the session')
+})
+
 test('--owned starts an owner-only bead for the person, but FACTORY_PATROL refuses it even with --owned (claude-factory-72v.19)', () => {
   reset()
   const r = repo()

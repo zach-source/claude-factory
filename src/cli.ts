@@ -4926,14 +4926,16 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
 function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk = false } = {}) {
   if (!hasBeads(repo)) return { goal }
   const b = beads(repo, 'factory')
-  const trimmed = goal.trim()
-  const looksLikeId = /^[a-z][\w-]*-[\w.]+$/i.test(trimmed)
+  // a bare id, or the id in front of '<id>: <title>': goalOf writes every run's goal that way, so a goal
+  // copied from a run or `factory status` names its bead too (claude-factory-vad1)
+  const id = /^([a-z][\w-]*-[\w.]+)(:\s.*)?$/is.exec(goal.trim())?.[1] ?? ''
+  const looksLikeId = !!id
   let named: Bead | null = null
   if (looksLikeId) {
     try {
-      named = b.lookup(trimmed)
+      named = b.lookup(id)
     } catch (err) {
-      fail(`could not look up bead ${trimmed} in ${repo}: ${(err as Error).message}; nothing was created`)
+      fail(`could not look up bead ${id} in ${repo}: ${(err as Error).message}; nothing was created`)
     }
     // not found: a goal shaped like this rig's own bead ids must never become a new bead titled with the
     // id text itself (claude-factory-5q3) -- a lookup failure above already failed the start; this is a
@@ -4943,10 +4945,10 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
       try {
         prefix = b.prefixStrict()
       } catch (err) {
-        fail(`could not look up bead ${trimmed} in ${repo}: ${(err as Error).message}; nothing was created`)
+        fail(`could not look up bead ${id} in ${repo}: ${(err as Error).message}; nothing was created`)
       }
-      if (trimmed.toLowerCase().startsWith(`${prefix.toLowerCase()}-`))
-        fail(`no bead ${trimmed} in ${repo}; nothing was created`)
+      if (id.toLowerCase().startsWith(`${prefix.toLowerCase()}-`))
+        fail(`no bead ${id} in ${repo}; nothing was created`)
     }
   }
   if (named) {
