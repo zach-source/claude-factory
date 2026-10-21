@@ -503,7 +503,8 @@ test('triage rollout requeues into the release factory; decision defers at plan;
   const decision = { to: 'done', defer: { station: 'plan' } }
   expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
   expect(lifecycle.nodes.triage!.next.elsewhere).toEqual({ to: 'done', defer: true })
-  for (const n of ['triage', 'plan', 'implement']) expect(lifecycle.nodes[n]!.next.decision).toEqual(decision)
+  for (const n of ['triage', 'plan', 'implement'] as const)
+    expect(lifecycle.nodes[n].next.decision).toEqual(decision)
   expect(release.start).toBe('recipe')
   expect(walk(lifecycle, ['rollout']).visited).toEqual(['triage', 'done'])
   expect(walk(lifecycle, ['elsewhere']).visited).toEqual(['triage', 'done'])

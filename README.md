@@ -859,7 +859,19 @@ queue, until someone queues it again). It can instead carry `requeue: true`, or
 `requeue: { factory?, station? }`. Either way the bead stays open, ready and `factory`-labeled.
 The next dispatch starts it in the factory and station the `requeue` object names, or in the
 labels the worker already set when `requeue` is `true` (claude-factory-wnm; see "The backlog
-dispatches itself" above).
+dispatches itself" above). A `defer` edge can also name a station: `defer: { station: 'plan' }`.
+It defers the bead and swaps its `station:*` label. The run after a `bd undefer` starts at that
+station. The station must be a node of the same factory.
+
+Lifecycle's triage has three outcomes that end the run at once (claude-factory-502):
+
+- `rollout`: the goal is to ship pull requests that are already open or merged. The bead requeues
+  into the `release` factory.
+- `decision`: the work needs a person's choice. The worker puts the question on the bead. The run
+  ends deferred. `bd undefer` starts it again at `plan`. Plan and implement also report `decision`.
+- `elsewhere`: the work belongs in another rig's repo. The worker files the bead there and
+  comments its id on this bead. The run ends deferred. A worker that cannot reach that repo writes
+  a `File in:` line, and the manager files the bead.
 
 `onRounds` names the node that takes the first capped report, instead of the manager. The run
 carries the round's findings to that node. A second capped report in the same run still goes to
