@@ -238,6 +238,25 @@ export async function resolveLinearApiKey(creds: ConnectCreds, cache: ConnectCac
   return field.value
 }
 
+/**
+ * This function returns the Linear key for a pull. It adds each secret it reads to `secrets`, so the caller
+ * can redact them. In the AX manager (FACTORY_IN_AX=1) the VM has no Connect token. The key is `placeholder`.
+ * The egress gateway replaces it with the real key on the way to api.linear.app (the LINEAR vault key).
+ * Everywhere else the key comes from the secret broker.
+ */
+export async function linearAuth(
+  secrets: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  cache: ConnectCache = {},
+): Promise<string> {
+  if (env.FACTORY_IN_AX === '1') return 'placeholder'
+  const creds = resolveConnectCreds(env)
+  secrets.push(creds.token, creds.cfId, creds.cfSecret)
+  const apiKey = await resolveLinearApiKey(creds, cache)
+  secrets.push(apiKey)
+  return apiKey
+}
+
 const LINEAR_ENV_KEYS = [
   'LINEAR_API_KEY',
   'LINEAR_OAUTH_CLIENT_ID',
