@@ -167,7 +167,7 @@ function fakeBdTwo(p1: number, p2: number, by1?: string) {
     'case "$1" in',
     `  ready) printf '%s' '${beads}';;`,
     "  children) printf '%s' '[]';;",
-    "  list) printf '%s' '[]';;", // the flood guard's b.every() (claude-factory-8pc.5): no sweep-filed beads here
+    `  list) printf '%s' '${beads}';;`, // b.every() answers the same beads: the filing guard drops a factory-filed ready bead that list never named (claude-factory-nwlh.2)
     '  dolt) echo "No remotes configured";;',
     '  *) exit 0;;',
     'esac',
